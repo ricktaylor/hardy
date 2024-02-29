@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+    "bpa"
+]
+
+[workspace.package]
+edition = "2021"
