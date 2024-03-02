@@ -2,23 +2,18 @@ syntax = "proto3";
 
 package bpa;
 
-import "google/rpc/status.proto";
-
 service cla_sink {
-    rpc Receive(stream ReceiveBundle) returns (stream ReceiveResponse);
-    rpc Forward(ForwardRequest) returns (stream ForwardBundle);
+    rpc Receive(ReceiveBundle) returns (ReceiveResponse);
+    rpc Poll(PollRequest) returns (ForwardBundle);
 }
 
 message ReceiveBundle {
-    string id = 1;
 }
 
 message ReceiveResponse {
-    string id = 1;
-    google.rpc.Status status = 2;
 }
 
-message ForwardRequest {
+message PollRequest {
     string ClaName = 1;
 }
 

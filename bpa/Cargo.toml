@@ -13,3 +13,6 @@ tokio-stream = "0.1.14"
 tonic = "0.11.0"
 config = "0.14.0"
 hardy-proto = { path = "../proto" }
+directories-next = "2.0.0"
+serde = { version = "1.0.197", features = ["derive"] }
+lazy_static = "1.4.0"
