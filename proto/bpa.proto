@@ -3,20 +3,32 @@ syntax = "proto3";
 package bpa;
 
 service cla_sink {
-    rpc Receive(ReceiveBundle) returns (ReceiveResponse);
-    rpc Poll(PollRequest) returns (ForwardBundle);
+    rpc RegisterCla(RegisterClaRequest) returns (RegisterClaResponse);
+    rpc UnregisterCla(UnregisterClaRequest) returns (UnregisterClaResponse);
+    rpc ForwardBundle(ForwardBundleRequest) returns (ForwardBundleResponse);
 }
 
-message ReceiveBundle {
+message RegisterClaRequest {
+    string Name = 1;
+    string Ident = 2;
+    string GrpcAddress = 3;
 }
 
-message ReceiveResponse {
+message RegisterClaResponse {
 }
 
-message PollRequest {
-    string ClaName = 1;
+message UnregisterClaRequest {
+    string Name = 1;
 }
 
-message ForwardBundle {
+message UnregisterClaResponse {
+}
 
+message ForwardBundleRequest {
+    string Name = 1;
+    bytes RemoteAddress = 2;
+    bytes Bundle = 3;
+}
+
+message ForwardBundleResponse {
 }

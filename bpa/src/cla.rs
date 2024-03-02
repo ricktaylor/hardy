@@ -1,5 +1,5 @@
-use hardy_proto::bpa::cla_sink_server::{ClaSink, ClaSinkServer};
-use hardy_proto::bpa::{ForwardBundle, PollRequest, ReceiveBundle, ReceiveResponse};
+use hardy_proto::bpa::*;
+use cla_sink_server::{ClaSink, ClaSinkServer};
 
 use tonic::{Request, Response, Status};
 
@@ -8,18 +8,25 @@ pub struct Service {}
 
 #[tonic::async_trait]
 impl ClaSink for Service {
-    async fn receive(
+    async fn register_cla(
         &self,
-        _request: Request<ReceiveBundle>,
-    ) -> Result<Response<ReceiveResponse>, Status> {
-        Ok(Response::new(ReceiveResponse {}))
+        _request: Request<RegisterClaRequest>,
+    ) -> Result<Response<RegisterClaResponse>, Status> {
+        Ok(Response::new(RegisterClaResponse {}))
     }
 
-    async fn poll(
+    async fn unregister_cla(
         &self,
-        _request: Request<PollRequest>,
-    ) -> Result<Response<ForwardBundle>, Status> {
-        Ok(Response::new(ForwardBundle {}))
+        _request: Request<UnregisterClaRequest>,
+    ) -> Result<Response<UnregisterClaResponse>, Status> {
+        Ok(Response::new(UnregisterClaResponse {}))
+    }
+
+    async fn forward_bundle(
+        &self,
+        _request: Request<ForwardBundleRequest>,
+    ) -> Result<Response<ForwardBundleResponse>, Status> {
+        Ok(Response::new(ForwardBundleResponse {}))
     }
 }
 
