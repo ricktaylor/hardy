@@ -44,7 +44,7 @@ fn load() -> Config {
     } else {
         b = b.add_source(
             config::File::with_name(if cfg!(target_family = "windows") {
-                todo!()
+                todo!() // Should probably do something with the registry
             } else {
                 "/etc/hardy/bpa.config"
             })
@@ -61,9 +61,9 @@ fn load() -> Config {
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
-    return b
+    b
         .build()
         .expect("Failed to parse configuration")
         .try_deserialize()
-        .expect("Failed to deserialize config");
+        .expect("Failed to deserialize config")
 }
