@@ -32,31 +32,36 @@ impl Config {
 }
 
 pub fn init() -> Option<()> {
-    Some(
-        INSTANCE
-            .set(load()?)
-            .expect("Configuration loaded more than once"),
-    )
+    INSTANCE
+        .set(load()?)
+        .expect("Configuration loaded more than once");
+    Some(())
 }
 
 fn load() -> Option<Config> {
     // Build command options
     let mut opts = getopts::Options::new();
-    opts.optflag("h", "help", "print this help menu");
-    opts.optflag("v", "version", "print the version information");
-    opts.optopt("c", "config", "use a custom configuration file", "FILE");
+    opts.optflag("h", "help", "print this help menu")
+        .optflag("v", "version", "print the version information")
+        .optopt("c", "config", "use a custom configuration file", "FILE");
 
     // Parse cmdline
     let args: Vec<String> = std::env::args().collect();
     let program = args[0].clone();
     let flags = opts.parse(&args[1..]).unwrap_or_else(|f| panic!("{}", f));
     if flags.opt_present("h") {
-        let brief = format!("{} {} - {}\n\nUsage: {} [options]", built_info::PKG_NAME,built_info::PKG_VERSION,built_info::PKG_DESCRIPTION,program);
+        let brief = format!(
+            "{} {} - {}\n\nUsage: {} [options]",
+            built_info::PKG_NAME,
+            built_info::PKG_VERSION,
+            built_info::PKG_DESCRIPTION,
+            program
+        );
         print!("{}", opts.usage(&brief));
         return None;
     }
     if flags.opt_present("v") {
-        print!("{}\n", built_info::PKG_VERSION);
+        println!("{}", built_info::PKG_VERSION);
         return None;
     }
 
