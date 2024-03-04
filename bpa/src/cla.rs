@@ -1,5 +1,5 @@
-use hardy_proto::bpa::*;
 use cla_sink_server::{ClaSink, ClaSinkServer};
+use hardy_proto::bpa::*;
 
 use tonic::{Request, Response, Status};
 

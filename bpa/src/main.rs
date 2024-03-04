@@ -6,21 +6,23 @@ async fn run() {
 
     let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
         .parse()
-        .unwrap();
+        .expect("Invalid gRPC address and/or port in configuration");
 
     tonic::transport::Server::builder()
         .add_service(cla::new_service())
         .serve(addr)
         .await
-        .unwrap()
+        .expect("Failed to start gRPC server")
 }
 
 fn main() {
-    settings::init();
+    if settings::init().is_none() {
+        return;
+    }
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .expect("Failed to start tokio runtime")
         .block_on(run())
 }
