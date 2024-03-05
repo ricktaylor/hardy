@@ -1,20 +1,9 @@
-use lazy_static::lazy_static;
 use serde::Deserialize;
-use std::sync::OnceLock;
 
 // Buildtime info
-// Use of a mod or pub mod is not actually necessary.
 mod built_info {
     // The file has been placed there by the build script.
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
-// Config defaults
-lazy_static! {
-    static ref DEFAULTS: Vec<(&'static str, config::Value)> = vec! {
-        ("grpc_addr","[::1]".into()),
-        ("grpc_port",50051.into())
-    };
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,29 +12,24 @@ pub struct Config {
     pub grpc_port: u16,
 }
 
-static INSTANCE: OnceLock<Config> = OnceLock::new();
-
-impl Config {
-    pub fn get() -> &'static Config {
-        INSTANCE.get().expect("Configuration not loaded")
-    }
-}
-
-pub fn init() -> Option<()> {
-    INSTANCE
-        .set(load()?)
-        .expect("Configuration loaded more than once");
-    Some(())
-}
-
-fn load() -> Option<Config> {
-    // Build command options
+fn options() -> getopts::Options {
     let mut opts = getopts::Options::new();
     opts.optflag("h", "help", "print this help menu")
         .optflag("v", "version", "print the version information")
         .optopt("c", "config", "use a custom configuration file", "FILE");
+    opts
+}
 
+fn defaults() -> Vec<(&'static str, config::Value)> {
+    vec! {
+        ("grpc_addr","[::1]".into()),
+        ("grpc_port",50051.into())
+    }
+}
+
+pub fn init() -> Option<Config> {
     // Parse cmdline
+    let opts = options();
     let args: Vec<String> = std::env::args().collect();
     let program = args[0].clone();
     let flags = opts.parse(&args[1..]).unwrap_or_else(|f| panic!("{}", f));
@@ -65,8 +49,8 @@ fn load() -> Option<Config> {
         return None;
     }
 
-    // Load defaults
-    let mut b = DEFAULTS
+    // Set defaults    
+    let mut b = defaults()
         .iter()
         .fold(config::Config::builder(), |b, (k, v)| {
             b.set_default(k, v.clone())

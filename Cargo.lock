@@ -420,7 +420,6 @@ dependencies = [
  "config",
  "getopts",
  "hardy-proto",
- "lazy_static",
  "serde",
  "tokio",
  "tokio-stream",

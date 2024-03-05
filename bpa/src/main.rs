@@ -1,9 +1,8 @@
 mod cla;
 mod settings;
 
-async fn run() {
-    let config = settings::Config::get();
-
+async fn run(config: &settings::Config) {
+    
     let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
         .parse()
         .expect("Invalid gRPC address and/or port in configuration");
@@ -16,13 +15,13 @@ async fn run() {
 }
 
 fn main() {
-    if settings::init().is_none() {
+    let Some(config) = settings::init() else {
         return;
-    }
+    };
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("Failed to start tokio runtime")
-        .block_on(run())
+        .block_on(run(&config))
 }
