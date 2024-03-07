@@ -4,22 +4,32 @@ use hardy_proto::bpa::*;
 
 use tonic::{Request, Response, Status};
 
-#[derive(Debug, Default)]
-pub struct Service {}
+#[derive(Debug)]
+pub struct Service {
+    cla_registry: cla::ClaRegistry,
+}
+
+impl Service {
+    pub fn new(_config: &settings::Config, cla_registry: cla::ClaRegistry) -> Self {
+        Service { cla_registry }
+    }
+}
 
 #[tonic::async_trait]
 impl ClaSink for Service {
     async fn register_cla(
         &self,
-        _request: Request<RegisterClaRequest>,
+        request: Request<RegisterClaRequest>,
     ) -> Result<Response<RegisterClaResponse>, Status> {
+        self.cla_registry.register(request.into_inner()).await?;
         Ok(Response::new(RegisterClaResponse {}))
     }
 
     async fn unregister_cla(
         &self,
-        _request: Request<UnregisterClaRequest>,
+        request: Request<UnregisterClaRequest>,
     ) -> Result<Response<UnregisterClaResponse>, Status> {
+        self.cla_registry.unregister(request.into_inner())?;
         Ok(Response::new(UnregisterClaResponse {}))
     }
 
@@ -31,8 +41,11 @@ impl ClaSink for Service {
     }
 }
 
-pub fn new_service(_config: &settings::Config) -> ClaSinkServer<Service> {
-    let service = Service::default();
+pub fn new_service(
+    config: &settings::Config,
+    cla_registry: cla::ClaRegistry,
+) -> ClaSinkServer<Service> {
+    let service = Service::new(config, cla_registry);
 
     ClaSinkServer::new(service)
 }

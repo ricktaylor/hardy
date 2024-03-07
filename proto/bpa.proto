@@ -9,7 +9,7 @@ service cla_sink {
 }
 
 message RegisterClaRequest {
-    string Name = 1;
+    string Protocol = 1;
     string Ident = 2;
     string GrpcAddress = 3;
 }
@@ -18,17 +18,22 @@ message RegisterClaResponse {
 }
 
 message UnregisterClaRequest {
-    string Name = 1;
+    string Protocol = 1;
+    string Ident = 2;
 }
 
 message UnregisterClaResponse {
 }
 
 message ForwardBundleRequest {
-    string Name = 1;
+    string Protocol = 1;
     bytes RemoteAddress = 2;
     bytes Bundle = 3;
 }
 
 message ForwardBundleResponse {
+}
+
+service cla {
+    rpc ForwardBundle(ForwardBundleRequest) returns (ForwardBundleResponse);
 }
