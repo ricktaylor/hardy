@@ -9,7 +9,7 @@ name = "bpa-server"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1.36.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.36.0", features = ["macros","rt-multi-thread","signal"] }
 tokio-stream = "0.1.14"
 tonic = "0.11.0"
 config = { version = "0.14.0", features = ["toml"] }
@@ -19,6 +19,7 @@ getopts = "0.2.21"
 simplelog = "0.12.2"
 log_err = "1.1.1"
 log = "0.4.21"
+tokio-util = "0.7.10"
 
 [build-dependencies]
 built = "0.7.1"

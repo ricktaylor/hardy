@@ -1,4 +1,6 @@
 use log_err::*;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio_util::sync::CancellationToken;
 
 mod cla;
 mod logger;
@@ -20,17 +22,35 @@ async fn main() {
         tonic::transport::Server::builder(),
     );
 
-    // And finally serve
+    // Start serving
+    let mut set = tokio::task::JoinSet::new();
+
     let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
         .parse()
         .log_expect("Invalid gRPC address and/or port in configuration");
 
-    tokio::spawn(async move {
+    let cancel_token = CancellationToken::new();
+    let cancel_token_cloned = cancel_token.clone();
+
+    set.spawn(async move {
         services
-            .serve(addr)
+            .serve_with_shutdown(addr, async {
+                cancel_token.cancelled().await;
+            })
             .await
             .log_expect("Failed to start gRPC server")
-    })
-    .await
-    .log_expect("Failed to run tasks")
+    });
+
+    set.spawn(async move {
+        if signal(SignalKind::terminate())
+            .expect("Failed to register signal handlers")
+            .recv()
+            .await
+            .is_some()
+        {
+            cancel_token_cloned.cancel();
+        }
+    });
+
+    while set.join_next().await.is_some() {}
 }
