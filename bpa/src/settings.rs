@@ -1,3 +1,4 @@
+use log_err::*;
 use serde::Deserialize;
 
 // Buildtime info
@@ -10,6 +11,7 @@ mod built_info {
 pub struct Config {
     pub grpc_addr: String,
     pub grpc_port: u16,
+    pub log_level: String,
 }
 
 fn options() -> getopts::Options {
@@ -21,10 +23,7 @@ fn options() -> getopts::Options {
 }
 
 fn defaults() -> Vec<(&'static str, config::Value)> {
-    vec! {
-        ("grpc_addr","[::1]".into()),
-        ("grpc_port",50051.into())
-    }
+    vec![("grpc_addr", "[::1]".into()), ("grpc_port", 50051.into())]
 }
 
 pub fn init() -> Option<Config> {
@@ -32,7 +31,9 @@ pub fn init() -> Option<Config> {
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
     let program = args[0].clone();
-    let flags = opts.parse(&args[1..]).unwrap_or_else(|f| panic!("{}", f));
+    let flags = opts
+        .parse(&args[1..])
+        .expect("Failed to parse command line args");
     if flags.opt_present("h") {
         let brief = format!(
             "{} {} - {}\n\nUsage: {} [options]",
@@ -49,12 +50,12 @@ pub fn init() -> Option<Config> {
         return None;
     }
 
-    // Set defaults    
+    // Set defaults
     let mut b = defaults()
         .iter()
         .fold(config::Config::builder(), |b, (k, v)| {
             b.set_default(k, v.clone())
-                .expect("Invalid default config value")
+                .log_expect("Invalid default config value")
         });
 
     // Add config file
@@ -78,7 +79,7 @@ pub fn init() -> Option<Config> {
 
     // And parse...
     b.build()
-        .expect("Failed to parse configuration")
+        .log_expect("Failed to parse configuration")
         .try_deserialize()
-        .expect("Failed to deserialize config")
+        .log_expect("Failed to deserialize config")
 }

@@ -1,3 +1,4 @@
+use super::*;
 use cla_sink_server::{ClaSink, ClaSinkServer};
 use hardy_proto::bpa::*;
 
@@ -30,7 +31,7 @@ impl ClaSink for Service {
     }
 }
 
-pub fn new_service() -> ClaSinkServer<Service> {
+pub fn new_service(_config: &settings::Config) -> ClaSinkServer<Service> {
     let service = Service::default();
 
     ClaSinkServer::new(service)

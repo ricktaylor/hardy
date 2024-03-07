@@ -1,17 +1,19 @@
+use log_err::*;
+
 mod cla;
+mod logger;
 mod settings;
 
 async fn run(config: &settings::Config) {
-    
     let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
         .parse()
-        .expect("Invalid gRPC address and/or port in configuration");
+        .log_expect("Invalid gRPC address and/or port in configuration");
 
     tonic::transport::Server::builder()
-        .add_service(cla::new_service())
+        .add_service(cla::new_service(config))
         .serve(addr)
         .await
-        .expect("Failed to start gRPC server")
+        .log_expect("Failed to start gRPC server")
 }
 
 fn main() {
@@ -19,9 +21,11 @@ fn main() {
         return;
     };
 
+    logger::init(&config);
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("Failed to start tokio runtime")
+        .log_expect("Failed to start tokio runtime")
         .block_on(run(&config))
 }
