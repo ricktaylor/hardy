@@ -1,19 +1,19 @@
 use log_err::*;
 
-mod cla;
 mod logger;
+mod services;
 mod settings;
 
 async fn run(config: &settings::Config) {
+    // Init services
+    let services = services::init(config, tonic::transport::Server::builder());
+
+    // And finally serve
     let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
         .parse()
         .log_expect("Invalid gRPC address and/or port in configuration");
-
-    tonic::transport::Server::builder()
-        .add_service(cla::new_service(config))
-        .serve(addr)
-        .await
-        .log_expect("Failed to start gRPC server")
+    
+    services.serve(addr).await.log_expect("Failed to start gRPC server")
 }
 
 fn main() {
