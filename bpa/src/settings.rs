@@ -23,7 +23,11 @@ fn options() -> getopts::Options {
 }
 
 fn defaults() -> Vec<(&'static str, config::Value)> {
-    vec![("grpc_addr", "[::1]".into()), ("grpc_port", 50051.into())]
+    vec![
+        ("grpc_addr", "[::1]".into()),
+        ("grpc_port", 50051.into()),
+        ("log_level", "error".into()),
+    ]
 }
 
 pub fn init() -> Option<Config> {
