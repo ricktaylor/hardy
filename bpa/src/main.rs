@@ -1,7 +1,7 @@
 use log_err::*;
+use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
-use std::sync::Arc;
 
 mod cla;
 mod logger;
@@ -22,24 +22,25 @@ async fn main() {
     let cla_registry = cla::ClaRegistry::new(&config);
 
     // Prep graceful shutdown
-    let mut set = tokio::task::JoinSet::new();
+    let mut task_set = tokio::task::JoinSet::new();
     let cancel_token = CancellationToken::new();
 
     // Init services
-    services::init(&config,cla_registry,&mut set,&cancel_token);
-    
+    services::init(&config, cla_registry, &mut task_set, &cancel_token);
+
     // And finally set up signal handler
-    set.spawn(async move {
+    task_set.spawn(async move {
         if signal(SignalKind::terminate())
             .expect("Failed to register signal handlers")
             .recv()
             .await
             .is_some()
         {
+            // Signal stop
             cancel_token.cancel();
         }
     });
 
     // Wait for all tasks to finish
-    while set.join_next().await.is_some() {}
+    while task_set.join_next().await.is_some() {}
 }

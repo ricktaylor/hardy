@@ -96,7 +96,7 @@ impl ClaRegistry {
     }
 
     pub async fn forward_bundle(&self, request: ForwardBundleRequest) -> bool {
-        let endpoint = {
+        {
             // Scope the read-lock
             let inner = self
                 .inner
@@ -106,17 +106,11 @@ impl ClaRegistry {
                 None => return false,
                 Some(cla) => cla.endpoint.clone(),
             }
-        };
-
-        let r = match endpoint
-            .lock()
-            .await
-            .forward_bundle(tonic::Request::new(request))
-            .await
-        {
-            Err(_e) => false,
-            _ => true,
-        };
-        r
+        }
+        .lock()
+        .await
+        .forward_bundle(tonic::Request::new(request))
+        .await
+        .is_err()
     }
 }

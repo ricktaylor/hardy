@@ -83,9 +83,10 @@ pub fn init() -> Option<Arc<Config>> {
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
-    Some(Arc::new(b.build()
-        .log_expect("Failed to parse configuration")
-        .try_deserialize()
-        .log_expect("Failed to deserialize config")
+    Some(Arc::new(
+        b.build()
+            .log_expect("Failed to parse configuration")
+            .try_deserialize()
+            .log_expect("Failed to deserialize config"),
     ))
 }
