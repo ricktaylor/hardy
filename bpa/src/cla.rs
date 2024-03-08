@@ -21,7 +21,7 @@ pub struct ClaRegistry {
 }
 
 impl ClaRegistry {
-    pub fn new(_config: &settings::Config) -> ClaRegistry {
+    pub fn new(_config: &Arc<settings::Config>) -> ClaRegistry {
         ClaRegistry {
             inner: RwLock::new(ClaRegistryInner {
                 clas: HashMap::new(),

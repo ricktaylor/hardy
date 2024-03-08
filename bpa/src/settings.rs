@@ -1,5 +1,6 @@
 use log_err::*;
 use serde::Deserialize;
+use std::sync::Arc;
 
 // Buildtime info
 mod built_info {
@@ -30,7 +31,7 @@ fn defaults() -> Vec<(&'static str, config::Value)> {
     ]
 }
 
-pub fn init() -> Option<Config> {
+pub fn init() -> Option<Arc<Config>> {
     // Parse cmdline
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
@@ -82,8 +83,9 @@ pub fn init() -> Option<Config> {
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
-    b.build()
+    Some(Arc::new(b.build()
         .log_expect("Failed to parse configuration")
         .try_deserialize()
         .log_expect("Failed to deserialize config")
+    ))
 }
