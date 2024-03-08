@@ -7,6 +7,12 @@ mod logger;
 mod services;
 mod settings;
 
+// Buildtime info
+mod built_info {
+    // The file has been placed there by the build script.
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
 #[tokio::main]
 async fn main() {
     // load config
@@ -36,10 +42,15 @@ async fn main() {
             .is_some()
         {
             // Signal stop
+            log::info!("{} stopping...", built_info::PKG_NAME);
             cancel_token.cancel();
         }
     });
 
+    log::info!("{} started", built_info::PKG_NAME);
+
     // Wait for all tasks to finish
     while task_set.join_next().await.is_some() {}
+
+    log::info!("{} stopped", built_info::PKG_NAME);
 }

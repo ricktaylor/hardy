@@ -1,17 +1,14 @@
-use log_err::*;
-use serde::Deserialize;
+use std::path::PathBuf;
 
-// Buildtime info
-mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
+use super::*;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub grpc_addr: String,
     pub grpc_port: u16,
     pub log_level: String,
+    pub cache_dir: String,
 }
 
 fn options() -> getopts::Options {
@@ -26,8 +23,38 @@ fn defaults() -> Vec<(&'static str, config::Value)> {
     vec![
         ("grpc_addr", "[::1]".into()),
         ("grpc_port", 50051.into()),
-        ("log_level", "error".into()),
+        ("log_level", "info".into()),
     ]
+}
+
+fn config_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
+        || {
+            log::warn!("Failed to resolve local config directory");
+            None
+        },
+        |proj_dirs| {
+            Some(proj_dirs.config_local_dir().to_path_buf())
+            // Lin: /home/alice/.config/barapp
+            // Win: C:\Users\Alice\AppData\Roaming\Foo Corp\Bar App\config
+            // Mac: /Users/Alice/Library/Application Support/com.Foo-Corp.Bar-App
+        },
+    )
+}
+
+fn cache_dir() -> Option<config::Value> {
+    directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
+        || {
+            log::warn!("Failed to resolve local config directory");
+            None
+        },
+        |proj_dirs| {
+            proj_dirs.cache_dir().to_str().map(|p| p.into())
+            // Lin: /home/alice/.cache/barapp
+            // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
+            // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
+        },
+    )
 }
 
 pub fn init() -> Option<Config> {
@@ -67,15 +94,15 @@ pub fn init() -> Option<Config> {
         b = b.add_source(config::File::with_name(&source));
     } else if let Ok(source) = std::env::var("HARDY_BPA_CONFIG_FILE") {
         b = b.add_source(config::File::with_name(&source));
-    } else {
-        b = b.add_source(
-            config::File::with_name(if cfg!(target_family = "windows") {
-                todo!() // Should probably do something with the registry
-            } else {
-                "/etc/hardy/bpa.config"
-            })
-            .required(false),
-        );
+    } else if let Some(path) = config_dir() {
+        b = b.add_source(config::File::from(path).required(false));
+    }
+
+    // Add cache_dir default
+    if let Some(cache_dir) = cache_dir() {
+        b = b
+            .set_default("cache_dir", cache_dir)
+            .log_expect("Invalid default cache_dir config value");
     }
 
     // Pull in environment vars

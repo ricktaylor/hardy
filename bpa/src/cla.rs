@@ -111,6 +111,7 @@ impl ClaRegistry {
         .await
         .forward_bundle(tonic::Request::new(request))
         .await
+        .map_err(|e| log::warn!("Failed to forward bundle: {}", e.to_string()))
         .is_err()
     }
 }
