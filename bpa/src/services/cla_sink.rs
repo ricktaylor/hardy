@@ -1,7 +1,6 @@
 use super::*;
 use cla_sink_server::{ClaSink, ClaSinkServer};
 use hardy_proto::bpa::*;
-use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
@@ -11,7 +10,7 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(_config: Arc<settings::Config>, cla_registry: cla::ClaRegistry) -> Self {
+    pub fn new(_config: &settings::Config, cla_registry: cla::ClaRegistry) -> Self {
         Service { cla_registry }
     }
 }
@@ -43,7 +42,7 @@ impl ClaSink for Service {
 }
 
 pub fn new_service(
-    config: Arc<settings::Config>,
+    config: &settings::Config,
     cla_registry: cla::ClaRegistry,
 ) -> ClaSinkServer<Service> {
     let service = Service::new(config, cla_registry);

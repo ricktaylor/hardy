@@ -1,10 +1,9 @@
 use super::*;
-use std::sync::Arc;
 
 mod cla_sink;
 
 pub fn init(
-    config: &Arc<settings::Config>,
+    config: &settings::Config,
     cla_registry: cla::ClaRegistry,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: &tokio_util::sync::CancellationToken,
@@ -14,12 +13,13 @@ pub fn init(
         .parse()
         .log_expect("Invalid gRPC address and/or port in configuration");
 
-    let config = config.clone();
+    let router = tonic::transport::Server::builder()
+        .add_service(cla_sink::new_service(config, cla_registry));
+
     let cancel_token_cloned = cancel_token.clone();
 
     task_set.spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(cla_sink::new_service(config, cla_registry))
+        router
             .serve_with_shutdown(addr, async {
                 cancel_token_cloned.cancelled().await;
             })
