@@ -182,40 +182,19 @@ mod migrate {
         }
 
         // Now run any new migrations
-        let result = if next < migrations.len() {
-            let mut i = migrations[next..].iter();
-            loop {
-                if let Some((seq, file_name, hash, migration)) = i.next() {
-                    // Use a savepoint
-                    match trans.savepoint() {
-                        Ok(sp) => {
-                            // Run the migration
-                            if let Err(e) = sp.execute_batch(migration) {
-                                break Err(e);
-                            }
+        if next < migrations.len() {
+            for (seq, file_name, hash, migration) in migrations[next..].iter() {
+                // Run the migration
+                trans.execute_batch(migration)?;
 
-                            // Update the metadata
-                            if let Err(e) = sp.execute(r"INSERT INTO schema_versions (seq_no,file_name,hash,timestamp) VALUES (?1,?2,?3,datetime('now'))",(seq, file_name, hash)) {
-                                break Err(e)
-                            }
-
-                            // Commit the savepoint
-                            if let Err(e) = sp.commit() {
-                                break Err(e);
-                            }
-                        }
-                        Err(e) => break Err(e),
-                    }
-                } else {
-                    break Ok(());
-                }
+                // Update the metadata
+                trans.execute(r"INSERT INTO schema_versions (seq_no,file_name,hash,timestamp) VALUES (?1,?2,?3,datetime('now'))",(seq, file_name, hash))?;
             }
-        } else {
-            Ok(())
-        };
+        }
 
-        // Always commit the transaction
+        // Commit the transaction
         trans.commit()?;
-        Ok(result?)
+
+        Ok(())
     }
 }
