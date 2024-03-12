@@ -17,7 +17,6 @@ pub fn init(
         .add_service(cla_sink::new_service(config, cla_registry));
 
     let cancel_token_cloned = cancel_token.clone();
-
     task_set.spawn(async move {
         router
             .serve_with_shutdown(addr, async {
