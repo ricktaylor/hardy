@@ -2,6 +2,7 @@ use log_err::*;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
+mod cache;
 mod cla;
 mod database;
 mod logger;

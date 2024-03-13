@@ -25,6 +25,13 @@ rusqlite = { version = "0.31.0", features = ["bundled"] }
 atoi = "2.0.0"
 sha1 = "0.10.6"
 thiserror = "1.0.58"
+rand = "0.8.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.153"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser"] }
 
 [build-dependencies]
 built = "0.7.1"

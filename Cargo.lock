@@ -498,8 +498,10 @@ dependencies = [
  "directories",
  "getopts",
  "hardy-proto",
+ "libc",
  "log",
  "log_err",
+ "rand",
  "regex",
  "rusqlite",
  "serde",
@@ -510,6 +512,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
+ "winapi",
 ]
 
 [[package]]
