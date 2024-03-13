@@ -11,18 +11,15 @@ fn main() {
     gen_migrations("schemas/").expect("Failed to build migration info");
 }
 
-fn gen_migrations(src_dir: &str) -> Result<(),Box<dyn std::error::Error>> {
+fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed={src_dir}");
 
     let out_dir = env::var("OUT_DIR")?;
-    let mut out = std::io::BufWriter::new(
-        std::fs::File::create(
-            [&out_dir, "migrations.rs"]
-                .iter()
-                .collect::<std::path::PathBuf>(),
-        )
-        ?,
-    );
+    let mut out = std::io::BufWriter::new(std::fs::File::create(
+        [&out_dir, "migrations.rs"]
+            .iter()
+            .collect::<std::path::PathBuf>(),
+    )?);
     let regex = regex::Regex::new(r"(\d+)_+.+")?;
 
     let mut m = Vec::new();
@@ -51,8 +48,7 @@ fn gen_migrations(src_dir: &str) -> Result<(),Box<dyn std::error::Error>> {
             "({seq}u64,r###\"{}\"###,\"{}\",",
             file_path.to_string_lossy(),
             BASE64_STANDARD.encode(hash)
-        ))
-        ?;
+        ))?;
         out.write_all("r###\"".as_bytes())?;
         out.write_all(&data)?;
         out.write_all("\"###),\n".as_bytes())?;
