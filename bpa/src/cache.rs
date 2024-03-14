@@ -1,10 +1,11 @@
 use super::*;
 use rand::random;
 use std::{
+    collections::HashSet,
     fs::{create_dir_all, remove_file, OpenOptions},
     io::{self, Write},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 #[cfg(unix)]
@@ -29,24 +30,18 @@ fn direct_flag(options: &mut OpenOptions) {
 
 pub struct Cache {
     cache_root: PathBuf,
+    partials: Mutex<HashSet<PathBuf>>,
 }
 
 impl Cache {
     pub fn new(config: &settings::Config) -> Self {
         Self {
             cache_root: PathBuf::from(&config.cache_dir),
+            partials: Mutex::new(HashSet::new()),
         }
     }
 
-    pub async fn store(&self, data: &Arc<Vec<u8>>) -> Result<PathBuf, std::io::Error> {
-        /*
-        create a new temp file (on the same file system!)
-        write data to the temp file
-        fsync() the temp file
-        rename the temp file to the appropriate name
-        fsync() the containing directory
-        */
-
+    fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
         // Compose a subdirectory
         let sub_dir = [
             &(random::<u16>() % 4096).to_string(),
@@ -56,36 +51,59 @@ impl Cache {
         .iter()
         .collect::<PathBuf>();
 
-        // Concat full path
-        let full_dir_path = [&self.cache_root, &sub_dir].iter().collect::<PathBuf>();
+        // Random filename
+        loop {
+            let file_path = [
+                &self.cache_root,
+                &sub_dir,
+                &PathBuf::from(random::<u64>().to_string()),
+            ]
+            .iter()
+            .collect::<PathBuf>();
+
+            // Stop races between threads
+            if self.partials.lock().unwrap().insert(file_path.clone()) {
+                // Check if a file with that name doesn't exist
+                match std::fs::metadata(&file_path) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(file_path),
+                    r => {
+                        // Remove the partials entry
+                        self.partials.lock().unwrap().remove(&file_path);
+                        r?;
+                    }
+                }
+            }
+        }
+    }
+
+    fn write_bundle(
+        &self,
+        mut file_path: PathBuf,
+        data: Arc<Vec<u8>>,
+    ) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
+        /*
+        create a new temp file (on the same file system!)
+        write data to the temp file
+        fsync() the temp file
+        rename the temp file to the appropriate name
+        fsync() the containing directory
+        */
 
         // Perform blocking I/O on dedicated worker task
-        let data = data.clone();
         tokio::task::spawn_blocking(move || {
             // Ensure directory exists
-            create_dir_all(&full_dir_path)?;
+            create_dir_all(file_path.parent().unwrap())?;
 
-            // Compose a filename
-            let (mut file_name, file_path, mut file) = loop {
-                let mut file_name = PathBuf::from(random::<u64>().to_string());
+            // Use a temporary extension
+            file_path.set_extension("partial");
 
-                // Write to temp file first
-                file_name.set_extension("partial");
-
-                // Open the file as direct as possible
-                let mut options = OpenOptions::new();
-                options.write(true).create_new(true);
-                if cfg!(windows) || cfg!(unix) {
-                    direct_flag(&mut options);
-                }
-
-                let file_path = [&full_dir_path, &file_name].iter().collect::<PathBuf>();
-                match options.open(&file_path) {
-                    Ok(file) => break (file_name, file_path, file),
-                    Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
-                    _ => { /* Pick a new random name */ }
-                }
-            };
+            // Open the file as direct as possible
+            let mut options = OpenOptions::new();
+            options.write(true).create(true);
+            if cfg!(windows) || cfg!(unix) {
+                direct_flag(&mut options);
+            }
+            let mut file = options.open(&file_path)?;
 
             // Write all data to file
             if let Err(e) = file.write_all(data.as_ref()) {
@@ -100,18 +118,37 @@ impl Cache {
             }
 
             // Rename the file
-            let old_name = file_name.clone();
-            file_name.set_extension("");
-            if let Err(e) = std::fs::rename(&old_name, &file_name) {
-                _ = remove_file(&file_path);
+            let old_path = file_path.clone();
+            file_path.set_extension("");
+            if let Err(e) = std::fs::rename(&old_path, &file_path) {
+                _ = remove_file(&old_path);
                 return Err(e);
             }
 
             // No idea how to fsync the directory in portable Rust!!
 
-            // Return the sub_dir path to the new file
-            Ok([&sub_dir, &file_name].iter().collect::<PathBuf>())
+            Ok(())
         })
-        .await?
+    }
+
+    pub async fn store(&self, data: &Arc<Vec<u8>>) -> Result<(), std::io::Error> {
+        // Create random filename
+        let file_path = self.random_file_path()?;
+
+        // Start the write to disk
+        let write_handle = self.write_bundle(file_path.clone(), data.clone());
+
+        // Do other stuff!
+
+        // Await the result of write_bundle
+        let write_result = write_handle.await;
+
+        // Always remove partials entry
+        self.partials.lock().unwrap().remove(&file_path);
+
+        // Check result of write_bundle
+        write_result??;
+
+        Ok(())
     }
 }
