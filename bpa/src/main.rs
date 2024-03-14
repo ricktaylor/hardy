@@ -55,7 +55,9 @@ async fn main() {
     log::info!("{} started", built_info::PKG_NAME);
 
     // Wait for all tasks to finish
-    while task_set.join_next().await.is_some() {}
+    while let Some(r) = task_set.join_next().await {
+        r.log_expect("Task terminated unexpectedly")
+    }
 
     log::info!("{} stopped", built_info::PKG_NAME);
 }
