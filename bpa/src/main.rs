@@ -15,6 +15,30 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
+fn listen_for_cancel(
+    task_set: &mut tokio::task::JoinSet<()>,
+) -> tokio_util::sync::CancellationToken {
+    let cancel_token = CancellationToken::new();
+
+    let mut term_handler =
+        signal(SignalKind::terminate()).expect("Failed to register signal handlers");
+
+    let cancel_token_cloned = cancel_token.clone();
+    task_set.spawn(async move {
+        tokio::select! {
+            Some(_) = term_handler.recv() =>
+                {
+                    // Signal stop
+                    log::info!("{} stopping...", built_info::PKG_NAME);
+                    cancel_token_cloned.cancel();
+                }
+            _ = cancel_token_cloned.cancelled() => {}
+        }
+    });
+
+    cancel_token
+}
+
 #[tokio::main]
 async fn main() {
     // load config
@@ -33,24 +57,10 @@ async fn main() {
 
     // Prep graceful shutdown
     let mut task_set = tokio::task::JoinSet::new();
-    let cancel_token = CancellationToken::new();
+    let cancel_token = listen_for_cancel(&mut task_set);
 
     // Init async systems
-    services::init(&config, cla_registry, &mut task_set, &cancel_token);
-
-    // And finally set up signal handler
-    task_set.spawn(async move {
-        if signal(SignalKind::terminate())
-            .expect("Failed to register signal handlers")
-            .recv()
-            .await
-            .is_some()
-        {
-            // Signal stop
-            log::info!("{} stopping...", built_info::PKG_NAME);
-            cancel_token.cancel();
-        }
-    });
+    services::init(&config, cla_registry, &mut task_set, cancel_token);
 
     log::info!("{} started", built_info::PKG_NAME);
 
