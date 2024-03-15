@@ -1,63 +1,26 @@
 use super::*;
-use std::{path::PathBuf, sync::Arc};
+use std::{fs::create_dir_all, path::PathBuf, sync::Arc};
 
 type Database = Arc<tokio::sync::Mutex<rusqlite::Connection>>;
 
-fn db_path(config: &settings::Config) -> PathBuf {
-    [&config.cache_dir, "cache.db"].iter().collect()
-}
+pub fn init(config: &settings::Config) -> Database {
+    // Compose DB name
+    let file_path = [&config.cache_dir, "cache.db"].iter().collect::<PathBuf>();
 
-fn db_new(path: &PathBuf) -> rusqlite::Connection {
+    // Ensure directory exists
+    create_dir_all(file_path.parent().unwrap()).log_expect("Failed to create cache directory");
+
     // Create database
-    rusqlite::Connection::open_with_flags(
-        path,
+    let mut conn = rusqlite::Connection::open_with_flags(
+        &file_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .log_expect("Failed to create cache database")
-}
+    .log_expect("Failed to create database");
 
-fn init_new(config: &settings::Config) -> rusqlite::Connection {
-    std::fs::create_dir_all(&config.cache_dir).log_expect("Failed to create cache directory");
-
-    db_new(&db_path(config))
-}
-
-fn init_existing(config: &settings::Config) -> rusqlite::Connection {
-    // Check cache db existence
-    let path = db_path(config);
-    match std::fs::metadata(&path) {
-        Ok(_) => rusqlite::Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .log_expect("Failed to open cache database"),
-        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => db_new(&db_path(config)),
-        e => {
-            e.log_expect("Failed to access cache database");
-            unreachable!()
-        }
-    }
-}
-
-pub fn init(config: &settings::Config) -> Database {
-    // Check cache directory existence first
-    let mut conn = match std::fs::metadata(&config.cache_dir) {
-        Ok(metadata) if metadata.is_dir() => init_existing(config),
-        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => init_new(config),
-        Ok(_metadata) => {
-            let msg = format!("supplied cache_dir {} is not a directory", config.cache_dir);
-            log::error!("{}", msg);
-            panic!("{}", msg);
-        }
-        e => {
-            e.log_expect("Failed to read cache_dir");
-            unreachable!()
-        }
-    };
-
-    migrate::migrate(&mut conn).log_expect("Failed to initialize database schema");
+    // Migrate the database to the latest schema
+    migrate::migrate(&mut conn).log_expect("Failed to initialize database");
 
     Arc::new(tokio::sync::Mutex::new(conn))
 }
@@ -86,7 +49,7 @@ mod migrate {
     pub fn migrate(conn: &mut rusqlite::Connection) -> Result<(), Box<dyn std::error::Error>> {
         let migrations = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
-        let mut trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
+        let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
 
         // Ensure we have a migrations table
         trans.execute_batch(
