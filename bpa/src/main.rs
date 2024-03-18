@@ -2,7 +2,9 @@ use log_err::*;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
+mod bundle;
 mod cache;
+mod cbor;
 mod cla;
 mod database;
 mod logger;
@@ -55,12 +57,15 @@ async fn main() {
     // Setup CLA registry
     let cla_registry = cla::ClaRegistry::new(&config);
 
+    // Init bundle cache
+    let cache = cache::Cache::init(&config);
+
     // Prep graceful shutdown
     let mut task_set = tokio::task::JoinSet::new();
     let cancel_token = listen_for_cancel(&mut task_set);
 
     // Init async systems
-    services::init(&config, cla_registry, &mut task_set, cancel_token);
+    services::init(&config, cla_registry, cache, &mut task_set, cancel_token);
 
     log::info!("{} started", built_info::PKG_NAME);
 

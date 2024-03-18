@@ -5,6 +5,7 @@ mod cla_sink;
 pub fn init(
     config: &settings::Config,
     cla_registry: cla::ClaRegistry,
+    cache: cache::Cache,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -14,8 +15,11 @@ pub fn init(
         .log_expect("Invalid gRPC address and/or port in configuration");
 
     // Add gRPC services to HTTP router
-    let router = tonic::transport::Server::builder()
-        .add_service(cla_sink::new_service(config, cla_registry));
+    let router = tonic::transport::Server::builder().add_service(cla_sink::new_service(
+        config,
+        cla_registry,
+        cache,
+    ));
 
     // Start serving
     task_set.spawn(async move {

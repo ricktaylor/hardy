@@ -7,11 +7,19 @@ use tonic::{Request, Response, Status};
 #[derive(Debug)]
 pub struct Service {
     cla_registry: cla::ClaRegistry,
+    cache: cache::Cache,
 }
 
 impl Service {
-    pub fn new(_config: &settings::Config, cla_registry: cla::ClaRegistry) -> Self {
-        Service { cla_registry }
+    pub fn new(
+        _config: &settings::Config,
+        cla_registry: cla::ClaRegistry,
+        cache: cache::Cache,
+    ) -> Self {
+        Service {
+            cla_registry,
+            cache,
+        }
     }
 }
 
@@ -35,8 +43,13 @@ impl ClaSink for Service {
 
     async fn forward_bundle(
         &self,
-        _request: Request<ForwardBundleRequest>,
+        request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
+        self.cache
+            .store(&std::sync::Arc::new(request.into_inner().bundle))
+            .await
+            .map_err(|e| Status::from_error(e.into()))?;
+
         Ok(Response::new(ForwardBundleResponse {}))
     }
 }
@@ -44,8 +57,7 @@ impl ClaSink for Service {
 pub fn new_service(
     config: &settings::Config,
     cla_registry: cla::ClaRegistry,
+    cache: cache::Cache,
 ) -> ClaSinkServer<Service> {
-    let service = Service::new(config, cla_registry);
-
-    ClaSinkServer::new(service)
+    ClaSinkServer::new(Service::new(config, cla_registry, cache))
 }

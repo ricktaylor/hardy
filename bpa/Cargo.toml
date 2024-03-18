@@ -26,6 +26,8 @@ atoi = "2.0.0"
 sha1 = "0.10.6"
 thiserror = "1.0.58"
 rand = "0.8.5"
+anyhow = "1.0.81"
+crc = "3.0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.153"

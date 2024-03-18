@@ -9,8 +9,6 @@ use std::{
 };
 
 #[cfg(unix)]
-use libc;
-#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
 #[cfg(unix)]
@@ -28,16 +26,17 @@ fn direct_flag(options: &mut OpenOptions) {
     options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
 }
 
+#[derive(Debug, Clone)]
 pub struct Cache {
     cache_root: PathBuf,
-    partials: Mutex<HashSet<PathBuf>>,
+    partials: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Cache {
-    pub fn new(config: &settings::Config) -> Self {
+    pub fn init(config: &settings::Config) -> Self {
         Self {
             cache_root: PathBuf::from(&config.cache_dir),
-            partials: Mutex::new(HashSet::new()),
+            partials: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -76,69 +75,15 @@ impl Cache {
         }
     }
 
-    fn write_bundle(
-        &self,
-        mut file_path: PathBuf,
-        data: Arc<Vec<u8>>,
-    ) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
-        /*
-        create a new temp file (on the same file system!)
-        write data to the temp file
-        fsync() the temp file
-        rename the temp file to the appropriate name
-        fsync() the containing directory
-        */
-
-        // Perform blocking I/O on dedicated worker task
-        tokio::task::spawn_blocking(move || {
-            // Ensure directory exists
-            create_dir_all(file_path.parent().unwrap())?;
-
-            // Use a temporary extension
-            file_path.set_extension("partial");
-
-            // Open the file as direct as possible
-            let mut options = OpenOptions::new();
-            options.write(true).create(true);
-            if cfg!(windows) || cfg!(unix) {
-                direct_flag(&mut options);
-            }
-            let mut file = options.open(&file_path)?;
-
-            // Write all data to file
-            if let Err(e) = file.write_all(data.as_ref()) {
-                _ = remove_file(&file_path);
-                return Err(e);
-            }
-
-            // Sync everything
-            if let Err(e) = file.sync_all() {
-                _ = remove_file(&file_path);
-                return Err(e);
-            }
-
-            // Rename the file
-            let old_path = file_path.clone();
-            file_path.set_extension("");
-            if let Err(e) = std::fs::rename(&old_path, &file_path) {
-                _ = remove_file(&old_path);
-                return Err(e);
-            }
-
-            // No idea how to fsync the directory in portable Rust!!
-
-            Ok(())
-        })
-    }
-
-    pub async fn store(&self, data: &Arc<Vec<u8>>) -> Result<(), std::io::Error> {
+    pub async fn store(&self, data: &Arc<Vec<u8>>) -> Result<(), anyhow::Error> {
         // Create random filename
         let file_path = self.random_file_path()?;
 
         // Start the write to disk
-        let write_handle = self.write_bundle(file_path.clone(), data.clone());
+        let write_handle = write_bundle(file_path.clone(), data.clone());
 
-        // Do other stuff!
+        // Parse the bundle in parallel
+        let bundle_result = bundle::Bundle::new(data);
 
         // Await the result of write_bundle
         let write_result = write_handle.await;
@@ -149,6 +94,70 @@ impl Cache {
         // Check result of write_bundle
         write_result??;
 
+        // Check result of bundle parse
+        let bundle = match bundle_result {
+            Ok(b) => b,
+            Err(e) => {
+                // Remove the cached file
+                _ = tokio::fs::remove_file(&file_path).await;
+                return Err(e);
+            }
+        };
+
         Ok(())
     }
+}
+
+fn write_bundle(
+    mut file_path: PathBuf,
+    data: Arc<Vec<u8>>,
+) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
+    /*
+    create a new temp file (on the same file system!)
+    write data to the temp file
+    fsync() the temp file
+    rename the temp file to the appropriate name
+    fsync() the containing directory
+    */
+
+    // Perform blocking I/O on dedicated worker task
+    tokio::task::spawn_blocking(move || {
+        // Ensure directory exists
+        create_dir_all(file_path.parent().unwrap())?;
+
+        // Use a temporary extension
+        file_path.set_extension("partial");
+
+        // Open the file as direct as possible
+        let mut options = OpenOptions::new();
+        options.write(true).create(true);
+        if cfg!(windows) || cfg!(unix) {
+            direct_flag(&mut options);
+        }
+        let mut file = options.open(&file_path)?;
+
+        // Write all data to file
+        if let Err(e) = file.write_all(data.as_ref()) {
+            _ = remove_file(&file_path);
+            return Err(e);
+        }
+
+        // Sync everything
+        if let Err(e) = file.sync_all() {
+            _ = remove_file(&file_path);
+            return Err(e);
+        }
+
+        // Rename the file
+        let old_path = file_path.clone();
+        file_path.set_extension("");
+        if let Err(e) = std::fs::rename(&old_path, &file_path) {
+            _ = remove_file(&old_path);
+            return Err(e);
+        }
+
+        // No idea how to fsync the directory in portable Rust!!
+
+        Ok(())
+    })
 }

@@ -87,12 +87,15 @@ impl ClaRegistry {
         Err(tonic::Status::not_found("No such CLA registered"))
     }
 
-    pub async fn forward_bundle(&self, request: ForwardBundleRequest) -> bool {
+    pub async fn forward_bundle(
+        &self,
+        request: ForwardBundleRequest,
+    ) -> Result<bool, tonic::Status> {
         {
             // Scope the read-lock
             let clas = self.clas.read().log_expect("Failed to read-lock CLA mutex");
             match clas.get(&request.protocol) {
-                None => return false,
+                None => return Ok(false),
                 Some(cla) => cla.endpoint.clone(),
             }
         }
@@ -100,7 +103,11 @@ impl ClaRegistry {
         .await
         .forward_bundle(tonic::Request::new(request))
         .await
-        .map_err(|e| log::warn!("Failed to forward bundle: {}", e.to_string()))
-        .is_err()
+        .map_err(|e| {
+            log::warn!("Failed to forward bundle: {}", e);
+            e
+        })?;
+
+        Ok(true)
     }
 }
