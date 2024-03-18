@@ -25,7 +25,7 @@ pub fn init(config: &settings::Config) -> Database {
     Arc::new(tokio::sync::Mutex::new(conn))
 }
 
-// Migration code: Move this to build time, and then a crate at some point!
+// Migration code: Move this to its own crate at some point!
 mod migrate {
 
     use rusqlite::OptionalExtension;

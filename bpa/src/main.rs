@@ -21,7 +21,7 @@ fn listen_for_cancel(
     let cancel_token = CancellationToken::new();
 
     let mut term_handler =
-        signal(SignalKind::terminate()).expect("Failed to register signal handlers");
+        signal(SignalKind::terminate()).log_expect("Failed to register signal handlers");
 
     let cancel_token_cloned = cancel_token.clone();
     task_set.spawn(async move {
