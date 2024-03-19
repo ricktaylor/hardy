@@ -45,12 +45,15 @@ impl ClaSink for Service {
         &self,
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
-        self.cache
+        let failure = self
+            .cache
             .store(&std::sync::Arc::new(request.into_inner().bundle))
             .await
             .map_err(|e| Status::from_error(e.into()))?;
 
-        Ok(Response::new(ForwardBundleResponse {}))
+        Ok(Response::new(ForwardBundleResponse {
+            failure: failure.map(|reason| BundleProcessingFailure { reason }),
+        }))
     }
 }
 

@@ -91,7 +91,7 @@ impl ClaRegistry {
         &self,
         request: ForwardBundleRequest,
     ) -> Result<bool, tonic::Status> {
-        {
+        if let Some(failure) = {
             // Scope the read-lock
             let clas = self.clas.read().log_expect("Failed to read-lock CLA mutex");
             match clas.get(&request.protocol) {
@@ -106,8 +106,14 @@ impl ClaRegistry {
         .map_err(|e| {
             log::warn!("Failed to forward bundle: {}", e);
             e
-        })?;
-
-        Ok(true)
+        })?
+        .into_inner()
+        .failure
+        {
+            log::info!("CLA failed to forward bundle: {}", failure.reason);
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 }

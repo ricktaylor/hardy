@@ -75,7 +75,7 @@ impl Cache {
         }
     }
 
-    pub async fn store(&self, data: &Arc<Vec<u8>>) -> Result<(), anyhow::Error> {
+    pub async fn store(&self, data: &Arc<Vec<u8>>) -> Result<Option<String>, anyhow::Error> {
         // Create random filename
         let file_path = self.random_file_path()?;
 
@@ -100,11 +100,14 @@ impl Cache {
             Err(e) => {
                 // Remove the cached file
                 _ = tokio::fs::remove_file(&file_path).await;
-                return Err(e);
+
+                // Reply with forwarding failure - NOT an error
+                return Ok(Some(format!("Bundle validation failed: {}", e.to_string())));
             }
         };
 
-        todo!()
+        // No failure
+        Ok(None)
     }
 }
 

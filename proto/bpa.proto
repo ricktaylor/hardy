@@ -31,7 +31,12 @@ message ForwardBundleRequest {
     bytes Bundle = 3;
 }
 
+message BundleProcessingFailure {
+    string Reason = 1;
+}
+
 message ForwardBundleResponse {
+    optional BundleProcessingFailure failure = 1;
 }
 
 service cla {
