@@ -143,7 +143,7 @@ pub fn parse(data: &[u8]) -> Result<Bundle, anyhow::Error> {
             if tags.is_some() {
                 log::info!("Parsing bundle with tags");
             }
-            process_bundle_blocks(data, a)
+            parse_bundle_blocks(data, a)
         } else {
             Err(anyhow!("Bundle is not a CBOR array"))
         }
@@ -156,23 +156,23 @@ pub fn parse(data: &[u8]) -> Result<Bundle, anyhow::Error> {
     Ok(b)
 }
 
-fn process_bundle_blocks(
+fn parse_bundle_blocks(
     data: &[u8],
     mut blocks: cbor::decode::Array,
 ) -> Result<Bundle, anyhow::Error> {
-    // Process Primary block
+    // Parse Primary block
     let primary = blocks.try_parse_item(|value, _, block_start, tags| {
         if let cbor::decode::Value::Array(a) = value {
             if tags.is_some() {
                 log::info!("Parsing primary block with tags");
             }
-            process_primary_block(data, a, block_start)
+            parse_primary_block(data, a, block_start)
         } else {
             Err(anyhow!("Bundle primary block is not a CBOR array"))
         }
     })?;
 
-    // Process other blocks
+    // Parse other blocks
     let (extensions, payload) = {
         // Use an intermediate vector so we can check the payload was the last item
         let mut extension_blocks = Vec::new();
@@ -183,7 +183,7 @@ fn process_bundle_blocks(
                         if tags.is_some() {
                             log::info!("Parsing extension block with tags");
                         }
-                        Ok(Some(process_extension_block(data, a, block_start)?))
+                        Ok(Some(parse_extension_block(data, a, block_start)?))
                     }
                     cbor::decode::Value::End(_) => Ok(None),
                     _ => Err(anyhow!("Bundle extension block is not a CBOR array")),
@@ -228,7 +228,7 @@ fn process_bundle_blocks(
     })
 }
 
-fn process_primary_block(
+fn parse_primary_block(
     data: &[u8],
     mut block: cbor::decode::Array,
     block_start: usize,
@@ -524,7 +524,7 @@ fn parse_crc_value(
     Ok(())
 }
 
-fn process_extension_block(
+fn parse_extension_block(
     data: &[u8],
     mut block: cbor::decode::Array,
     block_start: usize,
