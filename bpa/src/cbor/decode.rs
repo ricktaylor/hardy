@@ -23,7 +23,8 @@ pub enum Error {
 pub enum Value<'a> {
     End(usize),
     Uint(u64),
-    String(&'a str),
+    Bytes(&'a [u8], bool),
+    Text(&'a str, bool),
     Array(Array<'a>),
 }
 
@@ -100,6 +101,19 @@ impl<'a> Array<'a> {
             (Value::Uint(value), Some(tags)) => Ok((value, Some(tags.to_vec()))),
             (Value::Uint(value), None) => Ok((value, None)),
             _ => Err(Error::IncorrectType.into()),
+        })
+    }
+
+    pub fn parse_end_or_else<F>(&mut self, f: F) -> Result<usize, anyhow::Error>
+    where
+        F: FnOnce() -> anyhow::Error,
+    {
+        self.try_parse_item(|value, _, _, _| {
+            if let Value::End(end) = value {
+                Ok(end)
+            } else {
+                Err(f())
+            }
         })
     }
 }
@@ -229,22 +243,38 @@ where
             offset += o + 1;
             f(Value::Uint(v), tags.as_deref())
         }
-        (1 | 2, _) => todo!(),
-        (3, 31) => {
-            /* Indefinite length string */
+        (1, _) => todo!(),
+        (2, 31) => {
+            /* Indefinite length byte string */
             let (c, o) = parse_data_chunked(3, &data[offset + 1..])?;
-            let s = c.iter().try_fold(String::new(), |mut s, &b| {
+            let v = c.into_iter().try_fold(Vec::new(), |mut v, b| {
+                v.extend_from_slice(b);
+                Ok::<Vec<u8>, anyhow::Error>(v)
+            })?;
+            offset += o + 1;
+            f(Value::Bytes(&v, true), tags.as_deref())
+        }
+        (2, minor) => {
+            /* Known length byte string */
+            let (t, o) = parse_data_minor(minor, &data[offset + 1..])?;
+            offset += o + 1;
+            f(Value::Bytes(t, false), tags.as_deref())
+        }
+        (3, 31) => {
+            /* Indefinite length text string */
+            let (c, o) = parse_data_chunked(3, &data[offset + 1..])?;
+            let s = c.into_iter().try_fold(String::new(), |mut s, b| {
                 s.push_str(std::str::from_utf8(b)?);
                 Ok::<String, Utf8Error>(s)
             })?;
             offset += o + 1;
-            f(Value::String(&s), tags.as_deref())
+            f(Value::Text(&s, true), tags.as_deref())
         }
         (3, minor) => {
-            /* Known length string */
+            /* Known length text string */
             let (t, o) = parse_data_minor(minor, &data[offset + 1..])?;
             offset += o + 1;
-            f(Value::String(std::str::from_utf8(t)?), tags.as_deref())
+            f(Value::Text(std::str::from_utf8(t)?, false), tags.as_deref())
         }
         (4, 31) => {
             /* Indefinite length array */

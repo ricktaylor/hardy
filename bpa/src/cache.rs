@@ -83,7 +83,7 @@ impl Cache {
         let write_handle = write_bundle(file_path.clone(), data.clone());
 
         // Parse the bundle in parallel
-        let bundle_result = bundle::Bundle::new(data);
+        let bundle_result = bundle::parse(data);
 
         // Await the result of write_bundle
         let write_result = write_handle.await;
@@ -104,7 +104,7 @@ impl Cache {
             }
         };
 
-        Ok(())
+        todo!()
     }
 }
 
