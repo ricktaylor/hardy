@@ -192,31 +192,31 @@ fn parse_bundle_blocks(
                 extension_blocks.push((block_num, block));
             } else {
                 // Check the last block is the payload
-                if let Some((block_num, payload)) = extension_blocks.pop() {
-                    if let BlockType::Payload = payload.block_type {
-                        if block_num != 1 {
-                            return Err(anyhow!("Bundle payload block must be block number 1"));
-                        }
-                    } else {
-                        return Err(anyhow!("Final block of bundle is not a payload block"));
-                    }
-
-                    // Compose hashmap
-                    let extensions = if extension_blocks.is_empty() {
-                        None
-                    } else {
-                        Some(extension_blocks.into_iter().fold(
-                            HashMap::new(),
-                            |mut m, (block_num, block)| {
-                                m.insert(block_num, block);
-                                m
-                            },
-                        ))
-                    };
-                    break (extensions, payload);
-                } else {
+                let Some((block_num, payload)) = extension_blocks.pop() else {
                     return Err(anyhow!("Bundle has no payload block"));
+                };
+
+                if let BlockType::Payload = payload.block_type {
+                    if block_num != 1 {
+                        return Err(anyhow!("Bundle payload block must be block number 1"));
+                    }
+                } else {
+                    return Err(anyhow!("Final block of bundle is not a payload block"));
                 }
+
+                // Compose hashmap
+                let extensions = if extension_blocks.is_empty() {
+                    None
+                } else {
+                    Some(extension_blocks.into_iter().fold(
+                        HashMap::new(),
+                        |mut m, (block_num, block)| {
+                            m.insert(block_num, block);
+                            m
+                        },
+                    ))
+                };
+                break (extensions, payload);
             }
         }
     };
