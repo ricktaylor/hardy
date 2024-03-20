@@ -1,5 +1,4 @@
 use std::str::Utf8Error;
-
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,6 +17,12 @@ pub enum Error {
 
     #[error("Chunked string contains an invalid chunk")]
     InvalidChunk,
+}
+
+pub trait FromCBOR {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>
+    where
+        Self: Sized;
 }
 
 pub enum Value<'a> {
@@ -49,58 +54,50 @@ impl<'a> Array<'a> {
         self.count
     }
 
-    pub fn try_parse_item<T, F>(&mut self, f: F) -> Result<T, anyhow::Error>
-    where
-        F: FnOnce(Value, usize, usize, Option<&[u64]>) -> Result<T, anyhow::Error>,
-    {
+    fn check_for_end(&mut self) -> Result<Option<usize>, anyhow::Error> {
         // Check for end of array
         if let Some(count) = self.count {
             if self.idx >= count {
                 panic!("Read past end of array!")
             }
         }
-
-        let item_start = *self.offset;
-        match self.count {
-            Some(count) => {
-                if self.idx == count - 1 {
-                    self.idx += 1;
-                    return f(Value::End(*self.offset), self.idx, *self.offset, None);
-                }
-            }
-            None => {
-                if *self.offset >= self.data.len() {
-                    return Err(Error::NotEnoughData.into());
-                } else if self.data[*self.offset] == 0xFF {
-                    *self.offset += 1;
-                    self.idx += 1;
-                    self.count = Some(self.idx);
-                    return f(Value::End(*self.offset), self.idx, *self.offset - 1, None);
-                }
-            }
+        if *self.offset >= self.data.len() {
+            return Err(Error::NotEnoughData.into());
         }
 
-        // Inc index
-        let idx = self.idx + 1;
-
-        // Parse sub-item
-        parse(&self.data[*self.offset..], |value, tags| {
-            f(value, idx, item_start, tags).map(|r| {
-                self.idx = idx;
-                r
-            })
-        })
-        .map(|(r, o)| {
-            *self.offset += o;
-            r
-        })
+        match self.count {
+            Some(count) if self.idx == count => {
+                self.idx += 1;
+                Ok(Some(*self.offset))
+            }
+            None if self.data[*self.offset] == 0xFF => {
+                self.idx += 1;
+                *self.offset += 1;
+                self.count = Some(self.idx);
+                Ok(Some(*self.offset - 1))
+            }
+            _ => Ok(None),
+        }
     }
 
-    pub fn parse_uint(&mut self) -> Result<(u64, Option<Vec<u64>>), anyhow::Error> {
-        self.try_parse_item(|value, _, _, tags| match (value, tags) {
-            (Value::Uint(value), Some(tags)) => Ok((value, Some(tags.to_vec()))),
-            (Value::Uint(value), None) => Ok((value, None)),
-            _ => Err(Error::IncorrectType.into()),
+    pub fn try_parse_item<T, F>(&mut self, f: F) -> Result<T, anyhow::Error>
+    where
+        F: FnOnce(Value, usize, &[u64]) -> Result<T, anyhow::Error>,
+    {
+        // Check for end of array
+        if let Some(end_start) = self.check_for_end()? {
+            return f(Value::End(*self.offset), end_start, &[]);
+        }
+
+        // Parse sub-item
+        let item_start = *self.offset;
+        parse_value(&self.data[*self.offset..], |value, tags| {
+            f(value, item_start, tags)
+        })
+        .map(|(r, o)| {
+            self.idx += 1;
+            *self.offset += o;
+            r
         })
     }
 
@@ -108,7 +105,7 @@ impl<'a> Array<'a> {
     where
         F: FnOnce() -> anyhow::Error,
     {
-        self.try_parse_item(|value, _, _, _| {
+        self.try_parse_item(|value, _, _| {
             if let Value::End(end) = value {
                 Ok(end)
             } else {
@@ -116,21 +113,44 @@ impl<'a> Array<'a> {
             }
         })
     }
+
+    pub fn try_parse<T>(&mut self) -> Result<Option<(T, usize, Vec<u64>)>, anyhow::Error>
+    where
+        T: FromCBOR,
+    {
+        // Check for end of array
+        if self.check_for_end()?.is_some() {
+            Ok(None)
+        } else {
+            // Parse sub-item
+            let item_start = *self.offset;
+            let (v, o, tags) = T::from_cbor(&self.data[*self.offset..])?;
+            *self.offset += o;
+            self.idx += 1;
+            Ok(Some((v, item_start, tags)))
+        }
+    }
+
+    pub fn parse<T>(&mut self) -> Result<(T, usize, Vec<u64>), anyhow::Error>
+    where
+        T: FromCBOR,
+    {
+        match self.try_parse::<T>()? {
+            None => Err(Error::NotEnoughData.into()),
+            Some(r) => Ok(r),
+        }
+    }
 }
 
-fn parse_tags(data: &[u8]) -> Result<(Option<Vec<u64>>, usize), Error> {
-    let mut tags: Option<Vec<u64>> = None;
+fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, usize), Error> {
+    let mut tags = Vec::new();
     let mut offset = 0;
     while offset < data.len() {
         match (data[offset] >> 5, data[offset] & 0x1F) {
             (6, minor) => {
                 offset += 1;
                 let (tag, o) = parse_uint_minor(minor, &data[offset..])?;
-                if let Some(tags) = &mut tags {
-                    tags.push(tag);
-                } else {
-                    tags = Some(vec![tag]);
-                }
+                tags.push(tag);
                 offset += o;
             }
             _ => break,
@@ -224,13 +244,13 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, usize), Err
     }
 }
 
-pub fn parse<T, F>(data: &[u8], f: F) -> Result<(T, usize), anyhow::Error>
+pub fn parse_value<T, F>(data: &[u8], f: F) -> Result<(T, usize), anyhow::Error>
 where
-    F: FnOnce(Value, Option<&[u64]>) -> Result<T, anyhow::Error>,
+    F: FnOnce(Value, &[u64]) -> Result<T, anyhow::Error>,
 {
     let (tags, mut offset) = parse_tags(data)?;
     if offset >= data.len() {
-        if tags.is_some() {
+        if !tags.is_empty() {
             return Err(Error::JustTags.into());
         } else {
             return Err(Error::NotEnoughData.into());
@@ -241,7 +261,7 @@ where
         (0, minor) => {
             let (v, o) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += o + 1;
-            f(Value::Uint(v), tags.as_deref())
+            f(Value::Uint(v), &tags)
         }
         (1, _) => todo!(),
         (2, 31) => {
@@ -252,13 +272,13 @@ where
                 Ok::<Vec<u8>, anyhow::Error>(v)
             })?;
             offset += o + 1;
-            f(Value::Bytes(&v, true), tags.as_deref())
+            f(Value::Bytes(&v, true), &tags)
         }
         (2, minor) => {
             /* Known length byte string */
             let (t, o) = parse_data_minor(minor, &data[offset + 1..])?;
             offset += o + 1;
-            f(Value::Bytes(t, false), tags.as_deref())
+            f(Value::Bytes(t, false), &tags)
         }
         (3, 31) => {
             /* Indefinite length text string */
@@ -268,21 +288,18 @@ where
                 Ok::<String, Utf8Error>(s)
             })?;
             offset += o + 1;
-            f(Value::Text(&s, true), tags.as_deref())
+            f(Value::Text(&s, true), &tags)
         }
         (3, minor) => {
             /* Known length text string */
             let (t, o) = parse_data_minor(minor, &data[offset + 1..])?;
             offset += o + 1;
-            f(Value::Text(std::str::from_utf8(t)?, false), tags.as_deref())
+            f(Value::Text(std::str::from_utf8(t)?, false), &tags)
         }
         (4, 31) => {
             /* Indefinite length array */
             offset += 1;
-            f(
-                Value::Array(Array::new(data, None, &mut offset)),
-                tags.as_deref(),
-            )
+            f(Value::Array(Array::new(data, None, &mut offset)), &tags)
         }
         (4, minor) => {
             /* Known length array */
@@ -290,7 +307,7 @@ where
             offset += o + 1;
             f(
                 Value::Array(Array::new(data, Some(usize::try_from(len)?), &mut offset)),
-                tags.as_deref(),
+                &tags,
             )
         }
         (5, _) => todo!(),
@@ -298,4 +315,24 @@ where
         (_, _) => unreachable!(),
     }
     .map(|r| (r, offset))
+}
+
+pub fn parse<T>(data: &[u8]) -> Result<(T, usize, Vec<u64>), anyhow::Error>
+where
+    T: FromCBOR,
+{
+    T::from_cbor(data)
+}
+
+impl FromCBOR for u64 {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>
+    where
+        Self: Sized,
+    {
+        parse_value(data, |value, tags| match (value, tags) {
+            (Value::Uint(value), tags) => Ok((value, tags.to_vec())),
+            _ => Err(Error::IncorrectType.into()),
+        })
+        .map(|((val, tags), o)| (val, o, tags))
+    }
 }

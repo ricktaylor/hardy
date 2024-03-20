@@ -18,13 +18,14 @@ pub struct BundleFlags {
 }
 
 impl BundleFlags {
-    fn new(f: u64) -> Self {
+    pub fn new(f: u64) -> Self {
         let mut flags = BundleFlags::default();
-        for b in 0..20 {
+        for b in 0..=20 {
             if f & (1 << b) != 0 {
                 match b {
-                    1 => flags.is_fragment = true,
-                    2 => flags.is_admin_record = true,
+                    0 => flags.is_fragment = true,
+                    1 => flags.is_admin_record = true,
+                    2 => flags.do_not_fragment = true,
                     5 => flags.app_ack_requested = true,
                     6 => flags.status_time_requested = true,
                     14 => flags.receipt_report_requested = true,
@@ -46,13 +47,68 @@ impl BundleFlags {
         }
         flags
     }
+
+    pub fn as_u64(&self) -> u64 {
+        let mut flags: u64 = 0;
+        if self.is_fragment {
+            flags |= 1 << 0;
+        }
+        if self.is_admin_record {
+            flags |= 1 << 1;
+        }
+        if self.do_not_fragment {
+            flags |= 1 << 2;
+        }
+        if self.app_ack_requested {
+            flags |= 1 << 5;
+        }
+        if self.status_time_requested {
+            flags |= 1 << 6;
+        }
+        if self.receipt_report_requested {
+            flags |= 1 << 14;
+        }
+        if self.forward_report_requested {
+            flags |= 1 << 16;
+        }
+        if self.delivery_report_requested {
+            flags |= 1 << 17;
+        }
+        if self.delete_report_requested {
+            flags |= 1 << 18;
+        }
+        flags
+    }
+}
+
+impl cbor::decode::FromCBOR for BundleFlags {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        let (flags, o, tags) = cbor::decode::parse(data)?;
+        Ok((BundleFlags::new(flags), o, tags))
+    }
 }
 
 pub enum Eid {
-    None,
     LocalNode(u32),
     Ipn(u32, u32, u32),
     Dtn(String, String),
+}
+
+impl Eid {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        match &self {
+            Self::Ipn(allocator_id, node_num, service_num) => cbor::encode::write_array(&[
+                cbor::encode::write_uint(*allocator_id as u64),
+                cbor::encode::write_uint(*node_num as u64),
+                cbor::encode::write_uint(*service_num as u64),
+            ]),
+            Self::Dtn(s1, s2) => ["/", s1.as_str(), s2.as_str()]
+                .join("/")
+                .as_bytes()
+                .to_vec(),
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub struct FragmentInfo {
@@ -62,9 +118,9 @@ pub struct FragmentInfo {
 
 pub struct PrimaryBlock {
     pub flags: BundleFlags,
-    pub source: Eid,
+    pub source: Option<Eid>,
     pub destination: Eid,
-    pub report_to: Eid,
+    pub report_to: Option<Eid>,
     pub timestamp: (u64, u64),
     pub lifetime: u64,
     pub fragment_info: Option<FragmentInfo>,
@@ -94,6 +150,23 @@ impl BlockType {
             }
         }
     }
+
+    pub fn as_u64(&self) -> u64 {
+        match self {
+            BlockType::Payload => 1,
+            BlockType::PreviousNode => 6,
+            BlockType::BundleAge => 7,
+            BlockType::HopCount => 10,
+            BlockType::Private(v) => *v,
+        }
+    }
+}
+
+impl cbor::decode::FromCBOR for BlockType {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        let (code, o, tags) = cbor::decode::parse(data)?;
+        Ok((BlockType::new(code)?, o, tags))
+    }
 }
 
 #[derive(Default)]
@@ -105,9 +178,9 @@ pub struct BlockFlags {
 }
 
 impl BlockFlags {
-    fn new(f: u64) -> Self {
+    pub fn new(f: u64) -> Self {
         let mut flags = BlockFlags::default();
-        for b in 0..6 {
+        for b in 0..=6 {
             if f & (1 << b) != 0 {
                 match b {
                     0 => flags.must_replicate = true,
@@ -123,24 +196,47 @@ impl BlockFlags {
         }
         flags
     }
+
+    pub fn as_u64(&self) -> u64 {
+        let mut flags: u64 = 0;
+        if self.must_replicate {
+            flags |= 1 << 0;
+        }
+        if self.report_on_failure {
+            flags |= 1 << 1;
+        }
+        if self.delete_bundle_on_failure {
+            flags |= 1 << 2;
+        }
+        if self.delete_block_on_failure {
+            flags |= 1 << 4;
+        }
+        flags
+    }
+}
+
+impl cbor::decode::FromCBOR for BlockFlags {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        let (flags, o, tags) = cbor::decode::parse(data)?;
+        Ok((BlockFlags::new(flags), o, tags))
+    }
 }
 
 pub struct Block {
     pub block_type: BlockType,
     pub flags: BlockFlags,
-    pub data: usize,
+    pub data_offset: Option<usize>,
 }
 
 pub struct Bundle {
     pub primary: PrimaryBlock,
-    pub extensions: Option<HashMap<u64, Block>>,
-    pub payload: Block,
+    pub extensions: HashMap<u64, Block>,
 }
 
 pub fn parse(data: &[u8]) -> Result<Bundle, anyhow::Error> {
-    let (b, consumed) = cbor::decode::parse(data, |value, tags| {
+    let (b, consumed) = cbor::decode::parse_value(data, |value, tags| {
         if let cbor::decode::Value::Array(a) = value {
-            if tags.is_some() {
+            if !tags.is_empty() {
                 log::info!("Parsing bundle with tags");
             }
             parse_bundle_blocks(data, a)
@@ -161,9 +257,9 @@ fn parse_bundle_blocks(
     mut blocks: cbor::decode::Array,
 ) -> Result<Bundle, anyhow::Error> {
     // Parse Primary block
-    let primary = blocks.try_parse_item(|value, _, block_start, tags| {
+    let primary = blocks.try_parse_item(|value, block_start, tags| {
         if let cbor::decode::Value::Array(a) = value {
-            if tags.is_some() {
+            if !tags.is_empty() {
                 log::info!("Parsing primary block with tags");
             }
             parse_primary_block(data, a, block_start)
@@ -173,14 +269,14 @@ fn parse_bundle_blocks(
     })?;
 
     // Parse other blocks
-    let (extensions, payload) = {
+    let extensions = {
         // Use an intermediate vector so we can check the payload was the last item
         let mut extension_blocks = Vec::new();
         loop {
             if let Some((block_num, block)) =
-                blocks.try_parse_item(|value, _, block_start, tags| match value {
+                blocks.try_parse_item(|value, block_start, tags| match value {
                     cbor::decode::Value::Array(a) => {
-                        if tags.is_some() {
+                        if !tags.is_empty() {
                             log::info!("Parsing extension block with tags");
                         }
                         Ok(Some(parse_extension_block(data, a, block_start)?))
@@ -192,31 +288,31 @@ fn parse_bundle_blocks(
                 extension_blocks.push((block_num, block));
             } else {
                 // Check the last block is the payload
-                let Some((block_num, payload)) = extension_blocks.pop() else {
+                let Some((block_num, payload)) = extension_blocks.last() else {
                     return Err(anyhow!("Bundle has no payload block"));
                 };
 
                 if let BlockType::Payload = payload.block_type {
-                    if block_num != 1 {
+                    if *block_num != 1 {
                         return Err(anyhow!("Bundle payload block must be block number 1"));
                     }
                 } else {
                     return Err(anyhow!("Final block of bundle is not a payload block"));
                 }
 
+                // Check for duplicates
+
                 // Compose hashmap
-                let extensions = if extension_blocks.is_empty() {
-                    None
-                } else {
-                    Some(extension_blocks.into_iter().fold(
-                        HashMap::new(),
-                        |mut m, (block_num, block)| {
-                            m.insert(block_num, block);
-                            m
-                        },
-                    ))
-                };
-                break (extensions, payload);
+                let mut map = HashMap::new();
+                for (block_num, block) in extension_blocks {
+                    if map.insert(block_num, block).is_some() {
+                        return Err(anyhow!(
+                            "Bundle has more than one block with block number {}",
+                            block_num
+                        ));
+                    }
+                }
+                break map;
             }
         }
     };
@@ -224,7 +320,6 @@ fn parse_bundle_blocks(
     Ok(Bundle {
         primary,
         extensions,
-        payload,
     })
 }
 
@@ -243,28 +338,29 @@ fn parse_primary_block(
     }
 
     // Check version
-    let (version, tags) = block.parse_uint()?;
+    let (version, _, tags) = block.parse::<u64>()?;
     if version != 7 {
         return Err(anyhow!("Unsupported bundle protocol version {}", version));
-    } else if tags.is_some() {
+    } else if !tags.is_empty() {
         log::info!("Parsing bundle primary block version with tags");
     }
 
     // Parse flags
-    let (flags, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (flags, _, tags) = block.parse::<BundleFlags>()?;
+    if !tags.is_empty() {
         log::info!("Parsing bundle primary block flags with tags");
     }
-    let flags = BundleFlags::new(flags);
 
     // Parse CRC Type
-    let (crc_type, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (crc_type, _, tags) = block.parse::<u64>()?;
+    if !tags.is_empty() {
         log::info!("Parsing bundle primary block crc type with tags");
     }
 
     // Parse EIDs
-    let dest_eid = parse_eid(&mut block)?;
+    let Some(dest_eid) = parse_eid(&mut block)? else {
+        return Err(anyhow!("Bundle has Null destination EID"));
+    };
     let source_eid = parse_eid(&mut block)?;
     let report_to_eid = parse_eid(&mut block)?;
 
@@ -272,8 +368,8 @@ fn parse_primary_block(
     let timestamp = parse_timestamp(&mut block)?;
 
     // Parse lifetime
-    let (lifetime, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (lifetime, _, tags) = block.parse::<u64>()?;
+    if !tags.is_empty() {
         log::info!("Parsing bundle primary block lifetime with tags");
     }
 
@@ -281,12 +377,12 @@ fn parse_primary_block(
     let fragment_info = if !flags.is_fragment {
         None
     } else {
-        let (offset, tags) = block.parse_uint()?;
-        if tags.is_some() {
+        let (offset, _, tags) = block.parse::<u64>()?;
+        if !tags.is_empty() {
             log::info!("Parsing bundle primary block fragment offset with tags");
         }
-        let (total_len, tags) = block.parse_uint()?;
-        if tags.is_some() {
+        let (total_len, _, tags) = block.parse::<u64>()?;
+        if !tags.is_empty() {
             log::info!("Parsing bundle primary block total application data unit length with tags");
         }
         Some(FragmentInfo { offset, total_len })
@@ -306,10 +402,10 @@ fn parse_primary_block(
     })
 }
 
-fn parse_eid(block: &mut cbor::decode::Array) -> Result<Eid, anyhow::Error> {
-    block.try_parse_item(|value, _, _, tags| {
+fn parse_eid(block: &mut cbor::decode::Array) -> Result<Option<Eid>, anyhow::Error> {
+    block.try_parse_item(|value, _, tags| {
         if let cbor::decode::Value::Array(mut a) = value {
-            if tags.is_some() {
+            if !tags.is_empty() {
                 log::info!("Parsing EID with tags");
             }
             match a.count() {
@@ -319,12 +415,12 @@ fn parse_eid(block: &mut cbor::decode::Array) -> Result<Eid, anyhow::Error> {
                 }
                 _ => {}
             }
-            let (schema, tags) = a.parse_uint()?;
-            if tags.is_some() {
+            let (schema, _, tags) = a.parse::<u64>()?;
+            if !tags.is_empty() {
                 log::info!("Parsing EID schema with tags");
             }
-            let eid = a.try_parse_item(|value: cbor::decode::Value<'_>, _, _, tags| {
-                if tags.is_some() {
+            let eid = a.try_parse_item(|value: cbor::decode::Value<'_>, _, tags| {
+                if !tags.is_empty() {
                     log::info!("Parsing EID value with tags");
                 }
                 match (schema, value) {
@@ -345,31 +441,29 @@ fn parse_eid(block: &mut cbor::decode::Array) -> Result<Eid, anyhow::Error> {
     })
 }
 
-fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Eid, anyhow::Error> {
+fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Option<Eid>, anyhow::Error> {
     match value {
-        cbor::decode::Value::Uint(0) => Ok(Eid::None),
+        cbor::decode::Value::Uint(0) => Ok(None),
         cbor::decode::Value::Text("none", _) => {
             log::info!("Parsing dtn EID 'none'");
-            Ok(Eid::None)
+            Ok(None)
         }
         cbor::decode::Value::Text(s, _) => {
             if !s.is_ascii() {
                 Err(anyhow!("dtn URI be ASCII"))
             } else if !s.starts_with("//") {
                 Err(anyhow!("dtn URI must start with '//'"))
+            } else if let Some((s1, s2)) = &s[2..].split_once('/') {
+                Ok(Some(Eid::Dtn(s1.to_string(), s2.to_string())))
             } else {
-                if let Some((s1, s2)) = &s[2..].split_once('/') {
-                    Ok(Eid::Dtn(s1.to_string(), s2.to_string()))
-                } else {
-                    Err(anyhow!("dtn URI missing name-delim '/'"))
-                }
+                Err(anyhow!("dtn URI missing name-delim '/'"))
             }
         }
         _ => Err(anyhow!("dtn URI is not a CBOR text string or 0")),
     }
 }
 
-fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Eid, anyhow::Error> {
+fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Option<Eid>, anyhow::Error> {
     if let Some(count) = value.count() {
         if !(2..=3).contains(&count) {
             return Err(anyhow!(
@@ -380,18 +474,18 @@ fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Eid, anyhow::Error> {
         log::info!("Parsing IPN EID as indefinite array");
     }
 
-    let (v1, tags) = value.parse_uint()?;
-    if tags.is_some() {
+    let (v1, _, tags) = value.parse::<u64>()?;
+    if !tags.is_empty() {
         log::info!("Parsing IPN EID with tags");
     }
 
-    let (v2, tags) = value.parse_uint()?;
-    if tags.is_some() {
+    let (v2, _, tags) = value.parse::<u64>()?;
+    if !tags.is_empty() {
         log::info!("Parsing IPN EID with tags");
     }
 
-    let v3 = value.try_parse_item(|value, _, _, tags| {
-        if tags.is_some() {
+    let v3 = value.try_parse_item(|value, _, tags| {
+        if !tags.is_empty() {
             log::info!("Parsing IPN EID with tags");
         }
         match value {
@@ -426,27 +520,32 @@ fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Eid, anyhow::Error> {
         ((v1 >> 32) as u32, (v1 & ((2 ^ 32) - 1)) as u32, v2 as u32)
     };
 
-    if allocator_id == 0 && node_num == (2 ^ 32) - 1 {
-        Ok(Eid::LocalNode(service_num))
+    if allocator_id == 0 && node_num == 0 {
+        if service_num != 0 {
+            log::info!("Null EID with service number {}", service_num)
+        }
+        Ok(None)
+    } else if allocator_id == 0 && node_num == (2 ^ 32) - 1 {
+        Ok(Some(Eid::LocalNode(service_num)))
     } else {
-        Ok(Eid::Ipn(allocator_id, node_num, service_num))
+        Ok(Some(Eid::Ipn(allocator_id, node_num, service_num)))
     }
 }
 
 fn parse_timestamp(block: &mut cbor::decode::Array) -> Result<(u64, u64), anyhow::Error> {
-    block.try_parse_item(|value, _, _, tags| {
+    block.try_parse_item(|value, _, tags| {
         if let cbor::decode::Value::Array(mut a) = value {
-            if tags.is_some() {
+            if !tags.is_empty() {
                 log::info!("Parsing bundle primary block timestamp with tags");
             }
 
-            let (creation_time, tags) = a.parse_uint()?;
-            if tags.is_some() {
+            let (creation_time, _, tags) = a.parse::<u64>()?;
+            if !tags.is_empty() {
                 log::info!("Parsing bundle primary block timestamp with tags");
             }
 
-            let (seq_no, tags) = a.parse_uint()?;
-            if tags.is_some() {
+            let (seq_no, _, tags) = a.parse::<u64>()?;
+            if !tags.is_empty() {
                 log::info!("Parsing bundle primary block timestamp with tags");
             }
 
@@ -464,37 +563,37 @@ fn parse_crc_value(
     block_start: usize,
     block: &mut cbor::decode::Array,
     crc_type: u64,
-) -> Result<(), anyhow::Error> {
+) -> Result<usize, anyhow::Error> {
     // Parse CRC
-    let crc_info = block.try_parse_item(|value, _, crc_start, tags| match value {
+    let (crc_value, crc_start) = block.try_parse_item(|value, crc_start, tags| match value {
         cbor::decode::Value::End(_) => {
             if crc_type != 0 {
                 Err(anyhow!("Block is missing required CRC value"))
             } else {
-                Ok(None)
+                Ok((None, crc_start))
             }
         }
         cbor::decode::Value::Uint(crc) => {
             if crc_type == 0 {
                 Err(anyhow!("Block has unexpected CRC value"))
             } else {
-                if tags.is_some() {
+                if !tags.is_empty() {
                     log::info!("Parsing bundle primary block CRC value with tags");
                 }
-                Ok(Some((crc, crc_start)))
+                Ok((Some(crc), crc_start))
             }
         }
         _ => Err(anyhow!("Block CRC value must be a CBOR unsigned integer")),
     })?;
 
     // Confirm we are at the end of the block
-    let (crc_end, block_end) = block.try_parse_item(|value, _, start, _| match value {
+    let (crc_end, block_end) = block.try_parse_item(|value, start, _| match value {
         cbor::decode::Value::End(end) => Ok((start, end)),
         _ => Err(anyhow!("Block has additional items after CRC value")),
     })?;
 
     // Now check CRC
-    if let Some((crc_value, crc_start)) = crc_info {
+    if let Some(crc_value) = crc_value {
         let err = anyhow!("Block CRC check failed");
 
         if crc_type == 1 {
@@ -519,9 +618,11 @@ fn parse_crc_value(
             if crc_value != digest.finalize() as u64 {
                 return Err(err);
             }
+        } else {
+            return Err(anyhow!("Block has invalid CRC type {}", crc_type));
         }
     }
-    Ok(())
+    Ok(crc_start)
 }
 
 fn parse_extension_block(
@@ -539,54 +640,56 @@ fn parse_extension_block(
     }
 
     // Parse type code
-    let (block_type, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (block_type, _, tags) = block.parse::<BlockType>()?;
+    if !tags.is_empty() {
         log::info!("Parsing extension block type code with tags");
     }
-    let block_type = BlockType::new(block_type)?;
 
     // Parse block number
-    let (block_num, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (block_num, _, tags) = block.parse::<u64>()?;
+    if !tags.is_empty() {
         log::info!("Parsing extension block number with tags");
     }
 
     // Parse block flags
-    let (flags, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (flags, _, tags) = block.parse::<BlockFlags>()?;
+    if !tags.is_empty() {
         log::info!("Parsing extension block flags with tags");
     }
-    let flags = BlockFlags::new(flags);
 
     // Parse CRC Type
-    let (crc_type, tags) = block.parse_uint()?;
-    if tags.is_some() {
+    let (crc_type, _, tags) = block.parse::<u64>()?;
+    if !tags.is_empty() {
         log::info!("Parsing extension block crc type with tags");
     }
 
     // Stash start of data
-    let payload_data = block.try_parse_item(|value, _, data_start, tags| match value {
-        cbor::decode::Value::Bytes(_, chunked) => {
+    let (data_start, data_len) = block.try_parse_item(|value, data_start, tags| match value {
+        cbor::decode::Value::Bytes(v, chunked) => {
             if chunked {
                 log::info!("Parsing chunked extension block data");
             }
-            if tags.is_some() {
+            if !tags.is_empty() {
                 log::info!("Parsing extension block data with tags");
             }
-            Ok(data_start)
+            Ok((data_start, v.len()))
         }
         _ => Err(anyhow!("Block data must be encoded as a CBOR byte string")),
     })?;
 
     // Check CRC
-    parse_crc_value(data, block_start, &mut block, crc_type)?;
+    let data_end = parse_crc_value(data, block_start, &mut block, crc_type)?;
 
     Ok((
         block_num,
         Block {
             block_type,
             flags,
-            data: payload_data,
+            data_offset: if data_end == data_start || data_len == 0 {
+                None
+            } else {
+                Some(data_start)
+            },
         },
     ))
 }
