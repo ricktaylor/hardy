@@ -17,28 +17,21 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-fn listen_for_cancel(
-    task_set: &mut tokio::task::JoinSet<()>,
-) -> tokio_util::sync::CancellationToken {
-    let cancel_token = CancellationToken::new();
-
+fn listen_for_cancel(task_set: &mut tokio::task::JoinSet<()>, cancel_token: CancellationToken) {
     let mut term_handler =
         signal(SignalKind::terminate()).log_expect("Failed to register signal handlers");
 
-    let cancel_token_cloned = cancel_token.clone();
     task_set.spawn(async move {
         tokio::select! {
             Some(_) = term_handler.recv() =>
                 {
                     // Signal stop
                     log::info!("{} stopping...", built_info::PKG_NAME);
-                    cancel_token_cloned.cancel();
+                    cancel_token.cancel();
                 }
-            _ = cancel_token_cloned.cancelled() => {}
+            _ = cancel_token.cancelled() => {}
         }
     });
-
-    cancel_token
 }
 
 #[tokio::main]
@@ -50,22 +43,23 @@ async fn main() {
 
     // Init logger
     logger::init(&config);
+    log::info!("{} starting...", built_info::PKG_NAME);
 
     // Init DB
     let db = database::init(&config);
 
-    // Setup CLA registry
-    let cla_registry = cla::ClaRegistry::new(&config);
-
-    // Init bundle cache
-    let cache = cache::Cache::init(&config);
-
     // Prep graceful shutdown
+    let cancel_token = CancellationToken::new();
     let mut task_set = tokio::task::JoinSet::new();
-    let cancel_token = listen_for_cancel(&mut task_set);
+    listen_for_cancel(&mut task_set, cancel_token.clone());
+
+    // Init bundle cache - this can take a while
+    let Some(cache) = cache::init(&config, db, cancel_token.clone()).await else {
+        return;
+    };
 
     // Init async systems
-    services::init(&config, cla_registry, cache, &mut task_set, cancel_token);
+    services::init(&config, cache, &mut task_set, cancel_token);
 
     log::info!("{} started", built_info::PKG_NAME);
 

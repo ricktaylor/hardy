@@ -1,7 +1,7 @@
 use super::*;
 use std::{fs::create_dir_all, path::PathBuf, sync::Arc};
 
-type Database = Arc<tokio::sync::Mutex<rusqlite::Connection>>;
+pub type Database = Arc<tokio::sync::Mutex<rusqlite::Connection>>;
 
 pub fn init(config: &settings::Config) -> Database {
     // Compose DB name

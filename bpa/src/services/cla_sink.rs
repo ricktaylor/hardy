@@ -57,10 +57,6 @@ impl ClaSink for Service {
     }
 }
 
-pub fn new_service(
-    config: &settings::Config,
-    cla_registry: cla::ClaRegistry,
-    cache: cache::Cache,
-) -> ClaSinkServer<Service> {
-    ClaSinkServer::new(Service::new(config, cla_registry, cache))
+pub fn new_service(config: &settings::Config, cache: cache::Cache) -> ClaSinkServer<Service> {
+    ClaSinkServer::new(Service::new(config, cla::ClaRegistry::new(config), cache))
 }

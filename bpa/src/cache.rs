@@ -4,7 +4,7 @@ use std::{
     collections::HashSet,
     fs::{create_dir_all, remove_file, OpenOptions},
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -30,16 +30,10 @@ fn direct_flag(options: &mut OpenOptions) {
 pub struct Cache {
     cache_root: PathBuf,
     partials: Arc<Mutex<HashSet<PathBuf>>>,
+    db: database::Database,
 }
 
 impl Cache {
-    pub fn init(config: &settings::Config) -> Self {
-        Self {
-            cache_root: PathBuf::from(&config.cache_dir),
-            partials: Arc::new(Mutex::new(HashSet::new())),
-        }
-    }
-
     fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
         // Compose a subdirectory
         let sub_dir = [
@@ -83,31 +77,135 @@ impl Cache {
         let write_handle = write_bundle(file_path.clone(), data.clone());
 
         // Parse the bundle in parallel
-        let bundle_result = bundle::parse(data);
+        let bundle_result = match bundle::parse(data) {
+            Ok(bundle) => self.insert_bundle(file_path.as_path(), bundle).await,
+            Err(e) => Err(e),
+        };
 
         // Await the result of write_bundle
-        let write_result = write_handle.await;
+        let write_result = match write_handle.await {
+            Err(e) => Err(e.into()),
+            Ok(Err(e)) => Err(e),
+            Ok(Ok(())) => Ok(()),
+        };
 
         // Always remove partials entry
         self.partials.lock().unwrap().remove(&file_path);
 
         // Check result of write_bundle
-        write_result??;
+        if let Err(e) = write_result {
+            if let Ok((bundle_id, _)) = bundle_result {
+                // Delete bundle from db
+                todo!();
+            }
+            return Err(e.into());
+        }
 
         // Check result of bundle parse
-        let bundle = match bundle_result {
-            Ok(b) => b,
+        match bundle_result {
+            Ok((bundle_id, bundle)) => {
+                // Insert bundle into pipeline
+                todo!();
+
+                // No failure
+                Ok(None)
+            }
             Err(e) => {
                 // Remove the cached file
                 _ = tokio::fs::remove_file(&file_path).await;
 
                 // Reply with forwarding failure - NOT an error
-                return Ok(Some(format!("Bundle validation failed: {}", e.to_string())));
+                Ok(Some(format!("Bundle validation failed: {}", e)))
             }
-        };
+        }
+    }
 
-        // No failure
-        Ok(None)
+    async fn insert_bundle(
+        &self,
+        file_path: &Path,
+        bundle: bundle::Bundle,
+    ) -> Result<(i64, bundle::Bundle), anyhow::Error> {
+        let mut conn = self.db.lock().await;
+        let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let bundle_id = trans
+            .prepare_cached(
+                r#"
+            INSERT INTO bundles (
+                file_name,
+                flags,
+                destination,
+                creation_time,
+                creation_seq_num,
+                lifetime,
+                source,
+                report_to)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8);"#,
+            )?
+            .insert((
+                file_path.to_string_lossy(),
+                bundle.primary.flags.as_u64(),
+                cbor::encode::write(&bundle.primary.destination),
+                bundle.primary.timestamp.0,
+                bundle.primary.timestamp.1,
+                bundle.primary.lifetime,
+                if let bundle::Eid::Null = bundle.primary.source {
+                    None
+                } else {
+                    Some(cbor::encode::write(&bundle.primary.source))
+                },
+                if let bundle::Eid::Null = bundle.primary.report_to {
+                    None
+                } else {
+                    Some(cbor::encode::write(&bundle.primary.report_to))
+                },
+            ))?;
+
+        let mut block_query = trans.prepare_cached(
+            r#"
+            INSERT INTO bundle_blocks (
+                bundle_id,
+                block_type,
+                block_num,
+                flags,
+                data_offset)
+            VALUES (?1,?2,?3,?4,?5);"#,
+        )?;
+
+        // Insert extension blocks
+        for (block_num, block) in &bundle.extensions {
+            block_query.execute((
+                bundle_id,
+                block.block_type.as_u64(),
+                block_num,
+                block.flags.as_u64(),
+                block.data_offset,
+            ))?;
+        }
+
+        // Insert fragments
+        if let Some(fragment_info) = &bundle.primary.fragment_info {
+            trans
+                .prepare_cached(
+                    r#"
+                INSERT INTO bundle_fragments (
+                    bundle_id,
+                    offset,
+                    total_len)
+                VALUES (?1,?2,?3);"#,
+                )?
+                .execute((bundle_id, fragment_info.offset, fragment_info.total_len))?;
+        }
+        Ok((bundle_id, bundle))
+    }
+
+    async fn check(&mut self, cancel_token: CancellationToken) -> bool {
+        // Walk directories checking if the bundle is in the db
+        log::info!("Checking cache...");
+
+        todo!();
+
+        log::info!("Cache check complete");
+        true
     }
 }
 
@@ -159,8 +257,26 @@ fn write_bundle(
             return Err(e);
         }
 
-        // No idea how to fsync the directory in portable Rust!!
+        // No idea how to fsync the directory in portable Rust!
 
         Ok(())
     })
+}
+
+pub async fn init(
+    config: &settings::Config,
+    db: database::Database,
+    cancel_token: CancellationToken,
+) -> Option<Cache> {
+    let mut cache = Cache {
+        cache_root: PathBuf::from(&config.cache_dir),
+        partials: Arc::new(Mutex::new(HashSet::new())),
+        db,
+    };
+
+    if !cache.check(cancel_token).await {
+        None
+    } else {
+        Some(cache)
+    }
 }
