@@ -98,7 +98,7 @@ impl ToCbor for usize {
     }
 }
 
-impl ToCbor for &str {
+impl ToCbor for String {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         let mut v = write_tags(tags);
         v.extend(write_uint_minor(3, self.len() as u64));
@@ -107,7 +107,7 @@ impl ToCbor for &str {
     }
 }
 
-impl ToCbor for &Vec<Vec<u8>> {
+impl ToCbor for Vec<Vec<u8>> {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         let mut v = write_tags(tags);
         v.extend(write_uint_minor(6, self.len() as u64));

@@ -189,12 +189,12 @@ impl Eid {
 impl cbor::encode::ToCbor for &Eid {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         cbor::encode::write_with_tags(
-            &match self {
+            match self {
                 Eid::Null => vec![cbor::encode::write(1u8), cbor::encode::write(0u8)],
                 Eid::Dtn { node_name, demux } => vec![
                     cbor::encode::write(1u8),
                     cbor::encode::write(
-                        ["/", node_name.as_str(), demux.as_str()].join("/").as_str(),
+                        ["/", node_name.as_str(), demux.as_str()].join("/"),
                     ),
                 ],
                 Eid::Ipn {
@@ -203,7 +203,7 @@ impl cbor::encode::ToCbor for &Eid {
                     service_number,
                 } if *allocator_id == 0 => vec![
                     cbor::encode::write(2u8),
-                    cbor::encode::write(&vec![
+                    cbor::encode::write(vec![
                         cbor::encode::write(*node_number),
                         cbor::encode::write(*service_number),
                     ]),
@@ -214,7 +214,7 @@ impl cbor::encode::ToCbor for &Eid {
                     service_number,
                 } => vec![
                     cbor::encode::write(2u8),
-                    cbor::encode::write(&vec![
+                    cbor::encode::write(vec![
                         cbor::encode::write(*allocator_id),
                         cbor::encode::write(*node_number),
                         cbor::encode::write(*service_number),
@@ -222,7 +222,7 @@ impl cbor::encode::ToCbor for &Eid {
                 ],
                 Eid::LocalNode { service_number } => vec![
                     cbor::encode::write(2u8),
-                    cbor::encode::write(&vec![
+                    cbor::encode::write(vec![
                         cbor::encode::write((2u64 ^ 32) - 1),
                         cbor::encode::write(*service_number),
                     ]),
