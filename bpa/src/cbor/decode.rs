@@ -19,7 +19,7 @@ pub enum Error {
     InvalidChunk,
 }
 
-pub trait FromCBOR {
+pub trait FromCbor {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>
     where
         Self: Sized;
@@ -114,9 +114,9 @@ impl<'a> Array<'a> {
         })
     }
 
-    pub fn try_parse<T>(&mut self) -> Result<Option<(T, usize, Vec<u64>)>, anyhow::Error>
+    pub fn try_parse_detail<T>(&mut self) -> Result<Option<(T, usize, Vec<u64>)>, anyhow::Error>
     where
-        T: FromCBOR,
+        T: FromCbor,
     {
         // Check for end of array
         if self.check_for_end()?.is_some() {
@@ -131,14 +131,26 @@ impl<'a> Array<'a> {
         }
     }
 
-    pub fn parse<T>(&mut self) -> Result<(T, usize, Vec<u64>), anyhow::Error>
+    pub fn parse_detail<T>(&mut self) -> Result<(T, usize, Vec<u64>), anyhow::Error>
     where
-        T: FromCBOR,
+        T: FromCbor,
     {
-        match self.try_parse::<T>()? {
-            None => Err(Error::NotEnoughData.into()),
-            Some(r) => Ok(r),
-        }
+        self.try_parse_detail::<T>()?
+            .ok_or(Error::NotEnoughData.into())
+    }
+
+    pub fn try_parse<T>(&mut self) -> Result<Option<T>, anyhow::Error>
+    where
+        T: FromCbor,
+    {
+        Ok(self.try_parse_detail()?.map(|(v, _, _)| v))
+    }
+
+    pub fn parse<T>(&mut self) -> Result<T, anyhow::Error>
+    where
+        T: FromCbor,
+    {
+        self.try_parse::<T>()?.ok_or(Error::NotEnoughData.into())
     }
 }
 
@@ -317,14 +329,21 @@ where
     .map(|r| (r, offset))
 }
 
-pub fn parse<T>(data: &[u8]) -> Result<(T, usize, Vec<u64>), anyhow::Error>
+pub fn parse_detail<T>(data: &[u8]) -> Result<(T, usize, Vec<u64>), anyhow::Error>
 where
-    T: FromCBOR,
+    T: FromCbor,
 {
     T::from_cbor(data)
 }
 
-impl FromCBOR for u64 {
+pub fn parse<T>(data: &[u8]) -> Result<T, anyhow::Error>
+where
+    T: FromCbor,
+{
+    T::from_cbor(data).map(|(v, _, _)| v)
+}
+
+impl FromCbor for u64 {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>
     where
         Self: Sized,

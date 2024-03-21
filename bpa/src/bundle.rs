@@ -81,33 +81,194 @@ impl BundleFlags {
     }
 }
 
-impl cbor::decode::FromCBOR for BundleFlags {
+impl cbor::decode::FromCbor for BundleFlags {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (flags, o, tags) = cbor::decode::parse(data)?;
+        let (flags, o, tags) = cbor::decode::parse_detail(data)?;
         Ok((BundleFlags::new(flags), o, tags))
     }
 }
 
 pub enum Eid {
-    LocalNode(u32),
-    Ipn(u32, u32, u32),
-    Dtn(String, String),
+    Null,
+    LocalNode {
+        service_number: u32,
+    },
+    Ipn {
+        allocator_id: u32,
+        node_number: u32,
+        service_number: u32,
+    },
+    Dtn {
+        node_name: String,
+        demux: String,
+    },
 }
 
 impl Eid {
-    pub fn as_bytes(&self) -> Vec<u8> {
-        match &self {
-            Self::Ipn(allocator_id, node_num, service_num) => cbor::encode::write_array(&[
-                cbor::encode::write_uint(*allocator_id as u64),
-                cbor::encode::write_uint(*node_num as u64),
-                cbor::encode::write_uint(*service_num as u64),
-            ]),
-            Self::Dtn(s1, s2) => ["/", s1.as_str(), s2.as_str()]
-                .join("/")
-                .as_bytes()
-                .to_vec(),
-            _ => unreachable!(),
+    fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Eid, anyhow::Error> {
+        match value {
+            cbor::decode::Value::Uint(0) => Ok(Self::Null),
+            cbor::decode::Value::Text("none", _) => {
+                log::info!("Parsing dtn EID 'none'");
+                Ok(Self::Null)
+            }
+            cbor::decode::Value::Text(s, _) => {
+                if !s.is_ascii() {
+                    Err(anyhow!("dtn URI be ASCII"))
+                } else if !s.starts_with("//") {
+                    Err(anyhow!("dtn URI must start with '//'"))
+                } else if let Some((s1, s2)) = &s[2..].split_once('/') {
+                    Ok(Self::Dtn {
+                        node_name: s1.to_string(),
+                        demux: s2.to_string(),
+                    })
+                } else {
+                    Err(anyhow!("dtn URI missing name-delim '/'"))
+                }
+            }
+            _ => Err(anyhow!("dtn URI is not a CBOR text string or 0")),
         }
+    }
+
+    fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Eid, anyhow::Error> {
+        if let Some(count) = value.count() {
+            if !(2..=3).contains(&count) {
+                return Err(anyhow!(
+                    "IPN EIDs must be encoded as 2 or 3 element CBOR arrays"
+                ));
+            }
+        } else {
+            log::info!("Parsing IPN EID as indefinite array");
+        }
+
+        let v1 = value.parse::<u64>()?;
+        let v2 = value.parse::<u64>()?;
+
+        let (allocator_id, node_number, service_number) = if let Some(v3) =
+            value.try_parse::<u64>()?
+        {
+            if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
+                return Err(anyhow!(
+                    "Invalid IPN EID components: {}, {}, {}",
+                    v1,
+                    v2,
+                    v3
+                ));
+            }
+
+            // Check indefinite array length
+            if value.count().is_none() {
+                value.parse_end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
+            }
+
+            (v1 as u32, v2 as u32, v3 as u32)
+        } else {
+            if v2 >= 2 ^ 32 {
+                return Err(anyhow!("Invalid IPN EID service number {}", v2));
+            }
+            ((v1 >> 32) as u32, (v1 & ((2 ^ 32) - 1)) as u32, v2 as u32)
+        };
+
+        if allocator_id == 0 && node_number == 0 {
+            if service_number != 0 {
+                log::info!("Null EID with service number {}", service_number)
+            }
+            Ok(Self::Null)
+        } else if allocator_id == 0 && node_number == (2 ^ 32) - 1 {
+            Ok(Self::LocalNode { service_number })
+        } else {
+            Ok(Self::Ipn {
+                allocator_id,
+                node_number,
+                service_number,
+            })
+        }
+    }
+}
+
+impl cbor::encode::ToCbor for &Eid {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        cbor::encode::write_with_tags(
+            &match self {
+                Eid::Null => vec![cbor::encode::write(1u8), cbor::encode::write(0u8)],
+                Eid::Dtn { node_name, demux } => vec![
+                    cbor::encode::write(1u8),
+                    cbor::encode::write(
+                        ["/", node_name.as_str(), demux.as_str()].join("/").as_str(),
+                    ),
+                ],
+                Eid::Ipn {
+                    allocator_id,
+                    node_number,
+                    service_number,
+                } if *allocator_id == 0 => vec![
+                    cbor::encode::write(2u8),
+                    cbor::encode::write(&vec![
+                        cbor::encode::write(*node_number),
+                        cbor::encode::write(*service_number),
+                    ]),
+                ],
+                Eid::Ipn {
+                    allocator_id,
+                    node_number,
+                    service_number,
+                } => vec![
+                    cbor::encode::write(2u8),
+                    cbor::encode::write(&vec![
+                        cbor::encode::write(*allocator_id),
+                        cbor::encode::write(*node_number),
+                        cbor::encode::write(*service_number),
+                    ]),
+                ],
+                Eid::LocalNode { service_number } => vec![
+                    cbor::encode::write(2u8),
+                    cbor::encode::write(&vec![
+                        cbor::encode::write((2u64 ^ 32) - 1),
+                        cbor::encode::write(*service_number),
+                    ]),
+                ],
+            },
+            tags,
+        )
+    }
+}
+
+impl cbor::decode::FromCbor for Eid {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        cbor::decode::parse_value(data, |value, tags| {
+            if let cbor::decode::Value::Array(mut a) = value {
+                if !tags.is_empty() {
+                    log::info!("Parsing EID with tags");
+                }
+                match a.count() {
+                    None => log::info!("Parsing EID array of indefinite length"),
+                    Some(count) if count != 2 => {
+                        return Err(anyhow!("EID is not encoded as a 2 element CBOR array"))
+                    }
+                    _ => {}
+                }
+                let schema = a.parse::<u64>()?;
+                let eid = a.try_parse_item(|value: cbor::decode::Value<'_>, _, tags2| {
+                    if !tags2.is_empty() {
+                        log::info!("Parsing EID value with tags");
+                    }
+                    match (schema, value) {
+                        (1, value) => Self::parse_dtn_eid(value),
+                        (2, cbor::decode::Value::Array(a)) => Self::parse_ipn_eid(a),
+                        (2, _) => Err(anyhow!("IPN EIDs must be encoded as a CBOR array")),
+                        _ => Err(anyhow!("Unsupported EID scheme {}", schema)),
+                    }
+                })?;
+
+                if a.count().is_none() {
+                    a.parse_end_or_else(|| anyhow!("Additional items found in EID array"))?;
+                }
+                Ok((eid, tags.to_vec()))
+            } else {
+                Err(anyhow!("EID is not encoded as a CBOR array"))
+            }
+        })
+        .map(|((eid, tags), o)| (eid, o, tags))
     }
 }
 
@@ -118,9 +279,9 @@ pub struct FragmentInfo {
 
 pub struct PrimaryBlock {
     pub flags: BundleFlags,
-    pub source: Option<Eid>,
+    pub source: Eid,
     pub destination: Eid,
-    pub report_to: Option<Eid>,
+    pub report_to: Eid,
     pub timestamp: (u64, u64),
     pub lifetime: u64,
     pub fragment_info: Option<FragmentInfo>,
@@ -162,9 +323,9 @@ impl BlockType {
     }
 }
 
-impl cbor::decode::FromCBOR for BlockType {
+impl cbor::decode::FromCbor for BlockType {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (code, o, tags) = cbor::decode::parse(data)?;
+        let (code, o, tags) = cbor::decode::parse_detail(data)?;
         Ok((BlockType::new(code)?, o, tags))
     }
 }
@@ -215,9 +376,9 @@ impl BlockFlags {
     }
 }
 
-impl cbor::decode::FromCBOR for BlockFlags {
+impl cbor::decode::FromCbor for BlockFlags {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (flags, o, tags) = cbor::decode::parse(data)?;
+        let (flags, o, tags) = cbor::decode::parse_detail(data)?;
         Ok((BlockFlags::new(flags), o, tags))
     }
 }
@@ -273,7 +434,7 @@ fn parse_bundle_blocks(
         // Use an intermediate vector so we can check the payload was the last item
         let mut extension_blocks = Vec::new();
         loop {
-            if let Some((block_num, block)) =
+            if let Some((block_number, block)) =
                 blocks.try_parse_item(|value, block_start, tags| match value {
                     cbor::decode::Value::Array(a) => {
                         if !tags.is_empty() {
@@ -285,15 +446,15 @@ fn parse_bundle_blocks(
                     _ => Err(anyhow!("Bundle extension block is not a CBOR array")),
                 })?
             {
-                extension_blocks.push((block_num, block));
+                extension_blocks.push((block_number, block));
             } else {
                 // Check the last block is the payload
-                let Some((block_num, payload)) = extension_blocks.last() else {
+                let Some((block_number, payload)) = extension_blocks.last() else {
                     return Err(anyhow!("Bundle has no payload block"));
                 };
 
                 if let BlockType::Payload = payload.block_type {
-                    if *block_num != 1 {
+                    if *block_number != 1 {
                         return Err(anyhow!("Bundle payload block must be block number 1"));
                     }
                 } else {
@@ -304,11 +465,11 @@ fn parse_bundle_blocks(
 
                 // Compose hashmap
                 let mut map = HashMap::new();
-                for (block_num, block) in extension_blocks {
-                    if map.insert(block_num, block).is_some() {
+                for (block_number, block) in extension_blocks {
+                    if map.insert(block_number, block).is_some() {
                         return Err(anyhow!(
                             "Bundle has more than one block with block number {}",
-                            block_num
+                            block_number
                         ));
                     }
                 }
@@ -338,58 +499,42 @@ fn parse_primary_block(
     }
 
     // Check version
-    let (version, _, tags) = block.parse::<u64>()?;
+    let version = block.parse::<u64>()?;
     if version != 7 {
         return Err(anyhow!("Unsupported bundle protocol version {}", version));
-    } else if !tags.is_empty() {
-        log::info!("Parsing bundle primary block version with tags");
     }
 
     // Parse flags
-    let (flags, _, tags) = block.parse::<BundleFlags>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing bundle primary block flags with tags");
-    }
+    let flags = block.parse::<BundleFlags>()?;
 
     // Parse CRC Type
-    let (crc_type, _, tags) = block.parse::<u64>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing bundle primary block crc type with tags");
-    }
+    let crc_type = block.parse::<u64>()?;
 
     // Parse EIDs
-    let Some(dest_eid) = parse_eid(&mut block)? else {
+    let dest_eid = block.parse::<Eid>()?;
+    if let Eid::Null = &dest_eid {
         return Err(anyhow!("Bundle has Null destination EID"));
     };
-    let source_eid = parse_eid(&mut block)?;
-    let report_to_eid = parse_eid(&mut block)?;
+    let source_eid = block.parse::<Eid>()?;
+    let report_to_eid = block.parse::<Eid>()?;
 
     // Parse timestamp
     let timestamp = parse_timestamp(&mut block)?;
 
     // Parse lifetime
-    let (lifetime, _, tags) = block.parse::<u64>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing bundle primary block lifetime with tags");
-    }
+    let lifetime = block.parse::<u64>()?;
 
     // Parse fragment parts
     let fragment_info = if !flags.is_fragment {
         None
     } else {
-        let (offset, _, tags) = block.parse::<u64>()?;
-        if !tags.is_empty() {
-            log::info!("Parsing bundle primary block fragment offset with tags");
-        }
-        let (total_len, _, tags) = block.parse::<u64>()?;
-        if !tags.is_empty() {
-            log::info!("Parsing bundle primary block total application data unit length with tags");
-        }
+        let offset = block.parse::<u64>()?;
+        let total_len = block.parse::<u64>()?;
         Some(FragmentInfo { offset, total_len })
     };
 
     // Check CRC
-    parse_crc_value(data, block_start, &mut block, crc_type)?;
+    parse_crc_value(data, block_start, block, crc_type)?;
 
     Ok(PrimaryBlock {
         flags,
@@ -402,136 +547,6 @@ fn parse_primary_block(
     })
 }
 
-fn parse_eid(block: &mut cbor::decode::Array) -> Result<Option<Eid>, anyhow::Error> {
-    block.try_parse_item(|value, _, tags| {
-        if let cbor::decode::Value::Array(mut a) = value {
-            if !tags.is_empty() {
-                log::info!("Parsing EID with tags");
-            }
-            match a.count() {
-                None => log::info!("Parsing EID array of indefinite length"),
-                Some(count) if count != 2 => {
-                    return Err(anyhow!("EID is not encoded as a 2 element CBOR array"))
-                }
-                _ => {}
-            }
-            let (schema, _, tags) = a.parse::<u64>()?;
-            if !tags.is_empty() {
-                log::info!("Parsing EID schema with tags");
-            }
-            let eid = a.try_parse_item(|value: cbor::decode::Value<'_>, _, tags| {
-                if !tags.is_empty() {
-                    log::info!("Parsing EID value with tags");
-                }
-                match (schema, value) {
-                    (1, value) => parse_dtn_eid(value),
-                    (2, cbor::decode::Value::Array(a)) => parse_ipn_eid(a),
-                    (2, _) => Err(anyhow!("IPN EIDs must be encoded as a CBOR array")),
-                    _ => Err(anyhow!("Unsupported EID scheme {}", schema)),
-                }
-            })?;
-
-            if a.count().is_none() {
-                a.parse_end_or_else(|| anyhow!("Additional items found in EID array"))?;
-            }
-            Ok(eid)
-        } else {
-            Err(anyhow!("EID is not encoded as a CBOR array"))
-        }
-    })
-}
-
-fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Option<Eid>, anyhow::Error> {
-    match value {
-        cbor::decode::Value::Uint(0) => Ok(None),
-        cbor::decode::Value::Text("none", _) => {
-            log::info!("Parsing dtn EID 'none'");
-            Ok(None)
-        }
-        cbor::decode::Value::Text(s, _) => {
-            if !s.is_ascii() {
-                Err(anyhow!("dtn URI be ASCII"))
-            } else if !s.starts_with("//") {
-                Err(anyhow!("dtn URI must start with '//'"))
-            } else if let Some((s1, s2)) = &s[2..].split_once('/') {
-                Ok(Some(Eid::Dtn(s1.to_string(), s2.to_string())))
-            } else {
-                Err(anyhow!("dtn URI missing name-delim '/'"))
-            }
-        }
-        _ => Err(anyhow!("dtn URI is not a CBOR text string or 0")),
-    }
-}
-
-fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Option<Eid>, anyhow::Error> {
-    if let Some(count) = value.count() {
-        if !(2..=3).contains(&count) {
-            return Err(anyhow!(
-                "IPN EIDs must be encoded as 2 or 3 element CBOR arrays"
-            ));
-        }
-    } else {
-        log::info!("Parsing IPN EID as indefinite array");
-    }
-
-    let (v1, _, tags) = value.parse::<u64>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing IPN EID with tags");
-    }
-
-    let (v2, _, tags) = value.parse::<u64>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing IPN EID with tags");
-    }
-
-    let v3 = value.try_parse_item(|value, _, tags| {
-        if !tags.is_empty() {
-            log::info!("Parsing IPN EID with tags");
-        }
-        match value {
-            cbor::decode::Value::Uint(value) => Ok(Some(value)),
-            cbor::decode::Value::End(_) => Ok(None),
-            _ => Err(anyhow!(
-                "IPN EID service number must be encoded as a CBOR unsigned integer"
-            )),
-        }
-    })?;
-
-    let (allocator_id, node_num, service_num) = if let Some(v3) = v3 {
-        if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
-            return Err(anyhow!(
-                "Invalid IPN EID components: {}, {}, {}",
-                v1,
-                v2,
-                v3
-            ));
-        }
-
-        // Check indefinite array length
-        if value.count().is_none() {
-            value.parse_end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
-        }
-
-        (v1 as u32, v2 as u32, v3 as u32)
-    } else {
-        if v2 >= 2 ^ 32 {
-            return Err(anyhow!("Invalid IPN EID service number {}", v2));
-        }
-        ((v1 >> 32) as u32, (v1 & ((2 ^ 32) - 1)) as u32, v2 as u32)
-    };
-
-    if allocator_id == 0 && node_num == 0 {
-        if service_num != 0 {
-            log::info!("Null EID with service number {}", service_num)
-        }
-        Ok(None)
-    } else if allocator_id == 0 && node_num == (2 ^ 32) - 1 {
-        Ok(Some(Eid::LocalNode(service_num)))
-    } else {
-        Ok(Some(Eid::Ipn(allocator_id, node_num, service_num)))
-    }
-}
-
 fn parse_timestamp(block: &mut cbor::decode::Array) -> Result<(u64, u64), anyhow::Error> {
     block.try_parse_item(|value, _, tags| {
         if let cbor::decode::Value::Array(mut a) = value {
@@ -539,12 +554,12 @@ fn parse_timestamp(block: &mut cbor::decode::Array) -> Result<(u64, u64), anyhow
                 log::info!("Parsing bundle primary block timestamp with tags");
             }
 
-            let (creation_time, _, tags) = a.parse::<u64>()?;
+            let creation_time = a.parse::<u64>()?;
             if !tags.is_empty() {
                 log::info!("Parsing bundle primary block timestamp with tags");
             }
 
-            let (seq_no, _, tags) = a.parse::<u64>()?;
+            let seq_no = a.parse::<u64>()?;
             if !tags.is_empty() {
                 log::info!("Parsing bundle primary block timestamp with tags");
             }
@@ -561,7 +576,7 @@ fn parse_timestamp(block: &mut cbor::decode::Array) -> Result<(u64, u64), anyhow
 fn parse_crc_value(
     data: &[u8],
     block_start: usize,
-    block: &mut cbor::decode::Array,
+    mut block: cbor::decode::Array,
     crc_type: u64,
 ) -> Result<usize, anyhow::Error> {
     // Parse CRC
@@ -639,29 +654,10 @@ fn parse_extension_block(
         _ => {}
     }
 
-    // Parse type code
-    let (block_type, _, tags) = block.parse::<BlockType>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing extension block type code with tags");
-    }
-
-    // Parse block number
-    let (block_num, _, tags) = block.parse::<u64>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing extension block number with tags");
-    }
-
-    // Parse block flags
-    let (flags, _, tags) = block.parse::<BlockFlags>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing extension block flags with tags");
-    }
-
-    // Parse CRC Type
-    let (crc_type, _, tags) = block.parse::<u64>()?;
-    if !tags.is_empty() {
-        log::info!("Parsing extension block crc type with tags");
-    }
+    let block_type = block.parse::<BlockType>()?;
+    let block_number = block.parse::<u64>()?;
+    let flags = block.parse::<BlockFlags>()?;
+    let crc_type = block.parse::<u64>()?;
 
     // Stash start of data
     let (data_start, data_len) = block.try_parse_item(|value, data_start, tags| match value {
@@ -678,10 +674,10 @@ fn parse_extension_block(
     })?;
 
     // Check CRC
-    let data_end = parse_crc_value(data, block_start, &mut block, crc_type)?;
+    let data_end = parse_crc_value(data, block_start, block, crc_type)?;
 
     Ok((
-        block_num,
+        block_number,
         Block {
             block_type,
             flags,
