@@ -9,7 +9,7 @@ where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    cla_registry: cla::ClaRegistry,
+    cla_registry: cla_registry::ClaRegistry,
     cache: Arc<cache::Cache<M, B>>,
 }
 
@@ -20,7 +20,7 @@ where
 {
     fn new(
         _config: &config::Config,
-        cla_registry: cla::ClaRegistry,
+        cla_registry: cla_registry::ClaRegistry,
         cache: Arc<cache::Cache<M, B>>,
     ) -> Self {
         Service {
@@ -76,5 +76,9 @@ where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    ClaSinkServer::new(Service::new(config, cla::ClaRegistry::new(config), cache))
+    ClaSinkServer::new(Service::new(
+        config,
+        cla_registry::ClaRegistry::new(config),
+        cache,
+    ))
 }

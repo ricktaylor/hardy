@@ -34,22 +34,25 @@ where
             .check(
                 self.metadata_storage.clone(),
                 cancel_token,
-                |metadata_storage: Arc<M>, storage_name, data| async move {
-                    // Bundle in bundle_storage, but not in metadata_storage
+                |storage_name, data| {
+                    let metadata_storage = self.metadata_storage.clone();
+                    async move {
+                        // Bundle in bundle_storage, but not in metadata_storage
 
-                    // Parse the bundle first
-                    let Ok(bundle) = bundle::parse(&data) else {
-                        // Drop it... garbage
-                        return Ok(false);
-                    };
+                        // Parse the bundle first
+                        let Ok(bundle) = bundle::parse(&data) else {
+                            // Drop it... garbage
+                            return Ok(false);
+                        };
 
-                    // Write to metadata or die trying
-                    metadata_storage.store(&storage_name, &bundle).await?;
+                        // Write to metadata or die trying
+                        metadata_storage.store(&storage_name, &bundle).await?;
 
-                    todo!();
+                        todo!();
 
-                    // true for keep
-                    Ok(true)
+                        // true for keep
+                        Ok(true)
+                    }
                 },
             )
             .await

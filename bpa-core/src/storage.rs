@@ -18,7 +18,7 @@ pub trait BundleStorage {
         &self,
         metadata: std::sync::Arc<M>,
         cancel_token: &tokio_util::sync::CancellationToken,
-        f: impl FnMut(std::sync::Arc<M>, String, std::sync::Arc<Vec<u8>>) -> F,
+        f: impl FnMut(String, std::sync::Arc<Vec<u8>>) -> F,
     ) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send
     where
         F: std::future::Future<Output = Result<bool, anyhow::Error>> + Send,

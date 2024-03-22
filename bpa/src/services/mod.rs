@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::anyhow;
 use std::sync::Arc;
 
 mod cla_sink;
@@ -8,11 +9,15 @@ pub fn init<M: storage::MetadataStorage + Send + Sync, B: storage::BundleStorage
     cache: Arc<cache::Cache<M, B>>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
-) {
+) -> Result<(), anyhow::Error> {
+    let grpc_address: String = config
+        .get("grpc_address")
+        .map_err(|e| anyhow!("Invalid gRPC address in configuration: {}", e))?;
+
     // Get listen address from config
-    let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
+    let addr = grpc_address
         .parse()
-        .log_expect("Invalid gRPC address and/or port in configuration");
+        .map_err(|e| anyhow!("Invalid gRPC address and/or port in configuration: {}", e))?;
 
     // Add gRPC services to HTTP router
     let router =
@@ -27,4 +32,7 @@ pub fn init<M: storage::MetadataStorage + Send + Sync, B: storage::BundleStorage
             .await
             .log_expect("Failed to start gRPC server")
     });
+
+    log::info!("Start gRPC server on {}", grpc_address);
+    Ok(())
 }

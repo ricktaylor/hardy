@@ -5,7 +5,7 @@ pub fn init(config: &config::Config) {
         .get_string("log_level")
         .expect("Failed to find 'log_level' in config")
         .parse::<simplelog::LevelFilter>()
-        .log_expect("Invalid log level");
+        .expect("Invalid log level");
 
     simplelog::TermLogger::init(
         log_level,

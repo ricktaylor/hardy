@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-
 use anyhow::anyhow;
 use crc::Crc;
 use hardy_cbor as cbor;
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct BundleFlags {

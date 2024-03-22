@@ -1,8 +1,9 @@
+use anyhow::anyhow;
 use hardy_bpa_core::*;
 use log_err::*;
 
 mod cache;
-mod cla;
+mod cla_registry;
 mod logger;
 mod services;
 mod settings;
@@ -76,10 +77,13 @@ async fn main() {
         .check(&cancel_token)
         .await
         .log_expect("Cache check failed");
-    if !cancel_token.is_cancelled() {
-        // Init gRPC services
-        services::init(&config, cache, &mut task_set, cancel_token);
 
+    // Init gRPC services
+    if !cancel_token.is_cancelled() {
+        services::init(&config, cache, &mut task_set, cancel_token);
+    }
+
+    if !cancel_token.is_cancelled() {
         log::info!("{} started", built_info::PKG_NAME);
     }
 

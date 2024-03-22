@@ -11,8 +11,7 @@ fn options() -> getopts::Options {
 
 const fn defaults() -> &'static [(&'static str, config::Value)] {
     &[
-        ("grpc_addr", "[::1]".into()),
-        ("grpc_port", 50051.into()),
+        ("grpc_address", "[::1]:50051".into()),
         ("log_level", "info".into()),
     ]
 }
@@ -76,7 +75,7 @@ pub fn init() -> Option<config::Config> {
         .iter()
         .fold(config::Config::builder(), |b, (k, v)| {
             b.set_default(k, v.clone())
-                .log_expect("Invalid default config value")
+                .expect("Invalid default config value")
         });
 
     // Add config file
@@ -92,12 +91,12 @@ pub fn init() -> Option<config::Config> {
     if let Some(cache_dir) = cache_dir() {
         b = b
             .set_default("cache_dir", cache_dir)
-            .log_expect("Invalid default cache_dir config value");
+            .expect("Invalid default cache_dir config value");
     }
 
     // Pull in environment vars
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
-    Some(b.build().log_expect("Failed to parse configuration"))
+    Some(b.build().expect("Failed to load configuration"))
 }
