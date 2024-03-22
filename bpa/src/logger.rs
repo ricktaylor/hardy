@@ -1,11 +1,14 @@
 use super::*;
 
-pub fn init(config: &settings::Config) {
+pub fn init(config: &config::Config) {
+    let log_level = config
+        .get_string("log_level")
+        .expect("Failed to find 'log_level' in config")
+        .parse::<simplelog::LevelFilter>()
+        .log_expect("Invalid log level");
+
     simplelog::TermLogger::init(
-        config
-            .log_level
-            .parse::<simplelog::LevelFilter>()
-            .log_expect("Invalid log level"),
+        log_level,
         simplelog::Config::default(),
         simplelog::TerminalMode::Mixed,
         simplelog::ColorChoice::Auto,

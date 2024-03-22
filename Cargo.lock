@@ -511,16 +511,16 @@ dependencies = [
  "base64 0.22.0",
  "built",
  "config",
- "crc",
  "directories",
  "getopts",
+ "hardy-bpa-core",
+ "hardy-cbor",
+ "hardy-localdisk-storage",
  "hardy-proto",
- "libc",
+ "hardy-sqlite-storage",
  "log",
  "log_err",
- "rand",
  "regex",
- "rusqlite",
  "serde",
  "sha1",
  "simplelog",
@@ -529,6 +529,42 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
+]
+
+[[package]]
+name = "hardy-bpa-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "config",
+ "crc",
+ "hardy-cbor",
+ "log",
+ "tokio-util",
+]
+
+[[package]]
+name = "hardy-cbor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "thiserror",
+]
+
+[[package]]
+name = "hardy-localdisk-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hardy-bpa-core",
+ "libc",
+ "log",
+ "rand",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
  "winapi",
 ]
 
@@ -541,6 +577,26 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "hardy-sqlite-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atoi",
+ "base64 0.22.0",
+ "built",
+ "hardy-bpa-core",
+ "hardy-cbor",
+ "log",
+ "regex",
+ "rusqlite",
+ "serde",
+ "sha1",
+ "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

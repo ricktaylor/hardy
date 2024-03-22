@@ -1,0 +1,13 @@
+[package]
+name = "hardy-cbor"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+log = "0.4.21"
+thiserror = "1.0.58"
+anyhow = "1.0.81"

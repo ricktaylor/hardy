@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use super::*;
 use anyhow::anyhow;
 use crc::Crc;
+use hardy_cbor as cbor;
 
 #[derive(Default)]
 pub struct BundleFlags {
@@ -394,22 +394,22 @@ pub struct Bundle {
 }
 
 pub fn parse(data: &[u8]) -> Result<Bundle, anyhow::Error> {
-    let (b, consumed) = cbor::decode::parse_value(data, |value, tags| {
-        if let cbor::decode::Value::Array(a) = value {
+    let (bundle, consumed) = cbor::decode::parse_value(data, |value, tags| {
+        if let cbor::decode::Value::Array(blocks) = value {
             if !tags.is_empty() {
                 log::info!("Parsing bundle with tags");
             }
-            parse_bundle_blocks(data, a)
+            parse_bundle_blocks(data, blocks)
         } else {
             Err(anyhow!("Bundle is not a CBOR array"))
         }
     })?;
-    if consumed < data.len() {
+    if bundle.valid && consumed < data.len() {
         return Err(anyhow!(
             "Bundle has additional data after end of CBOR array"
         ));
     }
-    Ok(b)
+    Ok(bundle)
 }
 
 fn parse_bundle_blocks(
@@ -428,23 +428,25 @@ fn parse_bundle_blocks(
         }
     })?;
 
-    let mut bundle = Bundle {
-        primary,
-        extensions: HashMap::new(),
-        valid,
-    };
-
-    if valid {
+    let (extensions, valid) = if valid {
         // Parse other blocks
         match parse_extension_blocks(data, blocks) {
-            Ok(extensions) => bundle.extensions = extensions,
+            Ok(extensions) => (extensions, true),
             Err(e) => {
-                bundle.valid = false;
-                log::info!("Extension block parsing failed: {}", e)
+                // Don't return an Err, we need to return Ok(invalid)
+                log::info!("Extension block parsing failed: {}", e);
+                (HashMap::new(), false)
             }
         }
-    }
-    Ok(bundle)
+    } else {
+        (HashMap::new(), false)
+    };
+
+    Ok(Bundle {
+        primary,
+        extensions,
+        valid,
+    })
 }
 
 fn parse_primary_block(
@@ -471,24 +473,20 @@ fn parse_primary_block(
     let flags = block.parse::<BundleFlags>()?;
 
     // Parse CRC Type
-    let crc_type = block.parse::<u64>().map_err(|e| {
-        log::info!("Invalid crc type: {}", e);
-        e
-    });
+    let crc_type = block
+        .parse::<u64>()
+        .inspect_err(|e| log::info!("Invalid crc type: {}", e));
 
     // Parse EIDs
-    let dest_eid = block.parse::<Eid>().map_err(|e| {
-        log::info!("Invalid destination EID: {}", e);
-        e
-    });
-    let source_eid = block.parse::<Eid>().map_err(|e| {
-        log::info!("Invalid source EID: {}", e);
-        e
-    });
-    let report_to_eid = block.parse::<Eid>().map_err(|e| {
-        log::info!("Invalid report-to EID: {}", e);
-        e
-    })?;
+    let dest_eid = block
+        .parse::<Eid>()
+        .inspect_err(|e| log::info!("Invalid destination EID: {}", e));
+    let source_eid = block
+        .parse::<Eid>()
+        .inspect_err(|e| log::info!("Invalid source EID: {}", e));
+    let report_to_eid = block
+        .parse::<Eid>()
+        .inspect_err(|e| log::info!("Invalid report-to EID: {}", e))?;
 
     // Parse timestamp
     let timestamp = parse_timestamp(&mut block);

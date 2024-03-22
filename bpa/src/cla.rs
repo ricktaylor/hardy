@@ -3,20 +3,18 @@ use hardy_proto::bpa::*;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-#[derive(Debug)]
 struct Cla {
     ident: String,
     endpoint:
         Arc<tokio::sync::Mutex<hardy_proto::bpa::cla_client::ClaClient<tonic::transport::Channel>>>,
 }
 
-#[derive(Debug)]
 pub struct ClaRegistry {
     clas: RwLock<HashMap<String, Cla>>,
 }
 
 impl ClaRegistry {
-    pub fn new(_config: &settings::Config) -> ClaRegistry {
+    pub fn new(_config: &config::Config) -> ClaRegistry {
         ClaRegistry {
             clas: RwLock::new(HashMap::new()),
         }
@@ -103,10 +101,7 @@ impl ClaRegistry {
         .await
         .forward_bundle(tonic::Request::new(request))
         .await
-        .map_err(|e| {
-            log::warn!("Failed to forward bundle: {}", e);
-            e
-        })?
+        .inspect_err(|e| log::warn!("Failed to forward bundle: {}", e))?
         .into_inner()
         .failure
         {

@@ -1,10 +1,11 @@
 use super::*;
+use std::sync::Arc;
 
 mod cla_sink;
 
-pub fn init(
-    config: &settings::Config,
-    cache: cache::Cache,
+pub fn init<M: storage::MetadataStorage + Send + Sync, B: storage::BundleStorage + Send + Sync>(
+    config: &config::Config,
+    cache: Arc<cache::Cache<M, B>>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {

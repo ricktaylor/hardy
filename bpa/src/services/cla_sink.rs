@@ -4,17 +4,24 @@ use hardy_proto::bpa::*;
 
 use tonic::{Request, Response, Status};
 
-#[derive(Debug)]
-pub struct Service {
+struct Service<M, B>
+where
+    M: storage::MetadataStorage + Send + Sync + 'static,
+    B: storage::BundleStorage + Send + Sync + 'static,
+{
     cla_registry: cla::ClaRegistry,
-    cache: cache::Cache,
+    cache: Arc<cache::Cache<M, B>>,
 }
 
-impl Service {
-    pub fn new(
-        _config: &settings::Config,
+impl<M, B> Service<M, B>
+where
+    M: storage::MetadataStorage + Send + Sync + 'static,
+    B: storage::BundleStorage + Send + Sync + 'static,
+{
+    fn new(
+        _config: &config::Config,
         cla_registry: cla::ClaRegistry,
-        cache: cache::Cache,
+        cache: Arc<cache::Cache<M, B>>,
     ) -> Self {
         Service {
             cla_registry,
@@ -24,7 +31,11 @@ impl Service {
 }
 
 #[tonic::async_trait]
-impl ClaSink for Service {
+impl<M, B> ClaSink for Service<M, B>
+where
+    M: storage::MetadataStorage + Send + Sync + 'static,
+    B: storage::BundleStorage + Send + Sync + 'static,
+{
     async fn register_cla(
         &self,
         request: Request<RegisterClaRequest>,
@@ -47,7 +58,7 @@ impl ClaSink for Service {
     ) -> Result<Response<ForwardBundleResponse>, Status> {
         let failure = self
             .cache
-            .store(&std::sync::Arc::new(request.into_inner().bundle))
+            .store(std::sync::Arc::new(request.into_inner().bundle))
             .await
             .map_err(|e| Status::from_error(e.into()))?;
 
@@ -57,6 +68,13 @@ impl ClaSink for Service {
     }
 }
 
-pub fn new_service(config: &settings::Config, cache: cache::Cache) -> ClaSinkServer<Service> {
+pub fn new_service<M, B>(
+    config: &config::Config,
+    cache: Arc<cache::Cache<M, B>>,
+) -> ClaSinkServer<Service<M, B>>
+where
+    M: storage::MetadataStorage + Send + Sync + 'static,
+    B: storage::BundleStorage + Send + Sync + 'static,
+{
     ClaSinkServer::new(Service::new(config, cla::ClaRegistry::new(config), cache))
 }

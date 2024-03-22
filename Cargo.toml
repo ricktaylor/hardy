@@ -1,7 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "bpa"
+    "bpa", 
+    "bpa-core",
+    "cbor", 
+    "localdisk-storage",
+    "proto", 
+    "sqlite-storage"
 ]
 
 [workspace.package]

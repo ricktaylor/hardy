@@ -1,12 +1,8 @@
+use hardy_bpa_core::*;
 use log_err::*;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio_util::sync::CancellationToken;
 
-mod bundle;
 mod cache;
-mod cbor;
 mod cla;
-mod database;
 mod logger;
 mod services;
 mod settings;
@@ -17,9 +13,27 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-fn listen_for_cancel(task_set: &mut tokio::task::JoinSet<()>, cancel_token: CancellationToken) {
+fn init_metadata_storage(
+    config: &config::Config,
+) -> Result<std::sync::Arc<impl storage::MetadataStorage>, anyhow::Error> {
+    #[cfg(feature = "sqlite-storage")]
+    hardy_sqlite_storage::Storage::init(&config.get(hardy_sqlite_storage::Config::KEY)?)
+}
+
+fn init_bundle_storage(
+    config: &config::Config,
+) -> Result<std::sync::Arc<impl storage::BundleStorage>, anyhow::Error> {
+    #[cfg(feature = "localdisk-storage")]
+    hardy_localdisk_storage::Storage::init(&config.get(hardy_localdisk_storage::Config::KEY)?)
+}
+
+fn listen_for_cancel(
+    task_set: &mut tokio::task::JoinSet<()>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
     let mut term_handler =
-        signal(SignalKind::terminate()).log_expect("Failed to register signal handlers");
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .log_expect("Failed to register signal handlers");
 
     task_set.spawn(async move {
         tokio::select! {
@@ -45,23 +59,29 @@ async fn main() {
     logger::init(&config);
     log::info!("{} starting...", built_info::PKG_NAME);
 
-    // Init DB
-    let db = database::init(&config);
+    // Init pluggable storage engines
+    let cache = cache::Cache::new(
+        &config,
+        init_metadata_storage(&config).log_expect("Failed to initialize metadata store"),
+        init_bundle_storage(&config).log_expect("Failed to initialize bundle store"),
+    );
 
-    // Prep graceful shutdown
-    let cancel_token = CancellationToken::new();
+    // Prepare for graceful shutdown
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     let mut task_set = tokio::task::JoinSet::new();
     listen_for_cancel(&mut task_set, cancel_token.clone());
 
-    // Init bundle cache - this can take a while
-    let Some(cache) = cache::init(&config, db, cancel_token.clone()).await else {
-        return;
-    };
+    // Perform a cache check
+    cache
+        .check(&cancel_token)
+        .await
+        .log_expect("Cache check failed");
+    if !cancel_token.is_cancelled() {
+        // Init gRPC services
+        services::init(&config, cache, &mut task_set, cancel_token);
 
-    // Init async systems
-    services::init(&config, cache, &mut task_set, cancel_token);
-
-    log::info!("{} started", built_info::PKG_NAME);
+        log::info!("{} started", built_info::PKG_NAME);
+    }
 
     // Wait for all tasks to finish
     while let Some(r) = task_set.join_next().await {

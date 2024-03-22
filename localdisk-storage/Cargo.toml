@@ -1,0 +1,24 @@
+[package]
+name = "hardy-localdisk-storage"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+hardy-bpa-core = { path = "../bpa-core" }
+serde = { version = "1.0.197", features = ["derive"] }
+log = "0.4.21"
+thiserror = "1.0.58"
+anyhow = "1.0.81"
+tokio = { version = "1.36.0", features = ["rt-multi-thread","fs"] }
+tokio-util = "0.7.10"
+rand = "0.8.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.153"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser"] }

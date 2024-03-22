@@ -1,15 +1,5 @@
-use std::path::PathBuf;
-
 use super::*;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub grpc_addr: String,
-    pub grpc_port: u16,
-    pub log_level: String,
-    pub cache_dir: String,
-}
+use std::path::PathBuf;
 
 fn options() -> getopts::Options {
     let mut opts = getopts::Options::new();
@@ -19,8 +9,8 @@ fn options() -> getopts::Options {
     opts
 }
 
-fn defaults() -> Vec<(&'static str, config::Value)> {
-    vec![
+const fn defaults() -> &'static [(&'static str, config::Value)] {
+    &[
         ("grpc_addr", "[::1]".into()),
         ("grpc_port", 50051.into()),
         ("log_level", "info".into()),
@@ -57,7 +47,7 @@ fn cache_dir() -> Option<config::Value> {
     )
 }
 
-pub fn init() -> Option<Config> {
+pub fn init() -> Option<config::Config> {
     // Parse cmdline
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
@@ -109,8 +99,5 @@ pub fn init() -> Option<Config> {
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
-    b.build()
-        .log_expect("Failed to parse configuration")
-        .try_deserialize()
-        .log_expect("Failed to deserialize config")
+    Some(b.build().log_expect("Failed to parse configuration"))
 }
