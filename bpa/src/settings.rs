@@ -9,8 +9,8 @@ fn options() -> getopts::Options {
     opts
 }
 
-const fn defaults() -> &'static [(&'static str, config::Value)] {
-    &[
+fn defaults() -> Vec<(&'static str, config::Value)> {
+    vec![
         ("grpc_address", "[::1]:50051".into()),
         ("log_level", "info".into()),
     ]

@@ -6,7 +6,7 @@ mod cla_sink;
 
 pub fn init<M: storage::MetadataStorage + Send + Sync, B: storage::BundleStorage + Send + Sync>(
     config: &config::Config,
-    cache: Arc<cache::Cache<M, B>>,
+    ingress: Arc<ingress::Ingress<M, B>>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), anyhow::Error> {
@@ -21,7 +21,7 @@ pub fn init<M: storage::MetadataStorage + Send + Sync, B: storage::BundleStorage
 
     // Add gRPC services to HTTP router
     let router =
-        tonic::transport::Server::builder().add_service(cla_sink::new_service(config, cache));
+        tonic::transport::Server::builder().add_service(cla_sink::new_service(config, ingress));
 
     // Start serving
     task_set.spawn(async move {

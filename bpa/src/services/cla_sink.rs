@@ -4,13 +4,13 @@ use hardy_proto::bpa::*;
 
 use tonic::{Request, Response, Status};
 
-struct Service<M, B>
+pub struct Service<M, B>
 where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    cla_registry: cla_registry::ClaRegistry,
-    cache: Arc<cache::Cache<M, B>>,
+    cla_registry: Arc<cla_registry::ClaRegistry>,
+    ingress: Arc<ingress::Ingress<M, B>>,
 }
 
 impl<M, B> Service<M, B>
@@ -20,12 +20,12 @@ where
 {
     fn new(
         _config: &config::Config,
-        cla_registry: cla_registry::ClaRegistry,
-        cache: Arc<cache::Cache<M, B>>,
+        cla_registry: Arc<cla_registry::ClaRegistry>,
+        ingress: Arc<ingress::Ingress<M, B>>,
     ) -> Self {
         Service {
             cla_registry,
-            cache,
+            ingress,
         }
     }
 }
@@ -57,8 +57,8 @@ where
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
         let failure = self
-            .cache
-            .store(std::sync::Arc::new(request.into_inner().bundle))
+            .ingress
+            .receive(std::sync::Arc::new(request.into_inner().bundle))
             .await
             .map_err(|e| Status::from_error(e.into()))?;
 
@@ -70,7 +70,7 @@ where
 
 pub fn new_service<M, B>(
     config: &config::Config,
-    cache: Arc<cache::Cache<M, B>>,
+    ingress: Arc<ingress::Ingress<M, B>>,
 ) -> ClaSinkServer<Service<M, B>>
 where
     M: storage::MetadataStorage + Send + Sync + 'static,
@@ -79,6 +79,6 @@ where
     ClaSinkServer::new(Service::new(
         config,
         cla_registry::ClaRegistry::new(config),
-        cache,
+        ingress,
     ))
 }

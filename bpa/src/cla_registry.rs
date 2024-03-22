@@ -14,10 +14,10 @@ pub struct ClaRegistry {
 }
 
 impl ClaRegistry {
-    pub fn new(_config: &config::Config) -> ClaRegistry {
-        ClaRegistry {
+    pub fn new(_config: &config::Config) -> Arc<ClaRegistry> {
+        Arc::new(ClaRegistry {
             clas: RwLock::new(HashMap::new()),
-        }
+        })
     }
 
     pub async fn register(&self, request: RegisterClaRequest) -> Result<(), tonic::Status> {

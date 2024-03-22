@@ -58,7 +58,7 @@ where
             .await
     }
 
-    pub async fn store(&self, data: Arc<Vec<u8>>) -> Result<bundle::Bundle, anyhow::Error> {
+    pub async fn store(&self, data: Arc<Vec<u8>>) -> Result<Option<bundle::Bundle>, anyhow::Error> {
         // Start the write to bundle storage
         let write_result = self.bundle_storage.store(data.clone());
 
@@ -73,9 +73,11 @@ where
             Ok(r) => r,
             Err(e) => {
                 // Parse failed badly, no idea who to report to
+                log::info!("Bundle parsing failed: {}",e);
+
                 // Remove from bundle storage
                 self.bundle_storage.remove(&storage_name).await;
-                return Err(e);
+                return Ok(None);
             }
         };
 
@@ -91,6 +93,6 @@ where
         }
 
         // Return the parsed bundle
-        Ok(bundle)
+        Ok(Some(bundle))
     }
 }

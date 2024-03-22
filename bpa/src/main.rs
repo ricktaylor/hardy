@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use hardy_bpa_core::*;
 use log_err::*;
 
@@ -7,6 +6,7 @@ mod cla_registry;
 mod logger;
 mod services;
 mod settings;
+mod ingress;
 
 // Buildtime info
 mod built_info {
@@ -77,13 +77,13 @@ async fn main() {
         .check(&cancel_token)
         .await
         .log_expect("Cache check failed");
-
-    // Init gRPC services
     if !cancel_token.is_cancelled() {
-        services::init(&config, cache, &mut task_set, cancel_token);
-    }
+        // Create queues
+        let ingress = ingress::Ingress::new(&config, cache);
 
-    if !cancel_token.is_cancelled() {
+        // Init gRPC services
+        services::init(&config, ingress, &mut task_set, cancel_token);
+
         log::info!("{} started", built_info::PKG_NAME);
     }
 
