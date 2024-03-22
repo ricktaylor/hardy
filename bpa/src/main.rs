@@ -3,10 +3,10 @@ use log_err::*;
 
 mod cache;
 mod cla_registry;
+mod ingress;
 mod logger;
 mod services;
 mod settings;
-mod ingress;
 
 // Buildtime info
 mod built_info {
@@ -79,10 +79,12 @@ async fn main() {
         .log_expect("Cache check failed");
     if !cancel_token.is_cancelled() {
         // Create queues
-        let ingress = ingress::Ingress::new(&config, cache);
+        let ingress = ingress::init(&config, cache, &mut task_set, cancel_token.clone())
+            .log_expect("Failed to initialize ingress");
 
         // Init gRPC services
-        services::init(&config, ingress, &mut task_set, cancel_token);
+        services::init(&config, ingress, &mut task_set, cancel_token)
+            .log_expect("Failed to start gRPC services");
 
         log::info!("{} started", built_info::PKG_NAME);
     }

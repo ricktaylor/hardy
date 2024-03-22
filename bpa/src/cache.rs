@@ -73,10 +73,10 @@ where
             Ok(r) => r,
             Err(e) => {
                 // Parse failed badly, no idea who to report to
-                log::info!("Bundle parsing failed: {}",e);
+                log::info!("Bundle parsing failed: {}", e);
 
                 // Remove from bundle storage
-                self.bundle_storage.remove(&storage_name).await;
+                let _ = self.bundle_storage.remove(&storage_name).await;
                 return Ok(None);
             }
         };
@@ -87,7 +87,7 @@ where
             Err(e) => {
                 // This is just bad, we can't really claim to have received the bundle,
                 // so just cleanup and get out
-                self.bundle_storage.remove(&storage_name).await;
+                let _ = self.bundle_storage.remove(&storage_name).await;
                 return Err(e);
             }
         }

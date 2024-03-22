@@ -4,12 +4,16 @@ use std::sync::Arc;
 
 mod cla_sink;
 
-pub fn init<M: storage::MetadataStorage + Send + Sync, B: storage::BundleStorage + Send + Sync>(
+pub fn init<M, B>(
     config: &config::Config,
     ingress: Arc<ingress::Ingress<M, B>>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), anyhow::Error>
+where
+    M: storage::MetadataStorage + Send + Sync + 'static,
+    B: storage::BundleStorage + Send + Sync + 'static,
+{
     let grpc_address: String = config
         .get("grpc_address")
         .map_err(|e| anyhow!("Invalid gRPC address in configuration: {}", e))?;
