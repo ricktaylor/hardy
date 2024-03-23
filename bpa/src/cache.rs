@@ -26,40 +26,41 @@ where
         })
     }
 
-    pub async fn check(
+    pub fn check(
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
-        channel: tokio::sync::mpsc::Sender<bundle::Bundle>,
+        channel: tokio::sync::mpsc::Sender<(bundle::Bundle, bool)>,
     ) -> Result<(), anyhow::Error> {
-        self.bundle_storage
-            .check(
-                self.metadata_storage.clone(),
-                cancel_token,
-                |storage_name, data| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        // Bundle in bundle_storage, but not in metadata_storage
+        self.bundle_storage.check(
+            self.metadata_storage.clone(),
+            cancel_token,
+            |storage_name, data| {
+                tokio::runtime::Handle::current().block_on(async {
+                    // Bundle in bundle_storage, but not in metadata_storage
 
-                        // Parse the bundle first
-                        let Ok(bundle) = bundle::parse(data) else {
-                            // Drop it... garbage
-                            return Ok(false);
-                        };
+                    // Parse the bundle first
+                    let Ok((bundle, valid)) = bundle::parse(data) else {
+                        // Drop it... garbage
+                        return Ok(false);
+                    };
 
-                        // Write to metadata or die trying
-                        self.metadata_storage.store(storage_name, &bundle).await?;
+                    // Write to metadata or die trying
+                    self.metadata_storage.store(storage_name, &bundle).await?;
 
-                        // Queue the new bundle for ingress processing
-                        channel.send(bundle).await?;
+                    // Queue the new bundle for ingress processing
+                    channel.send((bundle, valid)).await?;
 
-                        // true for keep
-                        Ok(true)
-                    })
-                },
-            )
-            .await
+                    // true for keep
+                    Ok(true)
+                })
+            },
+        )
     }
 
-    pub async fn store(&self, data: Arc<Vec<u8>>) -> Result<Option<bundle::Bundle>, anyhow::Error> {
+    pub async fn store(
+        &self,
+        data: Arc<Vec<u8>>,
+    ) -> Result<Option<(bundle::Bundle, bool)>, anyhow::Error> {
         // Start the write to bundle storage
         let write_result = self.bundle_storage.store(data.clone());
 
@@ -70,7 +71,7 @@ where
         let storage_name = write_result.await?;
 
         // Check parse result
-        let bundle = match bundle_result {
+        let (bundle, valid) = match bundle_result {
             Ok(r) => r,
             Err(e) => {
                 // Parse failed badly, no idea who to report to
@@ -94,6 +95,6 @@ where
         }
 
         // Return the parsed bundle
-        Ok(Some(bundle))
+        Ok(Some((bundle, valid)))
     }
 }

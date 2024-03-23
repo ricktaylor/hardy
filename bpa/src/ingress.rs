@@ -8,7 +8,7 @@ where
     B: storage::BundleStorage + Send + Sync,
 {
     cache: Arc<cache::Cache<M, B>>,
-    tx: Sender<bundle::Bundle>,
+    tx: Sender<(bundle::Bundle, bool)>,
 }
 
 impl<M, B> Ingress<M, B>
@@ -16,14 +16,14 @@ where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    pub async fn init(
+    pub fn init(
         _config: &config::Config,
         cache: Arc<cache::Cache<M, B>>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Arc<Self>, anyhow::Error> {
         // Create a channel for new bundles
-        let (tx, mut rx) = channel(16);
+        let (tx, rx) = channel(16);
         let ingress = Arc::new(Self {
             cache: cache.clone(),
             tx: tx.clone(),
@@ -33,22 +33,12 @@ where
         let cancel_token_cloned = cancel_token.clone();
         let ingress_cloned = ingress.clone();
         task_set.spawn(async move {
-            loop {
-                tokio::select! {
-                    bundle = rx.recv() => match bundle {
-                        None => break,
-                        Some(bundle) => {
-                            ingress_cloned.do_something_with_the_bundle(bundle).await;
-                        }
-                    },
-                    _ = cancel_token_cloned.cancelled() => break
-                }
-            }
+            Self::pipeline_pump(ingress_cloned, rx, cancel_token_cloned).await
         });
 
         // Perform a cache check
         log::info!("Checking cache...");
-        cache.check(cancel_token, tx).await?;
+        cache.check(cancel_token, tx)?;
         log::info!("Cache check complete");
 
         Ok(ingress)
@@ -62,12 +52,40 @@ where
 
         // Put bundle into RX queue
         self.tx.send(bundle).await?;
-
         Ok(true)
     }
 
-    async fn do_something_with_the_bundle(&self, _bundle: bundle::Bundle) {
-        // This is the meat of the ingress controller
+    async fn pipeline_pump(
+        ingress: Arc<Self>,
+        mut rx: Receiver<(bundle::Bundle, bool)>,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) {
+        // We're going to spawn a bunch of tasks
+        let mut task_set = tokio::task::JoinSet::new();
+
+        loop {
+            tokio::select! {
+                bundle = rx.recv() => match bundle {
+                    None => break,
+                    Some((bundle,valid)) => {
+                        let ingress = ingress.clone();
+                        task_set.spawn(async move {
+                            ingress.do_something_with_the_bundle(bundle,valid).await;
+                        });
+                    }
+                },
+                _ = cancel_token.cancelled() => break
+            }
+        }
+
+        // Wait for all sub-tasks to complete
+        while let Some(r) = task_set.join_next().await {
+            r.log_expect("Task terminated unexpectedly")
+        }
+    }
+
+    async fn do_something_with_the_bundle(&self, _bundle: bundle::Bundle, valid: bool) {
+        // This is the meat of the ingress pipeline
         todo!()
     }
 }

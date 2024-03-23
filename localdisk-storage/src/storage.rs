@@ -95,17 +95,20 @@ impl Storage {
 }
 
 impl BundleStorage for Storage {
-    async fn check<M, F>(
+    fn check<M, F>(
         &self,
         metadata: std::sync::Arc<M>,
         cancel_token: tokio_util::sync::CancellationToken,
         f: F,
     ) -> Result<(), anyhow::Error>
     where
-        M: storage::MetadataStorage + Send + Sync,
-        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error> + Send,
+        M: storage::MetadataStorage,
+        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error>,
     {
-        todo!()
+        if self.cache_root.exists() {
+            todo!()
+        }
+        Ok(())
     }
 
     async fn store(&self, data: std::sync::Arc<Vec<u8>>) -> Result<String, anyhow::Error> {

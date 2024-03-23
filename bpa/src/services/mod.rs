@@ -35,6 +35,6 @@ where
             .log_expect("Failed to start gRPC server")
     });
 
-    log::info!("Start gRPC server on {}", grpc_address);
+    log::info!("gRPC server listening on {}", grpc_address);
     Ok(())
 }

@@ -389,11 +389,10 @@ pub struct Block {
 pub struct Bundle {
     pub primary: PrimaryBlock,
     pub extensions: HashMap<u64, Block>,
-    pub valid: bool,
 }
 
-pub fn parse(data: &[u8]) -> Result<Bundle, anyhow::Error> {
-    let (bundle, consumed) = cbor::decode::parse_value(data, |value, tags| {
+pub fn parse(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
+    let ((bundle, valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
         if let cbor::decode::Value::Array(blocks) = value {
             if !tags.is_empty() {
                 log::info!("Parsing bundle with tags");
@@ -403,18 +402,18 @@ pub fn parse(data: &[u8]) -> Result<Bundle, anyhow::Error> {
             Err(anyhow!("Bundle is not a CBOR array"))
         }
     })?;
-    if bundle.valid && consumed < data.len() {
+    if valid && consumed < data.len() {
         return Err(anyhow!(
             "Bundle has additional data after end of CBOR array"
         ));
     }
-    Ok(bundle)
+    Ok((bundle, valid))
 }
 
 fn parse_bundle_blocks(
     data: &[u8],
     mut blocks: cbor::decode::Array,
-) -> Result<Bundle, anyhow::Error> {
+) -> Result<(Bundle, bool), anyhow::Error> {
     // Parse Primary block
     let (primary, valid) = blocks.try_parse_item(|value, block_start, tags| {
         if let cbor::decode::Value::Array(a) = value {
@@ -441,11 +440,13 @@ fn parse_bundle_blocks(
         (HashMap::new(), false)
     };
 
-    Ok(Bundle {
-        primary,
-        extensions,
+    Ok((
+        Bundle {
+            primary,
+            extensions,
+        },
         valid,
-    })
+    ))
 }
 
 fn parse_primary_block(

@@ -19,10 +19,10 @@ pub trait BundleStorage {
         metadata: std::sync::Arc<M>,
         cancel_token: tokio_util::sync::CancellationToken,
         f: F,
-    ) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send
+    ) -> Result<(), anyhow::Error>
     where
-        M: storage::MetadataStorage + Send + Sync,
-        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error> + Send;
+        M: storage::MetadataStorage,
+        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error>;
 
     fn store(
         &self,

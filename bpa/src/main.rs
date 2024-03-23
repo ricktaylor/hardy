@@ -65,21 +65,41 @@ fn listen_for_cancel(
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
-    let mut term_handler =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .log_expect("Failed to register signal handlers");
+    if cfg!(unix) {
+        let mut term_handler =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .log_expect("Failed to register signal handlers");
 
-    task_set.spawn(async move {
-        tokio::select! {
-            _ = term_handler.recv() =>
-                {
-                    // Signal stop
-                    log::info!("{} stopping...", built_info::PKG_NAME);
-                    cancel_token.cancel();
-                }
-            _ = cancel_token.cancelled() => {}
-        }
-    });
+        task_set.spawn(async move {
+            tokio::select! {
+                _ = term_handler.recv() =>
+                    {
+                        // Signal stop
+                        log::info!("{} received terminate signal, stopping...", built_info::PKG_NAME);
+                        cancel_token.cancel();
+                    }
+                _ = tokio::signal::ctrl_c() =>
+                    {
+                        // Signal stop
+                        log::info!("{} received CTRL+C, stopping...", built_info::PKG_NAME);
+                        cancel_token.cancel();
+                    }
+                _ = cancel_token.cancelled() => {}
+            }
+        });
+    } else {
+        task_set.spawn(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() =>
+                    {
+                        // Signal stop
+                        log::info!("{} received CTRL+C, stopping...", built_info::PKG_NAME);
+                        cancel_token.cancel();
+                    }
+                _ = cancel_token.cancelled() => {}
+            }
+        });
+    }
 }
 
 #[tokio::main]
@@ -106,8 +126,7 @@ async fn main() {
     listen_for_cancel(&mut task_set, cancel_token.clone());
 
     // Create a new ingress - this can take a while
-    let ingress = ingress::Ingress::init(&config, cache, &mut &mut task_set, cancel_token.clone())
-        .await
+    let ingress = ingress::Ingress::init(&config, cache, &mut task_set, cancel_token.clone())
         .log_expect("Failed to initialize ingress");
 
     // Init gRPC services
@@ -118,7 +137,7 @@ async fn main() {
 
     // Wait for all tasks to finish
     if !cancel_token.is_cancelled() {
-        log::info!("{} started", built_info::PKG_NAME);
+        log::info!("{} started successfully", built_info::PKG_NAME);
     }
     while let Some(r) = task_set.join_next().await {
         r.log_expect("Task terminated unexpectedly")
