@@ -1,16 +1,38 @@
 use super::*;
+use anyhow::anyhow;
 use hardy_bpa_core::{storage::MetadataStorage, *};
 use hardy_cbor as cbor;
-use std::{fs::create_dir_all, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
 pub struct Storage {
     connection: tokio::sync::Mutex<rusqlite::Connection>,
 }
 
 impl Storage {
-    pub fn init(config: &config::Config) -> Result<std::sync::Arc<Self>, anyhow::Error> {
+    pub fn init(
+        config: &HashMap<String, config::Value>,
+    ) -> Result<std::sync::Arc<Self>, anyhow::Error> {
+        let db_dir: String = config.get("db_dir").map_or_else(
+            || {
+                directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
+                    || Err(anyhow!("Failed to resolve local config directory")),
+                    |project_dirs| {
+                        Ok(project_dirs.cache_dir().to_string_lossy().to_string())
+                        // Lin: /home/alice/.cache/barapp
+                        // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
+                        // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
+                    },
+                )
+            },
+            |v| {
+                v.clone()
+                    .into_string()
+                    .map_err(|e| anyhow!("'db_dir' is not a string value: {}!", e))
+            },
+        )?;
+
         // Compose DB name
-        let file_path = [&config.db_dir, "metadata.db"].iter().collect::<PathBuf>();
+        let file_path = [&db_dir, "metadata.db"].iter().collect::<PathBuf>();
 
         // Ensure directory exists
         create_dir_all(file_path.parent().unwrap())?;

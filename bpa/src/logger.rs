@@ -1,9 +1,10 @@
 use super::*;
 
 pub fn init(config: &config::Config) {
-    let log_level = config
-        .get_string("log_level")
-        .expect("Failed to find 'log_level' in config")
+    let log_level: String = settings::get_with_default(config, "log_level", "info")
+        .expect("Failed to find 'log_level' in config");
+
+    let log_level = log_level
         .parse::<simplelog::LevelFilter>()
         .expect("Invalid log level");
 

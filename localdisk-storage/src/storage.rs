@@ -1,8 +1,9 @@
 use super::*;
+use anyhow::anyhow;
 use hardy_bpa_core::storage::{BundleStorage, MetadataStorage};
 use rand::random;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{create_dir_all, remove_file, OpenOptions},
     io::{self, Write},
     path::PathBuf,
@@ -29,9 +30,30 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn init(config: &config::Config) -> Result<std::sync::Arc<Self>, anyhow::Error> {
+    pub fn init(
+        config: &HashMap<String, config::Value>,
+    ) -> Result<std::sync::Arc<Self>, anyhow::Error> {
+        let cache_dir: String = config.get("cache_dir").map_or_else(
+            || {
+                directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
+                    || Err(anyhow!("Failed to resolve local config directory")),
+                    |project_dirs| {
+                        Ok(project_dirs.cache_dir().to_string_lossy().to_string())
+                        // Lin: /home/alice/.cache/barapp
+                        // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
+                        // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
+                    },
+                )
+            },
+            |v| {
+                v.clone()
+                    .into_string()
+                    .map_err(|e| anyhow!("'cache_dir' is not a string value: {}!", e))
+            },
+        )?;
+
         Ok(Arc::new(Storage {
-            cache_root: PathBuf::from(&config.cache_dir),
+            cache_root: PathBuf::from(&cache_dir),
             partials: Mutex::new(HashSet::new()),
         }))
     }
@@ -73,18 +95,17 @@ impl Storage {
 }
 
 impl BundleStorage for Storage {
-    fn check<F, M>(
+    async fn check<M, F>(
         &self,
         metadata: std::sync::Arc<M>,
-        cancel_token: &tokio_util::sync::CancellationToken,
-        f: impl FnMut(String, std::sync::Arc<Vec<u8>>) -> F,
-    ) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send
+        cancel_token: tokio_util::sync::CancellationToken,
+        f: F,
+    ) -> Result<(), anyhow::Error>
     where
-        F: std::future::Future<Output = Result<bool, anyhow::Error>> + Send,
-        M: MetadataStorage + Send,
+        M: storage::MetadataStorage + Send + Sync,
+        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error> + Send,
     {
-        // This is bat-sh*t hand-unrolled async, but Rust likes it...
-        async { Ok(()) }
+        todo!()
     }
 
     async fn store(&self, data: std::sync::Arc<Vec<u8>>) -> Result<String, anyhow::Error> {

@@ -14,15 +14,15 @@ pub trait MetadataStorage {
 }
 
 pub trait BundleStorage {
-    fn check<F, M>(
+    fn check<M, F>(
         &self,
         metadata: std::sync::Arc<M>,
-        cancel_token: &tokio_util::sync::CancellationToken,
-        f: impl FnMut(String, std::sync::Arc<Vec<u8>>) -> F,
+        cancel_token: tokio_util::sync::CancellationToken,
+        f: F,
     ) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send
     where
-        F: std::future::Future<Output = Result<bool, anyhow::Error>> + Send,
-        M: storage::MetadataStorage + Send;
+        M: storage::MetadataStorage + Send + Sync,
+        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error> + Send;
 
     fn store(
         &self,

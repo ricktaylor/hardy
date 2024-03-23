@@ -18,14 +18,14 @@ fn init_metadata_storage(
     config: &config::Config,
 ) -> Result<std::sync::Arc<impl storage::MetadataStorage>, anyhow::Error> {
     #[cfg(feature = "sqlite-storage")]
-    hardy_sqlite_storage::Storage::init(&config.get(hardy_sqlite_storage::Config::KEY)?)
+    hardy_sqlite_storage::Storage::init(&config.get_table(hardy_sqlite_storage::CONFIG_KEY)?)
 }
 
 fn init_bundle_storage(
     config: &config::Config,
 ) -> Result<std::sync::Arc<impl storage::BundleStorage>, anyhow::Error> {
     #[cfg(feature = "localdisk-storage")]
-    hardy_localdisk_storage::Storage::init(&config.get(hardy_localdisk_storage::Config::KEY)?)
+    hardy_localdisk_storage::Storage::init(&config.get_table(hardy_localdisk_storage::CONFIG_KEY)?)
 }
 
 fn listen_for_cancel(
@@ -38,7 +38,7 @@ fn listen_for_cancel(
 
     task_set.spawn(async move {
         tokio::select! {
-            Some(_) = term_handler.recv() =>
+            _ = term_handler.recv() =>
                 {
                     // Signal stop
                     log::info!("{} stopping...", built_info::PKG_NAME);
@@ -72,24 +72,21 @@ async fn main() {
     let mut task_set = tokio::task::JoinSet::new();
     listen_for_cancel(&mut task_set, cancel_token.clone());
 
-    // Perform a cache check
-    cache
-        .check(&cancel_token)
+    // Create a new ingress - this can take a while
+    let ingress = ingress::Ingress::init(&config, cache, &mut &mut task_set, cancel_token.clone())
         .await
-        .log_expect("Cache check failed");
+        .log_expect("Failed to initialize ingress");
+
+    // Init gRPC services
     if !cancel_token.is_cancelled() {
-        // Create queues
-        let ingress = ingress::init(&config, cache, &mut task_set, cancel_token.clone())
-            .log_expect("Failed to initialize ingress");
-
-        // Init gRPC services
-        services::init(&config, ingress, &mut task_set, cancel_token)
+        services::init(&config, ingress, &mut task_set, cancel_token.clone())
             .log_expect("Failed to start gRPC services");
-
-        log::info!("{} started", built_info::PKG_NAME);
     }
 
     // Wait for all tasks to finish
+    if !cancel_token.is_cancelled() {
+        log::info!("{} started", built_info::PKG_NAME);
+    }
     while let Some(r) = task_set.join_next().await {
         r.log_expect("Task terminated unexpectedly")
     }

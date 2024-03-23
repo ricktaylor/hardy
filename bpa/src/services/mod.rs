@@ -14,9 +14,7 @@ where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    let grpc_address: String = config
-        .get("grpc_address")
-        .map_err(|e| anyhow!("Invalid gRPC address in configuration: {}", e))?;
+    let grpc_address: String = settings::get_with_default(config, "grpc_address", "[::1]:50051")?;
 
     // Get listen address from config
     let addr = grpc_address

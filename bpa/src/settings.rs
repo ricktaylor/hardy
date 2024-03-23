@@ -9,13 +9,6 @@ fn options() -> getopts::Options {
     opts
 }
 
-fn defaults() -> Vec<(&'static str, config::Value)> {
-    vec![
-        ("grpc_address", "[::1]:50051".into()),
-        ("log_level", "info".into()),
-    ]
-}
-
 fn config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
         || {
@@ -31,19 +24,20 @@ fn config_dir() -> Option<PathBuf> {
     )
 }
 
-fn cache_dir() -> Option<config::Value> {
-    directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
-        || {
-            log::warn!("Failed to resolve local config directory");
-            None
-        },
-        |proj_dirs| {
-            proj_dirs.cache_dir().to_str().map(|p| p.into())
-            // Lin: /home/alice/.cache/barapp
-            // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
-            // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
-        },
-    )
+pub fn get_with_default<'de, T: serde::Deserialize<'de>, D: Into<T>>(
+    config: &config::Config,
+    key: &str,
+    default: D,
+) -> Result<T, anyhow::Error> {
+    match config.get::<T>(key) {
+        Ok(v) => Ok(v),
+        Err(config::ConfigError::NotFound(_)) => Ok(default.into()),
+        Err(e) => Err(anyhow::anyhow!(
+            "Failed to parse config value '{}': {}",
+            key,
+            e
+        )),
+    }
 }
 
 pub fn init() -> Option<config::Config> {
@@ -70,13 +64,7 @@ pub fn init() -> Option<config::Config> {
         return None;
     }
 
-    // Set defaults
-    let mut b = defaults()
-        .iter()
-        .fold(config::Config::builder(), |b, (k, v)| {
-            b.set_default(k, v.clone())
-                .expect("Invalid default config value")
-        });
+    let mut b = config::Config::builder();
 
     // Add config file
     if let Some(source) = flags.opt_str("config") {
@@ -85,13 +73,6 @@ pub fn init() -> Option<config::Config> {
         b = b.add_source(config::File::with_name(&source));
     } else if let Some(path) = config_dir() {
         b = b.add_source(config::File::from(path).required(false));
-    }
-
-    // Add cache_dir default
-    if let Some(cache_dir) = cache_dir() {
-        b = b
-            .set_default("cache_dir", cache_dir)
-            .expect("Invalid default cache_dir config value");
     }
 
     // Pull in environment vars

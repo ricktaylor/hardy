@@ -18,6 +18,8 @@ log = "0.4.21"
 thiserror = "1.0.58"
 anyhow = "1.0.81"
 serde = { version = "1.0.197", features = ["derive"] }
+config = "0.14.0"
+directories = "5.0.1"
 
 [build-dependencies]
 built = "0.7.1"

@@ -1,6 +1,12 @@
-mod config;
 mod migrate;
 mod storage;
 
-pub use config::Config;
 pub use storage::Storage;
+
+pub const CONFIG_KEY: &'static str = "sqlite";
+
+// Buildtime info
+mod built_info {
+    // The file has been placed there by the build script.
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}

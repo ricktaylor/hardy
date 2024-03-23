@@ -16,7 +16,7 @@ where
     B: storage::BundleStorage + Send + Sync,
 {
     pub fn new(
-        config: &config::Config,
+        _config: &config::Config,
         metadata_storage: Arc<M>,
         bundle_storage: Arc<B>,
     ) -> Arc<Self> {
@@ -28,31 +28,32 @@ where
 
     pub async fn check(
         &self,
-        cancel_token: &tokio_util::sync::CancellationToken,
+        cancel_token: tokio_util::sync::CancellationToken,
+        channel: tokio::sync::mpsc::Sender<bundle::Bundle>,
     ) -> Result<(), anyhow::Error> {
         self.bundle_storage
             .check(
                 self.metadata_storage.clone(),
                 cancel_token,
                 |storage_name, data| {
-                    let metadata_storage = self.metadata_storage.clone();
-                    async move {
+                    tokio::runtime::Handle::current().block_on(async {
                         // Bundle in bundle_storage, but not in metadata_storage
 
                         // Parse the bundle first
-                        let Ok(bundle) = bundle::parse(&data) else {
+                        let Ok(bundle) = bundle::parse(data) else {
                             // Drop it... garbage
                             return Ok(false);
                         };
 
                         // Write to metadata or die trying
-                        metadata_storage.store(&storage_name, &bundle).await?;
+                        self.metadata_storage.store(storage_name, &bundle).await?;
 
-                        todo!();
+                        // Queue the new bundle for ingress processing
+                        channel.send(bundle).await?;
 
                         // true for keep
                         Ok(true)
-                    }
+                    })
                 },
             )
             .await

@@ -557,6 +557,9 @@ name = "hardy-localdisk-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "built",
+ "config",
+ "directories",
  "hardy-bpa-core",
  "libc",
  "log",
@@ -587,6 +590,8 @@ dependencies = [
  "atoi",
  "base64 0.22.0",
  "built",
+ "config",
+ "directories",
  "hardy-bpa-core",
  "hardy-cbor",
  "log",
