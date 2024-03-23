@@ -56,15 +56,16 @@ where
         &self,
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
-        let failure = self
+        if !self
             .ingress
             .receive(std::sync::Arc::new(request.into_inner().bundle))
             .await
-            .map_err(|e| Status::from_error(e.into()))?;
-
-        Ok(Response::new(ForwardBundleResponse {
-            failure: failure.map(|reason| BundleProcessingFailure { reason }),
-        }))
+            .map_err(|e| Status::from_error(e.into()))?
+        {
+            Err(Status::invalid_argument("Illegible bundle"))
+        } else {
+            Ok(Response::new(ForwardBundleResponse {}))
+        }
     }
 }
 
