@@ -36,7 +36,7 @@ impl Storage {
         let cache_dir: String = config.get("cache_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
-                    || Err(anyhow!("Failed to resolve local config directory")),
+                    || Err(anyhow!("Failed to resolve local cache directory")),
                     |project_dirs| {
                         Ok(project_dirs.cache_dir().to_string_lossy().to_string())
                         // Lin: /home/alice/.cache/barapp

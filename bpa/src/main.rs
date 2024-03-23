@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use hardy_bpa_core::*;
 use log_err::*;
 
@@ -17,15 +18,47 @@ mod built_info {
 fn init_metadata_storage(
     config: &config::Config,
 ) -> Result<std::sync::Arc<impl storage::MetadataStorage>, anyhow::Error> {
-    #[cfg(feature = "sqlite-storage")]
-    hardy_sqlite_storage::Storage::init(&config.get_table(hardy_sqlite_storage::CONFIG_KEY)?)
+    let default = if cfg!(feature = "sqlite-storage") {
+        hardy_sqlite_storage::CONFIG_KEY
+    } else {
+        return Err(anyhow!("No default metadata storage engine, rebuild the package with at least one metadata storage engine feature enabled"));
+    };
+
+    let engine: String = settings::get_with_default(config, "metadata_storage", default)
+        .map_err(|e| anyhow!("Failed to parse 'metadata_storage' config param: {}", e))?;
+    let config = config
+        .get_table(&engine)
+        .unwrap_or(std::collections::HashMap::new());
+
+    match engine.as_str() {
+        #[cfg(feature = "sqlite-storage")]
+        hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config),
+
+        _ => Err(anyhow!("Unknown metadata storage engine {}", engine)),
+    }
 }
 
 fn init_bundle_storage(
     config: &config::Config,
 ) -> Result<std::sync::Arc<impl storage::BundleStorage>, anyhow::Error> {
-    #[cfg(feature = "localdisk-storage")]
-    hardy_localdisk_storage::Storage::init(&config.get_table(hardy_localdisk_storage::CONFIG_KEY)?)
+    let default = if cfg!(feature = "localdisk-storage") {
+        hardy_localdisk_storage::CONFIG_KEY
+    } else {
+        return Err(anyhow!("No default bundle storage engine, rebuild the package with at least one bundle storage engine feature enabled"));
+    };
+
+    let engine: String = settings::get_with_default(config, "bundle_storage", default)
+        .map_err(|e| anyhow!("Failed to parse 'bundle_storage' config param: {}", e))?;
+    let config = config
+        .get_table(&engine)
+        .unwrap_or(std::collections::HashMap::new());
+
+    match engine.as_str() {
+        #[cfg(feature = "localdisk-storage")]
+        hardy_localdisk_storage::CONFIG_KEY => hardy_localdisk_storage::Storage::init(&config),
+
+        _ => Err(anyhow!("Unknown bundle storage engine {}", engine)),
+    }
 }
 
 fn listen_for_cancel(
