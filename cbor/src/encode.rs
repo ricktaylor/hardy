@@ -12,27 +12,17 @@ fn write_uint_minor(major: u8, val: u64) -> Vec<u8> {
     } else if val <= u8::MAX as u64 {
         vec![(major << 5) | 24u8, val as u8]
     } else if val <= u16::MAX as u64 {
-        vec![(major << 5) | 25u8, (val >> 8) as u8, (val & 0xFF) as u8]
+        let mut v = vec![(major << 5) | 25u8];
+        v.extend((val as u16).to_be_bytes());
+        v
     } else if val <= u32::MAX as u64 {
-        vec![
-            (major << 5) | 26u8,
-            (val >> 24) as u8,
-            (val >> 16) as u8,
-            (val >> 8) as u8,
-            val as u8,
-        ]
+        let mut v = vec![(major << 5) | 26u8];
+        v.extend((val as u32).to_be_bytes());
+        v
     } else {
-        vec![
-            (major << 5) | 27u8,
-            (val >> 56) as u8,
-            (val >> 48) as u8,
-            (val >> 40) as u8,
-            (val >> 32) as u8,
-            (val >> 24) as u8,
-            (val >> 16) as u8,
-            (val >> 8) as u8,
-            val as u8,
-        ]
+        let mut v = vec![(major << 5) | 27u8];
+        v.extend(val.to_be_bytes());
+        v
     }
 }
 

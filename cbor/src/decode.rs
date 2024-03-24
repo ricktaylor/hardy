@@ -180,43 +180,18 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, usize), Error> {
                 Ok((data[0] as u64, 1))
             }
         }
-        25 => {
-            if data.len() < 2 {
-                Err(Error::NotEnoughData)
-            } else {
-                Ok((((data[0] as u64) << 8) | (data[1] as u64), 2))
-            }
-        }
-        26 => {
-            if data.len() < 4 {
-                Err(Error::NotEnoughData)
-            } else {
-                Ok((
-                    ((data[0] as u64) << 24)
-                        | ((data[1] as u64) << 16)
-                        | ((data[2] as u64) << 8)
-                        | (data[3] as u64),
-                    4,
-                ))
-            }
-        }
-        27 => {
-            if data.len() < 8 {
-                Err(Error::NotEnoughData)
-            } else {
-                Ok((
-                    ((data[0] as u64) << 56)
-                        | ((data[1] as u64) << 48)
-                        | ((data[2] as u64) << 40)
-                        | ((data[3] as u64) << 32)
-                        | ((data[4] as u64) << 24)
-                        | ((data[5] as u64) << 16)
-                        | ((data[6] as u64) << 8)
-                        | (data[7] as u64),
-                    8,
-                ))
-            }
-        }
+        25 => Ok((
+            u16::from_be_bytes(data.try_into().map_err(|_| Error::NotEnoughData)?) as u64,
+            2,
+        )),
+        26 => Ok((
+            u32::from_be_bytes(data.try_into().map_err(|_| Error::NotEnoughData)?) as u64,
+            4,
+        )),
+        27 => Ok((
+            u64::from_be_bytes(data.try_into().map_err(|_| Error::NotEnoughData)?),
+            8,
+        )),
         val if val < 24 => Ok((val as u64, 0)),
         _ => Err(Error::InvalidMinorValue(minor)),
     }
