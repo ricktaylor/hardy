@@ -14,9 +14,12 @@ pub enum Error {
 
     #[error("Historic migration {0} has a different hash")]
     AlteredHistoric(String),
+
+    #[error("Database schema requires updating")]
+    UpdateRequired,
 }
 
-pub fn migrate(conn: &mut rusqlite::Connection) -> Result<(), anyhow::Error> {
+pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), anyhow::Error> {
     let migrations = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
     let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
@@ -113,14 +116,19 @@ pub fn migrate(conn: &mut rusqlite::Connection) -> Result<(), anyhow::Error> {
         trans.execute_batch("DROP TABLE temp.schema_check")?;
     }
 
-    // Now run any new migrations
+    // Are there newer migrations
     if next < migrations.len() {
-        for (seq, file_name, hash, migration) in migrations[next..].iter() {
-            // Run the migration
-            trans.execute_batch(migration)?;
+        if upgrade {
+            // Now run any new migrations
+            for (seq, file_name, hash, migration) in migrations[next..].iter() {
+                // Run the migration
+                trans.execute_batch(migration)?;
 
-            // Update the metadata
-            trans.execute(r"INSERT INTO schema_versions (seq_no,file_name,hash,timestamp) VALUES (?1,?2,?3,datetime('now'))",(seq, file_name, hash))?;
+                // Update the metadata
+                trans.execute(r"INSERT INTO schema_versions (seq_no,file_name,hash,timestamp) VALUES (?1,?2,?3,datetime('now'))",(seq, file_name, hash))?;
+            }
+        } else {
+            Err(Error::UpdateRequired)?;
         }
     }
 

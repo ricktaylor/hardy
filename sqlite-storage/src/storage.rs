@@ -11,6 +11,7 @@ pub struct Storage {
 impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
+        mut upgrade: bool,
     ) -> Result<std::sync::Arc<Self>, anyhow::Error> {
         let db_dir: String = config.get("db_dir").map_or_else(
             || {
@@ -37,16 +38,35 @@ impl Storage {
         // Ensure directory exists
         create_dir_all(file_path.parent().unwrap())?;
 
-        // Create database
-        let mut connection = rusqlite::Connection::open_with_flags(
+        // Attempt to open existing database first
+        let mut connection = match rusqlite::Connection::open_with_flags(
             &file_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                //| rusqlite::OpenFlags::SQLITE_OPEN_CREATE
                 | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        ) {
+            Ok(conn) => conn,
+            Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ffi::ErrorCode::CannotOpen,
+                    extended_code: _,
+                },
+                _,
+            )) => {
+                // Create database
+                upgrade = true;
+                rusqlite::Connection::open_with_flags(
+                    &file_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                        | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?
+            }
+            Err(e) => Err(e)?,
+        };
 
         // Migrate the database to the latest schema
-        migrate::migrate(&mut connection)?;
+        migrate::migrate(&mut connection, upgrade)?;
 
         Ok(Arc::new(Storage {
             connection: tokio::sync::Mutex::new(connection),
@@ -135,5 +155,14 @@ impl MetadataStorage for Storage {
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
         todo!()
+    }
+
+    async fn exists(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
+        self.connection
+            .lock()
+            .await
+            .prepare_cached(r#"SELECT EXISTS(SELECT 1 FROM bundles WHERE file_name=?1 LIMIT 1);"#)?
+            .query_row([storage_name], |row| row.get(0))
+            .map_err(|e| e.into())
     }
 }

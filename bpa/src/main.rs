@@ -17,6 +17,7 @@ mod built_info {
 
 fn init_metadata_storage(
     config: &config::Config,
+    upgrade: bool,
 ) -> Result<std::sync::Arc<impl storage::MetadataStorage>, anyhow::Error> {
     let default = if cfg!(feature = "sqlite-storage") {
         hardy_sqlite_storage::CONFIG_KEY
@@ -26,13 +27,16 @@ fn init_metadata_storage(
 
     let engine: String = settings::get_with_default(config, "metadata_storage", default)
         .map_err(|e| anyhow!("Failed to parse 'metadata_storage' config param: {}", e))?;
+
     let config = config
         .get_table(&engine)
         .unwrap_or(std::collections::HashMap::new());
 
+    log::info!("Using metadata storage: {}", engine);
+
     match engine.as_str() {
         #[cfg(feature = "sqlite-storage")]
-        hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config),
+        hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config, upgrade),
 
         _ => Err(anyhow!("Unknown metadata storage engine {}", engine)),
     }
@@ -40,6 +44,7 @@ fn init_metadata_storage(
 
 fn init_bundle_storage(
     config: &config::Config,
+    upgrade: bool,
 ) -> Result<std::sync::Arc<impl storage::BundleStorage>, anyhow::Error> {
     let default = if cfg!(feature = "localdisk-storage") {
         hardy_localdisk_storage::CONFIG_KEY
@@ -52,6 +57,8 @@ fn init_bundle_storage(
     let config = config
         .get_table(&engine)
         .unwrap_or(std::collections::HashMap::new());
+
+    log::info!("Using bundle storage: {}", engine);
 
     match engine.as_str() {
         #[cfg(feature = "localdisk-storage")]
@@ -105,7 +112,7 @@ fn listen_for_cancel(
 #[tokio::main]
 async fn main() {
     // load config
-    let Some(config) = settings::init() else {
+    let Some((config, upgrade)) = settings::init() else {
         return;
     };
 
@@ -116,8 +123,8 @@ async fn main() {
     // Init pluggable storage engines
     let cache = cache::Cache::new(
         &config,
-        init_metadata_storage(&config).log_expect("Failed to initialize metadata store"),
-        init_bundle_storage(&config).log_expect("Failed to initialize bundle store"),
+        init_metadata_storage(&config, upgrade).log_expect("Failed to initialize metadata store"),
+        init_bundle_storage(&config, upgrade).log_expect("Failed to initialize bundle store"),
     );
 
     // Prepare for graceful shutdown
@@ -127,6 +134,7 @@ async fn main() {
 
     // Create a new ingress - this can take a while
     let ingress = ingress::Ingress::init(&config, cache, &mut task_set, cancel_token.clone())
+        .await
         .log_expect("Failed to initialize ingress");
 
     // Init gRPC services

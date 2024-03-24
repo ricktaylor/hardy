@@ -5,6 +5,11 @@ fn options() -> getopts::Options {
     let mut opts = getopts::Options::new();
     opts.optflag("h", "help", "print this help menu")
         .optflag("v", "version", "print the version information")
+        .optflag(
+            "u",
+            "upgrade-cache",
+            "upgrade the bundle cache to the latest version",
+        )
         .optopt("c", "config", "use a custom configuration file", "FILE");
     opts
 }
@@ -36,7 +41,7 @@ pub fn get_with_default<'de, T: serde::Deserialize<'de>, D: Into<T>>(
     }
 }
 
-pub fn init() -> Option<config::Config> {
+pub fn init() -> Option<(config::Config, bool)> {
     // Parse cmdline
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
@@ -75,5 +80,8 @@ pub fn init() -> Option<config::Config> {
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
-    Some(b.build().expect("Failed to load configuration"))
+    Some((
+        b.build().expect("Failed to load configuration"),
+        flags.opt_present("u"),
+    ))
 }
