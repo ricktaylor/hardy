@@ -521,6 +521,7 @@ dependencies = [
  "log_err",
  "serde",
  "sha1",
+ "sha2",
  "simplelog",
  "thiserror",
  "tokio",

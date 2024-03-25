@@ -8,6 +8,7 @@ pub trait MetadataStorage {
     fn store(
         &self,
         storage_name: &str,
+        hash: &[u8],
         bundle: &bundle::Bundle,
     ) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send;
 
@@ -19,17 +20,8 @@ pub trait MetadataStorage {
     fn confirm_exists(
         &self,
         storage_name: &str,
+        hash: Option<&[u8]>,
     ) -> impl std::future::Future<Output = Result<bool, anyhow::Error>> + Send;
-}
-
-pub trait BundleData {
-    fn as_bytes(&self) -> &[u8];
-}
-
-impl BundleData for Vec<u8> {
-    fn as_bytes(&self) -> &[u8] {
-        self
-    }
 }
 
 pub trait BundleStorage {
@@ -40,7 +32,7 @@ pub trait BundleStorage {
     fn load(
         &self,
         storage_name: &str,
-    ) -> impl std::future::Future<Output = Result<std::sync::Arc<Box<dyn BundleData>>, anyhow::Error>>
+    ) -> impl std::future::Future<Output = Result<std::sync::Arc<Box<dyn AsRef<[u8]>>>, anyhow::Error>>
            + Send;
 
     fn store(

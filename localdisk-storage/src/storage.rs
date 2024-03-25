@@ -1,6 +1,6 @@
 use super::*;
 use anyhow::anyhow;
-use hardy_bpa_core::storage::{BundleData, BundleStorage};
+use hardy_bpa_core::storage::BundleStorage;
 use rand::random;
 use std::{
     collections::{HashMap, HashSet},
@@ -23,22 +23,6 @@ fn direct_flag(options: &mut OpenOptions) {
 
     #[cfg(windows)]
     options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
-}
-
-#[cfg(feature = "mmap")]
-mod mmap {
-    pub struct BundleDataMMap {
-        pub data: memmap2::Mmap,
-    }
-
-    impl super::BundleData for BundleDataMMap {
-        fn as_bytes(&self) -> &[u8] {
-            &self.data
-        }
-    }
-
-    unsafe impl Send for BundleDataMMap {}
-    unsafe impl Sync for BundleDataMMap {}
 }
 
 pub struct Storage {
@@ -166,13 +150,13 @@ impl BundleStorage for Storage {
         self.walk_dirs(&self.cache_root, &mut f).map(|_| ())
     }
 
-    async fn load(&self, storage_name: &str) -> Result<Arc<Box<dyn BundleData>>, anyhow::Error> {
+    async fn load(&self, storage_name: &str) -> Result<Arc<Box<dyn AsRef<[u8]>>>, anyhow::Error> {
         let path = self.cache_root.join(PathBuf::from_str(storage_name)?);
 
         if cfg!(feature = "mmap") {
             let file = std::fs::File::open(path)?;
             let data = unsafe { memmap2::Mmap::map(&file)? };
-            return Ok(Arc::new(Box::new(mmap::BundleDataMMap { data })));
+            Ok(Arc::new(Box::new(data)))
         } else {
             let mut v = Vec::new();
             std::fs::File::open(path)?.read_to_end(&mut v)?;

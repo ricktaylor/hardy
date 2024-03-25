@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::anyhow;
+use base64::prelude::*;
 use hardy_bpa_core::{storage::MetadataStorage, *};
 use hardy_cbor as cbor;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
@@ -92,6 +93,7 @@ impl MetadataStorage for Storage {
     async fn store(
         &self,
         storage_name: &str,
+        hash: &[u8],
         bundle: &bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         let mut conn = self.connection.lock().await;
@@ -103,6 +105,7 @@ impl MetadataStorage for Storage {
                 r#"
             INSERT INTO bundles (
                 file_name,
+                hash,
                 flags,
                 destination,
                 creation_time,
@@ -110,10 +113,11 @@ impl MetadataStorage for Storage {
                 lifetime,
                 source,
                 report_to)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8);"#,
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9);"#,
             )?
             .insert((
                 storage_name,
+                BASE64_STANDARD.encode(hash),
                 bundle.primary.flags.as_u64(),
                 cbor::encode::write(&bundle.primary.destination),
                 bundle.primary.timestamp.0,
@@ -179,15 +183,28 @@ impl MetadataStorage for Storage {
             != 0)
     }
 
-    async fn confirm_exists(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
+    async fn confirm_exists(
+        &self,
+        storage_name: &str,
+        hash: Option<&[u8]>,
+    ) -> Result<bool, anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction()?;
 
         // Check if bundle exists
-        let bundle_id: i64 = match trans
-            .prepare_cached(r#"SELECT id FROM bundles WHERE file_name = ?1 LIMIT 1;"#)?
-            .query_row([storage_name], |row| row.get(0))
-        {
+        let bundle_id: i64 = match if let Some(hash) = hash {
+            trans
+                .prepare_cached(
+                    r#"SELECT id FROM bundles WHERE file_name = ?1 AND hash = ?2 LIMIT 1;"#,
+                )?
+                .query_row([storage_name, &BASE64_STANDARD.encode(hash)], |row| {
+                    row.get(0)
+                })
+        } else {
+            trans
+                .prepare_cached(r#"SELECT id FROM bundles WHERE file_name = ?1 LIMIT 1;"#)?
+                .query_row([storage_name], |row| row.get(0))
+        } {
             Ok(bundle_id) => bundle_id,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
             Err(e) => Err(e)?,

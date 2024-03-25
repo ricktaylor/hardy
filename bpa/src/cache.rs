@@ -1,4 +1,5 @@
 use super::*;
+use sha2::Digest;
 use std::sync::Arc;
 
 pub struct Cache<M, B>
@@ -35,19 +36,26 @@ where
         self.bundle_storage.check(|storage_name| {
             let r = tokio::runtime::Handle::current().block_on(async {
                 // Check if the metadata_storage knows about this bundle
-                if self.metadata_storage.confirm_exists(storage_name).await? {
+                if self
+                    .metadata_storage
+                    .confirm_exists(storage_name, None)
+                    .await?
+                {
                     return Ok::<bool, anyhow::Error>(true);
                 }
 
                 // Parse the bundle first
                 let data = self.bundle_storage.load(storage_name).await?;
-                let Ok((bundle, valid)) = bundle::parse(data.as_bytes()) else {
+                let Ok((bundle, valid)) = bundle::parse((**data).as_ref()) else {
                     // Drop it... garbage
                     return Ok(false);
                 };
 
                 // Write to metadata or die trying
-                self.metadata_storage.store(storage_name, &bundle).await?;
+                let hash = sha2::Sha256::digest((**data).as_ref());
+                self.metadata_storage
+                    .store(storage_name, &hash, &bundle)
+                    .await?;
 
                 // Queue the new bundle for ingress processing
                 channel.send((bundle, valid)).await?;
@@ -82,6 +90,7 @@ where
 
         // Parse the bundle in parallel
         let bundle_result = bundle::parse(&data);
+        let hash = sha2::Sha256::digest(&*data);
 
         // Await the result of write to bundle storage
         let storage_name = write_result.await?;
@@ -100,7 +109,11 @@ where
         };
 
         // Write to metadata store
-        match self.metadata_storage.store(&storage_name, &bundle).await {
+        match self
+            .metadata_storage
+            .store(&storage_name, &hash, &bundle)
+            .await
+        {
             Ok(_) => {}
             Err(e) => {
                 // This is just bad, we can't really claim to have received the bundle,
