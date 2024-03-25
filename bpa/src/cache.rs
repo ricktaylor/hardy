@@ -27,7 +27,7 @@ where
         })
     }
 
-    pub async fn check(
+    pub fn check(
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
         channel: tokio::sync::mpsc::Sender<(bundle::Bundle, bool)>,
@@ -72,6 +72,7 @@ where
             // Now check the metadata storage
             self.metadata_storage.check(|bundle| {
                 // The data associated with `bundle` has gone!
+                todo!();
 
                 // Just dumb poll the cancel token now - try to avoid mismatched state again
                 Ok(!cancel_token.is_cancelled())

@@ -1,6 +1,7 @@
 CREATE TABLE bundles (
     id INTEGER PRIMARY KEY,
     file_name TEXT UNIQUE NOT NULL,
+    hash TEXT NOT NULL,
     flags INTEGER NOT NULL,
     destination BLOB NOT NULL,
     creation_time INTEGER NOT NULL,
@@ -15,7 +16,7 @@ CREATE TABLE bundle_blocks (
     bundle_id INTEGER NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
     block_type INTEGER NOT NULL,
     block_num INTEGER NOT NULL,
-    flags INTEGER NOT NULL,
+    block_flags INTEGER NOT NULL,
     data_offset INTEGER
 );
 

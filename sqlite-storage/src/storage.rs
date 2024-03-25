@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use base64::prelude::*;
-use hardy_bpa_core::{storage::MetadataStorage, *};
+use hardy_bpa_core::{bundle::Bundle, storage::MetadataStorage, *};
 use hardy_cbor as cbor;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
@@ -82,19 +82,136 @@ impl Storage {
     }
 }
 
+fn encode_eid(eid: &bundle::Eid) -> Result<rusqlite::types::Value, anyhow::Error> {
+    match eid {
+        bundle::Eid::Null => Ok(rusqlite::types::Value::Null),
+        _ => Ok(rusqlite::types::Value::Blob(cbor::encode::write(eid))),
+    }
+}
+
+fn decode_eid(
+    row: &rusqlite::Row,
+    idx: impl rusqlite::RowIndex,
+) -> Result<bundle::Eid, anyhow::Error> {
+    match row.get_ref(idx)? {
+        rusqlite::types::ValueRef::Blob(b) => cbor::decode::parse(b),
+        rusqlite::types::ValueRef::Null => Ok(bundle::Eid::Null),
+        _ => Err(anyhow!("EID encoded as unusual sqlite type")),
+    }
+}
+
+fn unpack_bundles<F>(mut rows: rusqlite::Rows, mut f: F) -> Result<(), anyhow::Error>
+where
+    F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
+{
+    /* Expected query MUST look like:
+           0:  bundles.id,
+           1:  bundles.flags,
+           2:  bundles.source,
+           3:  bundles.destination,
+           4:  bundles.report_to,
+           5:  bundles.creation_time,
+           6:  bundles.creation_seq_num,
+           7:  bundles.lifetime,
+           8:  bundle_fragments.offset,
+           9:  bundle_fragments.total_len,
+           10: bundle_blocks.block_num,
+           11: bundle_blocks.block_type,
+           12: bundle_blocks.block_flags,
+           13: bundle_blocks.data_offset
+    */
+
+    let mut row_result = rows.next()?;
+    while let Some(mut row) = row_result {
+        let bundle_id: i64 = row.get(0)?;
+        let primary = bundle::PrimaryBlock {
+            flags: bundle::BundleFlags::new(row.get(1)?),
+            source: decode_eid(row, 2)?,
+            destination: decode_eid(row, 3)?,
+            report_to: decode_eid(row, 4)?,
+            timestamp: (row.get(5)?, row.get(6)?),
+            lifetime: row.get(7)?,
+            fragment_info: match row.get_ref(8)? {
+                rusqlite::types::ValueRef::Null => None,
+                rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
+                    offset: offset as u64,
+                    total_len: row.get(9)?,
+                }),
+                _ => return Err(anyhow!("Fragment info is invalid")),
+            },
+        };
+
+        let mut extensions = HashMap::new();
+        while row.get::<usize, i64>(0)? == bundle_id {
+            let block_number: u64 = row.get(10)?;
+            let block = bundle::Block {
+                block_type: bundle::BlockType::new(row.get(11)?)?,
+                flags: bundle::BlockFlags::new(row.get(12)?),
+                data_offset: row.get(13)?,
+            };
+
+            if extensions.insert(block_number, block).is_some() {
+                return Err(anyhow!("Duplicate block number in DB!"));
+            }
+
+            row_result = rows.next()?;
+            row = match row_result {
+                None => break,
+                Some(row) => row,
+            };
+        }
+
+        if !f(Bundle {
+            primary,
+            extensions,
+        })? {
+            break;
+        }
+    }
+    Ok(())
+}
+
 impl MetadataStorage for Storage {
     fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
     where
-        F: FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>,
+        F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
     {
-        todo!()
+        let conn = self.connection.blocking_lock();
+        unpack_bundles(
+            conn.prepare(
+                r#"
+                SELECT 
+                    bundles.id,
+                    flags,
+                    source,
+                    destination,
+                    report_to,
+                    creation_time,
+                    creation_seq_num,
+                    lifetime,                    
+                    offset,
+                    total_len,
+                    block_num,
+                    block_type,
+                    block_flags,
+                    data_offset
+                FROM unconfirmed_bundles
+                JOIN bundles ON bundles.id = unconfirmed_bundles.bundle_id
+                LEFT OUTER JOIN bundle_fragments ON bundle_fragments.bundle_id = bundles.id
+                LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = bundles.id;
+            "#,
+            )?
+            .query([])?,
+            f,
+        )?;
+        Ok(())
     }
 
     async fn store(
         &self,
         storage_name: &str,
         hash: &[u8],
-        bundle: &bundle::Bundle,
+        bundle: &Bundle,
     ) -> Result<(), anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -119,35 +236,27 @@ impl MetadataStorage for Storage {
                 storage_name,
                 BASE64_STANDARD.encode(hash),
                 bundle.primary.flags.as_u64(),
-                cbor::encode::write(&bundle.primary.destination),
+                &encode_eid(&bundle.primary.destination)?,
                 bundle.primary.timestamp.0,
                 bundle.primary.timestamp.1,
                 bundle.primary.lifetime,
-                if let bundle::Eid::Null = bundle.primary.source {
-                    None
-                } else {
-                    Some(cbor::encode::write(&bundle.primary.source))
-                },
-                if let bundle::Eid::Null = bundle.primary.report_to {
-                    None
-                } else {
-                    Some(cbor::encode::write(&bundle.primary.report_to))
-                },
+                &encode_eid(&bundle.primary.source)?,
+                &encode_eid(&bundle.primary.report_to)?,
             ))?;
 
         // Insert extension blocks
-        let mut block_query = trans.prepare_cached(
+        let mut block_stmt = trans.prepare_cached(
             r#"
             INSERT INTO bundle_blocks (
                 bundle_id,
                 block_type,
                 block_num,
-                flags,
+                block_flags,
                 data_offset)
             VALUES (?1,?2,?3,?4,?5);"#,
         )?;
         for (block_num, block) in &bundle.extensions {
-            block_query.execute((
+            block_stmt.execute((
                 bundle_id,
                 block.block_type.as_u64(),
                 block_num,

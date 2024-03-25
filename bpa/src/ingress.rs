@@ -38,7 +38,10 @@ where
 
         // Perform a cache check
         log::info!("Starting cache reload...");
-        cache.check(cancel_token, tx).await?;
+
+        tokio::task::spawn_blocking(move || {
+            cache.check(cancel_token, tx)
+        }).await??;
         log::info!("Cache reload complete");
 
         Ok(ingress)
