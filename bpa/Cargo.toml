@@ -37,7 +37,3 @@ anyhow = "1.0.81"
 
 [build-dependencies]
 built = "0.7.1"
-regex = "1.10.3"
-atoi = "2.0.0"
-sha1 = "0.10.6"
-base64 = "0.22.0"

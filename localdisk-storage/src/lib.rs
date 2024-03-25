@@ -2,7 +2,7 @@ mod storage;
 
 pub use storage::Storage;
 
-pub const CONFIG_KEY: &'static str = "localdisk";
+pub const CONFIG_KEY: &str = "localdisk";
 
 // Buildtime info
 mod built_info {

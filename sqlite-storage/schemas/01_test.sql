@@ -25,3 +25,8 @@ CREATE TABLE bundle_fragments (
     offset INTEGER NOT NULL,
     total_len INTEGER NOT NULL
 );
+
+CREATE TABLE unconfirmed_bundles (
+    id INTEGER PRIMARY KEY,
+    bundle_id INTEGER UNIQUE NOT NULL REFERENCES bundles(id) ON DELETE CASCADE
+);

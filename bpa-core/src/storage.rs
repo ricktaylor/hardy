@@ -1,6 +1,10 @@
 use super::*;
 
 pub trait MetadataStorage {
+    fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
+    where
+        F: FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>;
+
     fn store(
         &self,
         storage_name: &str,
@@ -11,18 +15,33 @@ pub trait MetadataStorage {
         &self,
         storage_name: &str,
     ) -> impl std::future::Future<Output = Result<bool, anyhow::Error>> + Send;
+
+    fn confirm_exists(
+        &self,
+        storage_name: &str,
+    ) -> impl std::future::Future<Output = Result<bool, anyhow::Error>> + Send;
+}
+
+pub trait BundleData {
+    fn as_bytes(&self) -> &[u8];
+}
+
+impl BundleData for Vec<u8> {
+    fn as_bytes(&self) -> &[u8] {
+        self
+    }
 }
 
 pub trait BundleStorage {
-    fn check<M, F>(
-        &self,
-        metadata: std::sync::Arc<M>,
-        cancel_token: tokio_util::sync::CancellationToken,
-        f: F,
-    ) -> Result<(), anyhow::Error>
+    fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
     where
-        M: storage::MetadataStorage,
-        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error>;
+        F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>;
+
+    fn load(
+        &self,
+        storage_name: &str,
+    ) -> impl std::future::Future<Output = Result<std::sync::Arc<Box<dyn BundleData>>, anyhow::Error>>
+           + Send;
 
     fn store(
         &self,

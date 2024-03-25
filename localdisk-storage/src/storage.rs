@@ -1,12 +1,13 @@
 use super::*;
 use anyhow::anyhow;
-use hardy_bpa_core::storage::{BundleStorage, MetadataStorage};
+use hardy_bpa_core::storage::{BundleData, BundleStorage};
 use rand::random;
 use std::{
     collections::{HashMap, HashSet},
     fs::{create_dir_all, remove_file, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::PathBuf,
+    str::FromStr,
     sync::{Arc, Mutex},
 };
 
@@ -24,16 +25,30 @@ fn direct_flag(options: &mut OpenOptions) {
     options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
 }
 
+#[cfg(feature = "mmap")]
+mod mmap {
+    pub struct BundleDataMMap {
+        pub data: memmap2::Mmap,
+    }
+
+    impl super::BundleData for BundleDataMMap {
+        fn as_bytes(&self) -> &[u8] {
+            &self.data
+        }
+    }
+
+    unsafe impl Send for BundleDataMMap {}
+    unsafe impl Sync for BundleDataMMap {}
+}
+
 pub struct Storage {
     cache_root: PathBuf,
-    partials: Mutex<HashSet<PathBuf>>,
+    reserved_paths: Mutex<HashSet<PathBuf>>,
 }
 
 impl Storage {
-    pub fn init(
-        config: &HashMap<String, config::Value>,
-    ) -> Result<std::sync::Arc<Self>, anyhow::Error> {
-        let cache_dir: String = config.get("cache_dir").map_or_else(
+    pub fn init(config: &HashMap<String, config::Value>) -> Result<Arc<Self>, anyhow::Error> {
+        let cache_root: String = config.get("cache_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
                     || Err(anyhow!("Failed to resolve local cache directory")),
@@ -52,18 +67,22 @@ impl Storage {
             },
         )?;
 
+        // Ensure directory exists
+        let cache_root = PathBuf::from(&cache_root);
+        create_dir_all(&cache_root)?;
+
         Ok(Arc::new(Storage {
-            cache_root: PathBuf::from(&cache_dir),
-            partials: Mutex::new(HashSet::new()),
+            cache_root,
+            reserved_paths: Mutex::new(HashSet::new()),
         }))
     }
 
     fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
-        // Compose a subdirectory
+        // Compose a subdirectory that doesn't break Filesystems
         let sub_dir = [
-            &(random::<u16>() % 4096).to_string(),
-            &(random::<u16>() % 4096).to_string(),
-            &(random::<u16>() % 4096).to_string(),
+            format!("{:x}", random::<u16>() % 4096),
+            format!("{:x}", random::<u16>() % 4096),
+            format!("{:x}", random::<u16>() % 4096),
         ]
         .iter()
         .collect::<PathBuf>();
@@ -73,45 +92,95 @@ impl Storage {
             let file_path = [
                 &self.cache_root,
                 &sub_dir,
-                &PathBuf::from(random::<u64>().to_string()),
+                &PathBuf::from(format!("{:x}", random::<u64>() % 4096)),
             ]
             .iter()
             .collect::<PathBuf>();
 
             // Stop races between threads
-            if self.partials.lock().unwrap().insert(file_path.clone()) {
+            if self
+                .reserved_paths
+                .lock()
+                .unwrap()
+                .insert(file_path.clone())
+            {
                 // Check if a file with that name doesn't exist
                 match std::fs::metadata(&file_path) {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(file_path),
                     r => {
-                        // Remove the partials entry
-                        self.partials.lock().unwrap().remove(&file_path);
+                        // Remove the reserved_paths entry
+                        self.reserved_paths.lock().unwrap().remove(&file_path);
                         r?;
                     }
                 }
             }
         }
     }
+
+    fn walk_dirs<F>(&self, dir: &PathBuf, f: &mut F) -> Result<bool, anyhow::Error>
+    where
+        F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+    {
+        for entry in std::fs::read_dir(dir)?.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    if !self.walk_dirs(&entry.path(), f)? {
+                        return Ok(false);
+                    }
+                } else if file_type.is_file() {
+                    if let Some(extension) = entry.path().extension() {
+                        // Drop anything .tmp
+                        if extension == "tmp" {
+                            std::fs::remove_file(entry.path())?;
+                            continue;
+                        }
+                    }
+
+                    // Check corresponding bundle exists in the metadata storage
+                    let storage_path = entry.path();
+                    let storage_name = storage_path
+                        .strip_prefix(&self.cache_root)?
+                        .to_string_lossy();
+                    match f(&storage_name)? {
+                        Some(false) => {
+                            // Remove from cache
+                            std::fs::remove_file(storage_path)?;
+                        }
+                        None => {
+                            return Ok(false);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
 }
 
 impl BundleStorage for Storage {
-    fn check<M, F>(
-        &self,
-        metadata: std::sync::Arc<M>,
-        cancel_token: tokio_util::sync::CancellationToken,
-        f: F,
-    ) -> Result<(), anyhow::Error>
+    fn check<F>(&self, mut f: F) -> Result<(), anyhow::Error>
     where
-        M: storage::MetadataStorage,
-        F: FnMut(&str, &[u8]) -> Result<bool, anyhow::Error>,
+        F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
     {
-        if self.cache_root.exists() {
-            todo!()
-        }
-        Ok(())
+        self.walk_dirs(&self.cache_root, &mut f).map(|_| ())
     }
 
-    async fn store(&self, data: std::sync::Arc<Vec<u8>>) -> Result<String, anyhow::Error> {
+    async fn load(&self, storage_name: &str) -> Result<Arc<Box<dyn BundleData>>, anyhow::Error> {
+        let path = self.cache_root.join(PathBuf::from_str(storage_name)?);
+
+        if cfg!(feature = "mmap") {
+            let file = std::fs::File::open(path)?;
+            let data = unsafe { memmap2::Mmap::map(&file)? };
+            return Ok(Arc::new(Box::new(mmap::BundleDataMMap { data })));
+        } else {
+            let mut v = Vec::new();
+            std::fs::File::open(path)?.read_to_end(&mut v)?;
+            Ok(Arc::new(Box::new(v)))
+        }
+    }
+
+    async fn store(&self, data: Arc<Vec<u8>>) -> Result<String, anyhow::Error> {
         /*
         create a new temp file (on the same file system!)
         write data to the temp file
@@ -130,7 +199,7 @@ impl BundleStorage for Storage {
             create_dir_all(file_path_cloned.parent().unwrap())?;
 
             // Use a temporary extension
-            file_path_cloned.set_extension("partial");
+            file_path_cloned.set_extension("tmp");
 
             // Open the file as direct as possible
             let mut options = OpenOptions::new();
@@ -141,7 +210,7 @@ impl BundleStorage for Storage {
             let mut file = options.open(&file_path_cloned)?;
 
             // Write all data to file
-            if let Err(e) = file.write_all(data.as_ref()) {
+            if let Err(e) = file.write_all(&data) {
                 _ = remove_file(&file_path_cloned);
                 return Err(e);
             }
@@ -166,8 +235,8 @@ impl BundleStorage for Storage {
         })
         .await;
 
-        // Always remove partials entry
-        self.partials.lock().unwrap().remove(&file_path);
+        // Always remove tmps entry
+        self.reserved_paths.lock().unwrap().remove(&file_path);
 
         // Check result errors
         result??;

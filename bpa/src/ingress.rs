@@ -16,7 +16,7 @@ where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    pub fn init(
+    pub async fn init(
         _config: &config::Config,
         cache: Arc<cache::Cache<M, B>>,
         task_set: &mut tokio::task::JoinSet<()>,
@@ -37,9 +37,9 @@ where
         });
 
         // Perform a cache check
-        log::info!("Checking cache...");
-        cache.check(cancel_token, tx)?;
-        log::info!("Cache check complete");
+        log::info!("Starting cache reload...");
+        cache.check(cancel_token, tx).await?;
+        log::info!("Cache reload complete");
 
         Ok(ingress)
     }

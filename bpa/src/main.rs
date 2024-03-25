@@ -28,9 +28,7 @@ fn init_metadata_storage(
     let engine: String = settings::get_with_default(config, "metadata_storage", default)
         .map_err(|e| anyhow!("Failed to parse 'metadata_storage' config param: {}", e))?;
 
-    let config = config
-        .get_table(&engine)
-        .unwrap_or(std::collections::HashMap::new());
+    let config = config.get_table(&engine).unwrap_or_default();
 
     log::info!("Using metadata storage: {}", engine);
 
@@ -44,7 +42,7 @@ fn init_metadata_storage(
 
 fn init_bundle_storage(
     config: &config::Config,
-    upgrade: bool,
+    _upgrade: bool,
 ) -> Result<std::sync::Arc<impl storage::BundleStorage>, anyhow::Error> {
     let default = if cfg!(feature = "localdisk-storage") {
         hardy_localdisk_storage::CONFIG_KEY
@@ -54,9 +52,7 @@ fn init_bundle_storage(
 
     let engine: String = settings::get_with_default(config, "bundle_storage", default)
         .map_err(|e| anyhow!("Failed to parse 'bundle_storage' config param: {}", e))?;
-    let config = config
-        .get_table(&engine)
-        .unwrap_or(std::collections::HashMap::new());
+    let config = config.get_table(&engine).unwrap_or_default();
 
     log::info!("Using bundle storage: {}", engine);
 

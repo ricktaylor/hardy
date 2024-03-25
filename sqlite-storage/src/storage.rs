@@ -41,9 +41,7 @@ impl Storage {
         // Attempt to open existing database first
         let mut connection = match rusqlite::Connection::open_with_flags(
             &file_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-                //| rusqlite::OpenFlags::SQLITE_OPEN_CREATE
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             Ok(conn) => conn,
             Err(rusqlite::Error::SqliteFailure(
@@ -68,6 +66,15 @@ impl Storage {
         // Migrate the database to the latest schema
         migrate::migrate(&mut connection, upgrade)?;
 
+        // Mark all existing bundles as unconfirmed
+        connection.execute(
+            r#"
+            INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
+            SELECT id FROM bundles;
+            "#,
+            (),
+        )?;
+
         Ok(Arc::new(Storage {
             connection: tokio::sync::Mutex::new(connection),
         }))
@@ -75,6 +82,13 @@ impl Storage {
 }
 
 impl MetadataStorage for Storage {
+    fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
+    where
+        F: FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>,
+    {
+        todo!()
+    }
+
     async fn store(
         &self,
         storage_name: &str,
@@ -82,6 +96,8 @@ impl MetadataStorage for Storage {
     ) -> Result<(), anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        // Insert bundle
         let bundle_id = trans
             .prepare_cached(
                 r#"
@@ -115,6 +131,7 @@ impl MetadataStorage for Storage {
                 },
             ))?;
 
+        // Insert extension blocks
         let mut block_query = trans.prepare_cached(
             r#"
             INSERT INTO bundle_blocks (
@@ -125,8 +142,6 @@ impl MetadataStorage for Storage {
                 data_offset)
             VALUES (?1,?2,?3,?4,?5);"#,
         )?;
-
-        // Insert extension blocks
         for (block_num, block) in &bundle.extensions {
             block_query.execute((
                 bundle_id,
@@ -154,15 +169,34 @@ impl MetadataStorage for Storage {
     }
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
-        todo!()
-    }
-
-    async fn exists(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
-        self.connection
+        // Delete
+        Ok(self
+            .connection
             .lock()
             .await
-            .prepare_cached(r#"SELECT EXISTS(SELECT 1 FROM bundles WHERE file_name=?1 LIMIT 1);"#)?
+            .prepare_cached(r#"DELETE FROM bundles WHERE file_name = ?1;"#)?
+            .execute([storage_name])?
+            != 0)
+    }
+
+    async fn confirm_exists(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
+        let mut conn = self.connection.lock().await;
+        let trans = conn.transaction()?;
+
+        // Check if bundle exists
+        let bundle_id: i64 = match trans
+            .prepare_cached(r#"SELECT id FROM bundles WHERE file_name = ?1 LIMIT 1;"#)?
             .query_row([storage_name], |row| row.get(0))
-            .map_err(|e| e.into())
+        {
+            Ok(bundle_id) => bundle_id,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
+            Err(e) => Err(e)?,
+        };
+
+        // Remove from unconfirmed set
+        trans
+            .prepare_cached(r#"DELETE FROM unconfirmed_bundles WHERE bundle_id = ?1;"#)?
+            .execute([bundle_id])?;
+        Ok(true)
     }
 }

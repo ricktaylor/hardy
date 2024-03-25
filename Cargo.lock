@@ -508,7 +508,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atoi",
- "base64 0.22.0",
  "built",
  "config",
  "directories",
@@ -520,7 +519,6 @@ dependencies = [
  "hardy-sqlite-storage",
  "log",
  "log_err",
- "regex",
  "serde",
  "sha1",
  "simplelog",
@@ -563,6 +561,7 @@ dependencies = [
  "hardy-bpa-core",
  "libc",
  "log",
+ "memmap2",
  "rand",
  "serde",
  "thiserror",
@@ -844,6 +843,15 @@ name = "memchr"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "523dc4f511e55ab87b694dc30d0f820d60906ef06413f93d4d7a1385599cc149"
+
+[[package]]
+name = "memmap2"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe751422e4a8caa417e13c3ea66452215d7d63e19e604f4980461212f3ae1322"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "mime"
