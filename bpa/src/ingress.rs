@@ -49,23 +49,19 @@ where
 
     pub async fn receive(
         &self,
-        request: hardy_proto::bpa::ForwardBundleRequest,
-    ) -> Result<hardy_proto::bpa::ForwardBundleResponseStatus, anyhow::Error> {
+        cla_source: ClaSource,
+        data: Vec<u8>,
+    ) -> Result<bool, anyhow::Error> {
         // Store the bundle in the cache
-        let (bundle, status) = self.cache.store(Arc::new(request.bundle)).await?;
-        let (valid, bundle) = match (bundle, status) {
-            (Some(bundle), hardy_proto::bpa::ForwardBundleResponseStatus::FbrsInvalidBundle) => {
-                (false, bundle)
-            }
-            (Some(bundle), hardy_proto::bpa::ForwardBundleResponseStatus::FbrsOk) => (true, bundle),
-            _ => return Ok(status),
+        let (Some(bundle), valid) = self.cache.store(Arc::new(data)).await? else {
+            return Ok(false);
         };
 
         // Put bundle into RX queue
-        self.tx
-            .send((Some((request.protocol, request.address)), bundle, valid))
-            .await?;
-        Ok(status)
+        self.tx.send((cla_source, bundle, valid)).await?;
+
+        // We have processed it, caller doesn't have to react
+        Ok(true)
     }
 
     async fn pipeline_pump(

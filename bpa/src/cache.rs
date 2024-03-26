@@ -85,13 +85,7 @@ where
     pub async fn store(
         &self,
         data: Arc<Vec<u8>>,
-    ) -> Result<
-        (
-            Option<bundle::Bundle>,
-            hardy_proto::bpa::ForwardBundleResponseStatus,
-        ),
-        anyhow::Error,
-    > {
+    ) -> Result<(Option<bundle::Bundle>, bool), anyhow::Error> {
         // Start the write to bundle storage
         let write_result = self.bundle_storage.store(data.clone());
 
@@ -103,44 +97,31 @@ where
         let storage_name = write_result.await?;
 
         // Check parse result
-        let (bundle, status) = match bundle_result {
-            Ok((bundle, true)) => (
-                bundle,
-                hardy_proto::bpa::ForwardBundleResponseStatus::FbrsOk,
-            ),
-            Ok((bundle, false)) => (
-                bundle,
-                hardy_proto::bpa::ForwardBundleResponseStatus::FbrsInvalidBundle,
-            ),
+        let (bundle, valid) = match bundle_result {
+            Ok(r) => r,
             Err(e) => {
                 // Parse failed badly, no idea who to report to
                 log::info!("Bundle parsing failed: {}", e);
 
                 // Remove from bundle storage
                 let _ = self.bundle_storage.remove(&storage_name).await;
-                return Ok((
-                    None,
-                    hardy_proto::bpa::ForwardBundleResponseStatus::FbrsNotABundle,
-                ));
+                return Ok((None, false));
             }
         };
 
         // Write to metadata store
-        match self
+        if let Err(e) = self
             .metadata_storage
             .store(&storage_name, &hash, &bundle)
             .await
         {
-            Ok(_) => {}
-            Err(e) => {
-                // This is just bad, we can't really claim to have received the bundle,
-                // so just cleanup and get out
-                let _ = self.bundle_storage.remove(&storage_name).await;
-                return Err(e);
-            }
+            // This is just bad, we can't really claim to have received the bundle,
+            // so just cleanup and get out
+            let _ = self.bundle_storage.remove(&storage_name).await;
+            return Err(e);
         }
 
         // Return the parsed bundle
-        Ok((Some(bundle), status))
+        Ok((Some(bundle), valid))
     }
 }

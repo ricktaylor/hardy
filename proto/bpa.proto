@@ -31,15 +31,7 @@ message ForwardBundleRequest {
     bytes Bundle = 3;
 }
 
-enum ForwardBundleResponseStatus {
-    FBRS_OK = 0;
-    FBRS_DUPLICATE = 1;       // We've seen this exact bundle before
-    FBRS_NOT_A_BUNDLE = 2;    // It wasn't a bundle
-    FBRS_INVALID_BUNDLE = 3;  // It looked like a bundle, but not a valid one   
-}
-
 message ForwardBundleResponse {
-    ForwardBundleResponseStatus status = 1;
 }
 
 service cla {

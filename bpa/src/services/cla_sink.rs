@@ -56,14 +56,17 @@ where
         &self,
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
-        let status = self
+        let request = request.into_inner();
+        if !self
             .ingress
-            .receive(request.into_inner())
+            .receive(Some((request.protocol, request.address)), request.bundle)
             .await
-            .map_err(|e| Status::from_error(e.into()))?;
-        Ok(Response::new(ForwardBundleResponse {
-            status: status.into(),
-        }))
+            .map_err(|e| Status::from_error(e.into()))?
+        {
+            Err(Status::invalid_argument("Data is not a bundle"))
+        } else {
+            Ok(Response::new(ForwardBundleResponse {}))
+        }
     }
 }
 
