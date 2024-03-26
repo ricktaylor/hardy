@@ -30,7 +30,7 @@ where
     pub fn check(
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
-        channel: tokio::sync::mpsc::Sender<(bundle::Bundle, bool)>,
+        channel: tokio::sync::mpsc::Sender<(ingress::ClaSource, bundle::Bundle, bool)>,
     ) -> Result<(), anyhow::Error> {
         // Bundle storage checks first
         self.bundle_storage.check(|storage_name| {
@@ -58,7 +58,7 @@ where
                     .await?;
 
                 // Queue the new bundle for ingress processing
-                channel.send((bundle, valid)).await?;
+                channel.send((None, bundle, valid)).await?;
 
                 // true for keep
                 Ok(true)
@@ -85,7 +85,13 @@ where
     pub async fn store(
         &self,
         data: Arc<Vec<u8>>,
-    ) -> Result<Option<(bundle::Bundle, bool)>, anyhow::Error> {
+    ) -> Result<
+        (
+            Option<bundle::Bundle>,
+            hardy_proto::bpa::ForwardBundleResponseStatus,
+        ),
+        anyhow::Error,
+    > {
         // Start the write to bundle storage
         let write_result = self.bundle_storage.store(data.clone());
 
@@ -97,15 +103,25 @@ where
         let storage_name = write_result.await?;
 
         // Check parse result
-        let (bundle, valid) = match bundle_result {
-            Ok(r) => r,
+        let (bundle, status) = match bundle_result {
+            Ok((bundle, true)) => (
+                bundle,
+                hardy_proto::bpa::ForwardBundleResponseStatus::FbrsOk,
+            ),
+            Ok((bundle, false)) => (
+                bundle,
+                hardy_proto::bpa::ForwardBundleResponseStatus::FbrsInvalidBundle,
+            ),
             Err(e) => {
                 // Parse failed badly, no idea who to report to
                 log::info!("Bundle parsing failed: {}", e);
 
                 // Remove from bundle storage
                 let _ = self.bundle_storage.remove(&storage_name).await;
-                return Ok(None);
+                return Ok((
+                    None,
+                    hardy_proto::bpa::ForwardBundleResponseStatus::FbrsNotABundle,
+                ));
             }
         };
 
@@ -125,6 +141,6 @@ where
         }
 
         // Return the parsed bundle
-        Ok(Some((bundle, valid)))
+        Ok((Some(bundle), status))
     }
 }

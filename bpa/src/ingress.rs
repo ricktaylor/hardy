@@ -2,13 +2,15 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::mpsc::*;
 
+pub type ClaSource = Option<(String, Vec<u8>)>;
+
 pub struct Ingress<M, B>
 where
     M: storage::MetadataStorage + Send + Sync,
     B: storage::BundleStorage + Send + Sync,
 {
     cache: Arc<cache::Cache<M, B>>,
-    tx: Sender<(bundle::Bundle, bool)>,
+    tx: Sender<(ClaSource, bundle::Bundle, bool)>,
 }
 
 impl<M, B> Ingress<M, B>
@@ -39,28 +41,36 @@ where
         // Perform a cache check
         log::info!("Starting cache reload...");
 
-        tokio::task::spawn_blocking(move || {
-            cache.check(cancel_token, tx)
-        }).await??;
+        tokio::task::spawn_blocking(move || cache.check(cancel_token, tx)).await??;
         log::info!("Cache reload complete");
 
         Ok(ingress)
     }
 
-    pub async fn receive(&self, data: Arc<Vec<u8>>) -> Result<bool, anyhow::Error> {
+    pub async fn receive(
+        &self,
+        request: hardy_proto::bpa::ForwardBundleRequest,
+    ) -> Result<hardy_proto::bpa::ForwardBundleResponseStatus, anyhow::Error> {
         // Store the bundle in the cache
-        let Some(bundle) = self.cache.store(data).await? else {
-            return Ok(false);
+        let (bundle, status) = self.cache.store(Arc::new(request.bundle)).await?;
+        let (valid, bundle) = match (bundle, status) {
+            (Some(bundle), hardy_proto::bpa::ForwardBundleResponseStatus::FbrsInvalidBundle) => {
+                (false, bundle)
+            }
+            (Some(bundle), hardy_proto::bpa::ForwardBundleResponseStatus::FbrsOk) => (true, bundle),
+            _ => return Ok(status),
         };
 
         // Put bundle into RX queue
-        self.tx.send(bundle).await?;
-        Ok(true)
+        self.tx
+            .send((Some((request.protocol, request.address)), bundle, valid))
+            .await?;
+        Ok(status)
     }
 
     async fn pipeline_pump(
         ingress: Arc<Self>,
-        mut rx: Receiver<(bundle::Bundle, bool)>,
+        mut rx: Receiver<(ClaSource, bundle::Bundle, bool)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -70,10 +80,10 @@ where
             tokio::select! {
                 bundle = rx.recv() => match bundle {
                     None => break,
-                    Some((bundle,valid)) => {
+                    Some((cla_source,bundle,valid)) => {
                         let ingress = ingress.clone();
                         task_set.spawn(async move {
-                            ingress.do_something_with_the_bundle(bundle,valid).await;
+                            ingress.do_something_with_the_bundle(cla_source,bundle,valid).await;
                         });
                     }
                 },
@@ -87,7 +97,12 @@ where
         }
     }
 
-    async fn do_something_with_the_bundle(&self, _bundle: bundle::Bundle, valid: bool) {
+    async fn do_something_with_the_bundle(
+        &self,
+        cla_source: ClaSource,
+        bundle: bundle::Bundle,
+        valid: bool,
+    ) {
         // This is the meat of the ingress pipeline
         todo!()
     }
