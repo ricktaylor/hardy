@@ -62,7 +62,7 @@ impl Storage {
     }
 
     fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
-        // Compose a subdirectory that doesn't break Filesystems
+        // Compose a subdirectory that doesn't break filesystems
         let sub_dir = [
             format!("{:x}", random::<u16>() % 4096),
             format!("{:x}", random::<u16>() % 4096),
@@ -151,15 +151,15 @@ impl BundleStorage for Storage {
     }
 
     async fn load(&self, storage_name: &str) -> Result<Arc<Box<dyn AsRef<[u8]>>>, anyhow::Error> {
-        let path = self.cache_root.join(PathBuf::from_str(storage_name)?);
+        let file_path = self.cache_root.join(PathBuf::from_str(storage_name)?);
 
         if cfg!(feature = "mmap") {
-            let file = std::fs::File::open(path)?;
+            let file = std::fs::File::open(file_path)?;
             let data = unsafe { memmap2::Mmap::map(&file)? };
             Ok(Arc::new(Box::new(data)))
         } else {
             let mut v = Vec::new();
-            std::fs::File::open(path)?.read_to_end(&mut v)?;
+            std::fs::File::open(file_path)?.read_to_end(&mut v)?;
             Ok(Arc::new(Box::new(v)))
         }
     }
@@ -225,10 +225,23 @@ impl BundleStorage for Storage {
         // Check result errors
         result??;
 
-        Ok(file_path.to_string_lossy().to_string())
+        Ok(file_path
+            .strip_prefix(&self.cache_root)?
+            .to_string_lossy()
+            .to_string())
     }
 
-    async fn remove(&self, _storage_name: &str) -> Result<bool, anyhow::Error> {
-        todo!()
+    async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
+        let file_path = self.cache_root.join(PathBuf::from_str(storage_name)?);
+        match tokio::fs::remove_file(&file_path).await {
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    Ok(false)
+                } else {
+                    Err(e.into())
+                }
+            }
+            Ok(_) => Ok(true),
+        }
     }
 }
