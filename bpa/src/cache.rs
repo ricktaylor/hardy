@@ -1,6 +1,7 @@
 use super::*;
 use sha2::Digest;
 use std::sync::Arc;
+use tokio::sync::mpsc::*;
 
 pub struct Cache<M, B>
 where
@@ -11,74 +12,137 @@ where
     bundle_storage: Arc<B>,
 }
 
-impl<M, B> Cache<M, B>
+impl<M, B> Clone for Cache<M, B>
 where
     M: storage::MetadataStorage + Send + Sync,
     B: storage::BundleStorage + Send + Sync,
 {
-    pub fn new(
-        _config: &config::Config,
-        metadata_storage: Arc<M>,
-        bundle_storage: Arc<B>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    fn clone(&self) -> Self {
+        Self {
+            metadata_storage: self.metadata_storage.clone(),
+            bundle_storage: self.bundle_storage.clone(),
+        }
+    }
+}
+
+impl<M, B> Cache<M, B>
+where
+    M: storage::MetadataStorage + Send + Sync + 'static,
+    B: storage::BundleStorage + Send + Sync + 'static,
+{
+    pub fn new(_config: &config::Config, metadata_storage: Arc<M>, bundle_storage: Arc<B>) -> Self {
+        Self {
             metadata_storage,
             bundle_storage,
-        })
+        }
     }
 
-    pub fn check(
+    pub async fn init(
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
-        channel: tokio::sync::mpsc::Sender<(ingress::ClaSource, bundle::Bundle, bool)>,
     ) -> Result<(), anyhow::Error> {
+        log::info!("Starting cache reload...");
+
         // Bundle storage checks first
-        self.bundle_storage.check(|storage_name| {
-            let r = tokio::runtime::Handle::current().block_on(async {
-                // Check if the metadata_storage knows about this bundle
-                if self
-                    .metadata_storage
-                    .confirm_exists(storage_name, None)
-                    .await?
-                {
-                    return Ok::<bool, anyhow::Error>(true);
-                }
+        self.bundle_storage_check(cancel_token.clone()).await?;
 
-                // Parse the bundle first
-                let data = self.bundle_storage.load(storage_name).await?;
-                let Ok((bundle, valid)) = bundle::parse((**data).as_ref()) else {
-                    // Drop it... garbage
-                    return Ok(false);
-                };
-
-                // Write to metadata or die trying
-                let hash = sha2::Sha256::digest((**data).as_ref());
-                self.metadata_storage
-                    .store(storage_name, &hash, &bundle)
-                    .await?;
-
-                // Queue the new bundle for ingress processing
-                channel.send((None, bundle, valid)).await?;
-
-                // true for keep
-                Ok(true)
-            })?;
-
-            // Just dumb poll the cancel token now - try to avoid mismatched state again
-            Ok((!cancel_token.is_cancelled()).then_some(r))
-        })?;
-
+        // Now check the metadata storage for orphans
         if !cancel_token.is_cancelled() {
-            // Now check the metadata storage
-            self.metadata_storage.check(|bundle| {
-                // The data associated with `bundle` has gone!
-                todo!();
+            self.metadata_storage_check(cancel_token).await?;
+        }
+
+        log::info!("Cache reload complete");
+        Ok(())
+    }
+
+    async fn metadata_storage_check(
+        &self,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(), anyhow::Error> {
+        // Create a channel for feedback
+        let (tx, mut rx) = channel(16);
+        let cache_cloned = self.clone();
+        let check_task = tokio::task::spawn_blocking(move || {
+            cache_cloned.metadata_storage.check_orphans(|bundle| {
+                tokio::runtime::Handle::current().block_on(async {
+                    // The data associated with `bundle` has gone!
+                    tx.send(bundle).await
+                })?;
 
                 // Just dumb poll the cancel token now - try to avoid mismatched state again
                 Ok(!cancel_token.is_cancelled())
-            })?;
-        }
+            })
+        });
 
+        // Process orphan bundles
+        let rx_task = tokio::task::spawn(async move {
+            while let Some(bundle) = rx.recv().await {
+                todo!()
+            }
+        });
+
+        // Wait for the tasks to complete
+        check_task.await??;
+        rx_task.await?;
+        Ok(())
+    }
+
+    async fn bundle_storage_check(
+        &self,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(), anyhow::Error> {
+        // Create a channel for feedback
+        let (tx, mut rx) = channel(16);
+        let cache_cloned = self.clone();
+
+        let check_task = tokio::task::spawn_blocking(move || {
+            cache_cloned.bundle_storage.check_orphans(|storage_name| {
+                let r = tokio::runtime::Handle::current().block_on(async {
+                    // Check if the metadata_storage knows about this bundle
+                    if cache_cloned
+                        .metadata_storage
+                        .confirm_exists(storage_name, None)
+                        .await?
+                    {
+                        return Ok::<bool, anyhow::Error>(true);
+                    }
+
+                    // Parse the bundle first
+                    let data = cache_cloned.bundle_storage.load(storage_name).await?;
+                    let Ok((bundle, valid)) = bundle::parse((**data).as_ref()) else {
+                        // Drop it... garbage
+                        return Ok(false);
+                    };
+
+                    // Write to metadata or die trying
+                    let hash = sha2::Sha256::digest((**data).as_ref());
+                    cache_cloned
+                        .metadata_storage
+                        .store(storage_name, &hash, &bundle)
+                        .await?;
+
+                    // Queue the new bundle for ingress processing
+                    tx.send((bundle, valid)).await?;
+
+                    // true for keep
+                    Ok(true)
+                })?;
+
+                // Just dumb poll the cancel token now - try to avoid mismatched state again
+                Ok((!cancel_token.is_cancelled()).then_some(r))
+            })
+        });
+
+        // Process orphan bundles
+        let rx_task = tokio::task::spawn(async move {
+            while let Some((bundle, valid)) = rx.recv().await {
+                todo!()
+            }
+        });
+
+        // Wait for the tasks to complete
+        check_task.await??;
+        rx_task.await?;
         Ok(())
     }
 

@@ -6,22 +6,22 @@ use tonic::{Request, Response, Status};
 
 pub struct Service<M, B>
 where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
+    M: storage::MetadataStorage + Send + Sync,
+    B: storage::BundleStorage + Send + Sync,
 {
     cla_registry: Arc<cla_registry::ClaRegistry>,
-    ingress: Arc<ingress::Ingress<M, B>>,
+    ingress: ingress::Ingress<M, B>,
 }
 
 impl<M, B> Service<M, B>
 where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
+    M: storage::MetadataStorage + Send + Sync,
+    B: storage::BundleStorage + Send + Sync,
 {
     fn new(
         _config: &config::Config,
         cla_registry: Arc<cla_registry::ClaRegistry>,
-        ingress: Arc<ingress::Ingress<M, B>>,
+        ingress: ingress::Ingress<M, B>,
     ) -> Self {
         Service {
             cla_registry,
@@ -72,7 +72,7 @@ where
 
 pub fn new_service<M, B>(
     config: &config::Config,
-    ingress: Arc<ingress::Ingress<M, B>>,
+    ingress: ingress::Ingress<M, B>,
 ) -> ClaSinkServer<Service<M, B>>
 where
     M: storage::MetadataStorage + Send + Sync + 'static,

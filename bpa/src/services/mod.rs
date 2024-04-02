@@ -6,7 +6,7 @@ mod cla_sink;
 
 pub fn init<M, B>(
     config: &config::Config,
-    ingress: Arc<ingress::Ingress<M, B>>,
+    ingress: ingress::Ingress<M, B>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), anyhow::Error>

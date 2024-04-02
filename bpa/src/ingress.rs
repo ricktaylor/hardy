@@ -9,8 +9,21 @@ where
     M: storage::MetadataStorage + Send + Sync,
     B: storage::BundleStorage + Send + Sync,
 {
-    cache: Arc<cache::Cache<M, B>>,
+    cache: cache::Cache<M, B>,
     tx: Sender<(ClaSource, bundle::Bundle, bool)>,
+}
+
+impl<M, B> Clone for Ingress<M, B>
+where
+    M: storage::MetadataStorage + Send + Sync,
+    B: storage::BundleStorage + Send + Sync,
+{
+    fn clone(&self) -> Self {
+        Self {
+            cache: self.cache.clone(),
+            tx: self.tx.clone(),
+        }
+    }
 }
 
 impl<M, B> Ingress<M, B>
@@ -18,18 +31,15 @@ where
     M: storage::MetadataStorage + Send + Sync + 'static,
     B: storage::BundleStorage + Send + Sync + 'static,
 {
-    pub async fn init(
+    pub fn new(
         _config: &config::Config,
-        cache: Arc<cache::Cache<M, B>>,
+        cache: cache::Cache<M, B>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<Arc<Self>, anyhow::Error> {
+    ) -> Result<Self, anyhow::Error> {
         // Create a channel for new bundles
         let (tx, rx) = channel(16);
-        let ingress = Arc::new(Self {
-            cache: cache.clone(),
-            tx: tx.clone(),
-        });
+        let ingress = Self { cache, tx };
 
         // Spawn a bundle receiver
         let cancel_token_cloned = cancel_token.clone();
@@ -37,12 +47,6 @@ where
         task_set.spawn(async move {
             Self::pipeline_pump(ingress_cloned, rx, cancel_token_cloned).await
         });
-
-        // Perform a cache check
-        log::info!("Starting cache reload...");
-
-        tokio::task::spawn_blocking(move || cache.check(cancel_token, tx)).await??;
-        log::info!("Cache reload complete");
 
         Ok(ingress)
     }
@@ -65,7 +69,7 @@ where
     }
 
     async fn pipeline_pump(
-        ingress: Arc<Self>,
+        self,
         mut rx: Receiver<(ClaSource, bundle::Bundle, bool)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
@@ -77,7 +81,7 @@ where
                 bundle = rx.recv() => match bundle {
                     None => break,
                     Some((cla_source,bundle,valid)) => {
-                        let ingress = ingress.clone();
+                        let ingress = self.clone();
                         task_set.spawn(async move {
                             ingress.do_something_with_the_bundle(cla_source,bundle,valid).await;
                         });

@@ -172,7 +172,7 @@ where
 }
 
 impl MetadataStorage for Storage {
-    fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
+    fn check_orphans<F>(&self, f: F) -> Result<(), anyhow::Error>
     where
         F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
     {

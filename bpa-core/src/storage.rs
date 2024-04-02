@@ -1,7 +1,7 @@
 use super::*;
 
 pub trait MetadataStorage {
-    fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
+    fn check_orphans<F>(&self, f: F) -> Result<(), anyhow::Error>
     where
         F: FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>;
 
@@ -25,7 +25,7 @@ pub trait MetadataStorage {
 }
 
 pub trait BundleStorage {
-    fn check<F>(&self, f: F) -> Result<(), anyhow::Error>
+    fn check_orphans<F>(&self, f: F) -> Result<(), anyhow::Error>
     where
         F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>;
 

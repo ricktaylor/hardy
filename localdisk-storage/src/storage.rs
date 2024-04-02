@@ -143,7 +143,7 @@ impl Storage {
 }
 
 impl BundleStorage for Storage {
-    fn check<F>(&self, mut f: F) -> Result<(), anyhow::Error>
+    fn check_orphans<F>(&self, mut f: F) -> Result<(), anyhow::Error>
     where
         F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
     {
