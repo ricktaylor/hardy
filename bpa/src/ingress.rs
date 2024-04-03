@@ -51,21 +51,30 @@ where
         Ok(ingress)
     }
 
-    pub async fn receive(
-        &self,
-        cla_source: ClaSource,
-        data: Vec<u8>,
-    ) -> Result<bool, anyhow::Error> {
+    pub async fn receive(&self, from: ClaSource, data: Vec<u8>) -> Result<bool, anyhow::Error> {
         // Store the bundle in the cache
         let (Some(bundle), valid) = self.cache.store(Arc::new(data)).await? else {
             return Ok(false);
         };
 
-        // Put bundle into RX queue
-        self.tx.send((cla_source, bundle, valid)).await?;
+        // Enqueue bundle
+        self.enqueue_bundle(from, bundle, valid).await?;
 
         // We have processed it, caller doesn't have to react
         Ok(true)
+    }
+
+    pub async fn enqueue_bundle(
+        &self,
+        from: ClaSource,
+        bundle: bundle::Bundle,
+        valid: bool,
+    ) -> Result<(), anyhow::Error> {
+        // Put bundle into channel
+        self.tx
+            .send((from, bundle, valid))
+            .await
+            .map_err(|e| e.into())
     }
 
     async fn pipeline_pump(

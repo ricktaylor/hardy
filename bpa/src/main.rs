@@ -4,6 +4,7 @@ use log_err::*;
 
 mod cache;
 mod cla_registry;
+mod dispatcher;
 mod ingress;
 mod logger;
 mod services;
@@ -133,9 +134,14 @@ async fn main() {
         ingress::Ingress::new(&config, cache.clone(), &mut task_set, cancel_token.clone())
             .log_expect("Failed to initialize ingress");
 
+    // Create a new dispatcher
+    let dispatcher =
+        dispatcher::Dispatcher::new(&config, cache.clone(), &mut task_set, cancel_token.clone())
+            .log_expect("Failed to initialize dispatcher");
+
     // Init the cache - this can take a while as the cache is walked
     cache
-        .init(cancel_token.clone())
+        .init(ingress.clone(), dispatcher.clone(), cancel_token.clone())
         .await
         .log_expect("Cache initialization failed");
 

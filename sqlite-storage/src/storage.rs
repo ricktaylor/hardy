@@ -100,10 +100,7 @@ fn decode_eid(
     }
 }
 
-fn unpack_bundles<F>(mut rows: rusqlite::Rows, mut f: F) -> Result<(), anyhow::Error>
-where
-    F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
-{
+fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, Bundle)>, anyhow::Error> {
     /* Expected query MUST look like:
            0:  bundles.id,
            1:  bundles.flags,
@@ -121,6 +118,7 @@ where
            13: bundle_blocks.data_offset
     */
 
+    let mut bundles = Vec::new();
     let mut row_result = rows.next()?;
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
@@ -142,7 +140,7 @@ where
         };
 
         let mut extensions = HashMap::new();
-        while row.get::<usize, i64>(0)? == bundle_id {
+        loop {
             let block_number: u64 = row.get(10)?;
             let block = bundle::Block {
                 block_type: bundle::BlockType::new(row.get(11)?)?,
@@ -159,27 +157,34 @@ where
                 None => break,
                 Some(row) => row,
             };
+
+            if row.get::<usize, i64>(0)? != bundle_id {
+                break;
+            }
         }
 
-        if !f(Bundle {
-            primary,
-            extensions,
-        })? {
-            break;
-        }
+        bundles.push((
+            bundle_id,
+            Bundle {
+                primary,
+                extensions,
+            },
+        ));
     }
-    Ok(())
+    Ok(bundles)
 }
 
 impl MetadataStorage for Storage {
-    fn check_orphans<F>(&self, f: F) -> Result<(), anyhow::Error>
+    fn check_orphans<F>(&self, mut f: F) -> Result<(), anyhow::Error>
     where
         F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
     {
-        let conn = self.connection.blocking_lock();
-        unpack_bundles(
-            conn.prepare(
-                r#"
+        // We do this as separate transactions to not block the database
+        let bundles = unpack_bundles(
+            self.connection
+                .blocking_lock()
+                .prepare(
+                    r#"
                 SELECT 
                     bundles.id,
                     flags,
@@ -200,10 +205,16 @@ impl MetadataStorage for Storage {
                 LEFT OUTER JOIN bundle_fragments ON bundle_fragments.bundle_id = bundles.id
                 LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = bundles.id;
             "#,
-            )?
-            .query([])?,
-            f,
+                )?
+                .query([])?,
         )?;
+
+        // Now enumerate the vector
+        for (_bundle_id, bundle) in bundles {
+            if !f(bundle)? {
+                break;
+            }
+        }
         Ok(())
     }
 
