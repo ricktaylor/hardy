@@ -27,10 +27,34 @@ impl BundleFlags {
                     2 => flags.do_not_fragment = true,
                     5 => flags.app_ack_requested = true,
                     6 => flags.status_time_requested = true,
-                    14 => flags.receipt_report_requested = true,
-                    16 => flags.forward_report_requested = true,
-                    17 => flags.delivery_report_requested = true,
-                    18 => flags.delete_report_requested = true,
+                    14 => {
+                        if flags.is_admin_record {
+                            log::info!("Parsing bundle primary block with Administrative Record and Receipt Report Requested flag set!");
+                        } else {
+                            flags.receipt_report_requested = true;
+                        }
+                    }
+                    16 => {
+                        if flags.is_admin_record {
+                            log::info!("Parsing bundle primary block with Administrative Record and Forward Report Requested flag set!");
+                        } else {
+                            flags.forward_report_requested = true;
+                        }
+                    }
+                    17 => {
+                        if flags.is_admin_record {
+                            log::info!("Parsing bundle primary block with Administrative Record and Delivery Report Requested flag set!");
+                        } else {
+                            flags.delivery_report_requested = true;
+                        }
+                    }
+                    18 => {
+                        if flags.is_admin_record {
+                            log::info!("Parsing bundle primary block with Administrative Record and Delete Report Requested flag set!");
+                        } else {
+                            flags.delete_report_requested = true;
+                        }
+                    }
                     b => log::info!(
                         "Parsing bundle primary block with reserved flag bit {} set",
                         b
