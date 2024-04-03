@@ -374,7 +374,10 @@ impl BlockFlags {
             }
         }
         if f & !((2 ^ 6) - 1) != 0 {
-            log::info!("Parsing bundle block with unassigned flag bits set: {:#x}", f);
+            log::info!(
+                "Parsing bundle block with unassigned flag bits set: {:#x}",
+                f
+            );
         }
         flags
     }
