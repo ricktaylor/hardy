@@ -4,16 +4,12 @@ use std::sync::Arc;
 
 mod cla_sink;
 
-pub fn init<M, B>(
+pub fn init(
     config: &config::Config,
-    ingress: ingress::Ingress<M, B>,
+    ingress: ingress::Ingress,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
-) -> Result<(), anyhow::Error>
-where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
-{
+) -> Result<(), anyhow::Error> {
     let grpc_address: String = settings::get_with_default(config, "grpc_address", "[::1]:50051")?;
 
     // Get listen address from config

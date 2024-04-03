@@ -4,24 +4,16 @@ use hardy_proto::bpa::*;
 
 use tonic::{Request, Response, Status};
 
-pub struct Service<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync,
-    B: storage::BundleStorage + Send + Sync,
-{
+pub struct Service {
     cla_registry: Arc<cla_registry::ClaRegistry>,
-    ingress: ingress::Ingress<M, B>,
+    ingress: ingress::Ingress,
 }
 
-impl<M, B> Service<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync,
-    B: storage::BundleStorage + Send + Sync,
-{
+impl Service {
     fn new(
         _config: &config::Config,
         cla_registry: Arc<cla_registry::ClaRegistry>,
-        ingress: ingress::Ingress<M, B>,
+        ingress: ingress::Ingress,
     ) -> Self {
         Service {
             cla_registry,
@@ -31,11 +23,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<M, B> ClaSink for Service<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
-{
+impl ClaSink for Service {
     async fn register_cla(
         &self,
         request: Request<RegisterClaRequest>,
@@ -70,14 +58,7 @@ where
     }
 }
 
-pub fn new_service<M, B>(
-    config: &config::Config,
-    ingress: ingress::Ingress<M, B>,
-) -> ClaSinkServer<Service<M, B>>
-where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
-{
+pub fn new_service(config: &config::Config, ingress: ingress::Ingress) -> ClaSinkServer<Service> {
     ClaSinkServer::new(Service::new(
         config,
         cla_registry::ClaRegistry::new(config),

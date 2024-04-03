@@ -6,7 +6,7 @@ pub struct BundleFlags {
     pub is_admin_record: bool,
     pub do_not_fragment: bool,
     pub app_ack_requested: bool,
-    pub status_time_requested: bool,
+    pub report_status_time: bool,
     pub receipt_report_requested: bool,
     pub forward_report_requested: bool,
     pub delivery_report_requested: bool,
@@ -23,7 +23,7 @@ impl BundleFlags {
                     1 => flags.is_admin_record = true,
                     2 => flags.do_not_fragment = true,
                     5 => flags.app_ack_requested = true,
-                    6 => flags.status_time_requested = true,
+                    6 => flags.report_status_time = true,
                     14 => {
                         if flags.is_admin_record {
                             log::info!("Parsing bundle primary block with Administrative Record and Receipt Report Requested flag set!");
@@ -82,7 +82,7 @@ impl BundleFlags {
         if self.app_ack_requested {
             flags |= 1 << 5;
         }
-        if self.status_time_requested {
+        if self.report_status_time {
             flags |= 1 << 6;
         }
         if self.receipt_report_requested {

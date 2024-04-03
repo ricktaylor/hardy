@@ -1,47 +1,41 @@
 use super::*;
 
-pub trait MetadataStorage {
-    fn check_orphans<F>(&self, f: F) -> Result<(), anyhow::Error>
-    where
-        F: FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>;
+#[async_trait]
+pub trait MetadataStorage: Send + Sync {
+    fn check_orphans(
+        &self,
+        f: &mut dyn FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>,
+    ) -> Result<(), anyhow::Error>;
 
-    fn store(
+    async fn store(
         &self,
         storage_name: &str,
         hash: &[u8],
         bundle: &bundle::Bundle,
-    ) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send;
+    ) -> Result<(), anyhow::Error>;
 
-    fn remove(
-        &self,
-        storage_name: &str,
-    ) -> impl std::future::Future<Output = Result<bool, anyhow::Error>> + Send;
+    async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error>;
 
-    fn confirm_exists(
+    async fn confirm_exists(
         &self,
         storage_name: &str,
         hash: Option<&[u8]>,
-    ) -> impl std::future::Future<Output = Result<bool, anyhow::Error>> + Send;
+    ) -> Result<bool, anyhow::Error>;
 }
 
-pub trait BundleStorage {
-    fn check_orphans<F>(&self, f: F) -> Result<(), anyhow::Error>
-    where
-        F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>;
+#[async_trait]
+pub trait BundleStorage: Send + Sync {
+    fn check_orphans(
+        &self,
+        f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+    ) -> Result<(), anyhow::Error>;
 
-    fn load(
+    async fn load(
         &self,
         storage_name: &str,
-    ) -> impl std::future::Future<Output = Result<std::sync::Arc<dyn AsRef<[u8]>>, anyhow::Error>>
-           + Send;
+    ) -> Result<std::sync::Arc<dyn AsRef<[u8]>>, anyhow::Error>;
 
-    fn store(
-        &self,
-        data: std::sync::Arc<Vec<u8>>,
-    ) -> impl std::future::Future<Output = Result<String, anyhow::Error>> + Send;
+    async fn store(&self, data: std::sync::Arc<Vec<u8>>) -> Result<String, anyhow::Error>;
 
-    fn remove(
-        &self,
-        storage_name: &str,
-    ) -> impl std::future::Future<Output = Result<bool, anyhow::Error>> + Send;
+    async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error>;
 }

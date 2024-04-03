@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::anyhow;
+use hardy_bpa_core::async_trait;
 use hardy_bpa_core::storage::BundleStorage;
 use rand::random;
 use std::{
@@ -31,7 +32,9 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn init(config: &HashMap<String, config::Value>) -> Result<Arc<Self>, anyhow::Error> {
+    pub fn init(
+        config: &HashMap<String, config::Value>,
+    ) -> Result<Arc<dyn BundleStorage>, anyhow::Error> {
         let cache_root: String = config.get("cache_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
@@ -101,10 +104,11 @@ impl Storage {
         }
     }
 
-    fn walk_dirs<F>(&self, dir: &PathBuf, f: &mut F) -> Result<bool, anyhow::Error>
-    where
-        F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
-    {
+    fn walk_dirs(
+        &self,
+        dir: &PathBuf,
+        f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+    ) -> Result<bool, anyhow::Error> {
         for entry in std::fs::read_dir(dir)?.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
@@ -142,12 +146,13 @@ impl Storage {
     }
 }
 
+#[async_trait]
 impl BundleStorage for Storage {
-    fn check_orphans<F>(&self, mut f: F) -> Result<(), anyhow::Error>
-    where
-        F: FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
-    {
-        self.walk_dirs(&self.cache_root, &mut f).map(|_| ())
+    fn check_orphans(
+        &self,
+        f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+    ) -> Result<(), anyhow::Error> {
+        self.walk_dirs(&self.cache_root, f).map(|_| ())
     }
 
     async fn load(&self, storage_name: &str) -> Result<Arc<dyn AsRef<[u8]>>, anyhow::Error> {

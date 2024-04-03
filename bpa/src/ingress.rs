@@ -4,20 +4,12 @@ use tokio::sync::mpsc::*;
 
 pub type ClaSource = Option<(String, Vec<u8>)>;
 
-pub struct Ingress<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync,
-    B: storage::BundleStorage + Send + Sync,
-{
-    cache: cache::Cache<M, B>,
+pub struct Ingress {
+    cache: cache::Cache,
     tx: Sender<(ClaSource, bundle::Bundle, bool)>,
 }
 
-impl<M, B> Clone for Ingress<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync,
-    B: storage::BundleStorage + Send + Sync,
-{
+impl Clone for Ingress {
     fn clone(&self) -> Self {
         Self {
             cache: self.cache.clone(),
@@ -26,14 +18,10 @@ where
     }
 }
 
-impl<M, B> Ingress<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
-{
+impl Ingress {
     pub fn new(
         _config: &config::Config,
-        cache: cache::Cache<M, B>,
+        cache: cache::Cache,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {

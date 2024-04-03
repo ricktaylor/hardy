@@ -16,7 +16,14 @@ pub use bundle_flags::BundleFlags;
 pub use eid::Eid;
 pub use primary_block::{FragmentInfo, PrimaryBlock};
 
+pub struct Metadata {
+    pub storage_name: String,
+    pub hash: String,
+    pub received_at: time::OffsetDateTime,
+}
+
 pub struct Bundle {
+    pub metadata: Option<Metadata>,
     pub primary: PrimaryBlock,
     pub extensions: HashMap<u64, Block>,
 }
@@ -72,9 +79,14 @@ fn parse_bundle_blocks(
 
     Ok((
         Bundle {
+            metadata: None,
             primary,
             extensions,
         },
         valid,
     ))
+}
+
+pub fn dtn_time(instant: &time::OffsetDateTime) -> u64 {
+    (*instant - time::macros::datetime!(2000-01-01 00:00:00 UTC)).whole_milliseconds() as u64
 }

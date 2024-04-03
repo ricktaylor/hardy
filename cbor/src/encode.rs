@@ -80,6 +80,14 @@ impl ToCbor for u8 {
     }
 }
 
+impl ToCbor for bool {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        let mut v = write_tags(tags);
+        v.push((7 << 5) | if self { 21 } else { 20 });
+        v
+    }
+}
+
 impl ToCbor for usize {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         let mut v = write_tags(tags);
@@ -103,6 +111,20 @@ impl ToCbor for Vec<Vec<u8>> {
         v.extend(write_uint_minor(6, self.len() as u64));
         for i in self {
             v.extend(i);
+        }
+        v
+    }
+}
+
+impl<T> ToCbor for Option<T>
+where
+    T: ToCbor,
+{
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        let mut v = write_tags(tags);
+        match self {
+            Some(t) => v.extend(t.to_cbor(&[])),
+            None => v.push((7 << 5) | 22),
         }
         v
     }

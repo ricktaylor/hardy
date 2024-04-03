@@ -2,20 +2,12 @@ use super::*;
 use sha2::Digest;
 use std::sync::Arc;
 
-pub struct Cache<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync,
-    B: storage::BundleStorage + Send + Sync,
-{
-    metadata_storage: Arc<M>,
-    bundle_storage: Arc<B>,
+pub struct Cache {
+    metadata_storage: Arc<dyn storage::MetadataStorage>,
+    bundle_storage: Arc<dyn storage::BundleStorage>,
 }
 
-impl<M, B> Clone for Cache<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync,
-    B: storage::BundleStorage + Send + Sync,
-{
+impl Clone for Cache {
     fn clone(&self) -> Self {
         Self {
             metadata_storage: self.metadata_storage.clone(),
@@ -24,22 +16,70 @@ where
     }
 }
 
-impl<M, B> Cache<M, B>
-where
-    M: storage::MetadataStorage + Send + Sync + 'static,
-    B: storage::BundleStorage + Send + Sync + 'static,
-{
-    pub fn new(_config: &config::Config, metadata_storage: Arc<M>, bundle_storage: Arc<B>) -> Self {
+fn init_metadata_storage(
+    config: &config::Config,
+    upgrade: bool,
+) -> Result<std::sync::Arc<dyn storage::MetadataStorage>, anyhow::Error> {
+    let default = if cfg!(feature = "sqlite-storage") {
+        hardy_sqlite_storage::CONFIG_KEY
+    } else {
+        return Err(anyhow!("No default metadata storage engine, rebuild the package with at least one metadata storage engine feature enabled"));
+    };
+
+    let engine: String = settings::get_with_default(config, "metadata_storage", default)
+        .map_err(|e| anyhow!("Failed to parse 'metadata_storage' config param: {}", e))?;
+
+    let config = config.get_table(&engine).unwrap_or_default();
+
+    log::info!("Using metadata storage: {}", engine);
+
+    match engine.as_str() {
+        #[cfg(feature = "sqlite-storage")]
+        hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config, upgrade),
+
+        _ => Err(anyhow!("Unknown metadata storage engine {}", engine)),
+    }
+}
+
+fn init_bundle_storage(
+    config: &config::Config,
+    _upgrade: bool,
+) -> Result<std::sync::Arc<dyn storage::BundleStorage>, anyhow::Error> {
+    let default = if cfg!(feature = "localdisk-storage") {
+        hardy_localdisk_storage::CONFIG_KEY
+    } else {
+        return Err(anyhow!("No default bundle storage engine, rebuild the package with at least one bundle storage engine feature enabled"));
+    };
+
+    let engine: String = settings::get_with_default(config, "bundle_storage", default)
+        .map_err(|e| anyhow!("Failed to parse 'bundle_storage' config param: {}", e))?;
+    let config = config.get_table(&engine).unwrap_or_default();
+
+    log::info!("Using bundle storage: {}", engine);
+
+    match engine.as_str() {
+        #[cfg(feature = "localdisk-storage")]
+        hardy_localdisk_storage::CONFIG_KEY => hardy_localdisk_storage::Storage::init(&config),
+
+        _ => Err(anyhow!("Unknown bundle storage engine {}", engine)),
+    }
+}
+
+impl Cache {
+    pub fn new(config: &config::Config, upgrade: bool) -> Self {
+        // Init pluggable storage engines
         Self {
-            metadata_storage,
-            bundle_storage,
+            metadata_storage: init_metadata_storage(config, upgrade)
+                .log_expect("Failed to initialize metadata store"),
+            bundle_storage: init_bundle_storage(config, upgrade)
+                .log_expect("Failed to initialize bundle store"),
         }
     }
 
     pub async fn init(
         &self,
-        ingress: ingress::Ingress<M, B>,
-        dispatcher: dispatcher::Dispatcher<M, B>,
+        ingress: ingress::Ingress,
+        dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
         let self_cloned = self.clone();
@@ -62,13 +102,24 @@ where
 
     fn metadata_storage_check(
         &self,
-        dispatcher: dispatcher::Dispatcher<M, B>,
+        dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
-        self.metadata_storage.check_orphans(|bundle| {
+        self.metadata_storage.check_orphans(&mut |bundle| {
             tokio::runtime::Handle::current().block_on(async {
                 // The data associated with `bundle` has gone!
-                dispatcher.delete_bundle(bundle).await
+                dispatcher
+                    .report_bundle_deletion(
+                        &bundle,
+                        dispatcher::BundleStatusReportReasonCode::DepletedStorage,
+                    )
+                    .await?;
+
+                if let Some(metadata) = bundle.metadata {
+                    // Delete it
+                    self.metadata_storage.remove(&metadata.storage_name).await?;
+                }
+                Ok::<(), anyhow::Error>(())
             })?;
 
             // Just dumb poll the cancel token now - try to avoid mismatched state again
@@ -78,10 +129,10 @@ where
 
     fn bundle_storage_check(
         &self,
-        ingress: ingress::Ingress<M, B>,
+        ingress: ingress::Ingress,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
-        self.bundle_storage.check_orphans(|storage_name| {
+        self.bundle_storage.check_orphans(&mut |storage_name| {
             let r = tokio::runtime::Handle::current().block_on(async {
                 // Check if the metadata_storage knows about this bundle
                 if self
@@ -158,5 +209,9 @@ where
 
         // Return the parsed bundle
         Ok((Some(bundle), valid))
+    }
+
+    pub async fn remove(&self, bundle: bundle::Bundle) -> Result<(), anyhow::Error> {
+        todo!()
     }
 }

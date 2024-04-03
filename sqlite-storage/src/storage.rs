@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use base64::prelude::*;
-use hardy_bpa_core::{storage::MetadataStorage, *};
+use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
 use hardy_cbor as cbor;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
@@ -13,7 +13,7 @@ impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
         mut upgrade: bool,
-    ) -> Result<std::sync::Arc<Self>, anyhow::Error> {
+    ) -> Result<std::sync::Arc<dyn MetadataStorage>, anyhow::Error> {
         let db_dir: String = config.get("db_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
@@ -100,40 +100,48 @@ fn decode_eid(
     }
 }
 
-fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, Bundle)>, anyhow::Error> {
+fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>, anyhow::Error> {
     /* Expected query MUST look like:
            0:  bundles.id,
-           1:  bundles.flags,
-           2:  bundles.source,
-           3:  bundles.destination,
-           4:  bundles.report_to,
-           5:  bundles.creation_time,
-           6:  bundles.creation_seq_num,
-           7:  bundles.lifetime,
-           8:  bundle_fragments.offset,
-           9:  bundle_fragments.total_len,
-           10: bundle_blocks.block_num,
-           11: bundle_blocks.block_type,
-           12: bundle_blocks.block_flags,
-           13: bundle_blocks.data_offset
+           1:  bundles.file_name,
+           2:  bundles.hash,
+           3:  bundles.received_at,
+           4:  bundles.flags,
+           5:  bundles.source,
+           6:  bundles.destination,
+           7:  bundles.report_to,
+           8:  bundles.creation_time,
+           9:  bundles.creation_seq_num,
+           10: bundles.lifetime,
+           11: bundle_fragments.offset,
+           12: bundle_fragments.total_len,
+           13: bundle_blocks.block_num,
+           14: bundle_blocks.block_type,
+           15: bundle_blocks.block_flags,
+           16: bundle_blocks.data_offset
     */
 
     let mut bundles = Vec::new();
     let mut row_result = rows.next()?;
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
+        let metadata = bundle::Metadata {
+            storage_name: row.get(1)?,
+            hash: row.get(2)?,
+            received_at: row.get(3)?,
+        };
         let primary = bundle::PrimaryBlock {
-            flags: bundle::BundleFlags::new(row.get(1)?),
-            source: decode_eid(row, 2)?,
-            destination: decode_eid(row, 3)?,
-            report_to: decode_eid(row, 4)?,
-            timestamp: (row.get(5)?, row.get(6)?),
-            lifetime: row.get(7)?,
-            fragment_info: match row.get_ref(8)? {
+            flags: bundle::BundleFlags::new(row.get(4)?),
+            source: decode_eid(row, 5)?,
+            destination: decode_eid(row, 6)?,
+            report_to: decode_eid(row, 7)?,
+            timestamp: (row.get(8)?, row.get(9)?),
+            lifetime: row.get(10)?,
+            fragment_info: match row.get_ref(11)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
                     offset: offset as u64,
-                    total_len: row.get(9)?,
+                    total_len: row.get(12)?,
                 }),
                 _ => return Err(anyhow!("Fragment info is invalid")),
             },
@@ -141,11 +149,11 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, Bundle)>, anyhow
 
         let mut extensions = HashMap::new();
         loop {
-            let block_number: u64 = row.get(10)?;
+            let block_number: u64 = row.get(13)?;
             let block = bundle::Block {
-                block_type: bundle::BlockType::new(row.get(11)?)?,
-                flags: bundle::BlockFlags::new(row.get(12)?),
-                data_offset: row.get(13)?,
+                block_type: bundle::BlockType::new(row.get(14)?)?,
+                flags: bundle::BlockFlags::new(row.get(15)?),
+                data_offset: row.get(16)?,
             };
 
             if extensions.insert(block_number, block).is_some() {
@@ -165,7 +173,8 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, Bundle)>, anyhow
 
         bundles.push((
             bundle_id,
-            Bundle {
+            bundle::Bundle {
+                metadata: Some(metadata),
                 primary,
                 extensions,
             },
@@ -174,11 +183,12 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, Bundle)>, anyhow
     Ok(bundles)
 }
 
+#[async_trait]
 impl MetadataStorage for Storage {
-    fn check_orphans<F>(&self, mut f: F) -> Result<(), anyhow::Error>
-    where
-        F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
-    {
+    fn check_orphans(
+        &self,
+        f: &mut dyn FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>,
+    ) -> Result<(), anyhow::Error> {
         // Loop through subsets of 200 bundles, so we don't fill all memory
         loop {
             let bundles = unpack_bundles(
@@ -189,6 +199,9 @@ impl MetadataStorage for Storage {
                     WITH subset AS (
                         SELECT 
                             bundles.id AS id,
+                            file_name,
+                            hash,
+                            received_at,
                             flags,
                             source,
                             destination,
@@ -233,7 +246,7 @@ impl MetadataStorage for Storage {
         &self,
         storage_name: &str,
         hash: &[u8],
-        bundle: &Bundle,
+        bundle: &bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

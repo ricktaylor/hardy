@@ -74,9 +74,9 @@ dependencies = [
 
 [[package]]
 name = "async-trait"
-version = "0.1.77"
+version = "0.1.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c980ee35e870bd1a4d2c8294d4c04d0499e67bca1e4b5cefcc693c2fa00caea9"
+checksum = "a507401cad91ec6a857ed5513a2073c82a9b9048762b885bb98655b306964681"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -524,6 +524,7 @@ dependencies = [
  "sha2",
  "simplelog",
  "thiserror",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -535,10 +536,12 @@ name = "hardy-bpa-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "config",
  "crc",
  "hardy-cbor",
  "log",
+ "time",
  "tokio-util",
 ]
 
@@ -1269,6 +1272,7 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
+ "time",
 ]
 
 [[package]]

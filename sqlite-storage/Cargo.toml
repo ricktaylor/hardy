@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 sha1 = "0.10.6"
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
-rusqlite = { version = "0.31.0", features = ["bundled"] }
+rusqlite = { version = "0.31.0", features = ["bundled","time"] }
 tokio = { version = "1.36.0", features = ["macros","rt-multi-thread","signal","fs"] }
 tokio-util = "0.7.10"
 log = "0.4.21"
