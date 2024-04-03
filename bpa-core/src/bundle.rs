@@ -64,7 +64,7 @@ impl BundleFlags {
         }
         if f & !((2 ^ 20) - 1) != 0 {
             log::info!(
-                "Parsing bundle primary block with unassigned flag bit {} set",
+                "Parsing bundle primary block with unassigned flag bits set: {:#x}",
                 f
             );
         }
@@ -374,7 +374,7 @@ impl BlockFlags {
             }
         }
         if f & !((2 ^ 6) - 1) != 0 {
-            log::info!("Parsing bundle block with unassigned flag bit {} set", f);
+            log::info!("Parsing bundle block with unassigned flag bits set: {:#x}", f);
         }
         flags
     }
