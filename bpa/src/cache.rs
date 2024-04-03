@@ -94,13 +94,13 @@ where
 
                 // Parse the bundle first
                 let data = self.bundle_storage.load(storage_name).await?;
-                let Ok((bundle, valid)) = bundle::parse((**data).as_ref()) else {
+                let Ok((bundle, valid)) = bundle::parse((*data).as_ref()) else {
                     // Drop it... garbage
                     return Ok(false);
                 };
 
                 // Write to metadata or die trying
-                let hash = sha2::Sha256::digest((**data).as_ref());
+                let hash = sha2::Sha256::digest((*data).as_ref());
                 self.metadata_storage
                     .store(storage_name, &hash, &bundle)
                     .await?;
