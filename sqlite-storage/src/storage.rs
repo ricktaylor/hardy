@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use base64::prelude::*;
-use hardy_bpa_core::{bundle::Bundle, storage::MetadataStorage, *};
+use hardy_bpa_core::{storage::MetadataStorage, *};
 use hardy_cbor as cbor;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
