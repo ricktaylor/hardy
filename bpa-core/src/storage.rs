@@ -32,7 +32,7 @@ pub trait BundleStorage {
     fn load(
         &self,
         storage_name: &str,
-    ) -> impl std::future::Future<Output = Result<std::sync::Arc<Box<dyn AsRef<[u8]>>>, anyhow::Error>>
+    ) -> impl std::future::Future<Output = Result<std::sync::Arc<dyn AsRef<[u8]>>, anyhow::Error>>
            + Send;
 
     fn store(

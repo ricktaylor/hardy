@@ -150,17 +150,17 @@ impl BundleStorage for Storage {
         self.walk_dirs(&self.cache_root, &mut f).map(|_| ())
     }
 
-    async fn load(&self, storage_name: &str) -> Result<Arc<Box<dyn AsRef<[u8]>>>, anyhow::Error> {
+    async fn load(&self, storage_name: &str) -> Result<Arc<dyn AsRef<[u8]>>, anyhow::Error> {
         let file_path = self.cache_root.join(PathBuf::from_str(storage_name)?);
 
         if cfg!(feature = "mmap") {
             let file = std::fs::File::open(file_path)?;
             let data = unsafe { memmap2::Mmap::map(&file)? };
-            Ok(Arc::new(Box::new(data)))
+            Ok(Arc::new(data))
         } else {
             let mut v = Vec::new();
             std::fs::File::open(file_path)?.read_to_end(&mut v)?;
-            Ok(Arc::new(Box::new(v)))
+            Ok(Arc::new(v))
         }
     }
 
