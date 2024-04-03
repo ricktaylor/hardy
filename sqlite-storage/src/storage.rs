@@ -179,40 +179,51 @@ impl MetadataStorage for Storage {
     where
         F: FnMut(Bundle) -> Result<bool, anyhow::Error>,
     {
-        // We do this as separate transactions to not block the database
-        let bundles = unpack_bundles(
-            self.connection
-                .blocking_lock()
-                .prepare(
-                    r#"
-                SELECT 
-                    bundles.id,
-                    flags,
-                    source,
-                    destination,
-                    report_to,
-                    creation_time,
-                    creation_seq_num,
-                    lifetime,                    
-                    offset,
-                    total_len,
-                    block_num,
-                    block_type,
-                    block_flags,
-                    data_offset
-                FROM unconfirmed_bundles
-                JOIN bundles ON bundles.id = unconfirmed_bundles.bundle_id
-                LEFT OUTER JOIN bundle_fragments ON bundle_fragments.bundle_id = bundles.id
-                LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = bundles.id;
-            "#,
-                )?
-                .query([])?,
-        )?;
-
-        // Now enumerate the vector
-        for (_bundle_id, bundle) in bundles {
-            if !f(bundle)? {
+        // Loop through subsets of 200 bundles, so we don't fill all memory
+        loop {
+            let bundles = unpack_bundles(
+                self.connection
+                    .blocking_lock()
+                    .prepare(
+                        r#"
+                    WITH subset AS (
+                        SELECT 
+                            bundles.id AS id,
+                            flags,
+                            source,
+                            destination,
+                            report_to,
+                            creation_time,
+                            creation_seq_num,
+                            lifetime,                    
+                            offset,
+                            total_len
+                        FROM unconfirmed_bundles
+                        JOIN bundles ON bundles.id = unconfirmed_bundles.bundle_id
+                        LEFT OUTER JOIN bundle_fragments ON bundle_fragments.bundle_id = bundles.id
+                        LIMIT 200
+                    )
+                    SELECT 
+                        subset.*,
+                        block_num,
+                        block_type,
+                        block_flags,
+                        data_offset
+                    FROM subset
+                    LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = subset.id;
+                "#,
+                    )?
+                    .query([])?,
+            )?;
+            if bundles.is_empty() {
                 break;
+            }
+
+            // Now enumerate the vector outside the query implicit transaction
+            for (_bundle_id, bundle) in bundles {
+                if !f(bundle)? {
+                    break;
+                }
             }
         }
         Ok(())
