@@ -5,6 +5,7 @@ CREATE TABLE bundles (
     hash TEXT NOT NULL,
     received_at DATE NOT NULL DEFAULT(datetime('now','utc','subsecond')),
     flags INTEGER NOT NULL,
+    crc_type INTEGER NOT NULL,
     destination BLOB NOT NULL,
     creation_time INTEGER NOT NULL,
     creation_seq_num INTEGER NOT NULL,
@@ -19,7 +20,9 @@ CREATE TABLE bundle_blocks (
     block_type INTEGER NOT NULL,
     block_num INTEGER NOT NULL,
     block_flags INTEGER NOT NULL,
-    data_offset INTEGER
+    block_crc_type INTEGER NOT NULL,
+    data_offset INTEGER NOT NULL,
+    data_len INTEGER NOT NULL,
 );
 
 CREATE TABLE bundle_fragments (

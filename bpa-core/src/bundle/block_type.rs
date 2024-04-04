@@ -47,3 +47,9 @@ impl cbor::decode::FromCbor for BlockType {
         Ok((code.try_into()?, o, tags))
     }
 }
+
+impl cbor::encode::ToCbor for BlockType {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        cbor::encode::emit_with_tags::<u64>(self.into(), tags)
+    }
+}

@@ -89,65 +89,57 @@ fn new_bundle_status_report(
 ) -> Vec<u8> {
     let mut report = vec![
         // Statuses
-        cbor::encode::emit(vec![
+        cbor::encode::emit([
             // Report node received bundle
-            cbor::encode::emit(
-                if bundle.primary.flags.report_status_time
-                    && bundle.primary.flags.receipt_report_requested
-                    && bundle.metadata.is_some()
-                {
-                    vec![
-                        cbor::encode::emit(true),
-                        cbor::encode::emit(bundle::dtn_time(
-                            &bundle.metadata.as_ref().unwrap().received_at,
-                        )),
-                    ]
-                } else {
-                    vec![cbor::encode::emit(bundle.metadata.is_some())]
-                },
-            ),
+            if bundle.primary.flags.report_status_time
+                && bundle.primary.flags.receipt_report_requested
+                && bundle.metadata.is_some()
+            {
+                cbor::encode::emit([
+                    cbor::encode::emit(true),
+                    cbor::encode::emit(bundle::dtn_time(
+                        &bundle.metadata.as_ref().unwrap().received_at,
+                    )),
+                ])
+            } else {
+                cbor::encode::emit([cbor::encode::emit(bundle.metadata.is_some())])
+            },
             // Report node forwarded the bundle
-            cbor::encode::emit(vec![cbor::encode::emit(
-                if bundle.primary.flags.report_status_time
-                    && bundle.primary.flags.forward_report_requested
-                    && forwarded.is_some()
-                {
-                    vec![
-                        cbor::encode::emit(true),
-                        cbor::encode::emit(bundle::dtn_time(&forwarded.unwrap())),
-                    ]
-                } else {
-                    vec![cbor::encode::emit(forwarded.is_some())]
-                },
-            )]),
+            if bundle.primary.flags.report_status_time
+                && bundle.primary.flags.forward_report_requested
+                && forwarded.is_some()
+            {
+                cbor::encode::emit([
+                    cbor::encode::emit(true),
+                    cbor::encode::emit(bundle::dtn_time(&forwarded.unwrap())),
+                ])
+            } else {
+                cbor::encode::emit([cbor::encode::emit(forwarded.is_some())])
+            },
             // Report node delivered the bundle
-            cbor::encode::emit(vec![cbor::encode::emit(
-                if bundle.primary.flags.report_status_time
-                    && bundle.primary.flags.delivery_report_requested
-                    && delivered.is_some()
-                {
-                    vec![
-                        cbor::encode::emit(true),
-                        cbor::encode::emit(bundle::dtn_time(&delivered.unwrap())),
-                    ]
-                } else {
-                    vec![cbor::encode::emit(delivered.is_some())]
-                },
-            )]),
+            if bundle.primary.flags.report_status_time
+                && bundle.primary.flags.delivery_report_requested
+                && delivered.is_some()
+            {
+                cbor::encode::emit([
+                    cbor::encode::emit(true),
+                    cbor::encode::emit(bundle::dtn_time(&delivered.unwrap())),
+                ])
+            } else {
+                cbor::encode::emit([cbor::encode::emit(delivered.is_some())])
+            },
             // Report node deleted the bundle
-            cbor::encode::emit(vec![cbor::encode::emit(
-                if bundle.primary.flags.report_status_time
-                    && bundle.primary.flags.delete_report_requested
-                    && deleted.is_some()
-                {
-                    vec![
-                        cbor::encode::emit(true),
-                        cbor::encode::emit(bundle::dtn_time(&deleted.unwrap())),
-                    ]
-                } else {
-                    vec![cbor::encode::emit(deleted.is_some())]
-                },
-            )]),
+            if bundle.primary.flags.report_status_time
+                && bundle.primary.flags.delete_report_requested
+                && deleted.is_some()
+            {
+                cbor::encode::emit([
+                    cbor::encode::emit(true),
+                    cbor::encode::emit(bundle::dtn_time(&deleted.unwrap())),
+                ])
+            } else {
+                cbor::encode::emit([cbor::encode::emit(deleted.is_some())])
+            },
         ]),
         // Reason code
         cbor::encode::emit(reason as u64),
@@ -162,7 +154,5 @@ fn new_bundle_status_report(
         report.push(cbor::encode::emit(fragment_info.offset));
         report.push(cbor::encode::emit(fragment_info.total_len));
     }
-    let report = cbor::encode::emit(vec![cbor::encode::emit(1u8), cbor::encode::emit(report)]);
-
-    todo!()
+    cbor::encode::emit([cbor::encode::emit(1u8), cbor::encode::emit(report)])
 }

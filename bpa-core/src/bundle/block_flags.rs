@@ -50,3 +50,9 @@ impl From<u64> for BlockFlags {
         flags
     }
 }
+
+impl cbor::encode::ToCbor for BlockFlags {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        cbor::encode::emit_with_tags::<u64>(self.into(), tags)
+    }
+}

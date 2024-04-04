@@ -1,3 +1,5 @@
+use self::crc::CrcType;
+
 use super::*;
 
 pub struct FragmentInfo {
@@ -7,6 +9,7 @@ pub struct FragmentInfo {
 
 pub struct PrimaryBlock {
     pub flags: BundleFlags,
+    pub crc_type: CrcType,
     pub source: Eid,
     pub destination: Eid,
     pub report_to: Eid,
@@ -41,7 +44,7 @@ impl PrimaryBlock {
 
         // Parse CRC Type
         let crc_type = block
-            .parse::<u64>()
+            .parse::<CrcType>()
             .inspect_err(|e| log::info!("Invalid crc type: {}", e));
 
         // Parse EIDs
@@ -72,7 +75,10 @@ impl PrimaryBlock {
 
         // Try to parse and check CRC
         let crc_result = match crc_type {
-            Ok(crc_type) => parse_crc_value(data, block_start, block, crc_type),
+            Ok(crc_type) => Ok((
+                crc::parse_crc_value(data, block_start, block, crc_type),
+                crc_type,
+            )),
             Err(e) => Err(e),
         };
 
@@ -91,10 +97,11 @@ impl PrimaryBlock {
                 Ok(timestamp),
                 Ok(lifetime),
                 Ok(fragment_info),
-                Ok(_),
+                Ok((_, crc_type)),
             ) => Ok((
                 PrimaryBlock {
                     flags,
+                    crc_type,
                     source,
                     destination,
                     report_to: report_to_eid,
@@ -104,11 +111,12 @@ impl PrimaryBlock {
                 },
                 true,
             )),
-            (dest_eid, source_eid, timestamp, lifetime, _, _) => {
+            (dest_eid, source_eid, timestamp, lifetime, _, crc_result) => {
                 Ok((
                     // Compose something out of what we have!
                     PrimaryBlock {
                         flags,
+                        crc_type: crc_result.map_or(CrcType::None, |(_, t)| t),
                         source: source_eid.unwrap_or(Eid::Null),
                         destination: dest_eid.unwrap_or(Eid::Null),
                         report_to: report_to_eid,
@@ -120,6 +128,36 @@ impl PrimaryBlock {
                 ))
             }
         }
+    }
+
+    pub fn emit(&self) -> Vec<u8> {
+        let mut parts = vec![
+            // Version
+            cbor::encode::emit(7u8),
+            // Flags
+            cbor::encode::emit(self.flags),
+            // CRC
+            cbor::encode::emit(self.crc_type),
+            // EIDs
+            cbor::encode::emit(&self.destination),
+            cbor::encode::emit(&self.source),
+            cbor::encode::emit(&self.report_to),
+            // Timestamp
+            cbor::encode::emit([
+                cbor::encode::emit(self.timestamp.0),
+                cbor::encode::emit(self.timestamp.1),
+            ]),
+            // Lifetime
+            cbor::encode::emit(self.lifetime),
+        ];
+        if let Some(fragment_info) = &self.fragment_info {
+            // Add fragment info
+            parts.push(cbor::encode::emit(fragment_info.offset));
+            parts.push(cbor::encode::emit(fragment_info.total_len));
+        }
+
+        // And checksum
+        crc::emit_crc_value(parts, &self.crc_type)
     }
 }
 

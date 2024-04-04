@@ -108,18 +108,21 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
            3:  bundles.hash,
            4:  bundles.received_at,
            5:  bundles.flags,
-           6:  bundles.source,
-           7:  bundles.destination,
-           8:  bundles.report_to,
-           9:  bundles.creation_time,
-           10: bundles.creation_seq_num,
-           11: bundles.lifetime,
-           12: bundle_fragments.offset,
-           13: bundle_fragments.total_len,
-           14: bundle_blocks.block_num,
-           15: bundle_blocks.block_type,
-           16: bundle_blocks.block_flags,
-           17: bundle_blocks.data_offset
+           6:  bundles.crc_type,
+           7:  bundles.source,
+           8:  bundles.destination,
+           9:  bundles.report_to,
+           10: bundles.creation_time,
+           11: bundles.creation_seq_num,
+           12: bundles.lifetime,
+           13: bundle_fragments.offset,
+           14: bundle_fragments.total_len,
+           15: bundle_blocks.block_num,
+           16: bundle_blocks.block_type,
+           17: bundle_blocks.block_flags,
+           18: bundle_blocks.block_crc_type,
+           19: bundle_blocks.data_offset,
+           20: bundle_blocks.data_len
     */
 
     let mut bundles = Vec::new();
@@ -134,16 +137,17 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
         };
         let primary = bundle::PrimaryBlock {
             flags: row.get::<usize, u64>(5)?.into(),
-            source: decode_eid(row, 6)?,
-            destination: decode_eid(row, 7)?,
-            report_to: decode_eid(row, 8)?,
-            timestamp: (row.get(9)?, row.get(10)?),
-            lifetime: row.get(11)?,
-            fragment_info: match row.get_ref(12)? {
+            crc_type: row.get::<usize, u64>(6)?.try_into()?,
+            source: decode_eid(row, 7)?,
+            destination: decode_eid(row, 8)?,
+            report_to: decode_eid(row, 9)?,
+            timestamp: (row.get(10)?, row.get(11)?),
+            lifetime: row.get(12)?,
+            fragment_info: match row.get_ref(13)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
                     offset: offset as u64,
-                    total_len: row.get(13)?,
+                    total_len: row.get(14)?,
                 }),
                 _ => return Err(anyhow!("Fragment info is invalid")),
             },
@@ -151,11 +155,13 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
 
         let mut extensions = HashMap::new();
         loop {
-            let block_number: u64 = row.get(14)?;
+            let block_number: u64 = row.get(15)?;
             let block = bundle::Block {
-                block_type: row.get::<usize, u64>(15)?.try_into()?,
-                flags: row.get::<usize, u64>(16)?.into(),
-                data_offset: row.get(17)?,
+                block_type: row.get::<usize, u64>(16)?.try_into()?,
+                flags: row.get::<usize, u64>(17)?.into(),
+                crc_type: row.get::<usize, u64>(18)?.try_into()?,
+                data_offset: row.get(19)?,
+                data_len: row.get(20)?,
             };
 
             if extensions.insert(block_number, block).is_some() {
@@ -206,6 +212,7 @@ impl MetadataStorage for Storage {
                             hash,
                             received_at,
                             flags,
+                            crc_type,
                             source,
                             destination,
                             report_to,
@@ -224,7 +231,9 @@ impl MetadataStorage for Storage {
                         block_num,
                         block_type,
                         block_flags,
-                        data_offset
+                        block_crc_type,
+                        data_offset,
+                        data_len
                     FROM subset
                     LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = subset.id;
                 "#,
@@ -262,6 +271,7 @@ impl MetadataStorage for Storage {
                 file_name,
                 hash,
                 flags,
+                crc_type,
                 destination,
                 creation_time,
                 creation_seq_num,
@@ -274,6 +284,7 @@ impl MetadataStorage for Storage {
                 storage_name,
                 BASE64_STANDARD.encode(hash),
                 <bundle::BundleFlags as Into<u64>>::into(bundle.primary.flags),
+                <bundle::CrcType as Into<u64>>::into(bundle.primary.crc_type),
                 &encode_eid(&bundle.primary.destination)?,
                 bundle.primary.timestamp.0,
                 bundle.primary.timestamp.1,
@@ -290,8 +301,10 @@ impl MetadataStorage for Storage {
                 block_type,
                 block_num,
                 block_flags,
-                data_offset)
-            VALUES (?1,?2,?3,?4,?5);"#,
+                block_crc_type,
+                data_offset,
+                data_len)
+            VALUES (?1,?2,?3,?4,?5,?6);"#,
         )?;
         for (block_num, block) in &bundle.extensions {
             block_stmt.execute((
@@ -299,7 +312,9 @@ impl MetadataStorage for Storage {
                 <bundle::BlockType as Into<u64>>::into(block.block_type),
                 block_num,
                 <bundle::BlockFlags as Into<u64>>::into(block.flags),
+                <bundle::CrcType as Into<u64>>::into(block.crc_type),
                 block.data_offset,
+                block.data_len,
             ))?;
         }
 

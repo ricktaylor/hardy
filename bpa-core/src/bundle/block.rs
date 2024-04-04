@@ -1,9 +1,13 @@
+use self::crc::CrcType;
+
 use super::*;
 
 pub struct Block {
     pub block_type: BlockType,
     pub flags: BlockFlags,
-    pub data_offset: Option<usize>,
+    pub crc_type: CrcType,
+    pub data_offset: usize,
+    pub data_len: usize,
 }
 
 impl Block {
@@ -24,10 +28,10 @@ impl Block {
         let block_type = block.parse::<BlockType>()?;
         let block_number = block.parse::<u64>()?;
         let flags = block.parse::<BlockFlags>()?;
-        let crc_type = block.parse::<u64>()?;
+        let crc_type = block.parse::<CrcType>()?;
 
         // Stash start of data
-        let (data_start, data_len) =
+        let (data_offset, data_len) =
             block.try_parse_item(|value, data_start, tags| match value {
                 cbor::decode::Value::Bytes(v, chunked) => {
                     if chunked {
@@ -42,19 +46,35 @@ impl Block {
             })?;
 
         // Check CRC
-        let data_end = parse_crc_value(data, block_start, block, crc_type)?;
+        let data_end = crc::parse_crc_value(data, block_start, block, crc_type)?;
 
         Ok((
             block_number,
             Block {
                 block_type,
                 flags,
-                data_offset: if data_end == data_start || data_len == 0 {
-                    None
-                } else {
-                    Some(data_start)
-                },
+                crc_type,
+                data_offset,
+                data_len,
             },
         ))
+    }
+
+    pub fn emit(&self, block_number: u64, data: &[u8]) -> Vec<u8> {
+        crc::emit_crc_value(
+            vec![
+                // Block Type
+                cbor::encode::emit(self.block_type),
+                // Block Number
+                cbor::encode::emit(block_number),
+                // Flags
+                cbor::encode::emit(self.flags),
+                // CRC Type
+                cbor::encode::emit(self.crc_type),
+                // Payload
+                cbor::encode::emit(&data[self.data_offset..self.data_offset + self.data_len]),
+            ],
+            &self.crc_type,
+        )
     }
 }
