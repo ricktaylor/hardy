@@ -145,7 +145,7 @@ impl Cache {
 
                 // Parse the bundle first
                 let data = self.bundle_storage.load(storage_name).await?;
-                let Ok((bundle, valid)) = bundle::parse((*data).as_ref()) else {
+                let Ok((bundle, valid)) = bundle::Bundle::parse((*data).as_ref()) else {
                     // Drop it... garbage
                     return Ok(false);
                 };
@@ -176,7 +176,7 @@ impl Cache {
         let write_result = self.bundle_storage.store(data.clone());
 
         // Parse the bundle in parallel
-        let bundle_result = bundle::parse(&data);
+        let bundle_result = bundle::Bundle::parse(&data);
         let hash = sha2::Sha256::digest(&*data);
 
         // Await the result of write to bundle storage

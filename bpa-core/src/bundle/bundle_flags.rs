@@ -102,10 +102,3 @@ impl From<BundleFlags> for u64 {
         flags
     }
 }
-
-impl cbor::decode::FromCbor for BundleFlags {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (flags, o, tags) = cbor::decode::parse_detail::<u64>(data)?;
-        Ok((flags.into(), o, tags))
-    }
-}

@@ -19,10 +19,8 @@ pub enum Error {
     InvalidChunk,
 }
 
-pub trait FromCbor {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>
-    where
-        Self: Sized;
+pub trait FromCbor: Sized {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>;
 }
 
 pub enum Value<'a> {
@@ -318,15 +316,12 @@ where
     T::from_cbor(data).map(|(v, _, _)| v)
 }
 
-impl FromCbor for u64 {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>
-    where
-        Self: Sized,
-    {
+impl<T: From<u64>> FromCbor for T {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
         parse_value(data, |value, tags| match (value, tags) {
             (Value::Uint(value), tags) => Ok((value, tags.to_vec())),
             _ => Err(Error::IncorrectType.into()),
         })
-        .map(|((val, tags), o)| (val, o, tags))
+        .map(|((val, tags), o)| (val.into(), o, tags))
     }
 }

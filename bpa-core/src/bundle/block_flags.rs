@@ -50,10 +50,3 @@ impl From<u64> for BlockFlags {
         flags
     }
 }
-
-impl cbor::decode::FromCbor for BlockFlags {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (flags, o, tags) = cbor::decode::parse_detail::<u64>(data)?;
-        Ok((flags.into(), o, tags))
-    }
-}

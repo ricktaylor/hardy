@@ -85,7 +85,7 @@ impl Storage {
 fn encode_eid(eid: &bundle::Eid) -> Result<rusqlite::types::Value, anyhow::Error> {
     match eid {
         bundle::Eid::Null => Ok(rusqlite::types::Value::Null),
-        _ => Ok(rusqlite::types::Value::Blob(cbor::encode::write(eid))),
+        _ => Ok(rusqlite::types::Value::Blob(cbor::encode::emit(eid))),
     }
 }
 

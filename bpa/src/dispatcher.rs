@@ -89,67 +89,80 @@ fn new_bundle_status_report(
 ) -> Vec<u8> {
     let mut report = vec![
         // Statuses
-        cbor::encode::write(vec![
+        cbor::encode::emit(vec![
             // Report node received bundle
-            cbor::encode::write(
-                if bundle.primary.flags.report_status_time && bundle.metadata.is_some() {
+            cbor::encode::emit(
+                if bundle.primary.flags.report_status_time
+                    && bundle.primary.flags.receipt_report_requested
+                    && bundle.metadata.is_some()
+                {
                     vec![
-                        cbor::encode::write(true),
-                        cbor::encode::write(bundle::dtn_time(
+                        cbor::encode::emit(true),
+                        cbor::encode::emit(bundle::dtn_time(
                             &bundle.metadata.as_ref().unwrap().received_at,
                         )),
                     ]
                 } else {
-                    vec![cbor::encode::write(bundle.metadata.is_some())]
+                    vec![cbor::encode::emit(bundle.metadata.is_some())]
                 },
             ),
             // Report node forwarded the bundle
-            cbor::encode::write(vec![cbor::encode::write(
-                if bundle.primary.flags.report_status_time && forwarded.is_some() {
+            cbor::encode::emit(vec![cbor::encode::emit(
+                if bundle.primary.flags.report_status_time
+                    && bundle.primary.flags.forward_report_requested
+                    && forwarded.is_some()
+                {
                     vec![
-                        cbor::encode::write(true),
-                        cbor::encode::write(bundle::dtn_time(&forwarded.unwrap())),
+                        cbor::encode::emit(true),
+                        cbor::encode::emit(bundle::dtn_time(&forwarded.unwrap())),
                     ]
                 } else {
-                    vec![cbor::encode::write(forwarded.is_some())]
+                    vec![cbor::encode::emit(forwarded.is_some())]
                 },
             )]),
             // Report node delivered the bundle
-            cbor::encode::write(vec![cbor::encode::write(
-                if bundle.primary.flags.report_status_time && delivered.is_some() {
+            cbor::encode::emit(vec![cbor::encode::emit(
+                if bundle.primary.flags.report_status_time
+                    && bundle.primary.flags.delivery_report_requested
+                    && delivered.is_some()
+                {
                     vec![
-                        cbor::encode::write(true),
-                        cbor::encode::write(bundle::dtn_time(&delivered.unwrap())),
+                        cbor::encode::emit(true),
+                        cbor::encode::emit(bundle::dtn_time(&delivered.unwrap())),
                     ]
                 } else {
-                    vec![cbor::encode::write(delivered.is_some())]
+                    vec![cbor::encode::emit(delivered.is_some())]
                 },
             )]),
             // Report node deleted the bundle
-            cbor::encode::write(vec![cbor::encode::write(
-                if bundle.primary.flags.report_status_time && deleted.is_some() {
+            cbor::encode::emit(vec![cbor::encode::emit(
+                if bundle.primary.flags.report_status_time
+                    && bundle.primary.flags.delete_report_requested
+                    && deleted.is_some()
+                {
                     vec![
-                        cbor::encode::write(true),
-                        cbor::encode::write(bundle::dtn_time(&deleted.unwrap())),
+                        cbor::encode::emit(true),
+                        cbor::encode::emit(bundle::dtn_time(&deleted.unwrap())),
                     ]
                 } else {
-                    vec![cbor::encode::write(deleted.is_some())]
+                    vec![cbor::encode::emit(deleted.is_some())]
                 },
             )]),
         ]),
         // Reason code
-        cbor::encode::write(reason as u64),
+        cbor::encode::emit(reason as u64),
         // Source EID
-        cbor::encode::write(&bundle.primary.source),
+        cbor::encode::emit(&bundle.primary.source),
         // Creation Timestamp
-        cbor::encode::write(bundle.primary.timestamp.0),
-        cbor::encode::write(bundle.primary.timestamp.1),
+        cbor::encode::emit(bundle.primary.timestamp.0),
+        cbor::encode::emit(bundle.primary.timestamp.1),
     ];
     if let Some(fragment_info) = &bundle.primary.fragment_info {
         // Add fragment info
-        report.push(cbor::encode::write(fragment_info.offset));
-        report.push(cbor::encode::write(fragment_info.total_len));
+        report.push(cbor::encode::emit(fragment_info.offset));
+        report.push(cbor::encode::emit(fragment_info.total_len));
     }
+    let report = cbor::encode::emit(vec![cbor::encode::emit(1u8), cbor::encode::emit(report)]);
 
-    cbor::encode::write(vec![cbor::encode::write(1u8), cbor::encode::write(report)])
+    todo!()
 }
