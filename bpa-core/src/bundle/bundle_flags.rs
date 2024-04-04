@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub struct BundleFlags {
     pub is_fragment: bool,
     pub is_admin_record: bool,
@@ -13,11 +13,11 @@ pub struct BundleFlags {
     pub delete_report_requested: bool,
 }
 
-impl BundleFlags {
-    pub fn new(f: u64) -> Self {
+impl From<u64> for BundleFlags {
+    fn from(value: u64) -> Self {
         let mut flags = BundleFlags::default();
         for b in 0..=20 {
-            if f & (1 << b) != 0 {
+            if value & (1 << b) != 0 {
                 match b {
                     0 => flags.is_fragment = true,
                     1 => flags.is_admin_record = true,
@@ -59,42 +59,44 @@ impl BundleFlags {
                 }
             }
         }
-        if f & !((2 ^ 20) - 1) != 0 {
+        if value & !((2 ^ 20) - 1) != 0 {
             log::info!(
                 "Parsing bundle primary block with unassigned flag bits set: {:#x}",
-                f
+                value
             );
         }
         flags
     }
+}
 
-    pub fn as_u64(&self) -> u64 {
+impl From<BundleFlags> for u64 {
+    fn from(value: BundleFlags) -> Self {
         let mut flags: u64 = 0;
-        if self.is_fragment {
+        if value.is_fragment {
             flags |= 1 << 0;
         }
-        if self.is_admin_record {
+        if value.is_admin_record {
             flags |= 1 << 1;
         }
-        if self.do_not_fragment {
+        if value.do_not_fragment {
             flags |= 1 << 2;
         }
-        if self.app_ack_requested {
+        if value.app_ack_requested {
             flags |= 1 << 5;
         }
-        if self.report_status_time {
+        if value.report_status_time {
             flags |= 1 << 6;
         }
-        if self.receipt_report_requested {
+        if value.receipt_report_requested {
             flags |= 1 << 14;
         }
-        if self.forward_report_requested {
+        if value.forward_report_requested {
             flags |= 1 << 16;
         }
-        if self.delivery_report_requested {
+        if value.delivery_report_requested {
             flags |= 1 << 17;
         }
-        if self.delete_report_requested {
+        if value.delete_report_requested {
             flags |= 1 << 18;
         }
         flags
@@ -103,7 +105,7 @@ impl BundleFlags {
 
 impl cbor::decode::FromCbor for BundleFlags {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (flags, o, tags) = cbor::decode::parse_detail(data)?;
-        Ok((BundleFlags::new(flags), o, tags))
+        let (flags, o, tags) = cbor::decode::parse_detail::<u64>(data)?;
+        Ok((flags.into(), o, tags))
     }
 }

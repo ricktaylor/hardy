@@ -103,22 +103,23 @@ fn decode_eid(
 fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>, anyhow::Error> {
     /* Expected query MUST look like:
            0:  bundles.id,
-           1:  bundles.file_name,
-           2:  bundles.hash,
-           3:  bundles.received_at,
-           4:  bundles.flags,
-           5:  bundles.source,
-           6:  bundles.destination,
-           7:  bundles.report_to,
-           8:  bundles.creation_time,
-           9:  bundles.creation_seq_num,
-           10: bundles.lifetime,
-           11: bundle_fragments.offset,
-           12: bundle_fragments.total_len,
-           13: bundle_blocks.block_num,
-           14: bundle_blocks.block_type,
-           15: bundle_blocks.block_flags,
-           16: bundle_blocks.data_offset
+           1:  bundles.status,
+           2:  bundles.file_name,
+           3:  bundles.hash,
+           4:  bundles.received_at,
+           5:  bundles.flags,
+           6:  bundles.source,
+           7:  bundles.destination,
+           8:  bundles.report_to,
+           9:  bundles.creation_time,
+           10: bundles.creation_seq_num,
+           11: bundles.lifetime,
+           12: bundle_fragments.offset,
+           13: bundle_fragments.total_len,
+           14: bundle_blocks.block_num,
+           15: bundle_blocks.block_type,
+           16: bundle_blocks.block_flags,
+           17: bundle_blocks.data_offset
     */
 
     let mut bundles = Vec::new();
@@ -126,22 +127,23 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
         let metadata = bundle::Metadata {
-            storage_name: row.get(1)?,
-            hash: row.get(2)?,
-            received_at: row.get(3)?,
+            status: row.get::<usize, u64>(1)?.try_into()?,
+            storage_name: row.get(2)?,
+            hash: row.get(3)?,
+            received_at: row.get(4)?,
         };
         let primary = bundle::PrimaryBlock {
-            flags: bundle::BundleFlags::new(row.get(4)?),
-            source: decode_eid(row, 5)?,
-            destination: decode_eid(row, 6)?,
-            report_to: decode_eid(row, 7)?,
-            timestamp: (row.get(8)?, row.get(9)?),
-            lifetime: row.get(10)?,
-            fragment_info: match row.get_ref(11)? {
+            flags: row.get::<usize, u64>(5)?.into(),
+            source: decode_eid(row, 6)?,
+            destination: decode_eid(row, 7)?,
+            report_to: decode_eid(row, 8)?,
+            timestamp: (row.get(9)?, row.get(10)?),
+            lifetime: row.get(11)?,
+            fragment_info: match row.get_ref(12)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
                     offset: offset as u64,
-                    total_len: row.get(12)?,
+                    total_len: row.get(13)?,
                 }),
                 _ => return Err(anyhow!("Fragment info is invalid")),
             },
@@ -149,11 +151,11 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
 
         let mut extensions = HashMap::new();
         loop {
-            let block_number: u64 = row.get(13)?;
+            let block_number: u64 = row.get(14)?;
             let block = bundle::Block {
-                block_type: bundle::BlockType::new(row.get(14)?)?,
-                flags: bundle::BlockFlags::new(row.get(15)?),
-                data_offset: row.get(16)?,
+                block_type: row.get::<usize, u64>(15)?.try_into()?,
+                flags: row.get::<usize, u64>(16)?.into(),
+                data_offset: row.get(17)?,
             };
 
             if extensions.insert(block_number, block).is_some() {
@@ -199,6 +201,7 @@ impl MetadataStorage for Storage {
                     WITH subset AS (
                         SELECT 
                             bundles.id AS id,
+                            status,
                             file_name,
                             hash,
                             received_at,
@@ -270,7 +273,7 @@ impl MetadataStorage for Storage {
             .insert((
                 storage_name,
                 BASE64_STANDARD.encode(hash),
-                bundle.primary.flags.as_u64(),
+                <bundle::BundleFlags as Into<u64>>::into(bundle.primary.flags),
                 &encode_eid(&bundle.primary.destination)?,
                 bundle.primary.timestamp.0,
                 bundle.primary.timestamp.1,
@@ -293,9 +296,9 @@ impl MetadataStorage for Storage {
         for (block_num, block) in &bundle.extensions {
             block_stmt.execute((
                 bundle_id,
-                block.block_type.as_u64(),
+                <bundle::BlockType as Into<u64>>::into(block.block_type),
                 block_num,
-                block.flags.as_u64(),
+                <bundle::BlockFlags as Into<u64>>::into(block.flags),
                 block.data_offset,
             ))?;
         }

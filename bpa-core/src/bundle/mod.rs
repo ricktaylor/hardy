@@ -6,6 +6,7 @@ mod block;
 mod block_flags;
 mod block_type;
 mod bundle_flags;
+mod bundle_status;
 mod eid;
 mod primary_block;
 
@@ -13,10 +14,12 @@ pub use block::Block;
 pub use block_flags::BlockFlags;
 pub use block_type::BlockType;
 pub use bundle_flags::BundleFlags;
+pub use bundle_status::BundleStatus;
 pub use eid::Eid;
 pub use primary_block::{FragmentInfo, PrimaryBlock};
 
 pub struct Metadata {
+    pub status: BundleStatus,
     pub storage_name: String,
     pub hash: String,
     pub received_at: time::OffsetDateTime,

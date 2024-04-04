@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub struct BlockFlags {
     pub must_replicate: bool,
     pub report_on_failure: bool,
@@ -8,11 +8,30 @@ pub struct BlockFlags {
     pub delete_block_on_failure: bool,
 }
 
-impl BlockFlags {
-    pub fn new(f: u64) -> Self {
+impl From<BlockFlags> for u64 {
+    fn from(value: BlockFlags) -> Self {
+        let mut flags: u64 = 0;
+        if value.must_replicate {
+            flags |= 1 << 0;
+        }
+        if value.report_on_failure {
+            flags |= 1 << 1;
+        }
+        if value.delete_bundle_on_failure {
+            flags |= 1 << 2;
+        }
+        if value.delete_block_on_failure {
+            flags |= 1 << 4;
+        }
+        flags
+    }
+}
+
+impl From<u64> for BlockFlags {
+    fn from(value: u64) -> Self {
         let mut flags = BlockFlags::default();
         for b in 0..=6 {
-            if f & (1 << b) != 0 {
+            if value & (1 << b) != 0 {
                 match b {
                     0 => flags.must_replicate = true,
                     1 => flags.report_on_failure = true,
@@ -22,28 +41,11 @@ impl BlockFlags {
                 }
             }
         }
-        if f & !((2 ^ 6) - 1) != 0 {
+        if value & !((2 ^ 6) - 1) != 0 {
             log::info!(
                 "Parsing bundle block with unassigned flag bits set: {:#x}",
-                f
+                value
             );
-        }
-        flags
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        let mut flags: u64 = 0;
-        if self.must_replicate {
-            flags |= 1 << 0;
-        }
-        if self.report_on_failure {
-            flags |= 1 << 1;
-        }
-        if self.delete_bundle_on_failure {
-            flags |= 1 << 2;
-        }
-        if self.delete_block_on_failure {
-            flags |= 1 << 4;
         }
         flags
     }
@@ -51,7 +53,7 @@ impl BlockFlags {
 
 impl cbor::decode::FromCbor for BlockFlags {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (flags, o, tags) = cbor::decode::parse_detail(data)?;
-        Ok((BlockFlags::new(flags), o, tags))
+        let (flags, o, tags) = cbor::decode::parse_detail::<u64>(data)?;
+        Ok((flags.into(), o, tags))
     }
 }
