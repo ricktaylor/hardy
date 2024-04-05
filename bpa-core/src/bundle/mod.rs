@@ -18,7 +18,7 @@ pub use block_type::BlockType;
 pub use bundle_core::Bundle;
 pub use bundle_flags::BundleFlags;
 pub use bundle_status::BundleStatus;
-pub use crc::CrcType;
+pub use crc::{emit_crc_value, CrcType};
 pub use eid::Eid;
 pub use metadata::Metadata;
 pub use primary_block::{FragmentInfo, PrimaryBlock};

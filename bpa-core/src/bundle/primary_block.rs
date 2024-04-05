@@ -1,5 +1,3 @@
-use self::crc::CrcType;
-
 use super::*;
 
 pub struct FragmentInfo {
@@ -128,36 +126,6 @@ impl PrimaryBlock {
                 ))
             }
         }
-    }
-
-    pub fn emit(&self) -> Vec<u8> {
-        let mut parts = vec![
-            // Version
-            cbor::encode::emit(7u8),
-            // Flags
-            cbor::encode::emit(self.flags),
-            // CRC
-            cbor::encode::emit(self.crc_type),
-            // EIDs
-            cbor::encode::emit(&self.destination),
-            cbor::encode::emit(&self.source),
-            cbor::encode::emit(&self.report_to),
-            // Timestamp
-            cbor::encode::emit([
-                cbor::encode::emit(self.timestamp.0),
-                cbor::encode::emit(self.timestamp.1),
-            ]),
-            // Lifetime
-            cbor::encode::emit(self.lifetime),
-        ];
-        if let Some(fragment_info) = &self.fragment_info {
-            // Add fragment info
-            parts.push(cbor::encode::emit(fragment_info.offset));
-            parts.push(cbor::encode::emit(fragment_info.total_len));
-        }
-
-        // And checksum
-        crc::emit_crc_value(parts, &self.crc_type)
     }
 }
 

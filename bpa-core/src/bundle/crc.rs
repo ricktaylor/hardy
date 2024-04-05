@@ -75,7 +75,7 @@ pub fn parse_crc_value(
                     if crc.len() != 4 {
                         Err(anyhow!("Block has unexpected CRC value length"))
                     } else {
-                        Ok((Some(u32::from_be_bytes(crc.try_into()?) as u32), crc_start))
+                        Ok((Some(u32::from_be_bytes(crc.try_into()?)), crc_start))
                     }
                 }
             }
@@ -122,7 +122,7 @@ pub fn parse_crc_value(
     Ok(crc_start)
 }
 
-pub fn emit_crc_value(mut block: Vec<Vec<u8>>, crc_type: &CrcType) -> Vec<u8> {
+pub fn emit_crc_value(mut block: Vec<Vec<u8>>, crc_type: CrcType) -> Vec<u8> {
     match crc_type {
         CrcType::CRC16_X25 => {
             block.push(cbor::encode::emit([0u8; 2]));

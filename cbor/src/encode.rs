@@ -122,7 +122,7 @@ where
     I: IntoIterator<Item = u8>,
 {
     let mut v = emit_tags(tags);
-    v.extend(emit_uint_minor(2, len as u64));
+    v.extend(emit_uint_minor(2, len));
     v.extend(arr);
     v
 }

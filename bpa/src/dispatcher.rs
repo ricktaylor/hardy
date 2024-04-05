@@ -76,6 +76,12 @@ impl Dispatcher {
             Some(time::OffsetDateTime::now_utc()),
         );
 
+        // Create a bundle
+        let (bundle, data) = bundle::BundleBuilder::new()
+            .is_admin_record(true)
+            .add_payload_block(report)
+            .build();
+
         todo!()
     }
 }

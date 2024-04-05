@@ -1,6 +1,4 @@
 use super::*;
-use anyhow::anyhow;
-use std::sync::Arc;
 
 mod cla_sink;
 

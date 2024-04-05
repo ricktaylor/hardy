@@ -4,7 +4,7 @@ use std::collections::HashMap;
 pub struct Bundle {
     pub metadata: Option<Metadata>,
     pub primary: PrimaryBlock,
-    pub extensions: HashMap<u64, Block>,
+    pub blocks: HashMap<u64, Block>,
 }
 
 impl Bundle {
@@ -26,14 +26,6 @@ impl Bundle {
         }
         Ok((bundle, valid))
     }
-
-    pub fn emit(&self, data: &[u8]) -> Vec<u8> {
-        let mut blocks = vec![self.primary.emit()];
-        for (block_number, block) in &self.extensions {
-            blocks.push(block.emit(*block_number, data));
-        }
-        cbor::encode::emit_indefinite_array(blocks, &[])
-    }
 }
 
 fn parse_bundle_blocks(
@@ -52,10 +44,10 @@ fn parse_bundle_blocks(
         }
     })?;
 
-    let (extensions, valid) = if valid {
+    let (bundle_blocks, valid) = if valid {
         // Parse other blocks
         match parse_extension_blocks(data, blocks) {
-            Ok(extensions) => (extensions, true),
+            Ok(bundle_blocks) => (bundle_blocks, true),
             Err(e) => {
                 // Don't return an Err, we need to return Ok(invalid)
                 log::info!("Extension block parsing failed: {}", e);
@@ -70,7 +62,7 @@ fn parse_bundle_blocks(
         Bundle {
             metadata: None,
             primary,
-            extensions,
+            blocks: bundle_blocks,
         },
         valid,
     ))

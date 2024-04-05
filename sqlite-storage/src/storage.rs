@@ -153,7 +153,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
             },
         };
 
-        let mut extensions = HashMap::new();
+        let mut blocks = HashMap::new();
         loop {
             let block_number: u64 = row.get(15)?;
             let block = bundle::Block {
@@ -164,7 +164,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
                 data_len: row.get(20)?,
             };
 
-            if extensions.insert(block_number, block).is_some() {
+            if blocks.insert(block_number, block).is_some() {
                 return Err(anyhow!("Duplicate block number in DB!"));
             }
 
@@ -184,7 +184,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
             bundle::Bundle {
                 metadata: Some(metadata),
                 primary,
-                extensions,
+                blocks,
             },
         ));
     }
@@ -306,7 +306,7 @@ impl MetadataStorage for Storage {
                 data_len)
             VALUES (?1,?2,?3,?4,?5,?6);"#,
         )?;
-        for (block_num, block) in &bundle.extensions {
+        for (block_num, block) in &bundle.blocks {
             block_stmt.execute((
                 bundle_id,
                 <bundle::BlockType as Into<u64>>::into(block.block_type),

@@ -1,7 +1,7 @@
 use anyhow::anyhow;
-use hardy_bpa_core::*;
 use log_err::*;
 
+mod bundle;
 mod cache;
 mod cla_registry;
 mod dispatcher;

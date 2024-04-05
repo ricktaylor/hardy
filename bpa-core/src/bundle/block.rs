@@ -1,5 +1,3 @@
-use self::crc::CrcType;
-
 use super::*;
 
 pub struct Block {
@@ -46,7 +44,7 @@ impl Block {
             })?;
 
         // Check CRC
-        let data_end = crc::parse_crc_value(data, block_start, block, crc_type)?;
+        crc::parse_crc_value(data, block_start, block, crc_type)?;
 
         Ok((
             block_number,
@@ -58,23 +56,5 @@ impl Block {
                 data_len,
             },
         ))
-    }
-
-    pub fn emit(&self, block_number: u64, data: &[u8]) -> Vec<u8> {
-        crc::emit_crc_value(
-            vec![
-                // Block Type
-                cbor::encode::emit(self.block_type),
-                // Block Number
-                cbor::encode::emit(block_number),
-                // Flags
-                cbor::encode::emit(self.flags),
-                // CRC Type
-                cbor::encode::emit(self.crc_type),
-                // Payload
-                cbor::encode::emit(&data[self.data_offset..self.data_offset + self.data_len]),
-            ],
-            &self.crc_type,
-        )
     }
 }
