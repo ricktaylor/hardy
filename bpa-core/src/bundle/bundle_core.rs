@@ -2,7 +2,6 @@ use super::*;
 use std::collections::HashMap;
 
 pub struct Bundle {
-    pub metadata: Option<Metadata>,
     pub primary: PrimaryBlock,
     pub blocks: HashMap<u64, Block>,
 }
@@ -60,7 +59,6 @@ fn parse_bundle_blocks(
 
     Ok((
         Bundle {
-            metadata: None,
             primary,
             blocks: bundle_blocks,
         },

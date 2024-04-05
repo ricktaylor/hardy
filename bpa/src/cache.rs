@@ -106,26 +106,28 @@ impl Cache {
         dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
-        self.metadata_storage.check_orphans(&mut |bundle| {
-            tokio::runtime::Handle::current().block_on(async {
-                // The data associated with `bundle` has gone!
-                dispatcher
-                    .report_bundle_deletion(
-                        &bundle,
-                        dispatcher::BundleStatusReportReasonCode::DepletedStorage,
-                    )
-                    .await?;
+        self.metadata_storage
+            .check_orphans(&mut |metadata, bundle| {
+                tokio::runtime::Handle::current().block_on(async {
+                    // The data associated with `bundle` has gone!
+                    dispatcher
+                        .report_bundle_deletion(
+                            &metadata,
+                            &bundle,
+                            dispatcher::BundleStatusReportReasonCode::DepletedStorage,
+                        )
+                        .await?;
 
-                if let Some(metadata) = bundle.metadata {
                     // Delete it
-                    self.metadata_storage.remove(&metadata.storage_name).await?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })?;
+                    self.metadata_storage
+                        .remove(&metadata.storage_name)
+                        .await
+                        .map(|_| ())
+                })?;
 
-            // Just dumb poll the cancel token now - try to avoid mismatched state again
-            Ok(!cancel_token.is_cancelled())
-        })
+                // Just dumb poll the cancel token now - try to avoid mismatched state again
+                Ok(!cancel_token.is_cancelled())
+            })
     }
 
     fn bundle_storage_check(
@@ -151,14 +153,22 @@ impl Cache {
                     return Ok(false);
                 };
 
-                // Write to metadata or die trying
+                // Write to metadata
                 let hash = sha2::Sha256::digest((*data).as_ref());
-                self.metadata_storage
-                    .store(storage_name, &hash, &bundle)
+                let metadata = self
+                    .metadata_storage
+                    .store(
+                        bundle::BundleStatus::DispatchPending,
+                        storage_name,
+                        &hash,
+                        &bundle,
+                    )
                     .await?;
 
                 // Queue the new bundle for ingress processing
-                ingress.enqueue_bundle(None, bundle, valid).await?;
+                ingress
+                    .enqueue_bundle(None, metadata, bundle, valid)
+                    .await?;
 
                 // true for keep
                 Ok(true)
@@ -171,48 +181,29 @@ impl Cache {
 
     pub async fn store(
         &self,
-        data: Arc<Vec<u8>>,
-    ) -> Result<(Option<bundle::Bundle>, bool), anyhow::Error> {
-        // Start the write to bundle storage
-        let write_result = self.bundle_storage.store(data.clone());
+        bundle: &bundle::Bundle,
+        data: Vec<u8>,
+        status: bundle::BundleStatus,
+    ) -> Result<bundle::Metadata, anyhow::Error> {
+        // Calculate hash
+        let hash = sha2::Sha256::digest(&data);
 
-        // Parse the bundle in parallel
-        let bundle_result = bundle::Bundle::parse(&data);
-        let hash = sha2::Sha256::digest(&*data);
-
-        // Await the result of write to bundle storage
-        let storage_name = write_result.await?;
-
-        // Check parse result
-        let (bundle, valid) = match bundle_result {
-            Ok(r) => r,
-            Err(e) => {
-                // Parse failed badly, no idea who to report to
-                log::info!("Bundle parsing failed: {}", e);
-
-                // Remove from bundle storage
-                let _ = self.bundle_storage.remove(&storage_name).await;
-                return Ok((None, false));
-            }
-        };
+        // Write to bundle storage
+        let storage_name = self.bundle_storage.store(data).await?;
 
         // Write to metadata store
-        if let Err(e) = self
+        match self
             .metadata_storage
-            .store(&storage_name, &hash, &bundle)
+            .store(status, &storage_name, &hash, &bundle)
             .await
         {
-            // This is just bad, we can't really claim to have received the bundle,
-            // so just cleanup and get out
-            let _ = self.bundle_storage.remove(&storage_name).await;
-            return Err(e);
+            Err(e) => {
+                // This is just bad, we can't really claim to have received the bundle,
+                // so just cleanup and get out
+                let _ = self.bundle_storage.remove(&storage_name).await;
+                Err(e)
+            }
+            Ok(r) => Ok(r),
         }
-
-        // Return the parsed bundle
-        Ok((Some(bundle), valid))
-    }
-
-    pub async fn remove(&self, bundle: bundle::Bundle) -> Result<(), anyhow::Error> {
-        todo!()
     }
 }

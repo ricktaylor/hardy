@@ -1,7 +1,6 @@
 use super::*;
 use anyhow::anyhow;
-use hardy_bpa_core::async_trait;
-use hardy_bpa_core::storage::BundleStorage;
+use hardy_bpa_core::{async_trait, storage::BundleStorage};
 use rand::random;
 use std::{
     collections::{HashMap, HashSet},
@@ -169,7 +168,7 @@ impl BundleStorage for Storage {
         }
     }
 
-    async fn store(&self, data: Arc<Vec<u8>>) -> Result<String, anyhow::Error> {
+    async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
         /*
         create a new temp file (on the same file system!)
         write data to the temp file

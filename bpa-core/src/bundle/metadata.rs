@@ -3,6 +3,6 @@ use super::*;
 pub struct Metadata {
     pub status: BundleStatus,
     pub storage_name: String,
-    pub hash: String,
-    pub received_at: time::OffsetDateTime,
+    pub hash: Vec<u8>,
+    pub received_at: Option<time::OffsetDateTime>,
 }

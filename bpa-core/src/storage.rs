@@ -4,15 +4,16 @@ use super::*;
 pub trait MetadataStorage: Send + Sync {
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>,
+        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error>;
 
     async fn store(
         &self,
+        status: bundle::BundleStatus,
         storage_name: &str,
         hash: &[u8],
         bundle: &bundle::Bundle,
-    ) -> Result<(), anyhow::Error>;
+    ) -> Result<bundle::Metadata, anyhow::Error>;
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error>;
 
@@ -35,7 +36,7 @@ pub trait BundleStorage: Send + Sync {
         storage_name: &str,
     ) -> Result<std::sync::Arc<dyn AsRef<[u8]>>, anyhow::Error>;
 
-    async fn store(&self, data: std::sync::Arc<Vec<u8>>) -> Result<String, anyhow::Error>;
+    async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error>;
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error>;
 }

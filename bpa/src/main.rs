@@ -76,19 +76,24 @@ async fn main() {
     let mut task_set = tokio::task::JoinSet::new();
     listen_for_cancel(&mut task_set, cancel_token.clone());
 
-    // Create a new ingress
-    let ingress =
-        ingress::Ingress::new(&config, cache.clone(), &mut task_set, cancel_token.clone())
-            .log_expect("Failed to initialize ingress");
-
     // Create a new dispatcher
     let dispatcher =
         dispatcher::Dispatcher::new(&config, cache.clone(), &mut task_set, cancel_token.clone())
             .log_expect("Failed to initialize dispatcher");
 
+    // Create a new ingress
+    let ingress = ingress::Ingress::new(
+        &config,
+        cache.clone(),
+        dispatcher.clone(),
+        &mut task_set,
+        cancel_token.clone(),
+    )
+    .log_expect("Failed to initialize ingress");
+
     // Init the cache - this can take a while as the cache is walked
     cache
-        .init(ingress.clone(), dispatcher.clone(), cancel_token.clone())
+        .init(ingress.clone(), dispatcher, cancel_token.clone())
         .await
         .log_expect("Cache initialization failed");
 

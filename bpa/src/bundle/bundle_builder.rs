@@ -140,22 +140,15 @@ impl BundleBuilder {
         // End indefinite array
         data.push(0xFF);
 
-        (
-            Bundle {
-                metadata: None,
-                primary,
-                blocks,
-            },
-            data,
-        )
+        (Bundle { primary, blocks }, data)
     }
 
     fn build_primary_block(&self) -> (PrimaryBlock, Vec<u8>) {
-
-
-        // TODO!!!
-        let timestamp = (0u64,0u64);
-        let lifetime: u64 = 0;
+        let timestamp = time::OffsetDateTime::now_utc();
+        let timestamp = (
+            dtn_time(&timestamp),
+            (timestamp.nanosecond() / 1_000_000) as u64,
+        );
 
         (
             PrimaryBlock {
@@ -165,7 +158,7 @@ impl BundleBuilder {
                 destination: self.destination.clone(),
                 report_to: self.report_to.clone(),
                 timestamp,
-                lifetime,
+                lifetime: self.lifetime.whole_milliseconds() as u64,
                 fragment_info: None,
             },
             emit_crc_value(
@@ -186,7 +179,7 @@ impl BundleBuilder {
                         cbor::encode::emit(timestamp.1),
                     ]),
                     // Lifetime
-                    cbor::encode::emit(lifetime),
+                    cbor::encode::emit(self.lifetime.whole_milliseconds() as u64),
                 ],
                 self.crc_type,
             ),

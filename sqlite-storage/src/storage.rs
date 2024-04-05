@@ -100,7 +100,9 @@ fn decode_eid(
     }
 }
 
-fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>, anyhow::Error> {
+fn unpack_bundles(
+    mut rows: rusqlite::Rows,
+) -> Result<Vec<(i64, bundle::Metadata, bundle::Bundle)>, anyhow::Error> {
     /* Expected query MUST look like:
            0:  bundles.id,
            1:  bundles.status,
@@ -132,7 +134,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
         let metadata = bundle::Metadata {
             status: row.get::<usize, u64>(1)?.try_into()?,
             storage_name: row.get(2)?,
-            hash: row.get(3)?,
+            hash: BASE64_STANDARD.decode(row.get::<usize, String>(3)?)?,
             received_at: row.get(4)?,
         };
         let primary = bundle::PrimaryBlock {
@@ -179,14 +181,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
             }
         }
 
-        bundles.push((
-            bundle_id,
-            bundle::Bundle {
-                metadata: Some(metadata),
-                primary,
-                blocks,
-            },
-        ));
+        bundles.push((bundle_id, metadata, bundle::Bundle { primary, blocks }));
     }
     Ok(bundles)
 }
@@ -195,7 +190,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> Result<Vec<(i64, bundle::Bundle)>
 impl MetadataStorage for Storage {
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(bundle::Bundle) -> Result<bool, anyhow::Error>,
+        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error> {
         // Loop through subsets of 200 bundles, so we don't fill all memory
         loop {
@@ -245,8 +240,8 @@ impl MetadataStorage for Storage {
             }
 
             // Now enumerate the vector outside the query implicit transaction
-            for (_bundle_id, bundle) in bundles {
-                if !f(bundle)? {
+            for (_bundle_id, metadata, bundle) in bundles {
+                if !f(metadata, bundle)? {
                     break;
                 }
             }
@@ -256,18 +251,20 @@ impl MetadataStorage for Storage {
 
     async fn store(
         &self,
+        status: bundle::BundleStatus,
         storage_name: &str,
         hash: &[u8],
         bundle: &bundle::Bundle,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bundle::Metadata, anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Insert bundle
-        let bundle_id = trans
+        let (bundle_id, received_at) = trans
             .prepare_cached(
                 r#"
             INSERT INTO bundles (
+                status,
                 file_name,
                 hash,
                 flags,
@@ -278,20 +275,30 @@ impl MetadataStorage for Storage {
                 lifetime,
                 source,
                 report_to)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9);"#,
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            RETURNING id,received_at;"#,
             )?
-            .insert((
-                storage_name,
-                BASE64_STANDARD.encode(hash),
-                <bundle::BundleFlags as Into<u64>>::into(bundle.primary.flags),
-                <bundle::CrcType as Into<u64>>::into(bundle.primary.crc_type),
-                &encode_eid(&bundle.primary.destination)?,
-                bundle.primary.timestamp.0,
-                bundle.primary.timestamp.1,
-                bundle.primary.lifetime,
-                &encode_eid(&bundle.primary.source)?,
-                &encode_eid(&bundle.primary.report_to)?,
-            ))?;
+            .query_row(
+                (
+                    <bundle::BundleStatus as Into<u64>>::into(status),
+                    storage_name,
+                    BASE64_STANDARD.encode(hash),
+                    <bundle::BundleFlags as Into<u64>>::into(bundle.primary.flags),
+                    <bundle::CrcType as Into<u64>>::into(bundle.primary.crc_type),
+                    &encode_eid(&bundle.primary.destination)?,
+                    bundle.primary.timestamp.0,
+                    bundle.primary.timestamp.1,
+                    bundle.primary.lifetime,
+                    &encode_eid(&bundle.primary.source)?,
+                    &encode_eid(&bundle.primary.report_to)?,
+                ),
+                |row| {
+                    Ok((
+                        row.get::<usize, u64>(0)?,
+                        row.get::<usize, Option<time::OffsetDateTime>>(1)?,
+                    ))
+                },
+            )?;
 
         // Insert extension blocks
         let mut block_stmt = trans.prepare_cached(
@@ -331,7 +338,12 @@ impl MetadataStorage for Storage {
                 )?
                 .execute((bundle_id, fragment_info.offset, fragment_info.total_len))?;
         }
-        Ok(())
+        Ok(bundle::Metadata {
+            status,
+            storage_name: storage_name.to_string(),
+            hash: hash.to_vec(),
+            received_at,
+        })
     }
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
