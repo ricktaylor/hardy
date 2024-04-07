@@ -27,7 +27,7 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(filetype) = entry.file_type() {
             if filetype.is_file() {
                 if let Some(c) = regex.captures(&entry.file_name().to_string_lossy()) {
-                    let seq: u64 = atoi::atoi(c[0].as_bytes()).unwrap();
+                    let seq: u64 = c.get(1).unwrap().as_str().parse().unwrap();
                     m.push((seq, entry.path()));
                 }
             }

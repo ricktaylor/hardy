@@ -194,7 +194,7 @@ impl Store {
         // Write to metadata store
         match self
             .metadata_storage
-            .store(status, &storage_name, &hash, &bundle)
+            .store(status, &storage_name, &hash, bundle)
             .await
         {
             Err(e) => {

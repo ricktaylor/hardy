@@ -29,15 +29,21 @@ impl Eid {
             cbor::decode::Value::Text(s, _) => {
                 if !s.is_ascii() {
                     Err(anyhow!("dtn URI be ASCII"))
-                } else if !s.starts_with("//") {
-                    Err(anyhow!("dtn URI must start with '//'"))
-                } else if let Some((s1, s2)) = &s[2..].split_once('/') {
-                    Ok(Self::Dtn {
-                        node_name: s1.to_string(),
-                        demux: s2.to_string(),
-                    })
+                } else if let Some(s) = s.strip_prefix("//") {
+                    if let Some((s1, s2)) = s.split_once('/') {
+                        if s1.len() == 0 {
+                            Err(anyhow!("dtn URI node-name is empty"))
+                        } else {
+                            Ok(Self::Dtn {
+                                node_name: s1.to_string(),
+                                demux: s2.to_string(),
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("dtn URI missing name-delim '/'"))
+                    }
                 } else {
-                    Err(anyhow!("dtn URI missing name-delim '/'"))
+                    Err(anyhow!("dtn URI must start with '//'"))
                 }
             }
             _ => Err(anyhow!("dtn URI is not a CBOR text string or 0")),
@@ -181,5 +187,86 @@ impl cbor::decode::FromCbor for Eid {
             }
         })
         .map(|((eid, tags), o)| (eid, o, tags))
+    }
+}
+
+impl std::str::FromStr for Eid {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(s) = s.strip_prefix("dtn://") {
+            if !s.is_ascii() {
+                Err(anyhow!("dtn URI be ASCII"))
+            } else if let Some((s1, s2)) = s.split_once('/') {
+                if s1.len() == 0 {
+                    Err(anyhow!("dtn URI node-name is empty"))
+                } else {
+                    Ok(Self::Dtn {
+                        node_name: s1.to_string(),
+                        demux: s2.to_string(),
+                    })
+                }
+            } else {
+                Err(anyhow!("dtn URI missing name-delim '/'"))
+            }
+        } else if let Some(s) = s.strip_prefix("ipn:") {
+            let mut parts = s[4..].split('.');
+            if let Some(value) = parts.next() {
+                let v1 = value.parse::<u32>()?;
+                if let Some(value) = &parts.next() {
+                    let v2 = value.parse::<u32>()?;
+                    if let Some(value) = &parts.next() {
+                        let v3 = value.parse::<u32>()?;
+                        if parts.next().is_some() {
+                            Err(anyhow!("Invalid ipn URI"))
+                        } else {
+                            Ok(Self::Ipn {
+                                allocator_id: v1,
+                                node_number: v2,
+                                service_number: v3,
+                            })
+                        }
+                    } else {
+                        Ok(Self::Ipn {
+                            allocator_id: 0,
+                            node_number: v1,
+                            service_number: v2,
+                        })
+                    }
+                } else {
+                    Err(anyhow!("Invalid ipn URI"))
+                }
+            } else {
+                Err(anyhow!("Invalid ipn URI"))
+            }
+        } else {
+            Err(anyhow!("EID has unsupported scheme"))
+        }
+    }
+}
+
+impl std::fmt::Display for Eid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Eid::Null => f.write_str("ipn:0.0"),
+            Eid::LocalNode { service_number } => {
+                f.write_fmt(format_args!("ipn:!.{service_number}",))
+            }
+            Eid::Ipn {
+                allocator_id,
+                node_number,
+                service_number,
+            } if *allocator_id == 0 => {
+                f.write_fmt(format_args!("ipn:{node_number}.{service_number}"))
+            }
+            Eid::Ipn {
+                allocator_id,
+                node_number,
+                service_number,
+            } => f.write_fmt(format_args!(
+                "ipn:{allocator_id}.{node_number}.{service_number}"
+            )),
+            Eid::Dtn { node_name, demux } => f.write_fmt(format_args!("dtn://{node_name}/{demux}")),
+        }
     }
 }

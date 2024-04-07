@@ -95,7 +95,7 @@ impl Ingress {
                     Some((cla_source,metadata,bundle,valid)) => {
                         let ingress = self.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(cla_source,metadata,bundle,valid).await;
+                            ingress.process_bundle(cla_source,metadata,bundle,valid).await.log_expect("Failed to process bundle")
                         });
                     }
                 },
@@ -126,7 +126,7 @@ impl Ingress {
                         .report_bundle_reception(&metadata, &bundle)
                         .await?;
 
-                    // Valid is only negative if the bundle came from an orphan check, so we must check here
+                    // `valid` is only false if the bundle came from an orphan check, so we must check here
                     if !valid {
                         // Unintelligible bundle
                         self.dispatcher

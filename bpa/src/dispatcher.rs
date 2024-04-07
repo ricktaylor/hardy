@@ -47,12 +47,36 @@ impl Dispatcher {
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
+        // Load NodeId from config
+        let source_eid = match config.get::<String>("node_id") {
+            Ok(source_eid) => match source_eid.parse() {
+                Ok(source_eid) => source_eid,
+                Err(e) => return Err(anyhow!("Invalid \"node_id\" in configuration: {}", e)),
+            },
+            Err(e) => return Err(anyhow!("Missing \"node_id\" from configuration: {}", e)),
+        };
+
+        // Confirm we have a valid EID with administrative endpoint service number
+        let source_eid = match source_eid {
+            bundle::Eid::Ipn {
+                allocator_id: _,
+                node_number: _,
+                service_number,
+            } if service_number != 0 => source_eid,
+            bundle::Eid::Dtn {
+                node_name: _,
+                demux: _,
+            } => source_eid,
+            e => return Err(anyhow!("Invalid \"node_id\" in configuration: {}", e)),
+        };
+
         // Create a channel for bundles
         let (tx, rx) = channel(16);
         let dispatcher = Self {
             store,
             status_reports: settings::get_with_default(config, "status_reports", false)?,
             tx,
+            source_eid,
         };
 
         // Spawn a bundle receiver
@@ -78,7 +102,7 @@ impl Dispatcher {
                     Some((metadata,bundle)) => {
                         let dispatcher = self.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(metadata,bundle).await;
+                            dispatcher.process_bundle(metadata,bundle).await.log_expect("Failed to process bundle");
                         });
                     }
                 },
@@ -92,7 +116,11 @@ impl Dispatcher {
         }
     }
 
-    async fn process_bundle(&self, metadata: bundle::Metadata, bundle: bundle::Bundle) {
+    async fn process_bundle(
+        &self,
+        metadata: bundle::Metadata,
+        bundle: bundle::Bundle,
+    ) -> Result<(), anyhow::Error> {
         // This is the meat of the dispatch pipeline
         todo!()
     }

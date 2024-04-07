@@ -43,6 +43,7 @@ impl BundleBuilder {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn is_admin_record(mut self, is_admin_record: bool) -> Self {
         self.bundle_flags.is_admin_record = is_admin_record;
         self

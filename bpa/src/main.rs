@@ -92,12 +92,17 @@ async fn main() {
     .log_expect("Failed to initialize ingress");
 
     // Init gRPC services
-    services::init(&config, ingress, &mut task_set, cancel_token.clone())
-        .log_expect("Failed to start gRPC services");
+    services::init(
+        &config,
+        ingress.clone(),
+        &mut task_set,
+        cancel_token.clone(),
+    )
+    .log_expect("Failed to start gRPC services");
 
     // Restart the store - this can take a while as the store is walked
     store
-        .restart(ingress.clone(), dispatcher, cancel_token.clone())
+        .restart(ingress, dispatcher, cancel_token.clone())
         .await
         .log_expect("Store restart failed");
 
