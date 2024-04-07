@@ -68,13 +68,18 @@ pub fn init() -> Option<(config::Config, bool)> {
     let mut b = config::Config::builder();
 
     // Add config file
-    if let Some(source) = flags.opt_str("config") {
-        b = b.add_source(config::File::with_name(&source));
+    let config_file = if let Some(source) = flags.opt_str("config") {
+        config::File::with_name(&source)
     } else if let Ok(source) = std::env::var("HARDY_BPA_CONFIG_FILE") {
-        b = b.add_source(config::File::with_name(&source));
+        config::File::with_name(&source)
     } else if let Some(path) = config_dir() {
-        b = b.add_source(config::File::from(path).required(false));
-    }
+        config::File::from(path).required(false)
+    } else {
+        panic!("No config file specified, and no suitable default found")
+    };
+
+    // We use TOML
+    b = b.add_source(config_file.format(config::FileFormat::Toml));
 
     // Pull in environment vars
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
