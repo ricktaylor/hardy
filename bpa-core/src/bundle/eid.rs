@@ -31,7 +31,7 @@ impl Eid {
                     Err(anyhow!("dtn URI be ASCII"))
                 } else if let Some(s) = s.strip_prefix("//") {
                     if let Some((s1, s2)) = s.split_once('/') {
-                        if s1.len() == 0 {
+                        if s1.is_empty() {
                             Err(anyhow!("dtn URI node-name is empty"))
                         } else {
                             Ok(Self::Dtn {
@@ -198,7 +198,7 @@ impl std::str::FromStr for Eid {
             if !s.is_ascii() {
                 Err(anyhow!("dtn URI be ASCII"))
             } else if let Some((s1, s2)) = s.split_once('/') {
-                if s1.len() == 0 {
+                if s1.is_empty() {
                     Err(anyhow!("dtn URI node-name is empty"))
                 } else {
                     Ok(Self::Dtn {
@@ -210,7 +210,7 @@ impl std::str::FromStr for Eid {
                 Err(anyhow!("dtn URI missing name-delim '/'"))
             }
         } else if let Some(s) = s.strip_prefix("ipn:") {
-            let mut parts = s[4..].split('.');
+            let mut parts = s.split('.');
             if let Some(value) = parts.next() {
                 let v1 = value.parse::<u32>()?;
                 if let Some(value) = &parts.next() {
