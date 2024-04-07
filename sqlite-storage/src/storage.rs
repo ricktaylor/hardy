@@ -17,12 +17,12 @@ impl Storage {
         let db_dir: String = config.get("db_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
-                    || Err(anyhow!("Failed to resolve local cache directory")),
+                    || Err(anyhow!("Failed to resolve local store directory")),
                     |project_dirs| {
                         Ok(project_dirs.cache_dir().to_string_lossy().to_string())
-                        // Lin: /home/alice/.cache/barapp
-                        // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
-                        // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
+                        // Lin: /home/alice/.store/barapp
+                        // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\store
+                        // Mac: /Users/Alice/Library/stores/com.Foo-Corp.Bar-App
                     },
                 )
             },
@@ -137,25 +137,27 @@ fn unpack_bundles(
             hash: BASE64_STANDARD.decode(row.get::<usize, String>(3)?)?,
             received_at: row.get(4)?,
         };
-        let primary = bundle::PrimaryBlock {
+        let mut bundle = bundle::Bundle {
+            id: bundle::BundleId {
+                source: decode_eid(row, 7)?,
+                timestamp: (row.get(10)?, row.get(11)?),
+                fragment_info: match row.get_ref(13)? {
+                    rusqlite::types::ValueRef::Null => None,
+                    rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
+                        offset: offset as u64,
+                        total_len: row.get(14)?,
+                    }),
+                    _ => return Err(anyhow!("Fragment info is invalid")),
+                },
+            },
             flags: row.get::<usize, u64>(5)?.into(),
             crc_type: row.get::<usize, u64>(6)?.try_into()?,
-            source: decode_eid(row, 7)?,
             destination: decode_eid(row, 8)?,
             report_to: decode_eid(row, 9)?,
-            timestamp: (row.get(10)?, row.get(11)?),
             lifetime: row.get(12)?,
-            fragment_info: match row.get_ref(13)? {
-                rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
-                    offset: offset as u64,
-                    total_len: row.get(14)?,
-                }),
-                _ => return Err(anyhow!("Fragment info is invalid")),
-            },
+            blocks: HashMap::new(),
         };
 
-        let mut blocks = HashMap::new();
         loop {
             let block_number: u64 = row.get(15)?;
             let block = bundle::Block {
@@ -166,7 +168,7 @@ fn unpack_bundles(
                 data_len: row.get(20)?,
             };
 
-            if blocks.insert(block_number, block).is_some() {
+            if bundle.blocks.insert(block_number, block).is_some() {
                 return Err(anyhow!("Duplicate block number in DB!"));
             }
 
@@ -181,7 +183,7 @@ fn unpack_bundles(
             }
         }
 
-        bundles.push((bundle_id, metadata, bundle::Bundle { primary, blocks }));
+        bundles.push((bundle_id, metadata, bundle));
     }
     Ok(bundles)
 }
@@ -283,14 +285,14 @@ impl MetadataStorage for Storage {
                     <bundle::BundleStatus as Into<u64>>::into(status),
                     storage_name,
                     BASE64_STANDARD.encode(hash),
-                    <bundle::BundleFlags as Into<u64>>::into(bundle.primary.flags),
-                    <bundle::CrcType as Into<u64>>::into(bundle.primary.crc_type),
-                    &encode_eid(&bundle.primary.destination)?,
-                    bundle.primary.timestamp.0,
-                    bundle.primary.timestamp.1,
-                    bundle.primary.lifetime,
-                    &encode_eid(&bundle.primary.source)?,
-                    &encode_eid(&bundle.primary.report_to)?,
+                    <bundle::BundleFlags as Into<u64>>::into(bundle.flags),
+                    <bundle::CrcType as Into<u64>>::into(bundle.crc_type),
+                    &encode_eid(&bundle.destination)?,
+                    bundle.id.timestamp.0,
+                    bundle.id.timestamp.1,
+                    bundle.lifetime,
+                    &encode_eid(&bundle.id.source)?,
+                    &encode_eid(&bundle.report_to)?,
                 ),
                 |row| {
                     Ok((
@@ -326,7 +328,7 @@ impl MetadataStorage for Storage {
         }
 
         // Insert fragments
-        if let Some(fragment_info) = &bundle.primary.fragment_info {
+        if let Some(fragment_info) = &bundle.id.fragment_info {
             trans
                 .prepare_cached(
                     r#"
@@ -389,5 +391,15 @@ impl MetadataStorage for Storage {
             .prepare_cached(r#"DELETE FROM unconfirmed_bundles WHERE bundle_id = ?1;"#)?
             .execute([bundle_id])?;
         Ok(true)
+    }
+
+    async fn set_bundle_status(
+        &self,
+        bundle_id: &bundle::BundleId,
+        status: bundle::BundleStatus,
+    ) -> Result<bundle::BundleStatus, anyhow::Error> {
+        todo!();
+
+        Ok(status)
     }
 }

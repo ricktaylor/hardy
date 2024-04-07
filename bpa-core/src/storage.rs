@@ -15,6 +15,12 @@ pub trait MetadataStorage: Send + Sync {
         bundle: &bundle::Bundle,
     ) -> Result<bundle::Metadata, anyhow::Error>;
 
+    async fn set_bundle_status(
+        &self,
+        bundle_id: &bundle::BundleId,
+        status: bundle::BundleStatus,
+    ) -> Result<bundle::BundleStatus, anyhow::Error>;
+
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error>;
 
     async fn confirm_exists(

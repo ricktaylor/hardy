@@ -2,13 +2,13 @@ use anyhow::anyhow;
 use log_err::*;
 
 mod bundle;
-mod cache;
 mod cla_registry;
 mod dispatcher;
 mod ingress;
 mod logger;
 mod services;
 mod settings;
+mod store;
 
 // Buildtime info
 mod built_info {
@@ -68,8 +68,8 @@ async fn main() {
     logger::init(&config);
     log::info!("{} starting...", built_info::PKG_NAME);
 
-    // New Cache
-    let cache = cache::Cache::new(&config, upgrade);
+    // New store
+    let store = store::Store::new(&config, upgrade);
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -78,30 +78,28 @@ async fn main() {
 
     // Create a new dispatcher
     let dispatcher =
-        dispatcher::Dispatcher::new(&config, cache.clone(), &mut task_set, cancel_token.clone())
+        dispatcher::Dispatcher::new(&config, store.clone(), &mut task_set, cancel_token.clone())
             .log_expect("Failed to initialize dispatcher");
 
     // Create a new ingress
     let ingress = ingress::Ingress::new(
         &config,
-        cache.clone(),
+        store.clone(),
         dispatcher.clone(),
         &mut task_set,
         cancel_token.clone(),
     )
     .log_expect("Failed to initialize ingress");
 
-    // Init the cache - this can take a while as the cache is walked
-    cache
-        .init(ingress.clone(), dispatcher, cancel_token.clone())
-        .await
-        .log_expect("Cache initialization failed");
-
     // Init gRPC services
-    if !cancel_token.is_cancelled() {
-        services::init(&config, ingress, &mut task_set, cancel_token.clone())
-            .log_expect("Failed to start gRPC services");
-    }
+    services::init(&config, ingress, &mut task_set, cancel_token.clone())
+        .log_expect("Failed to start gRPC services");
+
+    // Restart the store - this can take a while as the store is walked
+    store
+        .restart(ingress.clone(), dispatcher, cancel_token.clone())
+        .await
+        .log_expect("Store restart failed");
 
     // Wait for all tasks to finish
     if !cancel_token.is_cancelled() {

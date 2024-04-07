@@ -1,10 +1,13 @@
 use super::*;
 
+// todo  - Rename all these states!!
+
 #[derive(Copy, Clone)]
 pub enum BundleStatus {
-    DispatchPending = 0,
-    ForwardPending = 1,
+    IngressPending = 0,
+    IngressFilterPending = 1,
     ReassemblyPending = 2,
+    ForwardPending = 3,
 }
 
 impl From<BundleStatus> for u64 {
@@ -18,9 +21,10 @@ impl TryFrom<u64> for BundleStatus {
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Self::DispatchPending),
-            1 => Ok(Self::ForwardPending),
+            0 => Ok(Self::IngressPending),
+            1 => Ok(Self::IngressFilterPending),
             2 => Ok(Self::ReassemblyPending),
+            3 => Ok(Self::ForwardPending),
             _ => Err(anyhow!("Invalid BundleSTatus value {}", value)),
         }
     }

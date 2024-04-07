@@ -7,8 +7,8 @@ fn options() -> getopts::Options {
         .optflag("v", "version", "print the version information")
         .optflag(
             "u",
-            "upgrade-cache",
-            "upgrade the bundle cache to the latest version",
+            "upgrade-store",
+            "upgrade the bundle store to the latest version",
         )
         .optopt("c", "config", "use a custom configuration file", "FILE");
     opts

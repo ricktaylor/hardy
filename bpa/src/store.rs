@@ -3,12 +3,12 @@ use hardy_bpa_core::storage;
 use sha2::Digest;
 use std::sync::Arc;
 
-pub struct Cache {
+pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
 }
 
-impl Clone for Cache {
+impl Clone for Store {
     fn clone(&self) -> Self {
         Self {
             metadata_storage: self.metadata_storage.clone(),
@@ -66,7 +66,7 @@ fn init_bundle_storage(
     }
 }
 
-impl Cache {
+impl Store {
     pub fn new(config: &config::Config, upgrade: bool) -> Self {
         // Init pluggable storage engines
         Self {
@@ -77,7 +77,7 @@ impl Cache {
         }
     }
 
-    pub async fn init(
+    pub async fn restart(
         &self,
         ingress: ingress::Ingress,
         dispatcher: dispatcher::Dispatcher,
@@ -85,7 +85,7 @@ impl Cache {
     ) -> Result<(), anyhow::Error> {
         let self_cloned = self.clone();
         tokio::task::spawn_blocking(move || {
-            log::info!("Starting cache reload...");
+            log::info!("Starting store consistency check...");
 
             // Bundle storage checks first
             self_cloned.bundle_storage_check(ingress, cancel_token.clone())?;
@@ -95,7 +95,7 @@ impl Cache {
                 self_cloned.metadata_storage_check(dispatcher, cancel_token)?;
             }
 
-            log::info!("Cache reload complete");
+            log::info!("Store consistency check complete");
             Ok::<(), anyhow::Error>(())
         })
         .await?
@@ -158,7 +158,7 @@ impl Cache {
                 let metadata = self
                     .metadata_storage
                     .store(
-                        bundle::BundleStatus::DispatchPending,
+                        bundle::BundleStatus::IngressPending,
                         storage_name,
                         &hash,
                         &bundle,
@@ -205,5 +205,19 @@ impl Cache {
             }
             Ok(r) => Ok(r),
         }
+    }
+
+    pub async fn set_bundle_status(
+        &self,
+        bundle_id: &bundle::BundleId,
+        status: bundle::BundleStatus,
+    ) -> Result<bundle::BundleStatus, anyhow::Error> {
+        self.metadata_storage
+            .set_bundle_status(bundle_id, status)
+            .await
+    }
+
+    pub async fn remove(&self, bundle_id: &bundle::BundleId) -> Result<(), anyhow::Error> {
+        todo!()
     }
 }

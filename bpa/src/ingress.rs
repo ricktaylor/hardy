@@ -4,7 +4,7 @@ use tokio::sync::mpsc::*;
 pub type ClaSource = Option<(String, Vec<u8>)>;
 
 pub struct Ingress {
-    cache: cache::Cache,
+    store: store::Store,
     dispatcher: dispatcher::Dispatcher,
     tx: Sender<(ClaSource, bundle::Metadata, bundle::Bundle, bool)>,
 }
@@ -12,7 +12,7 @@ pub struct Ingress {
 impl Clone for Ingress {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.clone(),
+            store: self.store.clone(),
             dispatcher: self.dispatcher.clone(),
             tx: self.tx.clone(),
         }
@@ -22,7 +22,7 @@ impl Clone for Ingress {
 impl Ingress {
     pub fn new(
         _config: &config::Config,
-        cache: cache::Cache,
+        store: store::Store,
         dispatcher: dispatcher::Dispatcher,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -30,7 +30,7 @@ impl Ingress {
         // Create a channel for new bundles
         let (tx, rx) = channel(16);
         let ingress = Self {
-            cache,
+            store,
             dispatcher,
             tx,
         };
@@ -53,15 +53,10 @@ impl Ingress {
             }
         };
 
-        // Store the bundle in the cache
+        // Store the bundle in the store
         let metadata = self
-            .cache
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending)
-            .await?;
-
-        // Report we have received the bundle
-        self.dispatcher
-            .report_bundle_reception(&metadata, &bundle)
+            .store
+            .store(&bundle, data, bundle::BundleStatus::IngressPending)
             .await?;
 
         // Enqueue bundle
@@ -100,7 +95,7 @@ impl Ingress {
                     Some((cla_source,metadata,bundle,valid)) => {
                         let ingress = self.clone();
                         task_set.spawn(async move {
-                            ingress.do_something_with_the_bundle(cla_source,metadata,bundle,valid).await;
+                            ingress.process_bundle(cla_source,metadata,bundle,valid).await;
                         });
                     }
                 },
@@ -114,14 +109,54 @@ impl Ingress {
         }
     }
 
-    async fn do_something_with_the_bundle(
+    async fn process_bundle(
         &self,
         cla_source: ClaSource,
-        metadata: bundle::Metadata,
+        mut metadata: bundle::Metadata,
         bundle: bundle::Bundle,
         valid: bool,
     ) -> Result<(), anyhow::Error> {
         // This is the meat of the ingress pipeline
+        loop {
+            // Duff's device
+            match &metadata.status {
+                bundle::BundleStatus::IngressPending => {
+                    // Report we have received the bundle
+                    self.dispatcher
+                        .report_bundle_reception(&metadata, &bundle)
+                        .await?;
+
+                    // Valid is only negative if the bundle came from an orphan check, so we must check here
+                    if !valid {
+                        // Unintelligible bundle
+                        self.dispatcher
+                            .report_bundle_deletion(
+                                &metadata,
+                                &bundle,
+                                dispatcher::BundleStatusReportReasonCode::BlockUnintelligible,
+                            )
+                            .await?;
+
+                        // Drop the bundle
+                        return self.store.remove(&bundle.id).await;
+                    }
+
+                    /* RACE: If there is a crash between the report creation(above) and the status update (below)
+                     * then we may send more than one "Received" Status Report, but that is currently considered benign and unlikely ;)
+                     */
+
+                    metadata.status = self
+                        .store
+                        .set_bundle_status(&bundle.id, bundle::BundleStatus::IngressFilterPending)
+                        .await?;
+                }
+                bundle::BundleStatus::IngressFilterPending => todo!(),
+                //bundle::BundleStatus::ForwardPending => todo!(),
+                //bundle::BundleStatus::ReassemblyPending => todo!(),
+                _ => break,
+            }
+        }
+
         todo!()
     }
 }

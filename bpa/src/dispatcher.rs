@@ -23,7 +23,7 @@ pub enum BundleStatusReportReasonCode {
 }
 
 pub struct Dispatcher {
-    cache: cache::Cache,
+    store: store::Store,
     status_reports: bool,
     tx: Sender<(bundle::Metadata, bundle::Bundle)>,
     source_eid: bundle::Eid,
@@ -32,7 +32,7 @@ pub struct Dispatcher {
 impl Clone for Dispatcher {
     fn clone(&self) -> Self {
         Self {
-            cache: self.cache.clone(),
+            store: self.store.clone(),
             status_reports: self.status_reports,
             tx: self.tx.clone(),
             source_eid: self.source_eid.clone(),
@@ -43,14 +43,14 @@ impl Clone for Dispatcher {
 impl Dispatcher {
     pub fn new(
         config: &config::Config,
-        cache: cache::Cache,
+        store: store::Store,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
         // Create a channel for bundles
         let (tx, rx) = channel(16);
         let dispatcher = Self {
-            cache,
+            store,
             status_reports: settings::get_with_default(config, "status_reports", false)?,
             tx,
         };
@@ -78,7 +78,7 @@ impl Dispatcher {
                     Some((metadata,bundle)) => {
                         let dispatcher = self.clone();
                         task_set.spawn(async move {
-                            dispatcher.do_something_with_the_bundle(metadata,bundle).await;
+                            dispatcher.process_bundle(metadata,bundle).await;
                         });
                     }
                 },
@@ -92,12 +92,8 @@ impl Dispatcher {
         }
     }
 
-    async fn do_something_with_the_bundle(
-        &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
-    ) {
-        // This is the meat of the ingress pipeline
+    async fn process_bundle(&self, metadata: bundle::Metadata, bundle: bundle::Bundle) {
+        // This is the meat of the dispatch pipeline
         todo!()
     }
 
@@ -107,7 +103,7 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
-        if !self.status_reports || !bundle.primary.flags.receipt_report_requested {
+        if !self.status_reports || !bundle.flags.receipt_report_requested {
             return Ok(());
         }
 
@@ -115,7 +111,7 @@ impl Dispatcher {
         let (bundle, data) = bundle::BundleBuilder::new()
             .is_admin_record(true)
             .source(self.source_eid.clone())
-            .destination(bundle.primary.report_to.clone())
+            .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata,
                 bundle,
@@ -126,9 +122,9 @@ impl Dispatcher {
             ))
             .build();
 
-        // Store to cache
+        // Store to store
         let metadata = self
-            .cache
+            .store
             .store(&bundle, data, bundle::BundleStatus::ForwardPending)
             .await?;
 
@@ -143,7 +139,7 @@ impl Dispatcher {
         reason: BundleStatusReportReasonCode,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
-        if !self.status_reports || !bundle.primary.flags.delete_report_requested {
+        if !self.status_reports || !bundle.flags.delete_report_requested {
             return Ok(());
         }
 
@@ -151,7 +147,7 @@ impl Dispatcher {
         let (bundle, data) = bundle::BundleBuilder::new()
             .is_admin_record(true)
             .source(self.source_eid.clone())
-            .destination(bundle.primary.report_to.clone())
+            .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata,
                 bundle,
@@ -162,9 +158,9 @@ impl Dispatcher {
             ))
             .build();
 
-        // Store to cache
+        // Store to store
         let metadata = self
-            .cache
+            .store
             .store(&bundle, data, bundle::BundleStatus::ForwardPending)
             .await?;
 
@@ -185,8 +181,8 @@ fn new_bundle_status_report(
         // Statuses
         cbor::encode::emit([
             // Report node received bundle
-            if bundle.primary.flags.report_status_time
-                && bundle.primary.flags.receipt_report_requested
+            if bundle.flags.report_status_time
+                && bundle.flags.receipt_report_requested
                 && metadata.received_at.is_some()
             {
                 cbor::encode::emit([
@@ -194,13 +190,11 @@ fn new_bundle_status_report(
                     cbor::encode::emit(bundle::dtn_time(&metadata.received_at.unwrap())),
                 ])
             } else {
-                cbor::encode::emit([cbor::encode::emit(
-                    bundle.primary.flags.receipt_report_requested,
-                )])
+                cbor::encode::emit([cbor::encode::emit(bundle.flags.receipt_report_requested)])
             },
             // Report node forwarded the bundle
-            if bundle.primary.flags.report_status_time
-                && bundle.primary.flags.forward_report_requested
+            if bundle.flags.report_status_time
+                && bundle.flags.forward_report_requested
                 && forwarded.is_some()
             {
                 cbor::encode::emit([
@@ -209,12 +203,12 @@ fn new_bundle_status_report(
                 ])
             } else {
                 cbor::encode::emit([cbor::encode::emit(
-                    bundle.primary.flags.forward_report_requested && forwarded.is_some(),
+                    bundle.flags.forward_report_requested && forwarded.is_some(),
                 )])
             },
             // Report node delivered the bundle
-            if bundle.primary.flags.report_status_time
-                && bundle.primary.flags.delivery_report_requested
+            if bundle.flags.report_status_time
+                && bundle.flags.delivery_report_requested
                 && delivered.is_some()
             {
                 cbor::encode::emit([
@@ -223,12 +217,12 @@ fn new_bundle_status_report(
                 ])
             } else {
                 cbor::encode::emit([cbor::encode::emit(
-                    bundle.primary.flags.delivery_report_requested && delivered.is_some(),
+                    bundle.flags.delivery_report_requested && delivered.is_some(),
                 )])
             },
             // Report node deleted the bundle
-            if bundle.primary.flags.report_status_time
-                && bundle.primary.flags.delete_report_requested
+            if bundle.flags.report_status_time
+                && bundle.flags.delete_report_requested
                 && deleted.is_some()
             {
                 cbor::encode::emit([
@@ -237,19 +231,19 @@ fn new_bundle_status_report(
                 ])
             } else {
                 cbor::encode::emit([cbor::encode::emit(
-                    bundle.primary.flags.delete_report_requested && deleted.is_some(),
+                    bundle.flags.delete_report_requested && deleted.is_some(),
                 )])
             },
         ]),
         // Reason code
         cbor::encode::emit(reason as u64),
         // Source EID
-        cbor::encode::emit(&bundle.primary.source),
+        cbor::encode::emit(&bundle.id.source),
         // Creation Timestamp
-        cbor::encode::emit(bundle.primary.timestamp.0),
-        cbor::encode::emit(bundle.primary.timestamp.1),
+        cbor::encode::emit(bundle.id.timestamp.0),
+        cbor::encode::emit(bundle.id.timestamp.1),
     ];
-    if let Some(fragment_info) = &bundle.primary.fragment_info {
+    if let Some(fragment_info) = &bundle.id.fragment_info {
         // Add fragment info
         report.push(cbor::encode::emit(fragment_info.offset));
         report.push(cbor::encode::emit(fragment_info.total_len));

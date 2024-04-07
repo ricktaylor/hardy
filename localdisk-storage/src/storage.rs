@@ -26,7 +26,7 @@ fn direct_flag(options: &mut OpenOptions) {
 }
 
 pub struct Storage {
-    cache_root: PathBuf,
+    store_root: PathBuf,
     reserved_paths: Mutex<HashSet<PathBuf>>,
 }
 
@@ -34,10 +34,10 @@ impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
     ) -> Result<Arc<dyn BundleStorage>, anyhow::Error> {
-        let cache_root: String = config.get("cache_dir").map_or_else(
+        let store_root: String = config.get("store_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
-                    || Err(anyhow!("Failed to resolve local cache directory")),
+                    || Err(anyhow!("Failed to resolve local store directory")),
                     |project_dirs| {
                         Ok(project_dirs.cache_dir().to_string_lossy().to_string())
                         // Lin: /home/alice/.cache/barapp
@@ -49,16 +49,16 @@ impl Storage {
             |v| {
                 v.clone()
                     .into_string()
-                    .map_err(|e| anyhow!("'cache_dir' is not a string value: {}!", e))
+                    .map_err(|e| anyhow!("'store_dir' is not a string value: {}!", e))
             },
         )?;
 
         // Ensure directory exists
-        let cache_root = PathBuf::from(&cache_root);
-        create_dir_all(&cache_root)?;
+        let store_root = PathBuf::from(&store_root);
+        create_dir_all(&store_root)?;
 
         Ok(Arc::new(Storage {
-            cache_root,
+            store_root,
             reserved_paths: Mutex::new(HashSet::new()),
         }))
     }
@@ -76,7 +76,7 @@ impl Storage {
         // Random filename
         loop {
             let file_path = [
-                &self.cache_root,
+                &self.store_root,
                 &sub_dir,
                 &PathBuf::from(format!("{:x}", random::<u64>() % 4096)),
             ]
@@ -126,11 +126,11 @@ impl Storage {
                     // Check corresponding bundle exists in the metadata storage
                     let storage_path = entry.path();
                     let storage_name = storage_path
-                        .strip_prefix(&self.cache_root)?
+                        .strip_prefix(&self.store_root)?
                         .to_string_lossy();
                     match f(&storage_name)? {
                         Some(false) => {
-                            // Remove from cache
+                            // Remove from store
                             std::fs::remove_file(storage_path)?;
                         }
                         None => {
@@ -151,11 +151,11 @@ impl BundleStorage for Storage {
         &self,
         f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
     ) -> Result<(), anyhow::Error> {
-        self.walk_dirs(&self.cache_root, f).map(|_| ())
+        self.walk_dirs(&self.store_root, f).map(|_| ())
     }
 
     async fn load(&self, storage_name: &str) -> Result<Arc<dyn AsRef<[u8]>>, anyhow::Error> {
-        let file_path = self.cache_root.join(PathBuf::from_str(storage_name)?);
+        let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
 
         if cfg!(feature = "mmap") {
             let file = std::fs::File::open(file_path)?;
@@ -230,13 +230,13 @@ impl BundleStorage for Storage {
         result??;
 
         Ok(file_path
-            .strip_prefix(&self.cache_root)?
+            .strip_prefix(&self.store_root)?
             .to_string_lossy()
             .to_string())
     }
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
-        let file_path = self.cache_root.join(PathBuf::from_str(storage_name)?);
+        let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
         match tokio::fs::remove_file(&file_path).await {
             Err(e) => {
                 if e.kind() == io::ErrorKind::NotFound {

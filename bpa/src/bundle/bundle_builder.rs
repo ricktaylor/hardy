@@ -121,29 +121,28 @@ impl BundleBuilder {
         let mut data = vec![(4 << 5) | 31u8];
 
         // Emit primary block
-        let (primary, block_data) = self.build_primary_block();
+        let (mut bundle, block_data) = self.build_primary_block();
         data.extend(block_data);
 
         // Emit extension blocks
-        let mut blocks = HashMap::new();
         for (block_number, block) in self.extensions.into_iter().enumerate() {
             let (block, block_data) = block.build(block_number + 2, data.len());
-            blocks.insert(block_number as u64, block);
+            bundle.blocks.insert(block_number as u64, block);
             data.extend(block_data);
         }
 
         // Emit payload
         let (block, block_data) = self.payload.build(1, data.len());
-        blocks.insert(1, block);
+        bundle.blocks.insert(1, block);
         data.extend(block_data);
 
         // End indefinite array
         data.push(0xFF);
 
-        (Bundle { primary, blocks }, data)
+        (bundle, data)
     }
 
-    fn build_primary_block(&self) -> (PrimaryBlock, Vec<u8>) {
+    fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
         let timestamp = time::OffsetDateTime::now_utc();
         let timestamp = (
             dtn_time(&timestamp),
@@ -151,15 +150,18 @@ impl BundleBuilder {
         );
 
         (
-            PrimaryBlock {
+            Bundle {
+                id: BundleId {
+                    source: self.source.clone(),
+                    timestamp,
+                    fragment_info: None,
+                },
                 flags: self.bundle_flags,
                 crc_type: self.crc_type,
-                source: self.source.clone(),
                 destination: self.destination.clone(),
                 report_to: self.report_to.clone(),
-                timestamp,
                 lifetime: self.lifetime.whole_milliseconds() as u64,
-                fragment_info: None,
+                blocks: HashMap::new(),
             },
             emit_crc_value(
                 vec![
