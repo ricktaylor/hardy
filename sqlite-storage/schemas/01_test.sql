@@ -22,7 +22,7 @@ CREATE TABLE bundle_blocks (
     block_flags INTEGER NOT NULL,
     block_crc_type INTEGER NOT NULL,
     data_offset INTEGER NOT NULL,
-    data_len INTEGER NOT NULL,
+    data_len INTEGER NOT NULL
 );
 
 CREATE TABLE bundle_fragments (
