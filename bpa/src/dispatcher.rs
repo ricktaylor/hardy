@@ -61,14 +61,15 @@ impl Dispatcher {
             bundle::Eid::Ipn {
                 allocator_id: _,
                 node_number: _,
-                service_number,
-            } if service_number != 0 => source_eid,
+                service_number: 0,
+            } => source_eid,
             bundle::Eid::Dtn {
                 node_name: _,
                 demux: _,
             } => source_eid,
             e => return Err(anyhow!("Invalid \"node_id\" in configuration: {}", e)),
         };
+        log::info!("Local Node ID: {source_eid}");
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
