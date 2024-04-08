@@ -100,6 +100,12 @@ fn decode_eid(
     }
 }
 
+// Quick helper for type conversion
+#[inline]
+fn as_u64(v: i64) -> u64 {
+    v as u64
+}
+
 fn unpack_bundles(
     mut rows: rusqlite::Rows,
 ) -> Result<Vec<(i64, bundle::Metadata, bundle::Bundle)>, anyhow::Error> {
@@ -117,8 +123,8 @@ fn unpack_bundles(
            10: bundles.creation_time,
            11: bundles.creation_seq_num,
            12: bundles.lifetime,
-           13: bundle_fragments.offset,
-           14: bundle_fragments.total_len,
+           13: bundles.fragment_offset,
+           14: bundles.fragment_total_len,
            15: bundle_blocks.block_num,
            16: bundle_blocks.block_type,
            17: bundle_blocks.block_flags,
@@ -132,40 +138,47 @@ fn unpack_bundles(
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
         let metadata = bundle::Metadata {
-            status: row.get::<usize, u64>(1)?.try_into()?,
+            status: as_u64(row.get(1)?).try_into()?,
             storage_name: row.get(2)?,
             hash: BASE64_STANDARD.decode(row.get::<usize, String>(3)?)?,
             received_at: row.get(4)?,
         };
+
+        let fragment_info = {
+            let offset: i64 = row.get(13)?;
+            let total_len: i64 = row.get(14)?;
+            if offset == -1 && total_len == -1 {
+                None
+            } else {
+                Some(bundle::FragmentInfo {
+                    offset: offset as u64,
+                    total_len: total_len as u64,
+                })
+            }
+        };
+
         let mut bundle = bundle::Bundle {
             id: bundle::BundleId {
                 source: decode_eid(row, 7)?,
-                timestamp: (row.get(10)?, row.get(11)?),
-                fragment_info: match row.get_ref(13)? {
-                    rusqlite::types::ValueRef::Null => None,
-                    rusqlite::types::ValueRef::Integer(offset) => Some(bundle::FragmentInfo {
-                        offset: offset as u64,
-                        total_len: row.get(14)?,
-                    }),
-                    _ => return Err(anyhow!("Fragment info is invalid")),
-                },
+                timestamp: (as_u64(row.get(10)?), as_u64(row.get(11)?)),
+                fragment_info,
             },
-            flags: row.get::<usize, u64>(5)?.into(),
-            crc_type: row.get::<usize, u64>(6)?.try_into()?,
+            flags: as_u64(row.get(5)?).into(),
+            crc_type: as_u64(row.get(6)?).try_into()?,
             destination: decode_eid(row, 8)?,
             report_to: decode_eid(row, 9)?,
-            lifetime: row.get(12)?,
+            lifetime: as_u64(row.get(12)?),
             blocks: HashMap::new(),
         };
 
         loop {
-            let block_number: u64 = row.get(15)?;
+            let block_number = as_u64(row.get(15)?);
             let block = bundle::Block {
-                block_type: row.get::<usize, u64>(16)?.try_into()?,
-                flags: row.get::<usize, u64>(17)?.into(),
-                crc_type: row.get::<usize, u64>(18)?.try_into()?,
-                data_offset: row.get(19)?,
-                data_len: row.get(20)?,
+                block_type: as_u64(row.get(16)?).try_into()?,
+                flags: as_u64(row.get(17)?).into(),
+                crc_type: as_u64(row.get(18)?).try_into()?,
+                data_offset: as_u64(row.get(19)?) as usize,
+                data_len: as_u64(row.get(20)?) as usize,
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -216,11 +229,10 @@ impl MetadataStorage for Storage {
                             creation_time,
                             creation_seq_num,
                             lifetime,                    
-                            offset,
-                            total_len
+                            fragment_offset,
+                            fragment_total_len
                         FROM unconfirmed_bundles
                         JOIN bundles ON bundles.id = unconfirmed_bundles.bundle_id
-                        LEFT OUTER JOIN bundle_fragments ON bundle_fragments.bundle_id = bundles.id
                         LIMIT 200
                     )
                     SELECT 
@@ -261,6 +273,13 @@ impl MetadataStorage for Storage {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
+        let (fragment_offset, fragment_total_len) =
+            if let Some(fragment_info) = bundle.id.fragment_info {
+                (fragment_info.offset as i64, fragment_info.total_len as i64)
+            } else {
+                (-1, -1)
+            };
+
         // Insert bundle
         let (bundle_id, received_at) = trans
             .prepare_cached(
@@ -271,32 +290,37 @@ impl MetadataStorage for Storage {
                 hash,
                 flags,
                 crc_type,
+                source,
                 destination,
+                report_to,
                 creation_time,
                 creation_seq_num,
                 lifetime,
-                source,
-                report_to)
+                fragment_offset,
+                fragment_total_len
+                )
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
             RETURNING id,received_at;"#,
             )?
             .query_row(
                 (
-                    <bundle::BundleStatus as Into<u64>>::into(status),
+                    <bundle::BundleStatus as Into<u64>>::into(status) as i64,
                     storage_name,
                     BASE64_STANDARD.encode(hash),
-                    <bundle::BundleFlags as Into<u64>>::into(bundle.flags),
-                    <bundle::CrcType as Into<u64>>::into(bundle.crc_type),
-                    &encode_eid(&bundle.destination)?,
-                    bundle.id.timestamp.0,
-                    bundle.id.timestamp.1,
-                    bundle.lifetime,
+                    <bundle::BundleFlags as Into<u64>>::into(bundle.flags) as i64,
+                    <bundle::CrcType as Into<u64>>::into(bundle.crc_type) as i64,
                     &encode_eid(&bundle.id.source)?,
+                    &encode_eid(&bundle.destination)?,
                     &encode_eid(&bundle.report_to)?,
+                    bundle.id.timestamp.0 as i64,
+                    bundle.id.timestamp.1 as i64,
+                    bundle.lifetime as i64,
+                    fragment_offset,
+                    fragment_total_len,
                 ),
                 |row| {
                     Ok((
-                        row.get::<usize, u64>(0)?,
+                        as_u64(row.get(0)?),
                         row.get::<usize, Option<time::OffsetDateTime>>(1)?,
                     ))
                 },
@@ -318,28 +342,15 @@ impl MetadataStorage for Storage {
         for (block_num, block) in &bundle.blocks {
             block_stmt.execute((
                 bundle_id,
-                <bundle::BlockType as Into<u64>>::into(block.block_type),
-                block_num,
-                <bundle::BlockFlags as Into<u64>>::into(block.flags),
-                <bundle::CrcType as Into<u64>>::into(block.crc_type),
-                block.data_offset,
-                block.data_len,
+                <bundle::BlockType as Into<u64>>::into(block.block_type) as i64,
+                *block_num as i64,
+                <bundle::BlockFlags as Into<u64>>::into(block.flags) as i64,
+                <bundle::CrcType as Into<u64>>::into(block.crc_type) as i64,
+                block.data_offset as i64,
+                block.data_len as i64,
             ))?;
         }
 
-        // Insert fragments
-        if let Some(fragment_info) = &bundle.id.fragment_info {
-            trans
-                .prepare_cached(
-                    r#"
-                INSERT INTO bundle_fragments (
-                    bundle_id,
-                    offset,
-                    total_len)
-                VALUES (?1,?2,?3);"#,
-                )?
-                .execute((bundle_id, fragment_info.offset, fragment_info.total_len))?;
-        }
         Ok(bundle::Metadata {
             status,
             storage_name: storage_name.to_string(),
