@@ -147,7 +147,7 @@ impl BundleBuilder {
         let timestamp = time::OffsetDateTime::now_utc();
         let timestamp = (
             dtn_time(&timestamp),
-            (timestamp.nanosecond() / 1_000_000) as u64,
+            (timestamp.nanosecond() % 1_000_000) as u64,
         );
 
         (
