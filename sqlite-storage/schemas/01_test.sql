@@ -1,7 +1,7 @@
 CREATE TABLE bundles (
     id INTEGER PRIMARY KEY,
     status INTEGER NOT NULL DEFAULT(0),
-    file_name TEXT UNIQUE NOT NULL,
+    storage_name TEXT UNIQUE NOT NULL,
     hash TEXT NOT NULL,
     received_at TEXT NOT NULL DEFAULT(datetime('now','utc','subsecond')),
     flags INTEGER NOT NULL,

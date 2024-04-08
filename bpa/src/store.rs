@@ -209,11 +209,11 @@ impl Store {
 
     pub async fn set_bundle_status(
         &self,
-        bundle_id: &bundle::BundleId,
+        storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<bundle::BundleStatus, anyhow::Error> {
+    ) -> Result<(), anyhow::Error> {
         self.metadata_storage
-            .set_bundle_status(bundle_id, status)
+            .set_bundle_status(storage_name, status)
             .await
     }
 

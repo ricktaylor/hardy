@@ -17,9 +17,9 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn set_bundle_status(
         &self,
-        bundle_id: &bundle::BundleId,
+        storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<bundle::BundleStatus, anyhow::Error>;
+    ) -> Result<(), anyhow::Error>;
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error>;
 

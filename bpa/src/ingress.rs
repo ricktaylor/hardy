@@ -145,10 +145,14 @@ impl Ingress {
                      * then we may send more than one "Received" Status Report, but that is currently considered benign and unlikely ;)
                      */
 
-                    metadata.status = self
+                    metadata.status = bundle::BundleStatus::IngressFilterPending;
+                    self
                         .store
-                        .set_bundle_status(&bundle.id, bundle::BundleStatus::IngressFilterPending)
-                        .await?;
+                        .set_bundle_status(
+                            &metadata.storage_name,
+                            metadata.status,
+                        )
+                        .await?;                    
                 }
                 bundle::BundleStatus::IngressFilterPending => {
                     // Check bundle blocks

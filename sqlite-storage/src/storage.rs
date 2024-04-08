@@ -112,7 +112,7 @@ fn unpack_bundles(
     /* Expected query MUST look like:
            0:  bundles.id,
            1:  bundles.status,
-           2:  bundles.file_name,
+           2:  bundles.storage_name,
            3:  bundles.hash,
            4:  bundles.received_at,
            5:  bundles.flags,
@@ -218,7 +218,7 @@ impl MetadataStorage for Storage {
                         SELECT 
                             bundles.id AS id,
                             status,
-                            file_name,
+                            storage_name,
                             hash,
                             received_at,
                             flags,
@@ -247,7 +247,7 @@ impl MetadataStorage for Storage {
                     LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = subset.id;
                 "#,
                     )?
-                    .query([])?,
+                    .query(())?,
             )?;
             if bundles.is_empty() {
                 break;
@@ -286,7 +286,7 @@ impl MetadataStorage for Storage {
                 r#"
             INSERT INTO bundles (
                 status,
-                file_name,
+                storage_name,
                 hash,
                 flags,
                 crc_type,
@@ -365,7 +365,7 @@ impl MetadataStorage for Storage {
             .connection
             .lock()
             .await
-            .prepare_cached(r#"DELETE FROM bundles WHERE file_name = ?1;"#)?
+            .prepare_cached(r#"DELETE FROM bundles WHERE storage_name = ?1;"#)?
             .execute([storage_name])?
             != 0)
     }
@@ -382,14 +382,14 @@ impl MetadataStorage for Storage {
         let bundle_id: i64 = match if let Some(hash) = hash {
             trans
                 .prepare_cached(
-                    r#"SELECT id FROM bundles WHERE file_name = ?1 AND hash = ?2 LIMIT 1;"#,
+                    r#"SELECT id FROM bundles WHERE storage_name = ?1 AND hash = ?2 LIMIT 1;"#,
                 )?
-                .query_row([storage_name, &BASE64_STANDARD.encode(hash)], |row| {
+                .query_row((storage_name, &BASE64_STANDARD.encode(hash)), |row| {
                     row.get(0)
                 })
         } else {
             trans
-                .prepare_cached(r#"SELECT id FROM bundles WHERE file_name = ?1 LIMIT 1;"#)?
+                .prepare_cached(r#"SELECT id FROM bundles WHERE storage_name = ?1 LIMIT 1;"#)?
                 .query_row([storage_name], |row| row.get(0))
         } {
             Ok(bundle_id) => bundle_id,
@@ -406,11 +406,17 @@ impl MetadataStorage for Storage {
 
     async fn set_bundle_status(
         &self,
-        bundle_id: &bundle::BundleId,
+        storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<bundle::BundleStatus, anyhow::Error> {
-        todo!();
-
-        Ok(status)
+    ) -> Result<(), anyhow::Error> {
+        self.connection
+            .lock()
+            .await
+            .prepare_cached(r#"UPDATE bundles SET status = ?1 WHERE storage_name = ?2;"#)?
+            .execute((
+                <bundle::BundleStatus as Into<u64>>::into(status) as i64,
+                storage_name,
+            ))?;
+        Ok(())
     }
 }
