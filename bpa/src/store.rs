@@ -217,7 +217,9 @@ impl Store {
             .await
     }
 
-    pub async fn remove(&self, bundle_id: &bundle::BundleId) -> Result<(), anyhow::Error> {
-        todo!()
+    pub async fn remove(&self, storage_name: &str) -> Result<(), anyhow::Error> {
+        self.bundle_storage.remove(storage_name).await?;
+        self.metadata_storage.remove(storage_name).await?;
+        Ok(())
     }
 }

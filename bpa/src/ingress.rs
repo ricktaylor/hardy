@@ -138,7 +138,7 @@ impl Ingress {
                             .await?;
 
                         // Drop the bundle
-                        return self.store.remove(&bundle.id).await;
+                        return self.store.remove(&metadata.storage_name).await;
                     }
 
                     /* RACE: If there is a crash between the report creation(above) and the status update (below)
@@ -150,7 +150,11 @@ impl Ingress {
                         .set_bundle_status(&bundle.id, bundle::BundleStatus::IngressFilterPending)
                         .await?;
                 }
-                bundle::BundleStatus::IngressFilterPending => todo!(),
+                bundle::BundleStatus::IngressFilterPending => {
+                    // Check bundle blocks
+
+                    todo!()
+                }
                 //bundle::BundleStatus::ForwardPending => todo!(),
                 //bundle::BundleStatus::ReassemblyPending => todo!(),
                 _ => break,
