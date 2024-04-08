@@ -85,20 +85,45 @@ impl Store {
     ) -> Result<(), anyhow::Error> {
         let self_cloned = self.clone();
         tokio::task::spawn_blocking(move || {
+            // Bundle storage check first
             log::info!("Starting store consistency check...");
-
-            // Bundle storage checks first
-            self_cloned.bundle_storage_check(ingress, cancel_token.clone())?;
+            self_cloned.bundle_storage_check(ingress.clone(), cancel_token.clone())?;
 
             // Now check the metadata storage for orphans
             if !cancel_token.is_cancelled() {
-                self_cloned.metadata_storage_check(dispatcher, cancel_token)?;
+                self_cloned.metadata_storage_check(dispatcher, cancel_token.clone())?;
+                if !cancel_token.is_cancelled() {
+                    log::info!("Store consistency check complete");
+
+                    // Now restart the store
+                    log::info!("Restarting store...");
+                    self_cloned.metadata_storage_restart(ingress, cancel_token.clone())?;
+
+                    if !cancel_token.is_cancelled() {
+                        log::info!("Store restart complete");
+                    }
+                }
             }
 
-            log::info!("Store consistency check complete");
             Ok::<(), anyhow::Error>(())
         })
         .await?
+    }
+
+    fn metadata_storage_restart(
+        &self,
+        ingress: ingress::Ingress,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(), anyhow::Error> {
+        self.metadata_storage.restart(&mut |metadata, bundle| {
+            tokio::runtime::Handle::current().block_on(async {
+                // Just shove bundles into the Ingress
+                ingress.enqueue_bundle(None, metadata, bundle, true).await
+            })?;
+
+            // Just dumb poll the cancel token now - try to avoid mismatched state again
+            Ok(!cancel_token.is_cancelled())
+        })
     }
 
     fn metadata_storage_check(

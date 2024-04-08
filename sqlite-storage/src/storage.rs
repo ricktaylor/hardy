@@ -68,12 +68,14 @@ impl Storage {
         migrate::migrate(&mut connection, upgrade)?;
 
         // Mark all existing bundles as unconfirmed
-        connection.execute(
+        connection.execute_batch(
             r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
             SELECT id FROM bundles;
-            "#,
-            (),
+
+            CREATE TEMPORARY TABLE restart_bundles (
+                bundle_id INTEGER UNIQUE NOT NULL
+            ) STRICT;"#,
         )?;
 
         Ok(Arc::new(Storage {
@@ -207,45 +209,43 @@ impl MetadataStorage for Storage {
         &self,
         f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error> {
-        // Loop through subsets of 200 bundles, so we don't fill all memory
+        // Loop through subsets of 16 bundles, so we don't fill all memory
         loop {
             let bundles = unpack_bundles(
                 self.connection
                     .blocking_lock()
-                    .prepare(
-                        r#"
-                    WITH subset AS (
+                    .prepare_cached(
+                        r#"WITH subset AS (
+                            SELECT 
+                                id,
+                                status,
+                                storage_name,
+                                hash,
+                                received_at,
+                                flags,
+                                crc_type,
+                                source,
+                                destination,
+                                report_to,
+                                creation_time,
+                                creation_seq_num,
+                                lifetime,                    
+                                fragment_offset,
+                                fragment_total_len
+                            FROM unconfirmed_bundles
+                            JOIN bundles ON id = unconfirmed_bundles.bundle_id
+                            LIMIT 16
+                        )
                         SELECT 
-                            bundles.id AS id,
-                            status,
-                            storage_name,
-                            hash,
-                            received_at,
-                            flags,
-                            crc_type,
-                            source,
-                            destination,
-                            report_to,
-                            creation_time,
-                            creation_seq_num,
-                            lifetime,                    
-                            fragment_offset,
-                            fragment_total_len
-                        FROM unconfirmed_bundles
-                        JOIN bundles ON bundles.id = unconfirmed_bundles.bundle_id
-                        LIMIT 200
-                    )
-                    SELECT 
-                        subset.*,
-                        block_num,
-                        block_type,
-                        block_flags,
-                        block_crc_type,
-                        data_offset,
-                        data_len
-                    FROM subset
-                    LEFT OUTER JOIN bundle_blocks ON bundle_blocks.id = subset.id;
-                "#,
+                            subset.*,
+                            block_num,
+                            block_type,
+                            block_flags,
+                            block_crc_type,
+                            data_offset,
+                            data_len
+                        FROM subset
+                        JOIN bundle_blocks ON bundle_blocks.id = subset.id;"#,
                     )?
                     .query(())?,
             )?;
@@ -260,6 +260,105 @@ impl MetadataStorage for Storage {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn restart(
+        &self,
+        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
+    ) -> Result<(), anyhow::Error> {
+        // Create a temprorary table (because DELETE RETURNING cannot be used as a CTE)
+        self.connection
+            .blocking_lock()
+            .prepare(
+                r#"CREATE TEMPORARY TABLE restart_subset (
+                    bundle_id INTEGER UNIQUE NOT NULL
+                ) STRICT;"#,
+            )?
+            .execute(())?;
+
+        loop {
+            // Loop through subsets of 16 bundles, so we don't fill all memory
+            let mut conn = self.connection.blocking_lock();
+            let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+            // Grab a subset, ordered by status descending
+            trans
+                .prepare_cached(
+                    r#"INSERT INTO restart_subset (bundle_id)
+                            SELECT id
+                            FROM restart_bundles
+                            JOIN bundles ON bundles.id = restart_bundles.bundle_id
+                            ORDER BY bundles.status DESC
+                            LIMIT 16;"#,
+                )?
+                .execute(())?;
+
+            // Remove from restart the subset we are about to process
+            if trans
+                .prepare_cached(
+                    r#"DELETE FROM restart_bundles WHERE bundle_id IN (
+                            SELECT bundle_id FROM restart_subset
+                        );"#,
+                )?
+                .execute(())?
+                == 0
+            {
+                break;
+            }
+
+            // Now enum the bundles from the subset
+            let bundles = unpack_bundles(
+                trans
+                    .prepare_cached(
+                        r#"SELECT 
+                            id,
+                            status,
+                            storage_name,
+                            hash,
+                            received_at,
+                            flags,
+                            crc_type,
+                            source,
+                            destination,
+                            report_to,
+                            creation_time,
+                            creation_seq_num,
+                            lifetime,                    
+                            fragment_offset,
+                            fragment_total_len,
+                            block_num,
+                            block_type,
+                            block_flags,
+                            block_crc_type,
+                            data_offset,
+                            data_len
+                        FROM restart_subset
+                        JOIN bundles ON bundles.id = restart_subset.bundle_id
+                        JOIN bundle_blocks ON bundle_blocks.id = restart_subset.bundle_id;"#,
+                    )?
+                    .query(())?,
+            )?;
+
+            // Complete transaction!
+            trans.commit()?;
+            drop(conn);
+
+            // Now enumerate the vector outside the transaction
+            for (_bundle_id, metadata, bundle) in bundles {
+                if !f(metadata, bundle)? {
+                    break;
+                }
+            }
+        }
+
+        // And finally drop the restart tables - they're no longer required
+        self.connection.blocking_lock().execute_batch(
+            r#"
+                DROP TABLE temp.restart_subset;
+                DROP TABLE temp.restart_bundles;"#,
+        )?;
+
         Ok(())
     }
 
@@ -398,9 +497,16 @@ impl MetadataStorage for Storage {
         };
 
         // Remove from unconfirmed set
-        trans
+        if trans
             .prepare_cached(r#"DELETE FROM unconfirmed_bundles WHERE bundle_id = ?1;"#)?
-            .execute([bundle_id])?;
+            .execute([bundle_id])?
+            > 0
+        {
+            // Add to restart set
+            trans
+                .prepare_cached(r#"INSERT INTO restart_bundles (bundle_id) VALUES (?1);"#)?
+                .execute([bundle_id])?;
+        }
         Ok(true)
     }
 

@@ -146,13 +146,9 @@ impl Ingress {
                      */
 
                     metadata.status = bundle::BundleStatus::IngressFilterPending;
-                    self
-                        .store
-                        .set_bundle_status(
-                            &metadata.storage_name,
-                            metadata.status,
-                        )
-                        .await?;                    
+                    self.store
+                        .set_bundle_status(&metadata.storage_name, metadata.status)
+                        .await?;
                 }
                 bundle::BundleStatus::IngressFilterPending => {
                     // Check bundle blocks

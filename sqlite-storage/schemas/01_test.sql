@@ -30,6 +30,5 @@ CREATE TABLE bundle_blocks (
 ) STRICT;
 
 CREATE TABLE unconfirmed_bundles (
-    id INTEGER PRIMARY KEY,
     bundle_id INTEGER UNIQUE NOT NULL REFERENCES bundles(id) ON DELETE CASCADE
 ) STRICT;

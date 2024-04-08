@@ -7,6 +7,11 @@ pub trait MetadataStorage: Send + Sync {
         f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error>;
 
+    fn restart(
+        &self,
+        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
+    ) -> Result<(), anyhow::Error>;
+
     async fn store(
         &self,
         status: bundle::BundleStatus,
