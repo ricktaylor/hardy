@@ -118,7 +118,7 @@ impl Store {
         self.metadata_storage.restart(&mut |metadata, bundle| {
             tokio::runtime::Handle::current().block_on(async {
                 // Just shove bundles into the Ingress
-                ingress.enqueue_bundle(None, metadata, bundle, true).await
+                ingress.enqueue_ingress_bundle(metadata, bundle).await
             })?;
 
             // Just dumb poll the cancel token now - try to avoid mismatched state again
@@ -160,79 +160,50 @@ impl Store {
         ingress: ingress::Ingress,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
-        self.bundle_storage.check_orphans(&mut |storage_name| {
-            let r = tokio::runtime::Handle::current().block_on(async {
-                // Check if the metadata_storage knows about this bundle
-                if self
-                    .metadata_storage
-                    .confirm_exists(storage_name, None)
-                    .await?
-                {
-                    return Ok::<bool, anyhow::Error>(true);
-                }
+        self.bundle_storage
+            .check_orphans(&mut |storage_name, file_time| {
+                tokio::runtime::Handle::current().block_on(async {
+                    // Check if the metadata_storage knows about this bundle
+                    if !self
+                        .metadata_storage
+                        .confirm_exists(storage_name, None)
+                        .await?
+                    {
+                        // Queue the new bundle for receive processing
+                        ingress
+                            .enqueue_receive_bundle(storage_name, file_time)
+                            .await?;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                })?;
 
-                // Parse the bundle first
-                let data = self.bundle_storage.load(storage_name).await?;
-                let Ok((bundle, valid)) = bundle::Bundle::parse((*data).as_ref()) else {
-                    // Drop it... garbage
-                    return Ok(false);
-                };
-
-                // Write to metadata
-                let hash = sha2::Sha256::digest((*data).as_ref());
-                let metadata = self
-                    .metadata_storage
-                    .store(
-                        bundle::BundleStatus::IngressPending,
-                        storage_name,
-                        &hash,
-                        &bundle,
-                    )
-                    .await?;
-
-                // Queue the new bundle for ingress processing
-                ingress
-                    .enqueue_bundle(None, metadata, bundle, valid)
-                    .await?;
-
-                // true for keep
-                Ok(true)
-            })?;
-
-            // Just dumb poll the cancel token now - try to avoid mismatched state again
-            Ok((!cancel_token.is_cancelled()).then_some(r))
-        })
+                // Just dumb poll the cancel token now - try to avoid mismatched state again
+                Ok(!cancel_token.is_cancelled())
+            })
     }
 
-    pub async fn store(
+    pub async fn load_data(
         &self,
-        bundle: &bundle::Bundle,
-        data: Vec<u8>,
-        status: bundle::BundleStatus,
-    ) -> Result<bundle::Metadata, anyhow::Error> {
-        // Calculate hash
-        let hash = sha2::Sha256::digest(&data);
-
-        // Write to bundle storage
-        let storage_name = self.bundle_storage.store(data).await?;
-
-        // Write to metadata store
-        match self
-            .metadata_storage
-            .store(status, &storage_name, &hash, bundle)
-            .await
-        {
-            Err(e) => {
-                // This is just bad, we can't really claim to have received the bundle,
-                // so just cleanup and get out
-                let _ = self.bundle_storage.remove(&storage_name).await;
-                Err(e)
-            }
-            Ok(r) => Ok(r),
-        }
+        storage_name: &str,
+    ) -> Result<Arc<dyn AsRef<[u8]>>, anyhow::Error> {
+        self.bundle_storage.load(storage_name).await
     }
 
-    pub async fn set_bundle_status(
+    pub async fn store_data(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
+        // Write to bundle storage
+        Ok(self.bundle_storage.store(data).await?)
+    }
+
+    pub async fn store_metadata(
+        &self,
+        metadata: &bundle::Metadata,
+        bundle: &bundle::Bundle,
+    ) -> Result<(), anyhow::Error> {
+        // Write to metadata store
+        self.metadata_storage.store(metadata, bundle).await
+    }
+
+    pub async fn set_status(
         &self,
         storage_name: &str,
         status: bundle::BundleStatus,

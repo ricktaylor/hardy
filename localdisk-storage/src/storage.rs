@@ -106,7 +106,7 @@ impl Storage {
     fn walk_dirs(
         &self,
         dir: &PathBuf,
-        f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+        f: &mut dyn FnMut(&str, Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
     ) -> Result<bool, anyhow::Error> {
         for entry in std::fs::read_dir(dir)?.flatten() {
             if let Ok(file_type) = entry.file_type() {
@@ -123,20 +123,19 @@ impl Storage {
                         }
                     }
 
-                    // Check corresponding bundle exists in the metadata storage
+                    // Report orphan
                     let storage_path = entry.path();
                     let storage_name = storage_path
                         .strip_prefix(&self.store_root)?
                         .to_string_lossy();
-                    match f(&storage_name)? {
-                        Some(false) => {
-                            // Remove from store
-                            std::fs::remove_file(storage_path)?;
-                        }
-                        None => {
-                            return Ok(false);
-                        }
-                        _ => {}
+                    let received_at = entry
+                        .metadata()
+                        .and_then(|m| m.created())
+                        .map(|c| time::OffsetDateTime::from(c))
+                        .ok();
+
+                    if !f(&storage_name, received_at)? {
+                        return Ok(false);
                     }
                 }
             }
@@ -149,7 +148,7 @@ impl Storage {
 impl BundleStorage for Storage {
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+        f: &mut dyn FnMut(&str, Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error> {
         self.walk_dirs(&self.store_root, f).map(|_| ())
     }

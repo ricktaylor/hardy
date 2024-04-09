@@ -1,47 +1,22 @@
 use super::*;
-use std::collections::HashMap;
 
-pub struct BundleId {
-    pub source: Eid,
-    pub timestamp: (u64, u64),
-    pub fragment_info: Option<FragmentInfo>,
-}
-
-#[derive(Copy, Clone)]
-pub struct FragmentInfo {
-    pub offset: u64,
-    pub total_len: u64,
-}
-
-pub struct Bundle {
-    pub id: BundleId,
-    pub flags: BundleFlags,
-    pub crc_type: CrcType,
-    pub destination: Eid,
-    pub report_to: Eid,
-    pub lifetime: u64,
-    pub blocks: HashMap<u64, Block>,
-}
-
-impl Bundle {
-    pub fn parse(data: &[u8]) -> Result<(Self, bool), anyhow::Error> {
-        let ((bundle, valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
-            if let cbor::decode::Value::Array(blocks) = value {
-                if !tags.is_empty() {
-                    log::info!("Parsing bundle with tags");
-                }
-                parse_bundle_blocks(data, blocks)
-            } else {
-                Err(anyhow!("Bundle is not a CBOR array"))
+pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
+    let ((bundle, valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
+        if let cbor::decode::Value::Array(blocks) = value {
+            if !tags.is_empty() {
+                log::info!("Parsing bundle with tags");
             }
-        })?;
-        if valid && consumed < data.len() {
-            return Err(anyhow!(
-                "Bundle has additional data after end of CBOR array"
-            ));
+            parse_bundle_blocks(data, blocks)
+        } else {
+            Err(anyhow!("Bundle is not a CBOR array"))
         }
-        Ok((bundle, valid))
+    })?;
+    if valid && consumed < data.len() {
+        return Err(anyhow!(
+            "Bundle has additional data after end of CBOR array"
+        ));
     }
+    Ok((bundle, valid))
 }
 
 fn parse_bundle_blocks(
@@ -80,7 +55,7 @@ fn parse_bundle_blocks(
     Ok((bundle, valid))
 }
 
-pub fn parse_primary_block(
+fn parse_primary_block(
     data: &[u8],
     mut block: cbor::decode::Array,
     block_start: usize,
@@ -120,10 +95,10 @@ pub fn parse_primary_block(
         .inspect_err(|e| log::info!("Invalid report-to EID: {}", e))?;
 
     // Parse timestamp
-    let timestamp = parse_timestamp(&mut block);
+    let timestamp = block.parse::<CreationTimestamp>();
 
     // Parse lifetime
-    let lifetime = block.parse::<u64>();
+    let lifetime = block.parse::<u64>().inspect_err(|e| log::info!("Invalid lifetime: {}", e));
 
     // Parse fragment parts
     let fragment_info: Result<Option<FragmentInfo>, anyhow::Error> = if !flags.is_fragment {
@@ -181,7 +156,7 @@ pub fn parse_primary_block(
                 Bundle {
                     id: BundleId {
                         source: source_eid.unwrap_or(Eid::Null),
-                        timestamp: timestamp.unwrap_or((0, 0)),
+                        timestamp: timestamp.unwrap_or(CreationTimestamp::default()),
                         fragment_info: None,
                     },
                     flags,
@@ -210,12 +185,15 @@ fn parse_extension_blocks(
                     if !tags.is_empty() {
                         log::info!("Parsing extension block with tags");
                     }
-                    Ok(Some(Block::parse(data, a, block_start)?))
+                    Ok(Some(parse_block(data, a, block_start)?))
                 }
                 cbor::decode::Value::End(_) => Ok(None),
                 _ => Err(anyhow!("Bundle extension block is not a CBOR array")),
             })?
         {
+            if block_number == 0 {
+                return Err(anyhow!("Bundle extension block must not be block number 0"));
+            }
             extension_blocks.push((block_number, block));
         } else {
             // Check the last block is the payload
@@ -250,20 +228,50 @@ fn parse_extension_blocks(
     Ok(extension_map)
 }
 
-fn parse_timestamp(block: &mut cbor::decode::Array) -> Result<(u64, u64), anyhow::Error> {
-    block.try_parse_item(|value, _, tags| {
-        if let cbor::decode::Value::Array(mut a) = value {
-            if !tags.is_empty() {
-                log::info!("Parsing bundle primary block timestamp with tags");
-            }
-
-            let creation_time = a.parse::<u64>()?;
-            let seq_no = a.parse::<u64>()?;
-            Ok((creation_time, seq_no))
-        } else {
-            Err(anyhow!(
-                "Bundle primary block timestamp must be a CBOR array"
-            ))
+fn parse_block(
+    data: &[u8],
+    mut block: cbor::decode::Array,
+    block_start: usize,
+) -> Result<(u64, Block), anyhow::Error> {
+    // Check number of items in the array
+    match block.count() {
+        None => log::info!("Parsing extension block of indefinite length"),
+        Some(count) if !(5..=6).contains(&count) => {
+            return Err(anyhow!("Extension block has {} elements", count))
         }
-    })
+        _ => {}
+    }
+
+    let block_type = block.parse::<BlockType>()?;
+    let block_number = block.parse::<u64>()?;
+    let flags = block.parse::<BlockFlags>()?;
+    let crc_type = block.parse::<CrcType>()?;
+
+    // Stash start of data
+    let (data_offset, data_len) = block.try_parse_item(|value, data_start, tags| match value {
+        cbor::decode::Value::Bytes(v, chunked) => {
+            if chunked {
+                log::info!("Parsing chunked extension block data");
+            }
+            if !tags.is_empty() {
+                log::info!("Parsing extension block data with tags");
+            }
+            Ok((data_start, v.len()))
+        }
+        _ => Err(anyhow!("Block data must be encoded as a CBOR byte string")),
+    })?;
+
+    // Check CRC
+    crc::parse_crc_value(data, block_start, block, crc_type)?;
+
+    Ok((
+        block_number,
+        Block {
+            block_type,
+            flags,
+            crc_type,
+            data_offset,
+            data_len,
+        },
+    ))
 }

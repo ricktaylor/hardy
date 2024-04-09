@@ -162,7 +162,10 @@ fn unpack_bundles(
         let mut bundle = bundle::Bundle {
             id: bundle::BundleId {
                 source: decode_eid(row, 7)?,
-                timestamp: (as_u64(row.get(10)?), as_u64(row.get(11)?)),
+                timestamp: bundle::CreationTimestamp {
+                    creation_time: as_u64(row.get(10)?),
+                    sequence_number: as_u64(row.get(11)?),
+                },
                 fragment_info,
             },
             flags: as_u64(row.get(5)?).into(),
@@ -364,11 +367,9 @@ impl MetadataStorage for Storage {
 
     async fn store(
         &self,
-        status: bundle::BundleStatus,
-        storage_name: &str,
-        hash: &[u8],
+        metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<bundle::Metadata, anyhow::Error> {
+    ) -> Result<(), anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -380,7 +381,7 @@ impl MetadataStorage for Storage {
             };
 
         // Insert bundle
-        let (bundle_id, received_at) = trans
+        let bundle_id = trans
             .prepare_cached(
                 r#"
             INSERT INTO bundles (
@@ -399,30 +400,25 @@ impl MetadataStorage for Storage {
                 fragment_total_len
                 )
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
-            RETURNING id,received_at;"#,
+            RETURNING id;"#,
             )?
             .query_row(
                 (
-                    <bundle::BundleStatus as Into<u64>>::into(status) as i64,
-                    storage_name,
-                    BASE64_STANDARD.encode(hash),
+                    <bundle::BundleStatus as Into<u64>>::into(metadata.status) as i64,
+                    &metadata.storage_name,
+                    BASE64_STANDARD.encode(&metadata.hash),
                     <bundle::BundleFlags as Into<u64>>::into(bundle.flags) as i64,
                     <bundle::CrcType as Into<u64>>::into(bundle.crc_type) as i64,
                     &encode_eid(&bundle.id.source)?,
                     &encode_eid(&bundle.destination)?,
                     &encode_eid(&bundle.report_to)?,
-                    bundle.id.timestamp.0 as i64,
-                    bundle.id.timestamp.1 as i64,
+                    bundle.id.timestamp.creation_time as i64,
+                    bundle.id.timestamp.sequence_number as i64,
                     bundle.lifetime as i64,
                     fragment_offset,
                     fragment_total_len,
                 ),
-                |row| {
-                    Ok((
-                        as_u64(row.get(0)?),
-                        row.get::<usize, Option<time::OffsetDateTime>>(1)?,
-                    ))
-                },
+                |row| Ok(as_u64(row.get(0)?)),
             )?;
 
         // Insert extension blocks
@@ -450,12 +446,7 @@ impl MetadataStorage for Storage {
             ))?;
         }
 
-        Ok(bundle::Metadata {
-            status,
-            storage_name: storage_name.to_string(),
-            hash: hash.to_vec(),
-            received_at,
-        })
+        Ok(())
     }
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {

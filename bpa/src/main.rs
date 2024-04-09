@@ -6,6 +6,7 @@ mod cla_registry;
 mod dispatcher;
 mod ingress;
 mod logger;
+mod reassembler;
 mod services;
 mod settings;
 mod store;
@@ -81,10 +82,21 @@ async fn main() {
         dispatcher::Dispatcher::new(&config, store.clone(), &mut task_set, cancel_token.clone())
             .log_expect("Failed to initialize dispatcher");
 
+    // Create a new reassembler
+    let reassembler = reassembler::Reassembler::new(
+        &config,
+        store.clone(),
+        dispatcher.clone(),
+        &mut task_set,
+        cancel_token.clone(),
+    )
+    .log_expect("Failed to initialize reassembler");
+
     // Create a new ingress
     let ingress = ingress::Ingress::new(
         &config,
         store.clone(),
+        reassembler.clone(),
         dispatcher.clone(),
         &mut task_set,
         cancel_token.clone(),

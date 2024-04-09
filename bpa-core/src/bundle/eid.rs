@@ -7,7 +7,12 @@ pub enum Eid {
     LocalNode {
         service_number: u32,
     },
-    Ipn {
+    Ipn2 {
+        allocator_id: u32,
+        node_number: u32,
+        service_number: u32,
+    },
+    Ipn3 {
         allocator_id: u32,
         node_number: u32,
         service_number: u32,
@@ -64,7 +69,7 @@ impl Eid {
         let v1 = value.parse::<u64>()?;
         let v2 = value.parse::<u64>()?;
 
-        let (allocator_id, node_number, service_number) = if let Some(v3) =
+        let (components, allocator_id, node_number, service_number) = if let Some(v3) =
             value.try_parse::<u64>()?
         {
             if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
@@ -81,12 +86,21 @@ impl Eid {
                 value.parse_end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
             }
 
-            (v1 as u32, v2 as u32, v3 as u32)
+            (3, v1 as u32, v2 as u32, v3 as u32)
         } else {
             if v2 >= 2 ^ 32 {
                 return Err(anyhow!("Invalid IPN EID service number {}", v2));
             }
-            ((v1 >> 32) as u32, (v1 & ((2 ^ 32) - 1)) as u32, v2 as u32)
+            if (v1 >> 32) as u32 != 0 {
+                (
+                    2,
+                    (v1 >> 32) as u32,
+                    (v1 & ((2 ^ 32) - 1)) as u32,
+                    v2 as u32,
+                )
+            } else {
+                (3, 0, v1 as u32, v2 as u32)
+            }
         };
 
         if allocator_id == 0 && node_number == 0 {
@@ -96,8 +110,14 @@ impl Eid {
             Ok(Self::Null)
         } else if allocator_id == 0 && node_number == (2 ^ 32) - 1 {
             Ok(Self::LocalNode { service_number })
+        } else if components == 2 {
+            Ok(Self::Ipn2 {
+                allocator_id,
+                node_number,
+                service_number,
+            })
         } else {
-            Ok(Self::Ipn {
+            Ok(Self::Ipn3 {
                 allocator_id,
                 node_number,
                 service_number,
@@ -115,18 +135,29 @@ impl cbor::encode::ToCbor for &Eid {
                     cbor::encode::emit(1u8),
                     cbor::encode::emit(["/", node_name.as_str(), demux.as_str()].join("/")),
                 ],
-                Eid::Ipn {
+                Eid::Ipn2 {
                     allocator_id,
                     node_number,
                     service_number,
-                } if *allocator_id == 0 => [
+                } => [
+                    cbor::encode::emit(2u8),
+                    cbor::encode::emit([
+                        cbor::encode::emit((*allocator_id as u64) << 32 | *node_number as u64),
+                        cbor::encode::emit(*service_number),
+                    ]),
+                ],
+                Eid::Ipn3 {
+                    allocator_id: 0,
+                    node_number,
+                    service_number,
+                } => [
                     cbor::encode::emit(2u8),
                     cbor::encode::emit([
                         cbor::encode::emit(*node_number),
                         cbor::encode::emit(*service_number),
                     ]),
                 ],
-                Eid::Ipn {
+                Eid::Ipn3 {
                     allocator_id,
                     node_number,
                     service_number,
@@ -155,9 +186,6 @@ impl cbor::decode::FromCbor for Eid {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
         cbor::decode::parse_value(data, |value, tags| {
             if let cbor::decode::Value::Array(mut a) = value {
-                if !tags.is_empty() {
-                    log::info!("Parsing EID with tags");
-                }
                 match a.count() {
                     None => log::info!("Parsing EID array of indefinite length"),
                     Some(count) if count != 2 => {
@@ -220,14 +248,14 @@ impl std::str::FromStr for Eid {
                         if parts.next().is_some() {
                             Err(anyhow!("Invalid ipn URI"))
                         } else {
-                            Ok(Self::Ipn {
+                            Ok(Self::Ipn3 {
                                 allocator_id: v1,
                                 node_number: v2,
                                 service_number: v3,
                             })
                         }
                     } else {
-                        Ok(Self::Ipn {
+                        Ok(Self::Ipn3 {
                             allocator_id: 0,
                             node_number: v1,
                             service_number: v2,
@@ -252,14 +280,24 @@ impl std::fmt::Display for Eid {
             Eid::LocalNode { service_number } => {
                 f.write_fmt(format_args!("ipn:!.{service_number}",))
             }
-            Eid::Ipn {
+            Eid::Ipn2 {
+                allocator_id: 0,
+                node_number,
+                service_number,
+            } => f.write_fmt(format_args!("ipn:{node_number}.{service_number}")),
+            Eid::Ipn3 {
+                allocator_id: 0,
+                node_number,
+                service_number,
+            } => f.write_fmt(format_args!("ipn:{node_number}.{service_number}")),
+            Eid::Ipn2 {
                 allocator_id,
                 node_number,
                 service_number,
-            } if *allocator_id == 0 => {
-                f.write_fmt(format_args!("ipn:{node_number}.{service_number}"))
-            }
-            Eid::Ipn {
+            } => f.write_fmt(format_args!(
+                "ipn:{allocator_id}.{node_number}.{service_number}"
+            )),
+            Eid::Ipn3 {
                 allocator_id,
                 node_number,
                 service_number,

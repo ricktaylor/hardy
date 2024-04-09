@@ -1,6 +1,4 @@
 use super::*;
-use hardy_cbor as cbor;
-use std::collections::HashMap;
 
 // Default values
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
@@ -145,10 +143,10 @@ impl BundleBuilder {
 
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
         let timestamp = time::OffsetDateTime::now_utc();
-        let timestamp = (
-            dtn_time(&timestamp),
-            (timestamp.nanosecond() % 1_000_000) as u64,
-        );
+        let timestamp = CreationTimestamp {
+            creation_time: dtn_time(&timestamp),
+            sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
+        };
 
         (
             Bundle {
@@ -164,7 +162,7 @@ impl BundleBuilder {
                 lifetime: self.lifetime.whole_milliseconds() as u64,
                 blocks: HashMap::new(),
             },
-            emit_crc_value(
+            crc::emit_crc_value(
                 vec![
                     // Version
                     cbor::encode::emit(7u8),
@@ -177,10 +175,7 @@ impl BundleBuilder {
                     cbor::encode::emit(&self.source),
                     cbor::encode::emit(&self.report_to),
                     // Timestamp
-                    cbor::encode::emit([
-                        cbor::encode::emit(timestamp.0),
-                        cbor::encode::emit(timestamp.1),
-                    ]),
+                    cbor::encode::emit(&timestamp),
                     // Lifetime
                     cbor::encode::emit(self.lifetime.whole_milliseconds() as u64),
                 ],
@@ -255,7 +250,7 @@ impl BlockTemplate {
                 data_offset: offset,
                 data_len: self.data.len(),
             },
-            emit_crc_value(
+            crc::emit_crc_value(
                 vec![
                     // Block Type
                     cbor::encode::emit(self.block_type),

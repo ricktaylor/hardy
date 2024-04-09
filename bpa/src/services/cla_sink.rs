@@ -1,3 +1,5 @@
+use self::ingress::ClaSource;
+
 use super::*;
 use cla_sink_server::{ClaSink, ClaSinkServer};
 use hardy_proto::bpa::*;
@@ -46,16 +48,18 @@ impl ClaSink for Service {
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
         let request = request.into_inner();
-        if !self
-            .ingress
-            .receive(Some((request.protocol, request.address)), request.bundle)
+        self.ingress
+            .receive(
+                Some(ClaSource {
+                    protocol: request.protocol,
+                    address: request.address,
+                }),
+                request.bundle,
+            )
             .await
-            .map_err(|e| Status::from_error(e.into()))?
-        {
-            Err(Status::invalid_argument("Data is not a bundle"))
-        } else {
-            Ok(Response::new(ForwardBundleResponse {}))
-        }
+            .map_err(|e| Status::from_error(e.into()))?;
+
+        Ok(Response::new(ForwardBundleResponse {}))
     }
 }
 

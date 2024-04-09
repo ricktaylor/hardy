@@ -23,6 +23,7 @@ rand = "0.8.5"
 config = "0.14.0"
 directories = "5.0.1"
 memmap2 = { version = "0.9.4", optional = true }
+time = "0.3.34"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.153"

@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use super::*;
 
 #[async_trait]
@@ -14,11 +16,9 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn store(
         &self,
-        status: bundle::BundleStatus,
-        storage_name: &str,
-        hash: &[u8],
+        metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<bundle::Metadata, anyhow::Error>;
+    ) -> Result<(), anyhow::Error>;
 
     async fn set_bundle_status(
         &self,
@@ -39,7 +39,7 @@ pub trait MetadataStorage: Send + Sync {
 pub trait BundleStorage: Send + Sync {
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(&str) -> Result<Option<bool>, anyhow::Error>,
+        f: &mut dyn FnMut(&str, Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error>;
 
     async fn load(

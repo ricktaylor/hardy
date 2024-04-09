@@ -58,7 +58,7 @@ impl Dispatcher {
 
         // Confirm we have a valid EID with administrative endpoint service number
         let source_eid = match source_eid {
-            bundle::Eid::Ipn {
+            bundle::Eid::Ipn3 {
                 allocator_id: _,
                 node_number: _,
                 service_number: 0,
@@ -86,6 +86,15 @@ impl Dispatcher {
             .spawn(async move { Self::pipeline_pump(dispatcher_cloned, rx, cancel_token).await });
 
         Ok(dispatcher)
+    }
+
+    pub async fn enqueue_bundle(
+        &self,
+        metadata: bundle::Metadata,
+        bundle: bundle::Bundle,
+    ) -> Result<(), anyhow::Error> {
+        // Put bundle into channel
+        self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
     }
 
     async fn pipeline_pump(
@@ -130,6 +139,7 @@ impl Dispatcher {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
+        reason: BundleStatusReportReasonCode,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
         if !self.status_reports || !bundle.flags.receipt_report_requested {
@@ -142,23 +152,18 @@ impl Dispatcher {
             .source(self.source_eid.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
-                metadata,
-                bundle,
-                BundleStatusReportReasonCode::NoAdditionalInformation,
-                None,
-                None,
-                None,
+                metadata, bundle, reason, None, None, None,
             ))
             .build();
 
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, bundle::BundleStatus::ForwardPending)
+            .store(&bundle, data, bundle::BundleStatus::DispatchPending)
             .await?;
 
         // And queue it up
-        self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
+        self.enqueue_bundle(metadata, bundle).await
     }
 
     pub async fn report_bundle_deletion(
@@ -187,14 +192,35 @@ impl Dispatcher {
             ))
             .build();
 
+        // Calculate hash
+        let hash = sha2::Sha256::digest(&data);
+
+        // Write to bundle storage
+        let storage_name = self.bundle_storage.store(data).await?;
+
+        // Write to metadata store
+        match self
+            .metadata_storage
+            .store(status, &storage_name, &hash, bundle)
+            .await
+        {
+            Err(e) => {
+                // This is just bad, we can't really claim to have received the bundle,
+                // so just cleanup and get out
+                let _ = self.bundle_storage.remove(&storage_name).await;
+                Err(e)
+            }
+            Ok(r) => Ok(r),
+        }
+
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, bundle::BundleStatus::ForwardPending)
+            .store(&bundle, data, bundle::BundleStatus::DispatchPending)
             .await?;
 
         // And queue it up
-        self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
+        self.enqueue_bundle(metadata, bundle).await
     }
 }
 
@@ -269,8 +295,7 @@ fn new_bundle_status_report(
         // Source EID
         cbor::encode::emit(&bundle.id.source),
         // Creation Timestamp
-        cbor::encode::emit(bundle.id.timestamp.0),
-        cbor::encode::emit(bundle.id.timestamp.1),
+        cbor::encode::emit(&bundle.id.timestamp),
     ];
     if let Some(fragment_info) = &bundle.id.fragment_info {
         // Add fragment info
