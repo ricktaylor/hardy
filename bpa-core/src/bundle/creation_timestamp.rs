@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default)]
+#[derive(Copy, Clone, Default)]
 pub struct CreationTimestamp {
     pub creation_time: u64,
     pub sequence_number: u64,
@@ -22,15 +22,17 @@ impl cbor::decode::FromCbor for CreationTimestamp {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
         cbor::decode::parse_value(data, |value, tags| {
             if let cbor::decode::Value::Array(mut a) = value {
-                Ok((CreationTimestamp {
-                    creation_time: a.parse::<u64>()?,
-                    sequence_number: a.parse::<u64>()?,
-                },tags.to_vec()))
-            } else {
-                Err(anyhow!(
-                    "Bundle creation timestamp must be a CBOR array"
+                Ok((
+                    CreationTimestamp {
+                        creation_time: a.parse::<u64>()?,
+                        sequence_number: a.parse::<u64>()?,
+                    },
+                    tags.to_vec(),
                 ))
+            } else {
+                Err(anyhow!("Bundle creation timestamp must be a CBOR array"))
             }
-        }).map(|((t, tags), o)| (t, o, tags))
+        })
+        .map(|((t, tags), o)| (t, o, tags))
     }
 }

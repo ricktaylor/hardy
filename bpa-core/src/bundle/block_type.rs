@@ -6,6 +6,8 @@ pub enum BlockType {
     PreviousNode,
     BundleAge,
     HopCount,
+    BlockIntegrity,
+    BlockSecurity,
     Private(u64),
 }
 
@@ -16,6 +18,8 @@ impl From<BlockType> for u64 {
             BlockType::PreviousNode => 6,
             BlockType::BundleAge => 7,
             BlockType::HopCount => 10,
+            BlockType::BlockIntegrity => 11,
+            BlockType::BlockSecurity => 12,
             BlockType::Private(v) => v,
         }
     }
@@ -31,8 +35,10 @@ impl TryFrom<u64> for BlockType {
             6 => Ok(BlockType::PreviousNode),
             7 => Ok(BlockType::BundleAge),
             10 => Ok(BlockType::HopCount),
+            11 => Ok(BlockType::BlockIntegrity),
+            12 => Ok(BlockType::BlockSecurity),
             _ => {
-                if !(192..=255).contains(&value) {
+                if value <= 191 {
                     log::info!("Extension block uses unassigned type code {}", value);
                 }
                 Ok(BlockType::Private(value))

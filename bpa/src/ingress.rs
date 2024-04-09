@@ -1,5 +1,4 @@
 use super::*;
-use hardy_bpa_core::storage;
 use sha2::Digest;
 use tokio::sync::mpsc::*;
 
@@ -177,7 +176,7 @@ impl Ingress {
             .report_bundle_reception(
                 &metadata,
                 &bundle,
-                dispatcher::BundleStatusReportReasonCode::NoAdditionalInformation,
+                bundle::StatusReportReasonCode::NoAdditionalInformation,
             )
             .await?;
 
@@ -196,7 +195,7 @@ impl Ingress {
                 .report_bundle_deletion(
                     &metadata,
                     &bundle,
-                    dispatcher::BundleStatusReportReasonCode::BlockUnintelligible,
+                    bundle::StatusReportReasonCode::BlockUnintelligible,
                 )
                 .await?;
 
@@ -217,39 +216,18 @@ impl Ingress {
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        loop {
-            // Duff's device
-            let reason = match &metadata.status {
-                bundle::BundleStatus::IngressPending => {
-                    /* RACE: If there is a crash between the report creation(above) and the status update (below)
-                     * then we may send more than one "Received" Status Report, but that is currently considered benign and unlikely ;)
-                     */
+        if let bundle::BundleStatus::IngressPending = &metadata.status {
+            // Check bundle blocks
+            let reason;
+            (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
 
-                    // Check bundle blocks
-                    let reason = self.check_bundle_blocks(&mut metadata, &mut bundle).await?;
+            if reason.is_none() {
+                // TODO: BPSec here!
+            }
 
-                    // TODO: More here!
-
-                    if reason.is_none() {
-                        metadata.status = if bundle.id.fragment_info.is_some() {
-                            // Fragments require reassembly
-                            bundle::BundleStatus::ReassemblyPending
-                        } else {
-                            // Dispatch!
-                            bundle::BundleStatus::DispatchPending
-                        };
-                    }
-                    reason
-                }
-                bundle::BundleStatus::ReassemblyPending => {
-                    // Send on to the reassembler
-                    return self.reassembler.enqueue_bundle(metadata, bundle).await;
-                }
-                _ => {
-                    // Just send it on to the dispatcher to deal with
-                    return self.dispatcher.enqueue_bundle(metadata, bundle).await;
-                }
-            };
+            if reason.is_none() {
+                // TODO: Pluggable Ingress filters!
+            }
 
             if let Some(reason) = reason {
                 // Not valid, drop it
@@ -261,93 +239,61 @@ impl Ingress {
                 return self.store.remove(&metadata.storage_name).await;
             }
 
+            metadata.status = if bundle.id.fragment_info.is_some() {
+                // Fragments require reassembly
+                bundle::BundleStatus::ReassemblyPending
+            } else {
+                // Dispatch!
+                bundle::BundleStatus::DispatchPending
+            };
+
             // Update the status
             self.store
                 .set_status(&metadata.storage_name, metadata.status)
                 .await?;
         }
+
+        if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
+            // Send on to the reassembler
+            self.reassembler.enqueue_bundle(metadata, bundle).await
+        } else {
+            // Just send it on to the dispatcher to deal with
+            self.dispatcher.enqueue_bundle(metadata, bundle).await
+        }
     }
 
-    async fn check_bundle_blocks(
+    async fn check_extension_blocks(
         &self,
-        metadata: &mut bundle::Metadata,
-        bundle: &mut bundle::Bundle,
-    ) -> Result<Option<dispatcher::BundleStatusReportReasonCode>, anyhow::Error> {
-        // Check for supported block types
-        let mut seen_payload = false;
-        let mut seen_previous_node = false;
-        let mut seen_bundle_age = false;
-        let mut seen_hop_count = false;
+        metadata: bundle::Metadata,
+        bundle: bundle::Bundle,
+    ) -> Result<
+        (
+            Option<bundle::StatusReportReasonCode>,
+            bundle::Metadata,
+            bundle::Bundle,
+        ),
+        anyhow::Error,
+    > {
+        // Check for unsupported block types
         let mut blocks_to_remove = Vec::new();
 
         for (block_number, block) in &bundle.blocks {
-            let (supported, valid) = match &block.block_type {
-                bundle::BlockType::Payload => (
-                    true,
-                    if seen_payload {
-                        log::info!("Bundle has multiple payload blocks");
-                        false
-                    } else if *block_number != 1 {
-                        log::info!("Bundle has payload block with number {}", block_number);
-                        false
-                    } else {
-                        seen_payload = true;
-                        true
-                    },
-                ),
-                bundle::BlockType::PreviousNode => (
-                    true,
-                    if seen_previous_node {
-                        log::info!("Bundle has multiple Previous Node extension blocks");
-                        false
-                    } else {
-                        seen_previous_node = true;
-                        self.check_previous_node(metadata, block)?
-                    },
-                ),
-                bundle::BlockType::BundleAge => (
-                    true,
-                    if seen_bundle_age {
-                        log::info!("Bundle has multiple Bundle Age extension blocks");
-                        false
-                    } else {
-                        seen_bundle_age = true;
-                        self.check_bundle_age(metadata, block)?
-                    },
-                ),
-                bundle::BlockType::HopCount => (
-                    true,
-                    if seen_hop_count {
-                        log::info!("Bundle has multiple Hop Count extension blocks");
-                        false
-                    } else {
-                        seen_hop_count = true;
-                        self.check_hop_count(metadata, block)?
-                    },
-                ),
-                bundle::BlockType::Private(_) => (false, true),
-            };
-
-            if !valid {
-                return Ok(Some(
-                    dispatcher::BundleStatusReportReasonCode::BlockUnintelligible,
-                ));
-            }
-
-            if !supported {
+            if let bundle::BlockType::Private(_) = &block.block_type {
                 if block.flags.report_on_failure {
                     self.dispatcher
                         .report_bundle_reception(
-                            metadata,
-                            bundle,
-                            dispatcher::BundleStatusReportReasonCode::BlockUnsupported,
+                            &metadata,
+                            &bundle,
+                            bundle::StatusReportReasonCode::BlockUnsupported,
                         )
                         .await?;
                 }
 
                 if block.flags.delete_bundle_on_failure {
-                    return Ok(Some(
-                        dispatcher::BundleStatusReportReasonCode::BlockUnsupported,
+                    return Ok((
+                        Some(bundle::StatusReportReasonCode::BlockUnsupported),
+                        metadata,
+                        bundle,
                     ));
                 }
 
@@ -357,20 +303,11 @@ impl Ingress {
             }
         }
 
-        if !seen_bundle_age && bundle.id.timestamp.creation_time == 0 {
-            log::info!("Bundle source had no clock, and there is no Bundle Age extension block");
-
-            return Ok(Some(
-                dispatcher::BundleStatusReportReasonCode::BlockUnintelligible,
-            ));
-        }
-
         if !blocks_to_remove.is_empty() {
             // Rewrite bundle!
-
             todo!()
         }
 
-        Ok(None)
+        Ok((None, metadata, bundle))
     }
 }

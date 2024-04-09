@@ -2,26 +2,6 @@ use super::*;
 use hardy_cbor as cbor;
 use tokio::sync::mpsc::*;
 
-pub enum BundleStatusReportReasonCode {
-    NoAdditionalInformation = 0,
-    LifetimeExpired = 1,
-    ForwardedOverUnidirectionalLink = 2,
-    TransmissionCanceled = 3,
-    DepletedStorage = 4,
-    DestinationEndpointIDUnavailable = 5,
-    NoKnownRouteToDestinationFromHere = 6,
-    NoTimelyContactWithNextNodeOnRoute = 7,
-    BlockUnintelligible = 8,
-    HopLimitExceeded = 9,
-    TrafficPared = 10,
-    BlockUnsupported = 11,
-    MissingSecurityOperation = 12,
-    UnknownSecurityOperation = 13,
-    UnexpectedSecurityOperation = 14,
-    FailedSecurityOperation = 15,
-    ConflictingSecurityOperation = 16,
-}
-
 pub struct Dispatcher {
     store: store::Store,
     status_reports: bool,
@@ -139,7 +119,7 @@ impl Dispatcher {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-        reason: BundleStatusReportReasonCode,
+        reason: bundle::StatusReportReasonCode,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
         if !self.status_reports || !bundle.flags.receipt_report_requested {
@@ -159,7 +139,7 @@ impl Dispatcher {
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending)
+            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
             .await?;
 
         // And queue it up
@@ -170,7 +150,7 @@ impl Dispatcher {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-        reason: BundleStatusReportReasonCode,
+        reason: bundle::StatusReportReasonCode,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
         if !self.status_reports || !bundle.flags.delete_report_requested {
@@ -192,31 +172,10 @@ impl Dispatcher {
             ))
             .build();
 
-        // Calculate hash
-        let hash = sha2::Sha256::digest(&data);
-
-        // Write to bundle storage
-        let storage_name = self.bundle_storage.store(data).await?;
-
-        // Write to metadata store
-        match self
-            .metadata_storage
-            .store(status, &storage_name, &hash, bundle)
-            .await
-        {
-            Err(e) => {
-                // This is just bad, we can't really claim to have received the bundle,
-                // so just cleanup and get out
-                let _ = self.bundle_storage.remove(&storage_name).await;
-                Err(e)
-            }
-            Ok(r) => Ok(r),
-        }
-
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending)
+            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
             .await?;
 
         // And queue it up
@@ -227,7 +186,7 @@ impl Dispatcher {
 fn new_bundle_status_report(
     metadata: &bundle::Metadata,
     bundle: &bundle::Bundle,
-    reason: BundleStatusReportReasonCode,
+    reason: bundle::StatusReportReasonCode,
     forwarded: Option<time::OffsetDateTime>,
     delivered: Option<time::OffsetDateTime>,
     deleted: Option<time::OffsetDateTime>,

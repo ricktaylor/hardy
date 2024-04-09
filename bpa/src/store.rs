@@ -139,7 +139,7 @@ impl Store {
                         .report_bundle_deletion(
                             &metadata,
                             &bundle,
-                            dispatcher::BundleStatusReportReasonCode::DepletedStorage,
+                            bundle::StatusReportReasonCode::DepletedStorage,
                         )
                         .await?;
 
@@ -191,7 +191,7 @@ impl Store {
 
     pub async fn store_data(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
         // Write to bundle storage
-        Ok(self.bundle_storage.store(data).await?)
+        self.bundle_storage.store(data).await
     }
 
     pub async fn store_metadata(
@@ -201,6 +201,39 @@ impl Store {
     ) -> Result<(), anyhow::Error> {
         // Write to metadata store
         self.metadata_storage.store(metadata, bundle).await
+    }
+
+    pub async fn store(
+        &self,
+        bundle: &bundle::Bundle,
+        data: Vec<u8>,
+        status: bundle::BundleStatus,
+        received_at: Option<time::OffsetDateTime>,
+    ) -> Result<bundle::Metadata, anyhow::Error> {
+        // Calculate hash
+        let hash = sha2::Sha256::digest(&data);
+
+        // Write to bundle storage
+        let storage_name = self.bundle_storage.store(data).await?;
+
+        // Compose metadata
+        let metadata = bundle::Metadata {
+            status,
+            storage_name,
+            hash: hash.to_vec(),
+            received_at,
+        };
+
+        // Write to metadata store
+        match self.metadata_storage.store(&metadata, bundle).await {
+            Err(e) => {
+                // This is just bad, we can't really claim to have stored the bundle,
+                // so just cleanup and get out
+                let _ = self.bundle_storage.remove(&metadata.storage_name).await;
+                Err(e)
+            }
+            Ok(_) => Ok(metadata),
+        }
     }
 
     pub async fn set_status(

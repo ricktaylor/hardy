@@ -1,5 +1,3 @@
-use std::time::SystemTime;
-
 use super::*;
 
 #[async_trait]
@@ -37,6 +35,7 @@ pub trait MetadataStorage: Send + Sync {
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
+    #[allow(clippy::type_complexity)]
     fn check_orphans(
         &self,
         f: &mut dyn FnMut(&str, Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,

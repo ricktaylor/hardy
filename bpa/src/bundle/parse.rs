@@ -1,7 +1,7 @@
 use super::*;
 
 pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
-    let ((bundle, valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
+    let ((bundle, mut valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
         if let cbor::decode::Value::Array(blocks) = value {
             if !tags.is_empty() {
                 log::info!("Parsing bundle with tags");
@@ -11,10 +11,14 @@ pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
             Err(anyhow!("Bundle is not a CBOR array"))
         }
     })?;
-    if valid && consumed < data.len() {
-        return Err(anyhow!(
-            "Bundle has additional data after end of CBOR array"
-        ));
+    if valid {
+        if consumed < data.len() {
+            return Err(anyhow!(
+                "Bundle has additional data after end of CBOR array"
+            ));
+        }
+
+        valid = check_bundle_blocks(&bundle);
     }
     Ok((bundle, valid))
 }
@@ -98,15 +102,22 @@ fn parse_primary_block(
     let timestamp = block.parse::<CreationTimestamp>();
 
     // Parse lifetime
-    let lifetime = block.parse::<u64>().inspect_err(|e| log::info!("Invalid lifetime: {}", e));
+    let lifetime = block
+        .parse::<u64>()
+        .inspect_err(|e| log::info!("Invalid lifetime: {}", e));
 
     // Parse fragment parts
     let fragment_info: Result<Option<FragmentInfo>, anyhow::Error> = if !flags.is_fragment {
         Ok(None)
     } else {
-        let offset = block.parse::<u64>()?;
-        let total_len = block.parse::<u64>()?;
-        Ok(Some(FragmentInfo { offset, total_len }))
+        Ok(Some(FragmentInfo {
+            offset: block
+                .parse::<u64>()
+                .inspect_err(|e| log::info!("Invalid fragment offset: {}", e))?,
+            total_len: block
+                .parse::<u64>()
+                .inspect_err(|e| log::info!("Invalid application data total length: {}", e))?,
+        }))
     };
 
     // Try to parse and check CRC
@@ -274,4 +285,77 @@ fn parse_block(
             data_len,
         },
     ))
+}
+
+fn check_bundle_blocks(bundle: &Bundle) -> bool {
+    // Check for RFC9171-specified extension blocks
+    let mut seen_payload = false;
+    let mut seen_previous_node = false;
+    let mut seen_bundle_age = false;
+    let mut seen_hop_count = false;
+
+    for (block_number, block) in &bundle.blocks {
+        match &block.block_type {
+            BlockType::Payload => {
+                if seen_payload {
+                    log::info!("Bundle has multiple payload blocks");
+                    return false;
+                } else if *block_number != 1 {
+                    log::info!("Bundle has payload block with number {}", block_number);
+                    return false;
+                } else {
+                    seen_payload = true;
+                }
+            }
+            BlockType::PreviousNode => {
+                if seen_previous_node {
+                    log::info!("Bundle has multiple Previous Node extension blocks");
+                    return false;
+                } else if !check_previous_node(block) {
+                    return false;
+                } else {
+                    seen_previous_node = true;
+                }
+            }
+            BlockType::BundleAge => {
+                if seen_bundle_age {
+                    log::info!("Bundle has multiple Bundle Age extension blocks");
+                    return false;
+                } else if !check_bundle_age(block) {
+                    return false;
+                } else {
+                    seen_bundle_age = true;
+                }
+            }
+            BlockType::HopCount => {
+                if seen_hop_count {
+                    log::info!("Bundle has multiple Hop Count extension blocks");
+                    return false;
+                } else if !check_hop_count(block) {
+                    return false;
+                } else {
+                    seen_hop_count = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !seen_bundle_age && bundle.id.timestamp.creation_time == 0 {
+        log::info!("Bundle source has no clock, and there is no Bundle Age extension block");
+        return false;
+    }
+    true
+}
+
+fn check_previous_node(block: &Block) -> bool {
+    todo!()
+}
+
+fn check_bundle_age(block: &Block) -> bool {
+    todo!()
+}
+
+fn check_hop_count(block: &Block) -> bool {
+    todo!()
 }

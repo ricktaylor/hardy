@@ -1,7 +1,5 @@
 use super::*;
 
-// todo  - Rename all these states!!
-
 #[derive(Copy, Clone, Debug)]
 pub enum BundleStatus {
     IngressPending = 0,

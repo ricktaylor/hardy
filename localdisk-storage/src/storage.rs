@@ -103,6 +103,7 @@ impl Storage {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn walk_dirs(
         &self,
         dir: &PathBuf,
@@ -131,7 +132,7 @@ impl Storage {
                     let received_at = entry
                         .metadata()
                         .and_then(|m| m.created())
-                        .map(|c| time::OffsetDateTime::from(c))
+                        .map(time::OffsetDateTime::from)
                         .ok();
 
                     if !f(&storage_name, received_at)? {

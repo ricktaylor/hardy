@@ -6,8 +6,8 @@ mod block_type;
 mod bundle_flags;
 mod bundle_status;
 mod crc;
-mod eid;
 mod creation_timestamp;
+mod eid;
 
 pub struct Metadata {
     pub status: BundleStatus,
@@ -51,5 +51,5 @@ pub use block_type::BlockType;
 pub use bundle_flags::BundleFlags;
 pub use bundle_status::BundleStatus;
 pub use crc::CrcType;
-pub use eid::Eid;
 pub use creation_timestamp::CreationTimestamp;
+pub use eid::Eid;
