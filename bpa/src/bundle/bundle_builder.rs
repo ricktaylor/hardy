@@ -153,14 +153,14 @@ impl BundleBuilder {
                 id: BundleId {
                     source: self.source.clone(),
                     timestamp,
-                    fragment_info: None,
+                    ..Default::default()
                 },
                 flags: self.bundle_flags,
                 crc_type: self.crc_type,
                 destination: self.destination.clone(),
                 report_to: self.report_to.clone(),
                 lifetime: self.lifetime.whole_milliseconds() as u64,
-                blocks: HashMap::new(),
+                ..Default::default()
             },
             crc::emit_crc_value(
                 vec![

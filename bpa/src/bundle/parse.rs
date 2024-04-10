@@ -1,7 +1,7 @@
 use super::*;
 
 pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
-    let ((bundle, mut valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
+    let ((mut bundle, mut valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
         if let cbor::decode::Value::Array(blocks) = value {
             if !tags.is_empty() {
                 log::info!("Parsing bundle with tags");
@@ -18,7 +18,7 @@ pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
             ));
         }
 
-        valid = check_bundle_blocks(&bundle);
+        valid = check_bundle_blocks(&mut bundle);
     }
     Ok((bundle, valid))
 }
@@ -157,7 +157,7 @@ fn parse_primary_block(
                 destination,
                 report_to: report_to_eid,
                 lifetime,
-                blocks: HashMap::new(),
+                ..Default::default()
             },
             true,
         )),
@@ -168,14 +168,14 @@ fn parse_primary_block(
                     id: BundleId {
                         source: source_eid.unwrap_or(Eid::Null),
                         timestamp: timestamp.unwrap_or(CreationTimestamp::default()),
-                        fragment_info: None,
+                        ..Default::default()
                     },
                     flags,
                     crc_type: crc_result.map_or(CrcType::None, |(_, t)| t),
                     destination: dest_eid.unwrap_or(Eid::Null),
                     report_to: report_to_eid,
                     lifetime: lifetime.unwrap_or(0),
-                    blocks: HashMap::new(),
+                    ..Default::default()
                 },
                 false,
             ))
@@ -287,14 +287,14 @@ fn parse_block(
     ))
 }
 
-fn check_bundle_blocks(bundle: &Bundle) -> bool {
+fn check_bundle_blocks(bundle: &mut Bundle) -> bool {
     // Check for RFC9171-specified extension blocks
     let mut seen_payload = false;
     let mut seen_previous_node = false;
     let mut seen_bundle_age = false;
     let mut seen_hop_count = false;
 
-    for (block_number, block) in &bundle.blocks {
+    for (block_number, block) in &mut bundle.blocks {
         match &block.block_type {
             BlockType::Payload => {
                 if seen_payload {
@@ -348,14 +348,14 @@ fn check_bundle_blocks(bundle: &Bundle) -> bool {
     true
 }
 
-fn check_previous_node(block: &Block) -> bool {
+fn check_previous_node(block: &mut Block) -> bool {
     todo!()
 }
 
-fn check_bundle_age(block: &Block) -> bool {
+fn check_bundle_age(block: &mut Block) -> bool {
     todo!()
 }
 
-fn check_hop_count(block: &Block) -> bool {
+fn check_hop_count(block: &mut Block) -> bool {
     todo!()
 }

@@ -16,6 +16,7 @@ pub struct Metadata {
     pub received_at: Option<time::OffsetDateTime>,
 }
 
+#[derive(Default)]
 pub struct BundleId {
     pub source: Eid,
     pub timestamp: CreationTimestamp,
@@ -28,13 +29,28 @@ pub struct FragmentInfo {
     pub total_len: u64,
 }
 
+#[derive(Copy, Clone)]
+pub struct HopInfo {
+    pub count: usize,
+    pub limit: usize,
+}
+
+#[derive(Default)]
 pub struct Bundle {
+    // From Primary Block
     pub id: BundleId,
     pub flags: BundleFlags,
     pub crc_type: CrcType,
     pub destination: Eid,
     pub report_to: Eid,
     pub lifetime: u64,
+
+    // Unpacked from extension blocks
+    pub previous_node: Option<Eid>,
+    pub age: Option<u64>,
+    pub hop_count: Option<HopInfo>,
+
+    // The extension blocks
     pub blocks: std::collections::HashMap<u64, Block>,
 }
 

@@ -3,7 +3,7 @@ CREATE TABLE bundles (
     status INTEGER NOT NULL DEFAULT(0),
     storage_name TEXT UNIQUE NOT NULL,
     hash TEXT NOT NULL,
-    received_at TEXT NOT NULL DEFAULT(datetime('now','utc','subsecond')),
+    received_at TEXT,
     flags INTEGER NOT NULL,
     crc_type INTEGER NOT NULL,
     source BLOB NOT NULL,
@@ -14,6 +14,10 @@ CREATE TABLE bundles (
     lifetime INTEGER NOT NULL,
     fragment_offset INTEGER NOT NULL DEFAULT(-1),
     fragment_total_len INTEGER NOT NULL DEFAULT(-1),
+    previous_node BLOB,
+    age INTEGER,
+    hop_count INTEGER,
+    hop_limit INTEGER,
 
     UNIQUE(source,creation_time,creation_seq_num,fragment_offset,fragment_total_len)
 ) STRICT;

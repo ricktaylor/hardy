@@ -1,8 +1,9 @@
 use super::*;
 
 #[allow(non_camel_case_types)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum CrcType {
+    #[default]
     None = 0,
     CRC16_X25 = 1,
     CRC32_CASTAGNOLI = 2,

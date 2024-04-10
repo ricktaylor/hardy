@@ -1,7 +1,11 @@
 use super::*;
 use anyhow::anyhow;
 use base64::prelude::*;
-use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
+use hardy_bpa_core::{
+    async_trait,
+    bundle::{self, HopInfo},
+    storage::MetadataStorage,
+};
 use hardy_cbor as cbor;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
@@ -127,12 +131,16 @@ fn unpack_bundles(
            12: bundles.lifetime,
            13: bundles.fragment_offset,
            14: bundles.fragment_total_len,
-           15: bundle_blocks.block_num,
-           16: bundle_blocks.block_type,
-           17: bundle_blocks.block_flags,
-           18: bundle_blocks.block_crc_type,
-           19: bundle_blocks.data_offset,
-           20: bundle_blocks.data_len
+           15: bundles.previous_node,
+           16: bundles.age,
+           17: bundles.hop_count,
+           18: bundles.hop_limit,
+           19: bundle_blocks.block_num,
+           20: bundle_blocks.block_type,
+           21: bundle_blocks.block_flags,
+           22: bundle_blocks.block_crc_type,
+           23: bundle_blocks.data_offset,
+           24: bundle_blocks.data_len
     */
 
     let mut bundles = Vec::new();
@@ -174,16 +182,32 @@ fn unpack_bundles(
             report_to: decode_eid(row, 9)?,
             lifetime: as_u64(row.get(12)?),
             blocks: HashMap::new(),
+            previous_node: match row.get_ref(15)? {
+                rusqlite::types::ValueRef::Null => None,
+                rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
+                _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
+            },
+            age: row
+                .get::<usize, Option<i64>>(16)?
+                .and_then(|v| Some(v as u64)),
+            hop_count: match row.get_ref(17)? {
+                rusqlite::types::ValueRef::Null => None,
+                rusqlite::types::ValueRef::Integer(i) => Some(HopInfo {
+                    count: i as usize,
+                    limit: row.get::<usize, i64>(18)? as usize,
+                }),
+                _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
+            },
         };
 
         loop {
-            let block_number = as_u64(row.get(15)?);
+            let block_number = as_u64(row.get(19)?);
             let block = bundle::Block {
-                block_type: as_u64(row.get(16)?).try_into()?,
-                flags: as_u64(row.get(17)?).into(),
-                crc_type: as_u64(row.get(18)?).try_into()?,
-                data_offset: as_u64(row.get(19)?) as usize,
-                data_len: as_u64(row.get(20)?) as usize,
+                block_type: as_u64(row.get(20)?).try_into()?,
+                flags: as_u64(row.get(21)?).into(),
+                crc_type: as_u64(row.get(22)?).try_into()?,
+                data_offset: as_u64(row.get(23)?) as usize,
+                data_len: as_u64(row.get(24)?) as usize,
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -234,7 +258,11 @@ impl MetadataStorage for Storage {
                                 creation_seq_num,
                                 lifetime,                    
                                 fragment_offset,
-                                fragment_total_len
+                                fragment_total_len,
+                                previous_node,
+                                age,
+                                hop_count,
+                                hop_limit
                             FROM unconfirmed_bundles
                             JOIN bundles ON id = unconfirmed_bundles.bundle_id
                             LIMIT 16
@@ -330,6 +358,10 @@ impl MetadataStorage for Storage {
                             lifetime,                    
                             fragment_offset,
                             fragment_total_len,
+                            previous_node,
+                            age,
+                            hop_count,
+                            hop_limit
                             block_num,
                             block_type,
                             block_flags,
@@ -380,6 +412,11 @@ impl MetadataStorage for Storage {
                 (-1, -1)
             };
 
+        let previous_node = match &bundle.previous_node {
+            Some(p) => Some(encode_eid(p)?),
+            None => None,
+        };
+
         // Insert bundle
         let bundle_id = trans
             .prepare_cached(
@@ -397,13 +434,17 @@ impl MetadataStorage for Storage {
                 creation_seq_num,
                 lifetime,
                 fragment_offset,
-                fragment_total_len
+                fragment_total_len,
+                previous_node,
+                age,
+                hop_count,
+                hop_limit
                 )
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
             RETURNING id;"#,
             )?
             .query_row(
-                (
+                rusqlite::params![
                     <bundle::BundleStatus as Into<u64>>::into(metadata.status) as i64,
                     &metadata.storage_name,
                     BASE64_STANDARD.encode(&metadata.hash),
@@ -417,7 +458,11 @@ impl MetadataStorage for Storage {
                     bundle.lifetime as i64,
                     fragment_offset,
                     fragment_total_len,
-                ),
+                    previous_node,
+                    bundle.age,
+                    bundle.hop_count.and_then(|h| Some(h.count)),
+                    bundle.hop_count.and_then(|h| Some(h.limit))
+                ],
                 |row| Ok(as_u64(row.get(0)?)),
             )?;
 
