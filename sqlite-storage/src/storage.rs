@@ -1,11 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use base64::prelude::*;
-use hardy_bpa_core::{
-    async_trait,
-    bundle::{self, HopInfo},
-    storage::MetadataStorage,
-};
+use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
 use hardy_cbor as cbor;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
@@ -112,6 +108,11 @@ fn as_u64(v: i64) -> u64 {
     v as u64
 }
 
+#[inline]
+fn as_i64<T: Into<u64>>(v: T) -> i64 {
+    T::into(v) as i64
+}
+
 fn unpack_bundles(
     mut rows: rusqlite::Rows,
 ) -> Result<Vec<(i64, bundle::Metadata, bundle::Bundle)>, anyhow::Error> {
@@ -187,12 +188,10 @@ fn unpack_bundles(
                 rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
                 _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
             },
-            age: row
-                .get::<usize, Option<i64>>(16)?
-                .and_then(|v| Some(v as u64)),
+            age: row.get::<usize, Option<i64>>(16)?.map(|v| v as u64),
             hop_count: match row.get_ref(17)? {
                 rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Integer(i) => Some(HopInfo {
+                rusqlite::types::ValueRef::Integer(i) => Some(bundle::HopInfo {
                     count: i as usize,
                     limit: row.get::<usize, i64>(18)? as usize,
                 }),
@@ -405,18 +404,6 @@ impl MetadataStorage for Storage {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        let (fragment_offset, fragment_total_len) =
-            if let Some(fragment_info) = bundle.id.fragment_info {
-                (fragment_info.offset as i64, fragment_info.total_len as i64)
-            } else {
-                (-1, -1)
-            };
-
-        let previous_node = match &bundle.previous_node {
-            Some(p) => Some(encode_eid(p)?),
-            None => None,
-        };
-
         // Insert bundle
         let bundle_id = trans
             .prepare_cached(
@@ -444,25 +431,28 @@ impl MetadataStorage for Storage {
             RETURNING id;"#,
             )?
             .query_row(
-                rusqlite::params![
-                    <bundle::BundleStatus as Into<u64>>::into(metadata.status) as i64,
+                rusqlite::params!(
+                    as_i64(metadata.status),
                     &metadata.storage_name,
                     BASE64_STANDARD.encode(&metadata.hash),
-                    <bundle::BundleFlags as Into<u64>>::into(bundle.flags) as i64,
-                    <bundle::CrcType as Into<u64>>::into(bundle.crc_type) as i64,
+                    as_i64(bundle.flags),
+                    as_i64(bundle.crc_type),
                     &encode_eid(&bundle.id.source)?,
                     &encode_eid(&bundle.destination)?,
                     &encode_eid(&bundle.report_to)?,
-                    bundle.id.timestamp.creation_time as i64,
-                    bundle.id.timestamp.sequence_number as i64,
-                    bundle.lifetime as i64,
-                    fragment_offset,
-                    fragment_total_len,
-                    previous_node,
-                    bundle.age,
-                    bundle.hop_count.and_then(|h| Some(h.count)),
-                    bundle.hop_count.and_then(|h| Some(h.limit))
-                ],
+                    as_i64(bundle.id.timestamp.creation_time),
+                    as_i64(bundle.id.timestamp.sequence_number),
+                    as_i64(bundle.lifetime),
+                    bundle.id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
+                    bundle.id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                    bundle
+                        .previous_node
+                        .as_ref()
+                        .map_or(Ok(None), |p| encode_eid(p).map(Some))?,
+                    bundle.age.map(as_i64),
+                    bundle.hop_count.map(|h| h.count as i64),
+                    bundle.hop_count.map(|h| h.limit as i64)
+                ),
                 |row| Ok(as_u64(row.get(0)?)),
             )?;
 
@@ -482,10 +472,10 @@ impl MetadataStorage for Storage {
         for (block_num, block) in &bundle.blocks {
             block_stmt.execute((
                 bundle_id,
-                <bundle::BlockType as Into<u64>>::into(block.block_type) as i64,
-                *block_num as i64,
-                <bundle::BlockFlags as Into<u64>>::into(block.flags) as i64,
-                <bundle::CrcType as Into<u64>>::into(block.crc_type) as i64,
+                as_i64(block.block_type),
+                as_i64(*block_num),
+                as_i64(block.flags),
+                as_i64(block.crc_type),
                 block.data_offset as i64,
                 block.data_len as i64,
             ))?;
@@ -555,10 +545,7 @@ impl MetadataStorage for Storage {
             .lock()
             .await
             .prepare_cached(r#"UPDATE bundles SET status = ?1 WHERE storage_name = ?2;"#)?
-            .execute((
-                <bundle::BundleStatus as Into<u64>>::into(status) as i64,
-                storage_name,
-            ))?;
+            .execute((as_i64(status), storage_name))?;
         Ok(())
     }
 }
