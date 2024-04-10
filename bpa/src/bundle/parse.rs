@@ -18,7 +18,9 @@ pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
             ));
         }
 
-        valid = check_bundle_blocks(&mut bundle);
+        valid = check_bundle_blocks(&mut bundle, data)
+            .inspect_err(|e| log::info!("{}", e))
+            .is_ok();
     }
     Ok((bundle, valid))
 }
@@ -287,75 +289,131 @@ fn parse_block(
     ))
 }
 
-fn check_bundle_blocks(bundle: &mut Bundle) -> bool {
+fn check_bundle_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Error> {
     // Check for RFC9171-specified extension blocks
     let mut seen_payload = false;
     let mut seen_previous_node = false;
     let mut seen_bundle_age = false;
     let mut seen_hop_count = false;
 
-    for (block_number, block) in &mut bundle.blocks {
+    let mut previous_node = None;
+    let mut bundle_age = None;
+    let mut hop_count = None;
+
+    for (block_number, block) in &bundle.blocks {
+        let block_data = &data[block.data_offset..block.data_offset + block.data_len];
         match &block.block_type {
             BlockType::Payload => {
                 if seen_payload {
-                    log::info!("Bundle has multiple payload blocks");
-                    return false;
-                } else if *block_number != 1 {
-                    log::info!("Bundle has payload block with number {}", block_number);
-                    return false;
-                } else {
-                    seen_payload = true;
+                    return Err(anyhow!("Bundle has multiple payload blocks"));
                 }
+                if *block_number != 1 {
+                    return Err(anyhow!(
+                        "Bundle has payload block with number {}",
+                        block_number
+                    ));
+                }
+                seen_payload = true;
             }
             BlockType::PreviousNode => {
                 if seen_previous_node {
-                    log::info!("Bundle has multiple Previous Node extension blocks");
-                    return false;
-                } else if !check_previous_node(block) {
-                    return false;
-                } else {
-                    seen_previous_node = true;
+                    return Err(anyhow!(
+                        "Bundle has multiple Previous Node extension blocks"
+                    ));
                 }
+                previous_node = Some(check_previous_node(block, block_data)?);
+                seen_previous_node = true;
             }
             BlockType::BundleAge => {
                 if seen_bundle_age {
-                    log::info!("Bundle has multiple Bundle Age extension blocks");
-                    return false;
-                } else if !check_bundle_age(block) {
-                    return false;
-                } else {
-                    seen_bundle_age = true;
+                    return Err(anyhow!("Bundle has multiple Bundle Age extension blocks"));
                 }
+
+                bundle_age = Some(check_bundle_age(block, block_data)?);
+                seen_bundle_age = true;
             }
             BlockType::HopCount => {
                 if seen_hop_count {
-                    log::info!("Bundle has multiple Hop Count extension blocks");
-                    return false;
-                } else if !check_hop_count(block) {
-                    return false;
-                } else {
-                    seen_hop_count = true;
+                    return Err(anyhow!("Bundle has multiple Hop Count extension blocks"));
                 }
+                hop_count = Some(check_hop_count(block, block_data)?);
+                seen_hop_count = true;
             }
             _ => {}
         }
     }
 
     if !seen_bundle_age && bundle.id.timestamp.creation_time == 0 {
-        log::info!("Bundle source has no clock, and there is no Bundle Age extension block");
-        return false;
+        return Err(anyhow!(
+            "Bundle source has no clock, and there is no Bundle Age extension block"
+        ));
     }
-    true
+
+    // Update bundle
+    bundle.previous_node = previous_node;
+    bundle.age = bundle_age;
+    bundle.hop_count = hop_count;
+    Ok(())
 }
 
-fn check_previous_node(block: &mut Block) -> bool {
-    todo!()
+fn check_previous_node(block: &Block, data: &[u8]) -> Result<Eid, anyhow::Error> {
+    cbor::decode::parse_detail::<Eid>(data)
+        .map_err(|e| anyhow!("Failed to parse EID in Previous Node block: {}", e))
+        .map(|(v, end, tags)| {
+            if !tags.is_empty() {
+                log::info!("Parsing Previous Node extension block with tags");
+            }
+            if end != block.data_len {
+                Err(anyhow!("Previous Node extension block has additional data"))
+            } else {
+                Ok(v)
+            }
+        })?
 }
 
-fn check_bundle_age(block: &mut Block) -> bool {
-    todo!()
+fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, anyhow::Error> {
+    cbor::decode::parse_detail::<u64>(data)
+        .map_err(|e| anyhow!("Failed to parse age in Bundle Age block: {}", e))
+        .map(|(v, end, tags)| {
+            if !tags.is_empty() {
+                log::info!("Parsing Bundle Age extension block with tags");
+            }
+            if end != block.data_len {
+                Err(anyhow!("Bundle Age extension block has additional data"))
+            } else {
+                Ok(v)
+            }
+        })?
 }
 
-fn check_hop_count(block: &mut Block) -> bool {
-    todo!()
+fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, anyhow::Error> {
+    cbor::decode::parse_value(data, |value, tags| {
+        if let cbor::decode::Value::Array(mut a) = value {
+            if !tags.is_empty() {
+                log::info!("Parsing Hop Count with tags");
+            }
+            if a.count().is_none() {
+                log::info!("Parsing Hop Count as indefinite length array");
+            }
+
+            let hop_info = HopInfo {
+                count: a.parse::<u64>()? as usize,
+                limit: a.parse::<u64>()? as usize,
+            };
+
+            let end =
+                a.parse_end_or_else(|| anyhow!("Hop Count extension block has too many items"))?;
+
+            if end != block.data_len {
+                return Err(anyhow!("Hop Count extension block has additional data"));
+            }
+
+            Ok(hop_info)
+        } else {
+            Err(anyhow!(
+                "Hop Count extension block content is not a CBOR array"
+            ))
+        }
+    })
+    .map(|(v, _)| v)
 }
