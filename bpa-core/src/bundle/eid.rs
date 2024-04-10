@@ -91,16 +91,12 @@ impl Eid {
             if v2 >= 2 ^ 32 {
                 return Err(anyhow!("Invalid IPN EID service number {}", v2));
             }
-            if (v1 >> 32) as u32 != 0 {
-                (
-                    2,
-                    (v1 >> 32) as u32,
-                    (v1 & ((2 ^ 32) - 1)) as u32,
-                    v2 as u32,
-                )
-            } else {
-                (3, 0, v1 as u32, v2 as u32)
-            }
+            (
+                2,
+                (v1 >> 32) as u32,
+                (v1 & ((2 ^ 32) - 1)) as u32,
+                v2 as u32,
+            )
         };
 
         if allocator_id == 0 && node_number == 0 {
