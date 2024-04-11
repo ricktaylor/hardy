@@ -190,7 +190,7 @@ impl cbor::decode::FromCbor for Eid {
                     _ => {}
                 }
                 let schema = a.parse::<u64>()?;
-                let eid = a.try_parse_item(|value: cbor::decode::Value<'_>, _, tags2| {
+                let eid = a.parse_item(|value: cbor::decode::Value<'_>, _, tags2| {
                     if !tags2.is_empty() {
                         log::info!("Parsing EID value with tags");
                     }
@@ -210,7 +210,7 @@ impl cbor::decode::FromCbor for Eid {
                 Err(anyhow!("EID is not encoded as a CBOR array"))
             }
         })
-        .map(|((eid, tags), o)| (eid, o, tags))
+        .map(|((eid, tags), len)| (eid, len, tags))
     }
 }
 

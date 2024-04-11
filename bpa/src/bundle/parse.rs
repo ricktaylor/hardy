@@ -1,7 +1,7 @@
 use super::*;
 
 pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
-    let ((mut bundle, mut valid), consumed) = cbor::decode::parse_value(data, |value, tags| {
+    let ((mut bundle, mut valid), len) = cbor::decode::parse_value(data, |value, tags| {
         if let cbor::decode::Value::Array(blocks) = value {
             if !tags.is_empty() {
                 log::info!("Parsing bundle with tags");
@@ -12,7 +12,7 @@ pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
         }
     })?;
     if valid {
-        if consumed < data.len() {
+        if len < data.len() {
             return Err(anyhow!(
                 "Bundle has additional data after end of CBOR array"
             ));
@@ -30,16 +30,35 @@ fn parse_bundle_blocks(
     mut blocks: cbor::decode::Array,
 ) -> Result<(Bundle, bool), anyhow::Error> {
     // Parse Primary block
-    let (mut bundle, valid) = blocks.try_parse_item(|value, block_start, tags| {
-        if let cbor::decode::Value::Array(a) = value {
-            if !tags.is_empty() {
-                log::info!("Parsing primary block with tags");
+    let (mut bundle, valid, block_start, block_len) = blocks
+        .parse_item_detail(|value, block_start, tags| {
+            if let cbor::decode::Value::Array(a) = value {
+                if !tags.is_empty() {
+                    log::info!("Parsing primary block with tags");
+                }
+                parse_primary_block(data, a, block_start)
+                    .map(|(bundle, valid)| (bundle, valid, block_start))
+            } else {
+                Err(anyhow!("Bundle primary block is not a CBOR array"))
             }
-            parse_primary_block(data, a, block_start)
-        } else {
-            Err(anyhow!("Bundle primary block is not a CBOR array"))
-        }
-    })?;
+        })
+        .map(|((bundle, valid, block_start), len)| (bundle, valid, block_start, len))?;
+
+    // Add a block 0
+    bundle.blocks.insert(
+        0,
+        Block {
+            block_type: BlockType::Primary,
+            flags: BlockFlags {
+                report_on_failure: true,
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            },
+            crc_type: bundle.crc_type,
+            data_offset: block_start,
+            data_len: block_len,
+        },
+    );
 
     let valid = if valid {
         // Parse other blocks
@@ -123,13 +142,12 @@ fn parse_primary_block(
     };
 
     // Try to parse and check CRC
-    let crc_result = match crc_type {
-        Ok(crc_type) => Ok((
+    let crc_result = crc_type.map(|crc_type| {
+        (
             crc::parse_crc_value(data, block_start, block, crc_type),
             crc_type,
-        )),
-        Err(e) => Err(e),
-    };
+        )
+    });
 
     // By the time we get here we have just enough information to react to an invalid primary block
     match (
@@ -146,7 +164,7 @@ fn parse_primary_block(
             Ok(timestamp),
             Ok(lifetime),
             Ok(fragment_info),
-            Ok((_, crc_type)),
+            Ok((Ok(_), crc_type)),
         ) => Ok((
             Bundle {
                 id: BundleId {
@@ -198,15 +216,11 @@ fn parse_extension_blocks(
                     if !tags.is_empty() {
                         log::info!("Parsing extension block with tags");
                     }
-                    Ok(Some(parse_block(data, a, block_start)?))
+                    parse_block(data, a, block_start)
                 }
-                cbor::decode::Value::End(_) => Ok(None),
                 _ => Err(anyhow!("Bundle extension block is not a CBOR array")),
             })?
         {
-            if block_number == 0 {
-                return Err(anyhow!("Bundle extension block must not be block number 0"));
-            }
             extension_blocks.push((block_number, block));
         } else {
             // Check the last block is the payload
@@ -235,9 +249,6 @@ fn parse_extension_blocks(
             break map;
         }
     };
-
-    // Check for duplicates
-
     Ok(extension_map)
 }
 
@@ -256,12 +267,20 @@ fn parse_block(
     }
 
     let block_type = block.parse::<BlockType>()?;
+    if let BlockType::Primary = block_type {
+        return Err(anyhow!("Bundle extension block must not be block type 0"));
+    }
+
     let block_number = block.parse::<u64>()?;
+    if block_number == 0 {
+        return Err(anyhow!("Bundle extension block must not be block number 0"));
+    }
+
     let flags = block.parse::<BlockFlags>()?;
     let crc_type = block.parse::<CrcType>()?;
 
     // Stash start of data
-    let (data_offset, data_len) = block.try_parse_item(|value, data_start, tags| match value {
+    let (data_offset, data_len) = block.parse_item(|value, data_start, tags| match value {
         cbor::decode::Value::Bytes(v, chunked) => {
             if chunked {
                 log::info!("Parsing chunked extension block data");
@@ -289,7 +308,7 @@ fn parse_block(
     ))
 }
 
-fn check_bundle_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Error> {
+pub fn check_bundle_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Error> {
     // Check for RFC9171-specified extension blocks
     let mut seen_payload = false;
     let mut seen_previous_node = false;

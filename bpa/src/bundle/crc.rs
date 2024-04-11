@@ -8,16 +8,9 @@ pub fn parse_crc_value(
     block_start: usize,
     mut block: cbor::decode::Array,
     crc_type: CrcType,
-) -> Result<usize, anyhow::Error> {
+) -> Result<(), anyhow::Error> {
     // Parse CRC
-    let (crc_value, crc_start) = block.try_parse_item(|value, crc_start, tags| match value {
-        cbor::decode::Value::End(_) => {
-            if let CrcType::None = crc_type {
-                Ok((None, crc_start))
-            } else {
-                Err(anyhow!("Block is missing required CRC value"))
-            }
-        }
+    let crc_value = block.try_parse_item_detail(|value, crc_start, tags| match value {
         cbor::decode::Value::Bytes(crc, _) => {
             if !tags.is_empty() {
                 log::info!("Parsing bundle block CRC value with tags");
@@ -28,14 +21,14 @@ pub fn parse_crc_value(
                     if crc.len() != 2 {
                         Err(anyhow!("Block has unexpected CRC value length"))
                     } else {
-                        Ok((Some(u16::from_be_bytes(crc.try_into()?) as u32), crc_start))
+                        Ok((u16::from_be_bytes(crc.try_into()?) as u32, crc_start))
                     }
                 }
                 CrcType::CRC32_CASTAGNOLI => {
                     if crc.len() != 4 {
                         Err(anyhow!("Block has unexpected CRC value length"))
                     } else {
-                        Ok((Some(u32::from_be_bytes(crc.try_into()?)), crc_start))
+                        Ok((u32::from_be_bytes(crc.try_into()?), crc_start))
                     }
                 }
             }
@@ -44,13 +37,11 @@ pub fn parse_crc_value(
     })?;
 
     // Confirm we are at the end of the block
-    let (crc_end, block_end) = block.try_parse_item(|value, start, _| match value {
-        cbor::decode::Value::End(end) => Ok((start, end)),
-        _ => Err(anyhow!("Block has additional items after CRC value")),
-    })?;
+    let block_end =
+        block.parse_end_or_else(|| anyhow!("Block has additional items after CRC value"))?;
 
     // Now check CRC
-    if let Some(crc_value) = crc_value {
+    if let Some(((crc_value, crc_start), crc_end)) = crc_value {
         let err = anyhow!("Block CRC check failed");
 
         match crc_type {
@@ -79,7 +70,7 @@ pub fn parse_crc_value(
             _ => return Err(anyhow!("Block has invalid CRC type {}", crc_type as u64)),
         }
     }
-    Ok(crc_start)
+    Ok(())
 }
 
 pub fn emit_crc_value(mut block: Vec<Vec<u8>>, crc_type: CrcType) -> Vec<u8> {

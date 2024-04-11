@@ -30,8 +30,8 @@ impl From<CrcType> for u64 {
 
 impl cbor::decode::FromCbor for CrcType {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        let (code, o, tags) = cbor::decode::parse_detail::<u64>(data)?;
-        Ok((code.try_into()?, o, tags))
+        let (code, len, tags) = cbor::decode::parse_detail::<u64>(data)?;
+        Ok((code.try_into()?, len, tags))
     }
 }
 

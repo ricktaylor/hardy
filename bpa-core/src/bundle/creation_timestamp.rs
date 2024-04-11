@@ -33,6 +33,6 @@ impl cbor::decode::FromCbor for CreationTimestamp {
                 Err(anyhow!("Bundle creation timestamp must be a CBOR array"))
             }
         })
-        .map(|((t, tags), o)| (t, o, tags))
+        .map(|((t, tags), len)| (t, len, tags))
     }
 }
