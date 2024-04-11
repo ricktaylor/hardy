@@ -30,6 +30,13 @@ pub enum Value<'a> {
     Array(Array<'a>),
 }
 
+pub struct ArrayValue<T> {
+    value: T,
+    offset: usize,
+    len: usize,
+    tags: Vec<u64>,
+}
+
 pub struct Array<'a> {
     data: &'a [u8],
     count: Option<usize>,
@@ -93,7 +100,7 @@ impl<'a> Array<'a> {
         F: FnOnce(Value, usize, &[u64]) -> Result<T, anyhow::Error>,
     {
         // Check for end of array
-        if let Some(_) = self.check_for_end()? {
+        if self.check_for_end()?.is_some() {
             return Ok(None);
         }
 
@@ -131,9 +138,7 @@ impl<'a> Array<'a> {
         self.try_parse_item(f)?.ok_or(Error::NotEnoughData.into())
     }
 
-    pub fn try_parse_detail<T>(
-        &mut self,
-    ) -> Result<Option<(T, usize, usize, Vec<u64>)>, anyhow::Error>
+    pub fn try_parse_detail<T>(&mut self) -> Result<Option<ArrayValue<T>>, anyhow::Error>
     where
         T: FromCbor,
     {
@@ -142,15 +147,20 @@ impl<'a> Array<'a> {
             Ok(None)
         } else {
             // Parse sub-item
-            let item_start = *self.offset;
-            let (v, len, tags) = T::from_cbor(&self.data[*self.offset..])?;
+            let offset = *self.offset;
+            let (value, len, tags) = T::from_cbor(&self.data[*self.offset..])?;
             *self.offset += len;
             self.idx += 1;
-            Ok(Some((v, item_start, len, tags)))
+            Ok(Some(ArrayValue {
+                value,
+                offset,
+                len,
+                tags,
+            }))
         }
     }
 
-    pub fn parse_detail<T>(&mut self) -> Result<(T, usize, usize, Vec<u64>), anyhow::Error>
+    pub fn parse_detail<T>(&mut self) -> Result<ArrayValue<T>, anyhow::Error>
     where
         T: FromCbor,
     {
@@ -161,7 +171,7 @@ impl<'a> Array<'a> {
     where
         T: FromCbor,
     {
-        Ok(self.try_parse_detail()?.map(|(v, _, _, _)| v))
+        Ok(self.try_parse_detail()?.map(|d| d.value))
     }
 
     pub fn parse<T>(&mut self) -> Result<T, anyhow::Error>

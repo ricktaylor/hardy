@@ -202,7 +202,7 @@ fn unpack_bundles(
         loop {
             let block_number = as_u64(row.get(19)?);
             let block = bundle::Block {
-                block_type: as_u64(row.get(20)?).try_into()?,
+                block_type: as_u64(row.get(20)?).into(),
                 flags: as_u64(row.get(21)?).into(),
                 crc_type: as_u64(row.get(22)?).try_into()?,
                 data_offset: as_u64(row.get(23)?) as usize,
