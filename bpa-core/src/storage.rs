@@ -44,7 +44,7 @@ pub trait BundleStorage: Send + Sync {
     async fn load(
         &self,
         storage_name: &str,
-    ) -> Result<std::sync::Arc<dyn AsRef<[u8]>>, anyhow::Error>;
+    ) -> Result<std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error>;
 
     async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error>;
 

@@ -154,7 +154,10 @@ impl BundleStorage for Storage {
         self.walk_dirs(&self.store_root, f).map(|_| ())
     }
 
-    async fn load(&self, storage_name: &str) -> Result<Arc<dyn AsRef<[u8]>>, anyhow::Error> {
+    async fn load(
+        &self,
+        storage_name: &str,
+    ) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
 
         if cfg!(feature = "mmap") {
