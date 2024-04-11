@@ -1,10 +1,12 @@
 use super::*;
+use crate::store;
 
 // Default values
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
 const DEFAULT_LIFETIME: time::Duration = time::Duration::new(24 * 60 * 60, 0);
 
 pub struct BundleBuilder {
+    status: BundleStatus,
     bundle_flags: BundleFlags,
     crc_type: CrcType,
     source: Eid,
@@ -28,8 +30,9 @@ pub struct BlockBuilder {
 }
 
 impl BundleBuilder {
-    pub fn new() -> Self {
+    pub fn new(status: BundleStatus) -> Self {
         Self {
+            status,
             bundle_flags: BundleFlags::default(),
             crc_type: DEFAULT_CRC_TYPE,
             source: Eid::default(),
@@ -115,7 +118,7 @@ impl BundleBuilder {
         self.add_extension_block(BlockType::Payload).build(data)
     }
 
-    pub fn build(self) -> (Bundle, Vec<u8>) {
+    pub async fn build(self, store: &store::Store) -> Result<(Metadata, Bundle), anyhow::Error> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
@@ -138,7 +141,13 @@ impl BundleBuilder {
         // End indefinite array
         data.push(0xFF);
 
-        (bundle, data)
+        // Update values from supported extension blocks
+        parse::check_bundle_blocks(&mut bundle, &data)?;
+
+        // Store to store
+        let metadata = store.store(&bundle, data, self.status, None).await?;
+
+        Ok((metadata, bundle))
     }
 
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
@@ -147,6 +156,26 @@ impl BundleBuilder {
             creation_time: dtn_time(&timestamp),
             sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
         };
+
+        let block_data = crc::emit_crc_value(
+            vec![
+                // Version
+                cbor::encode::emit(7u8),
+                // Flags
+                cbor::encode::emit(self.bundle_flags),
+                // CRC
+                cbor::encode::emit(self.crc_type),
+                // EIDs
+                cbor::encode::emit(&self.destination),
+                cbor::encode::emit(&self.source),
+                cbor::encode::emit(&self.report_to),
+                // Timestamp
+                cbor::encode::emit(&timestamp),
+                // Lifetime
+                cbor::encode::emit(self.lifetime.whole_milliseconds() as u64),
+            ],
+            self.crc_type,
+        );
 
         (
             Bundle {
@@ -160,27 +189,23 @@ impl BundleBuilder {
                 destination: self.destination.clone(),
                 report_to: self.report_to.clone(),
                 lifetime: self.lifetime.whole_milliseconds() as u64,
+                blocks: HashMap::from([(
+                    0,
+                    Block {
+                        block_type: BlockType::Primary,
+                        flags: BlockFlags {
+                            report_on_failure: true,
+                            delete_bundle_on_failure: true,
+                            ..Default::default()
+                        },
+                        crc_type: self.crc_type,
+                        data_offset: 1,
+                        data_len: block_data.len(),
+                    },
+                )]),
                 ..Default::default()
             },
-            crc::emit_crc_value(
-                vec![
-                    // Version
-                    cbor::encode::emit(7u8),
-                    // Flags
-                    cbor::encode::emit(self.bundle_flags),
-                    // CRC
-                    cbor::encode::emit(self.crc_type),
-                    // EIDs
-                    cbor::encode::emit(&self.destination),
-                    cbor::encode::emit(&self.source),
-                    cbor::encode::emit(&self.report_to),
-                    // Timestamp
-                    cbor::encode::emit(&timestamp),
-                    // Lifetime
-                    cbor::encode::emit(self.lifetime.whole_milliseconds() as u64),
-                ],
-                self.crc_type,
-            ),
+            block_data,
         )
     }
 }

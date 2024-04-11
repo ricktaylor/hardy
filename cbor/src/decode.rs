@@ -113,7 +113,8 @@ impl<'a> Array<'a> {
     where
         F: FnOnce(Value, usize, &[u64]) -> Result<T, anyhow::Error>,
     {
-        self.try_parse_item_detail(f)?.ok_or(Error::NotEnoughData.into())
+        self.try_parse_item_detail(f)?
+            .ok_or(Error::NotEnoughData.into())
     }
 
     pub fn try_parse_item<T, F>(&mut self, f: F) -> Result<Option<T>, anyhow::Error>

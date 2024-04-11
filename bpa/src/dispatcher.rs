@@ -127,19 +127,14 @@ impl Dispatcher {
         }
 
         // Create a bundle report
-        let (bundle, data) = bundle::BundleBuilder::new()
+        let (metadata, bundle) = bundle::BundleBuilder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
             .source(self.source_eid.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
             ))
-            .build();
-
-        // Store to store
-        let metadata = self
-            .store
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
+            .build(&self.store)
             .await?;
 
         // And queue it up
@@ -158,7 +153,7 @@ impl Dispatcher {
         }
 
         // Create a bundle report
-        let (bundle, data) = bundle::BundleBuilder::new()
+        let (metadata, bundle) = bundle::BundleBuilder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
             .source(self.source_eid.clone())
             .destination(bundle.report_to.clone())
@@ -170,12 +165,7 @@ impl Dispatcher {
                 None,
                 Some(time::OffsetDateTime::now_utc()),
             ))
-            .build();
-
-        // Store to store
-        let metadata = self
-            .store
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
+            .build(&self.store)
             .await?;
 
         // And queue it up
