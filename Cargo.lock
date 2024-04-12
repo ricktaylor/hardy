@@ -512,10 +512,8 @@ dependencies = [
  "log_err",
  "serde",
  "simplelog",
- "thiserror",
  "time",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "tonic",
 ]
@@ -531,7 +529,6 @@ dependencies = [
  "log",
  "sha2",
  "time",
- "tokio-util",
 ]
 
 [[package]]
@@ -539,7 +536,6 @@ name = "hardy-cbor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "log",
  "thiserror",
 ]
 
@@ -553,14 +549,11 @@ dependencies = [
  "directories",
  "hardy-bpa-core",
  "libc",
- "log",
  "memmap2",
  "rand",
  "serde",
- "thiserror",
  "time",
  "tokio",
- "tokio-util",
  "winapi",
 ]
 
@@ -586,7 +579,6 @@ dependencies = [
  "directories",
  "hardy-bpa-core",
  "hardy-cbor",
- "log",
  "regex",
  "rusqlite",
  "serde",
@@ -594,7 +586,6 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

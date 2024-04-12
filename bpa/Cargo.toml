@@ -14,23 +14,22 @@ sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 
 [dependencies]
-tokio = { version = "1.36.0", features = ["macros","rt-multi-thread","signal"] }
-tokio-stream = "0.1.14"
-tokio-util = "0.7.10"
-tonic = "0.11.0"
-config = { version = "0.14.0", features = ["toml"] }
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
 hardy-proto = { path = "../proto" }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", optional = true }
+tokio = { version = "1.36.0", features = ["macros","rt-multi-thread","signal"] }
+#tokio-stream = "0.1.14"
+tokio-util = "0.7.10"
+tonic = "0.11.0"
+config = { version = "0.14.0", features = ["toml"] }
 serde = { version = "1.0.197", features = ["derive"] }
 getopts = "0.2.21"
 simplelog = "0.12.2"
 log_err = "1.1.1"
 log = "0.4.21"
 directories = "5.0.1"
-thiserror = "1.0.58"
 anyhow = "1.0.81"
 time = { version = "0.3.34", features = ["macros"] }
 crc = "3.0.1"
