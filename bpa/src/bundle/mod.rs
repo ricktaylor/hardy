@@ -5,9 +5,11 @@ use std::collections::HashMap;
 mod crc;
 
 pub mod bundle_builder;
+pub mod bundle_editor;
 pub mod parse;
 
 pub use bundle_builder::*;
+pub use bundle_editor::*;
 pub use hardy_bpa_core::bundle::*;
 pub use parse::parse_bundle;
 

@@ -236,6 +236,15 @@ impl Store {
         }
     }
 
+    pub async fn replace_data(
+        &self,
+        storage_name: &str,
+        bundle: &bundle::Bundle,
+        data: Vec<u8>,
+    ) -> Result<bundle::Metadata, anyhow::Error> {
+        todo!()
+    }
+
     pub async fn set_status(
         &self,
         storage_name: &str,

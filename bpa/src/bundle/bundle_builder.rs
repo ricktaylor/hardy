@@ -17,11 +17,11 @@ pub struct BundleBuilder {
     extensions: Vec<BlockTemplate>,
 }
 
-struct BlockTemplate {
-    block_type: BlockType,
-    flags: BlockFlags,
-    crc_type: CrcType,
-    data: Vec<u8>,
+pub struct BlockTemplate {
+    pub block_type: BlockType,
+    pub flags: BlockFlags,
+    pub crc_type: CrcType,
+    pub data: Vec<u8>,
 }
 
 pub struct BlockBuilder {
@@ -128,7 +128,7 @@ impl BundleBuilder {
 
         // Emit extension blocks
         for (block_number, block) in self.extensions.into_iter().enumerate() {
-            let (block, block_data) = block.build(block_number + 2, data.len());
+            let (block, block_data) = block.build(block_number as u64 + 2, data.len());
             bundle.blocks.insert(block_number as u64, block);
             data.extend(block_data);
         }
@@ -257,7 +257,7 @@ impl BlockBuilder {
 }
 
 impl BlockTemplate {
-    fn new(block_type: BlockType, crc_type: CrcType) -> Self {
+    pub fn new(block_type: BlockType, crc_type: CrcType) -> Self {
         Self {
             block_type,
             flags: BlockFlags::default(),
@@ -266,7 +266,7 @@ impl BlockTemplate {
         }
     }
 
-    fn build(self, block_number: usize, offset: usize) -> (Block, Vec<u8>) {
+    pub fn build(self, block_number: u64, offset: usize) -> (Block, Vec<u8>) {
         (
             Block {
                 block_type: self.block_type,

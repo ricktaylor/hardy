@@ -222,6 +222,10 @@ impl Ingress {
             (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
 
             if reason.is_none() {
+                // TODO: Eid checks!
+            }
+
+            if reason.is_none() {
                 // TODO: BPSec here!
             }
 
@@ -264,8 +268,8 @@ impl Ingress {
 
     async fn check_extension_blocks(
         &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
+        mut metadata: bundle::Metadata,
+        mut bundle: bundle::Bundle,
     ) -> Result<
         (
             Option<bundle::StatusReportReasonCode>,
@@ -298,16 +302,19 @@ impl Ingress {
                 }
 
                 if block.flags.delete_block_on_failure {
-                    blocks_to_remove.push(block_number);
+                    blocks_to_remove.push(*block_number);
                 }
             }
         }
 
+        // Rewrite bundle if needed
         if !blocks_to_remove.is_empty() {
-            // Rewrite bundle!
-            todo!()
+            let mut r = bundle::BundleEditor::new(metadata, bundle);
+            for block_number in blocks_to_remove {
+                r = r.remove_extension_block(block_number);
+            }
+            (metadata, bundle) = r.build(&self.store).await?;
         }
-
         Ok((None, metadata, bundle))
     }
 }
