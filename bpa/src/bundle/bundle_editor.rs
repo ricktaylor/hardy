@@ -120,9 +120,7 @@ impl BundleEditor {
         parse::check_bundle_blocks(&mut bundle, &data)?;
 
         // Replace current bundle in store
-        let metadata = store
-            .replace_data(&self.source_metadata.storage_name, &bundle, data)
-            .await?;
+        let metadata = store.replace_data(self.source_metadata, data).await?;
 
         Ok((metadata, bundle))
     }

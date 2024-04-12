@@ -30,10 +30,8 @@ simplelog = "0.12.2"
 log_err = "1.1.1"
 log = "0.4.21"
 directories = "5.0.1"
-sha1 = "0.10.6"
 thiserror = "1.0.58"
 anyhow = "1.0.81"
-sha2 = "0.10.8"
 time = { version = "0.3.34", features = ["macros"] }
 crc = "3.0.1"
 

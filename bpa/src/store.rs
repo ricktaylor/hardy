@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpa_core::storage;
-use sha2::Digest;
 use std::sync::Arc;
 
 pub struct Store {
@@ -75,6 +74,10 @@ impl Store {
             bundle_storage: init_bundle_storage(config, upgrade)
                 .log_expect("Failed to initialize bundle store"),
         }
+    }
+
+    pub fn hash(&self, data: &[u8]) -> Vec<u8> {
+        self.bundle_storage.hash(data)
     }
 
     pub async fn restart(
@@ -161,12 +164,12 @@ impl Store {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
         self.bundle_storage
-            .check_orphans(&mut |storage_name, file_time| {
+            .check_orphans(&mut |storage_name, hash, file_time| {
                 tokio::runtime::Handle::current().block_on(async {
                     // Check if the metadata_storage knows about this bundle
                     if !self
                         .metadata_storage
-                        .confirm_exists(storage_name, None)
+                        .confirm_exists(storage_name, hash)
                         .await?
                     {
                         // Queue the new bundle for receive processing
@@ -211,7 +214,7 @@ impl Store {
         received_at: Option<time::OffsetDateTime>,
     ) -> Result<bundle::Metadata, anyhow::Error> {
         // Calculate hash
-        let hash = sha2::Sha256::digest(&data);
+        let hash = self.hash(&data);
 
         // Write to bundle storage
         let storage_name = self.bundle_storage.store(data).await?;
@@ -238,18 +241,44 @@ impl Store {
 
     pub async fn replace_data(
         &self,
-        storage_name: &str,
-        bundle: &bundle::Bundle,
+        metadata: bundle::Metadata,
         data: Vec<u8>,
     ) -> Result<bundle::Metadata, anyhow::Error> {
-        todo!()
+        // Calculate hash
+        let hash = self.hash(&data);
+
+        // Let the metadata storage know we are about to replace a bundle
+        if !self
+            .metadata_storage
+            .begin_replace(&metadata.storage_name, &hash)
+            .await?
+        {
+            return Err(anyhow!("No such bundle in metadata storage"));
+        }
+
+        // Store the new data
+        self.bundle_storage
+            .replace(&metadata.storage_name, data)
+            .await?;
+
+        // Update any replacement tracking in the metadata store
+        self.metadata_storage
+            .commit_replace(&metadata.storage_name, &hash)
+            .await?;
+
+        Ok(bundle::Metadata {
+            status: metadata.status,
+            storage_name: metadata.storage_name,
+            hash: hash.to_vec(),
+            received_at: metadata.received_at,
+        })
     }
 
     pub async fn set_status(
         &self,
         storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bool, anyhow::Error> {
         self.metadata_storage
             .set_bundle_status(storage_name, status)
             .await

@@ -8,7 +8,6 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-sha1 = "0.10.6"
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.31.0", features = ["bundled","time"] }

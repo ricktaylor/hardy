@@ -3,6 +3,7 @@ use anyhow::anyhow;
 use base64::prelude::*;
 use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
 use hardy_cbor as cbor;
+use rusqlite::OptionalExtension;
 use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
 
 pub struct Storage {
@@ -229,6 +230,44 @@ fn unpack_bundles(
     Ok(bundles)
 }
 
+fn complete_replace(
+    trans: &rusqlite::Transaction<'_>,
+    storage_name: &str,
+    hash: &[u8],
+) -> Result<Option<i64>, anyhow::Error> {
+    // Update the hash
+    let bundle_id = trans
+        .prepare_cached(
+            r#"WITH replacements AS (
+            SELECT bundle_id,hash FROM replacement_bundles
+            WHERE storage_name = ?1 AND hash = ?2
+            LIMIT 1 
+        )
+        UPDATE bundles SET hash = (
+            SELECT replacements.hash 
+            FROM replacements 
+            WHERE id = replacements.bundle_id
+        )
+        WHERE id IN (SELECT bundle_id FROM replacements)
+        RETURNING id;"#,
+        )?
+        .query_row((storage_name, BASE64_STANDARD.encode(hash)), |row| {
+            row.get::<usize, i64>(0)
+        })
+        .optional()?;
+
+    // Remove the replacement marker
+    let Some(bundle_id) = bundle_id else {
+        return Ok(None);
+    };
+
+    trans
+        .prepare_cached(r#"DELETE FROM replacement_bundles WHERE bundle_id = ?1;"#)?
+        .execute([bundle_id])
+        .map(|_| Some(bundle_id))
+        .map_err(|e| e.into())
+}
+
 #[async_trait]
 impl MetadataStorage for Storage {
     fn check_orphans(
@@ -374,7 +413,7 @@ impl MetadataStorage for Storage {
                     .query(())?,
             )?;
 
-            // Complete transaction!
+            // Commit transaction and drop it
             trans.commit()?;
             drop(conn);
 
@@ -387,13 +426,14 @@ impl MetadataStorage for Storage {
         }
 
         // And finally drop the restart tables - they're no longer required
-        self.connection.blocking_lock().execute_batch(
-            r#"
+        self.connection
+            .blocking_lock()
+            .execute_batch(
+                r#"
                 DROP TABLE temp.restart_subset;
                 DROP TABLE temp.restart_bundles;"#,
-        )?;
-
-        Ok(())
+            )
+            .map_err(|e| e.into())
     }
 
     async fn store(
@@ -457,81 +497,80 @@ impl MetadataStorage for Storage {
             )?;
 
         // Insert extension blocks
-        let mut block_stmt = trans.prepare_cached(
-            r#"
-            INSERT INTO bundle_blocks (
-                bundle_id,
-                block_type,
-                block_num,
-                block_flags,
-                block_crc_type,
-                data_offset,
-                data_len)
-            VALUES (?1,?2,?3,?4,?5,?6);"#,
-        )?;
-        for (block_num, block) in &bundle.blocks {
-            block_stmt.execute((
-                bundle_id,
-                as_i64(block.block_type),
-                as_i64(*block_num),
-                as_i64(block.flags),
-                as_i64(block.crc_type),
-                block.data_offset as i64,
-                block.data_len as i64,
-            ))?;
+        {
+            let mut block_stmt = trans.prepare_cached(
+                r#"
+                INSERT INTO bundle_blocks (
+                    bundle_id,
+                    block_type,
+                    block_num,
+                    block_flags,
+                    block_crc_type,
+                    data_offset,
+                    data_len)
+                VALUES (?1,?2,?3,?4,?5,?6);"#,
+            )?;
+            for (block_num, block) in &bundle.blocks {
+                block_stmt.execute((
+                    bundle_id,
+                    as_i64(block.block_type),
+                    as_i64(*block_num),
+                    as_i64(block.flags),
+                    as_i64(block.crc_type),
+                    block.data_offset as i64,
+                    block.data_len as i64,
+                ))?;
+            }
         }
 
-        Ok(())
+        // Commit transaction
+        trans.commit().map_err(|e| e.into())
     }
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
         // Delete
-        Ok(self
-            .connection
+        self.connection
             .lock()
             .await
             .prepare_cached(r#"DELETE FROM bundles WHERE storage_name = ?1;"#)?
-            .execute([storage_name])?
-            != 0)
+            .execute([storage_name])
+            .map(|count| count != 0)
+            .map_err(|e| e.into())
     }
 
-    async fn confirm_exists(
-        &self,
-        storage_name: &str,
-        hash: Option<&[u8]>,
-    ) -> Result<bool, anyhow::Error> {
+    async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
         let mut conn = self.connection.lock().await;
-        let trans = conn.transaction()?;
+        let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Check if bundle exists
-        let bundle_id: i64 = match if let Some(hash) = hash {
-            trans
-                .prepare_cached(
-                    r#"SELECT id FROM bundles WHERE storage_name = ?1 AND hash = ?2 LIMIT 1;"#,
-                )?
-                .query_row((storage_name, &BASE64_STANDARD.encode(hash)), |row| {
-                    row.get(0)
-                })
-        } else {
-            trans
-                .prepare_cached(r#"SELECT id FROM bundles WHERE storage_name = ?1 LIMIT 1;"#)?
-                .query_row([storage_name], |row| row.get(0))
-        } {
-            Ok(bundle_id) => bundle_id,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
-            Err(e) => Err(e)?,
+        let Some(bundle_id) = trans
+            .prepare_cached(
+                r#"SELECT id FROM bundles WHERE storage_name = ?1 AND hash = ?2 LIMIT 1;"#,
+            )?
+            .query_row((storage_name, &BASE64_STANDARD.encode(hash)), |row| {
+                row.get::<usize, i64>(0)
+            })
+            .optional()?
+            .map_or_else(
+                || complete_replace(&trans, storage_name, hash),
+                |bundle_id| Ok(Some(bundle_id)),
+            )?
+        else {
+            return Ok(false);
         };
 
         // Remove from unconfirmed set
         if trans
             .prepare_cached(r#"DELETE FROM unconfirmed_bundles WHERE bundle_id = ?1;"#)?
             .execute([bundle_id])?
-            > 0
+            != 0
         {
             // Add to restart set
             trans
                 .prepare_cached(r#"INSERT INTO restart_bundles (bundle_id) VALUES (?1);"#)?
                 .execute([bundle_id])?;
+
+            trans.commit()?;
         }
         Ok(true)
     }
@@ -540,12 +579,38 @@ impl MetadataStorage for Storage {
         &self,
         storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bool, anyhow::Error> {
         self.connection
             .lock()
             .await
             .prepare_cached(r#"UPDATE bundles SET status = ?1 WHERE storage_name = ?2;"#)?
-            .execute((as_i64(status), storage_name))?;
-        Ok(())
+            .execute((as_i64(status), storage_name))
+            .map(|count| count != 0)
+            .map_err(|e| e.into())
+    }
+
+    async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
+        self.connection
+            .lock()
+            .await
+            .prepare_cached(
+                r#"INSERT INTO replacement_bundles (bundle_id, hash)
+                SELECT id,?1 FROM bundles WHERE storage_name = ?2;"#,
+            )?
+            .execute((BASE64_STANDARD.encode(hash), storage_name))
+            .map(|count| count != 0)
+            .map_err(|e| e.into())
+    }
+
+    async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
+        let mut conn = self.connection.lock().await;
+        let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        if complete_replace(&trans, storage_name, hash)?.is_none() {
+            return Ok(false);
+        };
+
+        // Commit the transaction
+        trans.commit().map(|_| true).map_err(|e| e.into())
     }
 }

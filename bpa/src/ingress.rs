@@ -1,5 +1,4 @@
 use super::*;
-use sha2::Digest;
 use tokio::sync::mpsc::*;
 
 pub struct ClaSource {
@@ -157,7 +156,7 @@ impl Ingress {
                     bundle::Metadata {
                         status: bundle::BundleStatus::IngressPending,
                         storage_name,
-                        hash: sha2::Sha256::digest(data.as_ref()).to_vec(),
+                        hash: self.store.hash((*data).as_ref()),
                         received_at,
                     },
                     bundle,

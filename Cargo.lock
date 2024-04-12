@@ -511,8 +511,6 @@ dependencies = [
  "log",
  "log_err",
  "serde",
- "sha1",
- "sha2",
  "simplelog",
  "thiserror",
  "time",
@@ -531,6 +529,7 @@ dependencies = [
  "config",
  "hardy-cbor",
  "log",
+ "sha2",
  "time",
  "tokio-util",
 ]

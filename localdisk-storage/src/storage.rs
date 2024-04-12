@@ -107,7 +107,7 @@ impl Storage {
     fn walk_dirs(
         &self,
         dir: &PathBuf,
-        f: &mut dyn FnMut(&str, Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
+        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
     ) -> Result<bool, anyhow::Error> {
         for entry in std::fs::read_dir(dir)?.flatten() {
             if let Ok(file_type) = entry.file_type() {
@@ -135,7 +135,8 @@ impl Storage {
                         .map(time::OffsetDateTime::from)
                         .ok();
 
-                    if !f(&storage_name, received_at)? {
+                    let hash = self.hash(self.sync_load(&storage_name)?.as_ref().as_ref());
+                    if !f(&storage_name, &hash, received_at)? {
                         return Ok(false);
                     }
                 }
@@ -143,18 +144,8 @@ impl Storage {
         }
         Ok(true)
     }
-}
 
-#[async_trait]
-impl BundleStorage for Storage {
-    fn check_orphans(
-        &self,
-        f: &mut dyn FnMut(&str, Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
-    ) -> Result<(), anyhow::Error> {
-        self.walk_dirs(&self.store_root, f).map(|_| ())
-    }
-
-    async fn load(
+    fn sync_load(
         &self,
         storage_name: &str,
     ) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error> {
@@ -170,6 +161,23 @@ impl BundleStorage for Storage {
             Ok(Arc::new(v))
         }
     }
+}
+
+#[async_trait]
+impl BundleStorage for Storage {
+    fn check_orphans(
+        &self,
+        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
+    ) -> Result<(), anyhow::Error> {
+        self.walk_dirs(&self.store_root, f).map(|_| ())
+    }
+
+    async fn load(
+        &self,
+        storage_name: &str,
+    ) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error> {
+        self.sync_load(storage_name)
+    }
 
     async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
         /*
@@ -182,49 +190,10 @@ impl BundleStorage for Storage {
 
         // Create random filename
         let file_path = self.random_file_path()?;
-        let mut file_path_cloned = file_path.clone();
+        let file_path_cloned = file_path.clone();
 
         // Perform blocking I/O on dedicated worker task
-        let result = tokio::task::spawn_blocking(move || {
-            // Ensure directory exists
-            create_dir_all(file_path_cloned.parent().unwrap())?;
-
-            // Use a temporary extension
-            file_path_cloned.set_extension("tmp");
-
-            // Open the file as direct as possible
-            let mut options = OpenOptions::new();
-            options.write(true).create(true);
-            if cfg!(windows) || cfg!(unix) {
-                direct_flag(&mut options);
-            }
-            let mut file = options.open(&file_path_cloned)?;
-
-            // Write all data to file
-            if let Err(e) = file.write_all(&data) {
-                _ = remove_file(&file_path_cloned);
-                return Err(e);
-            }
-
-            // Sync everything
-            if let Err(e) = file.sync_all() {
-                _ = remove_file(&file_path_cloned);
-                return Err(e);
-            }
-
-            // Rename the file
-            let old_path = file_path_cloned.clone();
-            file_path_cloned.set_extension("");
-            if let Err(e) = std::fs::rename(&old_path, &file_path_cloned) {
-                _ = remove_file(&old_path);
-                return Err(e);
-            }
-
-            // No idea how to fsync the directory in portable Rust!
-
-            Ok(())
-        })
-        .await;
+        let result = tokio::task::spawn_blocking(move || write(file_path_cloned, data)).await;
 
         // Always remove tmps entry
         self.reserved_paths.lock().unwrap().remove(&file_path);
@@ -251,4 +220,63 @@ impl BundleStorage for Storage {
             Ok(_) => Ok(true),
         }
     }
+
+    async fn replace(&self, storage_name: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
+        /*
+        create a new temp file (alongside the original)
+        write data to the temp file
+        fsync() the temp file
+        rename the temp file to the original name
+        fsync() the containing directory
+        */
+
+        // Create random filename
+        let file_path = PathBuf::from_str(storage_name)?;
+        let file_path_cloned = file_path.clone();
+
+        // Perform blocking I/O on dedicated worker task
+        tokio::task::spawn_blocking(move || write(file_path_cloned, data))
+            .await?
+            .map_err(|e| e.into())
+    }
+}
+
+fn write(mut file_path: PathBuf, data: Vec<u8>) -> io::Result<()> {
+    // Ensure directory exists
+    create_dir_all(file_path.parent().unwrap())?;
+
+    // Use a temporary extension
+    file_path.set_extension("tmp");
+
+    // Open the file as direct as possible
+    let mut options = OpenOptions::new();
+    options.write(true).create(true);
+    if cfg!(windows) || cfg!(unix) {
+        direct_flag(&mut options);
+    }
+    let mut file = options.open(&file_path)?;
+
+    // Write all data to file
+    if let Err(e) = file.write_all(&data) {
+        _ = remove_file(&file_path);
+        return Err(e);
+    }
+
+    // Sync everything
+    if let Err(e) = file.sync_all() {
+        _ = remove_file(&file_path);
+        return Err(e);
+    }
+
+    // Rename the file
+    let old_path = file_path.clone();
+    file_path.set_extension("");
+    if let Err(e) = std::fs::rename(&old_path, &file_path) {
+        _ = remove_file(&old_path);
+        return Err(e);
+    }
+
+    // No idea how to fsync the directory in portable Rust!
+
+    Ok(())
 }
