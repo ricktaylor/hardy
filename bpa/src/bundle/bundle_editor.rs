@@ -43,14 +43,10 @@ impl BundleEditor {
     }
 
     pub fn replace_extension_block(self, block_type: BlockType) -> BlockBuilder {
-        if let Some((block_number, block)) =
-            self.blocks
-                .iter()
-                .find(|(block_number, block)| match block {
-                    BlockTemplate::Keep(t) => *t == block_type,
-                    BlockTemplate::Add(t) => t.block_type == block_type,
-                })
-        {
+        if let Some((block_number, _)) = self.blocks.iter().find(|(_, block)| match block {
+            BlockTemplate::Keep(t) => *t == block_type,
+            BlockTemplate::Add(t) => t.block_type == block_type,
+        }) {
             let block_number = *block_number;
             BlockBuilder::new(self, block_number, block_type)
         } else {
