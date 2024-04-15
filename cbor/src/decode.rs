@@ -577,10 +577,10 @@ where
 mod tests {
     use super::*;
     use hex_literal::hex;
-    
+
     #[test]
     fn rfc_tests() {
-        // RFC 7049 Appendix A tests
+        // RFC 8949 Appendix A tests
 
         assert_eq!(0, parse(&hex!("00")).unwrap());
         assert_eq!(1, parse(&hex!("01")).unwrap());
@@ -599,7 +599,7 @@ mod tests {
             18446744073709551615u64,
             parse(&hex!("1bffffffffffffffff")).unwrap()
         );
-        assert!(parse::<u64>(&hex!("c249 010000000000000000")).is_err());
+        assert!(parse::<u64>(&hex!("c249010000000000000000")).is_err());
         /*assert_eq!(
             18446744073709551616,
             parse(&hex!("c249 010000000000000000")).unwrap()
@@ -682,7 +682,7 @@ mod tests {
             parse_value(
                 &hex!("c074323031332d30332d32315432303a30343a30305a"),
                 |value, tags| match value {
-                    Value::Text("2013-03-21T20:04:00Z", false) if tags == vec![0u64] => Ok(true),
+                    Value::Text("2013-03-21T20:04:00Z", false) if tags == vec![0] => Ok(true),
                     _ => Ok(false),
                 }
             )
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(
             (true, 6),
             parse_value(&hex!("c11a514b67b0"), |value, tags| match value {
-                Value::UnsignedInteger(1363896240) if tags == vec![1u64] => Ok(true),
+                Value::UnsignedInteger(1363896240) if tags == vec![1] => Ok(true),
                 _ => Ok(false),
             })
             .unwrap()
@@ -699,9 +699,73 @@ mod tests {
         assert_eq!(
             (true, 10),
             parse_value(&hex!("c1fb41d452d9ec200000"), |value, tags| match value {
-                Value::Float(v) if v == 1363896240.5 && tags == vec![1u64] => Ok(true),
+                Value::Float(v) if v == 1363896240.5 && tags == vec![1] => Ok(true),
                 _ => Ok(false),
             })
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 6),
+            parse_value(&hex!("d74401020304"), |value, tags| match value {
+                Value::Bytes(v, false) if v == hex!("01020304") && tags == vec![23] => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 8),
+            parse_value(&hex!("d818456449455446"), |value, tags| match value {
+                Value::Bytes(v, false) if v == hex!("6449455446") && tags == vec![24] => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 25),
+            parse_value(
+                &hex!("d82076687474703a2f2f7777772e6578616d706c652e636f6d"),
+                |value, tags| match value {
+                    Value::Text(v, false) if v == "http://www.example.com" && tags == vec![32] =>
+                        Ok(true),
+                    _ => Ok(false),
+                }
+            )
+            .unwrap()
+        );
+        assert!(parse::<Vec<u8>>(&hex!("40")).unwrap().is_empty());
+        assert_eq!(
+            hex!("01020304").to_vec(),
+            parse::<Vec<u8>>(&hex!("4401020304")).unwrap()
+        );
+        assert!(parse::<String>(&hex!("60")).unwrap().is_empty());
+        assert_eq!("a", &parse::<String>(&hex!("6161")).unwrap());
+        assert_eq!("IETF", &parse::<String>(&hex!("6449455446")).unwrap());
+        assert_eq!("\"\\", &parse::<String>(&hex!("62225c")).unwrap());
+        assert_eq!("\u{00fc}", &parse::<String>(&hex!("62c3bc")).unwrap());
+        assert_eq!("\u{6c34}", &parse::<String>(&hex!("63e6b0b4")).unwrap());
+        //assert_eq!("\u{d800}\u{dd51}",&parse::<String>(&hex!("64f0908591")).unwrap());
+
+        // Arrays
+
+        // Maps
+
+        assert_eq!(
+            (true, 9),
+            parse_value(&hex!("5f42010243030405ff"), |value, _| match value {
+                Value::Bytes(v, true) if v == hex!("0102030405") => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 13),
+            parse_value(
+                &hex!("7f657374726561646d696e67ff"),
+                |value, _| match value {
+                    Value::Text(v, true) if v == "streaming" => Ok(true),
+                    _ => Ok(false),
+                }
+            )
             .unwrap()
         );
     }
