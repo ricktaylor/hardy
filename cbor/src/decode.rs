@@ -531,6 +531,26 @@ impl FromCbor for bool {
     }
 }
 
+impl FromCbor for Vec<u8> {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        parse_value(data, |value, tags| match (value, tags) {
+            (Value::Bytes(v, _), tags) => Ok((v.to_vec(), tags.to_vec())),
+            _ => Err(Error::IncorrectType.into()),
+        })
+        .map(|((val, tags), len)| (val, len, tags))
+    }
+}
+
+impl FromCbor for String {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        parse_value(data, |value, tags| match (value, tags) {
+            (Value::Text(v, _), tags) => Ok((v.to_string(), tags.to_vec())),
+            _ => Err(Error::IncorrectType.into()),
+        })
+        .map(|((val, tags), len)| (val, len, tags))
+    }
+}
+
 impl<T> FromCbor for Option<T>
 where
     T: FromCbor,
