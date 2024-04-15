@@ -19,8 +19,8 @@ pub enum Error {
     #[error("Chunked string contains an invalid chunk")]
     InvalidChunk,
 
-    #[error("Invalid Value type {0}")]
-    InvalidValue(u8),
+    #[error("Invalid simple type {0}")]
+    InvalidSimpleType(u8),
 }
 
 pub trait FromCbor: Sized {
@@ -38,7 +38,7 @@ pub enum Value<'a> {
     True,
     Null,
     Undefined,
-    Unassigned(u8),
+    Simple(u8),
     Float(f64),
 }
 
@@ -346,21 +346,21 @@ where
             f(Value::Undefined, &tags)
         }
         (7, 0..=19) => {
-            /* Unassigned */
+            /* Unassigned simple type */
             offset += 1;
-            f(Value::Unassigned(data[offset] & 0x1F), &tags)
+            f(Value::Simple(data[offset] & 0x1F), &tags)
         }
         (7, 24) => {
-            /* Unassigned */
+            /* Unassigned simple type */
             if data.len() <= offset + 1 {
                 return Err(Error::NotEnoughData.into());
             }
             let v = data[offset + 1];
             if v < 32 {
-                return Err(Error::InvalidValue(v).into());
+                return Err(Error::InvalidSimpleType(v).into());
             }
             offset += 2;
-            f(Value::Unassigned(v), &tags)
+            f(Value::Simple(v), &tags)
         }
         (7, 25) => {
             /* FP16 */
@@ -393,7 +393,7 @@ where
             f(Value::Float(v), &tags)
         }
         (7, _) => {
-            return Err(Error::InvalidValue(data[offset] & 0x1F).into());
+            return Err(Error::InvalidSimpleType(data[offset] & 0x1F).into());
         }
         (8.., _) => unreachable!(),
     }
