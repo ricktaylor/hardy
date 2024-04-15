@@ -68,27 +68,63 @@ impl ToCbor for u64 {
     }
 }
 
+impl ToCbor for usize {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as u64, tags)
+    }
+}
+
 impl ToCbor for u32 {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(0, self as u64));
-        v
+        emit_with_tags(self as u64, tags)
     }
 }
 
 impl ToCbor for u16 {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(0, self as u64));
-        v
+        emit_with_tags(self as u64, tags)
     }
 }
 
 impl ToCbor for u8 {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as u64, tags)
+    }
+}
+
+impl ToCbor for i64 {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(0, self as u64));
+        v.extend(if self >= 0 {
+            emit_uint_minor(0, self as u64)
+        } else {
+            emit_uint_minor(1, i64::abs(self + 1) as u64)
+        });
         v
+    }
+}
+
+impl ToCbor for isize {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as i64, tags)
+    }
+}
+
+impl ToCbor for i32 {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as i64, tags)
+    }
+}
+
+impl ToCbor for i16 {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as i64, tags)
+    }
+}
+
+impl ToCbor for i8 {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as i64, tags)
     }
 }
 
@@ -100,20 +136,18 @@ impl ToCbor for bool {
     }
 }
 
-impl ToCbor for usize {
+impl ToCbor for &str {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(0, self as u64));
+        v.extend(emit_uint_minor(3, self.len() as u64));
+        v.extend(self.as_bytes());
         v
     }
 }
 
 impl ToCbor for String {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(3, self.len() as u64));
-        v.extend(self.as_bytes());
-        v
+        emit_with_tags(self.as_str(), tags)
     }
 }
 
@@ -205,7 +239,7 @@ where
         let mut v = emit_tags(tags);
         match self {
             Some(t) => v.extend(t.to_cbor(&[])),
-            None => v.push((7 << 5) | 22),
+            None => v.push((7 << 5) | 23),
         }
         v
     }

@@ -10,7 +10,7 @@ pub fn parse_crc_value(
     crc_type: CrcType,
 ) -> Result<(), anyhow::Error> {
     // Parse CRC
-    let crc_value = block.try_parse_item_detail(|value, crc_start, tags| match value {
+    let crc_value = block.try_parse_value(|value, crc_start, tags| match value {
         cbor::decode::Value::Bytes(crc, _) => {
             if !tags.is_empty() {
                 log::info!("Parsing bundle block CRC value with tags");

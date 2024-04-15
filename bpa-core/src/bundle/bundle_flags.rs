@@ -108,3 +108,9 @@ impl cbor::encode::ToCbor for BundleFlags {
         cbor::encode::emit_with_tags::<u64>(self.into(), tags)
     }
 }
+
+impl cbor::decode::FromCbor for BundleFlags {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        cbor::decode::parse_detail::<u64>(data).map(|(v, len, tags)| (v.into(), len, tags))
+    }
+}

@@ -26,7 +26,7 @@ pub enum Eid {
 impl Eid {
     fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Eid, anyhow::Error> {
         match value {
-            cbor::decode::Value::Uint(0) => Ok(Self::Null),
+            cbor::decode::Value::UnsignedInteger(0) => Ok(Self::Null),
             cbor::decode::Value::Text("none", _) => {
                 log::info!("Parsing dtn EID 'none'");
                 Ok(Self::Null)
@@ -190,7 +190,7 @@ impl cbor::decode::FromCbor for Eid {
                     _ => {}
                 }
                 let schema = a.parse::<u64>()?;
-                let eid = a.parse_item(|value: cbor::decode::Value<'_>, _, tags2| {
+                let (eid, _) = a.parse_value(|value: cbor::decode::Value<'_>, _, tags2| {
                     if !tags2.is_empty() {
                         log::info!("Parsing EID value with tags");
                     }

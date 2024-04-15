@@ -31,7 +31,7 @@ fn parse_bundle_blocks(
 ) -> Result<(Bundle, bool), anyhow::Error> {
     // Parse Primary block
     let (mut bundle, valid, block_start, block_len) = blocks
-        .parse_item_detail(|value, block_start, tags| {
+        .parse_value(|value, block_start, tags| {
             if let cbor::decode::Value::Array(a) = value {
                 if !tags.is_empty() {
                     log::info!("Parsing primary block with tags");
@@ -133,10 +133,10 @@ fn parse_primary_block(
     } else {
         Ok(Some(FragmentInfo {
             offset: block
-                .parse::<u64>()
+                .parse()
                 .inspect_err(|e| log::info!("Invalid fragment offset: {}", e))?,
             total_len: block
-                .parse::<u64>()
+                .parse()
                 .inspect_err(|e| log::info!("Invalid application data total length: {}", e))?,
         }))
     };
@@ -210,8 +210,8 @@ fn parse_extension_blocks(
     // Use an intermediate vector so we can check the payload was the last item
     let mut extension_blocks = Vec::new();
     let extension_map = loop {
-        if let Some((block_number, block)) =
-            blocks.try_parse_item(|value, block_start, tags| match value {
+        if let Some(((block_number, block), _)) =
+            blocks.try_parse_value(|value, block_start, tags| match value {
                 cbor::decode::Value::Array(a) => {
                     if !tags.is_empty() {
                         log::info!("Parsing extension block with tags");
@@ -280,18 +280,19 @@ fn parse_block(
     let crc_type = block.parse::<CrcType>()?;
 
     // Stash start of data
-    let (data_offset, data_len) = block.parse_item(|value, data_start, tags| match value {
-        cbor::decode::Value::Bytes(v, chunked) => {
-            if chunked {
-                log::info!("Parsing chunked extension block data");
+    let ((data_offset, _), data_len) =
+        block.parse_value(|value, data_start, tags| match value {
+            cbor::decode::Value::Bytes(v, chunked) => {
+                if chunked {
+                    log::info!("Parsing chunked extension block data");
+                }
+                if !tags.is_empty() {
+                    log::info!("Parsing extension block data with tags");
+                }
+                Ok((data_start, v.len()))
             }
-            if !tags.is_empty() {
-                log::info!("Parsing extension block data with tags");
-            }
-            Ok((data_start, v.len()))
-        }
-        _ => Err(anyhow!("Block data must be encoded as a CBOR byte string")),
-    })?;
+            _ => Err(anyhow!("Block data must be encoded as a CBOR byte string")),
+        })?;
 
     // Check CRC
     crc::parse_crc_value(data, block_start, block, crc_type)?;
@@ -376,7 +377,7 @@ pub fn check_bundle_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyho
 }
 
 fn check_previous_node(block: &Block, data: &[u8]) -> Result<Eid, anyhow::Error> {
-    cbor::decode::parse_detail::<Eid>(data)
+    cbor::decode::parse_detail(data)
         .map_err(|e| anyhow!("Failed to parse EID in Previous Node block: {}", e))
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
@@ -391,7 +392,7 @@ fn check_previous_node(block: &Block, data: &[u8]) -> Result<Eid, anyhow::Error>
 }
 
 fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, anyhow::Error> {
-    cbor::decode::parse_detail::<u64>(data)
+    cbor::decode::parse_detail(data)
         .map_err(|e| anyhow!("Failed to parse age in Bundle Age block: {}", e))
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
@@ -416,8 +417,8 @@ fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, anyhow::Error>
             }
 
             let hop_info = HopInfo {
-                count: a.parse::<u64>()? as usize,
-                limit: a.parse::<u64>()? as usize,
+                count: a.parse()?,
+                limit: a.parse()?,
             };
 
             let end =

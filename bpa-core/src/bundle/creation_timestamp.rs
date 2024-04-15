@@ -24,8 +24,8 @@ impl cbor::decode::FromCbor for CreationTimestamp {
             if let cbor::decode::Value::Array(mut a) = value {
                 Ok((
                     CreationTimestamp {
-                        creation_time: a.parse::<u64>()?,
-                        sequence_number: a.parse::<u64>()?,
+                        creation_time: a.parse()?,
+                        sequence_number: a.parse()?,
                     },
                     tags.to_vec(),
                 ))
