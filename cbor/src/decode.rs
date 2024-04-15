@@ -223,17 +223,18 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, usize), Err
             return Err(Error::NotEnoughData);
         }
 
-        if data[offset] >> 5 != major {
-            return Err(Error::InvalidChunk);
-        }
-
-        let minor = data[offset] & 0x1F;
+        let v = data[offset];
         offset += 1;
-        if minor == 31 {
+
+        if v == 0xFF {
             break Ok((chunks, offset));
         }
 
-        let (chunk, chunk_len) = parse_data_minor(minor, &data[offset..])?;
+        if v >> 5 != major {
+            return Err(Error::InvalidChunk);
+        }
+
+        let (chunk, chunk_len) = parse_data_minor(v & 0x1F, &data[offset..])?;
         chunks.push(chunk);
         offset += chunk_len;
     }
@@ -265,7 +266,7 @@ where
         }
         (2, 31) => {
             /* Indefinite length byte string */
-            let (c, len) = parse_data_chunked(3, &data[offset + 1..])?;
+            let (c, len) = parse_data_chunked(2, &data[offset + 1..])?;
             let v = c.into_iter().try_fold(Vec::new(), |mut v, b| {
                 v.extend_from_slice(b);
                 Ok::<Vec<u8>, anyhow::Error>(v)
