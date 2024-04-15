@@ -38,6 +38,6 @@ CREATE TABLE unconfirmed_bundles (
 ) STRICT;
 
 CREATE TABLE replacement_bundles (
-    bundle_id INTEGER UNIQUE NOT NULL REFERENCES bundles(id) ON DELETE CASCADE
-    new_hash TEXT NOT NULL,   
+    bundle_id INTEGER UNIQUE NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
+    new_hash TEXT NOT NULL 
 ) STRICT;
