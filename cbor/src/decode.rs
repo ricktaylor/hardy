@@ -169,10 +169,9 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, usize), Error> {
     while offset < data.len() {
         match (data[offset] >> 5, data[offset] & 0x1F) {
             (6, minor) => {
-                offset += 1;
-                let (tag, o) = parse_uint_minor(minor, &data[offset..])?;
+                let (tag, o) = parse_uint_minor(minor, &data[offset + 1..])?;
                 tags.push(tag);
-                offset += o;
+                offset += o + 1;
             }
             _ => break,
         }
@@ -208,7 +207,7 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, usize), Error> {
 
 fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(&[u8], usize), Error> {
     let (data_len, len) = parse_uint_minor(minor, data)?;
-    if (len as u64) + data_len >= data.len() as u64 {
+    if (len as u64) + data_len > data.len() as u64 {
         Err(Error::NotEnoughData)
     } else {
         let end = ((len as u64) + data_len) as usize;
@@ -348,7 +347,7 @@ where
         (7, 0..=19) => {
             /* Unassigned simple type */
             offset += 1;
-            f(Value::Simple(data[offset] & 0x1F), &tags)
+            f(Value::Simple(data[offset - 1] & 0x1F), &tags)
         }
         (7, 24) => {
             /* Unassigned simple type */
@@ -550,5 +549,139 @@ where
             let (v, len, _) = parse_detail::<T>(&data[offset + 1..])?;
             Ok((Some(v), len + offset + 1, tags))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_literal::hex;
+    
+    #[test]
+    fn rfc_tests() {
+        // RFC 7049 Appendix A tests
+
+        assert_eq!(0, parse(&hex!("00")).unwrap());
+        assert_eq!(1, parse(&hex!("01")).unwrap());
+        assert_eq!(10, parse(&hex!("0a")).unwrap());
+        assert_eq!(23, parse(&hex!("17")).unwrap());
+        assert_eq!(24, parse(&hex!("1818")).unwrap());
+        assert_eq!(25, parse(&hex!("1819")).unwrap());
+        assert_eq!(100, parse(&hex!("1864")).unwrap());
+        assert_eq!(1000, parse(&hex!("1903e8")).unwrap());
+        assert_eq!(1000000, parse(&hex!("1a000f4240")).unwrap());
+        assert_eq!(
+            1000000000000u64,
+            parse(&hex!("1b000000e8d4a51000")).unwrap()
+        );
+        assert_eq!(
+            18446744073709551615u64,
+            parse(&hex!("1bffffffffffffffff")).unwrap()
+        );
+        assert!(parse::<u64>(&hex!("c249 010000000000000000")).is_err());
+        /*assert_eq!(
+            18446744073709551616,
+            parse(&hex!("c249 010000000000000000")).unwrap()
+        );*/
+        assert!(parse::<i64>(&hex!("3bffffffffffffffff")).is_err());
+        /*assert_eq!(
+            -18446744073709551616i128,
+            parse(&hex!("3bffffffffffffffff")).unwrap()
+        );*/
+        assert!(parse::<i64>(&hex!("c349 010000000000000000")).is_err());
+        /*assert_eq!(
+            -18446744073709551617,
+            parse(&hex!("c349 010000000000000000")).unwrap()
+        );*/
+        assert_eq!(-1, parse(&hex!("20")).unwrap());
+        assert_eq!(-10, parse(&hex!("29")).unwrap());
+        assert_eq!(-100, parse(&hex!("3863")).unwrap());
+        assert_eq!(-1000, parse(&hex!("3903e7")).unwrap());
+        assert_eq!(0.0, parse(&hex!("f90000")).unwrap());
+        assert_eq!(-0.0, parse(&hex!("f98000")).unwrap());
+        assert_eq!(1.0, parse(&hex!("f93c00")).unwrap());
+        assert_eq!(1.1, parse(&hex!("fb3ff199999999999a")).unwrap());
+        assert_eq!(1.5, parse(&hex!("f93e00")).unwrap());
+        assert_eq!(65504.0, parse(&hex!("f97bff")).unwrap());
+        assert_eq!(100000.0, parse(&hex!("fa47c35000")).unwrap());
+        assert_eq!(3.4028234663852886e+38, parse(&hex!("fa7f7fffff")).unwrap());
+        assert_eq!(1.0e+300, parse(&hex!("fb7e37e43c8800759c")).unwrap());
+        assert_eq!(5.960464477539063e-8, parse(&hex!("f90001")).unwrap());
+        assert_eq!(0.00006103515625, parse(&hex!("f90400")).unwrap());
+        assert_eq!(-4.0, parse(&hex!("f9c400")).unwrap());
+        assert_eq!(-4.1, parse(&hex!("fbc010666666666666")).unwrap());
+        assert_eq!(f32::INFINITY, parse(&hex!("f97c00")).unwrap());
+        assert!(parse::<f32>(&hex!("f97e00")).unwrap().is_nan());
+        assert_eq!(f32::NEG_INFINITY, parse(&hex!("f9fc00")).unwrap());
+        assert_eq!(f64::INFINITY, parse(&hex!("fa7f800000")).unwrap());
+        assert!(parse::<f32>(&hex!("fa7fc00000")).unwrap().is_nan());
+        assert_eq!(f64::NEG_INFINITY, parse(&hex!("faff800000")).unwrap());
+        assert_eq!(f64::INFINITY, parse(&hex!("fb7ff0000000000000")).unwrap());
+        assert!(parse::<f64>(&hex!("fb7ff8000000000000")).unwrap().is_nan());
+        assert_eq!(
+            f64::NEG_INFINITY,
+            parse(&hex!("fbfff0000000000000")).unwrap()
+        );
+        assert_eq!(false, parse(&hex!("f4")).unwrap());
+        assert_eq!(true, parse(&hex!("f5")).unwrap());
+        assert!(
+            parse_value(&hex!("f6"), |value, _| match value {
+                Value::Null => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+            .0
+        );
+        assert!(
+            parse_value(&hex!("f7"), |value, _| match value {
+                Value::Undefined => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+            .0
+        );
+        assert!(
+            parse_value(&hex!("f0"), |value, _| match value {
+                Value::Simple(16) => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+            .0
+        );
+        assert_eq!(
+            (true, 2),
+            parse_value(&hex!("f8ff"), |value, _| match value {
+                Value::Simple(255) => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 22),
+            parse_value(
+                &hex!("c074323031332d30332d32315432303a30343a30305a"),
+                |value, tags| match value {
+                    Value::Text("2013-03-21T20:04:00Z", false) if tags == vec![0u64] => Ok(true),
+                    _ => Ok(false),
+                }
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 6),
+            parse_value(&hex!("c11a514b67b0"), |value, tags| match value {
+                Value::UnsignedInteger(1363896240) if tags == vec![1u64] => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (true, 10),
+            parse_value(&hex!("c1fb41d452d9ec200000"), |value, tags| match value {
+                Value::Float(v) if v == 1363896240.5 && tags == vec![1u64] => Ok(true),
+                _ => Ok(false),
+            })
+            .unwrap()
+        );
     }
 }
