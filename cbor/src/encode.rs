@@ -1,4 +1,4 @@
-use std::u8;
+use num_traits::FromPrimitive;
 
 pub trait ToCbor {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8>;
@@ -128,6 +128,34 @@ impl ToCbor for i8 {
     }
 }
 
+impl ToCbor for f64 {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        let mut v = emit_tags(tags);
+        v.extend(
+            if let Some(f) = <half::f16 as num_traits::FromPrimitive>::from_f64(self) {
+                let mut v = vec![(7 << 5) | 25u8];
+                v.extend(f.to_be_bytes());
+                v
+            } else if let Some(f) = f32::from_f64(self) {
+                let mut v = vec![(7 << 5) | 26u8];
+                v.extend(f.to_be_bytes());
+                v
+            } else {
+                let mut v = vec![(7 << 5) | 27u8];
+                v.extend(self.to_be_bytes());
+                v
+            },
+        );
+        v
+    }
+}
+
+impl ToCbor for f32 {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        emit_with_tags(self as f64, tags)
+    }
+}
+
 impl ToCbor for bool {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         let mut v = emit_tags(tags);
@@ -198,7 +226,7 @@ where
     J: IntoIterator<Item = u8>,
 {
     let mut v = emit_tags(tags);
-    v.extend(emit_uint_minor(6, len));
+    v.extend(emit_uint_minor(4, len));
     for i in arr {
         v.extend(i);
     }
@@ -212,22 +240,37 @@ impl ToCbor for Vec<Vec<u8>> {
     }
 }
 
-impl<const N: usize> ToCbor for Vec<[u8; N]> {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let len = self.len() as u64;
-        to_cbor_array(self, len, tags)
-    }
-}
-
 impl<const N: usize> ToCbor for [Vec<u8>; N] {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
         to_cbor_array(self, N as u64, tags)
     }
 }
 
-impl<const M: usize, const N: usize> ToCbor for [[u8; N]; M] {
+fn to_cbor_map<I, J, K>(arr: I, len: u64, tags: &[u64]) -> Vec<u8>
+where
+    I: IntoIterator<Item = (J, K)>,
+    J: IntoIterator<Item = u8>,
+    K: IntoIterator<Item = u8>,
+{
+    let mut v = emit_tags(tags);
+    v.extend(emit_uint_minor(5, len));
+    for (i, j) in arr {
+        v.extend(i);
+        v.extend(j);
+    }
+    v
+}
+
+impl ToCbor for Vec<(Vec<u8>, Vec<u8>)> {
     fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        to_cbor_array(self, M as u64, tags)
+        let len = self.len() as u64;
+        to_cbor_map(self, len, tags)
+    }
+}
+
+impl<const N: usize> ToCbor for [(Vec<u8>, Vec<u8>); N] {
+    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
+        to_cbor_map(self, N as u64, tags)
     }
 }
 

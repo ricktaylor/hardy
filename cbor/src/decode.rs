@@ -1,3 +1,4 @@
+use num_traits::FromPrimitive;
 use std::str::Utf8Error;
 use thiserror::Error;
 
@@ -32,11 +33,13 @@ pub enum Value<'a> {
     Bytes(&'a [u8], bool),
     Text(&'a str, bool),
     Array(Array<'a>),
+    Map(Map),
     False,
     True,
     Null,
     Undefined,
     Unassigned(u8),
+    Float(f64),
 }
 
 pub struct Array<'a> {
@@ -149,6 +152,14 @@ impl<'a> Array<'a> {
         T: FromCbor,
     {
         self.try_parse()?.ok_or(Error::NotEnoughData.into())
+    }
+}
+
+pub struct Map {}
+
+impl Map {
+    fn new<'a>(_data: &'a [u8], _count: Option<usize>, _offset: &'a mut usize) -> Self {
+        Self {}
     }
 }
 
@@ -299,7 +310,21 @@ where
                 &tags,
             )
         }
-        (5, _) => todo!(),
+        (5, 31) => {
+            /* Indefinite length map */
+            offset += 1;
+            f(Value::Map(Map::new(data, None, &mut offset)), &tags)
+        }
+        (5, minor) => {
+            /* Known length array */
+            let (count, len) = parse_uint_minor(minor, &data[offset + 1..])?;
+            offset += len + 1;
+            f(
+                Value::Map(Map::new(data, Some(usize::try_from(count)?), &mut offset)),
+                &tags,
+            )
+        }
+        (6, _) => unreachable!(),
         (7, 20) => {
             /* False */
             offset += 1;
@@ -326,20 +351,51 @@ where
             f(Value::Unassigned(data[offset] & 0x1F), &tags)
         }
         (7, 24) => {
+            /* Unassigned */
             if data.len() <= offset + 1 {
                 return Err(Error::NotEnoughData.into());
             }
             let v = data[offset + 1];
-            offset += 2;
             if v < 32 {
                 return Err(Error::InvalidValue(v).into());
             }
+            offset += 2;
             f(Value::Unassigned(v), &tags)
+        }
+        (7, 25) => {
+            /* FP16 */
+            let v = half::f16::from_be_bytes(
+                data[offset + 1..]
+                    .try_into()
+                    .map_err(|_| Error::NotEnoughData)?,
+            );
+            offset += 3;
+            f(Value::Float(v.into()), &tags)
+        }
+        (7, 26) => {
+            /* FP32 */
+            let v = f32::from_be_bytes(
+                data[offset + 1..]
+                    .try_into()
+                    .map_err(|_| Error::NotEnoughData)?,
+            );
+            offset += 5;
+            f(Value::Float(v.into()), &tags)
+        }
+        (7, 27) => {
+            /* FP64 */
+            let v = f64::from_be_bytes(
+                data[offset + 1..]
+                    .try_into()
+                    .map_err(|_| Error::NotEnoughData)?,
+            );
+            offset += 9;
+            f(Value::Float(v), &tags)
         }
         (7, _) => {
             return Err(Error::InvalidValue(data[offset] & 0x1F).into());
         }
-        (_, _) => unreachable!(),
+        (8.., _) => unreachable!(),
     }
     .map(|r| Some((r, offset)))
 }
@@ -441,6 +497,34 @@ impl FromCbor for i64 {
                 -1i64 - <u64 as TryInto<i64>>::try_into(value)?,
                 tags.to_vec(),
             )),
+            _ => Err(Error::IncorrectType.into()),
+        })
+        .map(|((val, tags), len)| (val, len, tags))
+    }
+}
+
+impl FromCbor for f32 {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        let (v, len, tags) = parse_detail::<f64>(data)?;
+        Ok((f32::from_f64(v).ok_or(Error::IncorrectType)?, len, tags))
+    }
+}
+
+impl FromCbor for f64 {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        parse_value(data, |value, tags| match (value, tags) {
+            (Value::Float(value), tags) => Ok((value, tags.to_vec())),
+            _ => Err(Error::IncorrectType.into()),
+        })
+        .map(|((val, tags), len)| (val, len, tags))
+    }
+}
+
+impl FromCbor for bool {
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+        parse_value(data, |value, tags| match (value, tags) {
+            (Value::False, tags) => Ok((false, tags.to_vec())),
+            (Value::True, tags) => Ok((true, tags.to_vec())),
             _ => Err(Error::IncorrectType.into()),
         })
         .map(|((val, tags), len)| (val, len, tags))
