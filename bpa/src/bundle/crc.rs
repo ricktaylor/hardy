@@ -37,8 +37,7 @@ pub fn parse_crc_value(
     })?;
 
     // Confirm we are at the end of the block
-    let block_end =
-        block.parse_end_or_else(|| anyhow!("Block has additional items after CRC value"))?;
+    let block_end = block.end_or_else(|| anyhow!("Block has additional items after CRC value"))?;
 
     // Now check CRC
     if let Some(((crc_value, crc_start), crc_end)) = crc_value {

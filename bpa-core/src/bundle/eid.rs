@@ -69,35 +69,34 @@ impl Eid {
         let v1 = value.parse::<u64>()?;
         let v2 = value.parse::<u64>()?;
 
-        let (components, allocator_id, node_number, service_number) = if let Some(v3) =
-            value.try_parse::<u64>()?
-        {
-            if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
-                return Err(anyhow!(
-                    "Invalid IPN EID components: {}, {}, {}",
-                    v1,
-                    v2,
-                    v3
-                ));
-            }
+        let (components, allocator_id, node_number, service_number) =
+            if let Some(v3) = value.try_parse::<u64>()? {
+                if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
+                    return Err(anyhow!(
+                        "Invalid IPN EID components: {}, {}, {}",
+                        v1,
+                        v2,
+                        v3
+                    ));
+                }
 
-            // Check indefinite array length
-            if value.count().is_none() {
-                value.parse_end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
-            }
+                // Check indefinite array length
+                if value.count().is_none() {
+                    value.end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
+                }
 
-            (3, v1 as u32, v2 as u32, v3 as u32)
-        } else {
-            if v2 >= 2 ^ 32 {
-                return Err(anyhow!("Invalid IPN EID service number {}", v2));
-            }
-            (
-                2,
-                (v1 >> 32) as u32,
-                (v1 & ((2 ^ 32) - 1)) as u32,
-                v2 as u32,
-            )
-        };
+                (3, v1 as u32, v2 as u32, v3 as u32)
+            } else {
+                if v2 >= 2 ^ 32 {
+                    return Err(anyhow!("Invalid IPN EID service number {}", v2));
+                }
+                (
+                    2,
+                    (v1 >> 32) as u32,
+                    (v1 & ((2 ^ 32) - 1)) as u32,
+                    v2 as u32,
+                )
+            };
 
         if allocator_id == 0 && node_number == 0 {
             if service_number != 0 {
@@ -203,7 +202,7 @@ impl cbor::decode::FromCbor for Eid {
                 })?;
 
                 if a.count().is_none() {
-                    a.parse_end_or_else(|| anyhow!("Additional items found in EID array"))?;
+                    a.end_or_else(|| anyhow!("Additional items found in EID array"))?;
                 }
                 Ok((eid, tags.to_vec()))
             } else {

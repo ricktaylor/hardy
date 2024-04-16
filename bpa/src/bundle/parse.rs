@@ -421,8 +421,7 @@ fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, anyhow::Error>
                 limit: a.parse()?,
             };
 
-            let end =
-                a.parse_end_or_else(|| anyhow!("Hop Count extension block has too many items"))?;
+            let end = a.end_or_else(|| anyhow!("Hop Count extension block has too many items"))?;
 
             if end != block.data_len {
                 return Err(anyhow!("Hop Count extension block has additional data"));

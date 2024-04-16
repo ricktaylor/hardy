@@ -21,6 +21,9 @@ pub enum Error {
 
     #[error("Invalid simple type {0}")]
     InvalidSimpleType(u8),
+
+    #[error("Map has key but no value")]
+    PartialMap,
 }
 
 pub trait FromCbor: Sized {
@@ -33,7 +36,7 @@ pub enum Value<'a> {
     Bytes(&'a [u8], bool),
     Text(&'a str, bool),
     Array(Array<'a>),
-    Map(Map),
+    Map(Map<'a>),
     False,
     True,
     Null,
@@ -42,54 +45,55 @@ pub enum Value<'a> {
     Float(f64),
 }
 
-pub struct Array<'a> {
+pub struct Sequence<'a, const D: usize> {
     data: &'a [u8],
     count: Option<usize>,
     offset: &'a mut usize,
     idx: usize,
 }
 
-impl<'a> Array<'a> {
+pub type Array<'a> = Sequence<'a, 1>;
+pub type Map<'a> = Sequence<'a, 2>;
+
+impl<'a, const D: usize> Sequence<'a, D> {
     fn new(data: &'a [u8], count: Option<usize>, offset: &'a mut usize) -> Self {
         Self {
             data,
-            count,
+            count: count.map(|c| c * D),
             offset,
             idx: 0,
         }
     }
 
     pub fn count(&self) -> Option<usize> {
-        self.count
+        self.count.map(|c| c / D)
     }
 
     fn check_for_end(&mut self) -> Result<Option<(usize, usize)>, anyhow::Error> {
-        // Check for end of array
         if let Some(count) = self.count {
-            if self.idx >= count {
-                panic!("Read past end of array!")
-            }
-        }
-        if *self.offset >= self.data.len() {
-            return Err(Error::NotEnoughData.into());
-        }
-
-        match self.count {
-            Some(count) if self.idx == count => {
+            if self.idx > count {
+                return Err(Error::NotEnoughData.into());
+            } else if self.idx == count {
                 self.idx += 1;
-                Ok(Some((*self.offset, 0)))
+                return Ok(Some((*self.offset, 0)));
             }
-            None if self.data[*self.offset] == 0xFF => {
+        } else {
+            if *self.offset >= self.data.len() {
+                return Err(Error::NotEnoughData.into());
+            } else if self.data[*self.offset] == 0xFF {
+                if self.idx % D == 1 {
+                    return Err(Error::PartialMap.into());
+                }
+                self.count = Some(self.idx);
                 self.idx += 1;
                 *self.offset += 1;
-                self.count = Some(self.idx);
-                Ok(Some((*self.offset - 1, 1)))
+                return Ok(Some((*self.offset - 1, 1)));
             }
-            _ => Ok(None),
         }
+        Ok(None)
     }
 
-    pub fn parse_end_or_else<F>(&mut self, f: F) -> Result<usize, anyhow::Error>
+    pub fn end_or_else<F>(&mut self, f: F) -> Result<usize, anyhow::Error>
     where
         F: FnOnce() -> anyhow::Error,
     {
@@ -155,14 +159,6 @@ impl<'a> Array<'a> {
     }
 }
 
-pub struct Map {}
-
-impl Map {
-    fn new<'a>(_data: &'a [u8], _count: Option<usize>, _offset: &'a mut usize) -> Self {
-        Self {}
-    }
-}
-
 fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, usize), Error> {
     let mut tags = Vec::new();
     let mut offset = 0;
@@ -220,7 +216,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, usize), Err
     let mut offset = 0;
     loop {
         if data.is_empty() {
-            return Err(Error::NotEnoughData);
+            break Err(Error::NotEnoughData);
         }
 
         let v = data[offset];
@@ -231,7 +227,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, usize), Err
         }
 
         if v >> 5 != major {
-            return Err(Error::InvalidChunk);
+            break Err(Error::InvalidChunk);
         }
 
         let (chunk, chunk_len) = parse_data_minor(v & 0x1F, &data[offset..])?;
@@ -345,10 +341,10 @@ where
             offset += 1;
             f(Value::Undefined, &tags)
         }
-        (7, 0..=19) => {
+        (7, minor @ 0..=19) => {
             /* Unassigned simple type */
             offset += 1;
-            f(Value::Simple(data[offset - 1] & 0x1F), &tags)
+            f(Value::Simple(minor), &tags)
         }
         (7, 24) => {
             /* Unassigned simple type */
@@ -392,8 +388,8 @@ where
             offset += 9;
             f(Value::Float(v), &tags)
         }
-        (7, _) => {
-            return Err(Error::InvalidSimpleType(data[offset] & 0x1F).into());
+        (7, minor) => {
+            return Err(Error::InvalidSimpleType(minor).into());
         }
         (8.., _) => unreachable!(),
     }
@@ -580,7 +576,8 @@ mod tests {
 
     #[test]
     fn rfc_tests() {
-        // RFC 8949 Appendix A tests
+        // RFC 8949, Appendix A:
+        // https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
 
         assert_eq!(0, parse(&hex!("00")).unwrap());
         assert_eq!(1, parse(&hex!("01")).unwrap());
@@ -743,12 +740,125 @@ mod tests {
         assert_eq!("\"\\", &parse::<String>(&hex!("62225c")).unwrap());
         assert_eq!("\u{00fc}", &parse::<String>(&hex!("62c3bc")).unwrap());
         assert_eq!("\u{6c34}", &parse::<String>(&hex!("63e6b0b4")).unwrap());
-        //assert_eq!("\u{d800}\u{dd51}",&parse::<String>(&hex!("64f0908591")).unwrap());
+        assert_eq!(
+            "\u{10151}", /* surrogate pair: \u{d800}\u{dd51} */
+            &parse::<String>(&hex!("64f0908591")).unwrap()
+        );
+        assert_eq!(
+            (0, 1),
+            parse_value(&hex!("80"), |value, _| match value {
+                Value::Array(mut a) => {
+                    a.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(a.count().unwrap())
+                }
+                _ => Err(Error::IncorrectType.into()),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (vec![1, 2, 3], 4),
+            parse_value(&hex!("83010203"), |value, _| match value {
+                Value::Array(mut a) => {
+                    let v = vec![a.parse()?, a.parse()?, a.parse()?];
+                    a.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(v)
+                }
+                _ => Err(Error::IncorrectType.into()),
+            })
+            .unwrap()
+        );
 
-        // Arrays
+        /*
+        [1, 2, 3]	0x83010203
+        [1, [2, 3], [4, 5]]	0x8301820203820405
+         */
 
-        // Maps
+        assert_eq!(
+            (
+                vec![
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                    23, 24, 25
+                ],
+                29
+            ),
+            parse_value(
+                &hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819"),
+                |value, _| match value {
+                    Value::Array(mut a) => {
+                        let mut v = Vec::new();
+                        for _ in 1..=25 {
+                            v.push(a.parse()?);
+                        }
+                        a.end_or_else(|| Error::NotEnoughData.into())?;
+                        Ok(v)
+                    }
+                    _ => Err(Error::IncorrectType.into()),
+                }
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            (0, 1),
+            parse_value(&hex!("a0"), |value, _| match value {
+                Value::Map(mut m) => {
+                    m.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(m.count().unwrap())
+                }
+                _ => Err(Error::IncorrectType.into()),
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            (vec![1, 2, 3, 4], 5),
+            parse_value(&hex!("a201020304"), |value, _| match value {
+                Value::Map(mut m) => {
+                    let v = vec![m.parse()?, m.parse()?, m.parse()?, m.parse()?];
+                    m.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(v)
+                }
+                _ => Err(Error::IncorrectType.into()),
+            })
+            .unwrap()
+        );
 
+        /*
+        {"a": 1, "b": [2, 3]}	                            0xa26161016162820203
+        ["a", {"b": "c"}]	                                0x826161a161626163
+         */
+
+        assert_eq!(
+            (
+                vec![
+                    "a".to_string(),
+                    "A".to_string(),
+                    "b".to_string(),
+                    "B".to_string(),
+                    "c".to_string(),
+                    "C".to_string(),
+                    "d".to_string(),
+                    "D".to_string(),
+                    "e".to_string(),
+                    "E".to_string()
+                ],
+                21
+            ),
+            parse_value(
+                &hex!("a56161614161626142616361436164614461656145"),
+                |value, _| match value {
+                    Value::Map(mut m) => {
+                        let mut v = Vec::new();
+                        for _ in 1..=5 {
+                            v.push(m.parse()?);
+                            v.push(m.parse()?);
+                        }
+                        m.end_or_else(|| Error::NotEnoughData.into())?;
+                        Ok(v)
+                    }
+                    _ => Err(Error::IncorrectType.into()),
+                }
+            )
+            .unwrap()
+        );
         assert_eq!(
             (true, 9),
             parse_value(&hex!("5f42010243030405ff"), |value, _| match value {
@@ -768,5 +878,57 @@ mod tests {
             )
             .unwrap()
         );
+        assert_eq!(
+            (0, 2),
+            parse_value(&hex!("9fff"), |value, _| match value {
+                Value::Array(mut a) => {
+                    if a.count().is_some() {
+                        return Err(anyhow::anyhow!("Expected indefinite length!"));
+                    }
+                    a.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(a.count().unwrap())
+                }
+                _ => Err(Error::IncorrectType.into()),
+            })
+            .unwrap()
+        );
+
+        /*
+        [_ 1, [2, 3], [_ 4, 5]]	0x9f018202039f0405ffff
+        [_ 1, [2, 3], [4, 5]]	0x9f01820203820405ff
+        [1, [2, 3], [_ 4, 5]]	0x83018202039f0405ff
+        [1, [_ 2, 3], [4, 5]]	0x83019f0203ff820405
+        */
+        assert_eq!(
+            (
+                vec![
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                    23, 24, 25
+                ],
+                29
+            ),
+            parse_value(
+                &hex!("9f0102030405060708090a0b0c0d0e0f101112131415161718181819ff"),
+                |value, _| match value {
+                    Value::Array(mut a) => {
+                        if a.count().is_some() {
+                            return Err(anyhow::anyhow!("Expected indefinite length!"));
+                        }
+                        let mut v = Vec::new();
+                        for _ in 1..=25 {
+                            v.push(a.parse()?);
+                        }
+                        a.end_or_else(|| Error::NotEnoughData.into())?;
+                        Ok(v)
+                    }
+                    _ => Err(Error::IncorrectType.into()),
+                }
+            )
+            .unwrap()
+        );
+        /* {_ "a": 1, "b": [_ 2, 3]}	0xbf61610161629f0203ffff
+        ["a", {_ "b": "c"}]	0x826161bf61626163ff
+        {_ "Fun": true, "Amt": -2}	0xbf6346756ef563416d7421ff
+         */
     }
 }
