@@ -72,15 +72,15 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.count.map(|c| c / D)
     }
 
-    fn check_for_end(&mut self) -> Result<Option<(usize, usize)>, anyhow::Error> {
+    fn check_for_end(&mut self) -> Result<bool, anyhow::Error> {
         if let Some(count) = self.count {
             match self.idx.cmp(&count) {
-                std::cmp::Ordering::Greater => Ok(Some((*self.offset, 0))),
+                std::cmp::Ordering::Greater => Ok(true),
                 std::cmp::Ordering::Equal => {
                     self.idx += 1;
-                    Ok(Some((*self.offset, 0)))
+                    Ok(true)
                 }
-                _ => Ok(None),
+                _ => Ok(false),
             }
         } else if *self.offset >= self.data.len() {
             Err(Error::NotEnoughData.into())
@@ -91,10 +91,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
                 self.count = Some(self.idx);
                 self.idx += 1;
                 *self.offset += 1;
-                Ok(Some((*self.offset - 1, 1)))
+                Ok(true)
             }
         } else {
-            Ok(None)
+            Ok(false)
         }
     }
 
@@ -102,8 +102,8 @@ impl<'a, const D: usize> Sequence<'a, D> {
     where
         F: FnOnce() -> anyhow::Error,
     {
-        if let Some((offset, len)) = self.check_for_end()? {
-            Ok(offset + len)
+        if self.check_for_end()? {
+            Ok(*self.offset)
         } else {
             Err(f())
         }
@@ -120,7 +120,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         F: FnOnce(Value, usize, &[u64]) -> Result<T, anyhow::Error>,
     {
         // Check for end of array
-        if self.check_for_end()?.is_some() {
+        if self.check_for_end()? {
             Ok(None)
         } else {
             // Parse sub-item
@@ -150,7 +150,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         T: FromCbor,
     {
         // Check for end of array
-        if self.check_for_end()?.is_some() {
+        if self.check_for_end()? {
             Ok(None)
         } else {
             // Parse sub-item
