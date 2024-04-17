@@ -230,11 +230,11 @@ fn rfc_tests() {
             &hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819"),
             |a, tags| {
                 assert!(tags.is_empty());
-                assert!(a.count().is_some());
                 let mut v = Vec::new();
-                for _ in 1..=25 {
+                for _ in 0..a.count().unwrap() {
                     v.push(a.parse()?);
                 }
+                a.end_or_else(|| Error::UnparsedItems.into())?;
                 Ok(v)
             }
         )
@@ -253,6 +253,7 @@ fn rfc_tests() {
         (vec![1, 2, 3, 4], 5),
         parse_map(&hex!("a201020304"), |m, tags| {
             assert!(tags.is_empty());
+            assert!(m.count().is_some());
             let v = vec![m.parse()?, m.parse()?, m.parse()?, m.parse()?];
             m.end_or_else(|| Error::UnparsedItems.into())?;
             Ok(v)
@@ -263,22 +264,14 @@ fn rfc_tests() {
     /*
     {"a": 1, "b": [2, 3]}	                            0xa26161016162820203
     ["a", {"b": "c"}]	                                0x826161a161626163
-        */
+    */
 
     assert_eq!(
         (
-            vec![
-                "a".to_string(),
-                "A".to_string(),
-                "b".to_string(),
-                "B".to_string(),
-                "c".to_string(),
-                "C".to_string(),
-                "d".to_string(),
-                "D".to_string(),
-                "e".to_string(),
-                "E".to_string()
-            ],
+            vec!["a", "A", "b", "B", "c", "C", "d", "D", "e", "E"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             21
         ),
         parse_map(
@@ -286,7 +279,7 @@ fn rfc_tests() {
             |m, tags| {
                 assert!(tags.is_empty());
                 let mut v = Vec::new();
-                for _ in 1..=5 {
+                for _ in 0..m.count().unwrap() {
                     v.push(m.parse()?);
                     v.push(m.parse()?);
                 }
@@ -440,8 +433,12 @@ fn rfc_tests() {
                 assert!(tags.is_empty());
                 assert!(a.count().is_none());
                 let mut v = Vec::new();
-                for _ in 1..=25 {
-                    v.push(a.parse()?);
+                loop {
+                    if let Some(value) = a.try_parse()? {
+                        v.push(value);
+                    } else {
+                        break;
+                    }
                 }
                 a.end_or_else(|| Error::UnparsedItems.into())?;
                 Ok(v)
