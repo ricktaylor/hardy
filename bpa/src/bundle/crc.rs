@@ -66,30 +66,25 @@ pub fn parse_crc_value(
                     return Err(err);
                 }
             }
-            _ => return Err(anyhow!("Block has invalid CRC type {}", crc_type as u64)),
+            CrcType::None => return Err(anyhow!("Block has invalid CRC type {}", crc_type as u64)),
         }
     }
     Ok(())
 }
 
-pub fn emit_crc_value(mut block: Vec<Vec<u8>>, crc_type: CrcType) -> Vec<u8> {
+pub fn emit_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
     match crc_type {
         CrcType::CRC16_X25 => {
-            block.push(cbor::encode::emit([0u8; 2]));
-            let mut block = cbor::encode::emit(block);
-            let crc_value = X25.checksum(&block).to_be_bytes();
-            block.truncate(block.len() - crc_value.len());
-            block.extend(crc_value);
-            block
+            let crc_value = X25.checksum(&data).to_be_bytes();
+            data.truncate(data.len() - crc_value.len());
+            data.extend(crc_value)
         }
         CrcType::CRC32_CASTAGNOLI => {
-            block.push(cbor::encode::emit([0u8; 4]));
-            let mut block = cbor::encode::emit(block);
-            let crc_value = CASTAGNOLI.checksum(&block).to_be_bytes();
-            block.truncate(block.len() - crc_value.len());
-            block.extend(crc_value);
-            block
+            let crc_value = CASTAGNOLI.checksum(&data).to_be_bytes();
+            data.truncate(data.len() - crc_value.len());
+            data.extend(crc_value)
         }
-        _ => cbor::encode::emit(block),
+        CrcType::None => {}
     }
+    data
 }

@@ -71,25 +71,26 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     fn check_for_end(&mut self) -> Result<Option<(usize, usize)>, anyhow::Error> {
         if let Some(count) = self.count {
-            if self.idx > count {
-                return Err(Error::NotEnoughData.into());
-            } else if self.idx == count {
-                self.idx += 1;
-                return Ok(Some((*self.offset, 0)));
-            }
-        } else {
-            if *self.offset >= self.data.len() {
-                return Err(Error::NotEnoughData.into());
-            } else if self.data[*self.offset] == 0xFF {
-                if self.idx % D == 1 {
-                    return Err(Error::PartialMap.into());
+            match self.idx.cmp(&count) {
+                std::cmp::Ordering::Greater => return Err(Error::NotEnoughData.into()),
+                std::cmp::Ordering::Equal => {
+                    self.idx += 1;
+                    return Ok(Some((*self.offset, 0)));
                 }
-                self.count = Some(self.idx);
-                self.idx += 1;
-                *self.offset += 1;
-                return Ok(Some((*self.offset - 1, 1)));
+                _ => {}
             }
+        } else if *self.offset >= self.data.len() {
+            return Err(Error::NotEnoughData.into());
+        } else if self.data[*self.offset] == 0xFF {
+            if self.idx % D == 1 {
+                return Err(Error::PartialMap.into());
+            }
+            self.count = Some(self.idx);
+            self.idx += 1;
+            *self.offset += 1;
+            return Ok(Some((*self.offset - 1, 1)));
         }
+
         Ok(None)
     }
 
@@ -156,6 +157,23 @@ impl<'a, const D: usize> Sequence<'a, D> {
         T: FromCbor,
     {
         self.try_parse()?.ok_or(Error::NotEnoughData.into())
+    }
+
+    pub fn try_parse_array<T, F>(&mut self, f: F) -> Result<Option<(T, usize)>, anyhow::Error>
+    where
+        F: FnOnce(Array, usize, &[u64]) -> Result<T, anyhow::Error>,
+    {
+        self.try_parse_value(|value, start, tags| match value {
+            Value::Array(a) => f(a, start, tags),
+            _ => Err(Error::IncorrectType.into()),
+        })
+    }
+
+    pub fn parse_array<T, F>(&mut self, f: F) -> Result<(T, usize), anyhow::Error>
+    where
+        F: FnOnce(Array, usize, &[u64]) -> Result<T, anyhow::Error>,
+    {
+        self.try_parse_array(f)?.ok_or(Error::NotEnoughData.into())
     }
 }
 
@@ -401,6 +419,16 @@ where
     F: FnOnce(Value, &[u64]) -> Result<T, anyhow::Error>,
 {
     try_parse_value(data, f)?.ok_or(Error::NotEnoughData.into())
+}
+
+pub fn parse_array<T, F>(data: &[u8], f: F) -> Result<(T, usize), anyhow::Error>
+where
+    F: FnOnce(Array, &[u64]) -> Result<T, anyhow::Error>,
+{
+    parse_value(data, |value, tags| match value {
+        Value::Array(a) => f(a, tags),
+        _ => Err(Error::IncorrectType.into()),
+    })
 }
 
 pub fn parse_detail<T>(data: &[u8]) -> Result<(T, usize, Vec<u64>), anyhow::Error>
@@ -686,20 +714,12 @@ mod tests {
             .unwrap()
         );
         assert_eq!(
-            (true, 6),
-            parse_value(&hex!("c11a514b67b0"), |value, tags| match value {
-                Value::UnsignedInteger(1363896240) if tags == vec![1] => Ok(true),
-                _ => Ok(false),
-            })
-            .unwrap()
+            (1363896240, 6, vec![1]),
+            parse_detail(&hex!("c11a514b67b0")).unwrap()
         );
         assert_eq!(
-            (true, 10),
-            parse_value(&hex!("c1fb41d452d9ec200000"), |value, tags| match value {
-                Value::Float(v) if v == 1363896240.5 && tags == vec![1] => Ok(true),
-                _ => Ok(false),
-            })
-            .unwrap()
+            (1363896240.5, 10, vec![1]),
+            parse_detail(&hex!("c1fb41d452d9ec200000")).unwrap()
         );
         assert_eq!(
             (true, 6),
@@ -746,24 +766,18 @@ mod tests {
         );
         assert_eq!(
             (0, 1),
-            parse_value(&hex!("80"), |value, _| match value {
-                Value::Array(mut a) => {
-                    a.end_or_else(|| Error::NotEnoughData.into())?;
-                    Ok(a.count().unwrap())
-                }
-                _ => Err(Error::IncorrectType.into()),
+            parse_array(&hex!("80"), |mut a, _| {
+                a.end_or_else(|| Error::NotEnoughData.into())?;
+                Ok(a.count().unwrap())
             })
             .unwrap()
         );
         assert_eq!(
             (vec![1, 2, 3], 4),
-            parse_value(&hex!("83010203"), |value, _| match value {
-                Value::Array(mut a) => {
-                    let v = vec![a.parse()?, a.parse()?, a.parse()?];
-                    a.end_or_else(|| Error::NotEnoughData.into())?;
-                    Ok(v)
-                }
-                _ => Err(Error::IncorrectType.into()),
+            parse_array(&hex!("83010203"), |mut a, _| {
+                let v = vec![a.parse()?, a.parse()?, a.parse()?];
+                a.end_or_else(|| Error::NotEnoughData.into())?;
+                Ok(v)
             })
             .unwrap()
         );
@@ -781,18 +795,15 @@ mod tests {
                 ],
                 29
             ),
-            parse_value(
+            parse_array(
                 &hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819"),
-                |value, _| match value {
-                    Value::Array(mut a) => {
-                        let mut v = Vec::new();
-                        for _ in 1..=25 {
-                            v.push(a.parse()?);
-                        }
-                        a.end_or_else(|| Error::NotEnoughData.into())?;
-                        Ok(v)
+                |mut a, _| {
+                    let mut v = Vec::new();
+                    for _ in 1..=25 {
+                        v.push(a.parse()?);
                     }
-                    _ => Err(Error::IncorrectType.into()),
+                    a.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(v)
                 }
             )
             .unwrap()
@@ -880,15 +891,12 @@ mod tests {
         );
         assert_eq!(
             (0, 2),
-            parse_value(&hex!("9fff"), |value, _| match value {
-                Value::Array(mut a) => {
-                    if a.count().is_some() {
-                        return Err(anyhow::anyhow!("Expected indefinite length!"));
-                    }
-                    a.end_or_else(|| Error::NotEnoughData.into())?;
-                    Ok(a.count().unwrap())
+            parse_array(&hex!("9fff"), |mut a, _| {
+                if a.count().is_some() {
+                    return Err(anyhow::anyhow!("Expected indefinite length!"));
                 }
-                _ => Err(Error::IncorrectType.into()),
+                a.end_or_else(|| Error::NotEnoughData.into())?;
+                Ok(a.count().unwrap())
             })
             .unwrap()
         );
@@ -907,21 +915,18 @@ mod tests {
                 ],
                 29
             ),
-            parse_value(
+            parse_array(
                 &hex!("9f0102030405060708090a0b0c0d0e0f101112131415161718181819ff"),
-                |value, _| match value {
-                    Value::Array(mut a) => {
-                        if a.count().is_some() {
-                            return Err(anyhow::anyhow!("Expected indefinite length!"));
-                        }
-                        let mut v = Vec::new();
-                        for _ in 1..=25 {
-                            v.push(a.parse()?);
-                        }
-                        a.end_or_else(|| Error::NotEnoughData.into())?;
-                        Ok(v)
+                |mut a, _| {
+                    if a.count().is_some() {
+                        return Err(anyhow::anyhow!("Expected indefinite length!"));
                     }
-                    _ => Err(Error::IncorrectType.into()),
+                    let mut v = Vec::new();
+                    for _ in 1..=25 {
+                        v.push(a.parse()?);
+                    }
+                    a.end_or_else(|| Error::NotEnoughData.into())?;
+                    Ok(v)
                 }
             )
             .unwrap()

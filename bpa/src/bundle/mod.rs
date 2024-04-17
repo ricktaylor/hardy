@@ -36,3 +36,15 @@ pub enum StatusReportReasonCode {
     FailedSecurityOperation = 15,
     ConflictingSecurityOperation = 16,
 }
+
+impl From<StatusReportReasonCode> for u64 {
+    fn from(value: StatusReportReasonCode) -> Self {
+        value as u64
+    }
+}
+
+impl cbor::encode::ToCbor for StatusReportReasonCode {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        encoder.emit::<u64>(self.into())
+    }
+}

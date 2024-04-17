@@ -122,92 +122,88 @@ impl Eid {
 }
 
 impl cbor::encode::ToCbor for &Eid {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        cbor::encode::emit_with_tags(
-            match self {
-                Eid::Null => [cbor::encode::emit(1u8), cbor::encode::emit(0u8)],
-                Eid::Dtn { node_name, demux } => [
-                    cbor::encode::emit(1u8),
-                    cbor::encode::emit(["/", node_name.as_str(), demux.as_str()].join("/")),
-                ],
-                Eid::Ipn2 {
-                    allocator_id,
-                    node_number,
-                    service_number,
-                } => [
-                    cbor::encode::emit(2u8),
-                    cbor::encode::emit([
-                        cbor::encode::emit((*allocator_id as u64) << 32 | *node_number as u64),
-                        cbor::encode::emit(*service_number),
-                    ]),
-                ],
-                Eid::Ipn3 {
-                    allocator_id: 0,
-                    node_number,
-                    service_number,
-                } => [
-                    cbor::encode::emit(2u8),
-                    cbor::encode::emit([
-                        cbor::encode::emit(*node_number),
-                        cbor::encode::emit(*service_number),
-                    ]),
-                ],
-                Eid::Ipn3 {
-                    allocator_id,
-                    node_number,
-                    service_number,
-                } => [
-                    cbor::encode::emit(2u8),
-                    cbor::encode::emit([
-                        cbor::encode::emit(*allocator_id),
-                        cbor::encode::emit(*node_number),
-                        cbor::encode::emit(*service_number),
-                    ]),
-                ],
-                Eid::LocalNode { service_number } => [
-                    cbor::encode::emit(2u8),
-                    cbor::encode::emit([
-                        cbor::encode::emit((2u64 ^ 32) - 1),
-                        cbor::encode::emit(*service_number),
-                    ]),
-                ],
-            },
-            tags,
-        )
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        match self {
+            Eid::Null => encoder.emit_array(Some(2), |a| {
+                a.emit(1);
+                a.emit(0)
+            }),
+            Eid::Dtn { node_name, demux } => encoder.emit_array(Some(2), |a| {
+                a.emit(1);
+                a.emit(["/", node_name.as_str(), demux.as_str()].join("/").as_str())
+            }),
+            Eid::Ipn2 {
+                allocator_id,
+                node_number,
+                service_number,
+            } => encoder.emit_array(Some(2), |a| {
+                a.emit(2);
+                a.emit_array(Some(2), |a| {
+                    a.emit((*allocator_id as u64) << 32 | *node_number as u64);
+                    a.emit(*service_number);
+                })
+            }),
+            Eid::Ipn3 {
+                allocator_id: 0,
+                node_number,
+                service_number,
+            } => encoder.emit_array(Some(2), |a| {
+                a.emit(2);
+                a.emit_array(Some(2), |a| {
+                    a.emit(*node_number);
+                    a.emit(*service_number)
+                })
+            }),
+            Eid::Ipn3 {
+                allocator_id,
+                node_number,
+                service_number,
+            } => encoder.emit_array(Some(2), |a| {
+                a.emit(2);
+                a.emit_array(Some(3), |a| {
+                    a.emit(*allocator_id);
+                    a.emit(*node_number);
+                    a.emit(*service_number)
+                })
+            }),
+            Eid::LocalNode { service_number } => encoder.emit_array(Some(2), |a| {
+                a.emit(2);
+                a.emit_array(Some(2), |a| {
+                    a.emit((2u64 ^ 32) - 1);
+                    a.emit(*service_number)
+                })
+            }),
+        }
     }
 }
 
 impl cbor::decode::FromCbor for Eid {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        cbor::decode::parse_value(data, |value, tags| {
-            if let cbor::decode::Value::Array(mut a) = value {
-                match a.count() {
-                    None => log::info!("Parsing EID array of indefinite length"),
-                    Some(count) if count != 2 => {
-                        return Err(anyhow!("EID is not encoded as a 2 element CBOR array"))
-                    }
-                    _ => {}
+        cbor::decode::parse_array(data, |mut a, tags| {
+            match a.count() {
+                None => log::info!("Parsing EID array of indefinite length"),
+                Some(count) if count != 2 => {
+                    return Err(anyhow!("EID is not encoded as a 2 element CBOR array"))
                 }
-                let schema = a.parse::<u64>()?;
-                let (eid, _) = a.parse_value(|value: cbor::decode::Value<'_>, _, tags2| {
-                    if !tags2.is_empty() {
-                        log::info!("Parsing EID value with tags");
-                    }
-                    match (schema, value) {
-                        (1, value) => Self::parse_dtn_eid(value),
-                        (2, cbor::decode::Value::Array(a)) => Self::parse_ipn_eid(a),
-                        (2, _) => Err(anyhow!("IPN EIDs must be encoded as a CBOR array")),
-                        _ => Err(anyhow!("Unsupported EID scheme {}", schema)),
-                    }
-                })?;
-
-                if a.count().is_none() {
-                    a.end_or_else(|| anyhow!("Additional items found in EID array"))?;
-                }
-                Ok((eid, tags.to_vec()))
-            } else {
-                Err(anyhow!("EID is not encoded as a CBOR array"))
+                _ => {}
             }
+            let schema = a.parse::<u64>()?;
+            let (eid, _) = a.parse_value(|value: cbor::decode::Value<'_>, _, tags2| {
+                if !tags2.is_empty() {
+                    log::info!("Parsing EID value with tags");
+                }
+                match (schema, value) {
+                    (1, value) => Self::parse_dtn_eid(value),
+                    (2, cbor::decode::Value::Array(a)) => Self::parse_ipn_eid(a),
+                    (2, _) => Err(anyhow!("IPN EIDs must be encoded as a CBOR array")),
+                    _ => Err(anyhow!("Unsupported EID scheme {}", schema)),
+                }
+            })?;
+
+            if a.count().is_none() {
+                a.end_or_else(|| anyhow!("Additional items found in EID array"))?;
+            }
+            Ok((eid, tags.to_vec()))
         })
         .map(|((eid, tags), len)| (eid, len, tags))
     }

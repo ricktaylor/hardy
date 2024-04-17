@@ -1,15 +1,11 @@
 use super::*;
 
 pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
-    let ((mut bundle, mut valid), len) = cbor::decode::parse_value(data, |value, tags| {
-        if let cbor::decode::Value::Array(blocks) = value {
-            if !tags.is_empty() {
-                log::info!("Parsing bundle with tags");
-            }
-            parse_bundle_blocks(data, blocks)
-        } else {
-            Err(anyhow!("Bundle is not a CBOR array"))
+    let ((mut bundle, mut valid), len) = cbor::decode::parse_array(data, |blocks, tags| {
+        if !tags.is_empty() {
+            log::info!("Parsing bundle with tags");
         }
+        parse_bundle_blocks(data, blocks)
     })?;
     if valid {
         if len < data.len() {
@@ -31,16 +27,12 @@ fn parse_bundle_blocks(
 ) -> Result<(Bundle, bool), anyhow::Error> {
     // Parse Primary block
     let (mut bundle, valid, block_start, block_len) = blocks
-        .parse_value(|value, block_start, tags| {
-            if let cbor::decode::Value::Array(a) = value {
-                if !tags.is_empty() {
-                    log::info!("Parsing primary block with tags");
-                }
-                parse_primary_block(data, a, block_start)
-                    .map(|(bundle, valid)| (bundle, valid, block_start))
-            } else {
-                Err(anyhow!("Bundle primary block is not a CBOR array"))
+        .parse_array(|a, block_start, tags| {
+            if !tags.is_empty() {
+                log::info!("Parsing primary block with tags");
             }
+            parse_primary_block(data, a, block_start)
+                .map(|(bundle, valid)| (bundle, valid, block_start))
         })
         .map(|((bundle, valid, block_start), len)| (bundle, valid, block_start, len))?;
 
@@ -211,14 +203,11 @@ fn parse_extension_blocks(
     let mut extension_blocks = Vec::new();
     let extension_map = loop {
         if let Some(((block_number, block), _)) =
-            blocks.try_parse_value(|value, block_start, tags| match value {
-                cbor::decode::Value::Array(a) => {
-                    if !tags.is_empty() {
-                        log::info!("Parsing extension block with tags");
-                    }
-                    parse_block(data, a, block_start)
+            blocks.try_parse_array(|a, block_start, tags| {
+                if !tags.is_empty() {
+                    log::info!("Parsing extension block with tags");
                 }
-                _ => Err(anyhow!("Bundle extension block is not a CBOR array")),
+                parse_block(data, a, block_start)
             })?
         {
             extension_blocks.push((block_number, block));
@@ -407,32 +396,24 @@ fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, anyhow::Error> {
 }
 
 fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, anyhow::Error> {
-    cbor::decode::parse_value(data, |value, tags| {
-        if let cbor::decode::Value::Array(mut a) = value {
-            if !tags.is_empty() {
-                log::info!("Parsing Hop Count with tags");
-            }
-            if a.count().is_none() {
-                log::info!("Parsing Hop Count as indefinite length array");
-            }
-
-            let hop_info = HopInfo {
-                count: a.parse()?,
-                limit: a.parse()?,
-            };
-
-            let end = a.end_or_else(|| anyhow!("Hop Count extension block has too many items"))?;
-
-            if end != block.data_len {
-                return Err(anyhow!("Hop Count extension block has additional data"));
-            }
-
-            Ok(hop_info)
-        } else {
-            Err(anyhow!(
-                "Hop Count extension block content is not a CBOR array"
-            ))
+    cbor::decode::parse_array(data, |mut a, tags| {
+        if !tags.is_empty() {
+            log::info!("Parsing Hop Count with tags");
         }
+        if a.count().is_none() {
+            log::info!("Parsing Hop Count as indefinite length array");
+        }
+
+        let hop_info = HopInfo {
+            count: a.parse()?,
+            limit: a.parse()?,
+        };
+
+        let end = a.end_or_else(|| anyhow!("Hop Count extension block has too many items"))?;
+        if end != block.data_len {
+            return Err(anyhow!("Hop Count extension block has additional data"));
+        }
+        Ok(hop_info)
     })
     .map(|(v, _)| v)
 }

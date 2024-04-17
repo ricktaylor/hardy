@@ -158,23 +158,30 @@ impl BundleBuilder {
         };
 
         let block_data = crc::emit_crc_value(
-            vec![
-                // Version
-                cbor::encode::emit(7u8),
-                // Flags
-                cbor::encode::emit(self.bundle_flags),
-                // CRC
-                cbor::encode::emit(self.crc_type),
-                // EIDs
-                cbor::encode::emit(&self.destination),
-                cbor::encode::emit(&self.source),
-                cbor::encode::emit(&self.report_to),
-                // Timestamp
-                cbor::encode::emit(&timestamp),
-                // Lifetime
-                cbor::encode::emit(self.lifetime.whole_milliseconds() as u64),
-            ],
             self.crc_type,
+            cbor::encode::emit_array(
+                Some(if let CrcType::None = self.crc_type {
+                    8
+                } else {
+                    9
+                }),
+                |a| {
+                    // Version
+                    a.emit(7);
+                    // Flags
+                    a.emit(self.bundle_flags);
+                    // CRC
+                    a.emit(self.crc_type);
+                    // EIDs
+                    a.emit(&self.destination);
+                    a.emit(&self.source);
+                    a.emit(&self.report_to);
+                    // Timestamp
+                    a.emit(&timestamp);
+                    // Lifetime
+                    a.emit(self.lifetime.whole_milliseconds() as u64);
+                },
+            ),
         );
 
         (
@@ -267,6 +274,35 @@ impl BlockTemplate {
     }
 
     pub fn build(self, block_number: u64, offset: usize) -> (Block, Vec<u8>) {
+        let block_data = crc::emit_crc_value(
+            self.crc_type,
+            cbor::encode::emit_array(
+                Some(if let CrcType::None = self.crc_type {
+                    5
+                } else {
+                    6
+                }),
+                |a| {
+                    // Block Type
+                    a.emit(self.block_type);
+                    // Block Number
+                    a.emit(block_number);
+                    // Flags
+                    a.emit(self.flags);
+                    // CRC Type
+                    a.emit(self.crc_type);
+                    // Payload
+                    a.emit(&self.data);
+
+                    match self.crc_type {
+                        CrcType::None => {}
+                        CrcType::CRC16_X25 => a.emit(&[0u8; 2]),
+                        CrcType::CRC32_CASTAGNOLI => a.emit(&[0u8; 4]),
+                    }
+                },
+            ),
+        );
+
         (
             Block {
                 block_type: self.block_type,
@@ -275,21 +311,7 @@ impl BlockTemplate {
                 data_offset: offset,
                 data_len: self.data.len(),
             },
-            crc::emit_crc_value(
-                vec![
-                    // Block Type
-                    cbor::encode::emit(self.block_type),
-                    // Block Number
-                    cbor::encode::emit(block_number),
-                    // Flags
-                    cbor::encode::emit(self.flags),
-                    // CRC Type
-                    cbor::encode::emit(self.crc_type),
-                    // Payload
-                    cbor::encode::emit(self.data),
-                ],
-                self.crc_type,
-            ),
+            block_data,
         )
     }
 }

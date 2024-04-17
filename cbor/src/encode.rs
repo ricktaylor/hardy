@@ -1,289 +1,407 @@
 use num_traits::FromPrimitive;
 
 pub trait ToCbor {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8>;
+    fn to_cbor(self, encoder: &mut Encoder);
 }
 
-fn emit_uint_minor(major: u8, val: u64) -> Vec<u8> {
-    if val < 24 {
-        vec![(major << 5) | (val as u8)]
-    } else if val <= u8::MAX as u64 {
-        vec![(major << 5) | 24u8, val as u8]
-    } else if val <= u16::MAX as u64 {
-        let mut v = vec![(major << 5) | 25u8];
-        v.extend((val as u16).to_be_bytes());
-        v
-    } else if val <= u32::MAX as u64 {
-        let mut v = vec![(major << 5) | 26u8];
-        v.extend((val as u32).to_be_bytes());
-        v
-    } else {
-        let mut v = vec![(major << 5) | 27u8];
-        v.extend(val.to_be_bytes());
-        v
+pub struct Encoder {
+    data: Vec<u8>,
+}
+
+impl Encoder {
+    fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    fn emit_uint_minor(&mut self, major: u8, val: u64) {
+        if val < 24 {
+            self.data.push((major << 5) | (val as u8))
+        } else if val <= u8::MAX as u64 {
+            self.data.push((major << 5) | 24u8);
+            self.data.push(val as u8)
+        } else if val <= u16::MAX as u64 {
+            self.data.push((major << 5) | 25u8);
+            self.data.extend(&(val as u16).to_be_bytes())
+        } else if val <= u32::MAX as u64 {
+            self.data.push((major << 5) | 26u8);
+            self.data.extend(&(val as u32).to_be_bytes())
+        } else {
+            self.data.push((major << 5) | 27u8);
+            self.data.extend(&val.to_be_bytes())
+        }
+    }
+
+    fn emit_tags<I, T>(&mut self, tags: I)
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        for tag in tags {
+            self.emit_uint_minor(6, tag.into())
+        }
+    }
+
+    pub fn emit<V>(&mut self, value: V)
+    where
+        V: ToCbor,
+    {
+        value.to_cbor(self)
+    }
+
+    pub fn emit_tagged<V, I, T>(&mut self, value: V, tags: I)
+    where
+        V: ToCbor,
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        self.emit_tags(tags);
+        self.emit(value)
+    }
+
+    pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
+    where
+        F: FnOnce(&mut Array),
+    {
+        let mut a = Array::new(self, count);
+        f(&mut a);
+        a.end()
+    }
+
+    pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    where
+        F: FnOnce(&mut Array),
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        self.emit_tags(tags);
+        self.emit_array(count, f)
+    }
+
+    pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
+    where
+        F: FnOnce(&mut Map),
+    {
+        let mut m = Map::new(self, count);
+        f(&mut m);
+        m.end()
+    }
+
+    pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    where
+        F: FnOnce(&mut Map),
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        self.emit_tags(tags);
+        self.emit_map(count, f)
     }
 }
 
-pub fn emit_with_tags<T>(value: T, tags: &[u64]) -> Vec<u8>
-where
-    T: ToCbor,
-{
-    value.to_cbor(tags)
-}
-
-pub fn emit<T>(value: T) -> Vec<u8>
-where
-    T: ToCbor,
-{
-    value.to_cbor(&[])
-}
-
-pub fn emit_indefinite_array<I, J>(arr: I, tags: &[u64]) -> Vec<u8>
-where
-    I: IntoIterator<Item = J>,
-    J: IntoIterator<Item = u8>,
-{
-    let mut v = emit_tags(tags);
-    v.push((4 << 5) | 31);
-    for i in arr {
-        v.extend(i);
+impl Default for Encoder {
+    fn default() -> Self {
+        Self::new()
     }
-    v.push(0xFF);
-    v
 }
 
-fn emit_tags(tags: &[u64]) -> Vec<u8> {
-    let mut v = Vec::new();
-    for tag in tags {
-        v.extend(emit_uint_minor(6, *tag))
+pub struct Sequence<'a, const D: usize> {
+    encoder: &'a mut Encoder,
+    count: Option<usize>,
+    idx: usize,
+}
+
+pub type Array<'a> = Sequence<'a, 1>;
+pub type Map<'a> = Sequence<'a, 2>;
+
+impl<'a, const D: usize> Sequence<'a, D> {
+    fn new(encoder: &'a mut Encoder, count: Option<usize>) -> Self {
+        if let Some(count) = count {
+            encoder.emit_uint_minor(if D == 1 { 4 } else { 5 }, count as u64);
+        } else {
+            encoder.data.push((if D == 1 { 4 } else { 5 } << 5) | 31);
+        }
+        Self {
+            encoder,
+            count: count.map(|c| c * D),
+            idx: 0,
+        }
     }
-    v
+
+    fn check_bounds(&mut self) {
+        self.idx += 1;
+        if let Some(count) = self.count {
+            if self.idx >= count {
+                panic!("Too many items added to definite length sequence")
+            }
+        }
+    }
+
+    fn end(self) {
+        match self.count {
+            Some(count) => {
+                if self.idx != count {
+                    panic!(
+                        "Definite length sequence is short of items: {}, expected {}",
+                        self.idx, count
+                    );
+                }
+            }
+            None => self.encoder.data.push(0xFF),
+        }
+    }
+
+    pub fn emit<V>(&mut self, value: V)
+    where
+        Self: Sized,
+        V: ToCbor,
+    {
+        self.check_bounds();
+        self.encoder.emit(value)
+    }
+
+    pub fn emit_tagged<V, I, T>(&mut self, value: V, tags: I)
+    where
+        V: ToCbor,
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        self.check_bounds();
+        self.encoder.emit_tagged(value, tags)
+    }
+
+    pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
+    where
+        F: FnOnce(&mut Array),
+    {
+        self.check_bounds();
+        let mut a = Array::new(self.encoder, count);
+        f(&mut a);
+        a.end()
+    }
+
+    pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    where
+        F: FnOnce(&mut Array),
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        self.check_bounds();
+        self.encoder.emit_tags(tags);
+        let mut a = Array::new(self.encoder, count);
+        f(&mut a);
+        a.end()
+    }
+
+    pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
+    where
+        F: FnOnce(&mut Map),
+    {
+        self.check_bounds();
+        let mut m = Map::new(self.encoder, count);
+        f(&mut m);
+        m.end()
+    }
+
+    pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    where
+        F: FnOnce(&mut Map),
+        I: IntoIterator<Item = T>,
+        T: Into<u64>,
+    {
+        self.check_bounds();
+        self.encoder.emit_tags(tags);
+        let mut m = Map::new(self.encoder, count);
+        f(&mut m);
+        m.end()
+    }
 }
 
 impl ToCbor for u64 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(0, self));
-        v
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit_uint_minor(0, self)
     }
 }
 
 impl ToCbor for usize {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as u64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit(self as u64)
     }
 }
 
 impl ToCbor for u32 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as u64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<u64>(self.into())
     }
 }
 
 impl ToCbor for u16 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as u64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<u64>(self.into())
     }
 }
 
 impl ToCbor for u8 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as u64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<u64>(self.into())
     }
 }
 
 impl ToCbor for i64 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(if self >= 0 {
-            emit_uint_minor(0, self as u64)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        if self >= 0 {
+            encoder.emit_uint_minor(0, self as u64)
         } else {
-            emit_uint_minor(1, i64::abs(self + 1) as u64)
-        });
-        v
+            encoder.emit_uint_minor(1, i64::abs(self) as u64 + 1)
+        }
     }
 }
 
 impl ToCbor for isize {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as i64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit(self as i64)
     }
 }
 
 impl ToCbor for i32 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as i64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<i64>(self.into())
     }
 }
 
 impl ToCbor for i16 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as i64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<i64>(self.into())
     }
 }
 
 impl ToCbor for i8 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as i64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<i64>(self.into())
     }
 }
 
 impl ToCbor for f64 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(
-            if let Some(f) = <half::f16 as num_traits::FromPrimitive>::from_f64(self) {
-                let mut v = vec![(7 << 5) | 25u8];
-                v.extend(f.to_be_bytes());
-                v
-            } else if let Some(f) = f32::from_f64(self) {
-                let mut v = vec![(7 << 5) | 26u8];
-                v.extend(f.to_be_bytes());
-                v
-            } else {
-                let mut v = vec![(7 << 5) | 27u8];
-                v.extend(self.to_be_bytes());
-                v
-            },
-        );
-        v
+    fn to_cbor(self, encoder: &mut Encoder) {
+        if let Some(f) = <half::f16 as num_traits::FromPrimitive>::from_f64(self) {
+            encoder.data.push((7 << 5) | 25);
+            encoder.data.extend(&f.to_be_bytes());
+        } else if let Some(f) = f32::from_f64(self) {
+            encoder.data.push((7 << 5) | 26);
+            encoder.data.extend(&f.to_be_bytes());
+        } else {
+            encoder.data.push((7 << 5) | 27);
+            encoder.data.extend(&self.to_be_bytes());
+        }
     }
 }
 
 impl ToCbor for f32 {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self as f64, tags)
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit::<f64>(self.into())
     }
 }
 
 impl ToCbor for bool {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.push((7 << 5) | if self { 21 } else { 20 });
-        v
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.data.push((7 << 5) | if self { 21 } else { 20 })
     }
 }
 
 impl ToCbor for &str {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(3, self.len() as u64));
-        v.extend(self.as_bytes());
-        v
-    }
-}
-
-impl ToCbor for String {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        emit_with_tags(self.as_str(), tags)
-    }
-}
-
-fn to_cbor_bytes<I>(arr: I, len: u64, tags: &[u64]) -> Vec<u8>
-where
-    I: IntoIterator<Item = u8>,
-{
-    let mut v = emit_tags(tags);
-    v.extend(emit_uint_minor(2, len));
-    v.extend(arr);
-    v
-}
-
-impl ToCbor for Vec<u8> {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let len = self.len() as u64;
-        to_cbor_bytes(self, len, tags)
-    }
-}
-
-impl<const N: usize> ToCbor for [u8; N] {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        to_cbor_bytes(self, N as u64, tags)
-    }
-}
-
-impl<const N: usize> ToCbor for &[u8; N] {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(2, N as u64));
-        v.extend_from_slice(self);
-        v
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit_uint_minor(3, self.len() as u64);
+        encoder.data.extend(self.as_bytes())
     }
 }
 
 impl ToCbor for &[u8] {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
-        v.extend(emit_uint_minor(2, self.len() as u64));
-        v.extend_from_slice(self);
-        v
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit_uint_minor(2, self.len() as u64);
+        encoder.data.extend(self)
     }
 }
 
-fn to_cbor_array<I, J>(arr: I, len: u64, tags: &[u64]) -> Vec<u8>
+impl ToCbor for &Vec<u8> {
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit_uint_minor(2, self.len() as u64);
+        encoder.data.extend(self)
+    }
+}
+
+impl<const N: usize> ToCbor for &[u8; N] {
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit_uint_minor(2, N as u64);
+        encoder.data.extend(self)
+    }
+}
+
+impl<V> ToCbor for Option<V>
 where
-    I: IntoIterator<Item = J>,
-    J: IntoIterator<Item = u8>,
+    V: ToCbor,
 {
-    let mut v = emit_tags(tags);
-    v.extend(emit_uint_minor(4, len));
-    for i in arr {
-        v.extend(i);
-    }
-    v
-}
-
-impl ToCbor for Vec<Vec<u8>> {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let len = self.len() as u64;
-        to_cbor_array(self, len, tags)
-    }
-}
-
-impl<const N: usize> ToCbor for [Vec<u8>; N] {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        to_cbor_array(self, N as u64, tags)
-    }
-}
-
-fn to_cbor_map<I, J, K>(arr: I, len: u64, tags: &[u64]) -> Vec<u8>
-where
-    I: IntoIterator<Item = (J, K)>,
-    J: IntoIterator<Item = u8>,
-    K: IntoIterator<Item = u8>,
-{
-    let mut v = emit_tags(tags);
-    v.extend(emit_uint_minor(5, len));
-    for (i, j) in arr {
-        v.extend(i);
-        v.extend(j);
-    }
-    v
-}
-
-impl ToCbor for Vec<(Vec<u8>, Vec<u8>)> {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let len = self.len() as u64;
-        to_cbor_map(self, len, tags)
-    }
-}
-
-impl<const N: usize> ToCbor for [(Vec<u8>, Vec<u8>); N] {
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        to_cbor_map(self, N as u64, tags)
-    }
-}
-
-impl<T> ToCbor for Option<T>
-where
-    T: ToCbor,
-{
-    fn to_cbor(self, tags: &[u64]) -> Vec<u8> {
-        let mut v = emit_tags(tags);
+    fn to_cbor(self, encoder: &mut Encoder) {
         match self {
-            Some(t) => v.extend(t.to_cbor(&[])),
-            None => v.push((7 << 5) | 23),
+            Some(value) => encoder.emit(value),
+            None => encoder.data.push((7 << 5) | 23),
         }
-        v
     }
+}
+
+pub fn emit<V>(value: V) -> Vec<u8>
+where
+    V: ToCbor,
+{
+    let mut e = Encoder::default();
+    e.emit(value);
+    e.data
+}
+
+pub fn emit_tagged<V, I, T>(value: V, tags: I) -> Vec<u8>
+where
+    V: ToCbor,
+    I: IntoIterator<Item = T>,
+    T: Into<u64>,
+{
+    let mut e = Encoder::default();
+    e.emit_tagged(value, tags);
+    e.data
+}
+
+pub fn emit_array<F>(count: Option<usize>, f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Array),
+{
+    let mut e = Encoder::default();
+    e.emit_array(count, f);
+    e.data
+}
+
+pub fn emit_array_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Array),
+    I: IntoIterator<Item = T>,
+    T: Into<u64>,
+{
+    let mut e = Encoder::default();
+    e.emit_array_tagged(count, tags, f);
+    e.data
+}
+
+pub fn emit_map<F>(count: Option<usize>, f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Map),
+{
+    let mut e = Encoder::default();
+    e.emit_map(count, f);
+    e.data
+}
+
+pub fn emit_map_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Map),
+    I: IntoIterator<Item = T>,
+    T: Into<u64>,
+{
+    let mut e = Encoder::default();
+    e.emit_map_tagged(count, tags, f);
+    e.data
 }

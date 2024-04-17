@@ -181,75 +181,89 @@ fn new_bundle_status_report(
     delivered: Option<time::OffsetDateTime>,
     deleted: Option<time::OffsetDateTime>,
 ) -> Vec<u8> {
-    let mut report = vec![
-        // Statuses
-        cbor::encode::emit([
-            // Report node received bundle
-            if bundle.flags.report_status_time
-                && bundle.flags.receipt_report_requested
-                && metadata.received_at.is_some()
-            {
-                cbor::encode::emit([
-                    cbor::encode::emit(true),
-                    cbor::encode::emit(bundle::dtn_time(&metadata.received_at.unwrap())),
-                ])
-            } else {
-                cbor::encode::emit([cbor::encode::emit(bundle.flags.receipt_report_requested)])
-            },
-            // Report node forwarded the bundle
-            if bundle.flags.report_status_time
-                && bundle.flags.forward_report_requested
-                && forwarded.is_some()
-            {
-                cbor::encode::emit([
-                    cbor::encode::emit(true),
-                    cbor::encode::emit(bundle::dtn_time(&forwarded.unwrap())),
-                ])
-            } else {
-                cbor::encode::emit([cbor::encode::emit(
-                    bundle.flags.forward_report_requested && forwarded.is_some(),
-                )])
-            },
-            // Report node delivered the bundle
-            if bundle.flags.report_status_time
-                && bundle.flags.delivery_report_requested
-                && delivered.is_some()
-            {
-                cbor::encode::emit([
-                    cbor::encode::emit(true),
-                    cbor::encode::emit(bundle::dtn_time(&delivered.unwrap())),
-                ])
-            } else {
-                cbor::encode::emit([cbor::encode::emit(
-                    bundle.flags.delivery_report_requested && delivered.is_some(),
-                )])
-            },
-            // Report node deleted the bundle
-            if bundle.flags.report_status_time
-                && bundle.flags.delete_report_requested
-                && deleted.is_some()
-            {
-                cbor::encode::emit([
-                    cbor::encode::emit(true),
-                    cbor::encode::emit(bundle::dtn_time(&deleted.unwrap())),
-                ])
-            } else {
-                cbor::encode::emit([cbor::encode::emit(
-                    bundle.flags.delete_report_requested && deleted.is_some(),
-                )])
-            },
-        ]),
-        // Reason code
-        cbor::encode::emit(reason as u64),
-        // Source EID
-        cbor::encode::emit(&bundle.id.source),
-        // Creation Timestamp
-        cbor::encode::emit(&bundle.id.timestamp),
-    ];
-    if let Some(fragment_info) = &bundle.id.fragment_info {
-        // Add fragment info
-        report.push(cbor::encode::emit(fragment_info.offset));
-        report.push(cbor::encode::emit(fragment_info.total_len));
-    }
-    cbor::encode::emit([cbor::encode::emit(1u8), cbor::encode::emit(report)])
+    cbor::encode::emit_array(Some(2), |a| {
+        a.emit(1);
+        a.emit_array(Some(bundle.id.fragment_info.map_or(4, |_| 6)), |a| {
+            // Statuses
+            a.emit_array(Some(4), |a| {
+                // Report node received bundle
+                match metadata.received_at {
+                    Some(received_at)
+                        if bundle.flags.report_status_time
+                            && bundle.flags.receipt_report_requested =>
+                    {
+                        a.emit_array(Some(2), |a| {
+                            a.emit(true);
+                            a.emit(bundle::dtn_time(&received_at))
+                        })
+                    }
+                    _ => a.emit_array(Some(1), |a| a.emit(bundle.flags.receipt_report_requested)),
+                }
+
+                // Report node forwarded the bundle
+                match forwarded {
+                    Some(forwarded)
+                        if bundle.flags.report_status_time
+                            && bundle.flags.forward_report_requested =>
+                    {
+                        a.emit_array(Some(2), |a| {
+                            a.emit(true);
+                            a.emit(bundle::dtn_time(&forwarded))
+                        })
+                    }
+                    Some(_) => {
+                        a.emit_array(Some(1), |a| a.emit(bundle.flags.forward_report_requested))
+                    }
+                    _ => a.emit_array(Some(1), |a| a.emit(false)),
+                }
+
+                // Report node delivered the bundle
+                match delivered {
+                    Some(delivered)
+                        if bundle.flags.report_status_time
+                            && bundle.flags.delivery_report_requested =>
+                    {
+                        a.emit_array(Some(2), |a| {
+                            a.emit(true);
+                            a.emit(bundle::dtn_time(&delivered))
+                        })
+                    }
+                    Some(_) => {
+                        a.emit_array(Some(1), |a| a.emit(bundle.flags.delivery_report_requested))
+                    }
+                    _ => a.emit_array(Some(1), |a| a.emit(false)),
+                }
+
+                // Report node deleted the bundle
+                match deleted {
+                    Some(deleted)
+                        if bundle.flags.report_status_time
+                            && bundle.flags.delete_report_requested =>
+                    {
+                        a.emit_array(Some(2), |a| {
+                            a.emit(true);
+                            a.emit(bundle::dtn_time(&deleted))
+                        })
+                    }
+                    Some(_) => {
+                        a.emit_array(Some(1), |a| a.emit(bundle.flags.delete_report_requested))
+                    }
+                    _ => a.emit_array(Some(1), |a| a.emit(false)),
+                }
+            });
+
+            // Reason code
+            a.emit(reason);
+            // Source EID
+            a.emit(&bundle.id.source);
+            // Creation Timestamp
+            a.emit(&bundle.id.timestamp);
+
+            if let Some(fragment_info) = &bundle.id.fragment_info {
+                // Add fragment info
+                a.emit(fragment_info.offset);
+                a.emit(fragment_info.total_len);
+            }
+        })
+    })
 }
