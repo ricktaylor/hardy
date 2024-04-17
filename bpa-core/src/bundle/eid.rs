@@ -55,14 +55,8 @@ impl Eid {
         }
     }
 
-    fn parse_ipn_eid(mut value: cbor::decode::Array) -> Result<Eid, anyhow::Error> {
-        if let Some(count) = value.count() {
-            if !(2..=3).contains(&count) {
-                return Err(anyhow!(
-                    "IPN EIDs must be encoded as 2 or 3 element CBOR arrays"
-                ));
-            }
-        } else {
+    fn parse_ipn_eid(value: &mut cbor::decode::Array) -> Result<Eid, anyhow::Error> {
+        if value.count().is_none() {
             log::info!("Parsing IPN EID as indefinite array");
         }
 
@@ -79,12 +73,7 @@ impl Eid {
                         v3
                     ));
                 }
-
-                // Check indefinite array length
-                if value.count().is_none() {
-                    value.end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
-                }
-
+                value.end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
                 (3, v1 as u32, v2 as u32, v3 as u32)
             } else {
                 if v2 >= 2 ^ 32 {
@@ -180,15 +169,11 @@ impl cbor::encode::ToCbor for &Eid {
 impl cbor::decode::FromCbor for Eid {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
         cbor::decode::parse_array(data, |a, tags| {
-            match a.count() {
-                None => log::info!("Parsing EID array of indefinite length"),
-                Some(count) if count != 2 => {
-                    return Err(anyhow!("EID is not encoded as a 2 element CBOR array"))
-                }
-                _ => {}
+            if a.count().is_none() {
+                log::info!("Parsing EID array of indefinite length")
             }
             let schema = a.parse::<u64>()?;
-            let (eid, _) = a.parse_value(|value: cbor::decode::Value<'_>, _, tags2| {
+            let (eid, _) = a.parse_value(|value, _, tags2| {
                 if !tags2.is_empty() {
                     log::info!("Parsing EID value with tags");
                 }
@@ -200,9 +185,7 @@ impl cbor::decode::FromCbor for Eid {
                 }
             })?;
 
-            if a.count().is_none() {
-                a.end_or_else(|| anyhow!("Additional items found in EID array"))?;
-            }
+            a.end_or_else(|| anyhow!("Additional items found in EID array"))?;
             Ok((eid, tags.to_vec()))
         })
         .map(|((eid, tags), len)| (eid, len, tags))

@@ -33,13 +33,13 @@ pub trait FromCbor: Sized {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error>;
 }
 
-pub enum Value<'a> {
+pub enum Value<'a, 'b: 'a> {
     UnsignedInteger(u64),
     NegativeInteger(u64),
-    Bytes(&'a [u8], bool),
-    Text(&'a str, bool),
-    Array(Array<'a>),
-    Map(Map<'a>),
+    Bytes(&'b [u8], bool),
+    Text(&'b str, bool),
+    Array(&'a mut Array<'b>),
+    Map(&'a mut Map<'b>),
     False,
     True,
     Null,
@@ -109,7 +109,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         }
     }
 
-    fn complete(&mut self) -> Result<(), anyhow::Error> {
+    fn complete(mut self) -> Result<(), anyhow::Error> {
         match self.count {
             Some(count) if self.idx == count + 1 => Ok(()),
             _ => self.end_or_else(|| Error::UnparsedItems.into()).map(|_| ()),
@@ -175,11 +175,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         F: FnOnce(&mut Array, usize, &[u64]) -> Result<T, anyhow::Error>,
     {
         self.try_parse_value(|value, start, tags| match value {
-            Value::Array(mut a) => {
-                let r = f(&mut a, start, tags)?;
-                a.complete()?;
-                Ok(r)
-            }
+            Value::Array(a) => f(a, start, tags),
             _ => Err(Error::IncorrectType.into()),
         })
     }
@@ -196,11 +192,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         F: FnOnce(&mut Map, usize, &[u64]) -> Result<T, anyhow::Error>,
     {
         self.try_parse_value(|value, start, tags| match value {
-            Value::Map(mut m) => {
-                let r = f(&mut m, start, tags)?;
-                m.complete()?;
-                Ok(r)
-            }
+            Value::Map(m) => f(m, start, tags),
             _ => Err(Error::IncorrectType.into()),
         })
     }
@@ -349,30 +341,32 @@ where
         (4, 31) => {
             /* Indefinite length array */
             offset += 1;
-            f(Value::Array(Array::new(data, None, &mut offset)), &tags)
+            let mut a = Array::new(data, None, &mut offset);
+            let r = f(Value::Array(&mut a), &tags)?;
+            a.complete().map(|_| r)
         }
         (4, minor) => {
             /* Known length array */
             let (count, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
-            f(
-                Value::Array(Array::new(data, Some(usize::try_from(count)?), &mut offset)),
-                &tags,
-            )
+            let mut a = Array::new(data, Some(usize::try_from(count)?), &mut offset);
+            let r = f(Value::Array(&mut a), &tags)?;
+            a.complete().map(|_| r)
         }
         (5, 31) => {
             /* Indefinite length map */
             offset += 1;
-            f(Value::Map(Map::new(data, None, &mut offset)), &tags)
+            let mut m = Map::new(data, None, &mut offset);
+            let r = f(Value::Map(&mut m), &tags)?;
+            m.complete().map(|_| r)
         }
         (5, minor) => {
             /* Known length array */
             let (count, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
-            f(
-                Value::Map(Map::new(data, Some(usize::try_from(count)?), &mut offset)),
-                &tags,
-            )
+            let mut m = Map::new(data, Some(usize::try_from(count)?), &mut offset);
+            let r = f(Value::Map(&mut m), &tags)?;
+            m.complete().map(|_| r)
         }
         (6, _) => unreachable!(),
         (7, 20) => {
@@ -462,11 +456,7 @@ where
     F: FnOnce(&mut Array, &[u64]) -> Result<T, anyhow::Error>,
 {
     parse_value(data, |value, tags| match value {
-        Value::Array(mut a) => {
-            let r = f(&mut a, tags)?;
-            a.complete()?;
-            Ok(r)
-        }
+        Value::Array(a) => f(a, tags),
         _ => Err(Error::IncorrectType.into()),
     })
 }
@@ -476,11 +466,7 @@ where
     F: FnOnce(&mut Map, &[u64]) -> Result<T, anyhow::Error>,
 {
     parse_value(data, |value, tags| match value {
-        Value::Map(mut m) => {
-            let r = f(&mut m, tags)?;
-            m.complete()?;
-            Ok(r)
-        }
+        Value::Map(m) => f(m, tags),
         _ => Err(Error::IncorrectType.into()),
     })
 }
