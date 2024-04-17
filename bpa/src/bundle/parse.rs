@@ -23,7 +23,7 @@ pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
 
 fn parse_bundle_blocks(
     data: &[u8],
-    mut blocks: cbor::decode::Array,
+    blocks: &mut cbor::decode::Array,
 ) -> Result<(Bundle, bool), anyhow::Error> {
     // Parse Primary block
     let (mut bundle, valid, block_start, block_len) = blocks
@@ -74,7 +74,7 @@ fn parse_bundle_blocks(
 
 fn parse_primary_block(
     data: &[u8],
-    mut block: cbor::decode::Array,
+    block: &mut cbor::decode::Array,
     block_start: usize,
 ) -> Result<(Bundle, bool), anyhow::Error> {
     // Check number of items in the array
@@ -197,7 +197,7 @@ fn parse_primary_block(
 
 fn parse_extension_blocks(
     data: &[u8],
-    mut blocks: cbor::decode::Array,
+    blocks: &mut cbor::decode::Array,
 ) -> Result<HashMap<u64, Block>, anyhow::Error> {
     // Use an intermediate vector so we can check the payload was the last item
     let mut extension_blocks = Vec::new();
@@ -243,7 +243,7 @@ fn parse_extension_blocks(
 
 fn parse_block(
     data: &[u8],
-    mut block: cbor::decode::Array,
+    block: &mut cbor::decode::Array,
     block_start: usize,
 ) -> Result<(u64, Block), anyhow::Error> {
     // Check number of items in the array
@@ -396,7 +396,7 @@ fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, anyhow::Error> {
 }
 
 fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, anyhow::Error> {
-    cbor::decode::parse_array(data, |mut a, tags| {
+    cbor::decode::parse_array(data, |a, tags| {
         if !tags.is_empty() {
             log::info!("Parsing Hop Count with tags");
         }

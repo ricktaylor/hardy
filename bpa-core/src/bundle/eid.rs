@@ -179,7 +179,7 @@ impl cbor::encode::ToCbor for &Eid {
 
 impl cbor::decode::FromCbor for Eid {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        cbor::decode::parse_array(data, |mut a, tags| {
+        cbor::decode::parse_array(data, |a, tags| {
             match a.count() {
                 None => log::info!("Parsing EID array of indefinite length"),
                 Some(count) if count != 2 => {

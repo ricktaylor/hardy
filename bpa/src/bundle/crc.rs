@@ -6,7 +6,7 @@ const CASTAGNOLI: ::crc::Crc<u32> = ::crc::Crc::<u32>::new(&::crc::CRC_32_ISCSI)
 pub fn parse_crc_value(
     data: &[u8],
     block_start: usize,
-    mut block: cbor::decode::Array,
+    block: &mut cbor::decode::Array,
     crc_type: CrcType,
 ) -> Result<(), anyhow::Error> {
     // Parse CRC

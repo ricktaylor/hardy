@@ -17,7 +17,7 @@ impl cbor::encode::ToCbor for &CreationTimestamp {
 
 impl cbor::decode::FromCbor for CreationTimestamp {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-        cbor::decode::parse_array(data, |mut a, tags| {
+        cbor::decode::parse_array(data, |a, tags| {
             Ok((
                 CreationTimestamp {
                     creation_time: a.parse()?,
