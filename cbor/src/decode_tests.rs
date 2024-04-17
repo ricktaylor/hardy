@@ -224,7 +224,6 @@ fn rfc_tests() {
         (0, 1),
         parse_map(&hex!("a0"), |m, tags| {
             assert!(tags.is_empty());
-
             m.end_or_else(|| Error::UnparsedItems.into())?;
             Ok(m.count().unwrap())
         })
@@ -234,7 +233,6 @@ fn rfc_tests() {
         (vec![1, 2, 3, 4], 5),
         parse_map(&hex!("a201020304"), |m, tags| {
             assert!(tags.is_empty());
-
             let v = vec![m.parse()?, m.parse()?, m.parse()?, m.parse()?];
             m.end_or_else(|| Error::UnparsedItems.into())?;
             Ok(v)

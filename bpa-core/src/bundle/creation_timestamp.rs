@@ -18,13 +18,12 @@ impl cbor::encode::ToCbor for &CreationTimestamp {
 impl cbor::decode::FromCbor for CreationTimestamp {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
         cbor::decode::parse_array(data, |a, tags| {
-            Ok((
-                CreationTimestamp {
-                    creation_time: a.parse()?,
-                    sequence_number: a.parse()?,
-                },
-                tags.to_vec(),
-            ))
+            let ct = CreationTimestamp {
+                creation_time: a.parse()?,
+                sequence_number: a.parse()?,
+            };
+            a.end_or_else(|| anyhow!("Additional items found in Creation timestamp array"))?;
+            Ok((ct, tags.to_vec()))
         })
         .map(|((t, tags), len)| (t, len, tags))
     }

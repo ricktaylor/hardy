@@ -75,7 +75,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     fn check_for_end(&mut self) -> Result<Option<(usize, usize)>, anyhow::Error> {
         if let Some(count) = self.count {
             match self.idx.cmp(&count) {
-                std::cmp::Ordering::Greater => Err(Error::NotEnoughData.into()),
+                std::cmp::Ordering::Greater => Ok(Some((*self.offset, 0))),
                 std::cmp::Ordering::Equal => {
                     self.idx += 1;
                     Ok(Some((*self.offset, 0)))
@@ -110,10 +110,9 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     fn complete(mut self) -> Result<(), anyhow::Error> {
-        match self.count {
-            Some(count) if self.idx == count + 1 => Ok(()),
-            _ => self.end_or_else(|| Error::UnparsedItems.into()).map(|_| ()),
-        }
+        // Parse and discard any remaining items
+        while let Some((_, _)) = self.try_parse_value(|_, _, _| Ok(()))? {}
+        Ok(())
     }
 
     pub fn try_parse_value<T, F>(&mut self, f: F) -> Result<Option<(T, usize)>, anyhow::Error>
