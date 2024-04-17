@@ -231,10 +231,9 @@ fn rfc_tests() {
             |a, tags| {
                 assert!(tags.is_empty());
                 let mut v = Vec::new();
-                for _ in 0..a.count().unwrap() {
-                    v.push(a.parse()?);
+                while let Some(value) = a.try_parse()? {
+                    v.push(value);
                 }
-                a.end_or_else(|| Error::UnparsedItems.into())?;
                 Ok(v)
             }
         )
@@ -260,12 +259,42 @@ fn rfc_tests() {
         })
         .unwrap()
     );
-
-    /*
-    {"a": 1, "b": [2, 3]}	                            0xa26161016162820203
-    ["a", {"b": "c"}]	                                0x826161a161626163
-    */
-
+    assert_eq!(
+        (2, 9),
+        parse_map(&hex!("a26161016162820203"), |m, tags| {
+            assert!(tags.is_empty());
+            assert!(m.count().is_some());
+            assert_eq!("a".to_string(), m.parse::<String>()?);
+            assert_eq!(1, m.parse::<usize>()?);
+            assert_eq!("b".to_string(), m.parse::<String>()?);
+            m.parse_array(|a, _, tags| {
+                assert!(tags.is_empty());
+                assert!(a.count().is_some());
+                assert_eq!(2, a.parse::<usize>()?);
+                assert_eq!(3, a.parse::<usize>()?);
+                a.end_or_else(|| Error::UnparsedItems.into())
+            })?;
+            Ok(m.count().unwrap())
+        })
+        .unwrap()
+    );
+    assert_eq!(
+        (2, 8),
+        parse_array(&hex!("826161a161626163"), |a, tags| {
+            assert!(tags.is_empty());
+            assert!(a.count().is_some());
+            assert_eq!("a".to_string(), a.parse::<String>()?);
+            a.parse_map(|m, _, tags| {
+                assert!(tags.is_empty());
+                assert!(m.count().is_some());
+                assert_eq!("b".to_string(), m.parse::<String>()?);
+                assert_eq!("c".to_string(), m.parse::<String>()?);
+                m.end_or_else(|| Error::UnparsedItems.into())
+            })?;
+            Ok(a.count().unwrap())
+        })
+        .unwrap()
+    );
     assert_eq!(
         (
             vec!["a", "A", "b", "B", "c", "C", "d", "D", "e", "E"]
@@ -279,11 +308,10 @@ fn rfc_tests() {
             |m, tags| {
                 assert!(tags.is_empty());
                 let mut v = Vec::new();
-                for _ in 0..m.count().unwrap() {
-                    v.push(m.parse()?);
+                while let Some(value) = m.try_parse()? {
+                    v.push(value);
                     v.push(m.parse()?);
                 }
-                m.end_or_else(|| Error::UnparsedItems.into())?;
                 Ok(v)
             }
         )
@@ -433,14 +461,9 @@ fn rfc_tests() {
                 assert!(tags.is_empty());
                 assert!(a.count().is_none());
                 let mut v = Vec::new();
-                loop {
-                    if let Some(value) = a.try_parse()? {
-                        v.push(value);
-                    } else {
-                        break;
-                    }
+                while let Some(value) = a.try_parse()? {
+                    v.push(value);
                 }
-                a.end_or_else(|| Error::UnparsedItems.into())?;
                 Ok(v)
             }
         )
