@@ -188,16 +188,36 @@ fn rfc_tests() {
         parse_array(&hex!("83010203"), |a, tags| {
             assert!(tags.is_empty());
             assert!(a.count().is_some());
-            Ok(vec![a.parse()?, a.parse()?, a.parse()?])
+            let v = vec![a.parse()?, a.parse()?, a.parse()?];
+            a.end_or_else(|| Error::UnparsedItems.into())?;
+            Ok(v)
         })
         .unwrap()
     );
-
-    /*
-    [1, 2, 3]	0x83010203
-    [1, [2, 3], [4, 5]]	0x8301820203820405
-        */
-
+    assert_eq!(
+        (3, 8),
+        parse_array(&hex!("8301820203820405"), |a, tags| {
+            assert!(tags.is_empty());
+            assert!(a.count().is_some());
+            assert_eq!(1, a.parse::<usize>()?);
+            a.parse_array(|a, _, tags| {
+                assert!(tags.is_empty());
+                assert!(a.count().is_some());
+                assert_eq!(2, a.parse::<usize>()?);
+                assert_eq!(3, a.parse::<usize>()?);
+                a.end_or_else(|| Error::UnparsedItems.into())
+            })?;
+            a.parse_array(|a, _, tags| {
+                assert!(tags.is_empty());
+                assert!(a.count().is_some());
+                assert_eq!(4, a.parse::<usize>()?);
+                assert_eq!(5, a.parse::<usize>()?);
+                a.end_or_else(|| Error::UnparsedItems.into())
+            })?;
+            Ok(a.count().unwrap())
+        })
+        .unwrap()
+    );
     assert_eq!(
         (
             vec![
@@ -319,7 +339,7 @@ fn rfc_tests() {
                 assert!(a.count().is_some());
                 assert_eq!(2, a.parse::<usize>()?);
                 assert_eq!(3, a.parse::<usize>()?);
-                Ok(())
+                a.end_or_else(|| Error::UnparsedItems.into())
             })?;
             a.parse_array(|a, _, tags| {
                 assert!(tags.is_empty());
@@ -344,14 +364,14 @@ fn rfc_tests() {
                 assert!(a.count().is_some());
                 assert_eq!(2, a.parse::<usize>()?);
                 assert_eq!(3, a.parse::<usize>()?);
-                Ok(())
+                a.end_or_else(|| Error::UnparsedItems.into())
             })?;
             a.parse_array(|a, _, tags| {
                 assert!(tags.is_empty());
                 assert!(a.count().is_some());
                 assert_eq!(4, a.parse::<usize>()?);
                 assert_eq!(5, a.parse::<usize>()?);
-                Ok(())
+                a.end_or_else(|| Error::UnparsedItems.into())
             })?;
             a.end_or_else(|| Error::UnparsedItems.into())?;
             Ok(a.count().unwrap())
@@ -369,7 +389,7 @@ fn rfc_tests() {
                 assert!(a.count().is_some());
                 assert_eq!(2, a.parse::<usize>()?);
                 assert_eq!(3, a.parse::<usize>()?);
-                Ok(())
+                a.end_or_else(|| Error::UnparsedItems.into())
             })?;
             a.parse_array(|a, _, tags| {
                 assert!(tags.is_empty());
@@ -400,7 +420,7 @@ fn rfc_tests() {
                 assert!(a.count().is_some());
                 assert_eq!(4, a.parse::<usize>()?);
                 assert_eq!(5, a.parse::<usize>()?);
-                Ok(())
+                a.end_or_else(|| Error::UnparsedItems.into())
             })?;
             Ok(a.count().unwrap())
         })
