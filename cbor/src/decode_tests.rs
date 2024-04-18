@@ -23,6 +23,7 @@ fn rfc_tests() {
         18446744073709551615u64,
         parse(&hex!("1bffffffffffffffff")).unwrap()
     );
+    /* We do not support BIGNUMs */
     assert!(parse::<u64>(&hex!("c249010000000000000000")).is_err());
     /*assert_eq!(
         18446744073709551616,

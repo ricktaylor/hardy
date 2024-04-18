@@ -1,5 +1,3 @@
-use num_traits::FromPrimitive;
-
 pub trait ToCbor {
     fn to_cbor(self, encoder: &mut Encoder);
 }
@@ -34,10 +32,10 @@ impl Encoder {
     fn emit_tags<I, T>(&mut self, tags: I)
     where
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         for tag in tags {
-            self.emit_uint_minor(6, tag.into())
+            self.emit_uint_minor(6, tag.to_u64().expect("Tags must be unsigned integers"))
         }
     }
 
@@ -52,10 +50,48 @@ impl Encoder {
     where
         V: ToCbor,
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         self.emit_tags(tags);
         self.emit(value)
+    }
+
+    pub fn emit_byte_stream<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Stream<&[u8]>),
+    {
+        let mut s = Stream::new(self, 2);
+        f(&mut s);
+        s.end()
+    }
+
+    pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    where
+        F: FnOnce(&mut Stream<&[u8]>),
+        I: IntoIterator<Item = T>,
+        T: num_traits::ToPrimitive,
+    {
+        self.emit_tags(tags);
+        self.emit_byte_stream(f)
+    }
+
+    pub fn emit_text_stream<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Stream<&str>),
+    {
+        let mut s = Stream::new(self, 3);
+        f(&mut s);
+        s.end()
+    }
+
+    pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    where
+        F: FnOnce(&mut Stream<&str>),
+        I: IntoIterator<Item = T>,
+        T: num_traits::ToPrimitive,
+    {
+        self.emit_tags(tags);
+        self.emit_text_stream(f)
     }
 
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
@@ -71,7 +107,7 @@ impl Encoder {
     where
         F: FnOnce(&mut Array),
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         self.emit_tags(tags);
         self.emit_array(count, f)
@@ -90,7 +126,7 @@ impl Encoder {
     where
         F: FnOnce(&mut Map),
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         self.emit_tags(tags);
         self.emit_map(count, f)
@@ -100,6 +136,35 @@ impl Encoder {
 impl Default for Encoder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct Stream<'a, T>
+where
+    T: ToCbor,
+{
+    encoder: &'a mut Encoder,
+    phantom: std::marker::PhantomData<T>,
+}
+
+impl<'a, T> Stream<'a, T>
+where
+    T: ToCbor,
+{
+    fn new(encoder: &'a mut Encoder, major: u8) -> Self {
+        encoder.data.push((major << 5) | 31);
+        Self {
+            encoder,
+            phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub fn emit(&mut self, value: T) {
+        self.encoder.emit(value)
+    }
+
+    fn end(self) {
+        self.encoder.data.push(0xFF)
     }
 }
 
@@ -128,10 +193,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     fn check_bounds(&mut self) {
         self.idx += 1;
-        if let Some(count) = self.count {
-            if self.idx >= count {
+        match self.count {
+            Some(count) if self.idx > count => {
                 panic!("Too many items added to definite length sequence")
             }
+            _ => (),
         }
     }
 
@@ -162,10 +228,46 @@ impl<'a, const D: usize> Sequence<'a, D> {
     where
         V: ToCbor,
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         self.check_bounds();
         self.encoder.emit_tagged(value, tags)
+    }
+
+    pub fn emit_byte_stream<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Stream<&[u8]>),
+    {
+        self.check_bounds();
+        self.encoder.emit_byte_stream(f)
+    }
+
+    pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    where
+        F: FnOnce(&mut Stream<&[u8]>),
+        I: IntoIterator<Item = T>,
+        T: num_traits::ToPrimitive,
+    {
+        self.check_bounds();
+        self.encoder.emit_byte_stream_tagged(tags, f)
+    }
+
+    pub fn emit_text_stream<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut Stream<&str>),
+    {
+        self.check_bounds();
+        self.encoder.emit_text_stream(f)
+    }
+
+    pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    where
+        F: FnOnce(&mut Stream<&str>),
+        I: IntoIterator<Item = T>,
+        T: num_traits::ToPrimitive,
+    {
+        self.check_bounds();
+        self.encoder.emit_text_stream_tagged(tags, f)
     }
 
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
@@ -173,22 +275,17 @@ impl<'a, const D: usize> Sequence<'a, D> {
         F: FnOnce(&mut Array),
     {
         self.check_bounds();
-        let mut a = Array::new(self.encoder, count);
-        f(&mut a);
-        a.end()
+        self.encoder.emit_array(count, f)
     }
 
     pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Array),
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         self.check_bounds();
-        self.encoder.emit_tags(tags);
-        let mut a = Array::new(self.encoder, count);
-        f(&mut a);
-        a.end()
+        self.encoder.emit_array_tagged(count, tags, f)
     }
 
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
@@ -196,22 +293,17 @@ impl<'a, const D: usize> Sequence<'a, D> {
         F: FnOnce(&mut Map),
     {
         self.check_bounds();
-        let mut m = Map::new(self.encoder, count);
-        f(&mut m);
-        m.end()
+        self.encoder.emit_map(count, f)
     }
 
     pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Map),
         I: IntoIterator<Item = T>,
-        T: Into<u64>,
+        T: num_traits::ToPrimitive,
     {
         self.check_bounds();
-        self.encoder.emit_tags(tags);
-        let mut m = Map::new(self.encoder, count);
-        f(&mut m);
-        m.end()
+        self.encoder.emit_map_tagged(count, tags, f)
     }
 }
 
@@ -250,7 +342,7 @@ impl ToCbor for i64 {
         if self >= 0 {
             encoder.emit_uint_minor(0, self as u64)
         } else {
-            encoder.emit_uint_minor(1, i64::abs(self) as u64 + 1)
+            encoder.emit_uint_minor(1, i64::abs(self) as u64 - 1)
         }
     }
 }
@@ -279,12 +371,22 @@ impl ToCbor for i8 {
     }
 }
 
+fn lossless_float_coerce<T>(value: f64) -> Option<T>
+where
+    T: num_traits::FromPrimitive + Into<f64> + Copy,
+{
+    match <T as num_traits::FromPrimitive>::from_f64(value) {
+        Some(f) if <T as Into<f64>>::into(f) == value => Some(f),
+        _ => None,
+    }
+}
+
 impl ToCbor for f64 {
     fn to_cbor(self, encoder: &mut Encoder) {
-        if let Some(f) = <half::f16 as num_traits::FromPrimitive>::from_f64(self) {
+        if let Some(f) = lossless_float_coerce::<half::f16>(self) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(&f.to_be_bytes());
-        } else if let Some(f) = f32::from_f64(self) {
+        } else if let Some(f) = lossless_float_coerce::<f32>(self) {
             encoder.data.push((7 << 5) | 26);
             encoder.data.extend(&f.to_be_bytes());
         } else {
@@ -296,7 +398,20 @@ impl ToCbor for f64 {
 
 impl ToCbor for f32 {
     fn to_cbor(self, encoder: &mut Encoder) {
-        encoder.emit::<f64>(self.into())
+        if let Some(f) = lossless_float_coerce::<half::f16>(self as f64) {
+            encoder.data.push((7 << 5) | 25);
+            encoder.data.extend(&f.to_be_bytes());
+        } else {
+            encoder.data.push((7 << 5) | 26);
+            encoder.data.extend(&self.to_be_bytes());
+        }
+    }
+}
+
+impl ToCbor for half::f16 {
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.data.push((7 << 5) | 25);
+        encoder.data.extend(&self.to_be_bytes());
     }
 }
 
@@ -355,14 +470,65 @@ where
     e.data
 }
 
+pub fn emit_simple_value(value: u8) -> Vec<u8> {
+    match value {
+        20 | 21 | 23 | 24..=31 => panic!("Invalid simple value, use bool or Option<T>"),
+        _ => {
+            let mut e = Encoder::default();
+            e.emit_uint_minor(7, value as u64);
+            e.data
+        }
+    }
+}
+
 pub fn emit_tagged<V, I, T>(value: V, tags: I) -> Vec<u8>
 where
     V: ToCbor,
     I: IntoIterator<Item = T>,
-    T: Into<u64>,
+    T: num_traits::ToPrimitive,
 {
     let mut e = Encoder::default();
     e.emit_tagged(value, tags);
+    e.data
+}
+
+pub fn emit_byte_stream<F>(f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Stream<&[u8]>),
+{
+    let mut e = Encoder::default();
+    e.emit_byte_stream(f);
+    e.data
+}
+
+pub fn emit_byte_stream_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Stream<&[u8]>),
+    I: IntoIterator<Item = T>,
+    T: num_traits::ToPrimitive,
+{
+    let mut e = Encoder::default();
+    e.emit_byte_stream_tagged(tags, f);
+    e.data
+}
+
+pub fn emit_text_stream<F>(f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Stream<&str>),
+{
+    let mut e = Encoder::default();
+    e.emit_text_stream(f);
+    e.data
+}
+
+pub fn emit_text_stream_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Stream<&str>),
+    I: IntoIterator<Item = T>,
+    T: num_traits::ToPrimitive,
+{
+    let mut e = Encoder::default();
+    e.emit_text_stream_tagged(tags, f);
     e.data
 }
 
@@ -379,7 +545,7 @@ pub fn emit_array_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8
 where
     F: FnOnce(&mut Array),
     I: IntoIterator<Item = T>,
-    T: Into<u64>,
+    T: num_traits::ToPrimitive,
 {
     let mut e = Encoder::default();
     e.emit_array_tagged(count, tags, f);
@@ -399,7 +565,7 @@ pub fn emit_map_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
 where
     F: FnOnce(&mut Map),
     I: IntoIterator<Item = T>,
-    T: Into<u64>,
+    T: num_traits::ToPrimitive,
 {
     let mut e = Encoder::default();
     e.emit_map_tagged(count, tags, f);
