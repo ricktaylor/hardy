@@ -201,15 +201,15 @@ fn rfc_tests() {
         parse_array(&hex!("8301820203820405"), |a, tags| {
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap_or(0));
-            assert_eq!(1, a.parse::<usize>().unwrap());
+            assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (3, 3),
                 a.parse_array(|a, s, tags| {
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(2, a.parse::<usize>().unwrap());
-                    assert_eq!(3, a.parse::<usize>().unwrap());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -220,8 +220,8 @@ fn rfc_tests() {
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(4, a.parse::<usize>().unwrap());
-                    assert_eq!(5, a.parse::<usize>().unwrap());
+                    assert_eq!(4, a.parse().unwrap());
+                    assert_eq!(5, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -284,7 +284,7 @@ fn rfc_tests() {
             assert!(tags.is_empty());
             assert_eq!(2, m.count().unwrap_or(0));
             assert_eq!("a".to_string(), m.parse::<String>().unwrap());
-            assert_eq!(1, m.parse::<usize>().unwrap());
+            assert_eq!(1, m.parse().unwrap());
             assert_eq!("b".to_string(), m.parse::<String>().unwrap());
             assert_eq!(
                 (3, 3),
@@ -292,8 +292,8 @@ fn rfc_tests() {
                     assert!(tags.is_empty());
                     assert_eq!(6, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(2, a.parse::<usize>().unwrap());
-                    assert_eq!(3, a.parse::<usize>().unwrap());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -386,15 +386,15 @@ fn rfc_tests() {
         parse_array(&hex!("9f018202039f0405ffff"), |a, tags| {
             assert!(tags.is_empty());
             assert!(a.count().is_none());
-            assert_eq!(1, a.parse::<usize>().unwrap());
+            assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (3, 3),
                 a.parse_array(|a, s, tags| {
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(2, a.parse::<usize>().unwrap());
-                    assert_eq!(3, a.parse::<usize>().unwrap());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -405,8 +405,8 @@ fn rfc_tests() {
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert!(a.count().is_none());
-                    assert_eq!(4, a.parse::<usize>().unwrap());
-                    assert_eq!(5, a.parse::<usize>().unwrap());
+                    assert_eq!(4, a.parse().unwrap());
+                    assert_eq!(5, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -421,15 +421,15 @@ fn rfc_tests() {
         parse_array(&hex!("9f01820203820405ff"), |a, tags| {
             assert!(tags.is_empty());
             assert!(a.count().is_none());
-            assert_eq!(1, a.parse::<usize>().unwrap());
+            assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (3, 3),
                 a.parse_array(|a, s, tags| {
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(2, a.parse::<usize>().unwrap());
-                    assert_eq!(3, a.parse::<usize>().unwrap());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -440,8 +440,8 @@ fn rfc_tests() {
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(4, a.parse::<usize>().unwrap());
-                    assert_eq!(5, a.parse::<usize>().unwrap());
+                    assert_eq!(4, a.parse().unwrap());
+                    assert_eq!(5, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -456,15 +456,15 @@ fn rfc_tests() {
         parse_array(&hex!("83018202039f0405ff"), |a, tags| {
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap_or(0));
-            assert_eq!(1, a.parse::<usize>().unwrap());
+            assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (3, 3),
                 a.parse_array(|a, s, tags| {
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(2, a.parse::<usize>().unwrap());
-                    assert_eq!(3, a.parse::<usize>().unwrap());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -475,8 +475,8 @@ fn rfc_tests() {
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert!(a.count().is_none());
-                    assert_eq!(4, a.parse::<usize>().unwrap());
-                    assert_eq!(5, a.parse::<usize>().unwrap());
+                    assert_eq!(4, a.parse().unwrap());
+                    assert_eq!(5, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -491,15 +491,15 @@ fn rfc_tests() {
         parse_array(&hex!("83019f0203ff820405"), |a, tags| {
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap_or(0));
-            assert_eq!(1, a.parse::<usize>().unwrap());
+            assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (4, 4),
                 a.parse_array(|a, s, tags| {
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert!(a.count().is_none());
-                    assert_eq!(2, a.parse::<usize>().unwrap());
-                    assert_eq!(3, a.parse::<usize>().unwrap());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -510,8 +510,8 @@ fn rfc_tests() {
                     assert!(tags.is_empty());
                     assert_eq!(6, s);
                     assert_eq!(2, a.count().unwrap_or(0));
-                    assert_eq!(4, a.parse::<usize>().unwrap());
-                    assert_eq!(5, a.parse::<usize>().unwrap());
+                    assert_eq!(4, a.parse().unwrap());
+                    assert_eq!(5, a.parse().unwrap());
                     a.end_or_else(|| Error::UnparsedItems.into())
                 })
                 .unwrap()
@@ -544,8 +544,66 @@ fn rfc_tests() {
         )
         .unwrap()
     );
-    /* {_ "a": 1, "b": [_ 2, 3]}	0xbf61610161629f0203ffff
-    ["a", {_ "b": "c"}]	0x826161bf61626163ff
-    {_ "Fun": true, "Amt": -2}	0xbf6346756ef563416d7421ff
-        */
+    assert_eq!(
+        (2, 11),
+        parse_map(&hex!("bf61610161629f0203ffff"), |m, tags| {
+            assert!(tags.is_empty());
+            assert!(m.count().is_none());
+            assert_eq!("a".to_string(), m.parse::<String>().unwrap());
+            assert_eq!(1, m.parse().unwrap());
+            assert_eq!("b".to_string(), m.parse::<String>().unwrap());
+            assert_eq!(
+                (4, 4),
+                m.parse_array(|a, s, tags| {
+                    assert!(tags.is_empty());
+                    assert_eq!(6, s);
+                    assert!(a.count().is_none());
+                    assert_eq!(2, a.parse().unwrap());
+                    assert_eq!(3, a.parse().unwrap());
+                    a.end_or_else(|| Error::UnparsedItems.into())
+                })
+                .unwrap()
+            );
+            m.end_or_else(|| Error::UnparsedItems.into()).unwrap();
+            Ok(m.count().unwrap())
+        })
+        .unwrap()
+    );
+    assert_eq!(
+        (2, 9),
+        parse_array(&hex!("826161bf61626163ff"), |a, tags| {
+            assert!(tags.is_empty());
+            assert_eq!(2, a.count().unwrap_or(0));
+            assert_eq!("a".to_string(), a.parse::<String>().unwrap());
+            assert_eq!(
+                (6, 6),
+                a.parse_map(|m, s, tags| {
+                    assert!(tags.is_empty());
+                    assert_eq!(3, s);
+                    assert!(m.count().is_none());
+                    assert_eq!("b".to_string(), m.parse::<String>().unwrap());
+                    assert_eq!("c".to_string(), m.parse::<String>().unwrap());
+                    m.end_or_else(|| Error::UnparsedItems.into())
+                })
+                .unwrap()
+            );
+            a.end_or_else(|| Error::UnparsedItems.into()).unwrap();
+            Ok(a.count().unwrap())
+        })
+        .unwrap()
+    );
+    assert_eq!(
+        (2, 12),
+        parse_map(&hex!("bf6346756ef563416d7421ff"), |m, tags| {
+            assert!(tags.is_empty());
+            assert!(m.count().is_none());
+            assert_eq!("Fun".to_string(), m.parse::<String>().unwrap());
+            assert_eq!(true, m.parse().unwrap());
+            assert_eq!("Amt".to_string(), m.parse::<String>().unwrap());
+            assert_eq!(-2, m.parse().unwrap());
+            m.end_or_else(|| Error::UnparsedItems.into()).unwrap();
+            Ok(m.count().unwrap())
+        })
+        .unwrap()
+    );
 }
