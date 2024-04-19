@@ -370,10 +370,10 @@ where
             /* Known length array */
             let (count, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
-            if count > (usize::MAX as u64)/2 {
+            if count > (usize::MAX as u64) / 2 {
                 return Err(Error::NotEnoughData.into());
             }
-            let mut m = Map::new(data, Some((count*2) as usize), &mut offset);
+            let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
             let r = f(Value::Map(&mut m), &tags)?;
             m.complete().map(|_| r)
         }
