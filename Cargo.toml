@@ -4,6 +4,7 @@ members = [
     "bpa", 
     "bpa-core",
     "cbor", 
+    "cbor/fuzz",
     "localdisk-storage",
     "proto", 
     "sqlite-storage"
