@@ -62,7 +62,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     fn new(data: &'a [u8], count: Option<usize>, offset: &'a mut usize) -> Self {
         Self {
             data,
-            count: count.map(|c| c * D),
+            count,
             offset,
             idx: 0,
         }
@@ -248,11 +248,15 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, usize), Error> {
 
 fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(&[u8], usize), Error> {
     let (data_len, len) = parse_uint_minor(minor, data)?;
-    if (len as u64) + data_len > data.len() as u64 {
-        Err(Error::NotEnoughData)
+    if let Some(sum) = (len as u64).checked_add(data_len) {
+        if sum > data.len() as u64 {
+            Err(Error::NotEnoughData)
+        } else {
+            let end = ((len as u64) + data_len) as usize;
+            Ok((&data[len..end], end))
+        }
     } else {
-        let end = ((len as u64) + data_len) as usize;
-        Ok((&data[len..end], end))
+        Err(Error::NotEnoughData)
     }
 }
 
@@ -260,7 +264,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, usize), Err
     let mut chunks = Vec::new();
     let mut offset = 0;
     loop {
-        if data.is_empty() {
+        if offset >= data.len() {
             break Err(Error::NotEnoughData);
         }
 
@@ -348,7 +352,10 @@ where
             /* Known length array */
             let (count, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
-            let mut a = Array::new(data, Some(usize::try_from(count)?), &mut offset);
+            if count > usize::MAX as u64 {
+                return Err(Error::NotEnoughData.into());
+            }
+            let mut a = Array::new(data, Some(count as usize), &mut offset);
             let r = f(Value::Array(&mut a), &tags)?;
             a.complete().map(|_| r)
         }
@@ -363,7 +370,10 @@ where
             /* Known length array */
             let (count, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
-            let mut m = Map::new(data, Some(usize::try_from(count)?), &mut offset);
+            if count > (usize::MAX as u64)/2 {
+                return Err(Error::NotEnoughData.into());
+            }
+            let mut m = Map::new(data, Some((count*2) as usize), &mut offset);
             let r = f(Value::Map(&mut m), &tags)?;
             m.complete().map(|_| r)
         }
