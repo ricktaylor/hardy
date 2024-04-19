@@ -1,11 +1,11 @@
 use super::*;
 
-pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
+pub fn parse(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
     let ((mut bundle, mut valid), len) = cbor::decode::parse_array(data, |blocks, tags| {
         if !tags.is_empty() {
             log::info!("Parsing bundle with tags");
         }
-        parse_bundle_blocks(data, blocks)
+        parse_blocks(data, blocks)
     })?;
     if valid {
         if len < data.len() {
@@ -14,14 +14,14 @@ pub fn parse_bundle(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
             ));
         }
 
-        valid = check_bundle_blocks(&mut bundle, data)
+        valid = check_blocks(&mut bundle, data)
             .inspect_err(|e| log::info!("{}", e))
             .is_ok();
     }
     Ok((bundle, valid))
 }
 
-fn parse_bundle_blocks(
+fn parse_blocks(
     data: &[u8],
     blocks: &mut cbor::decode::Array,
 ) -> Result<(Bundle, bool), anyhow::Error> {
@@ -298,7 +298,7 @@ fn parse_block(
     ))
 }
 
-pub fn check_bundle_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Error> {
+pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Error> {
     // Check for RFC9171-specified extension blocks
     let mut seen_payload = false;
     let mut seen_previous_node = false;

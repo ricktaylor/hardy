@@ -151,7 +151,7 @@ impl Ingress {
         // Parse the bundle
         let (metadata, bundle, valid) = {
             let data = self.store.load_data(&storage_name).await?;
-            match bundle::parse_bundle((*data).as_ref()) {
+            match bundle::parse((*data).as_ref()) {
                 Ok((bundle, valid)) => (
                     bundle::Metadata {
                         status: bundle::BundleStatus::IngressPending,
@@ -308,7 +308,7 @@ impl Ingress {
 
         // Rewrite bundle if needed
         if !blocks_to_remove.is_empty() {
-            let mut r = bundle::BundleEditor::new(metadata, bundle);
+            let mut r = bundle::Editor::new(metadata, bundle);
             for block_number in blocks_to_remove {
                 r = r.remove_extension_block(block_number);
             }

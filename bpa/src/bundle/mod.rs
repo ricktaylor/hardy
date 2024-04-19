@@ -4,14 +4,14 @@ use std::collections::HashMap;
 
 mod crc;
 
-pub mod bundle_builder;
-pub mod bundle_editor;
+pub mod builder;
+pub mod editor;
 pub mod parse;
 
-pub use bundle_builder::*;
-pub use bundle_editor::*;
+pub use builder::*;
+pub use editor::*;
 pub use hardy_bpa_core::bundle::*;
-pub use parse::parse_bundle;
+pub use parse::parse;
 
 pub fn dtn_time(instant: &time::OffsetDateTime) -> u64 {
     (*instant - time::macros::datetime!(2000-01-01 00:00:00 UTC)).whole_milliseconds() as u64

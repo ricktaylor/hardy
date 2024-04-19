@@ -127,7 +127,7 @@ impl Dispatcher {
         }
 
         // Create a bundle report
-        let (metadata, bundle) = bundle::BundleBuilder::new(bundle::BundleStatus::DispatchPending)
+        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
             .source(self.source_eid.clone())
             .destination(bundle.report_to.clone())
@@ -153,7 +153,7 @@ impl Dispatcher {
         }
 
         // Create a bundle report
-        let (metadata, bundle) = bundle::BundleBuilder::new(bundle::BundleStatus::DispatchPending)
+        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
             .source(self.source_eid.clone())
             .destination(bundle.report_to.clone())

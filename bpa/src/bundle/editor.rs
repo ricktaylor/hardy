@@ -1,7 +1,7 @@
 use super::*;
 use crate::store;
 
-pub struct BundleEditor {
+pub struct Editor {
     source_bundle: Bundle,
     source_metadata: Metadata,
     blocks: HashMap<u64, BlockTemplate>,
@@ -9,16 +9,16 @@ pub struct BundleEditor {
 
 enum BlockTemplate {
     Keep(BlockType),
-    Add(bundle_builder::BlockTemplate),
+    Add(builder::BlockTemplate),
 }
 
 pub struct BlockBuilder {
-    editor: BundleEditor,
+    editor: Editor,
     block_number: u64,
-    template: bundle_builder::BlockTemplate,
+    template: builder::BlockTemplate,
 }
 
-impl BundleEditor {
+impl Editor {
     pub fn new(metadata: Metadata, bundle: Bundle) -> Self {
         Self {
             source_metadata: metadata,
@@ -117,7 +117,7 @@ impl BundleEditor {
         };
 
         // Update values from supported extension blocks
-        parse::check_bundle_blocks(&mut bundle, &data)?;
+        parse::check_blocks(&mut bundle, &data)?;
 
         // Replace current bundle in store
         let metadata = store.replace_data(self.source_metadata, data).await?;
@@ -154,9 +154,9 @@ impl BundleEditor {
 }
 
 impl BlockBuilder {
-    fn new(editor: BundleEditor, block_number: u64, block_type: BlockType) -> Self {
+    fn new(editor: Editor, block_number: u64, block_type: BlockType) -> Self {
         Self {
-            template: bundle_builder::BlockTemplate::new(block_type, editor.source_bundle.crc_type),
+            template: builder::BlockTemplate::new(block_type, editor.source_bundle.crc_type),
             block_number,
             editor,
         }
@@ -187,7 +187,7 @@ impl BlockBuilder {
         self
     }
 
-    pub fn build(mut self, data: Vec<u8>) -> BundleEditor {
+    pub fn build(mut self, data: Vec<u8>) -> Editor {
         // Just copy the data for now
         self.template.data = data;
         self.editor

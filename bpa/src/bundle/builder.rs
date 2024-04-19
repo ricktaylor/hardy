@@ -5,7 +5,7 @@ use crate::store;
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
 const DEFAULT_LIFETIME: time::Duration = time::Duration::new(24 * 60 * 60, 0);
 
-pub struct BundleBuilder {
+pub struct Builder {
     status: BundleStatus,
     bundle_flags: BundleFlags,
     crc_type: CrcType,
@@ -25,11 +25,11 @@ pub struct BlockTemplate {
 }
 
 pub struct BlockBuilder {
-    builder: BundleBuilder,
+    builder: Builder,
     template: BlockTemplate,
 }
 
-impl BundleBuilder {
+impl Builder {
     pub fn new(status: BundleStatus) -> Self {
         Self {
             status,
@@ -142,7 +142,7 @@ impl BundleBuilder {
         data.push(0xFF);
 
         // Update values from supported extension blocks
-        parse::check_bundle_blocks(&mut bundle, &data)?;
+        parse::check_blocks(&mut bundle, &data)?;
 
         // Store to store
         let metadata = store.store(&bundle, data, self.status, None).await?;
@@ -218,7 +218,7 @@ impl BundleBuilder {
 }
 
 impl BlockBuilder {
-    fn new(builder: BundleBuilder, block_type: BlockType) -> Self {
+    fn new(builder: Builder, block_type: BlockType) -> Self {
         Self {
             template: BlockTemplate::new(block_type, builder.crc_type),
             builder,
@@ -250,7 +250,7 @@ impl BlockBuilder {
         self
     }
 
-    pub fn build(mut self, data: Vec<u8>) -> BundleBuilder {
+    pub fn build(mut self, data: Vec<u8>) -> Builder {
         // Just copy the data for now
         self.template.data = data;
 
