@@ -194,7 +194,7 @@ fn new_bundle_status_report(
                     {
                         a.emit_array(Some(2), |a| {
                             a.emit(true);
-                            a.emit(bundle::dtn_time(&received_at))
+                            a.emit(bundle::as_dtn_time(&received_at))
                         })
                     }
                     _ => a.emit_array(Some(1), |a| a.emit(bundle.flags.receipt_report_requested)),
@@ -208,7 +208,7 @@ fn new_bundle_status_report(
                     {
                         a.emit_array(Some(2), |a| {
                             a.emit(true);
-                            a.emit(bundle::dtn_time(&forwarded))
+                            a.emit(bundle::as_dtn_time(&forwarded))
                         })
                     }
                     Some(_) => {
@@ -225,7 +225,7 @@ fn new_bundle_status_report(
                     {
                         a.emit_array(Some(2), |a| {
                             a.emit(true);
-                            a.emit(bundle::dtn_time(&delivered))
+                            a.emit(bundle::as_dtn_time(&delivered))
                         })
                     }
                     Some(_) => {
@@ -242,7 +242,7 @@ fn new_bundle_status_report(
                     {
                         a.emit_array(Some(2), |a| {
                             a.emit(true);
-                            a.emit(bundle::dtn_time(&deleted))
+                            a.emit(bundle::as_dtn_time(&deleted))
                         })
                     }
                     Some(_) => {

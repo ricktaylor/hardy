@@ -153,7 +153,7 @@ impl Builder {
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
         let timestamp = time::OffsetDateTime::now_utc();
         let timestamp = CreationTimestamp {
-            creation_time: dtn_time(&timestamp),
+            creation_time: as_dtn_time(&timestamp),
             sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
         };
 

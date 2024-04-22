@@ -35,7 +35,7 @@ impl Editor {
         // Find the lowest unused block_number
         let mut block_number = 2u64;
         loop {
-            if self.blocks.get(&block_number).is_none() {
+            if !self.blocks.contains_key(&block_number) {
                 return BlockBuilder::new(self, block_number, block_type);
             }
             block_number += 1;

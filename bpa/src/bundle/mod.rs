@@ -5,17 +5,15 @@ use std::collections::HashMap;
 mod crc;
 
 pub mod builder;
+pub mod dtn_time;
 pub mod editor;
 pub mod parse;
 
 pub use builder::*;
+pub use dtn_time::{as_dtn_time, has_bundle_expired};
 pub use editor::*;
 pub use hardy_bpa_core::bundle::*;
 pub use parse::parse;
-
-pub fn dtn_time(instant: &time::OffsetDateTime) -> u64 {
-    (*instant - time::macros::datetime!(2000-01-01 00:00:00 UTC)).whole_milliseconds() as u64
-}
 
 pub enum StatusReportReasonCode {
     NoAdditionalInformation = 0,

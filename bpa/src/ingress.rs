@@ -203,7 +203,9 @@ impl Ingress {
         }
 
         if let Some(_from) = from {
-            // TODO: Try to learn a route from `from`
+            if let Some(_previous_node) = &bundle.previous_node {
+                // TODO: Record a route to 'previous_node' via 'from'
+            }
         }
 
         // Process the bundle further
@@ -216,12 +218,26 @@ impl Ingress {
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         if let bundle::BundleStatus::IngressPending = &metadata.status {
-            // Check bundle blocks
-            let reason;
-            (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
+            // Check lifetime first
+            let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
+                .then_some(bundle::StatusReportReasonCode::LifetimeExpired);
+
+            if reason.is_none() {
+                // Check hop count exceeded
+                if let Some(hop_info) = bundle.hop_count {
+                    if hop_info.count >= hop_info.limit {
+                        reason = Some(bundle::StatusReportReasonCode::HopLimitExceeded);
+                    }
+                }
+            }
 
             if reason.is_none() {
                 // TODO: Eid checks!
+            }
+
+            if reason.is_none() {
+                // Check extension blocks
+                (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
             }
 
             if reason.is_none() {
@@ -281,38 +297,46 @@ impl Ingress {
         let mut blocks_to_remove = Vec::new();
 
         for (block_number, block) in &bundle.blocks {
-            if let bundle::BlockType::Private(_) = &block.block_type {
-                if block.flags.report_on_failure {
-                    self.dispatcher
-                        .report_bundle_reception(
-                            &metadata,
-                            &bundle,
-                            bundle::StatusReportReasonCode::BlockUnsupported,
-                        )
-                        .await?;
-                }
-
-                if block.flags.delete_bundle_on_failure {
-                    return Ok((
-                        Some(bundle::StatusReportReasonCode::BlockUnsupported),
-                        metadata,
-                        bundle,
-                    ));
-                }
-
-                if block.flags.delete_block_on_failure {
+            match &block.block_type {
+                bundle::BlockType::PreviousNode | bundle::BlockType::BundleAge => {
+                    // Always remove the Previous Node and Bundle Age blocks, as we have the data recorded
+                    // And we must replace them before forwarding anyway
                     blocks_to_remove.push(*block_number);
                 }
+                bundle::BlockType::Private(_) => {
+                    if block.flags.report_on_failure {
+                        self.dispatcher
+                            .report_bundle_reception(
+                                &metadata,
+                                &bundle,
+                                bundle::StatusReportReasonCode::BlockUnsupported,
+                            )
+                            .await?;
+                    }
+
+                    if block.flags.delete_bundle_on_failure {
+                        return Ok((
+                            Some(bundle::StatusReportReasonCode::BlockUnsupported),
+                            metadata,
+                            bundle,
+                        ));
+                    }
+
+                    if block.flags.delete_block_on_failure {
+                        blocks_to_remove.push(*block_number);
+                    }
+                }
+                _ => (),
             }
         }
 
         // Rewrite bundle if needed
         if !blocks_to_remove.is_empty() {
-            let mut r = bundle::Editor::new(metadata, bundle);
+            let mut editor = bundle::Editor::new(metadata, bundle);
             for block_number in blocks_to_remove {
-                r = r.remove_extension_block(block_number);
+                editor = editor.remove_extension_block(block_number);
             }
-            (metadata, bundle) = r.build(&self.store).await?;
+            (metadata, bundle) = editor.build(&self.store).await?;
         }
         Ok((None, metadata, bundle))
     }
