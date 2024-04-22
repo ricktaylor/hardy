@@ -2,36 +2,19 @@ use super::*;
 use hardy_cbor as cbor;
 use tokio::sync::mpsc::*;
 
-pub struct Dispatcher {
-    store: store::Store,
-    status_reports: bool,
-    tx: Sender<(bundle::Metadata, bundle::Bundle)>,
+#[derive(Clone)]
+struct Config {
     source_eid: bundle::Eid,
+    status_reports: bool,
 }
 
-impl Clone for Dispatcher {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-            status_reports: self.status_reports,
-            tx: self.tx.clone(),
-            source_eid: self.source_eid.clone(),
-        }
-    }
-}
-
-impl Dispatcher {
-    pub fn new(
-        config: &config::Config,
-        store: store::Store,
-        task_set: &mut tokio::task::JoinSet<()>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<Self, anyhow::Error> {
+impl Config {
+    fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
         // Load NodeId from config
         let source_eid = match config.get::<String>("node_id") {
             Ok(source_eid) => match source_eid.parse() {
                 Ok(source_eid) => source_eid,
-                Err(e) => return Err(anyhow!("Invalid \"node_id\" in configuration: {}", e)),
+                Err(e) => return Err(anyhow!("Malformed \"node_id\" in configuration: {}", e)),
             },
             Err(e) => return Err(anyhow!("Missing \"node_id\" from configuration: {}", e)),
         };
@@ -49,16 +32,44 @@ impl Dispatcher {
             } => source_eid,
             e => return Err(anyhow!("Invalid \"node_id\" in configuration: {}", e)),
         };
-        log::info!("Local Node ID: {source_eid}");
+        log::info!("Local Node ID: {}", source_eid);
+
+        Ok(Self {
+            source_eid,
+            status_reports: settings::get_with_default(config, "status_reports", false)?,
+        })
+    }
+}
+
+pub struct Dispatcher {
+    store: store::Store,
+    tx: Sender<(bundle::Metadata, bundle::Bundle)>,
+    config: Config,
+}
+
+impl Clone for Dispatcher {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            tx: self.tx.clone(),
+            config: self.config.clone(),
+        }
+    }
+}
+
+impl Dispatcher {
+    pub fn new(
+        config: &config::Config,
+        store: store::Store,
+        task_set: &mut tokio::task::JoinSet<()>,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<Self, anyhow::Error> {
+        // Load config
+        let config = Config::load(config)?;
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
-        let dispatcher = Self {
-            store,
-            status_reports: settings::get_with_default(config, "status_reports", false)?,
-            tx,
-            source_eid,
-        };
+        let dispatcher = Self { store, tx, config };
 
         // Spawn a bundle receiver
         let dispatcher_cloned = dispatcher.clone();
@@ -122,14 +133,14 @@ impl Dispatcher {
         reason: bundle::StatusReportReasonCode,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
-        if !self.status_reports || !bundle.flags.receipt_report_requested {
+        if !self.config.status_reports || !bundle.flags.receipt_report_requested {
             return Ok(());
         }
 
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.source_eid.clone())
+            .source(self.config.source_eid.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
@@ -148,14 +159,14 @@ impl Dispatcher {
         reason: bundle::StatusReportReasonCode,
     ) -> Result<(), anyhow::Error> {
         // Check if a report is requested
-        if !self.status_reports || !bundle.flags.delete_report_requested {
+        if !self.config.status_reports || !bundle.flags.delete_report_requested {
             return Ok(());
         }
 
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.source_eid.clone())
+            .source(self.config.source_eid.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata,
