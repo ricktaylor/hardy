@@ -6,12 +6,26 @@ pub struct ClaSource {
     pub address: Vec<u8>,
 }
 
+#[derive(Clone)]
+struct Config {
+    allow_null_sources: bool,
+}
+
+impl Config {
+    fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
+        Ok(Self {
+            allow_null_sources: settings::get_with_default(config, "allow_null_sources", false)?,
+        })
+    }
+}
+
 pub struct Ingress {
     store: store::Store,
     reassembler: reassembler::Reassembler,
     dispatcher: dispatcher::Dispatcher,
     receive_channel: Sender<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
     ingress_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
+    config: Config,
 }
 
 impl Clone for Ingress {
@@ -22,19 +36,23 @@ impl Clone for Ingress {
             reassembler: self.reassembler.clone(),
             receive_channel: self.receive_channel.clone(),
             ingress_channel: self.ingress_channel.clone(),
+            config: self.config.clone(),
         }
     }
 }
 
 impl Ingress {
     pub fn new(
-        _config: &config::Config,
+        config: &config::Config,
         store: store::Store,
         reassembler: reassembler::Reassembler,
         dispatcher: dispatcher::Dispatcher,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
+        // Load config
+        let config = Config::load(config)?;
+
         // Create a channel for new bundles
         let (receive_channel, receive_channel_rx) = channel(16);
         let (ingress_channel, ingress_channel_rx) = channel(16);
@@ -44,6 +62,7 @@ impl Ingress {
             dispatcher,
             receive_channel,
             ingress_channel,
+            config,
         };
 
         // Spawn a bundle receiver
@@ -217,47 +236,85 @@ impl Ingress {
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        if let bundle::BundleStatus::IngressPending = &metadata.status {
-            // Check lifetime first
-            let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
-                .then_some(bundle::StatusReportReasonCode::LifetimeExpired);
+        /* Always check bundles,  no matter the state, as after restarting 
+          the configured filters may have changed, and reprocessing is desired. */
 
-            if reason.is_none() {
+        // Check lifetime first
+        let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
+            .then_some(bundle::StatusReportReasonCode::LifetimeExpired)
+            .or_else(|| {
                 // Check hop count exceeded
-                if let Some(hop_info) = bundle.hop_count {
-                    if hop_info.count >= hop_info.limit {
-                        reason = Some(bundle::StatusReportReasonCode::HopLimitExceeded);
+                bundle.hop_count.and_then(|hop_info| {
+                    (hop_info.count >= hop_info.limit)
+                        .then_some(bundle::StatusReportReasonCode::HopLimitExceeded)
+                })
+            })
+            .or_else(|| {
+                // Source Eid checks
+                match bundle.id.source {
+                    hardy_bpa_core::bundle::Eid::Null => {
+                        log::info!("Bundle with Null source received");
+                        self.config
+                            .allow_null_sources
+                            .then_some(bundle::StatusReportReasonCode::BlockUnintelligible)
                     }
+                    hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
+                        log::info!("Bundle with LocalNode source received!");
+                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                    }
+                    _ => None,
                 }
-            }
+            })
+            .or_else(|| {
+                // Destination Eid checks
+                match bundle.destination {
+                    hardy_bpa_core::bundle::Eid::Null => {
+                        log::info!("Bundle with Null destination received");
+                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                    }
+                    hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
+                        log::info!("Bundle with LocalNode destination received!");
+                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                    }
+                    _ => None,
+                }
+            })
+            .or_else(|| {
+                // Report-To Eid checks
+                if let hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } =
+                    bundle.report_to
+                {
+                    log::info!("Bundle with LocalNode report-to received!");
+                    Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                } else {
+                    None
+                }
+            });
 
-            if reason.is_none() {
-                // TODO: Eid checks!
-            }
+        // Check extension blocks
+        if reason.is_none() {
+            (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
+        }
 
-            if reason.is_none() {
-                // Check extension blocks
-                (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
-            }
+        if reason.is_none() {
+            // TODO: BPSec here!
+        }
 
-            if reason.is_none() {
-                // TODO: BPSec here!
-            }
+        if reason.is_none() {
+            // TODO: Pluggable Ingress filters!
+        }
 
-            if reason.is_none() {
-                // TODO: Pluggable Ingress filters!
-            }
+        if let Some(reason) = reason {
+            // Not valid, drop it
+            self.dispatcher
+                .report_bundle_deletion(&metadata, &bundle, reason)
+                .await?;
 
-            if let Some(reason) = reason {
-                // Not valid, drop it
-                self.dispatcher
-                    .report_bundle_deletion(&metadata, &bundle, reason)
-                    .await?;
+            // Drop the bundle
+            return self.store.remove(&metadata.storage_name).await;
+        }
 
-                // Drop the bundle
-                return self.store.remove(&metadata.storage_name).await;
-            }
-
+        if let bundle::BundleStatus::IngressPending = &metadata.status {
             metadata.status = if bundle.id.fragment_info.is_some() {
                 // Fragments require reassembly
                 bundle::BundleStatus::ReassemblyPending
