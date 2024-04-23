@@ -217,10 +217,9 @@ impl Ingress {
             return self.store.remove(&metadata.storage_name).await;
         }
 
-        if let Some(_from) = from {
-            if let Some(_previous_node) = &bundle.previous_node {
-                // TODO: Record a route to 'previous_node' via 'from'
-            }
+        if let (Some(from), Some(previous_node)) = (from, &bundle.previous_node) {
+            // Record a route to 'previous_node' via 'from'
+            self.dispatcher.add_cla_route(previous_node, from).await?;
         }
 
         // Process the bundle further
@@ -287,17 +286,17 @@ impl Ingress {
                 }
             });
 
-        // Check extension blocks
-        if reason.is_none() {
-            (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
-        }
-
         if reason.is_none() {
             // TODO: BPSec here!
         }
 
         if reason.is_none() {
             // TODO: Pluggable Ingress filters!
+        }
+
+        // Check extension blocks - do this last as it can rewrite the bundle
+        if reason.is_none() {
+            (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
         }
 
         if let Some(reason) = reason {
@@ -311,13 +310,7 @@ impl Ingress {
         }
 
         if let bundle::BundleStatus::IngressPending = &metadata.status {
-            metadata.status = if bundle.id.fragment_info.is_some() {
-                // Fragments require reassembly
-                bundle::BundleStatus::ReassemblyPending
-            } else {
-                // Dispatch!
-                bundle::BundleStatus::DispatchPending
-            };
+            metadata.status = bundle::BundleStatus::DispatchPending;
 
             // Update the status
             self.store

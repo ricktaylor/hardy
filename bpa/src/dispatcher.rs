@@ -197,6 +197,14 @@ impl Dispatcher {
         // And queue it up
         self.enqueue_bundle(metadata, bundle).await
     }
+
+    pub async fn add_cla_route(
+        &self,
+        to: &bundle::Eid,
+        from: ingress::ClaSource,
+    ) -> Result<(), anyhow::Error> {
+        todo!();
+    }
 }
 
 fn new_bundle_status_report(
