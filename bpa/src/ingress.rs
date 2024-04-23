@@ -21,10 +21,9 @@ impl Config {
 
 pub struct Ingress {
     store: store::Store,
-    reassembler: reassembler::Reassembler,
     dispatcher: dispatcher::Dispatcher,
     receive_channel: Sender<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
-    ingress_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
+    restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
     config: Config,
 }
 
@@ -33,9 +32,8 @@ impl Clone for Ingress {
         Self {
             store: self.store.clone(),
             dispatcher: self.dispatcher.clone(),
-            reassembler: self.reassembler.clone(),
             receive_channel: self.receive_channel.clone(),
-            ingress_channel: self.ingress_channel.clone(),
+            restart_channel: self.restart_channel.clone(),
             config: self.config.clone(),
         }
     }
@@ -45,7 +43,6 @@ impl Ingress {
     pub fn new(
         config: &config::Config,
         store: store::Store,
-        reassembler: reassembler::Reassembler,
         dispatcher: dispatcher::Dispatcher,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -58,10 +55,9 @@ impl Ingress {
         let (ingress_channel, ingress_channel_rx) = channel(16);
         let ingress = Self {
             store,
-            reassembler,
             dispatcher,
             receive_channel,
-            ingress_channel,
+            restart_channel: ingress_channel,
             config,
         };
 
@@ -110,13 +106,13 @@ impl Ingress {
             .map_err(|e| e.into())
     }
 
-    pub async fn enqueue_ingress_bundle(
+    pub async fn recheck_bundle(
         &self,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         // Put bundle into ingress channel
-        self.ingress_channel
+        self.restart_channel
             .send((metadata, bundle))
             .await
             .map_err(|e| e.into())
@@ -125,7 +121,7 @@ impl Ingress {
     async fn pipeline_pump(
         self,
         mut receive_channel: Receiver<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
-        mut ingress_channel: Receiver<(bundle::Metadata, bundle::Bundle)>,
+        mut restart_channel: Receiver<(bundle::Metadata, bundle::Bundle)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -138,16 +134,16 @@ impl Ingress {
                     Some((cla_source,storage_name,received_at)) => {
                         let ingress = self.clone();
                         task_set.spawn(async move {
-                            ingress.process_receive_bundle(cla_source,storage_name,received_at).await.log_expect("Failed to process received bundle")
+                            ingress.receive_bundle(cla_source,storage_name,received_at).await.log_expect("Failed to process received bundle")
                         });
                     }
                 },
-                msg = ingress_channel.recv() => match msg {
+                msg = restart_channel.recv() => match msg {
                     None => break,
                     Some((metadata,bundle)) => {
                         let ingress = self.clone();
                         task_set.spawn(async move {
-                            ingress.process_ingress_bundle(metadata,bundle).await.log_expect("Failed to process ingress bundle")
+                            ingress.process_bundle(metadata,bundle).await.log_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -161,7 +157,7 @@ impl Ingress {
         }
     }
 
-    async fn process_receive_bundle(
+    async fn receive_bundle(
         &self,
         from: Option<ClaSource>,
         storage_name: String,
@@ -228,16 +224,16 @@ impl Ingress {
         }
 
         // Process the bundle further
-        self.process_ingress_bundle(metadata, bundle).await
+        self.process_bundle(metadata, bundle).await
     }
 
-    async fn process_ingress_bundle(
+    async fn process_bundle(
         &self,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        /* Always check bundles,  no matter the state, as after restarting 
-          the configured filters may have changed, and reprocessing is desired. */
+        /* Always check bundles,  no matter the state, as after restarting
+        the configured filters may have changed, and reprocessing is desired. */
 
         // Check lifetime first
         let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
@@ -329,13 +325,8 @@ impl Ingress {
                 .await?;
         }
 
-        if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
-            // Send on to the reassembler
-            self.reassembler.enqueue_bundle(metadata, bundle).await
-        } else {
-            // Just send it on to the dispatcher to deal with
-            self.dispatcher.enqueue_bundle(metadata, bundle).await
-        }
+        // Just send it on to the dispatcher to deal with
+        self.dispatcher.enqueue_bundle(metadata, bundle).await
     }
 
     async fn check_extension_blocks(

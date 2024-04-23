@@ -121,7 +121,7 @@ impl Store {
         self.metadata_storage.restart(&mut |metadata, bundle| {
             tokio::runtime::Handle::current().block_on(async {
                 // Just shove bundles into the Ingress
-                ingress.enqueue_ingress_bundle(metadata, bundle).await
+                ingress.recheck_bundle(metadata, bundle).await
             })?;
 
             // Just dumb poll the cancel token now - try to avoid mismatched state again

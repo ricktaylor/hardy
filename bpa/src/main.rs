@@ -77,26 +77,24 @@ async fn main() {
     let mut task_set = tokio::task::JoinSet::new();
     listen_for_cancel(&mut task_set, cancel_token.clone());
 
+    // Create a new reassembler
+    /*let reassembler = reassembler::Reassembler::new(
+        &config,
+        store.clone(),
+        &mut task_set,
+        cancel_token.clone(),
+    )
+    .log_expect("Failed to initialize reassembler");*/
+
     // Create a new dispatcher
     let dispatcher =
         dispatcher::Dispatcher::new(&config, store.clone(), &mut task_set, cancel_token.clone())
             .log_expect("Failed to initialize dispatcher");
 
-    // Create a new reassembler
-    let reassembler = reassembler::Reassembler::new(
-        &config,
-        store.clone(),
-        dispatcher.clone(),
-        &mut task_set,
-        cancel_token.clone(),
-    )
-    .log_expect("Failed to initialize reassembler");
-
     // Create a new ingress
     let ingress = ingress::Ingress::new(
         &config,
         store.clone(),
-        reassembler.clone(),
         dispatcher.clone(),
         &mut task_set,
         cancel_token.clone(),

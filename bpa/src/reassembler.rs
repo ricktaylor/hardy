@@ -3,7 +3,6 @@ use tokio::sync::mpsc::*;
 
 pub struct Reassembler {
     store: store::Store,
-    dispatcher: dispatcher::Dispatcher,
     tx: Sender<(bundle::Metadata, bundle::Bundle)>,
 }
 
@@ -11,7 +10,6 @@ impl Clone for Reassembler {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
-            dispatcher: self.dispatcher.clone(),
             tx: self.tx.clone(),
         }
     }
@@ -21,17 +19,12 @@ impl Reassembler {
     pub fn new(
         _config: &config::Config,
         store: store::Store,
-        dispatcher: dispatcher::Dispatcher,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
         // Create a channel for new bundles
         let (tx, rx) = channel(16);
-        let reassembler = Self {
-            store,
-            dispatcher,
-            tx,
-        };
+        let reassembler = Self { store, tx };
 
         // Spawn a bundle receiver
         let reassembler_cloned = reassembler.clone();
