@@ -4,38 +4,53 @@ use tokio::sync::mpsc::*;
 
 #[derive(Clone)]
 struct Config {
-    source_eid: bundle::Eid,
+    administrative_endpoint: bundle::Eid,
     status_reports: bool,
 }
 
 impl Config {
     fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
         // Load NodeId from config
-        let source_eid = match config.get::<String>("node_id") {
-            Ok(source_eid) => match source_eid.parse() {
-                Ok(source_eid) => source_eid,
-                Err(e) => return Err(anyhow!("Malformed \"node_id\" in configuration: {}", e)),
+        let administrative_endpoint = match config.get::<String>("administrative_endpoint") {
+            Ok(administrative_endpoint) => match administrative_endpoint.parse() {
+                Ok(administrative_endpoint) => administrative_endpoint,
+                Err(e) => {
+                    return Err(anyhow!(
+                        "Malformed \"administrative_endpoint\" in configuration: {}",
+                        e
+                    ))
+                }
             },
-            Err(e) => return Err(anyhow!("Missing \"node_id\" from configuration: {}", e)),
+            Err(e) => {
+                return Err(anyhow!(
+                    "Missing \"administrative_endpoint\" from configuration: {}",
+                    e
+                ))
+            }
         };
 
         // Confirm we have a valid EID with administrative endpoint service number
-        let source_eid = match source_eid {
+        let administrative_endpoint = match administrative_endpoint {
             bundle::Eid::Ipn3 {
                 allocator_id: _,
                 node_number: _,
                 service_number: 0,
-            } => source_eid,
+            } => administrative_endpoint,
             bundle::Eid::Dtn {
                 node_name: _,
-                demux: _,
-            } => source_eid,
-            e => return Err(anyhow!("Invalid \"node_id\" in configuration: {}", e)),
+                ref demux,
+            } if demux.is_empty() => administrative_endpoint,
+            e => {
+                return Err(anyhow!(
+                    "Invalid \"administrative_endpoint\" in configuration: {}",
+                    e
+                ))
+            }
         };
-        log::info!("Local Node ID: {}", source_eid);
+        log::info!("Administrative Endpoint: {}", administrative_endpoint);
 
         Ok(Self {
-            source_eid,
+            administrative_endpoint,
             status_reports: settings::get_with_default(config, "status_reports", false)?,
         })
     }
@@ -140,7 +155,7 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.config.source_eid.clone())
+            .source(self.config.administrative_endpoint.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
@@ -166,7 +181,7 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.config.source_eid.clone())
+            .source(self.config.administrative_endpoint.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata,
