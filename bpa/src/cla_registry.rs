@@ -1,12 +1,11 @@
 use super::*;
-use hardy_proto::bpa::*;
+use hardy_proto::cla::*;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 struct Cla {
     ident: String,
-    endpoint:
-        Arc<tokio::sync::Mutex<hardy_proto::bpa::cla_client::ClaClient<tonic::transport::Channel>>>,
+    endpoint: Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>,
 }
 
 pub struct ClaRegistry {

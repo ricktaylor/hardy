@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package bpa;
+package cla;
 
 service cla_sink {
     rpc RegisterCla(RegisterClaRequest) returns (RegisterClaResponse);

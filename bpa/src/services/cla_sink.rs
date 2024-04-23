@@ -2,7 +2,7 @@ use self::ingress::ClaSource;
 
 use super::*;
 use cla_sink_server::{ClaSink, ClaSinkServer};
-use hardy_proto::bpa::*;
+use hardy_proto::cla::*;
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
