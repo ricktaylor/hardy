@@ -22,6 +22,8 @@ CREATE TABLE bundles (
     UNIQUE(source,creation_time,creation_seq_num,fragment_offset,fragment_total_len)
 ) STRICT;
 
+CREATE INDEX idx_bundle_fragments ON bundles (source,creation_time,creation_seq_num);
+
 CREATE TABLE bundle_blocks (
     id INTEGER PRIMARY KEY,
     bundle_id INTEGER NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
