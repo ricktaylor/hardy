@@ -217,9 +217,16 @@ impl Ingress {
             return self.store.remove(&metadata.storage_name).await;
         }
 
-        if let (Some(from), Some(previous_node)) = (from, &bundle.previous_node) {
-            // Record a route to 'previous_node' via 'from'
-            self.dispatcher.add_cla_route(previous_node, from).await?;
+        if let Some(from) = from {
+            if let Some(previous_node) = &bundle.previous_node {
+                // Record a route to 'previous_node' via 'from'
+                self.dispatcher.add_cla_route(previous_node, from).await?;
+            } else {
+                // Record a route to bundle source via 'from'
+                self.dispatcher
+                    .add_cla_route(&bundle.id.source, from)
+                    .await?
+            }
         }
 
         // Process the bundle further

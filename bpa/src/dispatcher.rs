@@ -203,7 +203,27 @@ impl Dispatcher {
         to: &bundle::Eid,
         from: ingress::ClaSource,
     ) -> Result<(), anyhow::Error> {
-        todo!();
+        match to {
+            bundle::Eid::Null => {
+                /* ignore */
+                Ok(())
+            }
+            bundle::Eid::LocalNode { service_number: _ } => {
+                /* ignore */
+                Ok(())
+            }
+            bundle::Eid::Ipn2 {
+                allocator_id,
+                node_number,
+                service_number,
+            }
+            | bundle::Eid::Ipn3 {
+                allocator_id,
+                node_number,
+                service_number,
+            } => todo!(),
+            bundle::Eid::Dtn { node_name, demux } => todo!(),
+        }
     }
 }
 
