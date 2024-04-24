@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use hardy_bpa_core::{async_trait, storage::BundleStorage};
-use rand::random;
+use rand::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
     fs::{create_dir_all, remove_file, OpenOptions},
@@ -65,10 +65,11 @@ impl Storage {
 
     fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
         // Compose a subdirectory that doesn't break filesystems
+        let mut rng = rand::thread_rng();
         let sub_dir = [
-            format!("{:x}", random::<u16>() % 4096),
-            format!("{:x}", random::<u16>() % 4096),
-            format!("{:x}", random::<u16>() % 4096),
+            format!("{:x}", rng.gen::<u16>() % 4096),
+            format!("{:x}", rng.gen::<u16>() % 4096),
+            format!("{:x}", rng.gen::<u16>() % 4096),
         ]
         .iter()
         .collect::<PathBuf>();
@@ -78,7 +79,7 @@ impl Storage {
             let file_path = [
                 &self.store_root,
                 &sub_dir,
-                &PathBuf::from(format!("{:x}", random::<u64>() % 4096)),
+                &PathBuf::from(format!("{:x}", rng.gen::<u64>() % 4096)),
             ]
             .iter()
             .collect::<PathBuf>();
