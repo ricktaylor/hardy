@@ -8,15 +8,16 @@ struct Cla {
     endpoint: Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>,
 }
 
+#[derive(Default, Clone)]
 pub struct ClaRegistry {
-    clas: RwLock<HashMap<String, Cla>>,
+    clas: Arc<RwLock<HashMap<String, Cla>>>,
 }
 
 impl ClaRegistry {
-    pub fn new(_config: &config::Config) -> Arc<ClaRegistry> {
-        Arc::new(ClaRegistry {
-            clas: RwLock::new(HashMap::new()),
-        })
+    pub fn new(_config: &config::Config) -> ClaRegistry {
+        ClaRegistry {
+            ..Default::default()
+        }
     }
 
     pub async fn register(&self, request: RegisterClaRequest) -> Result<(), tonic::Status> {
@@ -35,11 +36,12 @@ impl ClaRegistry {
             }
         }
 
+        // Connect to client gRPC address
         let endpoint = cla_client::ClaClient::connect(request.grpc_address.clone())
             .await
             .map_err(|e| {
                 log::warn!(
-                    "Failed to connect to to CLA client at {}",
+                    "Failed to connect to CLA client at {}",
                     request.grpc_address
                 );
                 tonic::Status::invalid_argument(e.to_string())

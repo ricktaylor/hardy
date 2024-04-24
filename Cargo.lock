@@ -530,6 +530,7 @@ dependencies = [
  "hardy-sqlite-storage",
  "log",
  "log_err",
+ "rand",
  "serde",
  "simplelog",
  "time",

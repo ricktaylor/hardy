@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package application;
+
+service application_sink {
+    rpc RegisterApplication(RegisterApplicationRequest) returns (RegisterApplicationResponse);
+    rpc UnregisterApplication(UnregisterApplicationRequest) returns (UnregisterApplicationResponse);
+    rpc Send(SendRequest) returns (SendResponse);
+}
+
+message RegisterApplicationRequest {
+    oneof Endpoint {
+        string Id = 1;  /* Fully qualified EID */
+        uint32 ServiceNumber = 2;  /* ipn service number to be registered under node number of BPA node-id */
+    }
+    string Ident = 3;
+    string GrpcAddress = 4;
+}
+
+message RegisterApplicationResponse {
+    string Token = 1;
+    string EndpointId = 2;
+}
+
+message UnregisterApplicationRequest {
+    string Token = 1;
+}
+
+message UnregisterApplicationResponse {
+}
+
+message SendRequest {
+    enum SendFlags {
+        _Unused = 0;
+        DoNotFragment = 4;
+        Acknowledge = 0x20;
+    }
+    string Token = 1;
+    string Destination = 2;
+    bytes Data = 3;
+    optional uint64 Lifetime = 4;
+    optional uint32 Flags = 5;
+}
+
+message SendResponse {
+}
+
+service application {
+    rpc Receive(ReceiveRequest) returns (ReceiveResponse);
+}
+
+message ReceiveRequest {
+    string SourceEid = 1;
+    bytes Data = 2;
+}
+
+message ReceiveResponse {
+}

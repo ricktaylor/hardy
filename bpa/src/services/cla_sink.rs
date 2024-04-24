@@ -1,21 +1,17 @@
-use self::ingress::ClaSource;
-
 use super::*;
 use cla_sink_server::{ClaSink, ClaSinkServer};
 use hardy_proto::cla::*;
-use std::sync::Arc;
-
 use tonic::{Request, Response, Status};
 
 pub struct Service {
-    cla_registry: Arc<cla_registry::ClaRegistry>,
+    cla_registry: cla_registry::ClaRegistry,
     ingress: ingress::Ingress,
 }
 
 impl Service {
     fn new(
         _config: &config::Config,
-        cla_registry: Arc<cla_registry::ClaRegistry>,
+        cla_registry: cla_registry::ClaRegistry,
         ingress: ingress::Ingress,
     ) -> Self {
         Service {
@@ -31,16 +27,19 @@ impl ClaSink for Service {
         &self,
         request: Request<RegisterClaRequest>,
     ) -> Result<Response<RegisterClaResponse>, Status> {
-        self.cla_registry.register(request.into_inner()).await?;
-        Ok(Response::new(RegisterClaResponse {}))
+        self.cla_registry
+            .register(request.into_inner())
+            .await
+            .map(|_| Response::new(RegisterClaResponse {}))
     }
 
     async fn unregister_cla(
         &self,
         request: Request<UnregisterClaRequest>,
     ) -> Result<Response<UnregisterClaResponse>, Status> {
-        self.cla_registry.unregister(request.into_inner())?;
-        Ok(Response::new(UnregisterClaResponse {}))
+        self.cla_registry
+            .unregister(request.into_inner())
+            .map(|_| Response::new(UnregisterClaResponse {}))
     }
 
     async fn forward_bundle(
@@ -50,23 +49,22 @@ impl ClaSink for Service {
         let request = request.into_inner();
         self.ingress
             .receive(
-                Some(ClaSource {
+                Some(ingress::ClaSource {
                     protocol: request.protocol,
                     address: request.address,
                 }),
                 request.bundle,
             )
             .await
-            .map_err(|e| Status::from_error(e.into()))?;
-
-        Ok(Response::new(ForwardBundleResponse {}))
+            .map(|_| Response::new(ForwardBundleResponse {}))
+            .map_err(|e| Status::from_error(e.into()))
     }
 }
 
-pub fn new_service(config: &config::Config, ingress: ingress::Ingress) -> ClaSinkServer<Service> {
-    ClaSinkServer::new(Service::new(
-        config,
-        cla_registry::ClaRegistry::new(config),
-        ingress,
-    ))
+pub fn new_service(
+    config: &config::Config,
+    cla_registry: cla_registry::ClaRegistry,
+    ingress: ingress::Ingress,
+) -> ClaSinkServer<Service> {
+    ClaSinkServer::new(Service::new(config, cla_registry, ingress))
 }

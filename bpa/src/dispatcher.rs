@@ -1,62 +1,23 @@
 use super::*;
 use hardy_cbor as cbor;
+use hardy_proto::application::*;
 use tokio::sync::mpsc::*;
 
 #[derive(Clone)]
 struct Config {
-    administrative_endpoint: bundle::Eid,
     status_reports: bool,
 }
 
 impl Config {
     fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
-        // Load NodeId from config
-        let administrative_endpoint = match config.get::<String>("administrative_endpoint") {
-            Ok(administrative_endpoint) => match administrative_endpoint.parse() {
-                Ok(administrative_endpoint) => administrative_endpoint,
-                Err(e) => {
-                    return Err(anyhow!(
-                        "Malformed \"administrative_endpoint\" in configuration: {}",
-                        e
-                    ))
-                }
-            },
-            Err(e) => {
-                return Err(anyhow!(
-                    "Missing \"administrative_endpoint\" from configuration: {}",
-                    e
-                ))
-            }
-        };
-
-        // Confirm we have a valid EID with administrative endpoint service number
-        let administrative_endpoint = match administrative_endpoint {
-            bundle::Eid::Ipn3 {
-                allocator_id: _,
-                node_number: _,
-                service_number: 0,
-            } => administrative_endpoint,
-            bundle::Eid::Dtn {
-                node_name: _,
-                ref demux,
-            } if demux.is_empty() => administrative_endpoint,
-            e => {
-                return Err(anyhow!(
-                    "Invalid \"administrative_endpoint\" in configuration: {}",
-                    e
-                ))
-            }
-        };
-        log::info!("Administrative Endpoint: {}", administrative_endpoint);
-
         Ok(Self {
-            administrative_endpoint,
             status_reports: settings::get_with_default(config, "status_reports", false)?,
         })
     }
 }
 
 pub struct Dispatcher {
+    administrative_endpoint: bundle::Eid,
     store: store::Store,
     tx: Sender<(bundle::Metadata, bundle::Bundle)>,
     config: Config,
@@ -65,6 +26,7 @@ pub struct Dispatcher {
 impl Clone for Dispatcher {
     fn clone(&self) -> Self {
         Self {
+            administrative_endpoint: self.administrative_endpoint.clone(),
             store: self.store.clone(),
             tx: self.tx.clone(),
             config: self.config.clone(),
@@ -75,6 +37,7 @@ impl Clone for Dispatcher {
 impl Dispatcher {
     pub fn new(
         config: &config::Config,
+        administrative_endpoint: bundle::Eid,
         store: store::Store,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -84,7 +47,12 @@ impl Dispatcher {
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
-        let dispatcher = Self { store, tx, config };
+        let dispatcher = Self {
+            administrative_endpoint,
+            store,
+            tx,
+            config,
+        };
 
         // Spawn a bundle receiver
         let dispatcher_cloned = dispatcher.clone();
@@ -155,7 +123,7 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.config.administrative_endpoint.clone())
+            .source(self.administrative_endpoint.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
@@ -181,7 +149,7 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.config.administrative_endpoint.clone())
+            .source(self.administrative_endpoint.clone())
             .destination(bundle.report_to.clone())
             .add_payload_block(new_bundle_status_report(
                 metadata,
@@ -213,17 +181,56 @@ impl Dispatcher {
                 Ok(())
             }
             bundle::Eid::Ipn2 {
-                allocator_id,
-                node_number,
-                service_number,
+                allocator_id: _,
+                node_number: _,
+                service_number: _,
             }
             | bundle::Eid::Ipn3 {
-                allocator_id,
-                node_number,
-                service_number,
+                allocator_id: _,
+                node_number: _,
+                service_number: _,
             } => todo!(),
-            bundle::Eid::Dtn { node_name, demux } => todo!(),
+            bundle::Eid::Dtn {
+                node_name: _,
+                demux: _,
+            } => todo!(),
         }
+    }
+
+    pub async fn local_dispatch(
+        &self,
+        source: bundle::Eid,
+        request: SendRequest,
+    ) -> Result<(), anyhow::Error> {
+        // Build the bundle
+        let mut b = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
+            .source(source)
+            .destination(match request.destination.parse::<bundle::Eid>()? {
+                bundle::Eid::Null => return Err(anyhow!("Cannot send to Null endpoint")),
+                eid => eid,
+            });
+
+        // Set flags
+        if let Some(flags) = request.flags {
+            if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
+                b = b.app_ack_requested(true);
+            }
+            if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
+                b = b.do_not_fragment(true)
+            }
+            b = b.report_to(self.administrative_endpoint.clone());
+        }
+
+        // Lifetime
+        if let Some(lifetime) = request.lifetime {
+            b = b.lifetime(lifetime);
+        }
+
+        // Add payload and build
+        let (metadata, bundle) = b.add_payload_block(request.data).build(&self.store).await?;
+
+        // And queue it up
+        self.enqueue_bundle(metadata, bundle).await
     }
 }
 

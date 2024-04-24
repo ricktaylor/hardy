@@ -3,7 +3,7 @@ use crate::store;
 
 // Default values
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
-const DEFAULT_LIFETIME: time::Duration = time::Duration::new(24 * 60 * 60, 0);
+const DEFAULT_LIFETIME: u64 = time::Duration::new(24 * 60 * 60, 0).whole_milliseconds() as u64;
 
 pub struct Builder {
     status: BundleStatus,
@@ -12,7 +12,7 @@ pub struct Builder {
     source: Eid,
     destination: Eid,
     report_to: Eid,
-    lifetime: time::Duration,
+    lifetime: u64,
     payload: BlockTemplate,
     extensions: Vec<BlockTemplate>,
 }
@@ -105,7 +105,7 @@ impl Builder {
         self
     }
 
-    pub fn lifetime(mut self, lifetime: time::Duration) -> Self {
+    pub fn lifetime(mut self, lifetime: u64) -> Self {
         self.lifetime = lifetime;
         self
     }
@@ -179,7 +179,7 @@ impl Builder {
                     // Timestamp
                     a.emit(&timestamp);
                     // Lifetime
-                    a.emit(self.lifetime.whole_milliseconds() as u64);
+                    a.emit(self.lifetime);
                 },
             ),
         );
@@ -195,7 +195,7 @@ impl Builder {
                 crc_type: self.crc_type,
                 destination: self.destination.clone(),
                 report_to: self.report_to.clone(),
-                lifetime: self.lifetime.whole_milliseconds() as u64,
+                lifetime: self.lifetime,
                 blocks: HashMap::from([(
                     0,
                     Block {

@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Hash, PartialEq, Eq)]
 pub enum Eid {
     #[default]
     Null,

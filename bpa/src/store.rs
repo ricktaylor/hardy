@@ -19,7 +19,7 @@ impl Clone for Store {
 fn init_metadata_storage(
     config: &config::Config,
     upgrade: bool,
-) -> Result<std::sync::Arc<dyn storage::MetadataStorage>, anyhow::Error> {
+) -> Result<Arc<dyn storage::MetadataStorage>, anyhow::Error> {
     const DEFAULT: &str = if cfg!(feature = "sqlite-storage") {
         hardy_sqlite_storage::CONFIG_KEY
     } else {
@@ -44,7 +44,7 @@ fn init_metadata_storage(
 fn init_bundle_storage(
     config: &config::Config,
     _upgrade: bool,
-) -> Result<std::sync::Arc<dyn storage::BundleStorage>, anyhow::Error> {
+) -> Result<Arc<dyn storage::BundleStorage>, anyhow::Error> {
     const DEFAULT: &str = if cfg!(feature = "localdisk-storage") {
         hardy_localdisk_storage::CONFIG_KEY
     } else {

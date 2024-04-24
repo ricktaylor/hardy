@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use log_err::*;
 
+mod app_registry;
 mod bundle;
 mod cla_registry;
 mod dispatcher;
@@ -58,9 +59,51 @@ fn listen_for_cancel(
     }
 }
 
+fn get_administrative_endpoint(config: &config::Config) -> bundle::Eid {
+    // Load NodeId from config
+    let administrative_endpoint = match config.get::<String>("administrative_endpoint") {
+        Ok(administrative_endpoint) => match administrative_endpoint.parse() {
+            Ok(administrative_endpoint) => administrative_endpoint,
+            Err(e) => {
+                panic!(
+                    "Malformed \"administrative_endpoint\" in configuration: {}",
+                    e
+                )
+            }
+        },
+        Err(e) => {
+            panic!(
+                "Missing \"administrative_endpoint\" from configuration: {}",
+                e
+            )
+        }
+    };
+
+    // Confirm we have a valid EID with administrative endpoint service number
+    let administrative_endpoint = match administrative_endpoint {
+        bundle::Eid::Ipn3 {
+            allocator_id: _,
+            node_number: _,
+            service_number: 0,
+        } => administrative_endpoint,
+        bundle::Eid::Dtn {
+            node_name: _,
+            ref demux,
+        } if demux.is_empty() => administrative_endpoint,
+        e => {
+            panic!(
+                "Invalid \"administrative_endpoint\" in configuration: {}",
+                e
+            )
+        }
+    };
+    log::info!("Administrative Endpoint: {}", administrative_endpoint);
+    administrative_endpoint
+}
+
 #[tokio::main]
 async fn main() {
-    // load config
+    // Parse command line
     let Some((config, upgrade)) = settings::init() else {
         return;
     };
@@ -69,8 +112,15 @@ async fn main() {
     logger::init(&config);
     log::info!("{} starting...", built_info::PKG_NAME);
 
+    // Get administrative_endpoint
+    let administrative_endpoint = get_administrative_endpoint(&config);
+
     // New store
     let store = store::Store::new(&config, upgrade);
+
+    // New registries
+    let cla_registry = cla_registry::ClaRegistry::new(&config);
+    let app_registry = app_registry::AppRegistry::new(&config, administrative_endpoint.clone());
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -87,9 +137,14 @@ async fn main() {
     .log_expect("Failed to initialize reassembler");*/
 
     // Create a new dispatcher
-    let dispatcher =
-        dispatcher::Dispatcher::new(&config, store.clone(), &mut task_set, cancel_token.clone())
-            .log_expect("Failed to initialize dispatcher");
+    let dispatcher = dispatcher::Dispatcher::new(
+        &config,
+        administrative_endpoint,
+        store.clone(),
+        &mut task_set,
+        cancel_token.clone(),
+    )
+    .log_expect("Failed to initialize dispatcher");
 
     // Create a new ingress
     let ingress = ingress::Ingress::new(
@@ -104,7 +159,10 @@ async fn main() {
     // Init gRPC services
     services::init(
         &config,
+        cla_registry,
+        app_registry,
         ingress.clone(),
+        dispatcher.clone(),
         &mut task_set,
         cancel_token.clone(),
     )
