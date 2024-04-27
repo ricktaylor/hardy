@@ -185,10 +185,7 @@ impl Store {
             })
     }
 
-    pub async fn load_data(
-        &self,
-        storage_name: &str,
-    ) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error> {
+    pub async fn load_data(&self, storage_name: &str) -> Result<storage::DataRef, anyhow::Error> {
         self.bundle_storage.load(storage_name).await
     }
 

@@ -1,6 +1,6 @@
 use super::*;
 use anyhow::anyhow;
-use hardy_bpa_core::{async_trait, storage::BundleStorage};
+use hardy_bpa_core::{async_trait, storage::BundleStorage, storage::DataRef};
 use rand::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
@@ -146,10 +146,7 @@ impl Storage {
         Ok(true)
     }
 
-    fn sync_load(
-        &self,
-        storage_name: &str,
-    ) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error> {
+    fn sync_load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
 
         if cfg!(feature = "mmap") {
@@ -173,10 +170,7 @@ impl BundleStorage for Storage {
         self.walk_dirs(&self.store_root, f).map(|_| ())
     }
 
-    async fn load(
-        &self,
-        storage_name: &str,
-    ) -> Result<Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error> {
+    async fn load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error> {
         self.sync_load(storage_name)
     }
 

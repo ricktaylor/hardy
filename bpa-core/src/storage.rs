@@ -34,6 +34,8 @@ pub trait MetadataStorage: Send + Sync {
     async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error>;
 }
 
+pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;
+
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
     fn hash(&self, data: &[u8]) -> Vec<u8> {
@@ -46,10 +48,7 @@ pub trait BundleStorage: Send + Sync {
         f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error>;
 
-    async fn load(
-        &self,
-        storage_name: &str,
-    ) -> Result<std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>, anyhow::Error>;
+    async fn load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error>;
 
     async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error>;
 
