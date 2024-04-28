@@ -247,38 +247,52 @@ impl std::str::FromStr for Eid {
     }
 }
 
+impl std::fmt::Debug for Eid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Eid::Ipn2 {
+                allocator_id: 0,
+                node_number,
+                service_number,
+            } => write!(f, "ipn(2):{node_number}.{service_number}"),
+            Eid::Ipn2 {
+                allocator_id,
+                node_number,
+                service_number,
+            } => write!(f, "ipn(2):{allocator_id}.{node_number}.{service_number}"),
+            _ => <Self as std::fmt::Display>::fmt(self, f),
+        }
+    }
+}
+
 impl std::fmt::Display for Eid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Eid::Null => f.write_str("ipn:0.0"),
             Eid::LocalNode { service_number } => {
-                f.write_fmt(format_args!("ipn:!.{service_number}",))
+                write!(f, "ipn:!.{service_number}")
             }
             Eid::Ipn2 {
                 allocator_id: 0,
                 node_number,
                 service_number,
-            } => f.write_fmt(format_args!("ipn:{node_number}.{service_number}")),
-            Eid::Ipn3 {
+            }
+            | Eid::Ipn3 {
                 allocator_id: 0,
                 node_number,
                 service_number,
-            } => f.write_fmt(format_args!("ipn:{node_number}.{service_number}")),
+            } => write!(f, "ipn:{node_number}.{service_number}"),
             Eid::Ipn2 {
                 allocator_id,
                 node_number,
                 service_number,
-            } => f.write_fmt(format_args!(
-                "ipn:{allocator_id}.{node_number}.{service_number}"
-            )),
-            Eid::Ipn3 {
+            }
+            | Eid::Ipn3 {
                 allocator_id,
                 node_number,
                 service_number,
-            } => f.write_fmt(format_args!(
-                "ipn:{allocator_id}.{node_number}.{service_number}"
-            )),
-            Eid::Dtn { node_name, demux } => f.write_fmt(format_args!("dtn://{node_name}/{demux}")),
+            } => write!(f, "ipn:{allocator_id}.{node_number}.{service_number}"),
+            Eid::Dtn { node_name, demux } => write!(f, "dtn://{node_name}/{demux}"),
         }
     }
 }

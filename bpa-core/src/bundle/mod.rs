@@ -4,6 +4,7 @@ use hardy_cbor as cbor;
 mod block_flags;
 mod block_type;
 mod bundle_flags;
+mod bundle_id;
 mod bundle_status;
 mod crc;
 mod creation_timestamp;
@@ -14,19 +15,6 @@ pub struct Metadata {
     pub storage_name: String,
     pub hash: Vec<u8>,
     pub received_at: Option<time::OffsetDateTime>,
-}
-
-#[derive(Default)]
-pub struct BundleId {
-    pub source: Eid,
-    pub timestamp: CreationTimestamp,
-    pub fragment_info: Option<FragmentInfo>,
-}
-
-#[derive(Copy, Clone)]
-pub struct FragmentInfo {
-    pub offset: u64,
-    pub total_len: u64,
 }
 
 #[derive(Copy, Clone)]
@@ -65,6 +53,7 @@ pub struct Block {
 pub use block_flags::BlockFlags;
 pub use block_type::BlockType;
 pub use bundle_flags::BundleFlags;
+pub use bundle_id::{BundleId, FragmentInfo};
 pub use bundle_status::BundleStatus;
 pub use crc::CrcType;
 pub use creation_timestamp::CreationTimestamp;

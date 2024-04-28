@@ -90,18 +90,18 @@ impl Builder {
         self
     }
 
-    pub fn source(mut self, source: Eid) -> Self {
-        self.source = source;
+    pub fn source(mut self, source: &Eid) -> Self {
+        self.source = source.clone();
         self
     }
 
-    pub fn destination(mut self, destination: Eid) -> Self {
-        self.destination = destination;
+    pub fn destination(mut self, destination: &Eid) -> Self {
+        self.destination = destination.clone();
         self
     }
 
-    pub fn report_to(mut self, report_to: Eid) -> Self {
-        self.report_to = report_to;
+    pub fn report_to(mut self, report_to: &Eid) -> Self {
+        self.report_to = report_to.clone();
         self
     }
 
@@ -145,7 +145,10 @@ impl Builder {
         parse::check_blocks(&mut bundle, &data)?;
 
         // Store to store
-        let metadata = store.store(&bundle, data, self.status, None).await?;
+        let metadata = store
+            .store(&bundle, data, self.status, None)
+            .await?
+            .expect("Duplicate bundle created by builder!");
 
         Ok((metadata, bundle))
     }

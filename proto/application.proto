@@ -10,11 +10,11 @@ service application_sink {
 
 message RegisterApplicationRequest {
     oneof Endpoint {
-        string Id = 1;  /* Fully qualified EID */
-        uint32 ServiceNumber = 2;  /* ipn service number to be registered under node number of BPA node-id */
+        string DtnService = 1;  /* dtn scheme service name */
+        uint32 IpnServiceNumber = 2;  /* ipn service number to be registered under node number of BPA node-id */
     }
     string Ident = 3;
-    string GrpcAddress = 4;
+    optional string GrpcAddress = 4;
 }
 
 message RegisterApplicationResponse {
@@ -46,13 +46,13 @@ message SendResponse {
 }
 
 service application {
-    rpc Receive(ReceiveRequest) returns (ReceiveResponse);
+    rpc CollectionNotify(CollectionNotifyRequest) returns (CollectionNotifyResponse);
 }
 
-message ReceiveRequest {
-    string SourceEid = 1;
-    bytes Data = 2;
+message CollectionNotifyRequest {
+    string Token = 1;
+    string BundleId = 2;
 }
 
-message ReceiveResponse {
+message CollectionNotifyResponse {
 }

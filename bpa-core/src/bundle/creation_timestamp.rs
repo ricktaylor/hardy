@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug)]
 pub struct CreationTimestamp {
     pub creation_time: u64,
     pub sequence_number: u64,

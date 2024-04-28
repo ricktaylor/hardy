@@ -42,13 +42,12 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut data = Vec::new();
 
         in_buf.read_to_end(&mut data)?;
-        let hash = sha1::Sha1::digest(&data);
-
-        out.write_fmt(format_args!(
+        write!(
+            out,
             "({seq}u64,r###\"{}\"###,\"{}\",",
             file_path.to_string_lossy(),
-            BASE64_STANDARD.encode(hash)
-        ))?;
+            BASE64_STANDARD_NO_PAD.encode(sha1::Sha1::digest(&data))
+        )?;
         out.write_all("r###\"".as_bytes())?;
         out.write_all(&data)?;
         out.write_all("\"###),\n".as_bytes())?;

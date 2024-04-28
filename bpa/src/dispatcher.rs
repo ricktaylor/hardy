@@ -6,30 +6,34 @@ use tokio::sync::mpsc::*;
 #[derive(Clone)]
 struct Config {
     status_reports: bool,
+    forwarding: bool,
 }
 
 impl Config {
     fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
         Ok(Self {
             status_reports: settings::get_with_default(config, "status_reports", false)?,
+            forwarding: settings::get_with_default(config, "forwarding", true)?,
         })
     }
 }
 
 pub struct Dispatcher {
-    administrative_endpoint: bundle::Eid,
+    node_id: node_id::NodeId,
     store: store::Store,
     tx: Sender<(bundle::Metadata, bundle::Bundle)>,
     config: Config,
+    app_registry: app_registry::AppRegistry,
 }
 
 impl Clone for Dispatcher {
     fn clone(&self) -> Self {
         Self {
-            administrative_endpoint: self.administrative_endpoint.clone(),
+            node_id: self.node_id.clone(),
             store: self.store.clone(),
             tx: self.tx.clone(),
             config: self.config.clone(),
+            app_registry: self.app_registry.clone(),
         }
     }
 }
@@ -37,8 +41,9 @@ impl Clone for Dispatcher {
 impl Dispatcher {
     pub fn new(
         config: &config::Config,
-        administrative_endpoint: bundle::Eid,
+        node_id: node_id::NodeId,
         store: store::Store,
+        app_registry: app_registry::AppRegistry,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
@@ -48,10 +53,11 @@ impl Dispatcher {
         // Create a channel for bundles
         let (tx, rx) = channel(16);
         let dispatcher = Self {
-            administrative_endpoint,
+            node_id,
             store,
             tx,
             config,
+            app_registry,
         };
 
         // Spawn a bundle receiver
@@ -62,7 +68,7 @@ impl Dispatcher {
         Ok(dispatcher)
     }
 
-    pub async fn enqueue_bundle(
+    async fn enqueue_bundle(
         &self,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
@@ -90,6 +96,7 @@ impl Dispatcher {
                         });
                     }
                 },
+                Some(r) = task_set.join_next() => r.log_expect("Task terminated unexpectedly"),
                 _ = cancel_token.cancelled() => break
             }
         }
@@ -100,12 +107,62 @@ impl Dispatcher {
         }
     }
 
-    async fn process_bundle(
+    pub async fn process_bundle(
         &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
+        mut metadata: bundle::Metadata,
+        mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        // This is the meat of the dispatch pipeline
+        if let bundle::BundleStatus::DispatchPending = &metadata.status {
+            // Check if we are the final destination
+            let new_status = if self.node_id.is_local_service(&bundle.destination) {
+                if bundle.id.fragment_info.is_some() {
+                    // Reassembly!!
+                    bundle::BundleStatus::ReassemblyPending
+                } else {
+                    // The bundle is ready for collection
+                    bundle::BundleStatus::CollectionPending
+                }
+            } else {
+                // Forward to another BPA
+                bundle::BundleStatus::ForwardPending
+            };
+            metadata.status = self
+                .store
+                .set_status(&metadata.storage_name, new_status)
+                .await?;
+        }
+
+        if let bundle::BundleStatus::ForwardPending = &metadata.status {
+            return self.forward_bundle(metadata, bundle);
+        }
+
+        if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
+            // Attempt reassembly
+            let Some((m, b)) = self.reassemble(metadata, bundle).await? else {
+                // Waiting for more fragments to arrive
+                return Ok(());
+            };
+            (metadata, bundle) = (m, b);
+        }
+
+        if let bundle::BundleStatus::CollectionPending = &metadata.status {
+            // Check if we have a local service registered
+            if let Some(endpoint) = self.app_registry.lookup_by_eid(&bundle.destination) {
+                // Notify that the bundle is ready
+                endpoint.collection_notify(&bundle.id).await;
+            }
+        }
+        Ok(())
+    }
+
+    fn forward_bundle(
+        &self,
+        _metadata: bundle::Metadata,
+        _bundle: bundle::Bundle,
+    ) -> Result<(), anyhow::Error> {
+        if !self.config.forwarding {
+            todo!()
+        }
         todo!()
     }
 
@@ -123,8 +180,8 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.administrative_endpoint.clone())
-            .destination(bundle.report_to.clone())
+            .source(&self.node_id.get_admin_endpoint(&bundle.report_to))
+            .destination(&bundle.report_to)
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
             ))
@@ -149,8 +206,8 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(self.administrative_endpoint.clone())
-            .destination(bundle.report_to.clone())
+            .source(&self.node_id.get_admin_endpoint(&bundle.report_to))
+            .destination(&bundle.report_to)
             .add_payload_block(new_bundle_status_report(
                 metadata,
                 bundle,
@@ -166,10 +223,10 @@ impl Dispatcher {
         self.enqueue_bundle(metadata, bundle).await
     }
 
-    pub async fn add_cla_route(
+    pub fn add_cla_route(
         &self,
         to: &bundle::Eid,
-        from: ingress::ClaSource,
+        _from: ingress::ClaSource,
     ) -> Result<(), anyhow::Error> {
         match to {
             bundle::Eid::Null => {
@@ -203,12 +260,14 @@ impl Dispatcher {
         request: SendRequest,
     ) -> Result<(), anyhow::Error> {
         // Build the bundle
+        let destination = match request.destination.parse::<bundle::Eid>()? {
+            bundle::Eid::Null => return Err(anyhow!("Cannot send to Null endpoint")),
+            eid => eid,
+        };
+
         let mut b = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
-            .source(source)
-            .destination(match request.destination.parse::<bundle::Eid>()? {
-                bundle::Eid::Null => return Err(anyhow!("Cannot send to Null endpoint")),
-                eid => eid,
-            });
+            .source(&source)
+            .destination(&destination);
 
         // Set flags
         if let Some(flags) = request.flags {
@@ -218,7 +277,7 @@ impl Dispatcher {
             if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
                 b = b.do_not_fragment(true)
             }
-            b = b.report_to(self.administrative_endpoint.clone());
+            b = b.report_to(&self.node_id.get_admin_endpoint(&destination));
         }
 
         // Lifetime
@@ -231,6 +290,14 @@ impl Dispatcher {
 
         // And queue it up
         self.enqueue_bundle(metadata, bundle).await
+    }
+
+    async fn reassemble(
+        &self,
+        _metadata: bundle::Metadata,
+        _bundle: bundle::Bundle,
+    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, anyhow::Error> {
+        todo!()
     }
 }
 

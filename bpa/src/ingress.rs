@@ -147,6 +147,7 @@ impl Ingress {
                         });
                     }
                 },
+                Some(r) = task_set.join_next() => r.log_expect("Task terminated unexpectedly"),
                 _ = cancel_token.cancelled() => break
             }
         }
@@ -220,12 +221,10 @@ impl Ingress {
         if let Some(from) = from {
             if let Some(previous_node) = &bundle.previous_node {
                 // Record a route to 'previous_node' via 'from'
-                self.dispatcher.add_cla_route(previous_node, from).await?;
+                self.dispatcher.add_cla_route(previous_node, from)?;
             } else {
                 // Record a route to bundle source via 'from'
-                self.dispatcher
-                    .add_cla_route(&bundle.id.source, from)
-                    .await?
+                self.dispatcher.add_cla_route(&bundle.id.source, from)?
             }
         }
 
@@ -317,16 +316,18 @@ impl Ingress {
         }
 
         if let bundle::BundleStatus::IngressPending = &metadata.status {
-            metadata.status = bundle::BundleStatus::DispatchPending;
-
             // Update the status
-            self.store
-                .set_status(&metadata.storage_name, metadata.status)
+            metadata.status = self
+                .store
+                .set_status(
+                    &metadata.storage_name,
+                    bundle::BundleStatus::DispatchPending,
+                )
                 .await?;
         }
 
-        // Just send it on to the dispatcher to deal with
-        self.dispatcher.enqueue_bundle(metadata, bundle).await
+        // Just pass it on to the dispatcher to deal with
+        self.dispatcher.process_bundle(metadata, bundle).await
     }
 
     async fn check_extension_blocks(

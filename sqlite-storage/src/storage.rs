@@ -152,7 +152,7 @@ fn unpack_bundles(
         let metadata = bundle::Metadata {
             status: as_u64(row.get(1)?).try_into()?,
             storage_name: row.get(2)?,
-            hash: BASE64_STANDARD.decode(row.get::<usize, String>(3)?)?,
+            hash: BASE64_STANDARD_NO_PAD.decode(row.get::<usize, String>(3)?)?,
             received_at: row.get(4)?,
         };
 
@@ -251,7 +251,7 @@ fn complete_replace(
         WHERE id IN (SELECT bundle_id FROM replacements)
         RETURNING id;"#,
         )?
-        .query_row((storage_name, BASE64_STANDARD.encode(hash)), |row| {
+        .query_row((storage_name, BASE64_STANDARD_NO_PAD.encode(hash)), |row| {
             row.get::<usize, i64>(0)
         })
         .optional()?;
@@ -440,7 +440,7 @@ impl MetadataStorage for Storage {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bool, anyhow::Error> {
         let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -448,7 +448,7 @@ impl MetadataStorage for Storage {
         let bundle_id = trans
             .prepare_cached(
                 r#"
-            INSERT INTO bundles (
+            INSERT OR IGNORE INTO bundles (
                 status,
                 storage_name,
                 hash,
@@ -474,7 +474,7 @@ impl MetadataStorage for Storage {
                 rusqlite::params!(
                     as_i64(metadata.status),
                     &metadata.storage_name,
-                    BASE64_STANDARD.encode(&metadata.hash),
+                    BASE64_STANDARD_NO_PAD.encode(&metadata.hash),
                     as_i64(bundle.flags),
                     as_i64(bundle.crc_type),
                     &encode_eid(&bundle.id.source)?,
@@ -494,10 +494,11 @@ impl MetadataStorage for Storage {
                     bundle.hop_count.map(|h| h.limit as i64)
                 ),
                 |row| Ok(as_u64(row.get(0)?)),
-            )?;
+            )
+            .optional()?;
 
         // Insert extension blocks
-        {
+        if let Some(bundle_id) = bundle_id {
             let mut block_stmt = trans.prepare_cached(
                 r#"
                 INSERT INTO bundle_blocks (
@@ -524,7 +525,10 @@ impl MetadataStorage for Storage {
         }
 
         // Commit transaction
-        trans.commit().map_err(|e| e.into())
+        trans
+            .commit()
+            .map(|_| bundle_id.is_some())
+            .map_err(|e| e.into())
     }
 
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
@@ -547,9 +551,10 @@ impl MetadataStorage for Storage {
             .prepare_cached(
                 r#"SELECT id FROM bundles WHERE storage_name = ?1 AND hash = ?2 LIMIT 1;"#,
             )?
-            .query_row((storage_name, &BASE64_STANDARD.encode(hash)), |row| {
-                row.get::<usize, i64>(0)
-            })
+            .query_row(
+                (storage_name, &BASE64_STANDARD_NO_PAD.encode(hash)),
+                |row| row.get::<usize, i64>(0),
+            )
             .optional()?
             .map_or_else(
                 || complete_replace(&trans, storage_name, hash),
@@ -597,7 +602,7 @@ impl MetadataStorage for Storage {
                 r#"INSERT INTO replacement_bundles (bundle_id, hash)
                 SELECT id,?1 FROM bundles WHERE storage_name = ?2;"#,
             )?
-            .execute((BASE64_STANDARD.encode(hash), storage_name))
+            .execute((BASE64_STANDARD_NO_PAD.encode(hash), storage_name))
             .map(|count| count != 0)
             .map_err(|e| e.into())
     }

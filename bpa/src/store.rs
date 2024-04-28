@@ -198,7 +198,7 @@ impl Store {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bool, anyhow::Error> {
         // Write to metadata store
         self.metadata_storage.store(metadata, bundle).await
     }
@@ -209,7 +209,7 @@ impl Store {
         data: Vec<u8>,
         status: bundle::BundleStatus,
         received_at: Option<time::OffsetDateTime>,
-    ) -> Result<bundle::Metadata, anyhow::Error> {
+    ) -> Result<Option<bundle::Metadata>, anyhow::Error> {
         // Calculate hash
         let hash = self.hash(&data);
 
@@ -226,13 +226,18 @@ impl Store {
 
         // Write to metadata store
         match self.metadata_storage.store(&metadata, bundle).await {
+            Ok(true) => Ok(Some(metadata)),
+            Ok(false) => {
+                // We have a duplicate, remove the duplicate from the bundle store
+                let _ = self.bundle_storage.remove(&metadata.storage_name).await;
+                Ok(None)
+            }
             Err(e) => {
                 // This is just bad, we can't really claim to have stored the bundle,
                 // so just cleanup and get out
                 let _ = self.bundle_storage.remove(&metadata.storage_name).await;
                 Err(e)
             }
-            Ok(_) => Ok(metadata),
         }
     }
 
@@ -275,10 +280,16 @@ impl Store {
         &self,
         storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<bool, anyhow::Error> {
-        self.metadata_storage
+    ) -> Result<bundle::BundleStatus, anyhow::Error> {
+        if self
+            .metadata_storage
             .set_bundle_status(storage_name, status)
-            .await
+            .await?
+        {
+            Ok(status)
+        } else {
+            Err(anyhow!("Bundle is not in metadata storage"))
+        }
     }
 
     pub async fn remove(&self, storage_name: &str) -> Result<(), anyhow::Error> {
