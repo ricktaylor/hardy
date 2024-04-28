@@ -24,7 +24,7 @@ impl NodeId {
         match (&node_id.ipn, &node_id.dtn) {
             (None, None) => unreachable!(),
             (None, Some(eid)) | (Some(eid), None) => log::info!("Administrative Endpoint: {eid}"),
-            (Some(eid1), Some(eid2)) => log::info!("Administrative Endpoints: [{eid1}, {eid2}]"),
+            (Some(eid1), Some(eid2)) => log::info!("Administrative endpoints: [{eid1}, {eid2}]"),
         }
         Ok(node_id)
     }

@@ -103,7 +103,7 @@ impl Store {
                     self_cloned.metadata_storage_restart(ingress, cancel_token.clone())?;
 
                     if !cancel_token.is_cancelled() {
-                        log::info!("Store restart complete");
+                        log::info!("Store restarted");
                     }
                 }
             }
