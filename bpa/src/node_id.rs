@@ -156,7 +156,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                 let s = v.into_string().map_err(|e| e.extend_with_key(&k))?;
                 if s.split_once('/').is_some() {
                     Err(anyhow!(
-                        "Invalid \"administrative_endpoint\" dtn node-name {k} in configuration"
+                        "Invalid \"administrative_endpoint\" dtn node-name '{k}' in configuration"
                     ))
                 } else {
                     Ok(NodeId {
@@ -169,7 +169,23 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                 }
             }
             "ipn" => match v.kind {
+                config::ValueKind::I64(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
+                    dtn: None,
+                    ipn: Some(bundle::Eid::Ipn3 {
+                        allocator_id: 0,
+                        node_number: v as u32,
+                        service_number: 0,
+                    }),
+                }),
                 config::ValueKind::U64(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
+                    dtn: None,
+                    ipn: Some(bundle::Eid::Ipn3 {
+                        allocator_id: 0,
+                        node_number: v as u32,
+                        service_number: 0,
+                    }),
+                }),
+                config::ValueKind::I128(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
                     dtn: None,
                     ipn: Some(bundle::Eid::Ipn3 {
                         allocator_id: 0,
@@ -192,7 +208,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                         if let Some(value) = &parts.next() {
                             let v2 = value.parse::<u32>()?;
                             if parts.next().is_some() {
-                                Err(anyhow!("Invalid \"administrative_endpoint\" ipn FQNN {s} in configuration"))
+                                Err(anyhow!("Invalid \"administrative_endpoint\" ipn FQNN '{s}' in configuration"))
                             } else {
                                 Ok(NodeId {
                                     dtn: None,
@@ -226,12 +242,12 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                     }
                 }
                 _ => Err(anyhow!(
-                    "Invalid \"administrative_endpoint\" ipn FQNN {k} in configuration"
+                    "Invalid \"administrative_endpoint\" ipn FQNN '{k}' in configuration"
                 )),
             },
             _ => {
                 return Err(anyhow!(
-                    "Unsupported \"administrative_endpoint\" EID scheme {k} in configuration"
+                    "Unsupported \"administrative_endpoint\" EID scheme '{k}' in configuration"
                 ))
             }
         }?;
