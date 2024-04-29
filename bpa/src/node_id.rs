@@ -1,10 +1,56 @@
 use super::*;
 use std::collections::HashMap;
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct IpnNodeId {
+    allocator_id: u32,
+    node_number: u32,
+}
+
+impl IpnNodeId {
+    pub fn to_eid(&self, service_number: u32) -> bundle::Eid {
+        bundle::Eid::Ipn3 {
+            allocator_id: self.allocator_id,
+            node_number: self.node_number,
+            service_number,
+        }
+    }
+}
+
+impl std::fmt::Display for IpnNodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.allocator_id != 0 {
+            write!(f, "ipn:{}.{}.0", self.allocator_id, self.node_number)
+        } else {
+            write!(f, "ipn:{}.0", self.node_number)
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct DtnNodeId {
+    node_name: String,
+}
+
+impl DtnNodeId {
+    pub fn to_eid(&self, demux: &str) -> bundle::Eid {
+        bundle::Eid::Dtn {
+            node_name: self.node_name.clone(),
+            demux: demux.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for DtnNodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "dtn://{}/", self.node_name)
+    }
+}
+
 #[derive(Clone)]
 pub struct NodeId {
-    pub ipn: Option<bundle::Eid>,
-    pub dtn: Option<bundle::Eid>,
+    pub ipn: Option<IpnNodeId>,
+    pub dtn: Option<DtnNodeId>,
 }
 
 impl NodeId {
@@ -23,53 +69,51 @@ impl NodeId {
 
         match (&node_id.ipn, &node_id.dtn) {
             (None, None) => unreachable!(),
-            (None, Some(eid)) | (Some(eid), None) => log::info!("Administrative Endpoint: {eid}"),
+            (None, Some(eid)) => log::info!("Administrative Endpoint: {eid}"),
+            (Some(eid), None) => log::info!("Administrative Endpoint: {eid}"),
             (Some(eid1), Some(eid2)) => log::info!("Administrative endpoints: [{eid1}, {eid2}]"),
         }
         Ok(node_id)
     }
 
     pub fn get_admin_endpoint(&self, destination: &bundle::Eid) -> bundle::Eid {
-        match destination {
-            bundle::Eid::LocalNode { service_number: _ } => {
-                bundle::Eid::LocalNode { service_number: 0 }
-            }
-            bundle::Eid::Ipn2 {
-                allocator_id: _,
-                node_number: _,
-                service_number: _,
-            } => match (&self.ipn, &self.dtn) {
-                (None, Some(eid)) => eid.clone(),
-                (
-                    Some(bundle::Eid::Ipn3 {
-                        allocator_id,
-                        node_number,
-                        service_number,
-                    }),
-                    _,
-                ) => bundle::Eid::Ipn2 {
-                    allocator_id: *allocator_id,
-                    node_number: *node_number,
-                    service_number: *service_number,
+        match (&self.ipn, &self.dtn) {
+            (None, Some(node_id)) => node_id.to_eid(""),
+            (Some(node_id), None) => match destination {
+                bundle::Eid::LocalNode { service_number: _ } => {
+                    bundle::Eid::LocalNode { service_number: 0 }
+                }
+                bundle::Eid::Ipn2 {
+                    allocator_id: _,
+                    node_number: _,
+                    service_number: _,
+                } => bundle::Eid::Ipn2 {
+                    allocator_id: node_id.allocator_id,
+                    node_number: node_id.node_number,
+                    service_number: 0,
                 },
-                _ => unreachable!(),
+                _ => node_id.to_eid(0),
             },
-            bundle::Eid::Null
-            | bundle::Eid::Ipn3 {
-                allocator_id: _,
-                node_number: _,
-                service_number: _,
-            } => match (&self.ipn, &self.dtn) {
-                (None, Some(eid)) | (Some(eid), _) => eid.clone(),
-                _ => unreachable!(),
+            (Some(ipn_node_id), Some(dtn_node_id)) => match destination {
+                bundle::Eid::LocalNode { service_number: _ } => {
+                    bundle::Eid::LocalNode { service_number: 0 }
+                }
+                bundle::Eid::Ipn2 {
+                    allocator_id: _,
+                    node_number: _,
+                    service_number: _,
+                } => bundle::Eid::Ipn2 {
+                    allocator_id: ipn_node_id.allocator_id,
+                    node_number: ipn_node_id.node_number,
+                    service_number: 0,
+                },
+                bundle::Eid::Dtn {
+                    node_name: _,
+                    demux: _,
+                } => dtn_node_id.to_eid(""),
+                _ => ipn_node_id.to_eid(0),
             },
-            bundle::Eid::Dtn {
-                node_name: _,
-                demux: _,
-            } => match (&self.ipn, &self.dtn) {
-                (_, Some(eid)) | (Some(eid), None) => eid.clone(),
-                _ => unreachable!(),
-            },
+            _ => unreachable!(),
         }
     }
 
@@ -78,30 +122,25 @@ impl NodeId {
             bundle::Eid::Null => false,
             bundle::Eid::LocalNode { service_number: _ } => true,
             bundle::Eid::Ipn2 {
-                allocator_id: a,
-                node_number: n,
+                allocator_id,
+                node_number,
                 service_number: _,
             }
             | bundle::Eid::Ipn3 {
-                allocator_id: a,
-                node_number: n,
+                allocator_id,
+                node_number,
                 service_number: _,
             } => match &self.ipn {
-                Some(bundle::Eid::Ipn3 {
-                    allocator_id,
-                    node_number,
-                    service_number: _,
-                }) => allocator_id == a && node_number == n,
+                Some(node_id) => {
+                    node_id.allocator_id == *allocator_id && node_id.node_number == *node_number
+                }
                 _ => false,
             },
             bundle::Eid::Dtn {
-                node_name: name,
+                node_name,
                 demux: _,
             } => match &self.dtn {
-                Some(bundle::Eid::Dtn {
-                    node_name,
-                    demux: _,
-                }) => node_name == name,
+                Some(node_id) => node_id.node_name == *node_name,
                 _ => false,
             },
         }
@@ -124,18 +163,21 @@ fn init_from_string(s: String) -> Result<NodeId, anyhow::Error> {
     let eid = s.parse::<bundle::Eid>()?;
     match eid {
         bundle::Eid::Ipn3 {
-            allocator_id: _,
-            node_number: _,
+            allocator_id,
+            node_number,
             service_number: 0,
         } => Ok(NodeId {
-            ipn: Some(eid),
+            ipn: Some(IpnNodeId {
+                allocator_id,
+                node_number,
+            }),
             dtn: None,
         }),
         bundle::Eid::Dtn {
-            node_name: _,
+            node_name,
             ref demux,
         } if demux.is_empty() => Ok(NodeId {
-            dtn: Some(eid),
+            dtn: Some(DtnNodeId { node_name }),
             ipn: None,
         }),
         eid => Err(anyhow!(
@@ -160,10 +202,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                     ))
                 } else {
                     Ok(NodeId {
-                        dtn: Some(bundle::Eid::Dtn {
-                            node_name: s,
-                            demux: String::new(),
-                        }),
+                        dtn: Some(DtnNodeId { node_name: s }),
                         ipn: None,
                     })
                 }
@@ -171,34 +210,30 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
             "ipn" => match v.kind {
                 config::ValueKind::I64(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
                     dtn: None,
-                    ipn: Some(bundle::Eid::Ipn3 {
+                    ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
-                        service_number: 0,
                     }),
                 }),
                 config::ValueKind::U64(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
                     dtn: None,
-                    ipn: Some(bundle::Eid::Ipn3 {
+                    ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
-                        service_number: 0,
                     }),
                 }),
                 config::ValueKind::I128(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
                     dtn: None,
-                    ipn: Some(bundle::Eid::Ipn3 {
+                    ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
-                        service_number: 0,
                     }),
                 }),
                 config::ValueKind::U128(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
                     dtn: None,
-                    ipn: Some(bundle::Eid::Ipn3 {
+                    ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
-                        service_number: 0,
                     }),
                 }),
                 config::ValueKind::String(s) => {
@@ -212,20 +247,18 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                             } else {
                                 Ok(NodeId {
                                     dtn: None,
-                                    ipn: Some(bundle::Eid::Ipn3 {
+                                    ipn: Some(IpnNodeId {
                                         allocator_id: v1,
                                         node_number: v2,
-                                        service_number: 0,
                                     }),
                                 })
                             }
                         } else {
                             Ok(NodeId {
                                 dtn: None,
-                                ipn: Some(bundle::Eid::Ipn3 {
+                                ipn: Some(IpnNodeId {
                                     allocator_id: 0,
                                     node_number: v1,
-                                    service_number: 0,
                                 }),
                             })
                         }
@@ -233,10 +266,9 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                         let v1 = s.parse::<u32>()?;
                         Ok(NodeId {
                             dtn: None,
-                            ipn: Some(bundle::Eid::Ipn3 {
+                            ipn: Some(IpnNodeId {
                                 allocator_id: 0,
                                 node_number: v1,
-                                service_number: 0,
                             }),
                         })
                     }
@@ -350,7 +382,7 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle, NodeId};
+    use super::{bundle, DtnNodeId, IpnNodeId, NodeId};
 
     fn make_config<T: Into<config::Value>>(v: T) -> config::Config {
         config::Config::builder()
@@ -365,10 +397,9 @@ mod tests {
         let n = NodeId::init(&make_config("ipn:1.0")).unwrap();
         assert!(n.dtn.is_none());
         assert!(n.ipn.map_or(false, |eid| match eid {
-            bundle::Eid::Ipn3 {
+            IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
-                service_number: 0,
             } => true,
             _ => false,
         }));
@@ -376,18 +407,17 @@ mod tests {
         let n = NodeId::init(&make_config("ipn:2.1.0")).unwrap();
         assert!(n.dtn.is_none());
         assert!(n.ipn.map_or(false, |eid| match eid {
-            bundle::Eid::Ipn3 {
+            IpnNodeId {
                 allocator_id: 2,
                 node_number: 1,
-                service_number: 0,
             } => true,
             _ => false,
         }));
 
         let n = NodeId::init(&make_config("dtn://node-name/")).unwrap();
-        assert!(n.dtn.is_none());
-        assert!(n.ipn.map_or(false, |eid| match eid {
-            bundle::Eid::Dtn { node_name, demux } => node_name == "node-name" && demux.is_empty(),
+        assert!(n.ipn.is_none());
+        assert!(n.dtn.map_or(false, |eid| match eid {
+            DtnNodeId { node_name } => node_name == "node-name",
             _ => false,
         }));
 

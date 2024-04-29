@@ -76,15 +76,8 @@ impl AppRegistry {
                     return Err(tonic::Status::invalid_argument(
                         "Cannot register the administrative endpoint",
                     ));
-                } else if let Some(bundle::Eid::Dtn {
-                    node_name,
-                    demux: _,
-                }) = &self.node_id.dtn
-                {
-                    bundle::Eid::Dtn {
-                        node_name: node_name.clone(),
-                        demux: s.clone(),
-                    }
+                } else if let Some(node_id) = &self.node_id.dtn {
+                    node_id.to_eid(s)
                 } else {
                     return Err(tonic::Status::not_found(
                         "Node does not have a dtn scheme node-name",
@@ -96,20 +89,11 @@ impl AppRegistry {
                     return Err(tonic::Status::invalid_argument(
                         "Cannot register the administrative endpoint",
                     ));
-                } else if let Some(bundle::Eid::Ipn3 {
-                    allocator_id,
-                    node_number,
-                    service_number: _,
-                }) = &self.node_id.ipn
-                {
-                    bundle::Eid::Ipn3 {
-                        allocator_id: *allocator_id,
-                        node_number: *node_number,
-                        service_number: *s,
-                    }
+                } else if let Some(node_id) = &self.node_id.ipn {
+                    node_id.to_eid(*s)
                 } else {
                     return Err(tonic::Status::not_found(
-                        "Node does not have a ipn scheme node-number",
+                        "Node does not have a ipn scheme fully-qualified node-number",
                     ));
                 }
             }
@@ -117,29 +101,14 @@ impl AppRegistry {
                 let mut rng = rand::thread_rng();
                 loop {
                     let eid = match (&self.node_id.ipn, &self.node_id.dtn) {
-                        (
-                            None,
-                            Some(bundle::Eid::Dtn {
-                                node_name,
-                                demux: _,
-                            }),
-                        ) => bundle::Eid::Dtn {
-                            node_name: node_name.clone(),
-                            demux: format!("auto/{}", Alphanumeric.sample_string(&mut rng, 16)),
-                        },
-                        (
-                            Some(bundle::Eid::Ipn3 {
-                                allocator_id,
-                                node_number,
-                                service_number: _,
-                            }),
-                            _,
-                        ) => bundle::Eid::Ipn3 {
-                            allocator_id: *allocator_id,
-                            node_number: *node_number,
-                            service_number: (Into::<u16>::into(rng.gen::<std::num::NonZeroU16>())
-                                & 0x7F7Fu16) as u32,
-                        },
+                        (None, Some(node_id)) => node_id.to_eid(&format!(
+                            "auto/{}",
+                            Alphanumeric.sample_string(&mut rng, 16)
+                        )),
+                        (Some(node_id), _) => node_id.to_eid(
+                            (Into::<u16>::into(rng.gen::<std::num::NonZeroU16>()) & 0x7F7Fu16)
+                                as u32,
+                        ),
                         _ => unreachable!(),
                     };
 
