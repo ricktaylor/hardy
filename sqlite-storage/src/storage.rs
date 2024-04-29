@@ -68,12 +68,17 @@ impl Storage {
         // Migrate the database to the latest schema
         migrate::migrate(&mut connection, upgrade)?;
 
-        // Mark all existing bundles as unconfirmed
-        connection.execute_batch(
+        // Mark all existing non-Tombstone bundles as unconfirmed
+        connection.execute(
             r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
-            SELECT id FROM bundles;
+            SELECT id FROM bundles WHERE status != ?1;"#,
+            [as_i64(bundle::BundleStatus::Tombstone)],
+        )?;
 
+        // Create temporary tables for restarting
+        connection.execute_batch(
+            r#"
             CREATE TEMPORARY TABLE restart_bundles (
                 bundle_id INTEGER UNIQUE NOT NULL
             ) STRICT;"#,
