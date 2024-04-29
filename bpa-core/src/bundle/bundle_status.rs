@@ -7,6 +7,8 @@ pub enum BundleStatus {
     ReassemblyPending = 2,
     CollectionPending = 3,
     ForwardPending = 4,
+    Collected = 5,
+    Tombstone = 6,
 }
 
 impl From<BundleStatus> for u64 {
@@ -25,6 +27,8 @@ impl TryFrom<u64> for BundleStatus {
             2 => Ok(Self::ReassemblyPending),
             3 => Ok(Self::CollectionPending),
             4 => Ok(Self::ForwardPending),
+            5 => Ok(Self::Collected),
+            6 => Ok(Self::Tombstone),
             _ => Err(anyhow!("Invalid BundleStatus value {}", value)),
         }
     }

@@ -292,9 +292,21 @@ impl Store {
         }
     }
 
-    pub async fn remove(&self, storage_name: &str) -> Result<(), anyhow::Error> {
+    pub async fn delete(&self, storage_name: &str) -> Result<(), anyhow::Error> {
+        // Entirely delete the bundle from the metadata and bundle stores
         self.bundle_storage.remove(storage_name).await?;
         self.metadata_storage.remove(storage_name).await?;
+        Ok(())
+    }
+
+    pub async fn remove(&self, storage_name: &str) -> Result<(), anyhow::Error> {
+        // Delete the bundle from the bundle store
+        self.bundle_storage.remove(storage_name).await?;
+
+        // But leave a tombstone in the metadata, so we can ignore duplicates
+        self.metadata_storage
+            .set_bundle_status(storage_name, bundle::BundleStatus::Tombstone)
+            .await?;
         Ok(())
     }
 }

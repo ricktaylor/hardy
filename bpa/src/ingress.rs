@@ -215,7 +215,7 @@ impl Ingress {
                 .await?;
 
             // Drop the bundle
-            return self.store.remove(&metadata.storage_name).await;
+            return self.store.delete(&metadata.storage_name).await;
         }
 
         if let Some(from) = from {
@@ -240,7 +240,7 @@ impl Ingress {
         /* Always check bundles,  no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
-        // Check lifetime first
+        // Check some basic semantic validity, lifetime first
         let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
             .then_some(bundle::StatusReportReasonCode::LifetimeExpired)
             .or_else(|| {
