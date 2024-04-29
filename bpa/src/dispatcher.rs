@@ -21,7 +21,7 @@ impl Config {
 pub struct Dispatcher {
     node_id: node_id::NodeId,
     store: store::Store,
-    tx: Sender<(bundle::Metadata, bundle::Bundle)>,
+    tx: Sender<(Option<ingress::ClaSource>, bundle::Metadata, bundle::Bundle)>,
     config: Config,
     app_registry: app_registry::AppRegistry,
 }
@@ -70,16 +70,20 @@ impl Dispatcher {
 
     async fn enqueue_bundle(
         &self,
+        from: Option<ingress::ClaSource>,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         // Put bundle into channel
-        self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
+        self.tx
+            .send((from, metadata, bundle))
+            .await
+            .map_err(|e| e.into())
     }
 
     async fn pipeline_pump(
         self,
-        mut rx: Receiver<(bundle::Metadata, bundle::Bundle)>,
+        mut rx: Receiver<(Option<ingress::ClaSource>, bundle::Metadata, bundle::Bundle)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -89,10 +93,10 @@ impl Dispatcher {
             tokio::select! {
                 bundle = rx.recv() => match bundle {
                     None => break,
-                    Some((metadata,bundle)) => {
+                    Some((from,metadata,bundle)) => {
                         let dispatcher = self.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(metadata,bundle).await.log_expect("Failed to process bundle");
+                            dispatcher.process_bundle(from,metadata,bundle).await.log_expect("Failed to process bundle");
                         });
                     }
                 },
@@ -109,9 +113,20 @@ impl Dispatcher {
 
     pub async fn process_bundle(
         &self,
+        from: Option<ingress::ClaSource>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
+        if let Some(from) = &from {
+            if let Some(previous_node) = &bundle.previous_node {
+                // Record a route to 'previous_node' via 'from'
+                self.add_cla_route(previous_node, from)?;
+            } else {
+                // Record a route to bundle source via 'from'
+                self.add_cla_route(&bundle.id.source, from)?
+            }
+        }
+
         if let bundle::BundleStatus::DispatchPending = &metadata.status {
             // Check if we are the final destination
             let new_status = if self.node_id.is_local_service(&bundle.destination) {
@@ -133,7 +148,7 @@ impl Dispatcher {
         }
 
         if let bundle::BundleStatus::ForwardPending = &metadata.status {
-            return self.forward_bundle(metadata, bundle);
+            return self.forward_bundle(from, metadata, bundle).await;
         }
 
         if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
@@ -155,14 +170,26 @@ impl Dispatcher {
         Ok(())
     }
 
-    fn forward_bundle(
+    async fn forward_bundle(
         &self,
-        _metadata: bundle::Metadata,
-        _bundle: bundle::Bundle,
+        _from: Option<ingress::ClaSource>,
+        metadata: bundle::Metadata,
+        bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         if !self.config.forwarding {
-            todo!()
+            /* If forwarding is disabled in the configuration, then we can *only* deliver bundles.
+             * As we have decided that the bundle is not for a local service, we cannot deliver.
+             * Therefore, we respond with a Destination endpoint ID unavailable report
+             * and tombstone the bundle to ignore duplicates */
+            self.report_bundle_deletion(
+                &metadata,
+                &bundle,
+                bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
+            )
+            .await?;
+            return self.store.remove(&metadata.storage_name).await;
         }
+
         todo!()
     }
 
@@ -189,7 +216,7 @@ impl Dispatcher {
             .await?;
 
         // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+        self.enqueue_bundle(None, metadata, bundle).await
     }
 
     pub async fn report_bundle_deletion(
@@ -220,13 +247,13 @@ impl Dispatcher {
             .await?;
 
         // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+        self.enqueue_bundle(None, metadata, bundle).await
     }
 
-    pub fn add_cla_route(
+    fn add_cla_route(
         &self,
         to: &bundle::Eid,
-        _from: ingress::ClaSource,
+        _from: &ingress::ClaSource,
     ) -> Result<(), anyhow::Error> {
         match to {
             bundle::Eid::Null => {
@@ -289,7 +316,7 @@ impl Dispatcher {
         let (metadata, bundle) = b.add_payload_block(request.data).build(&self.store).await?;
 
         // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+        self.enqueue_bundle(None, metadata, bundle).await
     }
 
     async fn reassemble(

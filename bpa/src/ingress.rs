@@ -143,7 +143,7 @@ impl Ingress {
                     Some((metadata,bundle)) => {
                         let ingress = self.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(metadata,bundle).await.log_expect("Failed to process restart bundle")
+                            ingress.process_bundle(None,metadata,bundle).await.log_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -218,22 +218,13 @@ impl Ingress {
             return self.store.delete(&metadata.storage_name).await;
         }
 
-        if let Some(from) = from {
-            if let Some(previous_node) = &bundle.previous_node {
-                // Record a route to 'previous_node' via 'from'
-                self.dispatcher.add_cla_route(previous_node, from)?;
-            } else {
-                // Record a route to bundle source via 'from'
-                self.dispatcher.add_cla_route(&bundle.id.source, from)?
-            }
-        }
-
         // Process the bundle further
-        self.process_bundle(metadata, bundle).await
+        self.process_bundle(from, metadata, bundle).await
     }
 
     async fn process_bundle(
         &self,
+        from: Option<ClaSource>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
@@ -327,7 +318,7 @@ impl Ingress {
         }
 
         // Just pass it on to the dispatcher to deal with
-        self.dispatcher.process_bundle(metadata, bundle).await
+        self.dispatcher.process_bundle(from, metadata, bundle).await
     }
 
     async fn check_extension_blocks(
