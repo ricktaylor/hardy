@@ -69,9 +69,11 @@ impl NodeId {
 
         match (&node_id.ipn, &node_id.dtn) {
             (None, None) => unreachable!(),
-            (None, Some(eid)) => log::info!("Administrative Endpoint: {eid}"),
-            (Some(eid), None) => log::info!("Administrative Endpoint: {eid}"),
-            (Some(eid1), Some(eid2)) => log::info!("Administrative endpoints: [{eid1}, {eid2}]"),
+            (None, Some(node_id)) => log::info!("Administrative Endpoint: {node_id}"),
+            (Some(node_id), None) => log::info!("Administrative Endpoint: {node_id}"),
+            (Some(node_id1), Some(node_id2)) => {
+                log::info!("Administrative endpoints: [{node_id1}, {node_id2}]")
+            }
         }
         Ok(node_id)
     }
@@ -180,7 +182,7 @@ fn init_from_string(s: String) -> Result<NodeId, anyhow::Error> {
             dtn: Some(DtnNodeId { node_name }),
             ipn: None,
         }),
-        eid => Err(anyhow!(
+        _ => Err(anyhow!(
             "Invalid \"administrative_endpoint\" in configuration: {}",
             eid
         )),
@@ -284,34 +286,34 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
             }
         }?;
         match (&node_id.dtn, n.dtn) {
-            (None, Some(eid)) => node_id.dtn = Some(eid),
-            (Some(eid1), Some(eid2)) => {
-                if *eid1 == eid2 {
+            (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
+            (Some(dtn_node_id1), Some(dtn_node_id2)) => {
+                if *dtn_node_id1 == dtn_node_id2 {
                     log::info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
-                        eid1
+                        dtn_node_id1
                     )
                 } else {
                     return Err(anyhow!(
                         "Multiple \"administrative_endpoint\" dtn entries in configuration: {}",
-                        eid2
+                        dtn_node_id2
                     ));
                 }
             }
             _ => {}
         }
         match (&node_id.ipn, n.ipn) {
-            (None, Some(eid)) => node_id.ipn = Some(eid),
-            (Some(eid1), Some(eid2)) => {
-                if *eid1 == eid2 {
+            (None, Some(ipn_node_id)) => node_id.ipn = Some(ipn_node_id),
+            (Some(ipn_node_id1), Some(ipn_node_id2)) => {
+                if *ipn_node_id1 == ipn_node_id2 {
                     log::info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
-                        eid1
+                        ipn_node_id1
                     )
                 } else {
                     return Err(anyhow!(
                         "Multiple \"administrative_endpoint\" ipn entries in configuration: {}",
-                        eid2
+                        ipn_node_id2
                     ));
                 }
             }
@@ -336,34 +338,34 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, anyhow::Error> {
     for v in t {
         let n = init_from_value(v)?;
         match (&node_id.dtn, n.dtn) {
-            (None, Some(eid)) => node_id.dtn = Some(eid),
-            (Some(eid1), Some(eid2)) => {
-                if *eid1 == eid2 {
+            (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
+            (Some(dtn_node_id1), Some(dtn_node_id2)) => {
+                if *dtn_node_id1 == dtn_node_id2 {
                     log::info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
-                        eid1
+                        dtn_node_id1
                     )
                 } else {
                     return Err(anyhow!(
                         "Multiple \"administrative_endpoint\" dtn entries in configuration: {}",
-                        eid2
+                        dtn_node_id2
                     ));
                 }
             }
             _ => {}
         }
         match (&node_id.ipn, n.ipn) {
-            (None, Some(eid)) => node_id.ipn = Some(eid),
-            (Some(eid1), Some(eid2)) => {
-                if *eid1 == eid2 {
+            (None, Some(ipn_node_id)) => node_id.ipn = Some(ipn_node_id),
+            (Some(ipn_node_id1), Some(ipn_node_id2)) => {
+                if *ipn_node_id1 == ipn_node_id2 {
                     log::info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
-                        eid1
+                        ipn_node_id1
                     )
                 } else {
                     return Err(anyhow!(
                         "Multiple \"administrative_endpoint\" ipn entries in configuration: {}",
-                        eid2
+                        ipn_node_id2
                     ));
                 }
             }
@@ -396,7 +398,7 @@ mod tests {
     fn test() {
         let n = NodeId::init(&make_config("ipn:1.0")).unwrap();
         assert!(n.dtn.is_none());
-        assert!(n.ipn.map_or(false, |eid| match eid {
+        assert!(n.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
@@ -406,7 +408,7 @@ mod tests {
 
         let n = NodeId::init(&make_config("ipn:2.1.0")).unwrap();
         assert!(n.dtn.is_none());
-        assert!(n.ipn.map_or(false, |eid| match eid {
+        assert!(n.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
                 allocator_id: 2,
                 node_number: 1,
@@ -416,7 +418,7 @@ mod tests {
 
         let n = NodeId::init(&make_config("dtn://node-name/")).unwrap();
         assert!(n.ipn.is_none());
-        assert!(n.dtn.map_or(false, |eid| match eid {
+        assert!(n.dtn.map_or(false, |node_id| match node_id {
             DtnNodeId { node_name } => node_name == "node-name",
             _ => false,
         }));
