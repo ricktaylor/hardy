@@ -53,13 +53,14 @@ fn listen_for_cancel(
 #[tokio::main]
 async fn main() {
     // Parse command line
-    let Some((config, upgrade)) = settings::init() else {
+    let Some((config, upgrade, config_source)) = settings::init() else {
         return;
     };
 
     // Init logger
     logger::init(&config);
     log::info!("{} starting...", built_info::PKG_NAME);
+    log::info!("{}",config_source);
 
     // Get administrative_endpoint
     let administrative_endpoint =

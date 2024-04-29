@@ -50,7 +50,7 @@ pub fn get_with_default<'de, T: serde::Deserialize<'de>, D: Into<T>>(
     }
 }
 
-pub fn init() -> Option<(config::Config, bool)> {
+pub fn init() -> Option<(config::Config, bool, String)> {
     // Parse cmdline
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
@@ -77,25 +77,27 @@ pub fn init() -> Option<(config::Config, bool)> {
     let mut b = config::Config::builder();
 
     // Add config file
-    let config_file = if let Some(source) = flags.opt_str("config") {
-        config::File::with_name(&source)
+    let config_source: String;
+    if let Some(source) = flags.opt_str("config") {
+        config_source = format!("Using base configuration file '{}' specified on command line",&source);
+        b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else if let Ok(source) = std::env::var("HARDY_BPA_CONFIG_FILE") {
-        config::File::with_name(&source)
+        config_source = format!("Using base configuration file '{}' specified by HARDY_BPA_CONFIG_FILE environment variable",&source);
+        b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else if let Some(path) = config_dir() {
-        config::File::from(path).required(false)
+        config_source = format!("Using optional base configuration file '{}'",path.to_string_lossy());
+        b = b.add_source(config::File::from(path).required(false).format(config::FileFormat::Toml))
     } else {
-        panic!("No configuration file specified, and no suitable default found")
-    };
-
-    // We use TOML
-    b = b.add_source(config_file.format(config::FileFormat::Toml));
-
+        config_source = "No base configuration file specified, and no suitable default found".to_string();
+    }
+    
     // Pull in environment vars
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
     // And parse...
     Some((
-        b.build().expect("Failed to load configuration"),
+        b.build().expect("Failed to build configuration"),
         flags.opt_present("u"),
+        config_source
     ))
 }
