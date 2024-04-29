@@ -1,5 +1,5 @@
 use super::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn options() -> getopts::Options {
     let mut opts = getopts::Options::new();
@@ -8,7 +8,7 @@ fn options() -> getopts::Options {
         .optflag(
             "u",
             "upgrade-store",
-            "upgrade the bundle store to the latest version",
+            "upgrade the bundle store to the current format",
         )
         .optopt("c", "config", "use a custom configuration file", "FILE");
     opts
@@ -17,8 +17,17 @@ fn options() -> getopts::Options {
 fn config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
         || {
-            log::warn!("Failed to resolve local config directory");
-            None
+            if cfg!(all(
+                target_os = "linux",
+                not(feature = "packaged-installation")
+            )) {
+                Some(Path::new("/etc/opt").join(built_info::PKG_NAME))
+            } else if cfg!(unix) {
+                Some(Path::new("/etc").join(built_info::PKG_NAME))
+            } else {
+                log::warn!("Failed to determine default configuration directory");
+                None
+            }
         },
         |proj_dirs| {
             Some(proj_dirs.config_local_dir().to_path_buf())
@@ -75,7 +84,7 @@ pub fn init() -> Option<(config::Config, bool)> {
     } else if let Some(path) = config_dir() {
         config::File::from(path).required(false)
     } else {
-        panic!("No config file specified, and no suitable default found")
+        panic!("No configuration file specified, and no suitable default found")
     };
 
     // We use TOML

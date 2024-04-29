@@ -20,11 +20,14 @@ fn init_metadata_storage(
     config: &config::Config,
     upgrade: bool,
 ) -> Result<Arc<dyn storage::MetadataStorage>, anyhow::Error> {
-    const DEFAULT: &str = if cfg!(feature = "sqlite-storage") {
-        hardy_sqlite_storage::CONFIG_KEY
-    } else {
-        panic!("No default metadata storage engine, rebuild the package with at least one metadata storage engine feature enabled");
-    };
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "sqlite-storage")] {
+            const DEFAULT: &str = hardy_sqlite_storage::CONFIG_KEY;
+        } else {
+            const DEFAULT: &str = "";
+            compile_error!("No default metadata storage engine, rebuild the package with at least one metadata storage engine feature enabled");
+        }
+    }
 
     let engine: String = settings::get_with_default(config, "metadata_storage", DEFAULT)
         .map_err(|e| anyhow!("Failed to parse 'metadata_storage' config param: {}", e))?;
@@ -45,11 +48,14 @@ fn init_bundle_storage(
     config: &config::Config,
     _upgrade: bool,
 ) -> Result<Arc<dyn storage::BundleStorage>, anyhow::Error> {
-    const DEFAULT: &str = if cfg!(feature = "localdisk-storage") {
-        hardy_localdisk_storage::CONFIG_KEY
-    } else {
-        panic!("No default bundle storage engine, rebuild the package with at least one bundle storage engine feature enabled");
-    };
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "localdisk-storage")] {
+            const DEFAULT: &str = hardy_localdisk_storage::CONFIG_KEY;
+        } else {
+            const DEFAULT: &str = "";
+            compile_error!("No default bundle storage engine, rebuild the package with at least one bundle storage engine feature enabled");
+        }
+    }
 
     let engine: String = settings::get_with_default(config, "bundle_storage", DEFAULT)
         .map_err(|e| anyhow!("Failed to parse 'bundle_storage' config param: {}", e))?;

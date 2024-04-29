@@ -12,6 +12,7 @@ path = "src/main.rs"
 default = ["sqlite-storage", "localdisk-storage"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
+packaged-installation = []
 
 [dependencies]
 hardy-bpa-core = { path = "../bpa-core" }
@@ -33,6 +34,7 @@ anyhow = "1.0.81"
 time = { version = "0.3.34", features = ["macros"] }
 crc = "3.0.1"
 rand = "0.8.5"
+cfg-if = "1.0.0"
 
 [build-dependencies]
 built = "0.7.1"

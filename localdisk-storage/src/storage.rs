@@ -5,8 +5,8 @@ use rand::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
     fs::{create_dir_all, remove_file, OpenOptions},
-    io::{self, Read, Write},
-    path::PathBuf,
+    io::{self, Write},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -17,14 +17,6 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
-fn direct_flag(options: &mut OpenOptions) {
-    #[cfg(unix)]
-    options.custom_flags(libc::O_SYNC | libc::O_DIRECT);
-
-    #[cfg(windows)]
-    options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
-}
-
 pub struct Storage {
     store_root: PathBuf,
     reserved_paths: Mutex<HashSet<PathBuf>>,
@@ -34,12 +26,18 @@ impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
     ) -> Result<Arc<dyn BundleStorage>, anyhow::Error> {
-        let store_root: String = config.get("store_dir").map_or_else(
+        let store_root = config.get("store_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
-                    || Err(anyhow!("Failed to resolve local store directory")),
+                    || {
+                        if cfg!(unix) {
+                            Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
+                        } else {
+                            Err(anyhow!("Failed to resolve local store directory"))
+                        }
+                    },
                     |project_dirs| {
-                        Ok(project_dirs.cache_dir().to_string_lossy().to_string())
+                        Ok(project_dirs.cache_dir().into())
                         // Lin: /home/alice/.cache/barapp
                         // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
                         // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
@@ -49,12 +47,12 @@ impl Storage {
             |v| {
                 v.clone()
                     .into_string()
+                    .map(|s| s.into())
                     .map_err(|e| anyhow!("'store_dir' is not a string value: {}!", e))
             },
         )?;
 
         // Ensure directory exists
-        let store_root = PathBuf::from(&store_root);
         create_dir_all(&store_root)?;
 
         Ok(Arc::new(Storage {
@@ -149,14 +147,16 @@ impl Storage {
     fn sync_load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
 
-        if cfg!(feature = "mmap") {
-            let file = std::fs::File::open(file_path)?;
-            let data = unsafe { memmap2::Mmap::map(&file)? };
-            Ok(Arc::new(data))
-        } else {
-            let mut v = Vec::new();
-            std::fs::File::open(file_path)?.read_to_end(&mut v)?;
-            Ok(Arc::new(v))
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "mmap")] {
+                let file = std::fs::File::open(file_path)?;
+                let data = unsafe { memmap2::Mmap::map(&file)? };
+                Ok(Arc::new(data))
+            } else {
+                let mut v = Vec::new();
+                std::fs::File::open(file_path)?.read_to_end(&mut v)?;
+                Ok(Arc::new(v))
+            }
         }
     }
 }
@@ -246,8 +246,12 @@ fn write(mut file_path: PathBuf, data: Vec<u8>) -> io::Result<()> {
     // Open the file as direct as possible
     let mut options = OpenOptions::new();
     options.write(true).create(true);
-    if cfg!(windows) || cfg!(unix) {
-        direct_flag(&mut options);
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            options.custom_flags(libc::O_SYNC | libc::O_DIRECT);
+        } else if #[cfg(windows)] {
+            options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
+        }
     }
     let mut file = options.open(&file_path)?;
 

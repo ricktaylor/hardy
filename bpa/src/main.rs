@@ -22,41 +22,32 @@ fn listen_for_cancel(
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
-    if cfg!(unix) {
-        let mut term_handler =
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            let mut term_handler =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .log_expect("Failed to register signal handlers");
-
-        task_set.spawn(async move {
-            tokio::select! {
-                _ = term_handler.recv() =>
-                    {
-                        // Signal stop
-                        log::info!("{} received terminate signal, stopping...", built_info::PKG_NAME);
-                        cancel_token.cancel();
-                    }
-                _ = tokio::signal::ctrl_c() =>
-                    {
-                        // Signal stop
-                        log::info!("{} received CTRL+C, stopping...", built_info::PKG_NAME);
-                        cancel_token.cancel();
-                    }
-                _ = cancel_token.cancelled() => {}
-            }
-        });
-    } else {
-        task_set.spawn(async move {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() =>
-                    {
-                        // Signal stop
-                        log::info!("{} received CTRL+C, stopping...", built_info::PKG_NAME);
-                        cancel_token.cancel();
-                    }
-                _ = cancel_token.cancelled() => {}
-            }
-        });
+        } else {
+            let mut term_handler = std::future::pending();
+        }
     }
+    task_set.spawn(async move {
+        tokio::select! {
+            _ = term_handler.recv() =>
+                {
+                    // Signal stop
+                    log::info!("{} received terminate signal, stopping...", built_info::PKG_NAME);
+                    cancel_token.cancel();
+                }
+            _ = tokio::signal::ctrl_c() =>
+                {
+                    // Signal stop
+                    log::info!("{} received CTRL+C, stopping...", built_info::PKG_NAME);
+                    cancel_token.cancel();
+                }
+            _ = cancel_token.cancelled() => {}
+        }
+    });
 }
 
 #[tokio::main]

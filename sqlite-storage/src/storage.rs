@@ -4,7 +4,7 @@ use base64::prelude::*;
 use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
-use std::{collections::HashMap, fs::create_dir_all, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs::create_dir_all, path::Path, sync::Arc};
 
 pub struct Storage {
     connection: tokio::sync::Mutex<rusqlite::Connection>,
@@ -15,27 +15,36 @@ impl Storage {
         config: &HashMap<String, config::Value>,
         mut upgrade: bool,
     ) -> Result<std::sync::Arc<dyn MetadataStorage>, anyhow::Error> {
-        let db_dir: String = config.get("db_dir").map_or_else(
-            || {
-                directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
-                    || Err(anyhow!("Failed to resolve local store directory")),
-                    |project_dirs| {
-                        Ok(project_dirs.cache_dir().to_string_lossy().to_string())
-                        // Lin: /home/alice/.store/barapp
-                        // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\store
-                        // Mac: /Users/Alice/Library/stores/com.Foo-Corp.Bar-App
-                    },
-                )
-            },
-            |v| {
-                v.clone()
-                    .into_string()
-                    .map_err(|e| anyhow!("'db_dir' is not a string value: {}!", e))
-            },
-        )?;
-
         // Compose DB name
-        let file_path = [&db_dir, "metadata.db"].iter().collect::<PathBuf>();
+        let file_path = config
+            .get("db_dir")
+            .map_or_else(
+                || {
+                    directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME)
+                        .map_or_else(
+                            || {
+                                if cfg!(unix) {
+                                    Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
+                                } else {
+                                    Err(anyhow!("Failed to resolve local store directory"))
+                                }
+                            },
+                            |project_dirs| {
+                                Ok(project_dirs.cache_dir().into())
+                                // Lin: /home/alice/.store/barapp
+                                // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\store
+                                // Mac: /Users/Alice/Library/stores/com.Foo-Corp.Bar-App
+                            },
+                        )
+                },
+                |v| {
+                    v.clone()
+                        .into_string()
+                        .map(|s| s.into())
+                        .map_err(|e| anyhow!("'db_dir' is not a string value: {}!", e))
+                },
+            )?
+            .join("metadata.db");
 
         // Ensure directory exists
         create_dir_all(file_path.parent().unwrap())?;

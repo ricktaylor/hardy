@@ -519,6 +519,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "built",
+ "cfg-if",
  "config",
  "crc",
  "directories",
@@ -578,6 +579,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "built",
+ "cfg-if",
  "config",
  "directories",
  "hardy-bpa-core",
