@@ -22,7 +22,7 @@ struct Application {
 }
 
 #[derive(Default, Clone)]
-struct Indexed {
+struct Indexes {
     applications_by_eid: HashMap<bundle::Eid, Application>,
     applications_by_token: HashMap<String, Application>,
 }
@@ -30,12 +30,12 @@ struct Indexed {
 #[derive(Clone)]
 pub struct AppRegistry {
     node_id: node_id::NodeId,
-    applications: Arc<RwLock<Indexed>>,
+    applications: Arc<RwLock<Indexes>>,
 }
 
 impl AppRegistry {
-    pub fn new(_config: &config::Config, node_id: node_id::NodeId) -> AppRegistry {
-        AppRegistry {
+    pub fn new(_config: &config::Config, node_id: node_id::NodeId) -> Self {
+        Self {
             node_id,
             applications: Default::default(),
         }

@@ -14,8 +14,8 @@ pub struct ClaRegistry {
 }
 
 impl ClaRegistry {
-    pub fn new(_config: &config::Config) -> ClaRegistry {
-        ClaRegistry {
+    pub fn new(_config: &config::Config) -> Self {
+        Self {
             ..Default::default()
         }
     }

@@ -19,24 +19,13 @@ impl Config {
     }
 }
 
+#[derive(Clone)]
 pub struct Ingress {
     store: store::Store,
     dispatcher: dispatcher::Dispatcher,
     receive_channel: Sender<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
     restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
     config: Config,
-}
-
-impl Clone for Ingress {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-            dispatcher: self.dispatcher.clone(),
-            receive_channel: self.receive_channel.clone(),
-            restart_channel: self.restart_channel.clone(),
-            config: self.config.clone(),
-        }
-    }
 }
 
 impl Ingress {

@@ -2,18 +2,10 @@ use super::*;
 use hardy_bpa_core::storage;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
-}
-
-impl Clone for Store {
-    fn clone(&self) -> Self {
-        Self {
-            metadata_storage: self.metadata_storage.clone(),
-            bundle_storage: self.bundle_storage.clone(),
-        }
-    }
 }
 
 fn init_metadata_storage(
