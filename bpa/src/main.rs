@@ -5,6 +5,7 @@ mod app_registry;
 mod bundle;
 mod cla_registry;
 mod dispatcher;
+mod fib;
 mod ingress;
 mod logger;
 mod node_id;
@@ -73,6 +74,9 @@ async fn main() {
     let cla_registry = cla_registry::ClaRegistry::new(&config);
     let app_registry = app_registry::AppRegistry::new(&config, administrative_endpoint.clone());
 
+    // New FIB
+    let fib = fib::Fib::new(&config);
+
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let mut task_set = tokio::task::JoinSet::new();
@@ -84,6 +88,7 @@ async fn main() {
         administrative_endpoint,
         store.clone(),
         app_registry.clone(),
+        fib,
         &mut task_set,
         cancel_token.clone(),
     )

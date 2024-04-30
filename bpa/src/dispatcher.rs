@@ -6,36 +6,24 @@ use tokio::sync::mpsc::*;
 #[derive(Clone)]
 struct Config {
     status_reports: bool,
-    forwarding: bool,
 }
 
 impl Config {
     fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
         Ok(Self {
             status_reports: settings::get_with_default(config, "status_reports", false)?,
-            forwarding: settings::get_with_default(config, "forwarding", true)?,
         })
     }
 }
 
+#[derive(Clone)]
 pub struct Dispatcher {
     node_id: node_id::NodeId,
     store: store::Store,
     tx: Sender<(Option<ingress::ClaSource>, bundle::Metadata, bundle::Bundle)>,
     config: Config,
     app_registry: app_registry::AppRegistry,
-}
-
-impl Clone for Dispatcher {
-    fn clone(&self) -> Self {
-        Self {
-            node_id: self.node_id.clone(),
-            store: self.store.clone(),
-            tx: self.tx.clone(),
-            config: self.config.clone(),
-            app_registry: self.app_registry.clone(),
-        }
-    }
+    fib: Option<fib::Fib>,
 }
 
 impl Dispatcher {
@@ -44,6 +32,7 @@ impl Dispatcher {
         node_id: node_id::NodeId,
         store: store::Store,
         app_registry: app_registry::AppRegistry,
+        fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
@@ -58,6 +47,7 @@ impl Dispatcher {
             tx,
             config,
             app_registry,
+            fib,
         };
 
         // Spawn a bundle receiver
@@ -117,13 +107,14 @@ impl Dispatcher {
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        if let Some(from) = &from {
+        if let (Some(from),Some(fib)) = (&from,&self.fib) {
+            let action = fib::Action::Forward(fib::Entry::Cla { protocol: from.protocol.clone(), address: from.address.clone() });
             if let Some(previous_node) = &bundle.previous_node {
                 // Record a route to 'previous_node' via 'from'
-                self.add_cla_route(previous_node, from)?;
+                fib.add_action(fib::Entry::from(previous_node), action);
             } else {
                 // Record a route to bundle source via 'from'
-                self.add_cla_route(&bundle.id.source, from)?
+                fib.add_action(fib::Entry::from(&bundle.id.source), action);
             }
         }
 
@@ -176,7 +167,7 @@ impl Dispatcher {
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        if !self.config.forwarding {
+        let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
              * Therefore, we respond with a Destination endpoint ID unavailable report
@@ -188,7 +179,7 @@ impl Dispatcher {
             )
             .await?;
             return self.store.remove(&metadata.storage_name).await;
-        }
+        };
 
         todo!()
     }
@@ -248,37 +239,6 @@ impl Dispatcher {
 
         // And queue it up
         self.enqueue_bundle(None, metadata, bundle).await
-    }
-
-    fn add_cla_route(
-        &self,
-        to: &bundle::Eid,
-        _from: &ingress::ClaSource,
-    ) -> Result<(), anyhow::Error> {
-        match to {
-            bundle::Eid::Null => {
-                /* ignore */
-                Ok(())
-            }
-            bundle::Eid::LocalNode { service_number: _ } => {
-                /* ignore */
-                Ok(())
-            }
-            bundle::Eid::Ipn2 {
-                allocator_id: _,
-                node_number: _,
-                service_number: _,
-            }
-            | bundle::Eid::Ipn3 {
-                allocator_id: _,
-                node_number: _,
-                service_number: _,
-            } => todo!(),
-            bundle::Eid::Dtn {
-                node_name: _,
-                demux: _,
-            } => todo!(),
-        }
     }
 
     pub async fn local_dispatch(
