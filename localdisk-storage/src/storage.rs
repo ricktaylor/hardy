@@ -52,6 +52,8 @@ impl Storage {
             },
         )?;
 
+        log::info!("Using bundle directory: {}", store_root.display());
+
         // Ensure directory exists
         create_dir_all(&store_root)?;
 

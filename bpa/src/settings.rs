@@ -90,7 +90,7 @@ pub fn init() -> Option<(config::Config, bool, String)> {
     } else if let Some(path) = config_dir() {
         config_source = format!(
             "Using optional base configuration file '{}'",
-            path.to_string_lossy()
+            path.display()
         );
         b = b.add_source(
             config::File::from(path)

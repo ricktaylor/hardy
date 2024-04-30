@@ -46,6 +46,8 @@ impl Storage {
             )?
             .join("metadata.db");
 
+        log::info!("Using database: {}", file_path.display());
+
         // Ensure directory exists
         create_dir_all(file_path.parent().unwrap())?;
 
