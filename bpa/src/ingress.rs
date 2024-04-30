@@ -258,26 +258,31 @@ impl Ingress {
                 }
             })
             .or_else(|| {
-                // Destination Eid checks
-                match bundle.destination {
-                    hardy_bpa_core::bundle::Eid::Null => {
-                        log::info!("Bundle with Null destination received");
-                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                // Do the constant checks only on ingress bundles
+                if let bundle::BundleStatus::IngressPending = &metadata.status {
+                    // Destination Eid checks
+                    match bundle.destination {
+                        hardy_bpa_core::bundle::Eid::Null => {
+                            log::info!("Bundle with Null destination received");
+                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                        }
+                        hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
+                            log::info!("Bundle with LocalNode destination received!");
+                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                        }
+                        _ => None,
                     }
-                    hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                        log::info!("Bundle with LocalNode destination received!");
-                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                    }
-                    _ => None,
-                }
-            })
-            .or_else(|| {
-                // Report-To Eid checks
-                if let hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } =
-                    bundle.report_to
-                {
-                    log::info!("Bundle with LocalNode report-to received!");
-                    Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                    .or_else(|| {
+                        // Report-To Eid checks
+                        if let hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } =
+                            bundle.report_to
+                        {
+                            log::info!("Bundle with LocalNode report-to received!");
+                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 }
