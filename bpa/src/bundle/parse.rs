@@ -330,7 +330,13 @@ pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Erro
                         "Bundle has multiple Previous Node extension blocks"
                     ));
                 }
-                previous_node = Some(check_previous_node(block, block_data)?);
+                previous_node = match check_previous_node(block, block_data)? {
+                    Eid::Null => None,
+                    Eid::LocalNode { service_number:_ } => return Err(anyhow!(
+                        "Bundle has Local Previous Node"
+                    )),
+                    eid => Some(eid)
+                };
                 seen_previous_node = true;
             }
             BlockType::BundleAge => {
