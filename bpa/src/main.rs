@@ -60,7 +60,7 @@ async fn main() {
     // Init logger
     logger::init(&config);
     log::info!("{} starting...", built_info::PKG_NAME);
-    log::info!("{}",config_source);
+    log::info!("{}", config_source);
 
     // Get administrative_endpoint
     let administrative_endpoint =

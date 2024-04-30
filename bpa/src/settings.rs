@@ -79,18 +79,29 @@ pub fn init() -> Option<(config::Config, bool, String)> {
     // Add config file
     let config_source: String;
     if let Some(source) = flags.opt_str("config") {
-        config_source = format!("Using base configuration file '{}' specified on command line",&source);
+        config_source = format!(
+            "Using base configuration file '{}' specified on command line",
+            &source
+        );
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else if let Ok(source) = std::env::var("HARDY_BPA_CONFIG_FILE") {
         config_source = format!("Using base configuration file '{}' specified by HARDY_BPA_CONFIG_FILE environment variable",&source);
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else if let Some(path) = config_dir() {
-        config_source = format!("Using optional base configuration file '{}'",path.to_string_lossy());
-        b = b.add_source(config::File::from(path).required(false).format(config::FileFormat::Toml))
+        config_source = format!(
+            "Using optional base configuration file '{}'",
+            path.to_string_lossy()
+        );
+        b = b.add_source(
+            config::File::from(path)
+                .required(false)
+                .format(config::FileFormat::Toml),
+        )
     } else {
-        config_source = "No base configuration file specified, and no suitable default found".to_string();
+        config_source =
+            "No base configuration file specified, and no suitable default found".to_string();
     }
-    
+
     // Pull in environment vars
     b = b.add_source(config::Environment::with_prefix("HARDY_BPA"));
 
@@ -98,6 +109,6 @@ pub fn init() -> Option<(config::Config, bool, String)> {
     Some((
         b.build().expect("Failed to build configuration"),
         flags.opt_present("u"),
-        config_source
+        config_source,
     ))
 }

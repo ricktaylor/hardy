@@ -177,7 +177,7 @@ impl Dispatcher {
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         if !self.config.forwarding {
-            /* If forwarding is disabled in the configuration, then we can *only* deliver bundles.
+            /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
              * Therefore, we respond with a Destination endpoint ID unavailable report
              * and tombstone the bundle to ignore duplicates */
