@@ -18,6 +18,7 @@ serde = { version = "1.0.197", features = ["derive"] }
 config = "0.14.0"
 directories = "5.0.1"
 log = "0.4.21"
+log_err = "1.1.1"
 base64 = "0.22.0"
 time = "0.3.34"
 

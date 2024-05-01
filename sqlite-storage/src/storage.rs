@@ -3,18 +3,24 @@ use anyhow::anyhow;
 use base64::prelude::*;
 use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
 use hardy_cbor as cbor;
+use log_err::*;
 use rusqlite::OptionalExtension;
-use std::{collections::HashMap, fs::create_dir_all, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs::create_dir_all,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 pub struct Storage {
-    connection: tokio::sync::Mutex<rusqlite::Connection>,
+    connection: Arc<Mutex<rusqlite::Connection>>,
 }
 
 impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
         mut upgrade: bool,
-    ) -> Result<std::sync::Arc<dyn MetadataStorage>, anyhow::Error> {
+    ) -> Result<Arc<dyn MetadataStorage>, anyhow::Error> {
         // Compose DB name
         let file_path = config
             .get("db_dir")
@@ -96,7 +102,7 @@ impl Storage {
         )?;
 
         Ok(Arc::new(Storage {
-            connection: tokio::sync::Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
         }))
     }
 }
@@ -294,7 +300,8 @@ impl MetadataStorage for Storage {
         loop {
             let bundles = unpack_bundles(
                 self.connection
-                    .blocking_lock()
+                    .lock()
+                    .log_expect("Failed to lock connection mutex")
                     .prepare_cached(
                         r#"WITH subset AS (
                             SELECT 
@@ -352,9 +359,10 @@ impl MetadataStorage for Storage {
         &self,
         f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
     ) -> Result<(), anyhow::Error> {
-        // Create a temprorary table (because DELETE RETURNING cannot be used as a CTE)
+        // Create a temporary table (because DELETE RETURNING cannot be used as a CTE)
         self.connection
-            .blocking_lock()
+            .lock()
+            .log_expect("Failed to lock connection mutex")
             .prepare(
                 r#"CREATE TEMPORARY TABLE restart_subset (
                     bundle_id INTEGER UNIQUE NOT NULL
@@ -364,7 +372,10 @@ impl MetadataStorage for Storage {
 
         loop {
             // Loop through subsets of 16 bundles, so we don't fill all memory
-            let mut conn = self.connection.blocking_lock();
+            let mut conn = self
+                .connection
+                .lock()
+                .log_expect("Failed to lock connection mutex");
             let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
             // Grab a subset, ordered by status descending
@@ -443,7 +454,8 @@ impl MetadataStorage for Storage {
 
         // And finally drop the restart tables - they're no longer required
         self.connection
-            .blocking_lock()
+            .lock()
+            .log_expect("Failed to lock connection mutex")
             .execute_batch(
                 r#"
                 DROP TABLE temp.restart_subset;
@@ -457,7 +469,10 @@ impl MetadataStorage for Storage {
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
     ) -> Result<bool, anyhow::Error> {
-        let mut conn = self.connection.lock().await;
+        let mut conn = self
+            .connection
+            .lock()
+            .log_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Insert bundle
@@ -551,7 +566,7 @@ impl MetadataStorage for Storage {
         // Delete
         self.connection
             .lock()
-            .await
+            .log_expect("Failed to lock connection mutex")
             .prepare_cached(r#"DELETE FROM bundles WHERE storage_name = ?1;"#)?
             .execute([storage_name])
             .map(|count| count != 0)
@@ -559,7 +574,10 @@ impl MetadataStorage for Storage {
     }
 
     async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
-        let mut conn = self.connection.lock().await;
+        let mut conn = self
+            .connection
+            .lock()
+            .log_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Check if bundle exists
@@ -603,7 +621,7 @@ impl MetadataStorage for Storage {
     ) -> Result<bool, anyhow::Error> {
         self.connection
             .lock()
-            .await
+            .log_expect("Failed to lock connection mutex")
             .prepare_cached(r#"UPDATE bundles SET status = ?1 WHERE storage_name = ?2;"#)?
             .execute((as_i64(status), storage_name))
             .map(|count| count != 0)
@@ -613,7 +631,7 @@ impl MetadataStorage for Storage {
     async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
         self.connection
             .lock()
-            .await
+            .log_expect("Failed to lock connection mutex")
             .prepare_cached(
                 r#"INSERT INTO replacement_bundles (bundle_id, hash)
                 SELECT id,?1 FROM bundles WHERE storage_name = ?2;"#,
@@ -624,7 +642,10 @@ impl MetadataStorage for Storage {
     }
 
     async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
-        let mut conn = self.connection.lock().await;
+        let mut conn = self
+            .connection
+            .lock()
+            .log_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         if complete_replace(&trans, storage_name, hash)?.is_none() {
