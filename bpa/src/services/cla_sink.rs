@@ -30,7 +30,7 @@ impl ClaSink for Service {
         self.cla_registry
             .register(request.into_inner())
             .await
-            .map(|_| Response::new(RegisterClaResponse {}))
+            .map(Response::new)
     }
 
     async fn unregister_cla(
@@ -39,7 +39,7 @@ impl ClaSink for Service {
     ) -> Result<Response<UnregisterClaResponse>, Status> {
         self.cla_registry
             .unregister(request.into_inner())
-            .map(|_| Response::new(UnregisterClaResponse {}))
+            .map(Response::new)
     }
 
     async fn forward_bundle(
@@ -47,10 +47,12 @@ impl ClaSink for Service {
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
         let request = request.into_inner();
+        let (protocol, ident) = self.cla_registry.lookup(&request.token)?;
         self.ingress
             .receive(
                 Some(ingress::ClaSource {
-                    protocol: request.protocol,
+                    protocol,
+                    ident,
                     address: request.address,
                 }),
                 request.bundle,

@@ -88,7 +88,7 @@ async fn main() {
         administrative_endpoint,
         store.clone(),
         app_registry.clone(),
-        fib,
+        fib.clone(),
         &mut task_set,
         cancel_token.clone(),
     )
@@ -99,6 +99,7 @@ async fn main() {
         &config,
         store.clone(),
         dispatcher.clone(),
+        fib,
         &mut task_set,
         cancel_token.clone(),
     )

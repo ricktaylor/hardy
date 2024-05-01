@@ -5,12 +5,14 @@ use tokio::sync::mpsc::*;
 
 #[derive(Clone)]
 struct Config {
+    node_id: node_id::NodeId,
     status_reports: bool,
 }
 
 impl Config {
-    fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
+    fn load(config: &config::Config, node_id: node_id::NodeId) -> Result<Self, anyhow::Error> {
         Ok(Self {
+            node_id,
             status_reports: settings::get_with_default(config, "status_reports", false)?,
         })
     }
@@ -18,10 +20,9 @@ impl Config {
 
 #[derive(Clone)]
 pub struct Dispatcher {
-    node_id: node_id::NodeId,
+    config: Config,
     store: store::Store,
     tx: Sender<(Option<ingress::ClaSource>, bundle::Metadata, bundle::Bundle)>,
-    config: Config,
     app_registry: app_registry::AppRegistry,
     fib: Option<fib::Fib>,
 }
@@ -37,15 +38,14 @@ impl Dispatcher {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
         // Load config
-        let config = Config::load(config)?;
+        let config = Config::load(config, node_id)?;
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
         let dispatcher = Self {
-            node_id,
+            config,
             store,
             tx,
-            config,
             app_registry,
             fib,
         };
@@ -107,20 +107,9 @@ impl Dispatcher {
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        if let (Some(from),Some(fib)) = (&from,&self.fib) {
-            let action = fib::Action::Forward(fib::Entry::Cla { protocol: from.protocol.clone(), address: from.address.clone() });
-            if let Some(previous_node) = &bundle.previous_node {
-                // Record a route to 'previous_node' via 'from'
-                fib.add_action(fib::Entry::from(previous_node), action);
-            } else {
-                // Record a route to bundle source via 'from'
-                fib.add_action(fib::Entry::from(&bundle.id.source), action);
-            }
-        }
-
         if let bundle::BundleStatus::DispatchPending = &metadata.status {
             // Check if we are the final destination
-            let new_status = if self.node_id.is_local_service(&bundle.destination) {
+            let new_status = if self.config.node_id.is_local_service(&bundle.destination) {
                 if bundle.id.fragment_info.is_some() {
                     // Reassembly!!
                     bundle::BundleStatus::ReassemblyPending
@@ -198,7 +187,7 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(&self.node_id.get_admin_endpoint(&bundle.report_to))
+            .source(&self.config.node_id.get_admin_endpoint(&bundle.report_to))
             .destination(&bundle.report_to)
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
@@ -224,7 +213,7 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(&self.node_id.get_admin_endpoint(&bundle.report_to))
+            .source(&self.config.node_id.get_admin_endpoint(&bundle.report_to))
             .destination(&bundle.report_to)
             .add_payload_block(new_bundle_status_report(
                 metadata,
@@ -264,7 +253,7 @@ impl Dispatcher {
             if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
                 b = b.do_not_fragment(true)
             }
-            b = b.report_to(&self.node_id.get_admin_endpoint(&destination));
+            b = b.report_to(&self.config.node_id.get_admin_endpoint(&destination));
         }
 
         // Lifetime

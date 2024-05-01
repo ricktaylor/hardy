@@ -3,6 +3,7 @@ use tokio::sync::mpsc::*;
 
 pub struct ClaSource {
     pub protocol: String,
+    pub ident: String,
     pub address: Vec<u8>,
 }
 
@@ -21,11 +22,12 @@ impl Config {
 
 #[derive(Clone)]
 pub struct Ingress {
+    config: Config,
     store: store::Store,
-    dispatcher: dispatcher::Dispatcher,
     receive_channel: Sender<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
     restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
-    config: Config,
+    dispatcher: dispatcher::Dispatcher,
+    fib: Option<fib::Fib>,
 }
 
 impl Ingress {
@@ -33,6 +35,7 @@ impl Ingress {
         config: &config::Config,
         store: store::Store,
         dispatcher: dispatcher::Dispatcher,
+        fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, anyhow::Error> {
@@ -43,11 +46,12 @@ impl Ingress {
         let (receive_channel, receive_channel_rx) = channel(16);
         let (ingress_channel, ingress_channel_rx) = channel(16);
         let ingress = Self {
+            config,
             store,
-            dispatcher,
             receive_channel,
             restart_channel: ingress_channel,
-            config,
+            dispatcher,
+            fib,
         };
 
         // Spawn a bundle receiver
@@ -276,6 +280,20 @@ impl Ingress {
                     None
                 }
             });
+
+        if reason.is_none() {
+            /* By the time we get here, we are pretty confident that the bundle isn't garbage
+             * So we can confidently add routes if forwarding is enabled */
+            if let (Some(from), Some(fib)) = (&from, &self.fib) {
+                // Record a route to 'previous_node' via 'from'
+                let _ = bundle
+                    .previous_node
+                    .as_ref()
+                    .unwrap_or(&bundle.id.source)
+                    .try_into()
+                    .map(|p| fib.add_action(p, fib::Action::Forward(from.into())));
+            }
+        }
 
         if reason.is_none() {
             // TODO: BPSec here!

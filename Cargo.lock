@@ -518,6 +518,7 @@ name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.0",
  "built",
  "cfg-if",
  "config",
@@ -616,6 +617,7 @@ dependencies = [
  "hardy-bpa-core",
  "hardy-cbor",
  "log",
+ "log_err",
  "regex",
  "rusqlite",
  "serde",

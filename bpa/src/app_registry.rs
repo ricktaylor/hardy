@@ -45,9 +45,6 @@ impl AppRegistry {
         &self,
         request: RegisterApplicationRequest,
     ) -> Result<RegisterApplicationResponse, tonic::Status> {
-        // Compose a token first
-        let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-
         // Connect to client gRPC address
         let endpoint = if let Some(grpc_address) = request.grpc_address {
             application_client::ApplicationClient::connect(grpc_address.clone())
@@ -64,10 +61,19 @@ impl AppRegistry {
             None
         };
 
+        // Compose a token
+        let mut rng = rand::thread_rng();
+        let mut token = Alphanumeric.sample_string(&mut rng, 16);
+
         let mut applications = self
             .applications
             .write()
             .log_expect("Failed to write-lock applications mutex");
+
+        // Check token is unique
+        while applications.applications_by_token.contains_key(&token) {
+            token = Alphanumeric.sample_string(&mut rng, 16);
+        }
 
         // Compose EID
         let eid = match &request.endpoint {
@@ -97,26 +103,22 @@ impl AppRegistry {
                     ));
                 }
             }
-            None => {
-                let mut rng = rand::thread_rng();
-                loop {
-                    let eid = match (&self.node_id.ipn, &self.node_id.dtn) {
-                        (None, Some(node_id)) => node_id.to_eid(&format!(
-                            "auto/{}",
-                            Alphanumeric.sample_string(&mut rng, 16)
-                        )),
-                        (Some(node_id), _) => node_id.to_eid(
-                            (Into::<u16>::into(rng.gen::<std::num::NonZeroU16>()) & 0x7F7Fu16)
-                                as u32,
-                        ),
-                        _ => unreachable!(),
-                    };
+            None => loop {
+                let eid = match (&self.node_id.ipn, &self.node_id.dtn) {
+                    (None, Some(node_id)) => node_id.to_eid(&format!(
+                        "auto/{}",
+                        Alphanumeric.sample_string(&mut rng, 16)
+                    )),
+                    (Some(node_id), _) => node_id.to_eid(
+                        (Into::<u16>::into(rng.gen::<std::num::NonZeroU16>()) & 0x7F7Fu16) as u32,
+                    ),
+                    _ => unreachable!(),
+                };
 
-                    if !applications.applications_by_eid.contains_key(&eid) {
-                        break eid;
-                    }
+                if !applications.applications_by_eid.contains_key(&eid) {
+                    break eid;
                 }
-            }
+            },
         };
 
         if request.endpoint.is_some() {

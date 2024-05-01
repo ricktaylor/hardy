@@ -15,18 +15,18 @@ message RegisterClaRequest {
 }
 
 message RegisterClaResponse {
+    string Token = 1;
 }
 
 message UnregisterClaRequest {
-    string Protocol = 1;
-    string Ident = 2;
+    string Token = 1;
 }
 
 message UnregisterClaResponse {
 }
 
 message ForwardBundleRequest {
-    string Protocol = 1;
+    string Token = 1;
     bytes Address = 2;
     bytes Bundle = 3;
 }

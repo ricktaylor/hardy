@@ -1,10 +1,12 @@
 use super::*;
 use hardy_proto::cla::*;
+use rand::distributions::{Alphanumeric, DistString};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 struct Cla {
     ident: String,
+    protocol: String,
     endpoint: Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>,
 }
 
@@ -20,70 +22,66 @@ impl ClaRegistry {
         }
     }
 
-    pub async fn register(&self, request: RegisterClaRequest) -> Result<(), tonic::Status> {
-        // Scope the read-lock
-        if let Some(cla) = self
-            .clas
-            .read()
-            .log_expect("Failed to read-lock CLA mutex")
-            .get(&request.protocol)
-        {
-            if cla.ident != request.ident {
-                return Err(tonic::Status::already_exists(format!(
-                    "CLA for protocol {} already registered",
-                    request.protocol
-                )));
-            }
-        }
-
+    pub async fn register(
+        &self,
+        request: RegisterClaRequest,
+    ) -> Result<RegisterClaResponse, tonic::Status> {
         // Connect to client gRPC address
-        let endpoint = cla_client::ClaClient::connect(request.grpc_address.clone())
-            .await
-            .map_err(|e| {
-                log::warn!(
-                    "Failed to connect to CLA client at {}",
-                    request.grpc_address
-                );
-                tonic::Status::invalid_argument(e.to_string())
-            })?;
+        let endpoint = Arc::new(tokio::sync::Mutex::new(
+            cla_client::ClaClient::connect(request.grpc_address.clone())
+                .await
+                .map_err(|e| {
+                    log::warn!(
+                        "Failed to connect to CLA client at {}",
+                        request.grpc_address
+                    );
+                    tonic::Status::invalid_argument(e.to_string())
+                })?,
+        ));
+
+        // Compose a token
+        let mut rng = rand::thread_rng();
+        let mut token = Alphanumeric.sample_string(&mut rng, 16);
 
         let mut clas = self
             .clas
             .write()
             .log_expect("Failed to write-lock CLA mutex");
-        if let Some(cla) = clas.get(&request.protocol) {
-            // Check for races
-            if cla.ident != request.ident {
-                return Err(tonic::Status::already_exists(format!(
-                    "CLA for protocol {} already registered",
-                    request.protocol
-                )));
+
+        // Check token is unique
+        while clas.contains_key(&token) {
+            token = Alphanumeric.sample_string(&mut rng, 16);
+        }
+
+        // Do a linear search for re-registration with the same ident
+        for (k, cla) in clas.iter_mut() {
+            if cla.ident == request.ident {
+                cla.endpoint = endpoint;
+                return Ok(RegisterClaResponse { token: k.clone() });
             }
         }
 
         clas.insert(
-            request.protocol,
+            token.clone(),
             Cla {
+                protocol: request.protocol,
                 ident: request.ident,
-                endpoint: Arc::new(tokio::sync::Mutex::new(endpoint)),
+                endpoint,
             },
         );
-        Ok(())
+        Ok(RegisterClaResponse { token })
     }
 
-    pub fn unregister(&self, request: UnregisterClaRequest) -> Result<(), tonic::Status> {
-        let mut clas = self
-            .clas
+    pub fn unregister(
+        &self,
+        request: UnregisterClaRequest,
+    ) -> Result<UnregisterClaResponse, tonic::Status> {
+        self.clas
             .write()
-            .log_expect("Failed to write-lock CLA mutex");
-        if let Some(cla) = clas.get(&request.protocol) {
-            if cla.ident == request.ident {
-                // Matching ident
-                clas.remove(&request.protocol);
-                return Ok(());
-            }
-        }
-        Err(tonic::Status::not_found("No such CLA registered"))
+            .log_expect("Failed to write-lock CLA mutex")
+            .remove(&request.token)
+            .ok_or(tonic::Status::not_found("No such CLA registered"))
+            .map(|_| UnregisterClaResponse {})
     }
 
     pub async fn forward_bundle(
@@ -93,7 +91,7 @@ impl ClaRegistry {
         {
             // Scope the read-lock
             let clas = self.clas.read().log_expect("Failed to read-lock CLA mutex");
-            match clas.get(&request.protocol) {
+            match clas.get(&request.token) {
                 None => return Ok(false),
                 Some(cla) => cla.endpoint.clone(),
             }
@@ -104,5 +102,14 @@ impl ClaRegistry {
         .await
         .inspect_err(|e| log::warn!("Failed to forward bundle: {}", e))
         .map(|_| true)
+    }
+
+    pub fn lookup(&self, token: &str) -> Result<(String, String), tonic::Status> {
+        self.clas
+            .read()
+            .log_expect("Failed to read-lock CLA mutex")
+            .get(token)
+            .ok_or(tonic::Status::not_found("No such CLA registered"))
+            .map(|cla| (cla.protocol.clone(), cla.ident.clone()))
     }
 }
