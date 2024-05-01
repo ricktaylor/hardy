@@ -285,13 +285,30 @@ impl Ingress {
             /* By the time we get here, we are pretty confident that the bundle isn't garbage
              * So we can confidently add routes if forwarding is enabled */
             if let (Some(from), Some(fib)) = (&from, &self.fib) {
-                // Record a route to 'previous_node' via 'from'
+                // Record a route to 'from.address' via 'from.ident'
+                fib.add_action(
+                    fib::Entry::Cla {
+                        protocol: from.protocol.clone(),
+                        address: from.address.clone(),
+                    },
+                    fib::Action::Forward(from.ident.clone()),
+                );
+
+                // Record a route to 'previous_node' via 'from.address'
                 let _ = bundle
                     .previous_node
-                    .as_ref()
-                    .unwrap_or(&bundle.id.source)
+                    .clone()
+                    .unwrap_or(bundle.id.source.clone())
                     .try_into()
-                    .map(|p| fib.add_action(p, fib::Action::Forward(from.into())));
+                    .map(|p| {
+                        fib.add_action(
+                            p,
+                            fib::Action::Via(fib::Entry::Cla {
+                                protocol: from.protocol.clone(),
+                                address: from.address.clone(),
+                            }),
+                        )
+                    });
             }
         }
 
