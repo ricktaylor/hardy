@@ -332,10 +332,10 @@ pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Erro
                 }
                 previous_node = match check_previous_node(block, block_data)? {
                     Eid::Null => None,
-                    Eid::LocalNode { service_number:_ } => return Err(anyhow!(
-                        "Bundle has Local Previous Node"
-                    )),
-                    eid => Some(eid)
+                    Eid::LocalNode { service_number: _ } => {
+                        return Err(anyhow!("Bundle has Local Previous Node"))
+                    }
+                    eid => Some(eid),
                 };
                 seen_previous_node = true;
             }
