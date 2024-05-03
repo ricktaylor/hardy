@@ -90,7 +90,7 @@ impl TryFrom<bundle::Eid> for Destination {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
     Wait,                                         // Wait for later availability
