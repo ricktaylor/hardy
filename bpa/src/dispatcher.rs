@@ -22,7 +22,11 @@ impl Config {
 pub struct Dispatcher {
     config: Config,
     store: store::Store,
-    tx: Sender<(Option<ingress::ClaSource>, bundle::Metadata, bundle::Bundle)>,
+    tx: Sender<(
+        Option<ingress::ClaAddress>,
+        bundle::Metadata,
+        bundle::Bundle,
+    )>,
     app_registry: app_registry::AppRegistry,
     fib: Option<fib::Fib>,
 }
@@ -60,7 +64,7 @@ impl Dispatcher {
 
     async fn enqueue_bundle(
         &self,
-        from: Option<ingress::ClaSource>,
+        from: Option<ingress::ClaAddress>,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
@@ -73,7 +77,11 @@ impl Dispatcher {
 
     async fn pipeline_pump(
         self,
-        mut rx: Receiver<(Option<ingress::ClaSource>, bundle::Metadata, bundle::Bundle)>,
+        mut rx: Receiver<(
+            Option<ingress::ClaAddress>,
+            bundle::Metadata,
+            bundle::Bundle,
+        )>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -103,7 +111,7 @@ impl Dispatcher {
 
     pub async fn process_bundle(
         &self,
-        from: Option<ingress::ClaSource>,
+        from: Option<ingress::ClaAddress>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
@@ -152,25 +160,64 @@ impl Dispatcher {
 
     async fn forward_bundle(
         &self,
-        _from: Option<ingress::ClaSource>,
+        from: Option<ingress::ClaAddress>,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        let Some(fib) = &self.fib else {
+        let actions = self.fib.as_ref().map_or(
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
-             * Therefore, we respond with a Destination endpoint ID unavailable report
-             * and tombstone the bundle to ignore duplicates */
-            self.report_bundle_deletion(
-                &metadata,
-                &bundle,
+             * Therefore, we respond with a Destination endpoint ID unavailable report */
+            vec![fib::ForwardAction::Drop(Some(
                 bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-            )
-            .await?;
-            return self.store.remove(&metadata.storage_name).await;
-        };
+            ))],
+            |fib| {
+                // Lookup FIB entry, or Drop if not a valid next Destination
+                bundle.destination.clone().try_into().map_or(
+                    vec![fib::ForwardAction::Drop(Some(
+                        bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
+                    ))],
+                    |entry| {
+                        let mut actions = fib.lookup(&entry);
+                        if actions.is_empty() {
+                            /* Return the bundle to the source, either via 'from' if possible,
+                             * Or by checking the 'previous_node' or 'bundle.source' */
+                            if let Some(from) = from {
+                                actions = vec![fib::ForwardAction::Forward(from)];
+                            } else if let Ok(entry) = bundle
+                                .previous_node
+                                .clone()
+                                .unwrap_or(bundle.id.source.clone())
+                                .try_into()
+                            {
+                                // Try the previous_node
+                                fib.lookup(&entry);
+                            }
+                        }
+                        actions
+                    },
+                )
+            },
+        );
 
-        todo!()
+        match actions.first().unwrap_or(&fib::ForwardAction::Drop(Some(
+            bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
+        ))) {
+            fib::ForwardAction::Drop(reason) => {
+                if let Some(reason) = reason {
+                    self.report_bundle_deletion(&metadata, &bundle, *reason)
+                        .await?;
+                }
+                self.store.remove(&metadata.storage_name).await
+            }
+            fib::ForwardAction::Wait => todo!(),
+            fib::ForwardAction::Forward(a) => {
+                if actions.len() > 1 {
+                    // TODO Equal cost multi-path?!?!
+                }
+                todo!()
+            }
+        }
     }
 
     pub async fn report_bundle_reception(

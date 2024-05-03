@@ -17,7 +17,7 @@ pub struct Endpoint {
 struct Application {
     eid: bundle::Eid,
     token: String,
-    ident: String,
+    name: String,
     endpoint: Option<Channel>,
 }
 
@@ -123,7 +123,7 @@ impl AppRegistry {
 
         if request.endpoint.is_some() {
             if let Some(application) = applications.applications_by_eid.get(&eid) {
-                if application.ident != request.ident {
+                if application.name != request.name {
                     return Err(tonic::Status::already_exists(format!(
                         "Endpoint {} already registered",
                         eid
@@ -138,7 +138,7 @@ impl AppRegistry {
         };
         let app = Application {
             eid,
-            ident: request.ident,
+            name: request.name,
             token: response.token.clone(),
             endpoint,
         };

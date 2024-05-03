@@ -10,7 +10,7 @@ service cla_sink {
 
 message RegisterClaRequest {
     string Protocol = 1;
-    string Ident = 2;
+    string Name = 2;
     string GrpcAddress = 3;
 }
 

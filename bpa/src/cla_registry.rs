@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 struct Cla {
-    ident: String,
+    name: String,
     protocol: String,
     endpoint: Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>,
 }
@@ -53,9 +53,9 @@ impl ClaRegistry {
             token = Alphanumeric.sample_string(&mut rng, 16);
         }
 
-        // Do a linear search for re-registration with the same ident
+        // Do a linear search for re-registration with the same name
         for (k, cla) in clas.iter_mut() {
-            if cla.ident == request.ident {
+            if cla.name == request.name {
                 cla.endpoint = endpoint;
                 return Ok(RegisterClaResponse { token: k.clone() });
             }
@@ -65,7 +65,7 @@ impl ClaRegistry {
             token.clone(),
             Cla {
                 protocol: request.protocol,
-                ident: request.ident,
+                name: request.name,
                 endpoint,
             },
         );
@@ -110,6 +110,6 @@ impl ClaRegistry {
             .log_expect("Failed to read-lock CLA mutex")
             .get(token)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
-            .map(|cla| (cla.protocol.clone(), cla.ident.clone()))
+            .map(|cla| (cla.protocol.clone(), cla.name.clone()))
     }
 }

@@ -47,12 +47,12 @@ impl ClaSink for Service {
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
         let request = request.into_inner();
-        let (protocol, ident) = self.cla_registry.lookup(&request.token)?;
+        let (protocol, name) = self.cla_registry.lookup(&request.token)?;
         self.ingress
             .receive(
-                Some(ingress::ClaSource {
+                Some(ingress::ClaAddress {
                     protocol,
-                    ident,
+                    name,
                     address: request.address,
                 }),
                 request.bundle,

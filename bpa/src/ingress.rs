@@ -1,9 +1,10 @@
 use super::*;
 use tokio::sync::mpsc::*;
 
-pub struct ClaSource {
+#[derive(Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct ClaAddress {
     pub protocol: String,
-    pub ident: String,
+    pub name: String,
     pub address: Vec<u8>,
 }
 
@@ -24,7 +25,7 @@ impl Config {
 pub struct Ingress {
     config: Config,
     store: store::Store,
-    receive_channel: Sender<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
+    receive_channel: Sender<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
     restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
     dispatcher: dispatcher::Dispatcher,
     fib: Option<fib::Fib>,
@@ -71,7 +72,7 @@ impl Ingress {
 
     pub async fn receive(
         &self,
-        from: Option<ClaSource>,
+        from: Option<ClaAddress>,
         data: Vec<u8>,
     ) -> Result<(), anyhow::Error> {
         // Capture received_at as soon as possible
@@ -113,7 +114,7 @@ impl Ingress {
 
     async fn pipeline_pump(
         self,
-        mut receive_channel: Receiver<(Option<ClaSource>, String, Option<time::OffsetDateTime>)>,
+        mut receive_channel: Receiver<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
         mut restart_channel: Receiver<(bundle::Metadata, bundle::Bundle)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
@@ -153,7 +154,7 @@ impl Ingress {
 
     async fn receive_bundle(
         &self,
-        from: Option<ClaSource>,
+        from: Option<ClaAddress>,
         storage_name: String,
         received_at: Option<time::OffsetDateTime>,
     ) -> Result<(), anyhow::Error> {
@@ -217,7 +218,7 @@ impl Ingress {
 
     async fn process_bundle(
         &self,
-        from: Option<ClaSource>,
+        from: Option<ClaAddress>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
@@ -285,13 +286,14 @@ impl Ingress {
             /* By the time we get here, we are pretty confident that the bundle isn't garbage
              * So we can confidently add routes if forwarding is enabled */
             if let (Some(from), Some(fib)) = (&from, &self.fib) {
-                // Record a route to 'from.address' via 'from.ident'
-                fib.add_action(
-                    fib::Entry::Cla {
+                // Record a route to 'from.address' via 'from.name'
+                let _ = fib.add(
+                    fib::Destination::Cla(from.clone()),
+                    0,
+                    fib::Action::Forward {
                         protocol: from.protocol.clone(),
                         address: from.address.clone(),
                     },
-                    fib::Action::Forward(from.ident.clone()),
                 );
 
                 // Record a route to 'previous_node' via 'from.address'
@@ -300,15 +302,7 @@ impl Ingress {
                     .clone()
                     .unwrap_or(bundle.id.source.clone())
                     .try_into()
-                    .map(|p| {
-                        fib.add_action(
-                            p,
-                            fib::Action::Via(fib::Entry::Cla {
-                                protocol: from.protocol.clone(),
-                                address: from.address.clone(),
-                            }),
-                        )
-                    });
+                    .map(|p| fib.add(p, 0, fib::Action::Via(fib::Destination::Cla(from.clone()))));
             }
         }
 

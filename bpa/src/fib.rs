@@ -1,14 +1,11 @@
 use super::*;
 use base64::prelude::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub enum Entry {
-    Cla {
-        protocol: String,
-        address: Vec<u8>,
-    },
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Destination {
+    Cla(ingress::ClaAddress),
     Ipn2 {
         allocator_id: u32,
         node_number: u32,
@@ -25,38 +22,44 @@ pub enum Entry {
     },
 }
 
-impl std::fmt::Display for Entry {
+impl std::fmt::Display for Destination {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Entry::Cla { protocol, address } => {
-                write!(f, "{protocol}: {}", BASE64_STANDARD_NO_PAD.encode(address))
+            Destination::Cla(a) => {
+                write!(
+                    f,
+                    "{}: {}/{}",
+                    a.name,
+                    a.protocol,
+                    BASE64_STANDARD_NO_PAD.encode(&a.address)
+                )
             }
-            Entry::Ipn2 {
+            Destination::Ipn2 {
                 allocator_id: 0,
                 node_number,
                 service_number,
             }
-            | Entry::Ipn3 {
+            | Destination::Ipn3 {
                 allocator_id: 0,
                 node_number,
                 service_number,
             } => write!(f, "ipn:{node_number}.{service_number}"),
-            Entry::Ipn2 {
+            Destination::Ipn2 {
                 allocator_id,
                 node_number,
                 service_number,
             }
-            | Entry::Ipn3 {
+            | Destination::Ipn3 {
                 allocator_id,
                 node_number,
                 service_number,
             } => write!(f, "ipn:{allocator_id}.{node_number}.{service_number}"),
-            Entry::Dtn { node_name, demux } => write!(f, "dtn://{node_name}/{demux}"),
+            Destination::Dtn { node_name, demux } => write!(f, "dtn://{node_name}/{demux}"),
         }
     }
 }
 
-impl TryFrom<bundle::Eid> for Entry {
+impl TryFrom<bundle::Eid> for Destination {
     type Error = anyhow::Error;
 
     fn try_from(value: bundle::Eid) -> Result<Self, Self::Error> {
@@ -89,17 +92,30 @@ impl TryFrom<bundle::Eid> for Entry {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
-    Drop,
-    Forward(String), // Forward to CLA by token
-    Via(Entry),      // Recursive lookup
-    Store,
+    Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
+    Wait,                                         // Wait for later availability
+    Forward { protocol: String, address: Vec<u8> }, // Forward to CLA by protocol + address
+    Via(Destination),                             // Recursive lookup
 }
 
-type Table = BTreeMap<Entry, Vec<Action>>;
+#[derive(Clone)]
+pub enum ForwardAction {
+    Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
+    Wait,                                         // Wait for later availability
+    Forward(ingress::ClaAddress),                 // Forward to CLA by name
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct TableEntry {
+    priority: u32,
+    action: Action,
+}
+
+type Table = HashMap<Destination, Vec<TableEntry>>;
 
 #[derive(Clone)]
 pub struct Fib {
-    actions: Arc<RwLock<Table>>,
+    entries: Arc<RwLock<Table>>,
 }
 
 impl Fib {
@@ -108,99 +124,114 @@ impl Fib {
             .log_expect("Invalid 'forwarding' value in configuration")
         {
             Some(Self {
-                actions: Default::default(),
+                entries: Default::default(),
             })
         } else {
             None
         }
     }
 
-    pub fn add_action(&self, to: Entry, action: Action) {
-        let mut table = self
-            .actions
-            .write()
-            .log_expect("Failed to write-lock actions mutex");
+    pub fn add(&self, to: Destination, priority: u32, action: Action) -> Result<(), anyhow::Error> {
+        // Validate CLA actions
+        if let Action::Forward {
+            protocol,
+            address: _,
+        } = &action
+        {
+            if let Destination::Cla(a) = &to {
+                if &a.protocol != protocol {
+                    return Err(anyhow!(
+                        "Must forward CLA addresses to CLAs of the same protocol"
+                    ));
+                }
+            } else {
+                return Err(anyhow!("Must forward CLA addresses to CLAs"));
+            };
+        }
 
-        if let Some(actions) = table.get_mut(&to) {
-            if actions.binary_search(&action).is_err() {
-                actions.push(action);
-                actions.sort();
+        let mut table = self
+            .entries
+            .write()
+            .log_expect("Failed to write-lock entries mutex");
+
+        let entry = TableEntry { priority, action };
+        if let Some(entries) = table.get_mut(&to) {
+            if entries.binary_search(&entry).is_err() {
+                entries.push(entry);
+                entries.sort();
             }
         } else {
-            table.insert(to, vec![action]);
+            table.insert(to, vec![entry]);
         }
+        Ok(())
     }
 
-    pub fn lookup(&self, to: &Entry) -> Vec<Action> {
-        let mut actions = {
-            // Scope lock
-            let table = self
-                .actions
-                .read()
-                .log_expect("Failed to read-lock actions mutex");
+    pub fn lookup(&self, to: &Destination) -> Vec<ForwardAction> {
+        let table = self
+            .entries
+            .read()
+            .log_expect("Failed to read-lock entries mutex");
 
-            lookup_recurse(
-                &table,
-                table.get(to).unwrap_or(&Vec::new()),
-                &mut HashSet::new(),
-                0,
-            )
-        };
-
-        // Sort by precedence
-        actions.sort_unstable_by(action_precedence);
-
-        // De-duplicate using the same sort order
-        actions.dedup_by(|a1, a2| action_precedence(a1, a2).is_eq());
-
-        // Remove the depth component
-        actions.into_iter().map(|(_, a)| a).collect()
-    }
-}
-
-fn action_precedence(a1: &(usize, Action), a2: &(usize, Action)) -> std::cmp::Ordering {
-    match (a1, a2) {
-        ((d1, Action::Forward(f1)), (d2, Action::Forward(f2))) => {
-            /* Account for depth first */
-            d1.cmp(d2).then(f1.cmp(f2))
-        }
-        ((d1, Action::Via(e1)), (d2, Action::Via(e2))) => {
-            /* Account for depth first */
-            d1.cmp(d2).then(e1.cmp(e2))
-        }
-        ((_, a1), (_, a2)) => {
-            /* Depth is irrelevant */
-            a1.cmp(a2)
-        }
+        lookup_recurse(&table, to, &mut HashSet::new())
     }
 }
 
 fn lookup_recurse<'a>(
     table: &'a Table,
-    actions: &'a [Action],
-    trail: &mut HashSet<&'a Entry>,
-    depth: usize,
-) -> Vec<(usize, Action)> {
-    let mut new_actions = Vec::new();
-    for action in actions {
-        if let Action::Via(via) = action {
-            // Check for recursive Via
-            if trail.insert(via) {
-                if let Some(actions) = table.get(via) {
-                    new_actions.extend(lookup_recurse(table, actions, trail, depth + 1));
-                } else if let Entry::Cla {
-                    protocol: _,
-                    address: _,
-                } = via
-                {
-                    // We allow CLA Via's to remain
-                    new_actions.push((depth, action.clone()));
+    to: &'a Destination,
+    trail: &mut HashSet<&'a Destination>,
+) -> Vec<ForwardAction> {
+    let mut new_entries = Vec::new();
+    if trail.insert(to) {
+        if let Some(entries) = table.get(to) {
+            let mut priority = None;
+            for entry in entries {
+                // Ensure we equal priority if we have multiple actions (ECMP)
+                if let Some(priority) = priority {
+                    if priority < entry.priority {
+                        break;
+                    }
                 }
-                trail.remove(via);
+
+                match &entry.action {
+                    Action::Via(via) => {
+                        let entries = lookup_recurse(table, via, trail);
+                        match entries.first() {
+                            Some(ForwardAction::Forward(_)) => new_entries.extend(entries),
+                            Some(action) => {
+                                // Drop and Store trump everything else
+                                new_entries = vec![action.clone()];
+                                break;
+                            }
+                            None => {}
+                        }
+                    }
+                    Action::Forward {
+                        protocol,
+                        address: _,
+                    } => {
+                        if let Destination::Cla(a) = &to {
+                            if &a.protocol == protocol {
+                                new_entries.push(ForwardAction::Forward(a.clone()))
+                            }
+                        }
+                    }
+                    Action::Drop(reason) => {
+                        new_entries = vec![ForwardAction::Drop(*reason)];
+                        break;
+                    }
+                    Action::Wait => {
+                        new_entries = vec![ForwardAction::Wait];
+                        break;
+                    }
+                }
+
+                if !new_entries.is_empty() {
+                    priority = Some(entry.priority);
+                }
             }
-        } else {
-            new_actions.push((depth, action.clone()))
         }
+        trail.remove(to);
     }
-    new_actions
+    new_entries
 }
