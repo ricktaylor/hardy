@@ -150,7 +150,7 @@ impl Dispatcher {
 
         if let bundle::BundleStatus::CollectionPending = &metadata.status {
             // Check if we have a local service registered
-            if let Some(endpoint) = self.app_registry.lookup_by_eid(&bundle.destination) {
+            if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.destination) {
                 // Notify that the bundle is ready
                 endpoint.collection_notify(&bundle.id).await;
             }
@@ -178,7 +178,7 @@ impl Dispatcher {
                         bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
                     ))],
                     |entry| {
-                        let mut actions = fib.lookup(&entry);
+                        let mut actions = fib.find(&entry);
                         if actions.is_empty() {
                             /* Return the bundle to the source, either via 'from' if possible,
                              * Or by checking the 'previous_node' or 'bundle.source' */
@@ -191,7 +191,7 @@ impl Dispatcher {
                                 .try_into()
                             {
                                 // Try the previous_node
-                                fib.lookup(&entry);
+                                fib.find(&entry);
                             }
                         }
                         actions

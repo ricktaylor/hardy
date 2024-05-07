@@ -6,13 +6,20 @@ use std::sync::{Arc, RwLock};
 
 struct Cla {
     name: String,
+    ident: String,
     protocol: String,
     endpoint: Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>,
 }
 
+#[derive(Default)]
+struct Indexes {
+    clas_by_name: HashMap<String, Arc<Cla>>,
+    clas_by_token: HashMap<String, Arc<Cla>>,
+}
+
 #[derive(Default, Clone)]
 pub struct ClaRegistry {
-    clas: Arc<RwLock<HashMap<String, Cla>>>,
+    clas: Arc<RwLock<Indexes>>,
 }
 
 impl ClaRegistry {
@@ -49,26 +56,29 @@ impl ClaRegistry {
             .log_expect("Failed to write-lock CLA mutex");
 
         // Check token is unique
-        while clas.contains_key(&token) {
+        while clas.clas_by_token.contains_key(&token) {
             token = Alphanumeric.sample_string(&mut rng, 16);
         }
 
         // Do a linear search for re-registration with the same name
-        for (k, cla) in clas.iter_mut() {
-            if cla.name == request.name {
-                cla.endpoint = endpoint;
-                return Ok(RegisterClaResponse { token: k.clone() });
+        for (_, cla) in clas.clas_by_token.iter_mut() {
+            if cla.ident != request.ident {
+                return Err(tonic::Status::already_exists(format!(
+                    "CLA {} already registered",
+                    request.ident
+                )));
             }
         }
 
-        clas.insert(
-            token.clone(),
-            Cla {
-                protocol: request.protocol,
-                name: request.name,
-                endpoint,
-            },
-        );
+        let cla = Arc::new(Cla {
+            name: request.name.clone(),
+            ident: request.ident,
+            protocol: request.protocol,
+            endpoint,
+        });
+
+        clas.clas_by_token.insert(token.clone(), cla.clone());
+        clas.clas_by_name.insert(request.name, cla);
         Ok(RegisterClaResponse { token })
     }
 
@@ -76,10 +86,14 @@ impl ClaRegistry {
         &self,
         request: UnregisterClaRequest,
     ) -> Result<UnregisterClaResponse, tonic::Status> {
-        self.clas
+        let mut clas = self
+            .clas
             .write()
-            .log_expect("Failed to write-lock CLA mutex")
+            .log_expect("Failed to write-lock CLA mutex");
+
+        clas.clas_by_token
             .remove(&request.token)
+            .and_then(|cla| clas.clas_by_name.remove(&cla.name))
             .ok_or(tonic::Status::not_found("No such CLA registered"))
             .map(|_| UnregisterClaResponse {})
     }
@@ -91,7 +105,7 @@ impl ClaRegistry {
         {
             // Scope the read-lock
             let clas = self.clas.read().log_expect("Failed to read-lock CLA mutex");
-            match clas.get(&request.token) {
+            match clas.clas_by_token.get(&request.token) {
                 None => return Ok(false),
                 Some(cla) => cla.endpoint.clone(),
             }
@@ -104,10 +118,11 @@ impl ClaRegistry {
         .map(|_| true)
     }
 
-    pub fn lookup(&self, token: &str) -> Result<(String, String), tonic::Status> {
+    pub fn find_by_token(&self, token: &str) -> Result<(String, String), tonic::Status> {
         self.clas
             .read()
             .log_expect("Failed to read-lock CLA mutex")
+            .clas_by_token
             .get(token)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
             .map(|cla| (cla.protocol.clone(), cla.name.clone()))

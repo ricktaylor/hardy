@@ -47,7 +47,7 @@ impl ClaSink for Service {
         request: Request<ForwardBundleRequest>,
     ) -> Result<Response<ForwardBundleResponse>, Status> {
         let request = request.into_inner();
-        let (protocol, name) = self.cla_registry.lookup(&request.token)?;
+        let (protocol, name) = self.cla_registry.find_by_token(&request.token)?;
         self.ingress
             .receive(
                 Some(ingress::ClaAddress {

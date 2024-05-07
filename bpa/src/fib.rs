@@ -166,17 +166,17 @@ impl Fib {
         Ok(())
     }
 
-    pub fn lookup(&self, to: &Destination) -> Vec<ForwardAction> {
+    pub fn find(&self, to: &Destination) -> Vec<ForwardAction> {
         let table = self
             .entries
             .read()
             .log_expect("Failed to read-lock entries mutex");
 
-        lookup_recurse(&table, to, &mut HashSet::new())
+        find_recurse(&table, to, &mut HashSet::new())
     }
 }
 
-fn lookup_recurse<'a>(
+fn find_recurse<'a>(
     table: &'a Table,
     to: &'a Destination,
     trail: &mut HashSet<&'a Destination>,
@@ -195,7 +195,7 @@ fn lookup_recurse<'a>(
 
                 match &entry.action {
                     Action::Via(via) => {
-                        let entries = lookup_recurse(table, via, trail);
+                        let entries = find_recurse(table, via, trail);
                         match entries.first() {
                             Some(ForwardAction::Forward(_)) => new_entries.extend(entries),
                             Some(action) => {

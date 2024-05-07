@@ -13,7 +13,7 @@ message RegisterApplicationRequest {
         string DtnService = 1;  /* dtn scheme service name */
         uint32 IpnServiceNumber = 2;  /* ipn service number to be registered under node number of BPA node-id */
     }
-    string Name = 3;
+    string Ident = 3;
     optional string GrpcAddress = 4;
 }
 

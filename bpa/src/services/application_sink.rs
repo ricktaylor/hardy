@@ -44,7 +44,7 @@ impl ApplicationSink for Service {
 
     async fn send(&self, request: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
         let request = request.into_inner();
-        let eid = self.app_registry.lookup_by_token(&request.token)?;
+        let eid = self.app_registry.find_by_token(&request.token)?;
         self.dispatcher
             .local_dispatch(eid, request)
             .await

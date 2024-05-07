@@ -13,18 +13,17 @@ pub struct Endpoint {
     token: String,
 }
 
-#[derive(Clone)]
 struct Application {
     eid: bundle::Eid,
     token: String,
-    name: String,
+    ident: String,
     endpoint: Option<Channel>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 struct Indexes {
-    applications_by_eid: HashMap<bundle::Eid, Application>,
-    applications_by_token: HashMap<String, Application>,
+    applications_by_eid: HashMap<bundle::Eid, Arc<Application>>,
+    applications_by_token: HashMap<String, Arc<Application>>,
 }
 
 #[derive(Clone)]
@@ -123,7 +122,7 @@ impl AppRegistry {
 
         if request.endpoint.is_some() {
             if let Some(application) = applications.applications_by_eid.get(&eid) {
-                if application.name != request.name {
+                if application.ident != request.ident {
                     return Err(tonic::Status::already_exists(format!(
                         "Endpoint {} already registered",
                         eid
@@ -136,12 +135,12 @@ impl AppRegistry {
             token,
             endpoint_id: eid.to_string(),
         };
-        let app = Application {
+        let app = Arc::new(Application {
             eid,
-            name: request.name,
+            ident: request.ident,
             token: response.token.clone(),
             endpoint,
-        };
+        });
         applications
             .applications_by_eid
             .insert(app.eid.clone(), app.clone());
@@ -151,7 +150,10 @@ impl AppRegistry {
         Ok(response)
     }
 
-    pub fn unregister(&self, request: UnregisterApplicationRequest) -> Result<(), tonic::Status> {
+    pub fn unregister(
+        &self,
+        request: UnregisterApplicationRequest,
+    ) -> Result<UnregisterApplicationResponse, tonic::Status> {
         let mut applications = self
             .applications
             .write()
@@ -162,10 +164,10 @@ impl AppRegistry {
             .remove(&request.token)
             .and_then(|app| applications.applications_by_eid.remove(&app.eid))
             .ok_or(tonic::Status::not_found("No such application registered"))
-            .map(|_| ())
+            .map(|_| UnregisterApplicationResponse {})
     }
 
-    pub fn lookup_by_token(&self, token: &str) -> Result<bundle::Eid, tonic::Status> {
+    pub fn find_by_token(&self, token: &str) -> Result<bundle::Eid, tonic::Status> {
         self.applications
             .read()
             .log_expect("Failed to read-lock applications mutex")
@@ -175,7 +177,7 @@ impl AppRegistry {
             .map(|app| app.eid.clone())
     }
 
-    pub fn lookup_by_eid(&self, eid: &bundle::Eid) -> Option<Endpoint> {
+    pub fn find_by_eid(&self, eid: &bundle::Eid) -> Option<Endpoint> {
         self.applications
             .read()
             .log_expect("Failed to read-lock applications mutex")

@@ -9,9 +9,10 @@ service cla_sink {
 }
 
 message RegisterClaRequest {
-    string Protocol = 1;
-    string Name = 2;
-    string GrpcAddress = 3;
+    string Name = 1;
+    string Ident = 2;
+    string Protocol = 3;
+    string GrpcAddress = 4;
 }
 
 message RegisterClaResponse {
