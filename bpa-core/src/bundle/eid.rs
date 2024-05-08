@@ -57,7 +57,7 @@ impl Eid {
 
     fn parse_ipn_eid(value: &mut cbor::decode::Array) -> Result<Eid, anyhow::Error> {
         if value.count().is_none() {
-            log::info!("Parsing IPN EID as indefinite array");
+            log::info!("Parsing ipn EID as indefinite array");
         }
 
         let v1 = value.parse::<u64>()?;
@@ -67,17 +67,17 @@ impl Eid {
             if let Some(v3) = value.try_parse::<u64>()? {
                 if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
                     return Err(anyhow!(
-                        "Invalid IPN EID components: {}, {}, {}",
+                        "Invalid ipn EID components: {}, {}, {}",
                         v1,
                         v2,
                         v3
                     ));
                 }
-                value.end_or_else(|| anyhow!("Additional items found in IPN EID array"))?;
+                value.end_or_else(|| anyhow!("Additional items found in ipn EID array"))?;
                 (3, v1 as u32, v2 as u32, v3 as u32)
             } else {
                 if v2 >= 2 ^ 32 {
-                    return Err(anyhow!("Invalid IPN EID service number {}", v2));
+                    return Err(anyhow!("Invalid ipn EID service number {}", v2));
                 }
                 (
                     2,
@@ -180,7 +180,7 @@ impl cbor::decode::FromCbor for Eid {
                 match (schema, value) {
                     (1, value) => Self::parse_dtn_eid(value),
                     (2, cbor::decode::Value::Array(a)) => Self::parse_ipn_eid(a),
-                    (2, _) => Err(anyhow!("IPN EIDs must be encoded as a CBOR array")),
+                    (2, _) => Err(anyhow!("ipn EIDs must be encoded as a CBOR array")),
                     _ => Err(anyhow!("Unsupported EID scheme {}", schema)),
                 }
             })?;
