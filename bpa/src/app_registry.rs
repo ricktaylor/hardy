@@ -200,7 +200,8 @@ impl Endpoint {
                     token: self.token.clone(),
                     bundle_id: bundle_id.to_key(),
                 }))
-                .await;
+                .await
+                .inspect_err(|s| log::warn!("collection_notify failed: {}", s));
         }
     }
 }

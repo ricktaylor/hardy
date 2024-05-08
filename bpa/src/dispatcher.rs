@@ -27,15 +27,18 @@ pub struct Dispatcher {
         bundle::Metadata,
         bundle::Bundle,
     )>,
+    cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
     fib: Option<fib::Fib>,
 }
 
 impl Dispatcher {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &config::Config,
         node_id: node_id::NodeId,
         store: store::Store,
+        cla_registry: cla_registry::ClaRegistry,
         app_registry: app_registry::AppRegistry,
         fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
@@ -50,6 +53,7 @@ impl Dispatcher {
             config,
             store,
             tx,
+            cla_registry,
             app_registry,
             fib,
         };
@@ -200,24 +204,47 @@ impl Dispatcher {
             },
         );
 
-        match actions.first().unwrap_or(&fib::ForwardAction::Drop(Some(
-            bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
-        ))) {
-            fib::ForwardAction::Drop(reason) => {
-                if let Some(reason) = reason {
-                    self.report_bundle_deletion(&metadata, &bundle, *reason)
-                        .await?;
-                }
-                self.store.remove(&metadata.storage_name).await
-            }
-            fib::ForwardAction::Wait => todo!(),
-            fib::ForwardAction::Forward(a) => {
+        // Perform action
+        let reason = match actions.first() {
+            Some(fib::ForwardAction::Drop(reason)) => *reason,
+            Some(fib::ForwardAction::Wait) => todo!(),
+            Some(fib::ForwardAction::Forward(a)) => {
                 if actions.len() > 1 {
                     // TODO Equal cost multi-path?!?!
                 }
-                todo!()
+
+                if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
+                    match self.store.load_data(&metadata.storage_name).await {
+                        Ok(data) => {
+                            let Err(e) = endpoint
+                                .forward_bundle(a.address.clone(), (*data).as_ref().to_vec())
+                                .await
+                            else {
+                                return Ok(());
+                            };
+                            log::warn!("{}", e);
+                            Some(bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute)
+                        }
+                        Err(e) => {
+                            // The data has gone - report something at least!
+                            log::warn!("Failed to load bundle data: {}", e);
+                            Some(bundle::StatusReportReasonCode::DepletedStorage)
+                        }
+                    }
+                } else {
+                    // We were expecting a CLA for the route?!?
+                    Some(bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute)
+                }
             }
+            None => Some(bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
+        };
+
+        // If we get here, then we want to drop
+        if let Some(reason) = reason {
+            self.report_bundle_deletion(&metadata, &bundle, reason)
+                .await?;
         }
+        self.store.remove(&metadata.storage_name).await
     }
 
     pub async fn report_bundle_reception(

@@ -4,11 +4,19 @@ use rand::distributions::{Alphanumeric, DistString};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+type Channel = Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>;
+
+pub struct Endpoint {
+    inner: Channel,
+    token: String,
+}
+
 struct Cla {
+    token: String,
     name: String,
     ident: String,
     protocol: String,
-    endpoint: Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>,
+    endpoint: Channel,
 }
 
 #[derive(Default)]
@@ -71,6 +79,7 @@ impl ClaRegistry {
         }
 
         let cla = Arc::new(Cla {
+            token: token.clone(),
             name: request.name.clone(),
             ident: request.ident,
             protocol: request.protocol,
@@ -98,26 +107,6 @@ impl ClaRegistry {
             .map(|_| UnregisterClaResponse {})
     }
 
-    pub async fn forward_bundle(
-        &self,
-        request: ForwardBundleRequest,
-    ) -> Result<bool, tonic::Status> {
-        {
-            // Scope the read-lock
-            let clas = self.clas.read().log_expect("Failed to read-lock CLA mutex");
-            match clas.clas_by_token.get(&request.token) {
-                None => return Ok(false),
-                Some(cla) => cla.endpoint.clone(),
-            }
-        }
-        .lock()
-        .await
-        .forward_bundle(tonic::Request::new(request))
-        .await
-        .inspect_err(|e| log::warn!("Failed to forward bundle: {}", e))
-        .map(|_| true)
-    }
-
     pub fn find_by_token(&self, token: &str) -> Result<(String, String), tonic::Status> {
         self.clas
             .read()
@@ -126,5 +115,37 @@ impl ClaRegistry {
             .get(token)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
             .map(|cla| (cla.protocol.clone(), cla.name.clone()))
+    }
+
+    pub fn find_by_name(&self, name: &str) -> Option<Endpoint> {
+        self.clas
+            .read()
+            .log_expect("Failed to read-lock CLA mutex")
+            .clas_by_name
+            .get(name)
+            .map(|cla| Endpoint {
+                token: cla.token.clone(),
+                inner: cla.endpoint.clone(),
+            })
+    }
+}
+
+impl Endpoint {
+    pub async fn forward_bundle(
+        &self,
+        address: Vec<u8>,
+        bundle: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.inner
+            .lock()
+            .await
+            .forward_bundle(tonic::Request::new(ForwardBundleRequest {
+                token: self.token.clone(),
+                address,
+                bundle,
+            }))
+            .await
+            .map(|_| ())
+            .map_err(|s| s.into())
     }
 }
