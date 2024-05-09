@@ -341,7 +341,7 @@ impl Ingress {
         }
 
         // Just pass it on to the dispatcher to deal with
-        self.dispatcher.process_bundle(from, metadata, bundle).await
+        self.dispatcher.process_bundle(metadata, bundle).await
     }
 
     async fn check_extension_blocks(

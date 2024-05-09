@@ -7,6 +7,7 @@ use tokio::sync::mpsc::*;
 struct Config {
     node_id: node_id::NodeId,
     status_reports: bool,
+    max_forwarding_delay: u32,
 }
 
 impl Config {
@@ -14,6 +15,7 @@ impl Config {
         Ok(Self {
             node_id,
             status_reports: settings::get_with_default(config, "status_reports", false)?,
+            max_forwarding_delay: settings::get_with_default(config, "max_forwarding_delay", 5u32)?,
         })
     }
 }
@@ -22,11 +24,7 @@ impl Config {
 pub struct Dispatcher {
     config: Config,
     store: store::Store,
-    tx: Sender<(
-        Option<ingress::ClaAddress>,
-        bundle::Metadata,
-        bundle::Bundle,
-    )>,
+    tx: Sender<(bundle::Metadata, bundle::Bundle)>,
     cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
     fib: Option<fib::Fib>,
@@ -46,6 +44,14 @@ impl Dispatcher {
     ) -> Result<Self, anyhow::Error> {
         // Load config
         let config = Config::load(config, node_id)?;
+
+        if !config.status_reports {
+            log::info!("Bundle status reports are disabled by configuration");
+        }
+
+        if config.max_forwarding_delay == 0 {
+            log::info!("Forwarding synchronization delay disabled by configuration");
+        }
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
@@ -68,24 +74,16 @@ impl Dispatcher {
 
     async fn enqueue_bundle(
         &self,
-        from: Option<ingress::ClaAddress>,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
         // Put bundle into channel
-        self.tx
-            .send((from, metadata, bundle))
-            .await
-            .map_err(|e| e.into())
+        self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
     }
 
     async fn pipeline_pump(
         self,
-        mut rx: Receiver<(
-            Option<ingress::ClaAddress>,
-            bundle::Metadata,
-            bundle::Bundle,
-        )>,
+        mut rx: Receiver<(bundle::Metadata, bundle::Bundle)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -95,10 +93,10 @@ impl Dispatcher {
             tokio::select! {
                 bundle = rx.recv() => match bundle {
                     None => break,
-                    Some((from,metadata,bundle)) => {
+                    Some((metadata,bundle)) => {
                         let dispatcher = self.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(from,metadata,bundle).await.log_expect("Failed to process bundle");
+                            dispatcher.process_bundle(metadata,bundle).await.log_expect("Failed to process bundle");
                         });
                     }
                 },
@@ -115,7 +113,6 @@ impl Dispatcher {
 
     pub async fn process_bundle(
         &self,
-        from: Option<ingress::ClaAddress>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
@@ -140,7 +137,7 @@ impl Dispatcher {
         }
 
         if let bundle::BundleStatus::ForwardPending = &metadata.status {
-            return self.forward_bundle(from, metadata, bundle).await;
+            return self.forward_bundle(metadata, bundle).await;
         }
 
         if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
@@ -164,82 +161,133 @@ impl Dispatcher {
 
     async fn forward_bundle(
         &self,
-        from: Option<ingress::ClaAddress>,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
     ) -> Result<(), anyhow::Error> {
-        let actions = self.fib.as_ref().map_or(
+        let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
              * Therefore, we respond with a Destination endpoint ID unavailable report */
-            vec![fib::ForwardAction::Drop(Some(
-                bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-            ))],
-            |fib| {
-                // Lookup FIB entry, or Drop if not a valid next Destination
-                bundle.destination.clone().try_into().map_or(
-                    vec![fib::ForwardAction::Drop(Some(
-                        bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-                    ))],
-                    |entry| {
-                        let mut actions = fib.find(&entry);
-                        if actions.is_empty() {
-                            /* Return the bundle to the source, either via 'from' if possible,
-                             * Or by checking the 'previous_node' or 'bundle.source' */
-                            if let Some(from) = from {
-                                actions = vec![fib::ForwardAction::Forward(from)];
-                            } else if let Ok(entry) = bundle
-                                .previous_node
-                                .clone()
-                                .unwrap_or(bundle.id.source.clone())
-                                .try_into()
-                            {
-                                // Try the previous_node
-                                fib.find(&entry);
-                            }
-                        }
-                        actions
-                    },
+            return self
+                .drop_bundle(
+                    metadata,
+                    bundle,
+                    Some(bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable),
                 )
-            },
-        );
-
-        // Perform action
-        let reason = match actions.first() {
-            Some(fib::ForwardAction::Drop(reason)) => *reason,
-            Some(fib::ForwardAction::Wait) => todo!(),
-            Some(fib::ForwardAction::Forward(a)) => {
-                if actions.len() > 1 {
-                    // TODO Equal cost multi-path?!?!
-                }
-
-                if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
-                    match self.store.load_data(&metadata.storage_name).await {
-                        Ok(data) => {
-                            let Err(e) = endpoint
-                                .forward_bundle(a.address.clone(), (*data).as_ref().to_vec())
-                                .await
-                            else {
-                                return Ok(());
-                            };
-                            log::warn!("{}", e);
-                            Some(bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute)
-                        }
-                        Err(e) => {
-                            // The data has gone - report something at least!
-                            log::warn!("Failed to load bundle data: {}", e);
-                            Some(bundle::StatusReportReasonCode::DepletedStorage)
-                        }
-                    }
-                } else {
-                    // We were expecting a CLA for the route?!?
-                    Some(bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute)
-                }
-            }
-            None => Some(bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
+                .await;
         };
 
-        // If we get here, then we want to drop
+        // Resolve destination
+        let Ok(mut destination) = bundle.destination.clone().try_into() else {
+            // Bundle destination is not a valid next-hop
+            return self
+                .drop_bundle(
+                    metadata,
+                    bundle,
+                    Some(bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable),
+                )
+                .await;
+        };
+
+        /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
+         * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
+        let mut data = None;
+        let mut previous = false;
+        let mut retries = 0;
+        let mut actions = fib.find(&destination).into_iter();
+        let reason = loop {
+            // Lookup/Perform actions
+            match actions.next() {
+                Some(fib::ForwardAction::Drop(reason)) => break reason,
+                Some(fib::ForwardAction::Wait) => todo!(),
+                Some(fib::ForwardAction::Forward(a)) => {
+                    if retries > self.config.max_forwarding_delay {
+                        // We have delayed long enough trying to forward
+                        break Some(
+                            bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+                        );
+                    }
+
+                    // Find the named CLA
+                    if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
+                        // Get bundle data from store
+                        if data.is_none() {
+                            data = match self.store.load_data(&metadata.storage_name).await {
+                                Ok(data) => Some((*data).as_ref().to_vec()),
+                                Err(e) => {
+                                    // The bundle data has gone!
+                                    log::warn!("Failed to load bundle data: {}", e);
+                                    return self
+                                        .drop_bundle(
+                                            metadata,
+                                            bundle,
+                                            Some(bundle::StatusReportReasonCode::DepletedStorage),
+                                        )
+                                        .await;
+                                }
+                            };
+                        }
+
+                        if endpoint
+                            .forward_bundle(a.address.clone(), data.clone().unwrap())
+                            .await
+                            .inspect_err(|e| log::warn!("{}", e))
+                            .is_ok()
+                        {
+                            // We have successfully forwarded!
+                            return Ok(());
+                        }
+                    }
+                }
+                None => {
+                    if retries > self.config.max_forwarding_delay {
+                        if previous {
+                            // We have delayed long enough trying to find a route to previous_node
+                            break Some(
+                                bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
+                            );
+                        }
+
+                        // Return the bundle to the source via the 'previous_node' or 'bundle.source'
+                        if let Ok(previous_node) = bundle
+                            .previous_node
+                            .clone()
+                            .unwrap_or(bundle.id.source.clone())
+                            .try_into()
+                        {
+                            // Try the previous_node
+                            destination = previous_node;
+                        } else {
+                            // Previous node is not a valid next-hop
+                            break Some(
+                                bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
+                            );
+                        }
+
+                        // Reset retry counter as we are attempting to return the bundle
+                        previous = true;
+                        retries = 0;
+                    } else {
+                        // Async sleep for 1 second
+                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                        retries = retries.saturating_add(1);
+                    }
+
+                    // Lookup again
+                    actions = fib.find(&destination).into_iter();
+                }
+            }
+        };
+
+        self.drop_bundle(metadata, bundle, reason).await
+    }
+
+    async fn drop_bundle(
+        &self,
+        metadata: bundle::Metadata,
+        bundle: bundle::Bundle,
+        reason: Option<bundle::StatusReportReasonCode>,
+    ) -> Result<(), anyhow::Error> {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&metadata, &bundle, reason)
                 .await?;
@@ -270,7 +318,7 @@ impl Dispatcher {
             .await?;
 
         // And queue it up
-        self.enqueue_bundle(None, metadata, bundle).await
+        self.enqueue_bundle(metadata, bundle).await
     }
 
     pub async fn report_bundle_deletion(
@@ -301,7 +349,7 @@ impl Dispatcher {
             .await?;
 
         // And queue it up
-        self.enqueue_bundle(None, metadata, bundle).await
+        self.enqueue_bundle(metadata, bundle).await
     }
 
     pub async fn local_dispatch(
@@ -339,7 +387,7 @@ impl Dispatcher {
         let (metadata, bundle) = b.add_payload_block(request.data).build(&self.store).await?;
 
         // And queue it up
-        self.enqueue_bundle(None, metadata, bundle).await
+        self.enqueue_bundle(metadata, bundle).await
     }
 
     async fn reassemble(
