@@ -3,6 +3,8 @@ use hardy_cbor as cbor;
 use hardy_proto::application::*;
 use tokio::sync::mpsc::*;
 
+const INLINE_WAIT_SECS: u64 = 60;
+
 #[derive(Clone)]
 struct Config {
     node_id: node_id::NodeId,
@@ -201,7 +203,26 @@ impl Dispatcher {
             // Lookup/Perform actions
             match actions.next() {
                 Some(fib::ForwardAction::Drop(reason)) => break reason,
-                Some(fib::ForwardAction::Wait) => todo!(),
+                Some(fib::ForwardAction::Wait(until)) => {
+                    // See if we can just wait now, rather than delaying the whole dispatch process
+                    let wait = until - time::OffsetDateTime::now_utc();
+                    if wait <= std::time::Duration::new(INLINE_WAIT_SECS, 0) {
+                        let wait = if wait > std::time::Duration::from_secs(1) {
+                            tokio::time::Duration::from_secs(wait.whole_seconds() as u64)
+                        } else {
+                            tokio::time::Duration::from_secs(1)
+                        };
+
+                        // Just async sleep
+                        tokio::time::sleep(wait).await;
+
+                        // Loop again
+                        actions = fib.find(&destination).into_iter();
+                    } else {
+                        // Nothing more to do here, it will be picked up later
+                        return Ok(());
+                    }
+                }
                 Some(fib::ForwardAction::Forward(a)) => {
                     if retries > self.config.max_forwarding_delay {
                         // We have delayed long enough trying to forward
@@ -271,7 +292,7 @@ impl Dispatcher {
                         retries = 0;
                     } else {
                         // Async sleep for 1 second
-                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         retries = retries.saturating_add(1);
                     }
 

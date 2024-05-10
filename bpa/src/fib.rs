@@ -93,7 +93,7 @@ impl TryFrom<bundle::Eid> for Destination {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Wait,                                         // Wait for later availability
+    Wait(time::OffsetDateTime),                   // Wait for later availability
     Forward { protocol: String, address: Vec<u8> }, // Forward to CLA by protocol + address
     Via(Destination),                             // Recursive lookup
 }
@@ -101,7 +101,7 @@ pub enum Action {
 #[derive(Clone)]
 pub enum ForwardAction {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Wait,                                         // Wait for later availability
+    Wait(time::OffsetDateTime),                   // Wait for later availability
     Forward(ingress::ClaAddress),                 // Forward to CLA by name
 }
 
@@ -223,8 +223,8 @@ fn find_recurse<'a>(
                         new_entries = vec![ForwardAction::Drop(*reason)];
                         break;
                     }
-                    Action::Wait => {
-                        new_entries = vec![ForwardAction::Wait];
+                    Action::Wait(until) => {
+                        new_entries = vec![ForwardAction::Wait(*until)];
                         break;
                     }
                 }
