@@ -594,6 +594,7 @@ dependencies = [
  "serde",
  "time",
  "tokio",
+ "tracing",
  "winapi",
 ]
 
@@ -628,6 +629,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

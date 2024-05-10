@@ -8,7 +8,7 @@ pub struct BundleId {
     pub fragment_info: Option<FragmentInfo>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct FragmentInfo {
     pub offset: u64,
     pub total_len: u64,

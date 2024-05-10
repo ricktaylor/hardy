@@ -3,7 +3,7 @@ use base64::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Destination {
     Cla(ingress::ClaAddress),
     Ipn2 {
@@ -90,7 +90,7 @@ impl TryFrom<bundle::Eid> for Destination {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
     Wait,                                         // Wait for later availability
@@ -131,6 +131,7 @@ impl Fib {
         }
     }
 
+    #[instrument(skip(self))]
     pub fn add(&self, to: Destination, priority: u32, action: Action) -> Result<(), anyhow::Error> {
         // Validate CLA actions
         if let Action::Forward {
@@ -166,6 +167,7 @@ impl Fib {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub fn find(&self, to: &Destination) -> Vec<ForwardAction> {
         let table = self
             .entries
@@ -176,6 +178,7 @@ impl Fib {
     }
 }
 
+#[instrument(skip(table, trail))]
 fn find_recurse<'a>(
     table: &'a Table,
     to: &'a Destination,

@@ -40,6 +40,7 @@ impl AppRegistry {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn register(
         &self,
         request: RegisterApplicationRequest,
@@ -150,6 +151,7 @@ impl AppRegistry {
         Ok(response)
     }
 
+    #[instrument(skip(self))]
     pub fn unregister(
         &self,
         request: UnregisterApplicationRequest,
@@ -167,6 +169,7 @@ impl AppRegistry {
             .map(|_| UnregisterApplicationResponse {})
     }
 
+    #[instrument(skip(self))]
     pub fn find_by_token(&self, token: &str) -> Result<bundle::Eid, tonic::Status> {
         self.applications
             .read()
@@ -177,6 +180,7 @@ impl AppRegistry {
             .map(|app| app.eid.clone())
     }
 
+    #[instrument(skip(self))]
     pub fn find_by_eid(&self, eid: &bundle::Eid) -> Option<Endpoint> {
         self.applications
             .read()
@@ -191,6 +195,7 @@ impl AppRegistry {
 }
 
 impl Endpoint {
+    #[instrument(skip(self))]
     pub async fn collection_notify(&self, bundle_id: &bundle::BundleId) {
         if let Some(endpoint) = &self.inner {
             let _ = endpoint

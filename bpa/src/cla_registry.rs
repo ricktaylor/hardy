@@ -37,6 +37,7 @@ impl ClaRegistry {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn register(
         &self,
         request: RegisterClaRequest,
@@ -91,6 +92,7 @@ impl ClaRegistry {
         Ok(RegisterClaResponse { token })
     }
 
+    #[instrument(skip(self))]
     pub fn unregister(
         &self,
         request: UnregisterClaRequest,
@@ -107,6 +109,7 @@ impl ClaRegistry {
             .map(|_| UnregisterClaResponse {})
     }
 
+    #[instrument(skip(self))]
     pub fn find_by_token(&self, token: &str) -> Result<(String, String), tonic::Status> {
         self.clas
             .read()
@@ -117,6 +120,7 @@ impl ClaRegistry {
             .map(|cla| (cla.protocol.clone(), cla.name.clone()))
     }
 
+    #[instrument(skip(self))]
     pub fn find_by_name(&self, name: &str) -> Option<Endpoint> {
         self.clas
             .read()
@@ -131,6 +135,7 @@ impl ClaRegistry {
 }
 
 impl Endpoint {
+    #[instrument(skip(self))]
     pub async fn forward_bundle(
         &self,
         address: Vec<u8>,

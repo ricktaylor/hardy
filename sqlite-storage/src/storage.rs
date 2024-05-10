@@ -11,12 +11,14 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+use tracing::instrument;
 
 pub struct Storage {
     connection: Arc<Mutex<rusqlite::Connection>>,
 }
 
 impl Storage {
+    #[instrument(skip(config))]
     pub fn init(
         config: &HashMap<String, config::Value>,
         mut upgrade: bool,
@@ -292,6 +294,7 @@ fn complete_replace(
 
 #[async_trait]
 impl MetadataStorage for Storage {
+    #[instrument(skip_all)]
     fn check_orphans(
         &self,
         f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
@@ -355,6 +358,7 @@ impl MetadataStorage for Storage {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn restart(
         &self,
         f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
@@ -464,6 +468,7 @@ impl MetadataStorage for Storage {
             .map_err(|e| e.into())
     }
 
+    #[instrument(skip(self))]
     async fn store(
         &self,
         metadata: &bundle::Metadata,
@@ -562,6 +567,7 @@ impl MetadataStorage for Storage {
             .map_err(|e| e.into())
     }
 
+    #[instrument(skip(self))]
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
         // Delete
         self.connection
@@ -573,6 +579,7 @@ impl MetadataStorage for Storage {
             .map_err(|e| e.into())
     }
 
+    #[instrument(skip(self))]
     async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
         let mut conn = self
             .connection
@@ -614,6 +621,7 @@ impl MetadataStorage for Storage {
         Ok(true)
     }
 
+    #[instrument(skip(self))]
     async fn set_bundle_status(
         &self,
         storage_name: &str,
@@ -628,6 +636,7 @@ impl MetadataStorage for Storage {
             .map_err(|e| e.into())
     }
 
+    #[instrument(skip(self))]
     async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
         self.connection
             .lock()
@@ -641,6 +650,7 @@ impl MetadataStorage for Storage {
             .map_err(|e| e.into())
     }
 
+    #[instrument(skip(self))]
     async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
         let mut conn = self
             .connection

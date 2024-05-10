@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct BlockFlags {
     pub must_replicate: bool,
     pub report_on_failure: bool,

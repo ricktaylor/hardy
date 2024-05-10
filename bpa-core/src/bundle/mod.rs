@@ -10,6 +10,7 @@ mod crc;
 mod creation_timestamp;
 mod eid;
 
+#[derive(Debug)]
 pub struct Metadata {
     pub status: BundleStatus,
     pub storage_name: String,
@@ -17,13 +18,13 @@ pub struct Metadata {
     pub received_at: Option<time::OffsetDateTime>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct HopInfo {
     pub count: usize,
     pub limit: usize,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Bundle {
     // From Primary Block
     pub id: BundleId,
@@ -42,6 +43,7 @@ pub struct Bundle {
     pub blocks: std::collections::HashMap<u64, Block>,
 }
 
+#[derive(Debug)]
 pub struct Block {
     pub block_type: BlockType,
     pub flags: BlockFlags,

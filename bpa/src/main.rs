@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use log_err::*;
+use tracing::instrument;
 
 mod app_registry;
 mod bundle;
@@ -37,13 +38,13 @@ fn listen_for_cancel(
             _ = term_handler.recv() =>
                 {
                     // Signal stop
-                    log::info!("{} received terminate signal, stopping...", built_info::PKG_NAME);
+                    log::info!("Received terminate signal, stopping...");
                     cancel_token.cancel();
                 }
             _ = tokio::signal::ctrl_c() =>
                 {
                     // Signal stop
-                    log::info!("{} received CTRL+C, stopping...", built_info::PKG_NAME);
+                    log::info!("Received CTRL+C, stopping...");
                     cancel_token.cancel();
                 }
             _ = cancel_token.cancelled() => {}
@@ -60,7 +61,7 @@ async fn main() {
 
     // Init logger
     logger::init(&config);
-    log::info!("{} starting...", built_info::PKG_NAME);
+    log::info!("Version {} starting...", built_info::PKG_VERSION);
     log::info!("{}", config_source);
 
     // Get administrative_endpoint
@@ -126,11 +127,11 @@ async fn main() {
 
     // Wait for all tasks to finish
     if !cancel_token.is_cancelled() {
-        log::info!("{} started successfully", built_info::PKG_NAME);
+        log::info!("Started successfully");
     }
     while let Some(r) = task_set.join_next().await {
         r.log_expect("Task terminated unexpectedly")
     }
 
-    log::info!("{} stopped", built_info::PKG_NAME);
+    log::info!("Stopped");
 }

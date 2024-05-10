@@ -10,6 +10,7 @@ use std::{
     str::FromStr,
     sync::{Arc, Mutex},
 };
+use tracing::instrument;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -23,6 +24,7 @@ pub struct Storage {
 }
 
 impl Storage {
+    #[instrument(skip(config))]
     pub fn init(
         config: &HashMap<String, config::Value>,
     ) -> Result<Arc<dyn BundleStorage>, anyhow::Error> {
@@ -105,6 +107,7 @@ impl Storage {
     }
 
     #[allow(clippy::type_complexity)]
+    #[instrument(level = "debug", skip(self, f))]
     fn walk_dirs(
         &self,
         dir: &PathBuf,
@@ -165,6 +168,7 @@ impl Storage {
 
 #[async_trait]
 impl BundleStorage for Storage {
+    #[instrument(skip(self, f))]
     fn check_orphans(
         &self,
         f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
@@ -172,10 +176,12 @@ impl BundleStorage for Storage {
         self.walk_dirs(&self.store_root, f).map(|_| ())
     }
 
+    #[instrument(skip(self))]
     async fn load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error> {
         self.sync_load(storage_name)
     }
 
+    #[instrument(skip_all)]
     async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
         /*
         create a new temp file (on the same file system!)
@@ -204,6 +210,7 @@ impl BundleStorage for Storage {
             .to_string())
     }
 
+    #[instrument(skip(self))]
     async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
         match tokio::fs::remove_file(&file_path).await {
@@ -218,6 +225,7 @@ impl BundleStorage for Storage {
         }
     }
 
+    #[instrument(skip(self, data))]
     async fn replace(&self, storage_name: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
         /*
         create a new temp file (alongside the original)
@@ -238,6 +246,7 @@ impl BundleStorage for Storage {
     }
 }
 
+#[instrument(skip(data))]
 fn write(mut file_path: PathBuf, data: Vec<u8>) -> io::Result<()> {
     // Ensure directory exists
     create_dir_all(file_path.parent().unwrap())?;

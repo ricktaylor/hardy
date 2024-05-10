@@ -78,6 +78,7 @@ impl Store {
         self.bundle_storage.hash(data)
     }
 
+    #[instrument(skip_all)]
     pub async fn restart(
         &self,
         ingress: ingress::Ingress,
@@ -111,6 +112,7 @@ impl Store {
         .await?
     }
 
+    #[instrument(skip_all)]
     fn metadata_storage_restart(
         &self,
         ingress: ingress::Ingress,
@@ -127,6 +129,7 @@ impl Store {
         })
     }
 
+    #[instrument(skip_all)]
     fn metadata_storage_check(
         &self,
         dispatcher: dispatcher::Dispatcher,
@@ -156,6 +159,7 @@ impl Store {
             })
     }
 
+    #[instrument(skip_all)]
     fn bundle_storage_check(
         &self,
         ingress: ingress::Ingress,
@@ -201,6 +205,7 @@ impl Store {
         self.metadata_storage.store(metadata, bundle).await
     }
 
+    #[instrument(skip(self, data))]
     pub async fn store(
         &self,
         bundle: &bundle::Bundle,
@@ -239,6 +244,7 @@ impl Store {
         }
     }
 
+    #[instrument(skip(self, data))]
     pub async fn replace_data(
         &self,
         metadata: bundle::Metadata,
@@ -290,6 +296,7 @@ impl Store {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn delete(&self, storage_name: &str) -> Result<(), anyhow::Error> {
         // Entirely delete the bundle from the metadata and bundle stores
         self.bundle_storage.remove(storage_name).await?;
@@ -297,6 +304,7 @@ impl Store {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn remove(&self, storage_name: &str) -> Result<(), anyhow::Error> {
         // Delete the bundle from the bundle store
         self.bundle_storage.remove(storage_name).await?;

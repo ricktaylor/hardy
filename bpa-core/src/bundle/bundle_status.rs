@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum BundleStatus {
     IngressPending = 0,
     DispatchPending = 1,

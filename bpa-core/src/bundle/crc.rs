@@ -1,7 +1,7 @@
 use super::*;
 
 #[allow(non_camel_case_types)]
-#[derive(Copy, Clone, Default)]
+#[derive(Default, Debug, Copy, Clone)]
 pub enum CrcType {
     #[default]
     None = 0,

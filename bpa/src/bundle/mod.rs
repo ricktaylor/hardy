@@ -15,7 +15,7 @@ pub use editor::*;
 pub use hardy_bpa_core::bundle::*;
 pub use parse::parse;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StatusReportReasonCode {
     NoAdditionalInformation = 0,
     LifetimeExpired = 1,

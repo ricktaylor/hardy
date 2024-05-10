@@ -1,7 +1,7 @@
 use super::*;
 use tokio::sync::mpsc::*;
 
-#[derive(Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClaAddress {
     pub protocol: String,
     pub name: String,
@@ -70,6 +70,7 @@ impl Ingress {
         Ok(ingress)
     }
 
+    #[instrument(skip(self))]
     pub async fn receive(
         &self,
         from: Option<ClaAddress>,
@@ -152,6 +153,7 @@ impl Ingress {
         }
     }
 
+    #[instrument(skip(self))]
     async fn receive_bundle(
         &self,
         from: Option<ClaAddress>,
@@ -216,6 +218,7 @@ impl Ingress {
         self.process_bundle(from, metadata, bundle).await
     }
 
+    #[instrument(skip(self))]
     async fn process_bundle(
         &self,
         from: Option<ClaAddress>,

@@ -23,6 +23,7 @@ impl Service {
 
 #[tonic::async_trait]
 impl ClaSink for Service {
+    #[instrument(skip(self))]
     async fn register_cla(
         &self,
         request: Request<RegisterClaRequest>,
@@ -33,6 +34,7 @@ impl ClaSink for Service {
             .map(Response::new)
     }
 
+    #[instrument(skip(self))]
     async fn unregister_cla(
         &self,
         request: Request<UnregisterClaRequest>,
@@ -42,6 +44,7 @@ impl ClaSink for Service {
             .map(Response::new)
     }
 
+    #[instrument(skip(self))]
     async fn forward_bundle(
         &self,
         request: Request<ForwardBundleRequest>,
@@ -59,6 +62,7 @@ impl ClaSink for Service {
             )
             .await
             .map(|_| Response::new(ForwardBundleResponse {}))
+            .inspect_err(|e| log::info!("ingress receive failed: {}", e))
             .map_err(|e| Status::from_error(e.into()))
     }
 }

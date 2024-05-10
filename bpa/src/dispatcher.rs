@@ -111,6 +111,7 @@ impl Dispatcher {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn process_bundle(
         &self,
         mut metadata: bundle::Metadata,
@@ -159,6 +160,7 @@ impl Dispatcher {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn forward_bundle(
         &self,
         metadata: bundle::Metadata,
@@ -282,6 +284,7 @@ impl Dispatcher {
         self.drop_bundle(metadata, bundle, reason).await
     }
 
+    #[instrument(skip(self))]
     async fn drop_bundle(
         &self,
         metadata: bundle::Metadata,
@@ -295,6 +298,7 @@ impl Dispatcher {
         self.store.remove(&metadata.storage_name).await
     }
 
+    #[instrument(skip(self))]
     pub async fn report_bundle_reception(
         &self,
         metadata: &bundle::Metadata,
@@ -321,6 +325,7 @@ impl Dispatcher {
         self.enqueue_bundle(metadata, bundle).await
     }
 
+    #[instrument(skip(self))]
     pub async fn report_bundle_deletion(
         &self,
         metadata: &bundle::Metadata,
@@ -352,6 +357,7 @@ impl Dispatcher {
         self.enqueue_bundle(metadata, bundle).await
     }
 
+    #[instrument(skip(self))]
     pub async fn local_dispatch(
         &self,
         source: bundle::Eid,

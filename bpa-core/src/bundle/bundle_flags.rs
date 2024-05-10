@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct BundleFlags {
     pub is_fragment: bool,
     pub is_admin_record: bool,

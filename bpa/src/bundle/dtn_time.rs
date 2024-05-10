@@ -1,4 +1,4 @@
-use hardy_bpa_core::bundle::{Bundle, Metadata};
+use super::*;
 
 pub fn as_dtn_time(instant: &time::OffsetDateTime) -> u64 {
     (*instant - time::macros::datetime!(2000-01-01 00:00:00 UTC)).whole_milliseconds() as u64

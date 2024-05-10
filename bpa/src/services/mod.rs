@@ -3,6 +3,7 @@ use super::*;
 mod application_sink;
 mod cla_sink;
 
+#[instrument(skip_all)]
 pub fn init(
     config: &config::Config,
     cla_registry: cla_registry::ClaRegistry,

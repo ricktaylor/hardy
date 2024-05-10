@@ -23,6 +23,7 @@ impl Service {
 
 #[tonic::async_trait]
 impl ApplicationSink for Service {
+    #[instrument(skip(self))]
     async fn register_application(
         &self,
         request: Request<RegisterApplicationRequest>,
@@ -33,15 +34,17 @@ impl ApplicationSink for Service {
             .map(Response::new)
     }
 
+    #[instrument(skip(self))]
     async fn unregister_application(
         &self,
         request: Request<UnregisterApplicationRequest>,
     ) -> Result<Response<UnregisterApplicationResponse>, Status> {
         self.app_registry
             .unregister(request.into_inner())
-            .map(|_| Response::new(UnregisterApplicationResponse {}))
+            .map(Response::new)
     }
 
+    #[instrument(skip(self))]
     async fn send(&self, request: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
         let request = request.into_inner();
         let eid = self.app_registry.find_by_token(&request.token)?;
@@ -49,6 +52,7 @@ impl ApplicationSink for Service {
             .local_dispatch(eid, request)
             .await
             .map(|_| Response::new(SendResponse {}))
+            .inspect_err(|e| log::info!("local dispatch failed: {}", e))
             .map_err(|e| Status::from_error(e.into()))
     }
 }

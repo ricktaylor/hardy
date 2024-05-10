@@ -21,6 +21,7 @@ log = "0.4.21"
 log_err = "1.1.1"
 base64 = "0.22.0"
 time = "0.3.34"
+tracing = "0.1.40"
 
 [build-dependencies]
 built = "0.7.1"
