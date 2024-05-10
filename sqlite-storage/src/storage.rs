@@ -17,6 +17,38 @@ pub struct Storage {
     connection: Arc<Mutex<rusqlite::Connection>>,
 }
 
+fn bundle_status_to_pair(value: bundle::BundleStatus) -> (i64, Option<time::OffsetDateTime>) {
+    match value {
+        bundle::BundleStatus::IngressPending => (0, None),
+        bundle::BundleStatus::DispatchPending => (1, None),
+        bundle::BundleStatus::ReassemblyPending => (2, None),
+        bundle::BundleStatus::CollectionPending => (3, None),
+        bundle::BundleStatus::ForwardPending => (4, None),
+        bundle::BundleStatus::Waiting(until) => (5, Some(until)),
+        bundle::BundleStatus::Tombstone => (6, None),
+    }
+}
+
+fn unpack_bundle_status(
+    row: &rusqlite::Row,
+    idx1: usize,
+    idx2: usize,
+) -> Result<bundle::BundleStatus, anyhow::Error> {
+    match (
+        row.get::<usize, i64>(idx1)?,
+        row.get::<usize, Option<time::OffsetDateTime>>(idx2)?,
+    ) {
+        (0, None) => Ok(bundle::BundleStatus::IngressPending),
+        (1, None) => Ok(bundle::BundleStatus::DispatchPending),
+        (2, None) => Ok(bundle::BundleStatus::ReassemblyPending),
+        (3, None) => Ok(bundle::BundleStatus::CollectionPending),
+        (4, None) => Ok(bundle::BundleStatus::ForwardPending),
+        (5, Some(until)) => Ok(bundle::BundleStatus::Waiting(until)),
+        (6, None) => Ok(bundle::BundleStatus::Tombstone),
+        (v, d) => Err(anyhow!("Invalid BundleStatus value {}/{:?}", v, d)),
+    }
+}
+
 impl Storage {
     #[instrument(skip(config))]
     pub fn init(
@@ -92,7 +124,7 @@ impl Storage {
             r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
             SELECT id FROM bundles WHERE status != ?1;"#,
-            [as_i64(bundle::BundleStatus::Tombstone)],
+            [bundle_status_to_pair(bundle::BundleStatus::Tombstone).0],
         )?;
 
         // Create temporary tables for restarting
@@ -135,7 +167,8 @@ fn as_u64(v: i64) -> u64 {
 
 #[inline]
 fn as_i64<T: Into<u64>>(v: T) -> i64 {
-    T::into(v) as i64
+    let v: u64 = v.into();
+    v as i64
 }
 
 fn unpack_bundles(
@@ -161,12 +194,13 @@ fn unpack_bundles(
            16: bundles.age,
            17: bundles.hop_count,
            18: bundles.hop_limit,
-           19: bundle_blocks.block_num,
-           20: bundle_blocks.block_type,
-           21: bundle_blocks.block_flags,
-           22: bundle_blocks.block_crc_type,
-           23: bundle_blocks.data_offset,
-           24: bundle_blocks.data_len
+           19: bundles.wait_until,
+           20: bundle_blocks.block_num,
+           21: bundle_blocks.block_type,
+           22: bundle_blocks.block_flags,
+           23: bundle_blocks.block_crc_type,
+           24: bundle_blocks.data_offset,
+           25: bundle_blocks.data_len
     */
 
     let mut bundles = Vec::new();
@@ -174,7 +208,7 @@ fn unpack_bundles(
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
         let metadata = bundle::Metadata {
-            status: as_u64(row.get(1)?).try_into()?,
+            status: unpack_bundle_status(row, 1, 19)?,
             storage_name: row.get(2)?,
             hash: BASE64_STANDARD_NO_PAD.decode(row.get::<usize, String>(3)?)?,
             received_at: row.get(4)?,
@@ -187,8 +221,8 @@ fn unpack_bundles(
                 None
             } else {
                 Some(bundle::FragmentInfo {
-                    offset: offset as u64,
-                    total_len: total_len as u64,
+                    offset: as_u64(offset),
+                    total_len: as_u64(total_len),
                 })
             }
         };
@@ -213,25 +247,25 @@ fn unpack_bundles(
                 rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
                 _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
             },
-            age: row.get::<usize, Option<i64>>(16)?.map(|v| v as u64),
+            age: row.get::<usize, Option<i64>>(16)?.map(as_u64),
             hop_count: match row.get_ref(17)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Integer(i) => Some(bundle::HopInfo {
-                    count: i as usize,
-                    limit: row.get::<usize, i64>(18)? as usize,
+                    count: as_u64(i),
+                    limit: as_u64(row.get(18)?),
                 }),
                 _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
             },
         };
 
         loop {
-            let block_number = as_u64(row.get(19)?);
+            let block_number = as_u64(row.get(20)?);
             let block = bundle::Block {
-                block_type: as_u64(row.get(20)?).into(),
-                flags: as_u64(row.get(21)?).into(),
-                crc_type: as_u64(row.get(22)?).try_into()?,
-                data_offset: as_u64(row.get(23)?) as usize,
-                data_len: as_u64(row.get(24)?) as usize,
+                block_type: as_u64(row.get(21)?).into(),
+                flags: as_u64(row.get(23)?).into(),
+                crc_type: as_u64(row.get(23)?).try_into()?,
+                data_offset: as_u64(row.get(24)?) as usize,
+                data_len: as_u64(row.get(25)?) as usize,
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -479,6 +513,7 @@ impl MetadataStorage for Storage {
             .lock()
             .log_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (status, until) = bundle_status_to_pair(metadata.status);
 
         // Insert bundle
         let bundle_id = trans
@@ -501,14 +536,15 @@ impl MetadataStorage for Storage {
                 previous_node,
                 age,
                 hop_count,
-                hop_limit
+                hop_limit,
+                wait_until
                 )
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
             RETURNING id;"#,
             )?
             .query_row(
                 rusqlite::params!(
-                    as_i64(metadata.status),
+                    status,
                     &metadata.storage_name,
                     BASE64_STANDARD_NO_PAD.encode(&metadata.hash),
                     as_i64(bundle.flags),
@@ -526,8 +562,9 @@ impl MetadataStorage for Storage {
                         .as_ref()
                         .map_or(Ok(None), |p| encode_eid(p).map(Some))?,
                     bundle.age.map(as_i64),
-                    bundle.hop_count.map(|h| h.count as i64),
-                    bundle.hop_count.map(|h| h.limit as i64)
+                    bundle.hop_count.map(|h| as_i64(h.count)),
+                    bundle.hop_count.map(|h| as_i64(h.limit)),
+                    until
                 ),
                 |row| Ok(as_u64(row.get(0)?)),
             )
@@ -554,8 +591,8 @@ impl MetadataStorage for Storage {
                     as_i64(*block_num),
                     as_i64(block.flags),
                     as_i64(block.crc_type),
-                    block.data_offset as i64,
-                    block.data_len as i64,
+                    as_i64(block.data_offset as u64),
+                    as_i64(block.data_len as u64),
                 ))?;
             }
         }
@@ -627,11 +664,14 @@ impl MetadataStorage for Storage {
         storage_name: &str,
         status: bundle::BundleStatus,
     ) -> Result<bool, anyhow::Error> {
+        let (status, until) = bundle_status_to_pair(status);
         self.connection
             .lock()
             .log_expect("Failed to lock connection mutex")
-            .prepare_cached(r#"UPDATE bundles SET status = ?1 WHERE storage_name = ?2;"#)?
-            .execute((as_i64(status), storage_name))
+            .prepare_cached(
+                r#"UPDATE bundles SET status = ?1, wait_until = ?2 WHERE storage_name = ?3;"#,
+            )?
+            .execute((status, until, storage_name))
             .map(|count| count != 0)
             .map_err(|e| e.into())
     }

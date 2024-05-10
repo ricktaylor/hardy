@@ -20,8 +20,8 @@ pub struct Metadata {
 
 #[derive(Debug, Copy, Clone)]
 pub struct HopInfo {
-    pub count: usize,
-    pub limit: usize,
+    pub count: u64,
+    pub limit: u64,
 }
 
 #[derive(Default, Debug)]

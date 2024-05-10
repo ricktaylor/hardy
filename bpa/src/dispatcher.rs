@@ -220,7 +220,14 @@ impl Dispatcher {
                         actions = fib.find(&destination).into_iter();
                     } else {
                         // Nothing more to do here, it will be picked up later
-                        return Ok(());
+                        return self
+                            .store
+                            .set_status(
+                                &metadata.storage_name,
+                                bundle::BundleStatus::Waiting(until),
+                            )
+                            .await
+                            .map(|_| ());
                     }
                 }
                 Some(fib::ForwardAction::Forward(a)) => {
