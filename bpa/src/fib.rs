@@ -180,6 +180,9 @@ impl Fib {
             // For ECMP, we need a random order
             actions.shuffle(&mut rand::thread_rng());
         }
+
+        // TODO: We currently pick the first Drop action we find, and do not tie-break on reason...
+
         actions
     }
 }
