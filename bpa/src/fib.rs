@@ -1,5 +1,6 @@
 use super::*;
 use base64::prelude::*;
+use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -174,7 +175,12 @@ impl Fib {
             .read()
             .log_expect("Failed to read-lock entries mutex");
 
-        find_recurse(&table, to, &mut HashSet::new())
+        let mut actions = find_recurse(&table, to, &mut HashSet::new());
+        if actions.len() > 1 {
+            // For ECMP, we need a random order
+            actions.shuffle(&mut rand::thread_rng());
+        }
+        actions
     }
 }
 
@@ -200,12 +206,11 @@ fn find_recurse<'a>(
                     Action::Via(via) => {
                         let entries = find_recurse(table, via, trail);
                         match entries.first() {
-                            Some(ForwardAction::Forward(_)) => new_entries.extend(entries),
-                            Some(action) => {
-                                // Drop and Store trump everything else
-                                new_entries = vec![action.clone()];
-                                break;
+                            Some(ForwardAction::Drop(_)) => {
+                                // Drop trumps everything else
+                                return entries;
                             }
+                            Some(_) => new_entries.extend(entries),
                             None => {}
                         }
                     }
@@ -220,14 +225,13 @@ fn find_recurse<'a>(
                         }
                     }
                     Action::Drop(reason) => {
-                        new_entries = vec![ForwardAction::Drop(*reason)];
-                        break;
+                        // Drop trumps everything else
+                        return vec![ForwardAction::Drop(*reason)];
                     }
                     Action::Wait(until) => {
                         // Check we don't have a deadline in the past
                         if *until >= time::OffsetDateTime::now_utc() {
-                            new_entries = vec![ForwardAction::Wait(*until)];
-                            break;
+                            new_entries.push(ForwardAction::Wait(*until))
                         }
                     }
                 }
@@ -238,6 +242,35 @@ fn find_recurse<'a>(
             }
         }
         trail.remove(to);
+    }
+
+    // Remove any Wait actions, and remember the closest deadline
+    let mut wait = None;
+    new_entries = new_entries
+        .into_iter()
+        .filter_map(|a| match a {
+            ForwardAction::Wait(until) => {
+                wait = wait.map_or(
+                    Some(until),
+                    |w| {
+                        if until < w {
+                            Some(until)
+                        } else {
+                            Some(w)
+                        }
+                    },
+                );
+                None
+            }
+            a => Some(a),
+        })
+        .collect();
+
+    // If we have no Forwarding actions, return the closest Wait action
+    if new_entries.is_empty() {
+        if let Some(until) = wait {
+            new_entries.push(ForwardAction::Wait(until))
+        }
     }
     new_entries
 }
