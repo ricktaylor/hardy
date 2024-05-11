@@ -14,27 +14,6 @@ pub struct FragmentInfo {
     pub total_len: u64,
 }
 
-/*
-fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
-    let mut tags = Vec::new();
-    let mut len = 0;
-    Ok((
-        Self {
-            offset: cbor::decode::parse_detail(data).map(|(v, l, t)| {
-                tags = t;
-                len += l;
-                v
-            })?,
-            total_len: cbor::decode::parse_detail(data).map(|(v, l, _)| {
-                len += l;
-                v
-            })?,
-        },
-        len,
-        tags,
-    ))
-} */
-
 impl BundleId {
     pub fn from_key(k: &str) -> Result<Self, anyhow::Error> {
         cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _| {
