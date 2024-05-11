@@ -143,7 +143,7 @@ impl Dispatcher {
                                 let dispatcher = self.clone();
                                 let cancel_token_cloned = cancel_token.clone();
                                 task_set.spawn(async move {
-                                    dispatcher.delay_bundle(metadata,bundle, until - time::OffsetDateTime::now_utc(),cancel_token_cloned).await.log_expect("Failed to process bundle");
+                                    dispatcher.delay_bundle(metadata,bundle, until,cancel_token_cloned).await.log_expect("Failed to process bundle");
                                 });
                             }
                         }
@@ -167,9 +167,15 @@ impl Dispatcher {
         &self,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
-        wait: time::Duration,
+        until: time::OffsetDateTime,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
+            // Nothing to do now, it will be picked up later
+            return Ok(());
+        }
+
         // Wait a bit
         if !cancellable_sleep(wait, &cancel_token).await {
             // Cancelled
@@ -212,21 +218,6 @@ impl Dispatcher {
                 .await?;
         }
 
-        if let bundle::BundleStatus::Waiting(until) = &metadata.status {
-            let wait = *until - time::OffsetDateTime::now_utc();
-            if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
-                // Nothing to do now, it will be picked up later
-                return Ok(());
-            }
-            return self
-                .delay_bundle(metadata, bundle, wait, cancel_token)
-                .await;
-        }
-
-        if let bundle::BundleStatus::ForwardPending = &metadata.status {
-            return self.forward_bundle(metadata, bundle, cancel_token).await;
-        }
-
         if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
             // Attempt reassembly
             let Some((m, b)) = self.reassemble(metadata, bundle).await? else {
@@ -236,16 +227,30 @@ impl Dispatcher {
             (metadata, bundle) = (m, b);
         }
 
-        if let bundle::BundleStatus::CollectionPending = &metadata.status {
-            // Check if we have a local service registered
-            if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.destination) {
-                // Notify that the bundle is ready
-                endpoint.collection_notify(&bundle.id).await;
+        match &metadata.status {
+            bundle::BundleStatus::IngressPending
+            | bundle::BundleStatus::DispatchPending
+            | bundle::BundleStatus::ReassemblyPending => {
+                unreachable!()
             }
+            bundle::BundleStatus::CollectionPending => {
+                // Check if we have a local service registered
+                if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.destination) {
+                    // Notify that the bundle is ready for collection
+                    endpoint.collection_notify(&bundle.id).await;
+                }
+                Ok(())
+            }
+            bundle::BundleStatus::ForwardPending => {
+                self.forward_bundle(metadata, bundle, cancel_token).await
+            }
+            bundle::BundleStatus::Waiting(until) => {
+                let until = *until;
+                self.delay_bundle(metadata, bundle, until, cancel_token)
+                    .await
+            }
+            bundle::BundleStatus::Tombstone => Ok(()),
         }
-
-        // Nothing more to do now
-        Ok(())
     }
 
     async fn forward_bundle(
@@ -278,6 +283,8 @@ impl Dispatcher {
                 )
                 .await;
         };
+
+        // TODO: Pluggable Egress filters!
 
         /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
