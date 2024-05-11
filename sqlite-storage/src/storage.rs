@@ -375,7 +375,7 @@ impl MetadataStorage for Storage {
                             data_offset,
                             data_len
                         FROM subset
-                        JOIN bundle_blocks ON bundle_blocks.id = subset.id;"#,
+                        JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
                     )?
                     .query(())?,
             )?;
@@ -447,7 +447,7 @@ impl MetadataStorage for Storage {
                 trans
                     .prepare_cached(
                         r#"SELECT 
-                            id,
+                            bundle_id,
                             status,
                             storage_name,
                             hash,
@@ -475,7 +475,7 @@ impl MetadataStorage for Storage {
                             data_len
                         FROM restart_subset
                         JOIN bundles ON bundles.id = restart_subset.bundle_id
-                        JOIN bundle_blocks ON bundle_blocks.id = restart_subset.bundle_id;"#,
+                        JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id;"#,
                     )?
                     .query(())?,
             )?;
@@ -719,7 +719,7 @@ impl MetadataStorage for Storage {
                 .log_expect("Failed to lock connection mutex")
                 .prepare_cached(
                     r#"SELECT 
-                        id,
+                        bundles.id,
                         status,
                         storage_name,
                         hash,
@@ -746,7 +746,7 @@ impl MetadataStorage for Storage {
                         data_offset,
                         data_len
                     FROM bundles
-                    JOIN bundle_blocks ON bundle_blocks.id = bundles.bundle_id
+                    JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
                     WHERE wait_until IS NOT NULL AND unixepoch(wait_until) < unixepoch(?1)
                     LIMIT 256;"#,
                 )?
