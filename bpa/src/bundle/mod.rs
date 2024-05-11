@@ -10,7 +10,7 @@ pub mod editor;
 pub mod parse;
 
 pub use builder::*;
-pub use dtn_time::{as_dtn_time, has_bundle_expired};
+pub use dtn_time::{as_dtn_time, get_bundle_expiry, has_bundle_expired};
 pub use editor::*;
 pub use hardy_bpa_core::bundle::*;
 pub use parse::parse;

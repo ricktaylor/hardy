@@ -170,6 +170,7 @@ impl Dispatcher {
         until: time::OffsetDateTime,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
+        // Check if it's worth us waiting
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, it will be picked up later
@@ -259,6 +260,17 @@ impl Dispatcher {
         bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
+        // Check bundle expiry
+        if bundle::has_bundle_expired(&metadata, &bundle) {
+            return self
+                .drop_bundle(
+                    metadata,
+                    bundle,
+                    Some(bundle::StatusReportReasonCode::LifetimeExpired),
+                )
+                .await;
+        }
+
         let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
@@ -298,7 +310,12 @@ impl Dispatcher {
             match actions.next() {
                 Some(fib::ForwardAction::Drop(reason)) => break reason,
                 Some(fib::ForwardAction::Wait(until)) => {
-                    // We must wait here, as we have missed the scheduled wait interval
+                    // Check to see if waiting is even worth it
+                    if until > bundle::get_bundle_expiry(&metadata, &bundle) {
+                        break Some(bundle::StatusReportReasonCode::LifetimeExpired);
+                    }
+
+                    // Wait a bit
                     if !self
                         .wait_to_forward(&metadata, until, &cancel_token)
                         .await?
@@ -312,16 +329,9 @@ impl Dispatcher {
                     actions = fib.find(&destination).into_iter();
                 }
                 Some(fib::ForwardAction::Forward(a)) => {
-                    if retries > self.config.max_forwarding_delay {
-                        // We have delayed long enough trying to forward
-                        break Some(
-                            bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                        );
-                    }
-
                     // Find the named CLA
                     if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
-                        // Get bundle data from store
+                        // Get bundle data from store, now we know we need it!
                         if data.is_none() {
                             data = match self.store.load_data(&metadata.storage_name).await {
                                 Ok(data) => Some((*data).as_ref().to_vec()),
@@ -365,12 +375,18 @@ impl Dispatcher {
                     } else {
                         log::trace!("FIB has entry for missing endpoint: {}", a.name);
                     }
-
                     // Try the next CLA, this one is busy, broken or missing
                 }
                 None => {
                     // Check for congestion
                     if let Some(until) = congestion_wait {
+                        // Check to see if waiting is even worth it
+                        if until > bundle::get_bundle_expiry(&metadata, &bundle) {
+                            break Some(
+                                bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+                            );
+                        }
+
                         // We must wait for a bit for the CLAs to calm down
                         if !self
                             .wait_to_forward(&metadata, until, &cancel_token)
@@ -417,6 +433,11 @@ impl Dispatcher {
                             return Ok(());
                         }
                         retries = retries.saturating_add(1);
+                    }
+
+                    // Check bundle expiry
+                    if bundle::has_bundle_expired(&metadata, &bundle) {
+                        break Some(bundle::StatusReportReasonCode::LifetimeExpired);
                     }
 
                     // Lookup again
