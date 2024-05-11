@@ -224,8 +224,11 @@ fn find_recurse<'a>(
                         break;
                     }
                     Action::Wait(until) => {
-                        new_entries = vec![ForwardAction::Wait(*until)];
-                        break;
+                        // Check we don't have a deadline in the past
+                        if *until >= time::OffsetDateTime::now_utc() {
+                            new_entries = vec![ForwardAction::Wait(*until)];
+                            break;
+                        }
                     }
                 }
 
