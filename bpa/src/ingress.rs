@@ -113,6 +113,7 @@ impl Ingress {
             .map_err(|e| e.into())
     }
 
+    #[instrument(skip_all)]
     async fn pipeline_pump(
         self,
         mut receive_channel: Receiver<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
@@ -128,8 +129,9 @@ impl Ingress {
                     None => break,
                     Some((cla_source,storage_name,received_at)) => {
                         let ingress = self.clone();
+                        let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.receive_bundle(cla_source,storage_name,received_at).await.log_expect("Failed to process received bundle")
+                            ingress.receive_bundle(cla_source,storage_name,received_at,cancel_token_cloned).await.log_expect("Failed to process received bundle")
                         });
                     }
                 },
@@ -137,8 +139,9 @@ impl Ingress {
                     None => break,
                     Some((metadata,bundle)) => {
                         let ingress = self.clone();
+                        let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(None,metadata,bundle).await.log_expect("Failed to process restart bundle")
+                            ingress.process_bundle(None,metadata,bundle,cancel_token_cloned).await.log_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -159,6 +162,7 @@ impl Ingress {
         from: Option<ClaAddress>,
         storage_name: String,
         received_at: Option<time::OffsetDateTime>,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
         // Parse the bundle
         let (metadata, bundle, valid) = {
@@ -215,7 +219,8 @@ impl Ingress {
         }
 
         // Process the bundle further
-        self.process_bundle(from, metadata, bundle).await
+        self.process_bundle(from, metadata, bundle, cancel_token)
+            .await
     }
 
     #[instrument(skip(self))]
@@ -224,6 +229,7 @@ impl Ingress {
         from: Option<ClaAddress>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
         /* Always check bundles,  no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
@@ -344,7 +350,9 @@ impl Ingress {
         }
 
         // Just pass it on to the dispatcher to deal with
-        self.dispatcher.process_bundle(metadata, bundle).await
+        self.dispatcher
+            .process_bundle(metadata, bundle, cancel_token)
+            .await
     }
 
     async fn check_extension_blocks(

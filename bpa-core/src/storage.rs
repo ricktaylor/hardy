@@ -32,6 +32,11 @@ pub trait MetadataStorage: Send + Sync {
     async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error>;
 
     async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error>;
+
+    async fn get_waiting_bundles(
+        &self,
+        limit: time::OffsetDateTime,
+    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, anyhow::Error>;
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;

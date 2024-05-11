@@ -244,6 +244,13 @@ impl Store {
         }
     }
 
+    pub async fn get_waiting_bundles(
+        &self,
+        limit: time::OffsetDateTime,
+    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, anyhow::Error> {
+        self.metadata_storage.get_waiting_bundles(limit).await
+    }
+
     #[instrument(skip(self, data))]
     pub async fn replace_data(
         &self,

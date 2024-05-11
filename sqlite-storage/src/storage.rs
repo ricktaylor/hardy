@@ -360,7 +360,8 @@ impl MetadataStorage for Storage {
                                 previous_node,
                                 age,
                                 hop_count,
-                                hop_limit
+                                hop_limit,
+                                wait_until
                             FROM unconfirmed_bundles
                             JOIN bundles ON id = unconfirmed_bundles.bundle_id
                             LIMIT 16
@@ -464,7 +465,8 @@ impl MetadataStorage for Storage {
                             previous_node,
                             age,
                             hop_count,
-                            hop_limit
+                            hop_limit,
+                            wait_until,
                             block_num,
                             block_type,
                             block_flags,
@@ -704,5 +706,63 @@ impl MetadataStorage for Storage {
 
         // Commit the transaction
         trans.commit().map(|_| true).map_err(|e| e.into())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_waiting_bundles(
+        &self,
+        limit: time::OffsetDateTime,
+    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, anyhow::Error> {
+        unpack_bundles(
+            self.connection
+                .lock()
+                .log_expect("Failed to lock connection mutex")
+                .prepare_cached(
+                    r#"SELECT 
+                        id,
+                        status,
+                        storage_name,
+                        hash,
+                        received_at,
+                        flags,
+                        crc_type,
+                        source,
+                        destination,
+                        report_to,
+                        creation_time,
+                        creation_seq_num,
+                        lifetime,                    
+                        fragment_offset,
+                        fragment_total_len,
+                        previous_node,
+                        age,
+                        hop_count,
+                        hop_limit,
+                        wait_until,
+                        block_num,
+                        block_type,
+                        block_flags,
+                        block_crc_type,
+                        data_offset,
+                        data_len
+                    FROM bundles
+                    JOIN bundle_blocks ON bundle_blocks.id = bundles.bundle_id
+                    WHERE wait_until IS NOT NULL && unixepoch(wait_until) < unixepoch(?1)
+                    LIMIT 256;"#,
+                )?
+                .query([limit])?,
+        )
+        .map(|v| {
+            v.into_iter()
+                .filter_map(|(_, metadata, bundle)| {
+                    if let bundle::BundleStatus::Waiting(until) = &metadata.status {
+                        let until = *until;
+                        Some((metadata, bundle, until))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
     }
 }

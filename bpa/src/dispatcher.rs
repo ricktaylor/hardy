@@ -3,7 +3,7 @@ use hardy_cbor as cbor;
 use hardy_proto::application::*;
 use tokio::sync::mpsc::*;
 
-const INLINE_WAIT_SECS: u64 = 60;
+const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
 
 #[derive(Clone)]
 struct Config {
@@ -68,8 +68,14 @@ impl Dispatcher {
 
         // Spawn a bundle receiver
         let dispatcher_cloned = dispatcher.clone();
-        task_set
-            .spawn(async move { Self::pipeline_pump(dispatcher_cloned, rx, cancel_token).await });
+        let cancel_token_cloned = cancel_token.clone();
+        task_set.spawn(async move {
+            Self::pipeline_pump(dispatcher_cloned, rx, cancel_token_cloned).await
+        });
+
+        // Spawn a waiter
+        let dispatcher_cloned = dispatcher.clone();
+        task_set.spawn(async move { Self::check_waiting(dispatcher_cloned, cancel_token).await });
 
         Ok(dispatcher)
     }
@@ -83,6 +89,7 @@ impl Dispatcher {
         self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
     }
 
+    #[instrument(skip_all)]
     async fn pipeline_pump(
         self,
         mut rx: Receiver<(bundle::Metadata, bundle::Bundle)>,
@@ -97,8 +104,9 @@ impl Dispatcher {
                     None => break,
                     Some((metadata,bundle)) => {
                         let dispatcher = self.clone();
+                        let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(metadata,bundle).await.log_expect("Failed to process bundle");
+                            dispatcher.process_bundle(metadata,bundle,cancel_token_cloned).await.log_expect("Failed to process bundle");
                         });
                     }
                 },
@@ -113,11 +121,76 @@ impl Dispatcher {
         }
     }
 
+    #[instrument(skip_all)]
+    async fn check_waiting(self, cancel_token: tokio_util::sync::CancellationToken) {
+        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(WAIT_SAMPLE_INTERVAL_SECS));
+        tokio::pin!(timer);
+
+        // We're going to spawn a bunch of tasks
+        let mut task_set = tokio::task::JoinSet::new();
+
+        loop {
+            tokio::select! {
+                () = &mut timer => {
+                    // Determine next interval before we do any other waiting
+                    let interval = tokio::time::Instant::now() + tokio::time::Duration::from_secs(WAIT_SAMPLE_INTERVAL_SECS);
+
+                    // Get all bundles that are ready before now() + WAIT_SAMPLE_INTERVAL_SECS
+                    match self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0)).await {
+                        Ok(waiting) => {
+                            for (metadata,bundle,until) in waiting {
+                                // Spawn a task for each ready bundle
+                                let dispatcher = self.clone();
+                                let cancel_token_cloned = cancel_token.clone();
+                                task_set.spawn(async move {
+                                    dispatcher.delay_bundle(metadata,bundle, until - time::OffsetDateTime::now_utc(),cancel_token_cloned).await.log_expect("Failed to process bundle");
+                                });
+                            }
+                        }
+                        Err(e) =>  log::error!("get_waiting_bundles failed: {}",e),
+                    }
+
+                    timer.as_mut().reset(interval);
+                },
+                Some(r) = task_set.join_next() => r.log_expect("Task terminated unexpectedly"),
+                _ = cancel_token.cancelled() => break
+            }
+        }
+
+        // Wait for all sub-tasks to complete
+        while let Some(r) = task_set.join_next().await {
+            r.log_expect("Task terminated unexpectedly")
+        }
+    }
+
+    async fn delay_bundle(
+        &self,
+        metadata: bundle::Metadata,
+        bundle: bundle::Bundle,
+        wait: time::Duration,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<(), anyhow::Error> {
+        // Wait a bit
+        if !cancellable_sleep(wait, &cancel_token).await {
+            // Cancelled
+            return Ok(());
+        }
+
+        // Set status to ForwardPending
+        self.store
+            .set_status(&metadata.storage_name, bundle::BundleStatus::ForwardPending)
+            .await?;
+
+        // And forward it!
+        self.forward_bundle(metadata, bundle, cancel_token).await
+    }
+
     #[instrument(skip(self))]
     pub async fn process_bundle(
         &self,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
         if let bundle::BundleStatus::DispatchPending = &metadata.status {
             // Check if we are the final destination
@@ -139,8 +212,19 @@ impl Dispatcher {
                 .await?;
         }
 
+        if let bundle::BundleStatus::Waiting(until) = &metadata.status {
+            let wait = *until - time::OffsetDateTime::now_utc();
+            if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
+                // Nothing to do now, it will be picked up later
+                return Ok(());
+            }
+            return self
+                .delay_bundle(metadata, bundle, wait, cancel_token)
+                .await;
+        }
+
         if let bundle::BundleStatus::ForwardPending = &metadata.status {
-            return self.forward_bundle(metadata, bundle).await;
+            return self.forward_bundle(metadata, bundle, cancel_token).await;
         }
 
         if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
@@ -159,14 +243,16 @@ impl Dispatcher {
                 endpoint.collection_notify(&bundle.id).await;
             }
         }
+
+        // Nothing more to do now
         Ok(())
     }
 
-    #[instrument(skip(self))]
     async fn forward_bundle(
         &self,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), anyhow::Error> {
         let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
@@ -204,22 +290,9 @@ impl Dispatcher {
             match actions.next() {
                 Some(fib::ForwardAction::Drop(reason)) => break reason,
                 Some(fib::ForwardAction::Wait(until)) => {
-                    // See if we can just wait now, rather than delaying the whole dispatch process
                     let wait = until - time::OffsetDateTime::now_utc();
-                    if wait <= std::time::Duration::new(INLINE_WAIT_SECS, 0) {
-                        let wait = if wait > std::time::Duration::from_secs(1) {
-                            tokio::time::Duration::from_secs(wait.whole_seconds() as u64)
-                        } else {
-                            tokio::time::Duration::from_secs(1)
-                        };
-
-                        // Just async sleep
-                        tokio::time::sleep(wait).await;
-
-                        // Loop again
-                        actions = fib.find(&destination).into_iter();
-                    } else {
-                        // Nothing more to do here, it will be picked up later
+                    if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
+                        // Nothing to do now, set bundle status to Waiting, and it will be picked up later
                         return self
                             .store
                             .set_status(
@@ -229,6 +302,16 @@ impl Dispatcher {
                             .await
                             .map(|_| ());
                     }
+
+                    // We must wait here, as we have missed the scheduled wait interval
+                    if !cancellable_sleep(wait, &cancel_token).await {
+                        // Cancelled
+                        return Ok(());
+                    }
+
+                    // Restart lookup
+                    retries = 0;
+                    actions = fib.find(&destination).into_iter();
                 }
                 Some(fib::ForwardAction::Forward(a)) => {
                     if retries > self.config.max_forwarding_delay {
@@ -299,7 +382,10 @@ impl Dispatcher {
                         retries = 0;
                     } else {
                         // Async sleep for 1 second
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        if !cancellable_sleep(time::Duration::seconds(1), &cancel_token).await {
+                            // Cancelled
+                            return Ok(());
+                        }
                         retries = retries.saturating_add(1);
                     }
 
