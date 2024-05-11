@@ -1,7 +1,7 @@
 use super::*;
 use hardy_proto::application::*;
 use rand::distributions::{Alphanumeric, DistString};
-use rand::prelude::*;
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
