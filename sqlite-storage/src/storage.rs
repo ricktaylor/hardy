@@ -747,7 +747,7 @@ impl MetadataStorage for Storage {
                         data_len
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.id = bundles.bundle_id
-                    WHERE wait_until IS NOT NULL && unixepoch(wait_until) < unixepoch(?1)
+                    WHERE wait_until IS NOT NULL AND unixepoch(wait_until) < unixepoch(?1)
                     LIMIT 256;"#,
                 )?
                 .query([limit])?,
