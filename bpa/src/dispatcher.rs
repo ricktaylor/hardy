@@ -291,28 +291,19 @@ impl Dispatcher {
         let mut data = None;
         let mut previous = false;
         let mut retries = 0;
+        let mut congestion_wait = None;
         let mut actions = fib.find(&destination).into_iter();
         let reason = loop {
             // Lookup/Perform actions
             match actions.next() {
                 Some(fib::ForwardAction::Drop(reason)) => break reason,
                 Some(fib::ForwardAction::Wait(until)) => {
-                    let wait = until - time::OffsetDateTime::now_utc();
-                    if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
-                        // Nothing to do now, set bundle status to Waiting, and it will be picked up later
-                        return self
-                            .store
-                            .set_status(
-                                &metadata.storage_name,
-                                bundle::BundleStatus::Waiting(until),
-                            )
-                            .await
-                            .map(|_| ());
-                    }
-
                     // We must wait here, as we have missed the scheduled wait interval
-                    if !cancellable_sleep(wait, &cancel_token).await {
-                        // Cancelled
+                    if !self
+                        .wait_to_forward(&metadata, until, &cancel_token)
+                        .await?
+                    {
+                        // Cancelled, or too long a wait for here
                         return Ok(());
                     }
 
@@ -348,19 +339,51 @@ impl Dispatcher {
                             };
                         }
 
-                        if endpoint
+                        match endpoint
                             .forward_bundle(a.address.clone(), data.clone().unwrap())
                             .await
-                            .inspect_err(|e| log::warn!("{}", e))
-                            .is_ok()
+                            .inspect_err(|e| log::trace!("CLA failed to forward {}", e))
                         {
-                            // We have successfully forwarded!
-                            return Ok(());
+                            Ok(None) => {
+                                // We have successfully forwarded!
+                                return Ok(());
+                            }
+                            Ok(Some(until)) => {
+                                log::trace!("CLA reported congestion, retry at: {}", until);
+
+                                // Remember the shortest wait for a retry, in case we have ECMP
+                                congestion_wait = congestion_wait.map_or(Some(until), |w| {
+                                    if w < until {
+                                        Some(w)
+                                    } else {
+                                        Some(until)
+                                    }
+                                })
+                            }
+                            _ => {}
                         }
+                    } else {
+                        log::trace!("FIB has entry for missing endpoint: {}", a.name);
                     }
+
+                    // Try the next CLA, this one is busy, broken or missing
                 }
                 None => {
-                    if retries > self.config.max_forwarding_delay {
+                    // Check for congestion
+                    if let Some(until) = congestion_wait {
+                        // We must wait for a bit for the CLAs to calm down
+                        if !self
+                            .wait_to_forward(&metadata, until, &cancel_token)
+                            .await?
+                        {
+                            // Cancelled, or too long a wait for here
+                            return Ok(());
+                        }
+
+                        // Reset retry counter, as we found a route, it's just busy
+                        congestion_wait = None;
+                        retries = 0;
+                    } else if retries > self.config.max_forwarding_delay {
                         if previous {
                             // We have delayed long enough trying to find a route to previous_node
                             break Some(
@@ -403,6 +426,26 @@ impl Dispatcher {
         };
 
         self.drop_bundle(metadata, bundle, reason).await
+    }
+
+    async fn wait_to_forward(
+        &self,
+        metadata: &bundle::Metadata,
+        until: time::OffsetDateTime,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, anyhow::Error> {
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
+            // Nothing to do now, set bundle status to Waiting, and it will be picked up later
+            return self
+                .store
+                .set_status(&metadata.storage_name, bundle::BundleStatus::Waiting(until))
+                .await
+                .map(|_| false);
+        }
+
+        // We must wait here, as we have missed the scheduled wait interval
+        Ok(cancellable_sleep(wait, cancel_token).await)
     }
 
     #[instrument(skip(self))]

@@ -1,11 +1,13 @@
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
+
 package cla;
 
 service cla_sink {
     rpc RegisterCla(RegisterClaRequest) returns (RegisterClaResponse);
     rpc UnregisterCla(UnregisterClaRequest) returns (UnregisterClaResponse);
-    rpc ForwardBundle(ForwardBundleRequest) returns (ForwardBundleResponse);
+    rpc ReceiveBundle(ReceiveBundleRequest) returns (ReceiveBundleResponse);
 }
 
 message RegisterClaRequest {
@@ -26,15 +28,25 @@ message UnregisterClaRequest {
 message UnregisterClaResponse {
 }
 
-message ForwardBundleRequest {
+message ReceiveBundleRequest {
     string Token = 1;
-    bytes Address = 2;
+    bytes Source = 2;
     bytes Bundle = 3;
 }
 
-message ForwardBundleResponse {
+message ReceiveBundleResponse {
 }
 
 service cla {
     rpc ForwardBundle(ForwardBundleRequest) returns (ForwardBundleResponse);
+}
+
+message ForwardBundleRequest {
+    string Token = 1;
+    bytes Destination = 2;
+    bytes Bundle = 3;
+}
+
+message ForwardBundleResponse {
+    optional google.protobuf.Timestamp retry_at = 1;
 }

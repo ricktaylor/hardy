@@ -138,19 +138,32 @@ impl Endpoint {
     #[instrument(skip(self))]
     pub async fn forward_bundle(
         &self,
-        address: Vec<u8>,
+        destination: Vec<u8>,
         bundle: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.inner
+    ) -> Result<Option<time::OffsetDateTime>, anyhow::Error> {
+        match self
+            .inner
             .lock()
             .await
             .forward_bundle(tonic::Request::new(ForwardBundleRequest {
                 token: self.token.clone(),
-                address,
+                destination,
                 bundle,
             }))
             .await
-            .map(|_| ())
-            .map_err(|s| s.into())
+            .map(|response| response.into_inner())
+        {
+            Err(s) => Err(s.into()),
+            Ok(r) => {
+                if let Some(t) = r.retry_at {
+                    Ok(Some(
+                        time::OffsetDateTime::from_unix_timestamp(t.seconds)?
+                            + time::Duration::nanoseconds(t.nanos.into()),
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
     }
 }

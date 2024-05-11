@@ -45,10 +45,10 @@ impl ClaSink for Service {
     }
 
     #[instrument(skip(self))]
-    async fn forward_bundle(
+    async fn receive_bundle(
         &self,
-        request: Request<ForwardBundleRequest>,
-    ) -> Result<Response<ForwardBundleResponse>, Status> {
+        request: Request<ReceiveBundleRequest>,
+    ) -> Result<Response<ReceiveBundleResponse>, Status> {
         let request = request.into_inner();
         let (protocol, name) = self.cla_registry.find_by_token(&request.token)?;
         self.ingress
@@ -56,12 +56,12 @@ impl ClaSink for Service {
                 Some(ingress::ClaAddress {
                     protocol,
                     name,
-                    address: request.address,
+                    address: request.source,
                 }),
                 request.bundle,
             )
             .await
-            .map(|_| Response::new(ForwardBundleResponse {}))
+            .map(|_| Response::new(ReceiveBundleResponse {}))
             .inspect_err(|e| log::info!("ingress receive failed: {}", e))
             .map_err(|e| Status::from_error(e.into()))
     }
