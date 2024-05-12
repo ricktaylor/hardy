@@ -312,7 +312,9 @@ impl Dispatcher {
                 Some(fib::ForwardAction::Wait(until)) => {
                     // Check to see if waiting is even worth it
                     if until > bundle::get_bundle_expiry(&metadata, &bundle) {
-                        break Some(bundle::StatusReportReasonCode::LifetimeExpired);
+                        break Some(
+                            bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+                        );
                     }
 
                     // Wait a bit
