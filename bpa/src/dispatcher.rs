@@ -383,13 +383,8 @@ impl Dispatcher {
                                 log::trace!("CLA reported congestion, retry at: {}", until);
 
                                 // Remember the shortest wait for a retry, in case we have ECMP
-                                congestion_wait = congestion_wait.map_or(Some(until), |w| {
-                                    if w < until {
-                                        Some(w)
-                                    } else {
-                                        Some(until)
-                                    }
-                                })
+                                congestion_wait = congestion_wait
+                                    .map_or(Some(until), |w| Some(std::cmp::min(w, until)))
                             }
                             _ => {}
                         }

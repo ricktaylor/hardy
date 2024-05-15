@@ -253,16 +253,7 @@ fn find_recurse<'a>(
         .into_iter()
         .filter_map(|a| match a {
             ForwardAction::Wait(until) => {
-                wait = wait.map_or(
-                    Some(until),
-                    |w| {
-                        if until < w {
-                            Some(until)
-                        } else {
-                            Some(w)
-                        }
-                    },
-                );
+                wait = wait.map_or(Some(until), |w| Some(std::cmp::min(until, w)));
                 None
             }
             a => Some(a),
