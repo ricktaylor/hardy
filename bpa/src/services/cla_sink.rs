@@ -62,7 +62,6 @@ impl ClaSink for Service {
             )
             .await
             .map(|_| Response::new(ReceiveBundleResponse {}))
-            .inspect_err(|e| log::info!("ingress receive failed: {}", e))
             .map_err(|e| Status::from_error(e.into()))
     }
 }

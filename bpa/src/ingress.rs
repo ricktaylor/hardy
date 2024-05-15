@@ -180,7 +180,7 @@ impl Ingress {
                 ),
                 Err(e) => {
                     // Parse failed badly, no idea who to report to
-                    log::info!("Bundle parsing failed: {}", e);
+                    log::trace!("Bundle parsing failed: {}", e);
                     return Ok(());
                 }
             }
@@ -205,6 +205,8 @@ impl Ingress {
         self.store.store_metadata(&metadata, &bundle).await?;
 
         if !valid {
+            log::trace!("Bundle is unintelligible");
+
             // Not valid, drop it
             self.dispatcher
                 .report_bundle_deletion(
@@ -215,6 +217,7 @@ impl Ingress {
                 .await?;
 
             // Drop the bundle
+            log::trace!("Deleting bundle");
             return self.store.delete(&metadata.storage_name).await;
         }
 
@@ -236,25 +239,34 @@ impl Ingress {
 
         // Check some basic semantic validity, lifetime first
         let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
-            .then_some(bundle::StatusReportReasonCode::LifetimeExpired)
+            .then(|| {
+                log::trace!("Bundle lifetime has expired");
+                bundle::StatusReportReasonCode::LifetimeExpired
+            })
             .or_else(|| {
                 // Check hop count exceeded
                 bundle.hop_count.and_then(|hop_info| {
-                    (hop_info.count >= hop_info.limit)
-                        .then_some(bundle::StatusReportReasonCode::HopLimitExceeded)
+                    (hop_info.count >= hop_info.limit).then(|| {
+                        log::trace!(
+                            "Bundle hop-limit {}/{} exceeded",
+                            hop_info.count,
+                            hop_info.limit
+                        );
+                        bundle::StatusReportReasonCode::HopLimitExceeded
+                    })
                 })
             })
             .or_else(|| {
                 // Source Eid checks
                 match bundle.id.source {
                     hardy_bpa_core::bundle::Eid::Null => {
-                        log::info!("Bundle with Null source received");
+                        log::trace!("Bundle has Null source");
                         self.config
                             .allow_null_sources
                             .then_some(bundle::StatusReportReasonCode::BlockUnintelligible)
                     }
                     hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                        log::info!("Bundle with LocalNode source received!");
+                        log::trace!("Bundle has LocalNode");
                         Some(bundle::StatusReportReasonCode::BlockUnintelligible)
                     }
                     _ => None,
@@ -266,11 +278,11 @@ impl Ingress {
                     // Destination Eid checks
                     match bundle.destination {
                         hardy_bpa_core::bundle::Eid::Null => {
-                            log::info!("Bundle with Null destination received");
+                            log::trace!("Bundle has Null destination");
                             Some(bundle::StatusReportReasonCode::BlockUnintelligible)
                         }
                         hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                            log::info!("Bundle with LocalNode destination received!");
+                            log::trace!("Bundle has LocalNode destination");
                             Some(bundle::StatusReportReasonCode::BlockUnintelligible)
                         }
                         _ => None,
@@ -280,7 +292,7 @@ impl Ingress {
                         if let hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } =
                             bundle.report_to
                         {
-                            log::info!("Bundle with LocalNode report-to received!");
+                            log::trace!("Bundle has LocalNode report-to");
                             Some(bundle::StatusReportReasonCode::BlockUnintelligible)
                         } else {
                             None
@@ -335,6 +347,7 @@ impl Ingress {
                 .await?;
 
             // Drop the bundle
+            log::trace!("Discarding bundle, leaving tombstone");
             return self.store.remove(&metadata.storage_name).await;
         }
 

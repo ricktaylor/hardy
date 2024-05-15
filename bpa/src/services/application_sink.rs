@@ -52,7 +52,6 @@ impl ApplicationSink for Service {
             .local_dispatch(eid, request)
             .await
             .map(|_| Response::new(SendResponse {}))
-            .inspect_err(|e| log::info!("local dispatch failed: {}", e))
             .map_err(|e| Status::from_error(e.into()))
     }
 }

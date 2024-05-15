@@ -206,7 +206,7 @@ impl Endpoint {
                     bundle_id: bundle_id.to_key(),
                 }))
                 .await
-                .inspect_err(|s| log::warn!("collection_notify failed: {}", s));
+                .inspect_err(|s| log::info!("collection_notify failed: {}", s));
         }
     }
 }
