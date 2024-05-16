@@ -9,7 +9,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-cbor = { path = "../cbor" }
-anyhow = "1.0.81"
+thiserror = "1.0.58"
 log = "0.4.21"
 config = { version = "0.14.0" }
 time = "0.3.34"

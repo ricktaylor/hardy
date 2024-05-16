@@ -1,0 +1,11 @@
+[package]
+name = "trace-err"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+tracing = "0.1.40"

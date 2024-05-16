@@ -1,6 +1,7 @@
 use super::*;
 use hardy_bpa_core::storage;
 use std::sync::Arc;
+use utils::settings;
 
 #[derive(Clone)]
 pub struct Store {
@@ -11,7 +12,7 @@ pub struct Store {
 fn init_metadata_storage(
     config: &config::Config,
     upgrade: bool,
-) -> Result<Arc<dyn storage::MetadataStorage>, anyhow::Error> {
+) -> Arc<dyn storage::MetadataStorage> {
     cfg_if::cfg_if! {
         if #[cfg(feature = "sqlite-storage")] {
             const DEFAULT: &str = hardy_sqlite_storage::CONFIG_KEY;
@@ -22,24 +23,22 @@ fn init_metadata_storage(
     }
 
     let engine: String = settings::get_with_default(config, "metadata_storage", DEFAULT)
-        .map_err(|e| anyhow!("Failed to parse 'metadata_storage' config param: {}", e))?;
+        .trace_expect("Invalid 'metadata_storage' value in configuration");
+    tracing::info!("Using '{}' metadata storage engine", engine);
 
     let config = config.get_table(&engine).unwrap_or_default();
-
-    log::info!("Using metadata storage: {}", engine);
-
     match engine.as_str() {
         #[cfg(feature = "sqlite-storage")]
         hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config, upgrade),
 
-        _ => Err(anyhow!("Unknown metadata storage engine {}", engine)),
+        _ => {
+            tracing::error!("Unknown metadata storage engine: {}", engine);
+            panic!("Unknown metadata storage engine: {}", engine)
+        }
     }
 }
 
-fn init_bundle_storage(
-    config: &config::Config,
-    _upgrade: bool,
-) -> Result<Arc<dyn storage::BundleStorage>, anyhow::Error> {
+fn init_bundle_storage(config: &config::Config, _upgrade: bool) -> Arc<dyn storage::BundleStorage> {
     cfg_if::cfg_if! {
         if #[cfg(feature = "localdisk-storage")] {
             const DEFAULT: &str = hardy_localdisk_storage::CONFIG_KEY;
@@ -50,16 +49,18 @@ fn init_bundle_storage(
     }
 
     let engine: String = settings::get_with_default(config, "bundle_storage", DEFAULT)
-        .map_err(|e| anyhow!("Failed to parse 'bundle_storage' config param: {}", e))?;
+        .trace_expect("Invalid 'bundle_storage' value in configuration");
+    tracing::info!("Using '{}' bundle storage engine", engine);
+
     let config = config.get_table(&engine).unwrap_or_default();
-
-    log::info!("Using bundle storage: {}", engine);
-
     match engine.as_str() {
         #[cfg(feature = "localdisk-storage")]
         hardy_localdisk_storage::CONFIG_KEY => hardy_localdisk_storage::Storage::init(&config),
 
-        _ => Err(anyhow!("Unknown bundle storage engine {}", engine)),
+        _ => {
+            tracing::error!("Unknown bundle storage engine: {}", engine);
+            panic!("Unknown bundle storage engine: {}", engine)
+        }
     }
 }
 
@@ -67,10 +68,8 @@ impl Store {
     pub fn new(config: &config::Config, upgrade: bool) -> Self {
         // Init pluggable storage engines
         Self {
-            metadata_storage: init_metadata_storage(config, upgrade)
-                .log_expect("Failed to initialize metadata store"),
-            bundle_storage: init_bundle_storage(config, upgrade)
-                .log_expect("Failed to initialize bundle store"),
+            metadata_storage: init_metadata_storage(config, upgrade),
+            bundle_storage: init_bundle_storage(config, upgrade),
         }
     }
 
@@ -84,32 +83,28 @@ impl Store {
         ingress: ingress::Ingress,
         dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
-        let self_cloned = self.clone();
-        tokio::task::spawn_blocking(move || {
-            // Bundle storage check first
-            log::info!("Starting store consistency check...");
-            self_cloned.bundle_storage_check(ingress.clone(), cancel_token.clone())?;
+    ) {
+        tracing::info!("Starting store consistency check...");
+        self.bundle_storage_check(ingress.clone(), cancel_token.clone())
+            .trace_expect("Bundle storage consistency check failed");
 
-            // Now check the metadata storage for orphans
+        // Now check the metadata storage for orphans
+        if !cancel_token.is_cancelled() {
+            self.metadata_storage_check(dispatcher, cancel_token.clone())
+                .trace_expect("Metadata storage consistency check failed");
             if !cancel_token.is_cancelled() {
-                self_cloned.metadata_storage_check(dispatcher, cancel_token.clone())?;
+                tracing::info!("Store consistency check complete");
+
+                // Now restart the store
+                tracing::info!("Restarting store...");
+                self.metadata_storage_restart(ingress, cancel_token.clone())
+                    .trace_expect("Store restart failed");
+
                 if !cancel_token.is_cancelled() {
-                    log::info!("Store consistency check complete");
-
-                    // Now restart the store
-                    log::info!("Restarting store...");
-                    self_cloned.metadata_storage_restart(ingress, cancel_token.clone())?;
-
-                    if !cancel_token.is_cancelled() {
-                        log::info!("Store restarted");
-                    }
+                    tracing::info!("Store restarted");
                 }
             }
-
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?
+        }
     }
 
     #[instrument(skip_all)]
@@ -117,7 +112,7 @@ impl Store {
         &self,
         ingress: ingress::Ingress,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         self.metadata_storage.restart(&mut |metadata, bundle| {
             tokio::runtime::Handle::current().block_on(async {
                 // Just shove bundles into the Ingress
@@ -134,7 +129,7 @@ impl Store {
         &self,
         dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         self.metadata_storage
             .check_orphans(&mut |metadata, bundle| {
                 tokio::runtime::Handle::current().block_on(async {
@@ -164,7 +159,7 @@ impl Store {
         &self,
         ingress: ingress::Ingress,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         self.bundle_storage
             .check_orphans(&mut |storage_name, hash, file_time| {
                 tokio::runtime::Handle::current().block_on(async {
@@ -179,7 +174,7 @@ impl Store {
                             .enqueue_receive_bundle(storage_name, file_time)
                             .await?;
                     }
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<_, storage::Error>(())
                 })?;
 
                 // Just dumb poll the cancel token now - try to avoid mismatched state again
@@ -187,11 +182,11 @@ impl Store {
             })
     }
 
-    pub async fn load_data(&self, storage_name: &str) -> Result<storage::DataRef, anyhow::Error> {
+    pub async fn load_data(&self, storage_name: &str) -> Result<storage::DataRef, Error> {
         self.bundle_storage.load(storage_name).await
     }
 
-    pub async fn store_data(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
+    pub async fn store_data(&self, data: Vec<u8>) -> Result<String, Error> {
         // Write to bundle storage
         self.bundle_storage.store(data).await
     }
@@ -200,7 +195,7 @@ impl Store {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> Result<bool, Error> {
         // Write to metadata store
         self.metadata_storage.store(metadata, bundle).await
     }
@@ -212,7 +207,7 @@ impl Store {
         data: Vec<u8>,
         status: bundle::BundleStatus,
         received_at: Option<time::OffsetDateTime>,
-    ) -> Result<Option<bundle::Metadata>, anyhow::Error> {
+    ) -> Result<Option<bundle::Metadata>, Error> {
         // Calculate hash
         let hash = self.hash(&data);
 
@@ -247,7 +242,7 @@ impl Store {
     pub async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, anyhow::Error> {
+    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, Error> {
         self.metadata_storage.get_waiting_bundles(limit).await
     }
 
@@ -256,18 +251,14 @@ impl Store {
         &self,
         metadata: bundle::Metadata,
         data: Vec<u8>,
-    ) -> Result<bundle::Metadata, anyhow::Error> {
+    ) -> Result<bundle::Metadata, Error> {
         // Calculate hash
         let hash = self.hash(&data);
 
         // Let the metadata storage know we are about to replace a bundle
-        if !self
-            .metadata_storage
+        self.metadata_storage
             .begin_replace(&metadata.storage_name, &hash)
-            .await?
-        {
-            return Err(anyhow!("No such bundle in metadata storage"));
-        }
+            .await?;
 
         // Store the new data
         self.bundle_storage
@@ -291,20 +282,14 @@ impl Store {
         &self,
         storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<bundle::BundleStatus, anyhow::Error> {
-        if self
-            .metadata_storage
+    ) -> Result<(), Error> {
+        self.metadata_storage
             .set_bundle_status(storage_name, status)
-            .await?
-        {
-            Ok(status)
-        } else {
-            Err(anyhow!("Bundle is not in metadata storage"))
-        }
+            .await
     }
 
     #[instrument(skip(self))]
-    pub async fn delete(&self, storage_name: &str) -> Result<(), anyhow::Error> {
+    pub async fn delete(&self, storage_name: &str) -> Result<(), Error> {
         // Entirely delete the bundle from the metadata and bundle stores
         self.bundle_storage.remove(storage_name).await?;
         self.metadata_storage.remove(storage_name).await?;
@@ -312,7 +297,7 @@ impl Store {
     }
 
     #[instrument(skip(self))]
-    pub async fn remove(&self, storage_name: &str) -> Result<(), anyhow::Error> {
+    pub async fn remove(&self, storage_name: &str) -> Result<(), Error> {
         // Delete the bundle from the bundle store
         self.bundle_storage.remove(storage_name).await?;
 

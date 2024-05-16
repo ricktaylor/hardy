@@ -2,23 +2,36 @@ use super::*;
 use hardy_cbor as cbor;
 use hardy_proto::application::*;
 use tokio::sync::mpsc::*;
+use utils::{cancel::cancellable_sleep, settings};
 
 const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
 
 #[derive(Clone)]
 struct Config {
-    node_id: node_id::NodeId,
+    node_id: bundle::NodeId,
     status_reports: bool,
     max_forwarding_delay: u32,
 }
 
 impl Config {
-    fn load(config: &config::Config, node_id: node_id::NodeId) -> Result<Self, anyhow::Error> {
-        Ok(Self {
+    fn new(config: &config::Config, node_id: bundle::NodeId) -> Self {
+        let config = Self {
             node_id,
-            status_reports: settings::get_with_default(config, "status_reports", false)?,
-            max_forwarding_delay: settings::get_with_default(config, "max_forwarding_delay", 5u32)?,
-        })
+            status_reports: settings::get_with_default(config, "status_reports", false)
+                .trace_expect("Invalid 'status_reports' value in configuration"),
+            max_forwarding_delay: settings::get_with_default(config, "max_forwarding_delay", 5u32)
+                .trace_expect("Invalid 'max_forwarding_delay' value in configuration"),
+        };
+
+        if !config.status_reports {
+            log::info!("Bundle status reports are disabled by configuration");
+        }
+
+        if config.max_forwarding_delay == 0 {
+            log::info!("Forwarding synchronization delay disabled by configuration");
+        }
+
+        config
     }
 }
 
@@ -36,24 +49,16 @@ impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &config::Config,
-        node_id: node_id::NodeId,
+        node_id: bundle::NodeId,
         store: store::Store,
         cla_registry: cla_registry::ClaRegistry,
         app_registry: app_registry::AppRegistry,
         fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Self {
         // Load config
-        let config = Config::load(config, node_id)?;
-
-        if !config.status_reports {
-            log::info!("Bundle status reports are disabled by configuration");
-        }
-
-        if config.max_forwarding_delay == 0 {
-            log::info!("Forwarding synchronization delay disabled by configuration");
-        }
+        let config = Config::new(config, node_id);
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
@@ -77,14 +82,14 @@ impl Dispatcher {
         let dispatcher_cloned = dispatcher.clone();
         task_set.spawn(async move { Self::check_waiting(dispatcher_cloned, cancel_token).await });
 
-        Ok(dispatcher)
+        dispatcher
     }
 
     async fn enqueue_bundle(
         &self,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Put bundle into channel
         self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
     }
@@ -106,18 +111,18 @@ impl Dispatcher {
                         let dispatcher = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(metadata,bundle,cancel_token_cloned).await.log_expect("Failed to process bundle");
+                            dispatcher.process_bundle(metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process bundle");
                         });
                     }
                 },
-                Some(r) = task_set.join_next() => r.log_expect("Task terminated unexpectedly"),
+                Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
                 _ = cancel_token.cancelled() => break
             }
         }
 
         // Wait for all sub-tasks to complete
         while let Some(r) = task_set.join_next().await {
-            r.log_expect("Task terminated unexpectedly")
+            r.trace_expect("Task terminated unexpectedly")
         }
     }
 
@@ -143,7 +148,7 @@ impl Dispatcher {
                                 let dispatcher = self.clone();
                                 let cancel_token_cloned = cancel_token.clone();
                                 task_set.spawn(async move {
-                                    dispatcher.delay_bundle(metadata,bundle, until,cancel_token_cloned).await.log_expect("Failed to process bundle");
+                                    dispatcher.delay_bundle(metadata,bundle, until,cancel_token_cloned).await.trace_expect("Failed to process bundle");
                                 });
                             }
                         }
@@ -152,24 +157,24 @@ impl Dispatcher {
 
                     timer.as_mut().reset(interval);
                 },
-                Some(r) = task_set.join_next() => r.log_expect("Task terminated unexpectedly"),
+                Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
                 _ = cancel_token.cancelled() => break
             }
         }
 
         // Wait for all sub-tasks to complete
         while let Some(r) = task_set.join_next().await {
-            r.log_expect("Task terminated unexpectedly")
+            r.trace_expect("Task terminated unexpectedly")
         }
     }
 
     async fn delay_bundle(
         &self,
-        metadata: bundle::Metadata,
+        mut metadata: bundle::Metadata,
         bundle: bundle::Bundle,
         until: time::OffsetDateTime,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Check if it's worth us waiting
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
@@ -189,8 +194,9 @@ impl Dispatcher {
         log::trace!("Forwarding bundle");
 
         // Set status to ForwardPending
+        metadata.status = bundle::BundleStatus::ForwardPending;
         self.store
-            .set_status(&metadata.storage_name, bundle::BundleStatus::ForwardPending)
+            .set_status(&metadata.storage_name, metadata.status)
             .await?;
 
         // And forward it!
@@ -203,10 +209,10 @@ impl Dispatcher {
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         if let bundle::BundleStatus::DispatchPending = &metadata.status {
             // Check if we are the final destination
-            let new_status = if self.config.node_id.is_local_service(&bundle.destination) {
+            metadata.status = if self.config.node_id.is_local_service(&bundle.destination) {
                 if bundle.id.fragment_info.is_some() {
                     // Reassembly!!
                     log::trace!("Bundle requires fragment reassembly");
@@ -221,9 +227,9 @@ impl Dispatcher {
                 log::trace!("Forwarding bundle");
                 bundle::BundleStatus::ForwardPending
             };
-            metadata.status = self
-                .store
-                .set_status(&metadata.storage_name, new_status)
+
+            self.store
+                .set_status(&metadata.storage_name, metadata.status)
                 .await?;
         }
 
@@ -268,7 +274,7 @@ impl Dispatcher {
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Check bundle expiry
         if bundle::has_bundle_expired(&metadata, &bundle) {
             log::trace!("Bundle lifetime has expired");
@@ -355,7 +361,10 @@ impl Dispatcher {
                         // Get bundle data from store, now we know we need it!
                         if data.is_none() {
                             data = match self.store.load_data(&metadata.storage_name).await {
-                                Ok(data) => Some((*data).as_ref().to_vec()),
+                                Ok(data) => {
+                                    // TODO:  Update the bundle age and next hop blocks!!
+                                    Some((*data).as_ref().to_vec())
+                                }
                                 Err(e) => {
                                     // The bundle data has gone!
                                     log::warn!("Failed to load bundle data: {}", e);
@@ -485,16 +494,15 @@ impl Dispatcher {
         metadata: &bundle::Metadata,
         until: time::OffsetDateTime,
         cancel_token: &tokio_util::sync::CancellationToken,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> Result<bool, Error> {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
             log::trace!("Bundle will wait offline until: {}", until);
-            return self
-                .store
+            self.store
                 .set_status(&metadata.storage_name, bundle::BundleStatus::Waiting(until))
-                .await
-                .map(|_| false);
+                .await?;
+            return Ok(false);
         }
 
         // We must wait here, as we have missed the scheduled wait interval
@@ -508,7 +516,7 @@ impl Dispatcher {
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
         reason: Option<bundle::StatusReportReasonCode>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&metadata, &bundle, reason)
                 .await?;
@@ -523,7 +531,7 @@ impl Dispatcher {
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
         reason: bundle::StatusReportReasonCode,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Check if a report is requested
         if !self.config.status_reports || !bundle.flags.receipt_report_requested {
             return Ok(());
@@ -552,7 +560,7 @@ impl Dispatcher {
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
         reason: bundle::StatusReportReasonCode,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Check if a report is requested
         if !self.config.status_reports || !bundle.flags.delete_report_requested {
             return Ok(());
@@ -584,20 +592,18 @@ impl Dispatcher {
     pub async fn local_dispatch(
         &self,
         source: bundle::Eid,
-        request: SendRequest,
-    ) -> Result<(), anyhow::Error> {
+        destination: bundle::Eid,
+        data: Vec<u8>,
+        lifetime: Option<u64>,
+        flags: Option<u32>,
+    ) -> Result<(), Error> {
         // Build the bundle
-        let destination = match request.destination.parse::<bundle::Eid>()? {
-            bundle::Eid::Null => return Err(anyhow!("Cannot send to Null endpoint")),
-            eid => eid,
-        };
-
         let mut b = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .source(&source)
             .destination(&destination);
 
         // Set flags
-        if let Some(flags) = request.flags {
+        if let Some(flags) = flags {
             if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
                 b = b.app_ack_requested(true);
             }
@@ -608,12 +614,12 @@ impl Dispatcher {
         }
 
         // Lifetime
-        if let Some(lifetime) = request.lifetime {
+        if let Some(lifetime) = lifetime {
             b = b.lifetime(lifetime);
         }
 
         // Add payload and build
-        let (metadata, bundle) = b.add_payload_block(request.data).build(&self.store).await?;
+        let (metadata, bundle) = b.add_payload_block(data).build(&self.store).await?;
 
         // And queue it up
         self.enqueue_bundle(metadata, bundle).await
@@ -623,7 +629,7 @@ impl Dispatcher {
         &self,
         _metadata: bundle::Metadata,
         _bundle: bundle::Bundle,
-    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, anyhow::Error> {
+    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, Error> {
         todo!()
     }
 }

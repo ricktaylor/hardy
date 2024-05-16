@@ -42,11 +42,10 @@ pub fn get_with_default<'de, T: serde::Deserialize<'de>, D: Into<T>>(
     config: &config::Config,
     key: &str,
     default: D,
-) -> Result<T, anyhow::Error> {
+) -> Result<T, config::ConfigError> {
     match config.get::<T>(key) {
-        Ok(v) => Ok(v),
         Err(config::ConfigError::NotFound(_)) => Ok(default.into()),
-        Err(e) => Err(anyhow!("Failed to parse config value '{}': {}", key, e)),
+        r => r,
     }
 }
 

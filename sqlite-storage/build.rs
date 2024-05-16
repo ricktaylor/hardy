@@ -1,9 +1,6 @@
 use base64::prelude::*;
 use sha1::Digest;
-use std::{
-    env,
-    io::{Read, Write},
-};
+use std::io::{Read, Write};
 
 fn main() {
     built::write_built_file().expect("Failed to acquire build-time information");
@@ -14,7 +11,7 @@ fn main() {
 fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed={src_dir}");
 
-    let out_dir = env::var("OUT_DIR")?;
+    let out_dir = std::env::var("OUT_DIR")?;
     let mut out = std::io::BufWriter::new(std::fs::File::create(
         [&out_dir, "migrations.rs"]
             .iter()

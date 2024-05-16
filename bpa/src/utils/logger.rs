@@ -1,10 +1,8 @@
 use super::*;
 
 pub fn init(config: &config::Config) {
-    let log_level: String = settings::get_with_default(config, "log_level", "info")
-        .expect("Failed to find 'log_level' in config");
-
-    let log_level = log_level
+    let log_level = settings::get_with_default::<String, _>(config, "log_level", "info")
+        .expect("Invalid 'log_level' value in configuration")
         .parse::<tracing_subscriber::filter::LevelFilter>()
         .expect("Invalid log level");
 

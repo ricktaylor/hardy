@@ -1,20 +1,25 @@
 use super::*;
-use anyhow::anyhow;
 use base64::prelude::*;
-use hardy_bpa_core::{async_trait, bundle, storage::MetadataStorage};
+use hardy_bpa_core::{async_trait, bundle, storage, storage::MetadataStorage};
 use hardy_cbor as cbor;
-use log_err::*;
 use rusqlite::OptionalExtension;
 use std::{
     collections::HashMap,
-    fs::create_dir_all,
     path::Path,
     sync::{Arc, Mutex},
 };
-use tracing::instrument;
+use thiserror::Error;
+use trace_err::*;
+use tracing::*;
 
 pub struct Storage {
     connection: Arc<Mutex<rusqlite::Connection>>,
+}
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("No such bundle")]
+    NotFound,
 }
 
 fn bundle_status_to_pair(value: bundle::BundleStatus) -> (i64, Option<time::OffsetDateTime>) {
@@ -33,7 +38,7 @@ fn unpack_bundle_status(
     row: &rusqlite::Row,
     idx1: usize,
     idx2: usize,
-) -> Result<bundle::BundleStatus, anyhow::Error> {
+) -> Result<bundle::BundleStatus, Box<dyn std::error::Error + Send + Sync>> {
     match (
         row.get::<usize, i64>(idx1)?,
         row.get::<usize, Option<time::OffsetDateTime>>(idx2)?,
@@ -45,7 +50,7 @@ fn unpack_bundle_status(
         (4, None) => Ok(bundle::BundleStatus::ForwardPending),
         (5, Some(until)) => Ok(bundle::BundleStatus::Waiting(until)),
         (6, None) => Ok(bundle::BundleStatus::Tombstone),
-        (v, d) => Err(anyhow!("Invalid BundleStatus value {}/{:?}", v, d)),
+        (v, d) => panic!("Invalid BundleStatus value {}/{:?}", v, d),
     }
 }
 
@@ -54,7 +59,7 @@ impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
         mut upgrade: bool,
-    ) -> Result<Arc<dyn MetadataStorage>, anyhow::Error> {
+    ) -> Arc<dyn MetadataStorage> {
         // Compose DB name
         let file_path = config
             .get("db_dir")
@@ -63,10 +68,14 @@ impl Storage {
                     directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME)
                         .map_or_else(
                             || {
-                                if cfg!(unix) {
-                                    Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
-                                } else {
-                                    Err(anyhow!("Failed to resolve local store directory"))
+                                cfg_if::cfg_if! {
+                                    if #[cfg(unix)] {
+                                        Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
+                                    } else if #[cfg(windows)] {
+                                        Ok(std::env::current_exe().join(built_info::PKG_NAME))
+                                    } else {
+                                        compile_error!("No idea how to determine default local store directory for target platform")
+                                    }
                                 }
                             },
                             |project_dirs| {
@@ -81,22 +90,25 @@ impl Storage {
                     v.clone()
                         .into_string()
                         .map(|s| s.into())
-                        .map_err(|e| anyhow!("'db_dir' is not a string value: {}!", e))
                 },
-            )?
+            ).trace_expect("Failed to determine metadata store directory")
             .join("metadata.db");
 
-        log::info!("Using database: {}", file_path.display());
+        info!("Using database: {}", file_path.display());
 
         // Ensure directory exists
-        create_dir_all(file_path.parent().unwrap())?;
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).trace_expect(&format!(
+                "Failed to create metadata store directory {}",
+                parent.display()
+            ));
+        }
 
         // Attempt to open existing database first
         let mut connection = match rusqlite::Connection::open_with_flags(
             &file_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
-            Ok(conn) => conn,
             Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error {
                     code: rusqlite::ffi::ErrorCode::CannotOpen,
@@ -111,51 +123,56 @@ impl Storage {
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
                         | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
                         | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                )?
+                )
             }
-            Err(e) => Err(e)?,
-        };
+            r => r,
+        }
+        .trace_expect("Failed to open metadata store database");
 
         // Migrate the database to the latest schema
-        migrate::migrate(&mut connection, upgrade)?;
+        migrate::migrate(&mut connection, upgrade)
+            .trace_expect("Failed to migrate metadata store database");
 
         // Mark all existing non-Tombstone bundles as unconfirmed
-        connection.execute(
-            r#"
+        connection
+            .execute(
+                r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
             SELECT id FROM bundles WHERE status != ?1;"#,
-            [bundle_status_to_pair(bundle::BundleStatus::Tombstone).0],
-        )?;
+                [bundle_status_to_pair(bundle::BundleStatus::Tombstone).0],
+            )
+            .and_then(|_| {
+                // Create temporary tables for restarting
+                connection.execute_batch(
+                    r#"
+                CREATE TEMPORARY TABLE restart_bundles (
+                    bundle_id INTEGER UNIQUE NOT NULL
+                ) STRICT;"#,
+                )
+            })
+            .trace_expect("Failed to prepare metadata store database");
 
-        // Create temporary tables for restarting
-        connection.execute_batch(
-            r#"
-            CREATE TEMPORARY TABLE restart_bundles (
-                bundle_id INTEGER UNIQUE NOT NULL
-            ) STRICT;"#,
-        )?;
-
-        Ok(Arc::new(Storage {
+        Arc::new(Storage {
             connection: Arc::new(Mutex::new(connection)),
-        }))
+        })
     }
 }
 
-fn encode_eid(eid: &bundle::Eid) -> Result<rusqlite::types::Value, anyhow::Error> {
+fn encode_eid(eid: &bundle::Eid) -> rusqlite::types::Value {
     match eid {
-        bundle::Eid::Null => Ok(rusqlite::types::Value::Null),
-        _ => Ok(rusqlite::types::Value::Blob(cbor::encode::emit(eid))),
+        bundle::Eid::Null => rusqlite::types::Value::Null,
+        _ => rusqlite::types::Value::Blob(cbor::encode::emit(eid)),
     }
 }
 
 fn decode_eid(
     row: &rusqlite::Row,
     idx: impl rusqlite::RowIndex,
-) -> Result<bundle::Eid, anyhow::Error> {
+) -> Result<bundle::Eid, Box<dyn std::error::Error + Send + Sync>> {
     match row.get_ref(idx)? {
-        rusqlite::types::ValueRef::Blob(b) => cbor::decode::parse(b),
+        rusqlite::types::ValueRef::Blob(b) => Ok(cbor::decode::parse(b)?),
         rusqlite::types::ValueRef::Null => Ok(bundle::Eid::Null),
-        _ => Err(anyhow!("EID encoded as unusual sqlite type")),
+        _ => panic!("EID encoded as unusual sqlite type"),
     }
 }
 
@@ -173,7 +190,7 @@ fn as_i64<T: Into<u64>>(v: T) -> i64 {
 
 fn unpack_bundles(
     mut rows: rusqlite::Rows,
-) -> Result<Vec<(i64, bundle::Metadata, bundle::Bundle)>, anyhow::Error> {
+) -> storage::Result<Vec<(i64, bundle::Metadata, bundle::Bundle)>> {
     /* Expected query MUST look like:
            0:  bundles.id,
            1:  bundles.status,
@@ -245,7 +262,7 @@ fn unpack_bundles(
             previous_node: match row.get_ref(15)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
-                _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
+                v => panic!("EID encoded as unusual sqlite type: {:?}", v),
             },
             age: row.get::<usize, Option<i64>>(16)?.map(as_u64),
             hop_count: match row.get_ref(17)? {
@@ -254,7 +271,7 @@ fn unpack_bundles(
                     count: as_u64(i),
                     limit: as_u64(row.get(18)?),
                 }),
-                _ => return Err(anyhow!("EID encoded as unusual sqlite type")),
+                v => panic!("EID encoded as unusual sqlite type: {:?}", v),
             },
         };
 
@@ -269,7 +286,7 @@ fn unpack_bundles(
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
-                return Err(anyhow!("Duplicate block number in DB!"));
+                panic!("Duplicate block number {} in DB!", block_number);
             }
 
             row_result = rows.next()?;
@@ -292,7 +309,7 @@ fn complete_replace(
     trans: &rusqlite::Transaction<'_>,
     storage_name: &str,
     hash: &[u8],
-) -> Result<Option<i64>, anyhow::Error> {
+) -> storage::Result<Option<i64>> {
     // Update the hash
     let bundle_id = trans
         .prepare_cached(
@@ -331,14 +348,14 @@ impl MetadataStorage for Storage {
     #[instrument(skip_all)]
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
-    ) -> Result<(), anyhow::Error> {
+        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> storage::Result<bool>,
+    ) -> storage::Result<()> {
         // Loop through subsets of 16 bundles, so we don't fill all memory
         loop {
             let bundles = unpack_bundles(
                 self.connection
                     .lock()
-                    .log_expect("Failed to lock connection mutex")
+                    .trace_expect("Failed to lock connection mutex")
                     .prepare_cached(
                         r#"WITH subset AS (
                             SELECT 
@@ -396,12 +413,12 @@ impl MetadataStorage for Storage {
     #[instrument(skip_all)]
     fn restart(
         &self,
-        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool, anyhow::Error>,
-    ) -> Result<(), anyhow::Error> {
+        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> storage::Result<bool>,
+    ) -> storage::Result<()> {
         // Create a temporary table (because DELETE RETURNING cannot be used as a CTE)
         self.connection
             .lock()
-            .log_expect("Failed to lock connection mutex")
+            .trace_expect("Failed to lock connection mutex")
             .prepare(
                 r#"CREATE TEMPORARY TABLE restart_subset (
                     bundle_id INTEGER UNIQUE NOT NULL
@@ -414,7 +431,7 @@ impl MetadataStorage for Storage {
             let mut conn = self
                 .connection
                 .lock()
-                .log_expect("Failed to lock connection mutex");
+                .trace_expect("Failed to lock connection mutex");
             let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
             // Grab a subset, ordered by status descending
@@ -495,7 +512,7 @@ impl MetadataStorage for Storage {
         // And finally drop the restart tables - they're no longer required
         self.connection
             .lock()
-            .log_expect("Failed to lock connection mutex")
+            .trace_expect("Failed to lock connection mutex")
             .execute_batch(
                 r#"
                 DROP TABLE temp.restart_subset;
@@ -509,11 +526,11 @@ impl MetadataStorage for Storage {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> storage::Result<bool> {
         let mut conn = self
             .connection
             .lock()
-            .log_expect("Failed to lock connection mutex");
+            .trace_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let (status, until) = bundle_status_to_pair(metadata.status);
 
@@ -551,18 +568,15 @@ impl MetadataStorage for Storage {
                     BASE64_STANDARD_NO_PAD.encode(&metadata.hash),
                     as_i64(bundle.flags),
                     as_i64(bundle.crc_type),
-                    &encode_eid(&bundle.id.source)?,
-                    &encode_eid(&bundle.destination)?,
-                    &encode_eid(&bundle.report_to)?,
+                    &encode_eid(&bundle.id.source),
+                    &encode_eid(&bundle.destination),
+                    &encode_eid(&bundle.report_to),
                     as_i64(bundle.id.timestamp.creation_time),
                     as_i64(bundle.id.timestamp.sequence_number),
                     as_i64(bundle.lifetime),
                     bundle.id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
                     bundle.id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
-                    bundle
-                        .previous_node
-                        .as_ref()
-                        .map_or(Ok(None), |p| encode_eid(p).map(Some))?,
+                    bundle.previous_node.as_ref().map(encode_eid),
                     bundle.age.map(as_i64),
                     bundle.hop_count.map(|h| as_i64(h.count)),
                     bundle.hop_count.map(|h| as_i64(h.limit)),
@@ -607,23 +621,28 @@ impl MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
+    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
         // Delete
-        self.connection
+        if !self
+            .connection
             .lock()
-            .log_expect("Failed to lock connection mutex")
+            .trace_expect("Failed to lock connection mutex")
             .prepare_cached(r#"DELETE FROM bundles WHERE storage_name = ?1;"#)?
             .execute([storage_name])
-            .map(|count| count != 0)
-            .map_err(|e| e.into())
+            .map(|count| count != 0)?
+        {
+            Err(Error::NotFound.into())
+        } else {
+            Ok(())
+        }
     }
 
     #[instrument(skip(self))]
-    async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
+    async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> storage::Result<bool> {
         let mut conn = self
             .connection
             .lock()
-            .log_expect("Failed to lock connection mutex");
+            .trace_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Check if bundle exists
@@ -665,58 +684,68 @@ impl MetadataStorage for Storage {
         &self,
         storage_name: &str,
         status: bundle::BundleStatus,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> storage::Result<()> {
         let (status, until) = bundle_status_to_pair(status);
-        self.connection
+        if !self
+            .connection
             .lock()
-            .log_expect("Failed to lock connection mutex")
+            .trace_expect("Failed to lock connection mutex")
             .prepare_cached(
                 r#"UPDATE bundles SET status = ?1, wait_until = ?2 WHERE storage_name = ?3;"#,
             )?
             .execute((status, until, storage_name))
-            .map(|count| count != 0)
-            .map_err(|e| e.into())
+            .map(|count| count != 0)?
+        {
+            Err(Error::NotFound.into())
+        } else {
+            Ok(())
+        }
     }
 
     #[instrument(skip(self))]
-    async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
-        self.connection
+    async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> storage::Result<()> {
+        if !self
+            .connection
             .lock()
-            .log_expect("Failed to lock connection mutex")
+            .trace_expect("Failed to lock connection mutex")
             .prepare_cached(
                 r#"INSERT INTO replacement_bundles (bundle_id, hash)
                 SELECT id,?1 FROM bundles WHERE storage_name = ?2;"#,
             )?
             .execute((BASE64_STANDARD_NO_PAD.encode(hash), storage_name))
-            .map(|count| count != 0)
-            .map_err(|e| e.into())
+            .map(|count| count != 0)?
+        {
+            Err(Error::NotFound.into())
+        } else {
+            Ok(())
+        }
     }
 
     #[instrument(skip(self))]
-    async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<bool, anyhow::Error> {
+    async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> storage::Result<()> {
         let mut conn = self
             .connection
             .lock()
-            .log_expect("Failed to lock connection mutex");
+            .trace_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         if complete_replace(&trans, storage_name, hash)?.is_none() {
-            return Ok(false);
+            return Err(Error::NotFound.into());
         };
 
         // Commit the transaction
-        trans.commit().map(|_| true).map_err(|e| e.into())
+        trans.commit().map_err(|e| e.into())
     }
 
     #[instrument(skip(self))]
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, anyhow::Error> {
+    ) -> storage::Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>> {
         unpack_bundles(
             self.connection
                 .lock()
-                .log_expect("Failed to lock connection mutex")
+                .trace_expect("Failed to lock connection mutex")
                 .prepare_cached(
                     r#"SELECT 
                         bundles.id,

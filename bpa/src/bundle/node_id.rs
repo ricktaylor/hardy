@@ -1,15 +1,16 @@
 use super::*;
 use std::collections::HashMap;
+use thiserror::Error;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpnNodeId {
     allocator_id: u32,
     node_number: u32,
 }
 
 impl IpnNodeId {
-    pub fn to_eid(&self, service_number: u32) -> bundle::Eid {
-        bundle::Eid::Ipn3 {
+    pub fn to_eid(&self, service_number: u32) -> Eid {
+        Eid::Ipn3 {
             allocator_id: self.allocator_id,
             node_number: self.node_number,
             service_number,
@@ -27,14 +28,14 @@ impl std::fmt::Display for IpnNodeId {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DtnNodeId {
     node_name: String,
 }
 
 impl DtnNodeId {
-    pub fn to_eid(&self, demux: &str) -> bundle::Eid {
-        bundle::Eid::Dtn {
+    pub fn to_eid(&self, demux: &str) -> Eid {
+        Eid::Dtn {
             node_name: self.node_name.clone(),
             demux: demux.to_string(),
         }
@@ -54,18 +55,16 @@ pub struct NodeId {
 }
 
 impl NodeId {
-    pub fn init(config: &config::Config) -> Result<Self, anyhow::Error> {
+    pub fn init(config: &config::Config) -> Self {
         // Load NodeId from config
         let node_id = init_from_value(
             config
                 .get::<config::Value>("administrative_endpoint")
-                .map_err(|e| {
-                    anyhow!(
-                        "Missing \"administrative_endpoint\" from configuration: {}",
-                        e
-                    )
-                })?,
-        )?;
+                .trace_expect(
+                    "Missing or invalid 'administrative_endpoint' value in configuration",
+                ),
+        )
+        .trace_expect("Invalid 'administrative_endpoint' value in configuration");
 
         match (&node_id.ipn, &node_id.dtn) {
             (None, None) => unreachable!(),
@@ -75,21 +74,19 @@ impl NodeId {
                 log::info!("Administrative endpoints: [{node_id1}, {node_id2}]")
             }
         }
-        Ok(node_id)
+        node_id
     }
 
-    pub fn get_admin_endpoint(&self, destination: &bundle::Eid) -> bundle::Eid {
+    pub fn get_admin_endpoint(&self, destination: &Eid) -> Eid {
         match (&self.ipn, &self.dtn) {
             (None, Some(node_id)) => node_id.to_eid(""),
             (Some(node_id), None) => match destination {
-                bundle::Eid::LocalNode { service_number: _ } => {
-                    bundle::Eid::LocalNode { service_number: 0 }
-                }
-                bundle::Eid::Ipn2 {
+                Eid::LocalNode { service_number: _ } => Eid::LocalNode { service_number: 0 },
+                Eid::Ipn2 {
                     allocator_id: _,
                     node_number: _,
                     service_number: _,
-                } => bundle::Eid::Ipn2 {
+                } => Eid::Ipn2 {
                     allocator_id: node_id.allocator_id,
                     node_number: node_id.node_number,
                     service_number: 0,
@@ -97,19 +94,17 @@ impl NodeId {
                 _ => node_id.to_eid(0),
             },
             (Some(ipn_node_id), Some(dtn_node_id)) => match destination {
-                bundle::Eid::LocalNode { service_number: _ } => {
-                    bundle::Eid::LocalNode { service_number: 0 }
-                }
-                bundle::Eid::Ipn2 {
+                Eid::LocalNode { service_number: _ } => Eid::LocalNode { service_number: 0 },
+                Eid::Ipn2 {
                     allocator_id: _,
                     node_number: _,
                     service_number: _,
-                } => bundle::Eid::Ipn2 {
+                } => Eid::Ipn2 {
                     allocator_id: ipn_node_id.allocator_id,
                     node_number: ipn_node_id.node_number,
                     service_number: 0,
                 },
-                bundle::Eid::Dtn {
+                Eid::Dtn {
                     node_name: _,
                     demux: _,
                 } => dtn_node_id.to_eid(""),
@@ -119,16 +114,16 @@ impl NodeId {
         }
     }
 
-    pub fn is_local_service(&self, eid: &bundle::Eid) -> bool {
+    pub fn is_local_service(&self, eid: &Eid) -> bool {
         match eid {
-            bundle::Eid::Null => false,
-            bundle::Eid::LocalNode { service_number: _ } => true,
-            bundle::Eid::Ipn2 {
+            Eid::Null => false,
+            Eid::LocalNode { service_number: _ } => true,
+            Eid::Ipn2 {
                 allocator_id,
                 node_number,
                 service_number: _,
             }
-            | bundle::Eid::Ipn3 {
+            | Eid::Ipn3 {
                 allocator_id,
                 node_number,
                 service_number: _,
@@ -138,7 +133,7 @@ impl NodeId {
                 }
                 _ => false,
             },
-            bundle::Eid::Dtn {
+            Eid::Dtn {
                 node_name,
                 demux: _,
             } => match &self.dtn {
@@ -149,47 +144,168 @@ impl NodeId {
     }
 }
 
-fn init_from_value(v: config::Value) -> Result<NodeId, anyhow::Error> {
+#[derive(Error, Debug)]
+enum Error {
+    #[error("Value must be a string, table, or array")]
+    InvalidValue,
+
+    #[error("dtn URIs must be ASCII")]
+    DtnNotASCII,
+
+    #[error("dtn node-name is empty")]
+    DtnNodeNameEmpty,
+
+    #[error("dtn administrative endpoints must not have a demux part")]
+    DtnHasDemux,
+
+    #[error("Administrative endpoints must not be Null")]
+    NotNone,
+
+    #[error("More than 3 components in an ipn administrative endpoint")]
+    IpnAdditionalItems,
+
+    #[error("ipn administrative endpoints must have service number 0")]
+    IpnNonZeroServiceNumber,
+
+    #[error("Unsupported EID scheme {0}")]
+    UnsupportedScheme(String),
+
+    #[error("Multiple dtn administrative endpoints in configuration: {0}")]
+    MultipleDtn(DtnNodeId),
+
+    #[error("Multiple ipn administrative endpoints in configuration: {0}")]
+    MultipleIpn(IpnNodeId),
+
+    #[error("No administrative endpoints in configuration")]
+    NoEndpoints,
+
+    #[error("Failed to parse {field}: {source}")]
+    InvalidField {
+        field: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+trait CaptureFieldErr<T> {
+    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
+}
+
+impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
+    for std::result::Result<T, E>
+{
+    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
+        self.map_err(|e| Error::InvalidField {
+            field,
+            source: e.into(),
+        })
+    }
+}
+
+fn init_from_value(v: config::Value) -> Result<NodeId, Error> {
     match v.kind {
         config::ValueKind::String(s) => init_from_string(s),
         config::ValueKind::Table(t) => init_from_table(t),
         config::ValueKind::Array(v) => init_from_array(v),
-        v => Err(anyhow!(
-            "Invalid \"administrative_endpoint\" in configuration: {}",
-            v
-        )),
+        _ => Err(Error::InvalidValue),
     }
 }
 
-fn init_from_string(s: String) -> Result<NodeId, anyhow::Error> {
-    let eid = s.parse::<bundle::Eid>()?;
-    match eid {
-        bundle::Eid::Ipn3 {
-            allocator_id,
-            node_number,
-            service_number: 0,
-        } => Ok(NodeId {
-            ipn: Some(IpnNodeId {
-                allocator_id,
-                node_number,
+fn init_from_dtn(s: &str) -> Result<NodeId, Error> {
+    if !s.is_ascii() {
+        Err(Error::DtnNotASCII)
+    } else if let Some((s1, s2)) = s.split_once('/') {
+        if s1.is_empty() {
+            Err(Error::DtnNodeNameEmpty)
+        } else if !s2.is_empty() {
+            Err(Error::DtnHasDemux)
+        } else {
+            Ok(NodeId {
+                dtn: Some(DtnNodeId {
+                    node_name: s1.to_string(),
+                }),
+                ipn: None,
+            })
+        }
+    } else {
+        Ok(NodeId {
+            dtn: Some(DtnNodeId {
+                node_name: s.to_string(),
             }),
-            dtn: None,
-        }),
-        bundle::Eid::Dtn {
-            node_name,
-            ref demux,
-        } if demux.is_empty() => Ok(NodeId {
-            dtn: Some(DtnNodeId { node_name }),
             ipn: None,
-        }),
-        _ => Err(anyhow!(
-            "Invalid \"administrative_endpoint\" in configuration: {}",
-            eid
-        )),
+        })
     }
 }
 
-fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::Error> {
+fn init_from_ipn(s: &str) -> Result<NodeId, Error> {
+    let parts = s.split('.').collect::<Vec<&str>>();
+    if parts.len() == 1 {
+        let node_number = parts[0].parse::<u32>().map_field_err("Node Number")?;
+        if node_number == 0 {
+            Err(Error::NotNone)
+        } else {
+            Ok(NodeId {
+                ipn: Some(IpnNodeId {
+                    allocator_id: 0,
+                    node_number,
+                }),
+                dtn: None,
+            })
+        }
+    } else if parts.len() == 2 {
+        let node_number = parts[0].parse::<u32>().map_field_err("Node Number")?;
+        let service_number = parts[1].parse::<u32>().map_field_err("Service Number")?;
+        if service_number != 0 {
+            Err(Error::IpnNonZeroServiceNumber)
+        } else if node_number == 0 {
+            Err(Error::NotNone)
+        } else {
+            Ok(NodeId {
+                ipn: Some(IpnNodeId {
+                    allocator_id: 0,
+                    node_number,
+                }),
+                dtn: None,
+            })
+        }
+    } else if parts.len() == 3 {
+        let allocator_id = parts[0]
+            .parse::<u32>()
+            .map_field_err("Allocator Identifier")?;
+        let node_number = parts[1].parse::<u32>().map_field_err("Node Number")?;
+        let service_number = parts[2].parse::<u32>().map_field_err("Service Number")?;
+        if service_number != 0 {
+            Err(Error::IpnNonZeroServiceNumber)
+        } else if allocator_id == 0 && node_number == 0 {
+            Err(Error::NotNone)
+        } else {
+            Ok(NodeId {
+                ipn: Some(IpnNodeId {
+                    allocator_id,
+                    node_number,
+                }),
+                dtn: None,
+            })
+        }
+    } else {
+        Err(Error::IpnAdditionalItems)
+    }
+}
+
+fn init_from_string(s: String) -> Result<NodeId, Error> {
+    if let Some(s) = s.strip_prefix("dtn://") {
+        init_from_dtn(s)
+    } else if let Some(s) = s.strip_prefix("ipn:") {
+        init_from_ipn(s)
+    } else if s == "dtn:none" {
+        Err(Error::NotNone)
+    } else if let Some((schema, _)) = s.split_once(':') {
+        Err(Error::UnsupportedScheme(schema.to_string()))
+    } else {
+        Err(Error::UnsupportedScheme(s.to_string()))
+    }
+}
+
+fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
     let mut node_id = NodeId {
         ipn: None,
         dtn: None,
@@ -197,16 +313,11 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
     for (k, v) in t {
         let n = match k.as_str() {
             "dtn" => {
-                let s = v.into_string().map_err(|e| e.extend_with_key(&k))?;
-                if s.split_once('/').is_some() {
-                    Err(anyhow!(
-                        "Invalid \"administrative_endpoint\" dtn node-name '{k}' in configuration"
-                    ))
+                let s = v.into_string().map_field_err("dtn node id")?;
+                if s == "none" {
+                    Err(Error::NotNone)
                 } else {
-                    Ok(NodeId {
-                        dtn: Some(DtnNodeId { node_name: s }),
-                        ipn: None,
-                    })
+                    init_from_dtn(&s)
                 }
             }
             "ipn" => match v.kind {
@@ -238,53 +349,14 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::String(s) => {
-                    let mut parts = s.split('.');
-                    if let Some(value) = parts.next() {
-                        let v1 = value.parse::<u32>()?;
-                        if let Some(value) = &parts.next() {
-                            let v2 = value.parse::<u32>()?;
-                            if parts.next().is_some() {
-                                Err(anyhow!("Invalid \"administrative_endpoint\" ipn FQNN '{s}' in configuration"))
-                            } else {
-                                Ok(NodeId {
-                                    dtn: None,
-                                    ipn: Some(IpnNodeId {
-                                        allocator_id: v1,
-                                        node_number: v2,
-                                    }),
-                                })
-                            }
-                        } else {
-                            Ok(NodeId {
-                                dtn: None,
-                                ipn: Some(IpnNodeId {
-                                    allocator_id: 0,
-                                    node_number: v1,
-                                }),
-                            })
-                        }
-                    } else {
-                        let v1 = s.parse::<u32>()?;
-                        Ok(NodeId {
-                            dtn: None,
-                            ipn: Some(IpnNodeId {
-                                allocator_id: 0,
-                                node_number: v1,
-                            }),
-                        })
-                    }
+                _ => {
+                    let s = v.into_string().map_field_err("ipn node id")?;
+                    init_from_ipn(&s)
                 }
-                _ => Err(anyhow!(
-                    "Invalid \"administrative_endpoint\" ipn FQNN '{k}' in configuration"
-                )),
             },
-            _ => {
-                return Err(anyhow!(
-                    "Unsupported \"administrative_endpoint\" EID scheme '{k}' in configuration"
-                ))
-            }
+            _ => return Err(Error::UnsupportedScheme(k)),
         }?;
+
         match (&node_id.dtn, n.dtn) {
             (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
             (Some(dtn_node_id1), Some(dtn_node_id2)) => {
@@ -294,10 +366,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                         dtn_node_id1
                     )
                 } else {
-                    return Err(anyhow!(
-                        "Multiple \"administrative_endpoint\" dtn entries in configuration: {}",
-                        dtn_node_id2
-                    ));
+                    return Err(Error::MultipleDtn(dtn_node_id2));
                 }
             }
             _ => {}
@@ -311,10 +380,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
                         ipn_node_id1
                     )
                 } else {
-                    return Err(anyhow!(
-                        "Multiple \"administrative_endpoint\" ipn entries in configuration: {}",
-                        ipn_node_id2
-                    ));
+                    return Err(Error::MultipleIpn(ipn_node_id2));
                 }
             }
             _ => {}
@@ -323,14 +389,13 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, anyhow::
 
     // Check we have at least one endpoint!
     if node_id.ipn.is_none() && node_id.dtn.is_none() {
-        return Err(anyhow!(
-            "No valid \"administrative_endpoint\" entries in configuration!"
-        ));
+        Err(Error::NoEndpoints)
+    } else {
+        Ok(node_id)
     }
-    Ok(node_id)
 }
 
-fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, anyhow::Error> {
+fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, Error> {
     let mut node_id = NodeId {
         ipn: None,
         dtn: None,
@@ -346,10 +411,7 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, anyhow::Error> {
                         dtn_node_id1
                     )
                 } else {
-                    return Err(anyhow!(
-                        "Multiple \"administrative_endpoint\" dtn entries in configuration: {}",
-                        dtn_node_id2
-                    ));
+                    return Err(Error::MultipleDtn(dtn_node_id2));
                 }
             }
             _ => {}
@@ -363,10 +425,7 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, anyhow::Error> {
                         ipn_node_id1
                     )
                 } else {
-                    return Err(anyhow!(
-                        "Multiple \"administrative_endpoint\" ipn entries in configuration: {}",
-                        ipn_node_id2
-                    ));
+                    return Err(Error::MultipleIpn(ipn_node_id2));
                 }
             }
             _ => {}
@@ -375,28 +434,29 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, anyhow::Error> {
 
     // Check we have at least one endpoint!
     if node_id.ipn.is_none() && node_id.dtn.is_none() {
-        return Err(anyhow!(
-            "No valid \"administrative_endpoint\" entries in configuration!"
-        ));
+        Err(Error::NoEndpoints)
+    } else {
+        Ok(node_id)
     }
-    Ok(node_id)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle, DtnNodeId, IpnNodeId, NodeId};
+    use super::*;
 
-    fn make_config<T: Into<config::Value>>(v: T) -> config::Config {
+    fn fake_config<T: Into<config::Value>>(v: T) -> config::Value {
         config::Config::builder()
             .set_default("administrative_endpoint", v)
             .unwrap()
             .build()
             .unwrap()
+            .get::<config::Value>("administrative_endpoint")
+            .unwrap()
     }
 
     #[test]
     fn test() {
-        let n = NodeId::init(&make_config("ipn:1.0")).unwrap();
+        let n = init_from_value(fake_config("ipn:1.0")).unwrap();
         assert!(n.dtn.is_none());
         assert!(n.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
@@ -406,7 +466,7 @@ mod tests {
             _ => false,
         }));
 
-        let n = NodeId::init(&make_config("ipn:2.1.0")).unwrap();
+        let n = init_from_value(fake_config("ipn:2.1.0")).unwrap();
         assert!(n.dtn.is_none());
         assert!(n.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
@@ -416,7 +476,7 @@ mod tests {
             _ => false,
         }));
 
-        let n = NodeId::init(&make_config("dtn://node-name/")).unwrap();
+        let n = init_from_value(fake_config("dtn://node-name/")).unwrap();
         assert!(n.ipn.is_none());
         assert!(n.dtn.map_or(false, |node_id| match node_id {
             DtnNodeId { node_name } => node_name == "node-name",

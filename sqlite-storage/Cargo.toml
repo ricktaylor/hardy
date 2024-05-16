@@ -8,20 +8,19 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
+trace-err = { path = "../trace-err" }
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.31.0", features = ["bundled","time"] }
 tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
 thiserror = "1.0.58"
-anyhow = "1.0.81"
 serde = { version = "1.0.197", features = ["derive"] }
 config = "0.14.0"
 directories = "5.0.1"
-log = "0.4.21"
-log_err = "1.1.1"
+tracing = "0.1.40"
 base64 = "0.22.0"
 time = "0.3.34"
-tracing = "0.1.40"
+cfg-if = "1.0.0"
 
 [build-dependencies]
 built = "0.7.1"

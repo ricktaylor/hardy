@@ -15,6 +15,7 @@ localdisk-storage = ["dep:hardy-localdisk-storage"]
 packaged-installation = []
 
 [dependencies]
+trace-err = { path = "../trace-err" }
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
 hardy-proto = { path = "../proto" }
@@ -27,10 +28,9 @@ config = { version = "0.14.0", features = ["toml"] }
 serde = { version = "1.0.197", features = ["derive"] }
 getopts = "0.2.21"
 simplelog = "0.12.2"
-log_err = "1.1.1"
 log = "0.4.21"
 directories = "5.0.1"
-anyhow = "1.0.81"
+thiserror = "1.0.58"
 time = { version = "0.3.34", features = ["macros"] }
 crc = "3.0.1"
 rand = "0.8.5"

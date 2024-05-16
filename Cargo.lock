@@ -517,7 +517,6 @@ dependencies = [
 name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base64 0.22.0",
  "built",
  "cfg-if",
@@ -531,14 +530,15 @@ dependencies = [
  "hardy-proto",
  "hardy-sqlite-storage",
  "log",
- "log_err",
  "rand",
  "serde",
  "simplelog",
+ "thiserror",
  "time",
  "tokio",
  "tokio-util",
  "tonic",
+ "trace-err",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
@@ -548,13 +548,13 @@ dependencies = [
 name = "hardy-bpa-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.0",
  "config",
  "hardy-cbor",
  "log",
  "sha2",
+ "thiserror",
  "time",
 ]
 
@@ -562,7 +562,6 @@ dependencies = [
 name = "hardy-cbor"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "half",
  "hex-literal",
  "num-traits",
@@ -581,19 +580,18 @@ dependencies = [
 name = "hardy-localdisk-storage"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "built",
  "cfg-if",
  "config",
  "directories",
  "hardy-bpa-core",
  "libc",
- "log",
  "memmap2",
  "rand",
  "serde",
  "time",
  "tokio",
+ "trace-err",
  "tracing",
  "winapi",
 ]
@@ -613,15 +611,13 @@ dependencies = [
 name = "hardy-sqlite-storage"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base64 0.22.0",
  "built",
+ "cfg-if",
  "config",
  "directories",
  "hardy-bpa-core",
  "hardy-cbor",
- "log",
- "log_err",
  "regex",
  "rusqlite",
  "serde",
@@ -629,6 +625,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "trace-err",
  "tracing",
 ]
 
@@ -874,15 +871,6 @@ name = "log"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
-
-[[package]]
-name = "log_err"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2829e80508da18227e53a791bbe19018306f3f400bba439bc9959e9faa860f7"
-dependencies = [
- "log",
-]
 
 [[package]]
 name = "matchit"
@@ -1776,6 +1764,13 @@ name = "tower-service"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6bc1c9ce2b5135ac7f93c72918fc37feb872bdc6a5533a8b85eb4b86bfdae52"
+
+[[package]]
+name = "trace-err"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+]
 
 [[package]]
 name = "tracing"

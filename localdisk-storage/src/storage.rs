@@ -1,16 +1,16 @@
 use super::*;
-use anyhow::anyhow;
-use hardy_bpa_core::{async_trait, storage::BundleStorage, storage::DataRef};
+use hardy_bpa_core::{async_trait, storage, storage::BundleStorage, storage::DataRef};
 use rand::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{create_dir_all, remove_file, OpenOptions},
-    io::{self, Write},
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
 };
-use tracing::instrument;
+use trace_err::*;
+use tracing::*;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -25,17 +25,19 @@ pub struct Storage {
 
 impl Storage {
     #[instrument(skip(config))]
-    pub fn init(
-        config: &HashMap<String, config::Value>,
-    ) -> Result<Arc<dyn BundleStorage>, anyhow::Error> {
+    pub fn init(config: &HashMap<String, config::Value>) -> Arc<dyn BundleStorage> {
         let store_root = config.get("store_dir").map_or_else(
             || {
                 directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
                     || {
-                        if cfg!(unix) {
-                            Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
-                        } else {
-                            Err(anyhow!("Failed to resolve local store directory"))
+                        cfg_if::cfg_if! {
+                            if #[cfg(unix)] {
+                                Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
+                            } else if #[cfg(windows)] {
+                                Ok(std::env::current_exe().join(built_info::PKG_NAME))
+                            } else {
+                                compile_error!("No idea how to determine default local store directory for target platform")
+                            }
                         }
                     },
                     |project_dirs| {
@@ -47,22 +49,22 @@ impl Storage {
                 )
             },
             |v| {
-                v.clone()
-                    .into_string()
-                    .map(|s| s.into())
-                    .map_err(|e| anyhow!("'store_dir' is not a string value: {}!", e))
+                v.clone().into_string().map(|s| s.into())
             },
-        )?;
+        ).trace_expect("Failed to determine bundle store directory");
 
-        log::info!("Using bundle directory: {}", store_root.display());
+        info!("Using bundle store directory: {}", store_root.display());
 
         // Ensure directory exists
-        create_dir_all(&store_root)?;
+        std::fs::create_dir_all(&store_root).trace_expect(&format!(
+            "Failed to create bundle store directory {}",
+            store_root.display()
+        ));
 
-        Ok(Arc::new(Storage {
+        Arc::new(Storage {
             store_root,
             reserved_paths: Mutex::new(HashSet::new()),
-        }))
+        })
     }
 
     fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
@@ -90,15 +92,18 @@ impl Storage {
             if self
                 .reserved_paths
                 .lock()
-                .unwrap()
+                .trace_expect("Failed to lock reserved_paths mutex")
                 .insert(file_path.clone())
             {
                 // Check if a file with that name doesn't exist
                 match std::fs::metadata(&file_path) {
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(file_path),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(file_path),
                     r => {
                         // Remove the reserved_paths entry
-                        self.reserved_paths.lock().unwrap().remove(&file_path);
+                        self.reserved_paths
+                            .lock()
+                            .trace_expect("Failed to lock reserved_paths mutex")
+                            .remove(&file_path);
                         r?;
                     }
                 }
@@ -111,8 +116,8 @@ impl Storage {
     fn walk_dirs(
         &self,
         dir: &PathBuf,
-        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
-    ) -> Result<bool, anyhow::Error> {
+        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
+    ) -> storage::Result<bool> {
         for entry in std::fs::read_dir(dir)?.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
@@ -149,7 +154,7 @@ impl Storage {
         Ok(true)
     }
 
-    fn sync_load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error> {
+    fn sync_load(&self, storage_name: &str) -> storage::Result<DataRef> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
 
         cfg_if::cfg_if! {
@@ -171,18 +176,18 @@ impl BundleStorage for Storage {
     #[instrument(skip(self, f))]
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool, anyhow::Error>,
-    ) -> Result<(), anyhow::Error> {
+        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
+    ) -> storage::Result<()> {
         self.walk_dirs(&self.store_root, f).map(|_| ())
     }
 
     #[instrument(skip(self))]
-    async fn load(&self, storage_name: &str) -> Result<DataRef, anyhow::Error> {
+    async fn load(&self, storage_name: &str) -> storage::Result<DataRef> {
         self.sync_load(storage_name)
     }
 
     #[instrument(skip_all)]
-    async fn store(&self, data: Vec<u8>) -> Result<String, anyhow::Error> {
+    async fn store(&self, data: Vec<u8>) -> storage::Result<String> {
         /*
         create a new temp file (on the same file system!)
         write data to the temp file
@@ -199,7 +204,10 @@ impl BundleStorage for Storage {
         let result = tokio::task::spawn_blocking(move || write(file_path_cloned, data)).await;
 
         // Always remove tmps entry
-        self.reserved_paths.lock().unwrap().remove(&file_path);
+        self.reserved_paths
+            .lock()
+            .trace_expect("Failed to lock reserved_paths mutex")
+            .remove(&file_path);
 
         // Check result errors
         result??;
@@ -211,22 +219,15 @@ impl BundleStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn remove(&self, storage_name: &str) -> Result<bool, anyhow::Error> {
+    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
-        match tokio::fs::remove_file(&file_path).await {
-            Err(e) => {
-                if e.kind() == io::ErrorKind::NotFound {
-                    Ok(false)
-                } else {
-                    Err(e.into())
-                }
-            }
-            Ok(_) => Ok(true),
-        }
+        tokio::fs::remove_file(&file_path)
+            .await
+            .map_err(|e| e.into())
     }
 
     #[instrument(skip(self, data))]
-    async fn replace(&self, storage_name: &str, data: Vec<u8>) -> Result<(), anyhow::Error> {
+    async fn replace(&self, storage_name: &str, data: Vec<u8>) -> storage::Result<()> {
         /*
         create a new temp file (alongside the original)
         write data to the temp file
@@ -247,9 +248,11 @@ impl BundleStorage for Storage {
 }
 
 #[instrument(skip(data))]
-fn write(mut file_path: PathBuf, data: Vec<u8>) -> io::Result<()> {
+fn write(mut file_path: PathBuf, data: Vec<u8>) -> std::io::Result<()> {
     // Ensure directory exists
-    create_dir_all(file_path.parent().unwrap())?;
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Use a temporary extension
     file_path.set_extension("tmp");
@@ -268,13 +271,13 @@ fn write(mut file_path: PathBuf, data: Vec<u8>) -> io::Result<()> {
 
     // Write all data to file
     if let Err(e) = file.write_all(&data) {
-        _ = remove_file(&file_path);
+        _ = std::fs::remove_file(&file_path);
         return Err(e);
     }
 
     // Sync everything
     if let Err(e) = file.sync_all() {
-        _ = remove_file(&file_path);
+        _ = std::fs::remove_file(&file_path);
         return Err(e);
     }
 
@@ -282,7 +285,7 @@ fn write(mut file_path: PathBuf, data: Vec<u8>) -> io::Result<()> {
     let old_path = file_path.clone();
     file_path.set_extension("");
     if let Err(e) = std::fs::rename(&old_path, &file_path) {
-        _ = remove_file(&old_path);
+        _ = std::fs::remove_file(&old_path);
         return Err(e);
     }
 

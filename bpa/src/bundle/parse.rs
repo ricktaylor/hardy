@@ -1,40 +1,95 @@
 use super::*;
+use std::collections::HashMap;
+use thiserror::Error;
 
-pub fn parse(data: &[u8]) -> Result<(Bundle, bool), anyhow::Error> {
-    let ((mut bundle, mut valid), len) = cbor::decode::parse_array(data, |blocks, tags| {
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Bundle has additional data after end of CBOR array")]
+    AdditionalData,
+
+    #[error("Unsupported bundle protocol version {0}")]
+    UnsupportedVersion(u64),
+
+    #[error("Bundle has no payload block")]
+    MissingPayload,
+
+    #[error("Bundle payload block must be block number 1")]
+    InvalidPayloadBlockNumber,
+
+    #[error("Final block of bundle is not a payload block")]
+    PayloadNotFinal,
+
+    #[error("Bundle has more than one block with block number {0}")]
+    DuplicateBlockNumber(u64),
+
+    #[error("Bundle block must not be block type 0")]
+    InvalidBlockType,
+
+    #[error("Bundle block must not be block number 0")]
+    InvalidBlockNumber,
+
+    #[error("Bundle has multiple {0:?} blocks")]
+    DuplicateBlocks(bundle::BlockType),
+
+    #[error("{0:?} block has additional data")]
+    BlockAdditionalData(bundle::BlockType),
+
+    #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
+    MissingBundleAge,
+
+    #[error(transparent)]
+    InvalidCrc(#[from] crc::Error),
+
+    #[error("Failed to parse {field}: {source}")]
+    InvalidField {
+        field: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error("Expecting CBOR array")]
+    ArrayExpected(#[from] cbor::decode::Error),
+}
+
+trait CaptureFieldErr<T> {
+    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
+}
+
+impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
+    for std::result::Result<T, E>
+{
+    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
+        self.map_err(|e| Error::InvalidField {
+            field,
+            source: e.into(),
+        })
+    }
+}
+
+pub fn parse(data: &[u8]) -> Result<(Bundle, bool), Error> {
+    let ((bundle, valid), len) = cbor::decode::parse_array(data, |blocks, tags| {
         if !tags.is_empty() {
-            log::info!("Parsing bundle with tags");
+            log::trace!("Parsing bundle with tags");
         }
         parse_blocks(data, blocks)
     })?;
-    if valid {
-        if len < data.len() {
-            return Err(anyhow!(
-                "Bundle has additional data after end of CBOR array"
-            ));
-        }
-
-        valid = check_blocks(&mut bundle, data)
-            .inspect_err(|e| log::info!("{}", e))
-            .is_ok();
+    if valid && len < data.len() {
+        return Err(Error::AdditionalData);
     }
     Ok((bundle, valid))
 }
 
-fn parse_blocks(
-    data: &[u8],
-    blocks: &mut cbor::decode::Array,
-) -> Result<(Bundle, bool), anyhow::Error> {
+fn parse_blocks(data: &[u8], blocks: &mut cbor::decode::Array) -> Result<(Bundle, bool), Error> {
     // Parse Primary block
     let (mut bundle, valid, block_start, block_len) = blocks
         .parse_array(|a, block_start, tags| {
             if !tags.is_empty() {
-                log::info!("Parsing primary block with tags");
+                log::trace!("Parsing primary block with tags");
             }
             parse_primary_block(data, a, block_start)
                 .map(|(bundle, valid)| (bundle, valid, block_start))
         })
-        .map(|((bundle, valid, block_start), len)| (bundle, valid, block_start, len))?;
+        .map(|((bundle, valid, block_start), len)| (bundle, valid, block_start, len))
+        .map_field_err("Primary Block")?;
 
     // Add a block 0
     bundle.blocks.insert(
@@ -53,18 +108,13 @@ fn parse_blocks(
     );
 
     let valid = if valid {
-        // Parse other blocks
-        match parse_extension_blocks(data, blocks) {
-            Ok(bundle_blocks) => {
+        // Don't return an Err, we need to return Ok(invalid)
+        parse_extension_blocks(data, blocks)
+            .map(|bundle_blocks| {
                 bundle.blocks = bundle_blocks;
-                true
-            }
-            Err(e) => {
-                // Don't return an Err, we need to return Ok(invalid)
-                log::info!("Extension block parsing failed: {}", e);
-                false
-            }
-        }
+                check_blocks(&mut bundle, data).is_ok()
+            })
+            .is_ok()
     } else {
         false
     };
@@ -76,60 +126,48 @@ fn parse_primary_block(
     data: &[u8],
     block: &mut cbor::decode::Array,
     block_start: usize,
-) -> Result<(Bundle, bool), anyhow::Error> {
+) -> Result<(Bundle, bool), Error> {
     // Check number of items in the array
-    match block.count() {
-        None => log::info!("Parsing primary block of indefinite length"),
-        Some(count) if !(8..=11).contains(&count) => {
-            return Err(anyhow!("Bundle primary block has {} array items", count))
-        }
-        _ => {}
+    if block.count().is_none() {
+        log::trace!("Parsing primary block of indefinite length")
     }
 
     // Check version
-    let version = block.parse::<u64>()?;
+    let version = block.parse::<u64>().map_field_err("Version")?;
     if version != 7 {
-        return Err(anyhow!("Unsupported bundle protocol version {}", version));
+        return Err(Error::UnsupportedVersion(version));
     }
 
     // Parse flags
-    let flags = block.parse::<BundleFlags>()?;
+    let flags = block
+        .parse::<BundleFlags>()
+        .map_field_err("Bundle Processing Control Flags")?;
 
     // Parse CRC Type
-    let crc_type = block
-        .parse::<CrcType>()
-        .inspect_err(|e| log::info!("Invalid crc type: {}", e));
+    let crc_type = block.parse::<CrcType>().map_field_err("CRC Type");
 
     // Parse EIDs
-    let dest_eid = block
-        .parse::<Eid>()
-        .inspect_err(|e| log::info!("Invalid destination EID: {}", e));
-    let source_eid = block
-        .parse::<Eid>()
-        .inspect_err(|e| log::info!("Invalid source EID: {}", e));
-    let report_to_eid = block
-        .parse::<Eid>()
-        .inspect_err(|e| log::info!("Invalid report-to EID: {}", e))?;
+    let dest_eid = block.parse::<Eid>().map_field_err("Destination EID");
+    let source_eid = block.parse::<Eid>().map_field_err("Source EID");
+    let report_to_eid = block.parse::<Eid>().map_field_err("Report-to EID")?;
 
     // Parse timestamp
-    let timestamp = block.parse::<CreationTimestamp>();
+    let timestamp = block
+        .parse::<CreationTimestamp>()
+        .map_field_err("Creation Timestamp");
 
     // Parse lifetime
-    let lifetime = block
-        .parse::<u64>()
-        .inspect_err(|e| log::info!("Invalid lifetime: {}", e));
+    let lifetime = block.parse::<u64>().map_field_err("Lifetime");
 
     // Parse fragment parts
-    let fragment_info: Result<Option<FragmentInfo>, anyhow::Error> = if !flags.is_fragment {
+    let fragment_info: Result<Option<FragmentInfo>, Error> = if !flags.is_fragment {
         Ok(None)
     } else {
         Ok(Some(FragmentInfo {
-            offset: block
-                .parse()
-                .inspect_err(|e| log::info!("Invalid fragment offset: {}", e))?,
+            offset: block.parse().map_field_err("Fragment offset")?,
             total_len: block
                 .parse()
-                .inspect_err(|e| log::info!("Invalid application data total length: {}", e))?,
+                .map_field_err("Total Application Data Unit Length")?,
         }))
     };
 
@@ -198,14 +236,14 @@ fn parse_primary_block(
 fn parse_extension_blocks(
     data: &[u8],
     blocks: &mut cbor::decode::Array,
-) -> Result<HashMap<u64, Block>, anyhow::Error> {
+) -> Result<HashMap<u64, Block>, Error> {
     // Use an intermediate vector so we can check the payload was the last item
     let mut extension_blocks = Vec::new();
     let extension_map = loop {
         if let Some(((block_number, block), _)) =
             blocks.try_parse_array(|a, block_start, tags| {
                 if !tags.is_empty() {
-                    log::info!("Parsing extension block with tags");
+                    log::trace!("Parsing extension block with tags");
                 }
                 parse_block(data, a, block_start)
             })?
@@ -214,25 +252,22 @@ fn parse_extension_blocks(
         } else {
             // Check the last block is the payload
             let Some((block_number, payload)) = extension_blocks.last() else {
-                return Err(anyhow!("Bundle has no payload block"));
+                return Err(Error::MissingPayload);
             };
 
             if let BlockType::Payload = payload.block_type {
                 if *block_number != 1 {
-                    return Err(anyhow!("Bundle payload block must be block number 1"));
+                    return Err(Error::InvalidPayloadBlockNumber);
                 }
             } else {
-                return Err(anyhow!("Final block of bundle is not a payload block"));
+                return Err(Error::PayloadNotFinal);
             }
 
             // Compose hashmap
             let mut map = HashMap::new();
             for (block_number, block) in extension_blocks {
                 if map.insert(block_number, block).is_some() {
-                    return Err(anyhow!(
-                        "Bundle has more than one block with block number {}",
-                        block_number
-                    ));
+                    return Err(Error::DuplicateBlockNumber(block_number));
                 }
             }
             break map;
@@ -245,42 +280,42 @@ fn parse_block(
     data: &[u8],
     block: &mut cbor::decode::Array,
     block_start: usize,
-) -> Result<(u64, Block), anyhow::Error> {
+) -> Result<(u64, Block), Error> {
     // Check number of items in the array
-    match block.count() {
-        None => log::info!("Parsing extension block of indefinite length"),
-        Some(count) if !(5..=6).contains(&count) => {
-            return Err(anyhow!("Extension block has {} elements", count))
-        }
-        _ => {}
+    if block.count().is_none() {
+        log::trace!("Parsing extension block of indefinite length")
     }
 
-    let block_type = block.parse::<BlockType>()?;
-    if let BlockType::Primary = block_type {
-        return Err(anyhow!("Bundle extension block must not be block type 0"));
-    }
+    let block_type = block
+        .parse::<BlockType>()
+        .map_field_err("Block type code")?;
 
-    let block_number = block.parse::<u64>()?;
+    let block_number = block.parse::<u64>().map_field_err("Block number")?;
     if block_number == 0 {
-        return Err(anyhow!("Bundle extension block must not be block number 0"));
+        return Err(Error::InvalidBlockNumber);
     }
 
-    let flags = block.parse::<BlockFlags>()?;
-    let crc_type = block.parse::<CrcType>()?;
+    let flags = block
+        .parse::<BlockFlags>()
+        .map_field_err("Block processing control flags")?;
+    let crc_type = block.parse::<CrcType>().map_field_err("CRC type")?;
 
     // Stash start of data
     let ((data_offset, _), data_len) =
         block.parse_value(|value, data_start, tags| match value {
             cbor::decode::Value::Bytes(v, chunked) => {
                 if chunked {
-                    log::info!("Parsing chunked extension block data");
+                    log::trace!("Parsing chunked extension block data");
                 }
                 if !tags.is_empty() {
-                    log::info!("Parsing extension block data with tags");
+                    log::trace!("Parsing extension block data with tags");
                 }
                 Ok((data_start, v.len()))
             }
-            _ => Err(anyhow!("Block data must be encoded as a CBOR byte string")),
+            value => Err(cbor::decode::Error::IncorrectType(
+                "Byte String".to_string(),
+                value.type_name(),
+            )),
         })?;
 
     // Check CRC
@@ -298,7 +333,7 @@ fn parse_block(
     ))
 }
 
-pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Error> {
+pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), Error> {
     // Check for RFC9171-specified extension blocks
     let mut seen_payload = false;
     let mut seen_previous_node = false;
@@ -314,36 +349,30 @@ pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Erro
         match &block.block_type {
             BlockType::Payload => {
                 if seen_payload {
-                    return Err(anyhow!("Bundle has multiple payload blocks"));
+                    return Err(Error::DuplicateBlocks(block.block_type));
                 }
                 if *block_number != 1 {
-                    return Err(anyhow!(
-                        "Bundle has payload block with number {}",
-                        block_number
-                    ));
+                    return Err(Error::InvalidPayloadBlockNumber);
                 }
                 seen_payload = true;
             }
             BlockType::PreviousNode => {
                 if seen_previous_node {
-                    return Err(anyhow!(
-                        "Bundle has multiple Previous Node extension blocks"
-                    ));
+                    return Err(Error::DuplicateBlocks(block.block_type));
                 }
                 previous_node = Some(check_previous_node(block, block_data)?);
                 seen_previous_node = true;
             }
             BlockType::BundleAge => {
                 if seen_bundle_age {
-                    return Err(anyhow!("Bundle has multiple Bundle Age extension blocks"));
+                    return Err(Error::DuplicateBlocks(block.block_type));
                 }
-
                 bundle_age = Some(check_bundle_age(block, block_data)?);
                 seen_bundle_age = true;
             }
             BlockType::HopCount => {
                 if seen_hop_count {
-                    return Err(anyhow!("Bundle has multiple Hop Count extension blocks"));
+                    return Err(Error::DuplicateBlocks(block.block_type));
                 }
                 hop_count = Some(check_hop_count(block, block_data)?);
                 seen_hop_count = true;
@@ -353,9 +382,7 @@ pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Erro
     }
 
     if !seen_bundle_age && bundle.id.timestamp.creation_time == 0 {
-        return Err(anyhow!(
-            "Bundle source has no clock, and there is no Bundle Age extension block"
-        ));
+        return Err(Error::MissingBundleAge);
     }
 
     // Update bundle
@@ -365,55 +392,58 @@ pub fn check_blocks(bundle: &mut Bundle, data: &[u8]) -> Result<(), anyhow::Erro
     Ok(())
 }
 
-fn check_previous_node(block: &Block, data: &[u8]) -> Result<Eid, anyhow::Error> {
+fn check_previous_node(block: &Block, data: &[u8]) -> Result<Eid, Error> {
     cbor::decode::parse_detail(data)
-        .map_err(|e| anyhow!("Failed to parse EID in Previous Node block: {}", e))
+        .map_field_err("Previous Node ID")
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
-                log::info!("Parsing Previous Node extension block with tags");
+                log::trace!("Parsing Previous Node extension block with tags");
             }
             if end != block.data_len {
-                Err(anyhow!("Previous Node extension block has additional data"))
+                Err(Error::BlockAdditionalData(BlockType::PreviousNode))
             } else {
                 Ok(v)
             }
         })?
 }
 
-fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, anyhow::Error> {
+fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, Error> {
     cbor::decode::parse_detail(data)
-        .map_err(|e| anyhow!("Failed to parse age in Bundle Age block: {}", e))
+        .map_field_err("Bundle Age")
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
-                log::info!("Parsing Bundle Age extension block with tags");
+                log::trace!("Parsing Bundle Age extension block with tags");
             }
             if end != block.data_len {
-                Err(anyhow!("Bundle Age extension block has additional data"))
+                Err(Error::BlockAdditionalData(BlockType::BundleAge))
             } else {
                 Ok(v)
             }
         })?
 }
 
-fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, anyhow::Error> {
+fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, Error> {
     cbor::decode::parse_array(data, |a, tags| {
         if !tags.is_empty() {
-            log::info!("Parsing Hop Count with tags");
+            log::trace!("Parsing Hop Count with tags");
         }
         if a.count().is_none() {
-            log::info!("Parsing Hop Count as indefinite length array");
+            log::trace!("Parsing Hop Count as indefinite length array");
         }
 
         let hop_info = HopInfo {
-            count: a.parse()?,
-            limit: a.parse()?,
+            limit: a.parse().map_field_err("hop limit")?,
+            count: a.parse().map_field_err("hop count")?,
         };
 
-        let end = a.end_or_else(|| anyhow!("Hop Count extension block has too many items"))?;
+        let Some(end) = a.end()? else {
+            return Err(Error::BlockAdditionalData(BlockType::HopCount));
+        };
         if end != block.data_len {
-            return Err(anyhow!("Hop Count extension block has additional data"));
+            return Err(Error::BlockAdditionalData(BlockType::HopCount));
         }
         Ok(hop_info)
     })
     .map(|(v, _)| v)
+    .map_field_err("Hop Count Block")
 }

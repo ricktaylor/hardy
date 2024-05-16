@@ -26,33 +26,33 @@ impl From<u64> for BundleFlags {
                     6 => flags.report_status_time = true,
                     14 => {
                         if flags.is_admin_record {
-                            log::info!("Parsing bundle primary block with Administrative Record and Receipt Report Requested flag set!");
+                            trace!("Parsing bundle primary block with Administrative Record and Receipt Report Requested flag set!");
                         } else {
                             flags.receipt_report_requested = true;
                         }
                     }
                     16 => {
                         if flags.is_admin_record {
-                            log::info!("Parsing bundle primary block with Administrative Record and Forward Report Requested flag set!");
+                            trace!("Parsing bundle primary block with Administrative Record and Forward Report Requested flag set!");
                         } else {
                             flags.forward_report_requested = true;
                         }
                     }
                     17 => {
                         if flags.is_admin_record {
-                            log::info!("Parsing bundle primary block with Administrative Record and Delivery Report Requested flag set!");
+                            trace!("Parsing bundle primary block with Administrative Record and Delivery Report Requested flag set!");
                         } else {
                             flags.delivery_report_requested = true;
                         }
                     }
                     18 => {
                         if flags.is_admin_record {
-                            log::info!("Parsing bundle primary block with Administrative Record and Delete Report Requested flag set!");
+                            trace!("Parsing bundle primary block with Administrative Record and Delete Report Requested flag set!");
                         } else {
                             flags.delete_report_requested = true;
                         }
                     }
-                    b => log::info!(
+                    b => trace!(
                         "Parsing bundle primary block with reserved flag bit {} set",
                         b
                     ),
@@ -60,7 +60,7 @@ impl From<u64> for BundleFlags {
             }
         }
         if value & !((2 ^ 20) - 1) != 0 {
-            log::info!(
+            trace!(
                 "Parsing bundle primary block with unassigned flag bits set: {:#x}",
                 value
             );
@@ -110,7 +110,9 @@ impl cbor::encode::ToCbor for BundleFlags {
 }
 
 impl cbor::decode::FromCbor for BundleFlags {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+    type Error = cbor::decode::Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_detail::<u64>(data).map(|(v, len, tags)| (v.into(), len, tags))
     }
 }

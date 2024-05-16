@@ -39,7 +39,7 @@ impl From<u64> for BlockType {
             12 => BlockType::BlockSecurity,
             _ => {
                 if value <= 191 {
-                    log::info!("Extension block uses unassigned type code {}", value);
+                    trace!("Extension block uses unassigned type code {}", value);
                 }
                 BlockType::Private(value)
             }
@@ -54,7 +54,9 @@ impl cbor::encode::ToCbor for BlockType {
 }
 
 impl cbor::decode::FromCbor for BlockType {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+    type Error = cbor::decode::Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_detail::<u64>(data).map(|(v, len, tags)| (v.into(), len, tags))
     }
 }

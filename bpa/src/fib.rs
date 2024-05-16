@@ -3,6 +3,20 @@ use base64::prelude::*;
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
+use utils::settings;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Invalid FIB entry EID: {0}")]
+    InvalidEid(bundle::Eid),
+
+    #[error("Must forward CLA addresses to CLAs of the same protocol")]
+    WrongProtocol,
+
+    #[error("Must forward CLA addresses to CLAs")]
+    NotCla,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Destination {
@@ -61,7 +75,7 @@ impl std::fmt::Display for Destination {
 }
 
 impl TryFrom<bundle::Eid> for Destination {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: bundle::Eid) -> Result<Self, Self::Error> {
         match value {
@@ -84,9 +98,7 @@ impl TryFrom<bundle::Eid> for Destination {
                 service_number,
             }),
             bundle::Eid::Dtn { node_name, demux } => Ok(Self::Dtn { node_name, demux }),
-            bundle::Eid::Null | bundle::Eid::LocalNode { service_number: _ } => {
-                Err(anyhow!("Invalid FIB entry EID: {value}"))
-            }
+            _ => Err(Error::InvalidEid(value)),
         }
     }
 }
@@ -121,19 +133,15 @@ pub struct Fib {
 
 impl Fib {
     pub fn new(config: &config::Config) -> Option<Self> {
-        if settings::get_with_default(config, "forwarding", true)
-            .log_expect("Invalid 'forwarding' value in configuration")
-        {
-            Some(Self {
+        settings::get_with_default::<bool, _>(config, "forwarding", true)
+            .trace_expect("Invalid 'forwarding' value in configuration")
+            .then(|| Self {
                 entries: Default::default(),
             })
-        } else {
-            None
-        }
     }
 
     #[instrument(skip(self))]
-    pub fn add(&self, to: Destination, priority: u32, action: Action) -> Result<(), anyhow::Error> {
+    pub fn add(&self, to: Destination, priority: u32, action: Action) -> Result<(), Error> {
         // Validate CLA actions
         if let Action::Forward {
             protocol,
@@ -142,19 +150,17 @@ impl Fib {
         {
             if let Destination::Cla(a) = &to {
                 if &a.protocol != protocol {
-                    return Err(anyhow!(
-                        "Must forward CLA addresses to CLAs of the same protocol"
-                    ));
+                    return Err(Error::WrongProtocol);
                 }
             } else {
-                return Err(anyhow!("Must forward CLA addresses to CLAs"));
+                return Err(Error::NotCla);
             };
         }
 
         let mut table = self
             .entries
             .write()
-            .log_expect("Failed to write-lock entries mutex");
+            .trace_expect("Failed to write-lock entries mutex");
 
         let entry = TableEntry { priority, action };
         if let Some(entries) = table.get_mut(&to) {
@@ -173,7 +179,7 @@ impl Fib {
         let table = self
             .entries
             .read()
-            .log_expect("Failed to read-lock entries mutex");
+            .trace_expect("Failed to read-lock entries mutex");
 
         let mut actions = find_recurse(&table, to, &mut HashSet::new());
         if actions.len() > 1 {
@@ -217,13 +223,14 @@ fn find_recurse<'a>(
                             None => {}
                         }
                     }
-                    Action::Forward {
-                        protocol,
-                        address: _,
-                    } => {
+                    Action::Forward { protocol, address } => {
                         if let Destination::Cla(a) = &to {
                             if &a.protocol == protocol {
-                                new_entries.push(ForwardAction::Forward(a.clone()))
+                                new_entries.push(ForwardAction::Forward(ingress::ClaAddress {
+                                    protocol: protocol.clone(),
+                                    name: a.name.clone(),
+                                    address: address.clone(),
+                                }))
                             }
                         }
                     }

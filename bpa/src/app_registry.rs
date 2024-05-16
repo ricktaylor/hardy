@@ -28,12 +28,12 @@ struct Indexes {
 
 #[derive(Clone)]
 pub struct AppRegistry {
-    node_id: node_id::NodeId,
+    node_id: bundle::NodeId,
     applications: Arc<RwLock<Indexes>>,
 }
 
 impl AppRegistry {
-    pub fn new(_config: &config::Config, node_id: node_id::NodeId) -> Self {
+    pub fn new(_config: &config::Config, node_id: bundle::NodeId) -> Self {
         Self {
             node_id,
             applications: Default::default(),
@@ -68,7 +68,7 @@ impl AppRegistry {
         let mut applications = self
             .applications
             .write()
-            .log_expect("Failed to write-lock applications mutex");
+            .trace_expect("Failed to write-lock applications mutex");
 
         // Check token is unique
         while applications.applications_by_token.contains_key(&token) {
@@ -159,7 +159,7 @@ impl AppRegistry {
         let mut applications = self
             .applications
             .write()
-            .log_expect("Failed to write-lock applications mutex");
+            .trace_expect("Failed to write-lock applications mutex");
 
         applications
             .applications_by_token
@@ -173,7 +173,7 @@ impl AppRegistry {
     pub fn find_by_token(&self, token: &str) -> Result<bundle::Eid, tonic::Status> {
         self.applications
             .read()
-            .log_expect("Failed to read-lock applications mutex")
+            .trace_expect("Failed to read-lock applications mutex")
             .applications_by_token
             .get(token)
             .ok_or(tonic::Status::not_found("No such application"))
@@ -184,7 +184,7 @@ impl AppRegistry {
     pub fn find_by_eid(&self, eid: &bundle::Eid) -> Option<Endpoint> {
         self.applications
             .read()
-            .log_expect("Failed to read-lock applications mutex")
+            .trace_expect("Failed to read-lock applications mutex")
             .applications_by_eid
             .get(eid)
             .map(|app| Endpoint {

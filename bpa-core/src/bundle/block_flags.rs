@@ -37,12 +37,12 @@ impl From<u64> for BlockFlags {
                     1 => flags.report_on_failure = true,
                     2 => flags.delete_bundle_on_failure = true,
                     4 => flags.delete_block_on_failure = true,
-                    b => log::info!("Parsing bundle block with reserved flag bit {} set", b),
+                    b => trace!("Parsing bundle block with reserved flag bit {} set", b),
                 }
             }
         }
         if value & !((2 ^ 6) - 1) != 0 {
-            log::info!(
+            trace!(
                 "Parsing bundle block with unassigned flag bits set: {:#x}",
                 value
             );
@@ -58,7 +58,9 @@ impl cbor::encode::ToCbor for BlockFlags {
 }
 
 impl cbor::decode::FromCbor for BlockFlags {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+    type Error = cbor::decode::Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_detail::<u64>(data).map(|(v, len, tags)| (v.into(), len, tags))
     }
 }

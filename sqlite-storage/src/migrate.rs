@@ -21,7 +21,7 @@ pub enum Error {
 }
 
 #[instrument]
-pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), anyhow::Error> {
+pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Error> {
     let migrations = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
     let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;

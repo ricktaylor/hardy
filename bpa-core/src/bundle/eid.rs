@@ -1,4 +1,5 @@
 use super::*;
+use thiserror::Error;
 
 #[derive(Default, Clone, Hash, PartialEq, Eq)]
 pub enum Eid {
@@ -23,21 +24,81 @@ pub enum Eid {
     },
 }
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("dtn URI be ASCII")]
+    DtnNotASCII,
+
+    #[error("dtn URI node-name is empty")]
+    DtnNodeNameEmpty,
+
+    #[error("dtn URI missing name-delim '/'")]
+    DtnMissingSlash,
+
+    #[error("dtn URIs must start with '//'")]
+    DtnMissingPrefix,
+
+    #[error("dtn URI is not a CBOR text string or 0")]
+    DtnInvalidEncoding,
+
+    #[error("Invalid ipn allocator id {0}")]
+    IpnInvalidAllocatorId(u64),
+
+    #[error("Invalid ipn node number {0}")]
+    IpnInvalidNodeNumber(u64),
+
+    #[error("Invalid ipn service number {0}")]
+    IpnInvalidServiceNumber(u64),
+
+    #[error("More than 3 components in an ipn URI")]
+    IpnAdditionalItems,
+
+    #[error("Unsupported EID scheme {0}")]
+    UnsupportedScheme(String),
+
+    #[error("Additional items in EID array")]
+    AdditionalItems,
+
+    #[error("Failed to parse {field}: {source}")]
+    InvalidField {
+        field: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error("Expecting CBOR array")]
+    ArrayExpected(#[from] cbor::decode::Error),
+}
+
+trait CaptureFieldErr<T> {
+    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
+}
+
+impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
+    for std::result::Result<T, E>
+{
+    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
+        self.map_err(|e| Error::InvalidField {
+            field,
+            source: e.into(),
+        })
+    }
+}
+
 impl Eid {
-    fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Eid, anyhow::Error> {
+    fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Eid, Error> {
         match value {
             cbor::decode::Value::UnsignedInteger(0) => Ok(Self::Null),
             cbor::decode::Value::Text("none", _) => {
-                log::info!("Parsing dtn EID 'none'");
+                trace!("Parsing dtn EID 'none'");
                 Ok(Self::Null)
             }
             cbor::decode::Value::Text(s, _) => {
                 if !s.is_ascii() {
-                    Err(anyhow!("dtn URI be ASCII"))
+                    Err(Error::DtnNotASCII)
                 } else if let Some(s) = s.strip_prefix("//") {
                     if let Some((s1, s2)) = s.split_once('/') {
                         if s1.is_empty() {
-                            Err(anyhow!("dtn URI node-name is empty"))
+                            Err(Error::DtnNodeNameEmpty)
                         } else {
                             Ok(Self::Dtn {
                                 node_name: s1.to_string(),
@@ -45,39 +106,41 @@ impl Eid {
                             })
                         }
                     } else {
-                        Err(anyhow!("dtn URI missing name-delim '/'"))
+                        Err(Error::DtnMissingSlash)
                     }
                 } else {
-                    Err(anyhow!("dtn URI must start with '//'"))
+                    Err(Error::DtnMissingPrefix)
                 }
             }
-            _ => Err(anyhow!("dtn URI is not a CBOR text string or 0")),
+            _ => Err(Error::DtnInvalidEncoding),
         }
     }
 
-    fn parse_ipn_eid(value: &mut cbor::decode::Array) -> Result<Eid, anyhow::Error> {
+    fn parse_ipn_eid(value: &mut cbor::decode::Array) -> Result<Eid, Error> {
         if value.count().is_none() {
-            log::info!("Parsing ipn EID as indefinite array");
+            trace!("Parsing ipn EID as indefinite array");
         }
 
-        let v1 = value.parse::<u64>()?;
-        let v2 = value.parse::<u64>()?;
+        let v1 = value.parse::<u64>().map_field_err("First component")?;
+        let v2 = value.parse::<u64>().map_field_err("Second component")?;
 
         let (components, allocator_id, node_number, service_number) =
-            if let Some(v3) = value.try_parse::<u64>()? {
-                if (v1 >= 2 ^ 32) || (v2 >= 2 ^ 32) || (v3 >= 2 ^ 32) {
-                    return Err(anyhow!(
-                        "Invalid ipn EID components: {}, {}, {}",
-                        v1,
-                        v2,
-                        v3
-                    ));
+            if let Some(v3) = value.try_parse::<u64>().map_field_err("Service Number")? {
+                if v1 >= 2 ^ 32 {
+                    return Err(Error::IpnInvalidAllocatorId(v1));
+                } else if v2 >= 2 ^ 32 {
+                    return Err(Error::IpnInvalidNodeNumber(v2));
+                } else if v3 >= 2 ^ 32 {
+                    return Err(Error::IpnInvalidServiceNumber(v3));
                 }
-                value.end_or_else(|| anyhow!("Additional items found in ipn EID array"))?;
+
+                if value.end()?.is_none() {
+                    return Err(Error::IpnAdditionalItems);
+                }
                 (3, v1 as u32, v2 as u32, v3 as u32)
             } else {
                 if v2 >= 2 ^ 32 {
-                    return Err(anyhow!("Invalid ipn EID service number {}", v2));
+                    return Err(Error::IpnInvalidServiceNumber(v2));
                 }
                 (
                     2,
@@ -89,7 +152,7 @@ impl Eid {
 
         if allocator_id == 0 && node_number == 0 {
             if service_number != 0 {
-                log::info!("Null EID with service number {}", service_number)
+                trace!("Null EID with service number {}", service_number)
             }
             Ok(Self::Null)
         } else if allocator_id == 0 && node_number == (2 ^ 32) - 1 {
@@ -167,41 +230,51 @@ impl cbor::encode::ToCbor for &Eid {
 }
 
 impl cbor::decode::FromCbor for Eid {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_array(data, |a, tags| {
             if a.count().is_none() {
-                log::info!("Parsing EID array of indefinite length")
+                trace!("Parsing EID array of indefinite length")
             }
-            let schema = a.parse::<u64>()?;
-            let (eid, _) = a.parse_value(|value, _, tags2| {
-                if !tags2.is_empty() {
-                    log::info!("Parsing EID value with tags");
-                }
-                match (schema, value) {
-                    (1, value) => Self::parse_dtn_eid(value),
-                    (2, cbor::decode::Value::Array(a)) => Self::parse_ipn_eid(a),
-                    (2, _) => Err(anyhow!("ipn EIDs must be encoded as a CBOR array")),
-                    _ => Err(anyhow!("Unsupported EID scheme {}", schema)),
-                }
-            })?;
-
-            a.end_or_else(|| anyhow!("Additional items found in EID array"))?;
-            Ok((eid, tags.to_vec()))
+            let schema = a.parse::<u64>().map_field_err("Scheme")?;
+            let (eid, _) = a
+                .parse_value(|value, _, tags2| {
+                    if !tags2.is_empty() {
+                        trace!("Parsing EID value with tags");
+                    }
+                    match (schema, value) {
+                        (1, value) => Self::parse_dtn_eid(value),
+                        (2, cbor::decode::Value::Array(a)) => Self::parse_ipn_eid(a),
+                        (2, value) => Err(cbor::decode::Error::IncorrectType(
+                            "Array".to_string(),
+                            value.type_name(),
+                        )
+                        .into()),
+                        _ => Err(Error::UnsupportedScheme(schema.to_string())),
+                    }
+                })
+                .map_field_err("Scheme-specific part")?;
+            if a.end()?.is_none() {
+                Err(Error::AdditionalItems)
+            } else {
+                Ok((eid, tags.to_vec()))
+            }
         })
         .map(|((eid, tags), len)| (eid, len, tags))
     }
 }
 
 impl std::str::FromStr for Eid {
-    type Err = anyhow::Error;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(s) = s.strip_prefix("dtn://") {
             if !s.is_ascii() {
-                Err(anyhow!("dtn URI be ASCII"))
+                Err(Error::DtnNotASCII)
             } else if let Some((s1, s2)) = s.split_once('/') {
                 if s1.is_empty() {
-                    Err(anyhow!("dtn URI node-name is empty"))
+                    Err(Error::DtnNodeNameEmpty)
                 } else {
                     Ok(Self::Dtn {
                         node_name: s1.to_string(),
@@ -209,40 +282,38 @@ impl std::str::FromStr for Eid {
                     })
                 }
             } else {
-                Err(anyhow!("dtn URI missing name-delim '/'"))
+                Err(Error::DtnMissingSlash)
             }
         } else if let Some(s) = s.strip_prefix("ipn:") {
-            let mut parts = s.split('.');
-            if let Some(value) = parts.next() {
-                let v1 = value.parse::<u32>()?;
-                if let Some(value) = &parts.next() {
-                    let v2 = value.parse::<u32>()?;
-                    if let Some(value) = &parts.next() {
-                        let v3 = value.parse::<u32>()?;
-                        if parts.next().is_some() {
-                            Err(anyhow!("Invalid ipn URI"))
-                        } else {
-                            Ok(Self::Ipn3 {
-                                allocator_id: v1,
-                                node_number: v2,
-                                service_number: v3,
-                            })
-                        }
-                    } else {
-                        Ok(Self::Ipn3 {
-                            allocator_id: 0,
-                            node_number: v1,
-                            service_number: v2,
-                        })
-                    }
-                } else {
-                    Err(anyhow!("Invalid ipn URI"))
-                }
+            let parts = s.split('.').collect::<Vec<&str>>();
+            if parts.len() == 2 {
+                let v1 = parts[0].parse::<u32>().map_field_err("Node Number")?;
+                let v2 = parts[1].parse::<u32>().map_field_err("Service Number")?;
+                Ok(Self::Ipn3 {
+                    allocator_id: 0,
+                    node_number: v1,
+                    service_number: v2,
+                })
+            } else if parts.len() == 3 {
+                let v1 = parts[0]
+                    .parse::<u32>()
+                    .map_field_err("Allocator Identifier")?;
+                let v2 = parts[1].parse::<u32>().map_field_err("Node Number")?;
+                let v3 = parts[2].parse::<u32>().map_field_err("Service Number")?;
+                Ok(Self::Ipn3 {
+                    allocator_id: v1,
+                    node_number: v2,
+                    service_number: v3,
+                })
             } else {
-                Err(anyhow!("Invalid ipn URI"))
+                Err(Error::IpnAdditionalItems)
             }
+        } else if s == "dtn:none" {
+            Ok(Eid::Null)
+        } else if let Some((schema, _)) = s.split_once(':') {
+            Err(Error::UnsupportedScheme(schema.to_string()))
         } else {
-            Err(anyhow!("EID has unsupported scheme"))
+            Err(Error::UnsupportedScheme(s.to_string()))
         }
     }
 }

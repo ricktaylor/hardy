@@ -1,5 +1,6 @@
 use super::*;
 use base64::prelude::*;
+use thiserror::Error;
 
 #[derive(Default, Debug)]
 pub struct BundleId {
@@ -14,24 +15,61 @@ pub struct FragmentInfo {
     pub total_len: u64,
 }
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Bad bundle id key")]
+    BadKey,
+
+    #[error("Bad base64 encoding")]
+    BadBase64(#[from] base64::DecodeError),
+
+    #[error("Failed to decode {field}: {source}")]
+    InvalidField {
+        field: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error("Expecting CBOR array")]
+    ArrayExpected(#[from] cbor::decode::Error),
+}
+
+trait CaptureFieldErr<T> {
+    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
+}
+
+impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
+    for std::result::Result<T, E>
+{
+    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
+        self.map_err(|e| Error::InvalidField {
+            field,
+            source: e.into(),
+        })
+    }
+}
+
 impl BundleId {
-    pub fn from_key(k: &str) -> Result<Self, anyhow::Error> {
+    pub fn from_key(k: &str) -> Result<Self, Error> {
         cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _| {
             let s = Self {
-                source: array.parse()?,
-                timestamp: array.parse()?,
+                source: array.parse().map_field_err("Source EID")?,
+                timestamp: array.parse().map_field_err("Creation timestamp")?,
                 fragment_info: if let Some(4) = array.count() {
                     Some(FragmentInfo {
-                        offset: array.parse()?,
-                        total_len: array.parse()?,
+                        offset: array.parse().map_field_err("Fragment offset")?,
+                        total_len: array
+                            .parse()
+                            .map_field_err("Total Application Data Unit Length")?,
                     })
                 } else {
                     None
                 },
             };
-            array
-                .end_or_else(|| anyhow!("Bad bundle id key"))
-                .map(|_| s)
+            if array.end()?.is_none() {
+                Err(Error::BadKey)
+            } else {
+                Ok(s)
+            }
         })
         .map(|(v, _)| v)
     }

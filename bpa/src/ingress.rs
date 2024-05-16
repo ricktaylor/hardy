@@ -1,5 +1,6 @@
 use super::*;
 use tokio::sync::mpsc::*;
+use utils::settings;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClaAddress {
@@ -14,10 +15,17 @@ struct Config {
 }
 
 impl Config {
-    fn load(config: &config::Config) -> Result<Self, anyhow::Error> {
-        Ok(Self {
-            allow_null_sources: settings::get_with_default(config, "allow_null_sources", false)?,
-        })
+    fn new(config: &config::Config) -> Self {
+        let config = Self {
+            allow_null_sources: settings::get_with_default(config, "allow_null_sources", false)
+                .trace_expect("Invalid 'allow_null_sources' value in configuration"),
+        };
+
+        if config.allow_null_sources {
+            log::info!("Bundles with Null source endpoints are permitted");
+        }
+
+        config
     }
 }
 
@@ -39,9 +47,9 @@ impl Ingress {
         fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Self {
         // Load config
-        let config = Config::load(config)?;
+        let config = Config::new(config);
 
         // Create a channel for new bundles
         let (receive_channel, receive_channel_rx) = channel(16);
@@ -67,15 +75,11 @@ impl Ingress {
             .await
         });
 
-        Ok(ingress)
+        ingress
     }
 
     #[instrument(skip(self))]
-    pub async fn receive(
-        &self,
-        from: Option<ClaAddress>,
-        data: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
+    pub async fn receive(&self, from: Option<ClaAddress>, data: Vec<u8>) -> Result<(), Error> {
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
@@ -93,7 +97,7 @@ impl Ingress {
         &self,
         storage_name: &str,
         received_at: Option<time::OffsetDateTime>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Put bundle into receive channel
         self.receive_channel
             .send((None, storage_name.to_string(), received_at))
@@ -105,7 +109,7 @@ impl Ingress {
         &self,
         metadata: bundle::Metadata,
         bundle: bundle::Bundle,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Put bundle into ingress channel
         self.restart_channel
             .send((metadata, bundle))
@@ -131,7 +135,7 @@ impl Ingress {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.receive_bundle(cla_source,storage_name,received_at,cancel_token_cloned).await.log_expect("Failed to process received bundle")
+                            ingress.receive_bundle(cla_source,storage_name,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
                         });
                     }
                 },
@@ -141,18 +145,18 @@ impl Ingress {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(None,metadata,bundle,cancel_token_cloned).await.log_expect("Failed to process restart bundle")
+                            ingress.process_bundle(None,metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
                         });
                     }
                 },
-                Some(r) = task_set.join_next() => r.log_expect("Task terminated unexpectedly"),
+                Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
                 _ = cancel_token.cancelled() => break
             }
         }
 
         // Wait for all sub-tasks to complete
         while let Some(r) = task_set.join_next().await {
-            r.log_expect("Task terminated unexpectedly")
+            r.trace_expect("Task terminated unexpectedly")
         }
     }
 
@@ -163,7 +167,7 @@ impl Ingress {
         storage_name: String,
         received_at: Option<time::OffsetDateTime>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         // Parse the bundle
         let (metadata, bundle, valid) = {
             let data = self.store.load_data(&storage_name).await?;
@@ -233,7 +237,7 @@ impl Ingress {
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         /* Always check bundles,  no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
@@ -353,12 +357,9 @@ impl Ingress {
 
         if let bundle::BundleStatus::IngressPending = &metadata.status {
             // Update the status
-            metadata.status = self
-                .store
-                .set_status(
-                    &metadata.storage_name,
-                    bundle::BundleStatus::DispatchPending,
-                )
+            metadata.status = bundle::BundleStatus::DispatchPending;
+            self.store
+                .set_status(&metadata.storage_name, metadata.status)
                 .await?;
         }
 
@@ -378,7 +379,7 @@ impl Ingress {
             bundle::Metadata,
             bundle::Bundle,
         ),
-        anyhow::Error,
+        Error,
     > {
         // Check for unsupported block types
         let mut blocks_to_remove = Vec::new();

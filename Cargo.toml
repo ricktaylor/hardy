@@ -7,7 +7,8 @@ members = [
     "cbor/fuzz",
     "localdisk-storage",
     "proto", 
-    "sqlite-storage"
+    "sqlite-storage",
+    "trace-err"
 ]
 
 [workspace.package]

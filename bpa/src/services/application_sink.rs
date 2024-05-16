@@ -47,12 +47,29 @@ impl ApplicationSink for Service {
     #[instrument(skip(self))]
     async fn send(&self, request: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
         let request = request.into_inner();
-        let eid = self.app_registry.find_by_token(&request.token)?;
+        let destination = match request
+            .destination
+            .parse::<bundle::Eid>()
+            .map_err(|e| Status::from_error(e.into()))?
+        {
+            bundle::Eid::Null => {
+                return Err(Status::invalid_argument("Cannot send to Null endpoint"))
+            }
+            eid => eid,
+        };
+
+        let source = self.app_registry.find_by_token(&request.token)?;
         self.dispatcher
-            .local_dispatch(eid, request)
+            .local_dispatch(
+                source,
+                destination,
+                request.data,
+                request.lifetime,
+                request.flags,
+            )
             .await
             .map(|_| Response::new(SendResponse {}))
-            .map_err(|e| Status::from_error(e.into()))
+            .map_err(Status::from_error)
     }
 }
 

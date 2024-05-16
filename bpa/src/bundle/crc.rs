@@ -1,48 +1,72 @@
 use super::*;
+use thiserror::Error;
 
 const X25: ::crc::Crc<u16> = ::crc::Crc::<u16>::new(&::crc::CRC_16_IBM_SDLC);
 const CASTAGNOLI: ::crc::Crc<u32> = ::crc::Crc::<u32>::new(&::crc::CRC_32_ISCSI);
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Block has unexpected CRC value length {0}")]
+    InvalidLength(usize),
+
+    #[error("Block has a CRC value with no CRC type specified")]
+    UnexpectedCrcValue,
+
+    #[error("Block has additional items after CRC value")]
+    AdditionalItems,
+
+    #[error("Incorrect CRC value")]
+    IncorrectCrc,
+
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
+}
 
 pub fn parse_crc_value(
     data: &[u8],
     block_start: usize,
     block: &mut cbor::decode::Array,
     crc_type: CrcType,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), Error> {
     // Parse CRC
     let crc_value = block.try_parse_value(|value, crc_start, tags| match value {
         cbor::decode::Value::Bytes(crc, _) => {
             if !tags.is_empty() {
-                log::info!("Parsing bundle block CRC value with tags");
+                log::trace!("Parsing bundle block CRC value with tags");
             }
             match crc_type {
-                CrcType::None => Err(anyhow!("Block has unexpected CRC value")),
+                CrcType::None => Err(Error::UnexpectedCrcValue),
                 CrcType::CRC16_X25 => {
                     if crc.len() != 2 {
-                        Err(anyhow!("Block has unexpected CRC value length"))
+                        Err(Error::InvalidLength(crc.len()))
                     } else {
-                        Ok((u16::from_be_bytes(crc.try_into()?) as u32, crc_start))
+                        Ok((
+                            u16::from_be_bytes(crc.try_into().unwrap()) as u32,
+                            crc_start,
+                        ))
                     }
                 }
                 CrcType::CRC32_CASTAGNOLI => {
                     if crc.len() != 4 {
-                        Err(anyhow!("Block has unexpected CRC value length"))
+                        Err(Error::InvalidLength(crc.len()))
                     } else {
-                        Ok((u32::from_be_bytes(crc.try_into()?), crc_start))
+                        Ok((u32::from_be_bytes(crc.try_into().unwrap()), crc_start))
                     }
                 }
             }
         }
-        _ => Err(anyhow!("Block CRC value must be a CBOR byte string")),
+        _ => Err(
+            cbor::decode::Error::IncorrectType("Byte String".to_string(), value.type_name()).into(),
+        ),
     })?;
 
     // Confirm we are at the end of the block
-    let block_end = block.end_or_else(|| anyhow!("Block has additional items after CRC value"))?;
+    let Some(block_end) = block.end()? else {
+        return Err(Error::AdditionalItems);
+    };
 
     // Now check CRC
     if let Some(((crc_value, crc_start), crc_end)) = crc_value {
-        let err = anyhow!("Block CRC check failed");
-
         match crc_type {
             CrcType::CRC16_X25 => {
                 let mut digest = X25.digest();
@@ -52,7 +76,7 @@ pub fn parse_crc_value(
                     digest.update(&data[crc_end..block_end]);
                 }
                 if crc_value != digest.finalize() as u32 {
-                    return Err(err);
+                    return Err(Error::IncorrectCrc);
                 }
             }
             CrcType::CRC32_CASTAGNOLI => {
@@ -63,10 +87,10 @@ pub fn parse_crc_value(
                     digest.update(&data[crc_end..block_end]);
                 }
                 if crc_value != digest.finalize() {
-                    return Err(err);
+                    return Err(Error::IncorrectCrc);
                 }
             }
-            CrcType::None => return Err(anyhow!("Block has invalid CRC type {}", crc_type as u64)),
+            CrcType::None => unreachable!(),
         }
     }
     Ok(())

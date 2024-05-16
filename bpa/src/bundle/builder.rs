@@ -1,5 +1,5 @@
 use super::*;
-use crate::store;
+use std::collections::HashMap;
 
 // Default values
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
@@ -118,7 +118,7 @@ impl Builder {
         self.add_extension_block(BlockType::Payload).build(data)
     }
 
-    pub async fn build(self, store: &store::Store) -> Result<(Metadata, Bundle), anyhow::Error> {
+    pub async fn build(self, store: &store::Store) -> Result<(Metadata, Bundle), Error> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 

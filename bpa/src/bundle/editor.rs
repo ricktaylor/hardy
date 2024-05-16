@@ -1,5 +1,5 @@
 use super::*;
-use crate::store;
+use std::collections::HashMap;
 
 pub struct Editor {
     source_bundle: Bundle,
@@ -62,10 +62,7 @@ impl Editor {
         self
     }
 
-    pub async fn build(
-        mut self,
-        store: &store::Store,
-    ) -> Result<(Metadata, Bundle), anyhow::Error> {
+    pub async fn build(mut self, store: &store::Store) -> Result<(Metadata, Bundle), Error> {
         // Load up the source bundle data
         let source_data = store.load_data(&self.source_metadata.storage_name).await?;
 

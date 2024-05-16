@@ -1,4 +1,5 @@
 use super::*;
+use thiserror::Error;
 
 #[allow(non_camel_case_types)]
 #[derive(Default, Debug, Copy, Clone)]
@@ -9,15 +10,30 @@ pub enum CrcType {
     CRC32_CASTAGNOLI = 2,
 }
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Invalid CRC Type {0}")]
+    InvalidType(u64),
+}
+
+#[derive(Error, Debug)]
+pub enum DecodeError {
+    #[error(transparent)]
+    InvalidType(#[from] Error),
+
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
+}
+
 impl TryFrom<u64> for CrcType {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::None),
             1 => Ok(Self::CRC16_X25),
             2 => Ok(Self::CRC32_CASTAGNOLI),
-            _ => Err(anyhow!("Invalid CRC type {}", value)),
+            _ => Err(Error::InvalidType(value)),
         }
     }
 }
@@ -29,7 +45,9 @@ impl From<CrcType> for u64 {
 }
 
 impl cbor::decode::FromCbor for CrcType {
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), anyhow::Error> {
+    type Error = DecodeError;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         let (code, len, tags) = cbor::decode::parse_detail::<u64>(data)?;
         Ok((code.try_into()?, len, tags))
     }

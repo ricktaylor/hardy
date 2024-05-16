@@ -62,7 +62,7 @@ impl ClaRegistry {
         let mut clas = self
             .clas
             .write()
-            .log_expect("Failed to write-lock CLA mutex");
+            .trace_expect("Failed to write-lock CLA mutex");
 
         // Check token is unique
         while clas.clas_by_token.contains_key(&token) {
@@ -100,7 +100,7 @@ impl ClaRegistry {
         let mut clas = self
             .clas
             .write()
-            .log_expect("Failed to write-lock CLA mutex");
+            .trace_expect("Failed to write-lock CLA mutex");
 
         clas.clas_by_token
             .remove(&request.token)
@@ -113,7 +113,7 @@ impl ClaRegistry {
     pub fn find_by_token(&self, token: &str) -> Result<(String, String), tonic::Status> {
         self.clas
             .read()
-            .log_expect("Failed to read-lock CLA mutex")
+            .trace_expect("Failed to read-lock CLA mutex")
             .clas_by_token
             .get(token)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
@@ -124,7 +124,7 @@ impl ClaRegistry {
     pub fn find_by_name(&self, name: &str) -> Option<Endpoint> {
         self.clas
             .read()
-            .log_expect("Failed to read-lock CLA mutex")
+            .trace_expect("Failed to read-lock CLA mutex")
             .clas_by_name
             .get(name)
             .map(|cla| Endpoint {
@@ -140,7 +140,7 @@ impl Endpoint {
         &self,
         destination: Vec<u8>,
         bundle: Vec<u8>,
-    ) -> Result<Option<time::OffsetDateTime>, anyhow::Error> {
+    ) -> Result<(String, Option<time::OffsetDateTime>), Error> {
         match self
             .inner
             .lock()
