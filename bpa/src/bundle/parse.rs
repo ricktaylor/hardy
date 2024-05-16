@@ -22,9 +22,6 @@ pub enum Error {
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),
 
-    #[error("Bundle block must not be block type 0")]
-    InvalidBlockType,
-
     #[error("Bundle block must not be block number 0")]
     InvalidBlockNumber,
 

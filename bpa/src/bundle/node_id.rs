@@ -478,10 +478,9 @@ mod tests {
 
         let n = init_from_value(fake_config("dtn://node-name/")).unwrap();
         assert!(n.ipn.is_none());
-        assert!(n.dtn.map_or(false, |node_id| match node_id {
-            DtnNodeId { node_name } => node_name == "node-name",
-            _ => false,
-        }));
+        assert!(n
+            .dtn
+            .map_or(false, |node_id| node_id.node_name == "node-name"));
 
         /*#administrative_endpoint = { "ipn": N, "dtn": "node-name" }
         #administrative_endpoint = { "ipn": "[A.]N", "dtn": "node-name" }
