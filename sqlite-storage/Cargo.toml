@@ -12,18 +12,18 @@ trace-err = { path = "../trace-err" }
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.31.0", features = ["bundled","time"] }
-tokio = { version = "1.36.0", features = ["rt-multi-thread"] }
-thiserror = "1.0.58"
-serde = { version = "1.0.197", features = ["derive"] }
+tokio = { version = "1.37.0", features = ["rt-multi-thread"] }
+thiserror = "1.0.61"
+serde = { version = "1.0.202", features = ["derive"] }
 config = "0.14.0"
 directories = "5.0.1"
 tracing = "0.1.40"
-base64 = "0.22.0"
-time = "0.3.34"
+base64 = "0.22.1"
+time = "0.3.36"
 cfg-if = "1.0.0"
 
 [build-dependencies]
-built = "0.7.1"
-regex = "1.10.3"
+built = "0.7.2"
+regex = "1.10.4"
 sha1 = "0.10.6"
-base64 = "0.22.0"
+base64 = "0.22.1"

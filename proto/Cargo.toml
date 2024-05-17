@@ -8,9 +8,9 @@ path = "lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-bytes = "1.5.0"
-prost = "0.12.3"
-prost-types = "0.12.3"
+bytes = "1.6.0"
+prost = "0.12.6"
+prost-types = "0.12.6"
 tonic = "0.11.0"
 
 [build-dependencies]
