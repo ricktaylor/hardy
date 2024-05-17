@@ -64,6 +64,22 @@ impl ClaSink for Service {
             .map(|_| Response::new(ReceiveBundleResponse {}))
             .map_err(Status::from_error)
     }
+
+    #[instrument(skip(self))]
+    async fn confirm_forwarding(
+        &self,
+        request: Request<ConfirmForwardingRequest>,
+    ) -> Result<Response<ConfirmForwardingResponse>, Status> {
+        let request = request.into_inner();
+
+        // Just check the token is valid
+        self.cla_registry.find_by_token(&request.token)?;
+
+        self.ingress
+            .confirm_forwarding(&request.token, &request.bundle_id)
+            .await
+            .map(|_| Response::new(ConfirmForwardingResponse {}))
+    }
 }
 
 pub fn new_service(

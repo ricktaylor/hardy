@@ -8,6 +8,7 @@ service cla_sink {
     rpc RegisterCla(RegisterClaRequest) returns (RegisterClaResponse);
     rpc UnregisterCla(UnregisterClaRequest) returns (UnregisterClaResponse);
     rpc ReceiveBundle(ReceiveBundleRequest) returns (ReceiveBundleResponse);
+    rpc ConfirmForwarding(ConfirmForwardingRequest) returns (ConfirmForwardingResponse);
 }
 
 message RegisterClaRequest {
@@ -37,6 +38,14 @@ message ReceiveBundleRequest {
 message ReceiveBundleResponse {
 }
 
+message ConfirmForwardingRequest {
+    string Token = 1;
+    string BundleId = 2;
+}
+
+message ConfirmForwardingResponse {
+}
+
 service cla {
     rpc ForwardBundle(ForwardBundleRequest) returns (ForwardBundleResponse);
 }
@@ -48,5 +57,11 @@ message ForwardBundleRequest {
 }
 
 message ForwardBundleResponse {
-    optional google.protobuf.Timestamp retry_at = 1;
+    enum ForwardingResult {
+        Sent = 0;
+        Pending = 1;
+        Congested = 2;
+    }
+    ForwardingResult result = 1;
+    optional google.protobuf.Timestamp delay = 2;
 }

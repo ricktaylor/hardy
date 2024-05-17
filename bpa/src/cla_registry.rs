@@ -140,8 +140,8 @@ impl Endpoint {
         &self,
         destination: Vec<u8>,
         bundle: Vec<u8>,
-    ) -> Result<(String, Option<time::OffsetDateTime>), Error> {
-        match self
+    ) -> Result<(Option<String>, Option<time::OffsetDateTime>), Error> {
+        let r = self
             .inner
             .lock()
             .await
@@ -150,19 +150,30 @@ impl Endpoint {
                 destination,
                 bundle,
             }))
-            .await
-            .map(|response| response.into_inner())
-        {
-            Err(s) => Err(s.into()),
-            Ok(r) => {
-                if let Some(t) = r.retry_at {
-                    Ok(Some(
-                        time::OffsetDateTime::from_unix_timestamp(t.seconds)?
-                            + time::Duration::nanoseconds(t.nanos.into()),
-                    ))
-                } else {
-                    Ok(None)
-                }
+            .await?
+            .into_inner();
+
+        let delay = if let Some(t) = r.delay {
+            Some(
+                time::OffsetDateTime::from_unix_timestamp(t.seconds)
+                    .map_err(<time::error::ComponentRange as Into<Error>>::into)?
+                    + time::Duration::nanoseconds(t.nanos.into()),
+            )
+        } else {
+            None
+        };
+
+        // This is just horrible
+        match r.result {
+            v if v == (forward_bundle_response::ForwardingResult::Sent as i32) => Ok((None, None)),
+            v if v == (forward_bundle_response::ForwardingResult::Pending as i32) => {
+                Ok((Some(self.token.clone()), delay))
+            }
+            v if v == (forward_bundle_response::ForwardingResult::Congested as i32) => {
+                Ok((None, delay))
+            }
+            v => {
+                Err(tonic::Status::invalid_argument(format!("Invalid result {v} received")).into())
             }
         }
     }

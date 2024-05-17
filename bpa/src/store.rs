@@ -135,7 +135,7 @@ impl Store {
                 tokio::runtime::Handle::current().block_on(async {
                     // The data associated with `bundle` has gone!
                     dispatcher
-                        .report_bundle_deletion(
+                        .report_bundle_deleted(
                             &metadata,
                             &bundle,
                             bundle::StatusReportReasonCode::DepletedStorage,
@@ -198,6 +198,13 @@ impl Store {
     ) -> Result<bool, Error> {
         // Write to metadata store
         self.metadata_storage.store(metadata, bundle).await
+    }
+
+    pub async fn load(
+        &self,
+        bundle_id: &bundle::BundleId,
+    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, Error> {
+        self.metadata_storage.load(bundle_id).await
     }
 
     #[instrument(skip(self, data))]
@@ -278,10 +285,20 @@ impl Store {
         })
     }
 
+    #[instrument(skip(self))]
+    pub async fn check_status(
+        &self,
+        storage_name: &str,
+    ) -> Result<Option<bundle::BundleStatus>, Error> {
+        self.metadata_storage
+            .check_bundle_status(storage_name)
+            .await
+    }
+
     pub async fn set_status(
         &self,
         storage_name: &str,
-        status: bundle::BundleStatus,
+        status: &bundle::BundleStatus,
     ) -> Result<(), Error> {
         self.metadata_storage
             .set_bundle_status(storage_name, status)
@@ -303,7 +320,7 @@ impl Store {
 
         // But leave a tombstone in the metadata, so we can ignore duplicates
         self.metadata_storage
-            .set_bundle_status(storage_name, bundle::BundleStatus::Tombstone)
+            .set_bundle_status(storage_name, &bundle::BundleStatus::Tombstone)
             .await?;
         Ok(())
     }

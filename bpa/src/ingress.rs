@@ -213,7 +213,7 @@ impl Ingress {
 
             // Not valid, drop it
             self.dispatcher
-                .report_bundle_deletion(
+                .report_bundle_deleted(
                     &metadata,
                     &bundle,
                     bundle::StatusReportReasonCode::BlockUnintelligible,
@@ -347,7 +347,7 @@ impl Ingress {
         if let Some(reason) = reason {
             // Not valid, drop it
             self.dispatcher
-                .report_bundle_deletion(&metadata, &bundle, reason)
+                .report_bundle_deleted(&metadata, &bundle, reason)
                 .await?;
 
             // Drop the bundle
@@ -359,7 +359,7 @@ impl Ingress {
             // Update the status
             metadata.status = bundle::BundleStatus::DispatchPending;
             self.store
-                .set_status(&metadata.storage_name, metadata.status)
+                .set_status(&metadata.storage_name, &metadata.status)
                 .await?;
         }
 
@@ -427,5 +427,33 @@ impl Ingress {
             (metadata, bundle) = editor.build(&self.store).await?;
         }
         Ok((None, metadata, bundle))
+    }
+
+    #[instrument(skip(self))]
+    pub async fn confirm_forwarding(
+        &self,
+        token: &str,
+        bundle_id: &str,
+    ) -> Result<(), tonic::Status> {
+        let Some((metadata, _)) = self
+            .store
+            .load(
+                &bundle::BundleId::from_key(bundle_id)
+                    .map_err(|e| tonic::Status::from_error(e.into()))?,
+            )
+            .await
+            .map_err(tonic::Status::from_error)?
+        else {
+            return Err(tonic::Status::not_found("No such bundle"));
+        };
+
+        match &metadata.status {
+            bundle::BundleStatus::ForwardAckPending(t, _) if t == token => self
+                .store
+                .remove(&metadata.storage_name)
+                .await
+                .map_err(tonic::Status::from_error),
+            _ => Err(tonic::Status::not_found("No such bundle")),
+        }
     }
 }

@@ -171,7 +171,7 @@ impl Dispatcher {
         until: time::OffsetDateTime,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        // Check if it's worth us waiting
+        // Check if it's worth us waiting (safety check for metadata storage clock drift)
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, it will be picked up later
@@ -179,7 +179,11 @@ impl Dispatcher {
             return Ok(());
         }
 
-        trace!("Waiting to forward bundle inline until: {until}");
+        if let bundle::BundleStatus::ForwardAckPending(_, _) = &metadata.status {
+            trace!("Waiting for bundle forwarding acknowledgement inline until: {until}");
+        } else {
+            trace!("Waiting to forward bundle inline until: {until}");
+        }
 
         // Wait a bit
         if !cancellable_sleep(wait, &cancel_token).await {
@@ -187,12 +191,22 @@ impl Dispatcher {
             return Ok(());
         }
 
+        if let bundle::BundleStatus::ForwardAckPending(_, _) = &metadata.status {
+            // Check if the bundle has been acknowledged while we slept
+            let Some(bundle::BundleStatus::ForwardAckPending(_, _)) =
+                self.store.check_status(&metadata.storage_name).await?
+            else {
+                // It's not longer waiting, our work here is done
+                return Ok(());
+            };
+        }
+
         trace!("Forwarding bundle");
 
         // Set status to ForwardPending
         metadata.status = bundle::BundleStatus::ForwardPending;
         self.store
-            .set_status(&metadata.storage_name, metadata.status)
+            .set_status(&metadata.storage_name, &metadata.status)
             .await?;
 
         // And forward it!
@@ -229,7 +243,7 @@ impl Dispatcher {
             };
 
             self.store
-                .set_status(&metadata.storage_name, metadata.status)
+                .set_status(&metadata.storage_name, &metadata.status)
                 .await?;
         }
 
@@ -257,6 +271,16 @@ impl Dispatcher {
                 }
                 Ok(())
             }
+            bundle::BundleStatus::ForwardAckPending(_, _) => {
+                // Clear the pending ACK, we are reprocessing
+                metadata.status = bundle::BundleStatus::ForwardPending;
+                self.store
+                    .set_status(&metadata.storage_name, &metadata.status)
+                    .await?;
+
+                // And just forward
+                self.forward_bundle(metadata, bundle, cancel_token).await
+            }
             bundle::BundleStatus::ForwardPending => {
                 self.forward_bundle(metadata, bundle, cancel_token).await
             }
@@ -271,7 +295,7 @@ impl Dispatcher {
 
     async fn forward_bundle(
         &self,
-        metadata: bundle::Metadata,
+        mut metadata: bundle::Metadata,
         bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
@@ -383,12 +407,32 @@ impl Dispatcher {
                             .forward_bundle(a.address.clone(), data.clone().unwrap())
                             .await
                         {
-                            Ok(None) => {
+                            Ok((None, None)) => {
                                 // We have successfully forwarded!
-                                return Ok(());
+                                self.report_bundle_forwarded(&metadata, &bundle).await?;
+                                break None;
                             }
-                            Ok(Some(until)) => {
-                                trace!("CLA reported congestion, retry at: {}", until);
+                            Ok((Some(token), until)) => {
+                                // CLA will report successful forwarding
+                                let until = until.unwrap_or_else(|| {
+                                    warn!("CLA endpoint has not provided a suitable AckPending delay, defaulting to 1 minute");
+                                    time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
+                                });
+
+                                // Set the bundle status to 'Forward Acknowledgement Pending'
+                                metadata.status =
+                                    bundle::BundleStatus::ForwardAckPending(token, until);
+                                return self
+                                    .store
+                                    .set_status(&metadata.storage_name, &metadata.status)
+                                    .await;
+                            }
+                            Ok((None, until)) => {
+                                let until = until.unwrap_or_else(|| {
+                                    warn!("CLA endpoint has not provided a suitable Congestion delay, defaulting to 10 seconds");
+                                    time::OffsetDateTime::now_utc() + time::Duration::seconds(10)
+                                });
+                                trace!("CLA reported congestion, retry at: {until}");
 
                                 // Remember the shortest wait for a retry, in case we have ECMP
                                 congestion_wait = congestion_wait
@@ -404,7 +448,7 @@ impl Dispatcher {
                 None => {
                     // Check for congestion
                     if let Some(until) = congestion_wait {
-                        trace!("All available CLAs report congestion");
+                        trace!("All available CLAs report congestion until {until}");
 
                         // Check to see if waiting is even worth it
                         if until > bundle::get_bundle_expiry(&metadata, &bundle) {
@@ -476,6 +520,9 @@ impl Dispatcher {
                         break Some(bundle::StatusReportReasonCode::LifetimeExpired);
                     }
 
+                    // Force a reload of current data
+                    data = None;
+
                     // Lookup again
                     actions = fib.find(&destination).into_iter();
                 }
@@ -496,7 +543,10 @@ impl Dispatcher {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
             trace!("Bundle will wait offline until: {until}");
             self.store
-                .set_status(&metadata.storage_name, bundle::BundleStatus::Waiting(until))
+                .set_status(
+                    &metadata.storage_name,
+                    &bundle::BundleStatus::Waiting(until),
+                )
                 .await?;
             return Ok(false);
         }
@@ -514,7 +564,7 @@ impl Dispatcher {
         reason: Option<bundle::StatusReportReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
-            self.report_bundle_deletion(&metadata, &bundle, reason)
+            self.report_bundle_deleted(&metadata, &bundle, reason)
                 .await?;
         }
         trace!("Discarding bundle, leaving tombstone");
@@ -556,7 +606,83 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    pub async fn report_bundle_deletion(
+    pub async fn report_bundle_forwarded(
+        &self,
+        metadata: &bundle::Metadata,
+        bundle: &bundle::Bundle,
+    ) -> Result<(), Error> {
+        // Check if a report is requested
+        if !self.config.status_reports || !bundle.flags.forward_report_requested {
+            return Ok(());
+        }
+
+        trace!("Reporting bundle forwarded to {}", &bundle.report_to);
+
+        // Create a bundle report
+        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
+            .is_admin_record(true)
+            .source(
+                &self
+                    .config
+                    .admin_endpoints
+                    .get_admin_endpoint(&bundle.report_to),
+            )
+            .destination(&bundle.report_to)
+            .add_payload_block(new_bundle_status_report(
+                metadata,
+                bundle,
+                bundle::StatusReportReasonCode::NoAdditionalInformation,
+                Some(time::OffsetDateTime::now_utc()),
+                None,
+                None,
+            ))
+            .build(&self.store)
+            .await?;
+
+        // And queue it up
+        self.enqueue_bundle(metadata, bundle).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn report_bundle_delivered(
+        &self,
+        metadata: &bundle::Metadata,
+        bundle: &bundle::Bundle,
+    ) -> Result<(), Error> {
+        // Check if a report is requested
+        if !self.config.status_reports || !bundle.flags.forward_report_requested {
+            return Ok(());
+        }
+
+        trace!("Reporting bundle delivered to {}", &bundle.report_to);
+
+        // Create a bundle report
+        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
+            .is_admin_record(true)
+            .source(
+                &self
+                    .config
+                    .admin_endpoints
+                    .get_admin_endpoint(&bundle.report_to),
+            )
+            .destination(&bundle.report_to)
+            .add_payload_block(new_bundle_status_report(
+                metadata,
+                bundle,
+                bundle::StatusReportReasonCode::NoAdditionalInformation,
+                None,
+                Some(time::OffsetDateTime::now_utc()),
+                None,
+            ))
+            .build(&self.store)
+            .await?;
+
+        // And queue it up
+        self.enqueue_bundle(metadata, bundle).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn report_bundle_deleted(
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
@@ -567,7 +693,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        trace!("Reporting bundle deletion to {}", &bundle.report_to);
+        trace!("Reporting bundle deleted to {}", &bundle.report_to);
 
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)

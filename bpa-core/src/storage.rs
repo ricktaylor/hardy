@@ -16,12 +16,20 @@ pub trait MetadataStorage: Send + Sync {
         f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool>,
     ) -> Result<()>;
 
+    async fn load(
+        &self,
+        bundle_id: &bundle::BundleId,
+    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>>;
+
     async fn store(&self, metadata: &bundle::Metadata, bundle: &bundle::Bundle) -> Result<bool>;
+
+    async fn check_bundle_status(&self, storage_name: &str)
+        -> Result<Option<bundle::BundleStatus>>;
 
     async fn set_bundle_status(
         &self,
         storage_name: &str,
-        status: bundle::BundleStatus,
+        status: &bundle::BundleStatus,
     ) -> Result<()>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;

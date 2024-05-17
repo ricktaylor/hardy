@@ -19,6 +19,7 @@ CREATE TABLE bundles (
     hop_count INTEGER,
     hop_limit INTEGER,
     wait_until TEXT,
+    ack_token TEXT,
 
     -- This enforces bundle uniqueness
     UNIQUE(source,creation_time,creation_seq_num,fragment_offset,fragment_total_len)

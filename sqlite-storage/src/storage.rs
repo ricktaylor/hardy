@@ -22,35 +22,43 @@ pub enum Error {
     NotFound,
 }
 
-fn bundle_status_to_pair(value: bundle::BundleStatus) -> (i64, Option<time::OffsetDateTime>) {
+fn bundle_status_to_parts(
+    value: &bundle::BundleStatus,
+) -> (i64, Option<String>, Option<time::OffsetDateTime>) {
     match value {
-        bundle::BundleStatus::IngressPending => (0, None),
-        bundle::BundleStatus::DispatchPending => (1, None),
-        bundle::BundleStatus::ReassemblyPending => (2, None),
-        bundle::BundleStatus::CollectionPending => (3, None),
-        bundle::BundleStatus::ForwardPending => (4, None),
-        bundle::BundleStatus::Waiting(until) => (5, Some(until)),
-        bundle::BundleStatus::Tombstone => (6, None),
+        bundle::BundleStatus::IngressPending => (0, None, None),
+        bundle::BundleStatus::DispatchPending => (1, None, None),
+        bundle::BundleStatus::ReassemblyPending => (2, None, None),
+        bundle::BundleStatus::CollectionPending => (3, None, None),
+        bundle::BundleStatus::ForwardPending => (4, None, None),
+        bundle::BundleStatus::ForwardAckPending(token, until) => {
+            (5, Some(token.clone()), Some(*until))
+        }
+        bundle::BundleStatus::Waiting(until) => (6, None, Some(*until)),
+        bundle::BundleStatus::Tombstone => (7, None, None),
     }
 }
 
-fn unpack_bundle_status(
+fn columns_to_bundle_status(
     row: &rusqlite::Row,
     idx1: usize,
     idx2: usize,
-) -> Result<bundle::BundleStatus, Box<dyn std::error::Error + Send + Sync>> {
+    idx3: usize,
+) -> rusqlite::Result<bundle::BundleStatus> {
     match (
         row.get::<usize, i64>(idx1)?,
-        row.get::<usize, Option<time::OffsetDateTime>>(idx2)?,
+        row.get::<usize, Option<String>>(idx2)?,
+        row.get::<usize, Option<time::OffsetDateTime>>(idx3)?,
     ) {
-        (0, None) => Ok(bundle::BundleStatus::IngressPending),
-        (1, None) => Ok(bundle::BundleStatus::DispatchPending),
-        (2, None) => Ok(bundle::BundleStatus::ReassemblyPending),
-        (3, None) => Ok(bundle::BundleStatus::CollectionPending),
-        (4, None) => Ok(bundle::BundleStatus::ForwardPending),
-        (5, Some(until)) => Ok(bundle::BundleStatus::Waiting(until)),
-        (6, None) => Ok(bundle::BundleStatus::Tombstone),
-        (v, d) => panic!("Invalid BundleStatus value {v}/{d:?}"),
+        (0, None, None) => Ok(bundle::BundleStatus::IngressPending),
+        (1, None, None) => Ok(bundle::BundleStatus::DispatchPending),
+        (2, None, None) => Ok(bundle::BundleStatus::ReassemblyPending),
+        (3, None, None) => Ok(bundle::BundleStatus::CollectionPending),
+        (4, None, None) => Ok(bundle::BundleStatus::ForwardPending),
+        (5, Some(token), Some(until)) => Ok(bundle::BundleStatus::ForwardAckPending(token, until)),
+        (6, None, Some(until)) => Ok(bundle::BundleStatus::Waiting(until)),
+        (7, None, None) => Ok(bundle::BundleStatus::Tombstone),
+        (v, t, d) => panic!("Invalid BundleStatus value combination {v}/{t:?}/{d:?}"),
     }
 }
 
@@ -139,7 +147,7 @@ impl Storage {
                 r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
             SELECT id FROM bundles WHERE status != ?1;"#,
-                [bundle_status_to_pair(bundle::BundleStatus::Tombstone).0],
+                [bundle_status_to_parts(&bundle::BundleStatus::Tombstone).0],
             )
             .and_then(|_| {
                 // Create temporary tables for restarting
@@ -212,12 +220,13 @@ fn unpack_bundles(
            17: bundles.hop_count,
            18: bundles.hop_limit,
            19: bundles.wait_until,
-           20: bundle_blocks.block_num,
-           21: bundle_blocks.block_type,
-           22: bundle_blocks.block_flags,
-           23: bundle_blocks.block_crc_type,
-           24: bundle_blocks.data_offset,
-           25: bundle_blocks.data_len
+           20: bundles.ack_token,
+           21: bundle_blocks.block_num,
+           22: bundle_blocks.block_type,
+           23: bundle_blocks.block_flags,
+           24: bundle_blocks.block_crc_type,
+           25: bundle_blocks.data_offset,
+           26: bundle_blocks.data_len
     */
 
     let mut bundles = Vec::new();
@@ -225,7 +234,7 @@ fn unpack_bundles(
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
         let metadata = bundle::Metadata {
-            status: unpack_bundle_status(row, 1, 19)?,
+            status: columns_to_bundle_status(row, 1, 20, 19)?,
             storage_name: row.get(2)?,
             hash: BASE64_STANDARD_NO_PAD.decode(row.get::<usize, String>(3)?)?,
             received_at: row.get(4)?,
@@ -276,13 +285,13 @@ fn unpack_bundles(
         };
 
         loop {
-            let block_number = as_u64(row.get(20)?);
+            let block_number = as_u64(row.get(21)?);
             let block = bundle::Block {
-                block_type: as_u64(row.get(21)?).into(),
+                block_type: as_u64(row.get(22)?).into(),
                 flags: as_u64(row.get(23)?).into(),
-                crc_type: as_u64(row.get(23)?).try_into()?,
-                data_offset: as_u64(row.get(24)?) as usize,
-                data_len: as_u64(row.get(25)?) as usize,
+                crc_type: as_u64(row.get(24)?).try_into()?,
+                data_offset: as_u64(row.get(25)?) as usize,
+                data_len: as_u64(row.get(26)?) as usize,
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -378,7 +387,8 @@ impl MetadataStorage for Storage {
                                 age,
                                 hop_count,
                                 hop_limit,
-                                wait_until
+                                wait_until,
+                                ack_token
                             FROM unconfirmed_bundles
                             JOIN bundles ON id = unconfirmed_bundles.bundle_id
                             LIMIT 16
@@ -484,6 +494,7 @@ impl MetadataStorage for Storage {
                             hop_count,
                             hop_limit,
                             wait_until,
+                            ack_token,
                             block_num,
                             block_type,
                             block_flags,
@@ -522,6 +533,66 @@ impl MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
+    async fn load(
+        &self,
+        bundle_id: &bundle::BundleId,
+    ) -> storage::Result<Option<(bundle::Metadata, bundle::Bundle)>> {
+        Ok(unpack_bundles(
+            self.connection
+                .lock()
+                .trace_expect("Failed to lock connection mutex")
+                .prepare_cached(
+                    r#"SELECT 
+                    bundles.id,
+                    status,
+                    storage_name,
+                    hash,
+                    received_at,
+                    flags,
+                    crc_type,
+                    source,
+                    destination,
+                    report_to,
+                    creation_time,
+                    creation_seq_num,
+                    lifetime,                    
+                    fragment_offset,
+                    fragment_total_len,
+                    previous_node,
+                    age,
+                    hop_count,
+                    hop_limit,
+                    wait_until,
+                    ack_token,
+                    block_num,
+                    block_type,
+                    block_flags,
+                    block_crc_type,
+                    data_offset,
+                    data_len
+                FROM bundles
+                JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
+                WHERE 
+                    source = ?1 AND
+                    creation_time = ?2 AND
+                    creation_seq_num = ?3 AND
+                    fragment_offset = ?4 AND 
+                    fragment_total_len = ?5
+                LIMIT 1;"#,
+                )?
+                .query((
+                    &encode_eid(&bundle_id.source),
+                    as_i64(bundle_id.timestamp.creation_time),
+                    as_i64(bundle_id.timestamp.sequence_number),
+                    bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
+                    bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                ))?,
+        )?
+        .pop()
+        .map(|(_, metadata, bundle)| (metadata, bundle)))
+    }
+
+    #[instrument(skip(self))]
     async fn store(
         &self,
         metadata: &bundle::Metadata,
@@ -532,7 +603,7 @@ impl MetadataStorage for Storage {
             .lock()
             .trace_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let (status, until) = bundle_status_to_pair(metadata.status);
+        let (status, ack_token, until) = bundle_status_to_parts(&metadata.status);
 
         // Insert bundle
         let bundle_id = trans
@@ -556,9 +627,10 @@ impl MetadataStorage for Storage {
                 age,
                 hop_count,
                 hop_limit,
-                wait_until
+                wait_until,
+                ack_token
                 )
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
             RETURNING id;"#,
             )?
             .query_row(
@@ -580,7 +652,8 @@ impl MetadataStorage for Storage {
                     bundle.age.map(as_i64),
                     bundle.hop_count.map(|h| as_i64(h.count)),
                     bundle.hop_count.map(|h| as_i64(h.limit)),
-                    until
+                    until,
+                    ack_token
                 ),
                 |row| Ok(as_u64(row.get(0)?)),
             )
@@ -680,20 +753,39 @@ impl MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
+    async fn check_bundle_status(
+        &self,
+        storage_name: &str,
+    ) -> storage::Result<Option<bundle::BundleStatus>> {
+        self
+            .connection
+            .lock()
+            .trace_expect("Failed to lock connection mutex")
+            .prepare_cached(
+                r#"SELECT status,ack_token,wait_until FROM bundles WHERE storage_name = ?1 LIMIT 1;"#,
+            )?
+            .query_row(
+                [storage_name],
+                |row| columns_to_bundle_status(row,0,1,2),
+            )
+            .optional().map_err(|e| e.into())
+    }
+
+    #[instrument(skip(self))]
     async fn set_bundle_status(
         &self,
         storage_name: &str,
-        status: bundle::BundleStatus,
+        status: &bundle::BundleStatus,
     ) -> storage::Result<()> {
-        let (status, until) = bundle_status_to_pair(status);
+        let (status, ack_token, until) = bundle_status_to_parts(status);
         if !self
             .connection
             .lock()
             .trace_expect("Failed to lock connection mutex")
             .prepare_cached(
-                r#"UPDATE bundles SET status = ?1, wait_until = ?2 WHERE storage_name = ?3;"#,
+                r#"UPDATE bundles SET status = ?1, ack_token = ?2, wait_until = ?3 WHERE storage_name = ?3;"#,
             )?
-            .execute((status, until, storage_name))
+            .execute((status, ack_token, until, storage_name))
             .map(|count| count != 0)?
         {
             Err(Error::NotFound.into())
@@ -768,6 +860,7 @@ impl MetadataStorage for Storage {
                         hop_count,
                         hop_limit,
                         wait_until,
+                        ack_token,
                         block_num,
                         block_type,
                         block_flags,
@@ -783,13 +876,13 @@ impl MetadataStorage for Storage {
         )
         .map(|v| {
             v.into_iter()
-                .filter_map(|(_, metadata, bundle)| {
-                    if let bundle::BundleStatus::Waiting(until) = &metadata.status {
+                .filter_map(|(_, metadata, bundle)| match &metadata.status {
+                    bundle::BundleStatus::ForwardAckPending(_, until)
+                    | bundle::BundleStatus::Waiting(until) => {
                         let until = *until;
                         Some((metadata, bundle, until))
-                    } else {
-                        None
                     }
+                    _ => None,
                 })
                 .collect()
         })
