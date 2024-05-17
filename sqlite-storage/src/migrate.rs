@@ -7,13 +7,13 @@ pub enum Error {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
-    #[error("Database does not contain historic migration {0}")]
+    #[error("Database does not contain historic migration '{0}'")]
     MissingHistoric(String),
 
-    #[error("Database contains unexpected historic migration {0}")]
+    #[error("Database contains unexpected historic migration '{0}'")]
     ExtraHistoric(String),
 
-    #[error("Historic migration {0} has a different hash")]
+    #[error("Historic migration '{0}' has a different hash")]
     AlteredHistoric(String),
 
     #[error("Database schema requires updating")]
