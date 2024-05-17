@@ -31,7 +31,7 @@ async fn main() {
     // Init logger
     utils::logger::init(&config);
     info!("Version {} starting...", built_info::PKG_VERSION);
-    info!("{}", config_source);
+    info!("{config_source}");
 
     // Get administrative_endpoint
     let administrative_endpoint = bundle::NodeId::init(&config);

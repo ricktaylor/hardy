@@ -184,7 +184,7 @@ impl Ingress {
                 ),
                 Err(e) => {
                     // Parse failed badly, no idea who to report to
-                    trace!("Bundle parsing failed: {}", e);
+                    trace!("Bundle parsing failed: {e}");
                     return Ok(());
                 }
             }

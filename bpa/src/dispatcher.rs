@@ -175,11 +175,11 @@ impl Dispatcher {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, it will be picked up later
-            trace!("Bundle will wait offline until: {}", until);
+            trace!("Bundle will wait offline until: {until}");
             return Ok(());
         }
 
-        trace!("Waiting to forward bundle inline until: {}", until);
+        trace!("Waiting to forward bundle inline until: {until}");
 
         // Wait a bit
         if !cancellable_sleep(wait, &cancel_token).await {
@@ -363,7 +363,7 @@ impl Dispatcher {
                                 }
                                 Err(e) => {
                                     // The bundle data has gone!
-                                    warn!("Failed to load bundle data: {}", e);
+                                    warn!("Failed to load bundle data: {e}");
                                     return self
                                         .drop_bundle(
                                             metadata,
@@ -390,7 +390,7 @@ impl Dispatcher {
                                 congestion_wait = congestion_wait
                                     .map_or(Some(until), |w| Some(std::cmp::min(w, until)))
                             }
-                            Err(e) => trace!("CLA failed to forward {}", e),
+                            Err(e) => trace!("CLA failed to forward {e}"),
                         }
                     } else {
                         trace!("FIB has entry for unknown endpoint: {}", a.name);
@@ -451,16 +451,13 @@ impl Dispatcher {
                         }
 
                         // Reset retry counter as we are attempting to return the bundle
-                        trace!("Returning bundle to previous node: {}", destination);
+                        trace!("Returning bundle to previous node: {destination}");
                         previous = true;
                         retries = 0;
                     } else {
                         retries = retries.saturating_add(1);
 
-                        trace!(
-                            "Retrying ({}) FIB lookup to allow FIB and CLAs to resync",
-                            retries
-                        );
+                        trace!("Retrying ({retries}) FIB lookup to allow FIB and CLAs to resync");
 
                         // Async sleep for 1 second
                         if !cancellable_sleep(time::Duration::seconds(1), &cancel_token).await {
@@ -493,7 +490,7 @@ impl Dispatcher {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
-            trace!("Bundle will wait offline until: {}", until);
+            trace!("Bundle will wait offline until: {until}");
             self.store
                 .set_status(&metadata.storage_name, bundle::BundleStatus::Waiting(until))
                 .await?;
@@ -501,7 +498,7 @@ impl Dispatcher {
         }
 
         // We must wait here, as we have missed the scheduled wait interval
-        trace!("Waiting to forward bundle inline until: {}", until);
+        trace!("Waiting to forward bundle inline until: {until}");
         Ok(cancellable_sleep(wait, cancel_token).await)
     }
 

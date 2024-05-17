@@ -50,12 +50,9 @@ impl AppRegistry {
             application_client::ApplicationClient::connect(grpc_address.clone())
                 .await
                 .map(|endpoint| Some(Arc::new(tokio::sync::Mutex::new(endpoint))))
-                .map_err(|err| {
-                    warn!(
-                        "Failed to connect to application client at {}",
-                        grpc_address
-                    );
-                    tonic::Status::invalid_argument(err.to_string())
+                .map_err(|e| {
+                    warn!("Failed to connect to application client at {grpc_address}: {e}");
+                    tonic::Status::invalid_argument(e.to_string())
                 })?
         } else {
             None
@@ -125,8 +122,7 @@ impl AppRegistry {
             if let Some(application) = applications.applications_by_eid.get(&eid) {
                 if application.ident != request.ident {
                     return Err(tonic::Status::already_exists(format!(
-                        "Endpoint {} already registered",
-                        eid
+                        "Endpoint {eid} already registered"
                     )));
                 }
             }
@@ -206,7 +202,7 @@ impl Endpoint {
                     bundle_id: bundle_id.to_key(),
                 }))
                 .await
-                .inspect_err(|s| info!("collection_notify failed: {}", s));
+                .inspect_err(|s| info!("collection_notify failed: {s}"));
         }
     }
 }

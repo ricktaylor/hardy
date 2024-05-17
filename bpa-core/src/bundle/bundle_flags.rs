@@ -52,18 +52,12 @@ impl From<u64> for BundleFlags {
                             flags.delete_report_requested = true;
                         }
                     }
-                    b => trace!(
-                        "Parsing bundle primary block with reserved flag bit {} set",
-                        b
-                    ),
+                    b => trace!("Parsing bundle primary block with reserved flag bit {b} set"),
                 }
             }
         }
         if value & !((2 ^ 20) - 1) != 0 {
-            trace!(
-                "Parsing bundle primary block with unassigned flag bits set: {:#x}",
-                value
-            );
+            trace!("Parsing bundle primary block with unassigned flag bits set: {value:#x}");
         }
         flags
     }

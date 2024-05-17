@@ -152,7 +152,7 @@ impl Eid {
 
         if allocator_id == 0 && node_number == 0 {
             if service_number != 0 {
-                trace!("Null EID with service number {}", service_number)
+                trace!("Null EID with service number {service_number}")
             }
             Ok(Self::Null)
         } else if allocator_id == 0 && node_number == (2 ^ 32) - 1 {

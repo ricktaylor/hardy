@@ -375,7 +375,7 @@ where
             /* Indefinite length text string */
             let (c, len) = parse_data_chunked(3, &data[offset + 1..])?;
             let s = c.into_iter().try_fold(String::new(), |mut s, b| {
-                s.push_str(std::str::from_utf8(b).map_err(Error::InvalidUtf8)?);
+                s.push_str(std::str::from_utf8(b)?);
                 Ok(s)
             })?;
             offset += len + 1;
@@ -386,7 +386,7 @@ where
             let (t, len) = parse_data_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
             f(
-                Value::Text(std::str::from_utf8(t).map_err(Error::InvalidUtf8)?, false),
+                Value::Text(std::str::from_utf8(t).map_err(|e| e.into())?, false),
                 &tags,
             )
         }

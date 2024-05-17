@@ -40,5 +40,5 @@ pub fn init(
             .trace_expect("Failed to start gRPC server")
     });
 
-    info!("gRPC server listening on {}", grpc_address)
+    info!("gRPC server listening on {grpc_address}")
 }

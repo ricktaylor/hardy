@@ -24,7 +24,7 @@ fn init_metadata_storage(
 
     let engine: String = settings::get_with_default(config, "metadata_storage", DEFAULT)
         .trace_expect("Invalid 'metadata_storage' value in configuration");
-    tracing::info!("Using '{}' metadata storage engine", engine);
+    info!("Using '{engine}' metadata storage engine");
 
     let config = config.get_table(&engine).unwrap_or_default();
     match engine.as_str() {
@@ -32,8 +32,8 @@ fn init_metadata_storage(
         hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config, upgrade),
 
         _ => {
-            tracing::error!("Unknown metadata storage engine: {}", engine);
-            panic!("Unknown metadata storage engine: {}", engine)
+            error!("Unknown metadata storage engine: {engine}");
+            panic!("Unknown metadata storage engine: {engine}")
         }
     }
 }
@@ -50,7 +50,7 @@ fn init_bundle_storage(config: &config::Config, _upgrade: bool) -> Arc<dyn stora
 
     let engine: String = settings::get_with_default(config, "bundle_storage", DEFAULT)
         .trace_expect("Invalid 'bundle_storage' value in configuration");
-    tracing::info!("Using '{}' bundle storage engine", engine);
+    info!("Using '{engine}' bundle storage engine");
 
     let config = config.get_table(&engine).unwrap_or_default();
     match engine.as_str() {
@@ -58,8 +58,8 @@ fn init_bundle_storage(config: &config::Config, _upgrade: bool) -> Arc<dyn stora
         hardy_localdisk_storage::CONFIG_KEY => hardy_localdisk_storage::Storage::init(&config),
 
         _ => {
-            tracing::error!("Unknown bundle storage engine: {}", engine);
-            panic!("Unknown bundle storage engine: {}", engine)
+            error!("Unknown bundle storage engine: {engine}");
+            panic!("Unknown bundle storage engine: {engine}")
         }
     }
 }
@@ -84,7 +84,7 @@ impl Store {
         dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
-        tracing::info!("Starting store consistency check...");
+        info!("Starting store consistency check...");
         self.bundle_storage_check(ingress.clone(), cancel_token.clone())
             .trace_expect("Bundle storage consistency check failed");
 
@@ -93,15 +93,15 @@ impl Store {
             self.metadata_storage_check(dispatcher, cancel_token.clone())
                 .trace_expect("Metadata storage consistency check failed");
             if !cancel_token.is_cancelled() {
-                tracing::info!("Store consistency check complete");
+                info!("Store consistency check complete");
 
                 // Now restart the store
-                tracing::info!("Restarting store...");
+                info!("Restarting store...");
                 self.metadata_storage_restart(ingress, cancel_token.clone())
                     .trace_expect("Store restart failed");
 
                 if !cancel_token.is_cancelled() {
-                    tracing::info!("Store restarted");
+                    info!("Store restarted");
                 }
             }
         }

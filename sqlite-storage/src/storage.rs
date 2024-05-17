@@ -50,7 +50,7 @@ fn unpack_bundle_status(
         (4, None) => Ok(bundle::BundleStatus::ForwardPending),
         (5, Some(until)) => Ok(bundle::BundleStatus::Waiting(until)),
         (6, None) => Ok(bundle::BundleStatus::Tombstone),
-        (v, d) => panic!("Invalid BundleStatus value {}/{:?}", v, d),
+        (v, d) => panic!("Invalid BundleStatus value {v}/{d:?}"),
     }
 }
 
@@ -286,7 +286,7 @@ fn unpack_bundles(
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
-                panic!("Duplicate block number {} in DB!", block_number);
+                panic!("Duplicate block number {block_number} in DB!");
             }
 
             row_result = rows.next()?;

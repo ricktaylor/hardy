@@ -39,7 +39,7 @@ impl From<u64> for BlockType {
             12 => BlockType::BlockSecurity,
             _ => {
                 if value <= 191 {
-                    trace!("Extension block uses unassigned type code {}", value);
+                    trace!("Extension block uses unassigned type code {value}");
                 }
                 BlockType::Private(value)
             }
