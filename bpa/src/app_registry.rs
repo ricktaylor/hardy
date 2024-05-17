@@ -28,14 +28,14 @@ struct Indexes {
 
 #[derive(Clone)]
 pub struct AppRegistry {
-    node_id: bundle::NodeId,
+    admin_endpoints: bundle::AdminEndpoints,
     applications: Arc<RwLock<Indexes>>,
 }
 
 impl AppRegistry {
-    pub fn new(_config: &config::Config, node_id: bundle::NodeId) -> Self {
+    pub fn new(_config: &config::Config, admin_endpoints: bundle::AdminEndpoints) -> Self {
         Self {
-            node_id,
+            admin_endpoints,
             applications: Default::default(),
         }
     }
@@ -79,7 +79,7 @@ impl AppRegistry {
                     return Err(tonic::Status::invalid_argument(
                         "Cannot register the administrative endpoint",
                     ));
-                } else if let Some(node_id) = &self.node_id.dtn {
+                } else if let Some(node_id) = &self.admin_endpoints.dtn {
                     node_id.to_eid(s)
                 } else {
                     return Err(tonic::Status::not_found(
@@ -92,7 +92,7 @@ impl AppRegistry {
                     return Err(tonic::Status::invalid_argument(
                         "Cannot register the administrative endpoint",
                     ));
-                } else if let Some(node_id) = &self.node_id.ipn {
+                } else if let Some(node_id) = &self.admin_endpoints.ipn {
                     node_id.to_eid(*s)
                 } else {
                     return Err(tonic::Status::not_found(
@@ -101,7 +101,7 @@ impl AppRegistry {
                 }
             }
             None => loop {
-                let eid = match (&self.node_id.ipn, &self.node_id.dtn) {
+                let eid = match (&self.admin_endpoints.ipn, &self.admin_endpoints.dtn) {
                     (None, Some(node_id)) => node_id.to_eid(&format!(
                         "auto/{}",
                         Alphanumeric.sample_string(&mut rng, 16)

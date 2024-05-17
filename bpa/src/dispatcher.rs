@@ -8,15 +8,15 @@ const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
 
 #[derive(Clone)]
 struct Config {
-    node_id: bundle::NodeId,
+    admin_endpoints: bundle::AdminEndpoints,
     status_reports: bool,
     max_forwarding_delay: u32,
 }
 
 impl Config {
-    fn new(config: &config::Config, node_id: bundle::NodeId) -> Self {
+    fn new(config: &config::Config, admin_endpoints: bundle::AdminEndpoints) -> Self {
         let config = Self {
-            node_id,
+            admin_endpoints,
             status_reports: settings::get_with_default(config, "status_reports", false)
                 .trace_expect("Invalid 'status_reports' value in configuration"),
             max_forwarding_delay: settings::get_with_default(config, "max_forwarding_delay", 5u32)
@@ -49,7 +49,7 @@ impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &config::Config,
-        node_id: bundle::NodeId,
+        admin_endpoints: bundle::AdminEndpoints,
         store: store::Store,
         cla_registry: cla_registry::ClaRegistry,
         app_registry: app_registry::AppRegistry,
@@ -58,7 +58,7 @@ impl Dispatcher {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         // Load config
-        let config = Config::new(config, node_id);
+        let config = Config::new(config, admin_endpoints);
 
         // Create a channel for bundles
         let (tx, rx) = channel(16);
@@ -208,7 +208,11 @@ impl Dispatcher {
     ) -> Result<(), Error> {
         if let bundle::BundleStatus::DispatchPending = &metadata.status {
             // Check if we are the final destination
-            metadata.status = if self.config.node_id.is_local_service(&bundle.destination) {
+            metadata.status = if self
+                .config
+                .admin_endpoints
+                .is_local_service(&bundle.destination)
+            {
                 if bundle.id.fragment_info.is_some() {
                     // Reassembly!!
                     trace!("Bundle requires fragment reassembly");
@@ -534,7 +538,12 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(&self.config.node_id.get_admin_endpoint(&bundle.report_to))
+            .source(
+                &self
+                    .config
+                    .admin_endpoints
+                    .get_admin_endpoint(&bundle.report_to),
+            )
             .destination(&bundle.report_to)
             .add_payload_block(new_bundle_status_report(
                 metadata, bundle, reason, None, None, None,
@@ -563,7 +572,12 @@ impl Dispatcher {
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
             .is_admin_record(true)
-            .source(&self.config.node_id.get_admin_endpoint(&bundle.report_to))
+            .source(
+                &self
+                    .config
+                    .admin_endpoints
+                    .get_admin_endpoint(&bundle.report_to),
+            )
             .destination(&bundle.report_to)
             .add_payload_block(new_bundle_status_report(
                 metadata,
@@ -602,7 +616,7 @@ impl Dispatcher {
             if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
                 b = b.do_not_fragment(true)
             }
-            b = b.report_to(&self.config.node_id.get_admin_endpoint(&destination));
+            b = b.report_to(&self.config.admin_endpoints.get_admin_endpoint(&destination));
         }
 
         // Lifetime

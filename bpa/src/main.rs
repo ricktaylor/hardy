@@ -33,15 +33,15 @@ async fn main() {
     info!("Version {} starting...", built_info::PKG_VERSION);
     info!("{config_source}");
 
-    // Get administrative_endpoint
-    let administrative_endpoint = bundle::NodeId::init(&config);
+    // Get administrative endpoints
+    let administrative_endpoints = bundle::AdminEndpoints::init(&config);
 
     // New store
     let store = store::Store::new(&config, upgrade);
 
     // New registries
     let cla_registry = cla_registry::ClaRegistry::new(&config);
-    let app_registry = app_registry::AppRegistry::new(&config, administrative_endpoint.clone());
+    let app_registry = app_registry::AppRegistry::new(&config, administrative_endpoints.clone());
 
     // New FIB
     let fib = fib::Fib::new(&config);
@@ -52,7 +52,7 @@ async fn main() {
     // Create a new dispatcher
     let dispatcher = dispatcher::Dispatcher::new(
         &config,
-        administrative_endpoint,
+        administrative_endpoints,
         store.clone(),
         cla_registry.clone(),
         app_registry.clone(),

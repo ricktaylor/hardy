@@ -49,15 +49,15 @@ impl std::fmt::Display for DtnNodeId {
 }
 
 #[derive(Clone)]
-pub struct NodeId {
+pub struct AdminEndpoints {
     pub ipn: Option<IpnNodeId>,
     pub dtn: Option<DtnNodeId>,
 }
 
-impl NodeId {
+impl AdminEndpoints {
     pub fn init(config: &config::Config) -> Self {
         // Load NodeId from config
-        let node_id = init_from_value(
+        let admin_endpoints = init_from_value(
             config
                 .get::<config::Value>("administrative_endpoint")
                 .trace_expect(
@@ -66,7 +66,7 @@ impl NodeId {
         )
         .trace_expect("Invalid 'administrative_endpoint' value in configuration");
 
-        match (&node_id.ipn, &node_id.dtn) {
+        match (&admin_endpoints.ipn, &admin_endpoints.dtn) {
             (None, None) => unreachable!(),
             (None, Some(node_id)) => info!("Administrative Endpoint: {node_id}"),
             (Some(node_id), None) => info!("Administrative Endpoint: {node_id}"),
@@ -74,7 +74,7 @@ impl NodeId {
                 info!("Administrative endpoints: [{node_id1}, {node_id2}]")
             }
         }
-        node_id
+        admin_endpoints
     }
 
     pub fn get_admin_endpoint(&self, destination: &Eid) -> Eid {
@@ -201,7 +201,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
-fn init_from_value(v: config::Value) -> Result<NodeId, Error> {
+fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
     match v.kind {
         config::ValueKind::String(s) => init_from_string(s),
         config::ValueKind::Table(t) => init_from_table(t),
@@ -210,7 +210,7 @@ fn init_from_value(v: config::Value) -> Result<NodeId, Error> {
     }
 }
 
-fn init_from_dtn(s: &str) -> Result<NodeId, Error> {
+fn init_from_dtn(s: &str) -> Result<AdminEndpoints, Error> {
     if !s.is_ascii() {
         Err(Error::DtnNotASCII)
     } else if let Some((s1, s2)) = s.split_once('/') {
@@ -219,7 +219,7 @@ fn init_from_dtn(s: &str) -> Result<NodeId, Error> {
         } else if !s2.is_empty() {
             Err(Error::DtnHasDemux)
         } else {
-            Ok(NodeId {
+            Ok(AdminEndpoints {
                 dtn: Some(DtnNodeId {
                     node_name: s1.to_string(),
                 }),
@@ -227,7 +227,7 @@ fn init_from_dtn(s: &str) -> Result<NodeId, Error> {
             })
         }
     } else {
-        Ok(NodeId {
+        Ok(AdminEndpoints {
             dtn: Some(DtnNodeId {
                 node_name: s.to_string(),
             }),
@@ -236,14 +236,14 @@ fn init_from_dtn(s: &str) -> Result<NodeId, Error> {
     }
 }
 
-fn init_from_ipn(s: &str) -> Result<NodeId, Error> {
+fn init_from_ipn(s: &str) -> Result<AdminEndpoints, Error> {
     let parts = s.split('.').collect::<Vec<&str>>();
     if parts.len() == 1 {
         let node_number = parts[0].parse::<u32>().map_field_err("Node Number")?;
         if node_number == 0 {
             Err(Error::NotNone)
         } else {
-            Ok(NodeId {
+            Ok(AdminEndpoints {
                 ipn: Some(IpnNodeId {
                     allocator_id: 0,
                     node_number,
@@ -259,7 +259,7 @@ fn init_from_ipn(s: &str) -> Result<NodeId, Error> {
         } else if node_number == 0 {
             Err(Error::NotNone)
         } else {
-            Ok(NodeId {
+            Ok(AdminEndpoints {
                 ipn: Some(IpnNodeId {
                     allocator_id: 0,
                     node_number,
@@ -278,7 +278,7 @@ fn init_from_ipn(s: &str) -> Result<NodeId, Error> {
         } else if allocator_id == 0 && node_number == 0 {
             Err(Error::NotNone)
         } else {
-            Ok(NodeId {
+            Ok(AdminEndpoints {
                 ipn: Some(IpnNodeId {
                     allocator_id,
                     node_number,
@@ -291,7 +291,7 @@ fn init_from_ipn(s: &str) -> Result<NodeId, Error> {
     }
 }
 
-fn init_from_string(s: String) -> Result<NodeId, Error> {
+fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
     if let Some(s) = s.strip_prefix("dtn://") {
         init_from_dtn(s)
     } else if let Some(s) = s.strip_prefix("ipn:") {
@@ -305,8 +305,8 @@ fn init_from_string(s: String) -> Result<NodeId, Error> {
     }
 }
 
-fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
-    let mut node_id = NodeId {
+fn init_from_table(t: HashMap<String, config::Value>) -> Result<AdminEndpoints, Error> {
+    let mut admin_endpoints = AdminEndpoints {
         ipn: None,
         dtn: None,
     };
@@ -321,28 +321,28 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
                 }
             }
             "ipn" => match v.kind {
-                config::ValueKind::I64(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
+                config::ValueKind::I64(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::U64(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
+                config::ValueKind::U64(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::I128(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
+                config::ValueKind::I128(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::U128(v) if v < (2 ^ 32) - 1 => Ok(NodeId {
+                config::ValueKind::U128(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
@@ -357,8 +357,8 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
             _ => return Err(Error::UnsupportedScheme(k)),
         }?;
 
-        match (&node_id.dtn, n.dtn) {
-            (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
+        match (&admin_endpoints.dtn, n.dtn) {
+            (None, Some(dtn_node_id)) => admin_endpoints.dtn = Some(dtn_node_id),
             (Some(dtn_node_id1), Some(dtn_node_id2)) => {
                 if *dtn_node_id1 == dtn_node_id2 {
                     info!("Duplicate \"administrative_endpoint\" in configuration: {dtn_node_id1}")
@@ -368,8 +368,8 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
             }
             _ => {}
         }
-        match (&node_id.ipn, n.ipn) {
-            (None, Some(ipn_node_id)) => node_id.ipn = Some(ipn_node_id),
+        match (&admin_endpoints.ipn, n.ipn) {
+            (None, Some(ipn_node_id)) => admin_endpoints.ipn = Some(ipn_node_id),
             (Some(ipn_node_id1), Some(ipn_node_id2)) => {
                 if *ipn_node_id1 == ipn_node_id2 {
                     info!("Duplicate \"administrative_endpoint\" in configuration: {ipn_node_id1}")
@@ -382,22 +382,22 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
     }
 
     // Check we have at least one endpoint!
-    if node_id.ipn.is_none() && node_id.dtn.is_none() {
+    if admin_endpoints.ipn.is_none() && admin_endpoints.dtn.is_none() {
         Err(Error::NoEndpoints)
     } else {
-        Ok(node_id)
+        Ok(admin_endpoints)
     }
 }
 
-fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, Error> {
-    let mut node_id = NodeId {
+fn init_from_array(t: Vec<config::Value>) -> Result<AdminEndpoints, Error> {
+    let mut admin_endpoints = AdminEndpoints {
         ipn: None,
         dtn: None,
     };
     for v in t {
         let n = init_from_value(v)?;
-        match (&node_id.dtn, n.dtn) {
-            (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
+        match (&admin_endpoints.dtn, n.dtn) {
+            (None, Some(dtn_node_id)) => admin_endpoints.dtn = Some(dtn_node_id),
             (Some(dtn_node_id1), Some(dtn_node_id2)) => {
                 if *dtn_node_id1 == dtn_node_id2 {
                     info!("Duplicate \"administrative_endpoint\" in configuration: {dtn_node_id1}")
@@ -407,8 +407,8 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, Error> {
             }
             _ => {}
         }
-        match (&node_id.ipn, n.ipn) {
-            (None, Some(ipn_node_id)) => node_id.ipn = Some(ipn_node_id),
+        match (&admin_endpoints.ipn, n.ipn) {
+            (None, Some(ipn_node_id)) => admin_endpoints.ipn = Some(ipn_node_id),
             (Some(ipn_node_id1), Some(ipn_node_id2)) => {
                 if *ipn_node_id1 == ipn_node_id2 {
                     info!("Duplicate \"administrative_endpoint\" in configuration: {ipn_node_id1}")
@@ -421,10 +421,10 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, Error> {
     }
 
     // Check we have at least one endpoint!
-    if node_id.ipn.is_none() && node_id.dtn.is_none() {
+    if admin_endpoints.ipn.is_none() && admin_endpoints.dtn.is_none() {
         Err(Error::NoEndpoints)
     } else {
-        Ok(node_id)
+        Ok(admin_endpoints)
     }
 }
 
@@ -444,9 +444,9 @@ mod tests {
 
     #[test]
     fn test() {
-        let n = init_from_value(fake_config("ipn:1")).unwrap();
-        assert!(n.dtn.is_none());
-        assert!(n.ipn.map_or(false, |node_id| match node_id {
+        let a = init_from_value(fake_config("ipn:1")).unwrap();
+        assert!(a.dtn.is_none());
+        assert!(a.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
@@ -454,9 +454,9 @@ mod tests {
             _ => false,
         }));
 
-        let n = init_from_value(fake_config("ipn:1.0")).unwrap();
-        assert!(n.dtn.is_none());
-        assert!(n.ipn.map_or(false, |node_id| match node_id {
+        let a = init_from_value(fake_config("ipn:1.0")).unwrap();
+        assert!(a.dtn.is_none());
+        assert!(a.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
@@ -464,9 +464,9 @@ mod tests {
             _ => false,
         }));
 
-        let n = init_from_value(fake_config("ipn:2.1.0")).unwrap();
-        assert!(n.dtn.is_none());
-        assert!(n.ipn.map_or(false, |node_id| match node_id {
+        let a = init_from_value(fake_config("ipn:2.1.0")).unwrap();
+        assert!(a.dtn.is_none());
+        assert!(a.ipn.map_or(false, |node_id| match node_id {
             IpnNodeId {
                 allocator_id: 2,
                 node_number: 1,
@@ -474,15 +474,15 @@ mod tests {
             _ => false,
         }));
 
-        let n = init_from_value(fake_config("dtn://node-name")).unwrap();
-        assert!(n.ipn.is_none());
-        assert!(n
+        let a = init_from_value(fake_config("dtn://node-name")).unwrap();
+        assert!(a.ipn.is_none());
+        assert!(a
             .dtn
             .map_or(false, |node_id| node_id.node_name == "node-name"));
 
-        let n = init_from_value(fake_config("dtn://node-name/")).unwrap();
-        assert!(n.ipn.is_none());
-        assert!(n
+        let a = init_from_value(fake_config("dtn://node-name/")).unwrap();
+        assert!(a.ipn.is_none());
+        assert!(a
             .dtn
             .map_or(false, |node_id| node_id.node_name == "node-name"));
 
