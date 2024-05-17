@@ -47,7 +47,7 @@ impl ClaRegistry {
             cla_client::ClaClient::connect(request.grpc_address.clone())
                 .await
                 .map_err(|e| {
-                    log::warn!(
+                    warn!(
                         "Failed to connect to CLA client at {}",
                         request.grpc_address
                     );

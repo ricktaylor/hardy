@@ -32,7 +32,7 @@ pub fn parse_crc_value(
     let crc_value = block.try_parse_value(|value, crc_start, tags| match value {
         cbor::decode::Value::Bytes(crc, _) => {
             if !tags.is_empty() {
-                log::trace!("Parsing bundle block CRC value with tags");
+                trace!("Parsing bundle block CRC value with tags");
             }
             match crc_type {
                 CrcType::None => Err(Error::UnexpectedCrcValue),

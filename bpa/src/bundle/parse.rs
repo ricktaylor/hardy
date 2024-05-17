@@ -65,7 +65,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
 pub fn parse(data: &[u8]) -> Result<(Bundle, bool), Error> {
     let ((bundle, valid), len) = cbor::decode::parse_array(data, |blocks, tags| {
         if !tags.is_empty() {
-            log::trace!("Parsing bundle with tags");
+            trace!("Parsing bundle with tags");
         }
         parse_blocks(data, blocks)
     })?;
@@ -80,7 +80,7 @@ fn parse_blocks(data: &[u8], blocks: &mut cbor::decode::Array) -> Result<(Bundle
     let (mut bundle, valid, block_start, block_len) = blocks
         .parse_array(|a, block_start, tags| {
             if !tags.is_empty() {
-                log::trace!("Parsing primary block with tags");
+                trace!("Parsing primary block with tags");
             }
             parse_primary_block(data, a, block_start)
                 .map(|(bundle, valid)| (bundle, valid, block_start))
@@ -126,7 +126,7 @@ fn parse_primary_block(
 ) -> Result<(Bundle, bool), Error> {
     // Check number of items in the array
     if block.count().is_none() {
-        log::trace!("Parsing primary block of indefinite length")
+        trace!("Parsing primary block of indefinite length")
     }
 
     // Check version
@@ -240,7 +240,7 @@ fn parse_extension_blocks(
         if let Some(((block_number, block), _)) =
             blocks.try_parse_array(|a, block_start, tags| {
                 if !tags.is_empty() {
-                    log::trace!("Parsing extension block with tags");
+                    trace!("Parsing extension block with tags");
                 }
                 parse_block(data, a, block_start)
             })?
@@ -280,7 +280,7 @@ fn parse_block(
 ) -> Result<(u64, Block), Error> {
     // Check number of items in the array
     if block.count().is_none() {
-        log::trace!("Parsing extension block of indefinite length")
+        trace!("Parsing extension block of indefinite length")
     }
 
     let block_type = block
@@ -302,10 +302,10 @@ fn parse_block(
         block.parse_value(|value, data_start, tags| match value {
             cbor::decode::Value::Bytes(v, chunked) => {
                 if chunked {
-                    log::trace!("Parsing chunked extension block data");
+                    trace!("Parsing chunked extension block data");
                 }
                 if !tags.is_empty() {
-                    log::trace!("Parsing extension block data with tags");
+                    trace!("Parsing extension block data with tags");
                 }
                 Ok((data_start, v.len()))
             }
@@ -394,7 +394,7 @@ fn check_previous_node(block: &Block, data: &[u8]) -> Result<Eid, Error> {
         .map_field_err("Previous Node ID")
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
-                log::trace!("Parsing Previous Node extension block with tags");
+                trace!("Parsing Previous Node extension block with tags");
             }
             if end != block.data_len {
                 Err(Error::BlockAdditionalData(BlockType::PreviousNode))
@@ -409,7 +409,7 @@ fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, Error> {
         .map_field_err("Bundle Age")
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
-                log::trace!("Parsing Bundle Age extension block with tags");
+                trace!("Parsing Bundle Age extension block with tags");
             }
             if end != block.data_len {
                 Err(Error::BlockAdditionalData(BlockType::BundleAge))
@@ -422,10 +422,10 @@ fn check_bundle_age(block: &Block, data: &[u8]) -> Result<u64, Error> {
 fn check_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, Error> {
     cbor::decode::parse_array(data, |a, tags| {
         if !tags.is_empty() {
-            log::trace!("Parsing Hop Count with tags");
+            trace!("Parsing Hop Count with tags");
         }
         if a.count().is_none() {
-            log::trace!("Parsing Hop Count as indefinite length array");
+            trace!("Parsing Hop Count as indefinite length array");
         }
 
         let hop_info = HopInfo {

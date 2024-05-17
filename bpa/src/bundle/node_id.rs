@@ -68,10 +68,10 @@ impl NodeId {
 
         match (&node_id.ipn, &node_id.dtn) {
             (None, None) => unreachable!(),
-            (None, Some(node_id)) => log::info!("Administrative Endpoint: {node_id}"),
-            (Some(node_id), None) => log::info!("Administrative Endpoint: {node_id}"),
+            (None, Some(node_id)) => info!("Administrative Endpoint: {node_id}"),
+            (Some(node_id), None) => info!("Administrative Endpoint: {node_id}"),
             (Some(node_id1), Some(node_id2)) => {
-                log::info!("Administrative endpoints: [{node_id1}, {node_id2}]")
+                info!("Administrative endpoints: [{node_id1}, {node_id2}]")
             }
         }
         node_id
@@ -361,7 +361,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
             (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
             (Some(dtn_node_id1), Some(dtn_node_id2)) => {
                 if *dtn_node_id1 == dtn_node_id2 {
-                    log::info!(
+                    info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
                         dtn_node_id1
                     )
@@ -375,7 +375,7 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<NodeId, Error> {
             (None, Some(ipn_node_id)) => node_id.ipn = Some(ipn_node_id),
             (Some(ipn_node_id1), Some(ipn_node_id2)) => {
                 if *ipn_node_id1 == ipn_node_id2 {
-                    log::info!(
+                    info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
                         ipn_node_id1
                     )
@@ -406,7 +406,7 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, Error> {
             (None, Some(dtn_node_id)) => node_id.dtn = Some(dtn_node_id),
             (Some(dtn_node_id1), Some(dtn_node_id2)) => {
                 if *dtn_node_id1 == dtn_node_id2 {
-                    log::info!(
+                    info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
                         dtn_node_id1
                     )
@@ -420,7 +420,7 @@ fn init_from_array(t: Vec<config::Value>) -> Result<NodeId, Error> {
             (None, Some(ipn_node_id)) => node_id.ipn = Some(ipn_node_id),
             (Some(ipn_node_id1), Some(ipn_node_id2)) => {
                 if *ipn_node_id1 == ipn_node_id2 {
-                    log::info!(
+                    info!(
                         "Duplicate \"administrative_endpoint\" in configuration: {}",
                         ipn_node_id1
                     )

@@ -1,5 +1,5 @@
 use hardy_cbor as cbor;
-use log::*;
+use tracing::*;
 
 mod block_flags;
 mod block_type;

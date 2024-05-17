@@ -24,11 +24,11 @@ impl Config {
         };
 
         if !config.status_reports {
-            log::info!("Bundle status reports are disabled by configuration");
+            info!("Bundle status reports are disabled by configuration");
         }
 
         if config.max_forwarding_delay == 0 {
-            log::info!("Forwarding synchronization delay disabled by configuration");
+            info!("Forwarding synchronization delay disabled by configuration");
         }
 
         config
@@ -141,18 +141,14 @@ impl Dispatcher {
                     let interval = tokio::time::Instant::now() + tokio::time::Duration::from_secs(WAIT_SAMPLE_INTERVAL_SECS);
 
                     // Get all bundles that are ready before now() + WAIT_SAMPLE_INTERVAL_SECS
-                    match self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0)).await {
-                        Ok(waiting) => {
-                            for (metadata,bundle,until) in waiting {
-                                // Spawn a task for each ready bundle
-                                let dispatcher = self.clone();
-                                let cancel_token_cloned = cancel_token.clone();
-                                task_set.spawn(async move {
-                                    dispatcher.delay_bundle(metadata,bundle, until,cancel_token_cloned).await.trace_expect("Failed to process bundle");
-                                });
-                            }
-                        }
-                        Err(e) => log::error!("get_waiting_bundles failed: {}",e),
+                    let waiting = self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0)).await.trace_expect("get_waiting_bundles failed");
+                    for (metadata,bundle,until) in waiting {
+                        // Spawn a task for each ready bundle
+                        let dispatcher = self.clone();
+                        let cancel_token_cloned = cancel_token.clone();
+                        task_set.spawn(async move {
+                            dispatcher.delay_bundle(metadata,bundle, until,cancel_token_cloned).await.trace_expect("Failed to process bundle");
+                        });
                     }
 
                     timer.as_mut().reset(interval);
@@ -179,11 +175,11 @@ impl Dispatcher {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, it will be picked up later
-            log::trace!("Bundle will wait offline until: {}", until);
+            trace!("Bundle will wait offline until: {}", until);
             return Ok(());
         }
 
-        log::trace!("Waiting to forward bundle inline until: {}", until);
+        trace!("Waiting to forward bundle inline until: {}", until);
 
         // Wait a bit
         if !cancellable_sleep(wait, &cancel_token).await {
@@ -191,7 +187,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        log::trace!("Forwarding bundle");
+        trace!("Forwarding bundle");
 
         // Set status to ForwardPending
         metadata.status = bundle::BundleStatus::ForwardPending;
@@ -215,16 +211,16 @@ impl Dispatcher {
             metadata.status = if self.config.node_id.is_local_service(&bundle.destination) {
                 if bundle.id.fragment_info.is_some() {
                     // Reassembly!!
-                    log::trace!("Bundle requires fragment reassembly");
+                    trace!("Bundle requires fragment reassembly");
                     bundle::BundleStatus::ReassemblyPending
                 } else {
                     // The bundle is ready for collection
-                    log::trace!("Bundle is ready for local delivery");
+                    trace!("Bundle is ready for local delivery");
                     bundle::BundleStatus::CollectionPending
                 }
             } else {
                 // Forward to another BPA
-                log::trace!("Forwarding bundle");
+                trace!("Forwarding bundle");
                 bundle::BundleStatus::ForwardPending
             };
 
@@ -252,7 +248,7 @@ impl Dispatcher {
                 // Check if we have a local service registered
                 if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.destination) {
                     // Notify that the bundle is ready for collection
-                    log::trace!("Notifying application that bundle is ready for collection");
+                    trace!("Notifying application that bundle is ready for collection");
                     endpoint.collection_notify(&bundle.id).await;
                 }
                 Ok(())
@@ -277,7 +273,7 @@ impl Dispatcher {
     ) -> Result<(), Error> {
         // Check bundle expiry
         if bundle::has_bundle_expired(&metadata, &bundle) {
-            log::trace!("Bundle lifetime has expired");
+            trace!("Bundle lifetime has expired");
             return self
                 .drop_bundle(
                     metadata,
@@ -291,7 +287,7 @@ impl Dispatcher {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
              * Therefore, we respond with a Destination endpoint ID unavailable report */
-            log::trace!("Bundle should be forwarded, but forwarding is disabled");
+            trace!("Bundle should be forwarded, but forwarding is disabled");
             return self
                 .drop_bundle(
                     metadata,
@@ -304,7 +300,7 @@ impl Dispatcher {
         // Resolve destination
         let Ok(mut destination) = bundle.destination.clone().try_into() else {
             // Bundle destination is not a valid next-hop
-            log::trace!(
+            trace!(
                 "Bundle has invalid destination for forwarding: {}",
                 bundle.destination
             );
@@ -330,13 +326,13 @@ impl Dispatcher {
             // Lookup/Perform actions
             match actions.next() {
                 Some(fib::ForwardAction::Drop(reason)) => {
-                    log::trace!("Bundle is black-holed");
+                    trace!("Bundle is black-holed");
                     break reason;
                 }
                 Some(fib::ForwardAction::Wait(until)) => {
                     // Check to see if waiting is even worth it
                     if until > bundle::get_bundle_expiry(&metadata, &bundle) {
-                        log::trace!("Bundle lifetime is shorter than wait period");
+                        trace!("Bundle lifetime is shorter than wait period");
                         break Some(
                             bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
                         );
@@ -367,7 +363,7 @@ impl Dispatcher {
                                 }
                                 Err(e) => {
                                     // The bundle data has gone!
-                                    log::warn!("Failed to load bundle data: {}", e);
+                                    warn!("Failed to load bundle data: {}", e);
                                     return self
                                         .drop_bundle(
                                             metadata,
@@ -382,34 +378,33 @@ impl Dispatcher {
                         match endpoint
                             .forward_bundle(a.address.clone(), data.clone().unwrap())
                             .await
-                            .inspect_err(|e| log::trace!("CLA failed to forward {}", e))
                         {
                             Ok(None) => {
                                 // We have successfully forwarded!
                                 return Ok(());
                             }
                             Ok(Some(until)) => {
-                                log::trace!("CLA reported congestion, retry at: {}", until);
+                                trace!("CLA reported congestion, retry at: {}", until);
 
                                 // Remember the shortest wait for a retry, in case we have ECMP
                                 congestion_wait = congestion_wait
                                     .map_or(Some(until), |w| Some(std::cmp::min(w, until)))
                             }
-                            _ => {}
+                            Err(e) => trace!("CLA failed to forward {}", e),
                         }
                     } else {
-                        log::trace!("FIB has entry for unknown endpoint: {}", a.name);
+                        trace!("FIB has entry for unknown endpoint: {}", a.name);
                     }
                     // Try the next CLA, this one is busy, broken or missing
                 }
                 None => {
                     // Check for congestion
                     if let Some(until) = congestion_wait {
-                        log::trace!("All available CLAs report congestion");
+                        trace!("All available CLAs report congestion");
 
                         // Check to see if waiting is even worth it
                         if until > bundle::get_bundle_expiry(&metadata, &bundle) {
-                            log::trace!("Bundle lifetime is shorter than wait period");
+                            trace!("Bundle lifetime is shorter than wait period");
                             break Some(
                                 bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
                             );
@@ -430,13 +425,13 @@ impl Dispatcher {
                     } else if retries > self.config.max_forwarding_delay {
                         if previous {
                             // We have delayed long enough trying to find a route to previous_node
-                            log::trace!("Timed out trying to forward bundle to previous node");
+                            trace!("Timed out trying to forward bundle to previous node");
                             break Some(
                                 bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
                             );
                         }
 
-                        log::trace!("Timed out trying to forward bundle");
+                        trace!("Timed out trying to forward bundle");
 
                         // Return the bundle to the source via the 'previous_node' or 'bundle.source'
                         if let Ok(previous_node) = bundle
@@ -449,20 +444,20 @@ impl Dispatcher {
                             destination = previous_node;
                         } else {
                             // Previous node is not a valid next-hop
-                            log::trace!("Bundle has no valid previous node to return to");
+                            trace!("Bundle has no valid previous node to return to");
                             break Some(
                                 bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
                             );
                         }
 
                         // Reset retry counter as we are attempting to return the bundle
-                        log::trace!("Returning bundle to previous node: {}", destination);
+                        trace!("Returning bundle to previous node: {}", destination);
                         previous = true;
                         retries = 0;
                     } else {
                         retries = retries.saturating_add(1);
 
-                        log::trace!(
+                        trace!(
                             "Retrying ({}) FIB lookup to allow FIB and CLAs to resync",
                             retries
                         );
@@ -476,7 +471,7 @@ impl Dispatcher {
 
                     // Check bundle expiry
                     if bundle::has_bundle_expired(&metadata, &bundle) {
-                        log::trace!("Bundle lifetime has expired");
+                        trace!("Bundle lifetime has expired");
                         break Some(bundle::StatusReportReasonCode::LifetimeExpired);
                     }
 
@@ -498,7 +493,7 @@ impl Dispatcher {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
-            log::trace!("Bundle will wait offline until: {}", until);
+            trace!("Bundle will wait offline until: {}", until);
             self.store
                 .set_status(&metadata.storage_name, bundle::BundleStatus::Waiting(until))
                 .await?;
@@ -506,7 +501,7 @@ impl Dispatcher {
         }
 
         // We must wait here, as we have missed the scheduled wait interval
-        log::trace!("Waiting to forward bundle inline until: {}", until);
+        trace!("Waiting to forward bundle inline until: {}", until);
         Ok(cancellable_sleep(wait, cancel_token).await)
     }
 
@@ -521,7 +516,7 @@ impl Dispatcher {
             self.report_bundle_deletion(&metadata, &bundle, reason)
                 .await?;
         }
-        log::trace!("Discarding bundle, leaving tombstone");
+        trace!("Discarding bundle, leaving tombstone");
         self.store.remove(&metadata.storage_name).await
     }
 
@@ -537,7 +532,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        log::trace!("Reporting bundle reception to {}", &bundle.report_to);
+        trace!("Reporting bundle reception to {}", &bundle.report_to);
 
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
@@ -566,7 +561,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        log::trace!("Reporting bundle deletion to {}", &bundle.report_to);
+        trace!("Reporting bundle deletion to {}", &bundle.report_to);
 
         // Create a bundle report
         let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)

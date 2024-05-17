@@ -25,7 +25,7 @@ fn config_dir() -> Option<PathBuf> {
             } else if cfg!(unix) {
                 Some(Path::new("/etc").join(built_info::PKG_NAME))
             } else {
-                log::warn!("Failed to determine default configuration directory");
+                warn!("Failed to determine default configuration directory");
                 None
             }
         },

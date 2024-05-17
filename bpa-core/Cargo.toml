@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 [dependencies]
 hardy-cbor = { path = "../cbor" }
 thiserror = "1.0.58"
-log = "0.4.21"
+tracing = "0.1.40"
 config = { version = "0.14.0" }
 time = "0.3.34"
 async-trait = "0.1.79"

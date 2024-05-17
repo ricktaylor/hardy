@@ -51,7 +51,7 @@ impl AppRegistry {
                 .await
                 .map(|endpoint| Some(Arc::new(tokio::sync::Mutex::new(endpoint))))
                 .map_err(|err| {
-                    log::warn!(
+                    warn!(
                         "Failed to connect to application client at {}",
                         grpc_address
                     );
@@ -206,7 +206,7 @@ impl Endpoint {
                     bundle_id: bundle_id.to_key(),
                 }))
                 .await
-                .inspect_err(|s| log::info!("collection_notify failed: {}", s));
+                .inspect_err(|s| info!("collection_notify failed: {}", s));
         }
     }
 }

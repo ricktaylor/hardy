@@ -19,7 +19,7 @@ mod built_info {
 
 // This is the effective prelude
 use trace_err::*;
-use tracing::instrument;
+use tracing::{error, info, instrument, trace, warn};
 
 #[tokio::main]
 async fn main() {
@@ -30,8 +30,8 @@ async fn main() {
 
     // Init logger
     utils::logger::init(&config);
-    log::info!("Version {} starting...", built_info::PKG_VERSION);
-    log::info!("{}", config_source);
+    info!("Version {} starting...", built_info::PKG_VERSION);
+    info!("{}", config_source);
 
     // Get administrative_endpoint
     let administrative_endpoint = bundle::NodeId::init(&config);
@@ -89,11 +89,11 @@ async fn main() {
 
     // Wait for all tasks to finish
     if !cancel_token.is_cancelled() {
-        log::info!("Started successfully");
+        info!("Started successfully");
     }
     while let Some(r) = task_set.join_next().await {
         r.trace_expect("Task terminated unexpectedly")
     }
 
-    log::info!("Stopped");
+    info!("Stopped");
 }
