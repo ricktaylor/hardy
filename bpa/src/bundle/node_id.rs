@@ -444,6 +444,16 @@ mod tests {
 
     #[test]
     fn test() {
+        let n = init_from_value(fake_config("ipn:1")).unwrap();
+        assert!(n.dtn.is_none());
+        assert!(n.ipn.map_or(false, |node_id| match node_id {
+            IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            } => true,
+            _ => false,
+        }));
+
         let n = init_from_value(fake_config("ipn:1.0")).unwrap();
         assert!(n.dtn.is_none());
         assert!(n.ipn.map_or(false, |node_id| match node_id {
@@ -464,14 +474,19 @@ mod tests {
             _ => false,
         }));
 
+        let n = init_from_value(fake_config("dtn://node-name")).unwrap();
+        assert!(n.ipn.is_none());
+        assert!(n
+            .dtn
+            .map_or(false, |node_id| node_id.node_name == "node-name"));
+
         let n = init_from_value(fake_config("dtn://node-name/")).unwrap();
         assert!(n.ipn.is_none());
         assert!(n
             .dtn
             .map_or(false, |node_id| node_id.node_name == "node-name"));
 
-        /*#administrative_endpoint = { "ipn": N, "dtn": "node-name" }
-        #administrative_endpoint = { "ipn": "[A.]N", "dtn": "node-name" }
+        /*#administrative_endpoint = { "ipn": N[.0], "dtn": "node-name" }
         #administrative_endpoint = [ "ipn:[A.]N.0", "dtn://node-name/"]*/
     }
 }
