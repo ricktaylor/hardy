@@ -435,7 +435,7 @@ impl Ingress {
         token: &str,
         bundle_id: &str,
     ) -> Result<(), tonic::Status> {
-        let Some((metadata, _)) = self
+        let Some((metadata, bundle)) = self
             .store
             .load(
                 &bundle::BundleId::from_key(bundle_id)
@@ -448,11 +448,21 @@ impl Ingress {
         };
 
         match &metadata.status {
-            bundle::BundleStatus::ForwardAckPending(t, _) if t == token => self
-                .store
-                .remove(&metadata.storage_name)
-                .await
-                .map_err(tonic::Status::from_error),
+            bundle::BundleStatus::ForwardAckPending(t, until)
+                if t == token && until <= time::OffsetDateTime::now_utc() =>
+            {
+                // Report bundle forwarded
+                self.dispatcher
+                    .report_bundle_forwarded(&metadata, &bundle)
+                    .await
+                    .map_err(tonic::Status::from_error)?;
+
+                // And tombstone the bundle
+                self.store
+                    .remove(&metadata.storage_name)
+                    .await
+                    .map_err(tonic::Status::from_error)
+            }
             _ => Err(tonic::Status::not_found("No such bundle")),
         }
     }
