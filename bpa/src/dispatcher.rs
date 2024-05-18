@@ -392,13 +392,7 @@ impl Dispatcher {
                                 Err(e) => {
                                     // The bundle data has gone!
                                     warn!("Failed to load bundle data: {e}");
-                                    return self
-                                        .drop_bundle(
-                                            metadata,
-                                            bundle,
-                                            Some(bundle::StatusReportReasonCode::DepletedStorage),
-                                        )
-                                        .await;
+                                    break Some(bundle::StatusReportReasonCode::DepletedStorage);
                                 }
                             };
                         }
