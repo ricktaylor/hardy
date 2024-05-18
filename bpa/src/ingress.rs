@@ -448,9 +448,7 @@ impl Ingress {
         };
 
         match &metadata.status {
-            bundle::BundleStatus::ForwardAckPending(t, until)
-                if t == token && until <= time::OffsetDateTime::now_utc() =>
-            {
+            bundle::BundleStatus::ForwardAckPending(t, _) if t == token => {
                 // Report bundle forwarded
                 self.dispatcher
                     .report_bundle_forwarded(&metadata, &bundle)

@@ -260,7 +260,7 @@ fn find_recurse<'a>(
         .into_iter()
         .filter_map(|a| match a {
             ForwardAction::Wait(until) => {
-                wait = wait.map_or(Some(until), |w| Some(std::cmp::min(until, w)));
+                wait = wait.map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)));
                 None
             }
             a => Some(a),

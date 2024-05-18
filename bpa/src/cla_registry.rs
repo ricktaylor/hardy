@@ -154,11 +154,14 @@ impl Endpoint {
             .into_inner();
 
         let delay = if let Some(t) = r.delay {
-            Some(
-                time::OffsetDateTime::from_unix_timestamp(t.seconds)
-                    .map_err(<time::error::ComponentRange as Into<Error>>::into)?
-                    + time::Duration::nanoseconds(t.nanos.into()),
-            )
+            let delay = time::OffsetDateTime::from_unix_timestamp(t.seconds)
+                .map_err(<time::error::ComponentRange as Into<Error>>::into)?
+                + time::Duration::nanoseconds(t.nanos.into());
+            if delay <= time::OffsetDateTime::now_utc() {
+                None
+            } else {
+                Some(delay)
+            }
         } else {
             None
         };

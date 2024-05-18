@@ -414,10 +414,11 @@ impl Dispatcher {
                             }
                             Ok((Some(token), until)) => {
                                 // CLA will report successful forwarding
+                                // Don't wait longer than expiry
                                 let until = until.unwrap_or_else(|| {
                                     warn!("CLA endpoint has not provided a suitable AckPending delay, defaulting to 1 minute");
                                     time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
-                                });
+                                }).min(bundle::get_bundle_expiry(&metadata, &bundle));
 
                                 // Set the bundle status to 'Forward Acknowledgement Pending'
                                 metadata.status =
@@ -436,7 +437,9 @@ impl Dispatcher {
 
                                 // Remember the shortest wait for a retry, in case we have ECMP
                                 congestion_wait = congestion_wait
-                                    .map_or(Some(until), |w| Some(std::cmp::min(w, until)))
+                                    .map_or(Some(until), |w: time::OffsetDateTime| {
+                                        Some(w.min(until))
+                                    })
                             }
                             Err(e) => trace!("CLA failed to forward {e}"),
                         }
