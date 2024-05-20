@@ -420,11 +420,20 @@ impl Ingress {
 
         // Rewrite bundle if needed
         if !blocks_to_remove.is_empty() {
-            let mut editor = bundle::Editor::new(metadata, bundle);
+            let mut editor = bundle::Editor::new(&bundle);
             for block_number in blocks_to_remove {
                 editor = editor.remove_extension_block(block_number);
             }
-            (metadata, bundle) = editor.build(&self.store).await?;
+
+            // Load up the source bundle data
+            let source_data = self.store.load_data(&metadata.storage_name).await?;
+
+            // Edit the bundle
+            let data;
+            (bundle, data) = editor.build((*source_data).as_ref())?;
+
+            // Replace in store
+            metadata = self.store.replace_data(&metadata, data).await?;
         }
         Ok((None, metadata, bundle))
     }

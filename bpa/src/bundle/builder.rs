@@ -6,7 +6,6 @@ const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
 const DEFAULT_LIFETIME: u64 = time::Duration::new(24 * 60 * 60, 0).whole_milliseconds() as u64;
 
 pub struct Builder {
-    status: BundleStatus,
     bundle_flags: BundleFlags,
     crc_type: CrcType,
     source: Eid,
@@ -17,6 +16,7 @@ pub struct Builder {
     extensions: Vec<BlockTemplate>,
 }
 
+#[derive(Clone)]
 pub struct BlockTemplate {
     pub block_type: BlockType,
     pub flags: BlockFlags,
@@ -30,9 +30,8 @@ pub struct BlockBuilder {
 }
 
 impl Builder {
-    pub fn new(status: BundleStatus) -> Self {
+    pub fn new() -> Self {
         Self {
-            status,
             bundle_flags: BundleFlags::default(),
             crc_type: DEFAULT_CRC_TYPE,
             source: Eid::default(),
@@ -60,7 +59,7 @@ impl Builder {
         self
     }
 
-    pub fn report_status_time(mut self, report_status_time: bool) -> Self {
+    /*pub fn report_status_time(mut self, report_status_time: bool) -> Self {
         self.bundle_flags.report_status_time = report_status_time;
         self
     }
@@ -88,7 +87,7 @@ impl Builder {
     pub fn crc_type(mut self, crc_type: CrcType) -> Self {
         self.crc_type = crc_type;
         self
-    }
+    }*/
 
     pub fn source(mut self, source: &Eid) -> Self {
         self.source = source.clone();
@@ -115,10 +114,12 @@ impl Builder {
     }
 
     pub fn add_payload_block(self, data: Vec<u8>) -> Self {
-        self.add_extension_block(BlockType::Payload).build(data)
+        self.add_extension_block(BlockType::Payload)
+            .data(data)
+            .build()
     }
 
-    pub async fn build(self, store: &store::Store) -> Result<(Metadata, Bundle), Error> {
+    pub fn build(self) -> Result<(Bundle, Vec<u8>), Error> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
@@ -144,13 +145,7 @@ impl Builder {
         // Update values from supported extension blocks
         parse::check_blocks(&mut bundle, &data)?;
 
-        // Store to store
-        let metadata = store
-            .store(&bundle, data, self.status, None)
-            .await?
-            .expect("Duplicate bundle created by builder!");
-
-        Ok((metadata, bundle))
+        Ok((bundle, data))
     }
 
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
@@ -228,7 +223,7 @@ impl BlockBuilder {
         }
     }
 
-    pub fn must_replicate(mut self, must_replicate: bool) -> Self {
+    /*pub fn must_replicate(mut self, must_replicate: bool) -> Self {
         self.template.flags.must_replicate = must_replicate;
         self
     }
@@ -251,12 +246,15 @@ impl BlockBuilder {
     pub fn crc_type(mut self, crc_type: CrcType) -> Self {
         self.template.crc_type = crc_type;
         self
-    }
+    }*/
 
-    pub fn build(mut self, data: Vec<u8>) -> Builder {
+    pub fn data(mut self, data: Vec<u8>) -> Self {
         // Just copy the data for now
         self.template.data = data;
+        self
+    }
 
+    pub fn build(mut self) -> Builder {
         if let BlockType::Payload = self.template.block_type {
             self.builder.payload = self.template;
         } else {

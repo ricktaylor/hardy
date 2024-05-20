@@ -2,7 +2,7 @@ use super::*;
 use base64::prelude::*;
 use thiserror::Error;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct BundleId {
     pub source: Eid,
     pub timestamp: CreationTimestamp,

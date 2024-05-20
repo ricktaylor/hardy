@@ -256,7 +256,7 @@ impl Store {
     #[instrument(skip(self, data))]
     pub async fn replace_data(
         &self,
-        metadata: bundle::Metadata,
+        metadata: &bundle::Metadata,
         data: Vec<u8>,
     ) -> Result<bundle::Metadata, Error> {
         // Calculate hash
@@ -278,8 +278,8 @@ impl Store {
             .await?;
 
         Ok(bundle::Metadata {
-            status: metadata.status,
-            storage_name: metadata.storage_name,
+            status: metadata.status.clone(),
+            storage_name: metadata.storage_name.clone(),
             hash: hash.to_vec(),
             received_at: metadata.received_at,
         })

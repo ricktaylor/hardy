@@ -12,7 +12,7 @@ fn millis_to_duration(ms: u64) -> time::Duration {
     time::Duration::saturating_seconds_f64((ms / 1_000) as f64 + ((ms % 1_0000) as f64 / 1_000f64))
 }
 
-pub fn get_bundle_expiry(metadata: &Metadata, bundle: &Bundle) -> time::OffsetDateTime {
+pub fn get_bundle_creation(metadata: &Metadata, bundle: &Bundle) -> time::OffsetDateTime {
     if bundle.id.timestamp.creation_time != 0 {
         DTN_EPOCH.saturating_add(millis_to_duration(bundle.id.timestamp.creation_time))
     } else {
@@ -21,7 +21,10 @@ pub fn get_bundle_expiry(metadata: &Metadata, bundle: &Bundle) -> time::OffsetDa
             .unwrap_or_else(time::OffsetDateTime::now_utc)
             .saturating_sub(millis_to_duration(bundle.age.unwrap_or(0)))
     }
-    .saturating_add(millis_to_duration(bundle.lifetime))
+}
+
+pub fn get_bundle_expiry(metadata: &Metadata, bundle: &Bundle) -> time::OffsetDateTime {
+    get_bundle_creation(metadata, bundle).saturating_add(millis_to_duration(bundle.lifetime))
 }
 
 pub fn has_bundle_expired(metadata: &Metadata, bundle: &Bundle) -> bool {

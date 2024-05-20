@@ -1,9 +1,8 @@
 use super::*;
 use std::collections::HashMap;
 
-pub struct Editor {
-    source_bundle: Bundle,
-    source_metadata: Metadata,
+pub struct Editor<'a> {
+    original: &'a Bundle,
     blocks: HashMap<u64, BlockTemplate>,
 }
 
@@ -12,26 +11,25 @@ enum BlockTemplate {
     Add(builder::BlockTemplate),
 }
 
-pub struct BlockBuilder {
-    editor: Editor,
+pub struct BlockBuilder<'a> {
+    editor: Editor<'a>,
     block_number: u64,
     template: builder::BlockTemplate,
 }
 
-impl Editor {
-    pub fn new(metadata: Metadata, bundle: Bundle) -> Self {
+impl<'a> Editor<'a> {
+    pub fn new(original: &'a Bundle) -> Self {
         Self {
-            source_metadata: metadata,
-            blocks: bundle
+            blocks: original
                 .blocks
                 .iter()
                 .map(|(block_number, block)| (*block_number, BlockTemplate::Keep(block.block_type)))
                 .collect(),
-            source_bundle: bundle,
+            original,
         }
     }
 
-    pub fn add_extension_block(self, block_type: BlockType) -> BlockBuilder {
+    pub fn add_extension_block(self, block_type: BlockType) -> BlockBuilder<'a> {
         // Find the lowest unused block_number
         let mut block_number = 2u64;
         loop {
@@ -42,13 +40,30 @@ impl Editor {
         }
     }
 
-    pub fn replace_extension_block(self, block_type: BlockType) -> BlockBuilder {
-        if let Some((block_number, _)) = self.blocks.iter().find(|(_, block)| match block {
-            BlockTemplate::Keep(t) => *t == block_type,
-            BlockTemplate::Add(t) => t.block_type == block_type,
-        }) {
-            let block_number = *block_number;
-            BlockBuilder::new(self, block_number, block_type)
+    pub fn replace_extension_block(self, block_type: BlockType) -> BlockBuilder<'a> {
+        if let Some((block_number, template)) = self
+            .blocks
+            .iter()
+            .find(|(_, block)| match block {
+                BlockTemplate::Keep(t) => *t == block_type,
+                BlockTemplate::Add(t) => t.block_type == block_type,
+            })
+            .and_then(|(block_number, template)| match template {
+                BlockTemplate::Keep(_) => self.original.blocks.get(block_number).map(|block| {
+                    (
+                        *block_number,
+                        builder::BlockTemplate {
+                            block_type,
+                            flags: block.flags,
+                            crc_type: block.crc_type,
+                            data: Vec::new(),
+                        },
+                    )
+                }),
+                BlockTemplate::Add(template) => Some((*block_number, template.clone())),
+            })
+        {
+            BlockBuilder::new_from_template(self, block_number, template)
         } else {
             self.add_extension_block(block_type)
         }
@@ -62,10 +77,7 @@ impl Editor {
         self
     }
 
-    pub async fn build(mut self, store: &store::Store) -> Result<(Metadata, Bundle), Error> {
-        // Load up the source bundle data
-        let source_data = store.load_data(&self.source_metadata.storage_name).await?;
-
+    pub fn build(mut self, source_data: &[u8]) -> Result<(Bundle, Vec<u8>), Error> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
         let mut blocks = HashMap::new();
@@ -103,12 +115,12 @@ impl Editor {
 
         // Compose bundle
         let mut bundle = Bundle {
-            id: self.source_bundle.id,
-            flags: self.source_bundle.flags,
-            crc_type: self.source_bundle.crc_type,
-            destination: self.source_bundle.destination,
-            report_to: self.source_bundle.report_to,
-            lifetime: self.source_bundle.lifetime,
+            id: self.original.id.clone(),
+            flags: self.original.flags,
+            crc_type: self.original.crc_type,
+            destination: self.original.destination.clone(),
+            report_to: self.original.report_to.clone(),
+            lifetime: self.original.lifetime,
             blocks,
             ..Default::default()
         };
@@ -116,10 +128,7 @@ impl Editor {
         // Update values from supported extension blocks
         parse::check_blocks(&mut bundle, &data)?;
 
-        // Replace current bundle in store
-        let metadata = store.replace_data(self.source_metadata, data).await?;
-
-        Ok((metadata, bundle))
+        Ok((bundle, data))
     }
 
     fn build_block(
@@ -131,7 +140,7 @@ impl Editor {
     ) -> (Block, Vec<u8>) {
         match template {
             BlockTemplate::Keep(_) => {
-                let Some(block) = self.source_bundle.blocks.get(&block_number) else {
+                let Some(block) = self.original.blocks.get(&block_number) else {
                     panic!("Mismatched block in bundle!")
                 };
                 (
@@ -150,10 +159,22 @@ impl Editor {
     }
 }
 
-impl BlockBuilder {
-    fn new(editor: Editor, block_number: u64, block_type: BlockType) -> Self {
+impl<'a> BlockBuilder<'a> {
+    fn new(editor: Editor<'a>, block_number: u64, block_type: BlockType) -> Self {
         Self {
-            template: builder::BlockTemplate::new(block_type, editor.source_bundle.crc_type),
+            template: builder::BlockTemplate::new(block_type, editor.original.crc_type),
+            block_number,
+            editor,
+        }
+    }
+
+    fn new_from_template(
+        editor: Editor<'a>,
+        block_number: u64,
+        template: builder::BlockTemplate,
+    ) -> Self {
+        Self {
+            template,
             block_number,
             editor,
         }
@@ -164,7 +185,7 @@ impl BlockBuilder {
         self
     }
 
-    pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
+    /*pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
         self.template.flags.report_on_failure = report_on_failure;
         self
     }
@@ -182,11 +203,14 @@ impl BlockBuilder {
     pub fn crc_type(mut self, crc_type: CrcType) -> Self {
         self.template.crc_type = crc_type;
         self
+    }*/
+
+    pub fn data(mut self, data: Vec<u8>) -> Self {
+        self.template.data = data;
+        self
     }
 
-    pub fn build(mut self, data: Vec<u8>) -> Editor {
-        // Just copy the data for now
-        self.template.data = data;
+    pub fn build(mut self) -> Editor<'a> {
         self.editor
             .blocks
             .insert(self.block_number, BlockTemplate::Add(self.template));

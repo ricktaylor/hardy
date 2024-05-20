@@ -346,6 +346,7 @@ impl Dispatcher {
         /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
         let mut data = None;
+        let mut data_time_sensitive = false;
         let mut previous = false;
         let mut retries = 0;
         let mut congestion_wait = None;
@@ -384,11 +385,16 @@ impl Dispatcher {
                     if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
                         // Get bundle data from store, now we know we need it!
                         if data.is_none() {
-                            data = match self.store.load_data(&metadata.storage_name).await {
-                                Ok(data) => {
-                                    // TODO:  Update the bundle age and next hop blocks!!
-                                    Some((*data).as_ref().to_vec())
-                                }
+                            (data, data_time_sensitive) = match self
+                                .store
+                                .load_data(&metadata.storage_name)
+                                .await
+                            {
+                                Ok(data) => self
+                                    .update_extension_blocks(&metadata, &bundle, (*data).as_ref())
+                                    .map(|(data, data_time_sensitive)| {
+                                        (Some(data), data_time_sensitive)
+                                    })?,
                                 Err(e) => {
                                     // The bundle data has gone!
                                     warn!("Failed to load bundle data: {e}");
@@ -517,8 +523,10 @@ impl Dispatcher {
                         break Some(bundle::StatusReportReasonCode::LifetimeExpired);
                     }
 
-                    // Force a reload of current data
-                    data = None;
+                    if data_time_sensitive {
+                        // Force a reload of current data, because Bundle Age may have changed
+                        data = None;
+                    }
 
                     // Lookup again
                     actions = fib.find(&destination).into_iter();
@@ -553,6 +561,72 @@ impl Dispatcher {
         Ok(cancellable_sleep(wait, cancel_token).await)
     }
 
+    fn update_extension_blocks(
+        &self,
+        metadata: &bundle::Metadata,
+        bundle: &bundle::Bundle,
+        data: &[u8],
+    ) -> Result<(Vec<u8>, bool), Error> {
+        let mut editor = bundle::Editor::new(bundle)
+            // Previous Node Block
+            .replace_extension_block(bundle::BlockType::PreviousNode)
+            .must_replicate(true)
+            .data(cbor::encode::emit_array(Some(1), |a| {
+                a.emit(
+                    &self
+                        .config
+                        .admin_endpoints
+                        .get_admin_endpoint(&bundle.destination),
+                )
+            }))
+            .build();
+
+        // Increment Hop Count
+        if let Some(mut hop_count) = bundle.hop_count {
+            editor = editor
+                .replace_extension_block(bundle::BlockType::HopCount)
+                .must_replicate(true)
+                .data(cbor::encode::emit_array(Some(2), |a| {
+                    hop_count.count += 1;
+                    a.emit(hop_count.limit);
+                    a.emit(hop_count.count);
+                }))
+                .build();
+        }
+
+        // Update Bundle Age, if required
+        let mut time_sensitive = false;
+        if let Some(bundle_age) = bundle
+            .age
+            .map_or_else(
+                || {
+                    (bundle.id.timestamp.creation_time == 0)
+                        .then(|| bundle::get_bundle_creation(metadata, bundle))
+                },
+                |_| Some(bundle::get_bundle_creation(metadata, bundle)),
+            )
+            .map(|creation| {
+                (time::OffsetDateTime::now_utc() - creation)
+                    .whole_milliseconds()
+                    .clamp(0, u64::MAX as i128) as u64
+            })
+        {
+            editor = editor
+                .replace_extension_block(bundle::BlockType::BundleAge)
+                .must_replicate(true)
+                .data(cbor::encode::emit_array(Some(1), |a| a.emit(bundle_age)))
+                .build();
+
+            // If we have a bundle age, then we are time sensitive
+            time_sensitive = true;
+        }
+
+        editor
+            .build(data)
+            .map(|(_, data)| data)
+            .map(|data| (data, time_sensitive))
+    }
+
     #[instrument(skip(self))]
     async fn drop_bundle(
         &self,
@@ -582,24 +656,11 @@ impl Dispatcher {
 
         trace!("Reporting bundle reception to {}", &bundle.report_to);
 
-        // Create a bundle report
-        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
-            .is_admin_record(true)
-            .source(
-                &self
-                    .config
-                    .admin_endpoints
-                    .get_admin_endpoint(&bundle.report_to),
-            )
-            .destination(&bundle.report_to)
-            .add_payload_block(new_bundle_status_report(
-                metadata, bundle, reason, None, None, None,
-            ))
-            .build(&self.store)
-            .await?;
-
-        // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+        self.dispatch_status_report(
+            new_bundle_status_report(metadata, bundle, reason, None, None, None),
+            &bundle.report_to,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -615,33 +676,22 @@ impl Dispatcher {
 
         trace!("Reporting bundle forwarded to {}", &bundle.report_to);
 
-        // Create a bundle report
-        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
-            .is_admin_record(true)
-            .source(
-                &self
-                    .config
-                    .admin_endpoints
-                    .get_admin_endpoint(&bundle.report_to),
-            )
-            .destination(&bundle.report_to)
-            .add_payload_block(new_bundle_status_report(
+        self.dispatch_status_report(
+            new_bundle_status_report(
                 metadata,
                 bundle,
                 bundle::StatusReportReasonCode::NoAdditionalInformation,
                 Some(time::OffsetDateTime::now_utc()),
                 None,
                 None,
-            ))
-            .build(&self.store)
-            .await?;
-
-        // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+            ),
+            &bundle.report_to,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
-    pub async fn report_bundle_delivered(
+    async fn report_bundle_delivered(
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
@@ -654,28 +704,18 @@ impl Dispatcher {
         trace!("Reporting bundle delivered to {}", &bundle.report_to);
 
         // Create a bundle report
-        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
-            .is_admin_record(true)
-            .source(
-                &self
-                    .config
-                    .admin_endpoints
-                    .get_admin_endpoint(&bundle.report_to),
-            )
-            .destination(&bundle.report_to)
-            .add_payload_block(new_bundle_status_report(
+        self.dispatch_status_report(
+            new_bundle_status_report(
                 metadata,
                 bundle,
                 bundle::StatusReportReasonCode::NoAdditionalInformation,
                 None,
                 Some(time::OffsetDateTime::now_utc()),
                 None,
-            ))
-            .build(&self.store)
-            .await?;
-
-        // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+            ),
+            &bundle.report_to,
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -693,25 +733,39 @@ impl Dispatcher {
         trace!("Reporting bundle deleted to {}", &bundle.report_to);
 
         // Create a bundle report
-        let (metadata, bundle) = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
-            .is_admin_record(true)
-            .source(
-                &self
-                    .config
-                    .admin_endpoints
-                    .get_admin_endpoint(&bundle.report_to),
-            )
-            .destination(&bundle.report_to)
-            .add_payload_block(new_bundle_status_report(
+        self.dispatch_status_report(
+            new_bundle_status_report(
                 metadata,
                 bundle,
                 reason,
                 None,
                 None,
                 Some(time::OffsetDateTime::now_utc()),
-            ))
-            .build(&self.store)
-            .await?;
+            ),
+            &bundle.report_to,
+        )
+        .await
+    }
+
+    async fn dispatch_status_report(
+        &self,
+        payload: Vec<u8>,
+        report_to: &bundle::Eid,
+    ) -> Result<(), Error> {
+        // Create a bundle report
+        let (bundle, data) = bundle::Builder::new()
+            .is_admin_record(true)
+            .source(&self.config.admin_endpoints.get_admin_endpoint(report_to))
+            .destination(report_to)
+            .add_payload_block(payload)
+            .build()?;
+
+        // Store to store
+        let metadata = self
+            .store
+            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
+            .await?
+            .trace_expect("Duplicate bundle created by builder!");
 
         // And queue it up
         self.enqueue_bundle(metadata, bundle).await
@@ -727,7 +781,7 @@ impl Dispatcher {
         flags: Option<u32>,
     ) -> Result<(), Error> {
         // Build the bundle
-        let mut b = bundle::Builder::new(bundle::BundleStatus::DispatchPending)
+        let mut b = bundle::Builder::new()
             .source(&source)
             .destination(&destination);
 
@@ -748,7 +802,14 @@ impl Dispatcher {
         }
 
         // Add payload and build
-        let (metadata, bundle) = b.add_payload_block(data).build(&self.store).await?;
+        let (bundle, data) = b.add_payload_block(data).build()?;
+
+        // Store to store
+        let metadata = self
+            .store
+            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
+            .await?
+            .trace_expect("Duplicate bundle created by builder!");
 
         // And queue it up
         self.enqueue_bundle(metadata, bundle).await
