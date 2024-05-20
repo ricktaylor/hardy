@@ -1,6 +1,9 @@
 use super::*;
 use base64::prelude::*;
-use hardy_bpa_core::{async_trait, bundle, storage, storage::MetadataStorage};
+use hardy_bpa_core::{
+    async_trait,
+    bundle, storage,
+};
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
 use std::{
@@ -67,7 +70,7 @@ impl Storage {
     pub fn init(
         config: &HashMap<String, config::Value>,
         mut upgrade: bool,
-    ) -> Arc<dyn MetadataStorage> {
+    ) -> Arc<dyn storage::MetadataStorage> {
         // Compose DB name
         let file_path = config
             .get("db_dir")
@@ -353,7 +356,7 @@ fn complete_replace(
 }
 
 #[async_trait]
-impl MetadataStorage for Storage {
+impl storage::MetadataStorage for Storage {
     #[instrument(skip_all)]
     fn check_orphans(
         &self,
@@ -869,8 +872,7 @@ impl MetadataStorage for Storage {
                         data_len
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
-                    WHERE wait_until IS NOT NULL AND unixepoch(wait_until) < unixepoch(?1)
-                    LIMIT 256;"#,
+                    WHERE wait_until IS NOT NULL AND unixepoch(wait_until) < unixepoch(?1);"#,
                 )?
                 .query([limit])?,
         )
@@ -884,6 +886,59 @@ impl MetadataStorage for Storage {
                     }
                     _ => None,
                 })
+                .collect()
+        })
+    }
+
+    async fn poll_for_collection(
+        &self,
+        destination: bundle::Eid,
+    ) -> storage::Result<Vec<(bundle::Metadata, bundle::Bundle)>> {
+        unpack_bundles(
+            self.connection
+                .lock()
+                .trace_expect("Failed to lock connection mutex")
+                .prepare_cached(
+                    r#"SELECT 
+                        bundles.id,
+                        status,
+                        storage_name,
+                        hash,
+                        received_at,
+                        flags,
+                        crc_type,
+                        source,
+                        destination,
+                        report_to,
+                        creation_time,
+                        creation_seq_num,
+                        lifetime,                    
+                        fragment_offset,
+                        fragment_total_len,
+                        previous_node,
+                        age,
+                        hop_count,
+                        hop_limit,
+                        wait_until,
+                        ack_token,
+                        block_num,
+                        block_type,
+                        block_flags,
+                        block_crc_type,
+                        data_offset,
+                        data_len
+                    FROM bundles
+                    JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
+                    WHERE status = ?1 AND destination = ?2;"#,
+                )?
+                .query((
+                    bundle_status_to_parts(&bundle::BundleStatus::CollectionPending).0,
+                    encode_eid(&destination),
+                ))?,
+        )
+        .map(|v| {
+            v.into_iter()
+                .map(|(_, metadata, bundle)| (metadata, bundle))
                 .collect()
         })
     }

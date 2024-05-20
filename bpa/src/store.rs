@@ -253,6 +253,29 @@ impl Store {
         self.metadata_storage.get_waiting_bundles(limit).await
     }
 
+    pub async fn poll_for_collection(
+        &self,
+        destination: bundle::Eid,
+    ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
+        self.metadata_storage
+            .poll_for_collection(destination)
+            .await
+            .map(|v| {
+                v.into_iter()
+                    .filter_map(|(metadata, bundle)| {
+                        // Double check that we are returning something valid
+                        if let bundle::BundleStatus::CollectionPending = &metadata.status {
+                            let expiry = bundle::get_bundle_expiry(&metadata, &bundle);
+                            if expiry > time::OffsetDateTime::now_utc() {
+                                return Some((bundle.id.to_key(), expiry));
+                            }
+                        }
+                        None
+                    })
+                    .collect()
+            })
+    }
+
     #[instrument(skip(self, data))]
     pub async fn replace_data(
         &self,

@@ -820,21 +820,50 @@ impl Dispatcher {
         todo!()
     }
 
+    #[instrument(skip(self))]
     pub async fn collect(
         &self,
         destination: bundle::Eid,
         bundle_id: String,
-    ) -> Result<(String, Vec<u8>, time::OffsetDateTime), Error> {
-        todo!();
+    ) -> Result<Option<(String, Vec<u8>, time::OffsetDateTime)>, Error> {
+        // Lookup bundle
+        let Some((metadata, bundle)) = self
+            .store
+            .load(&bundle::BundleId::from_key(&bundle_id)?)
+            .await?
+        else {
+            return Ok(None);
+        };
 
-        //Ok((bundle_id,data,expiry))
+        // Double check that we are returning something valid
+        if let bundle::BundleStatus::CollectionPending = &metadata.status {
+            let expiry = bundle::get_bundle_expiry(&metadata, &bundle);
+            if expiry <= time::OffsetDateTime::now_utc() || bundle.destination != destination {
+                return Ok(None);
+            }
+
+            // Get the data!
+            let data = self.store.load_data(&metadata.storage_name).await?;
+
+            // By the time we get here, we're safe to report delivery
+            self.report_bundle_delivered(&metadata, &bundle).await?;
+
+            Ok(Some((
+                bundle.id.to_key(),
+                (*data).as_ref().to_vec(),
+                expiry,
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
+    #[instrument(skip(self))]
     pub async fn poll_for_collection(
         &self,
         destination: bundle::Eid,
     ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
-        todo!()
+        self.store.poll_for_collection(destination).await
     }
 }
 

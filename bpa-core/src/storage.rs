@@ -44,6 +44,11 @@ pub trait MetadataStorage: Send + Sync {
         &self,
         limit: time::OffsetDateTime,
     ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>>;
+
+    async fn poll_for_collection(
+        &self,
+        destination: bundle::Eid,
+    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle)>>;
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;

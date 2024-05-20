@@ -91,20 +91,23 @@ impl ApplicationSink for Service {
         request: Request<CollectRequest>,
     ) -> Result<Response<CollectResponse>, Status> {
         let request = request.into_inner();
-        self.dispatcher
+        let Some((bundle_id, data, expiry)) = self
+            .dispatcher
             .collect(
                 self.app_registry.find_by_token(&request.token)?,
                 request.bundle_id,
             )
             .await
-            .map(|(bundle_id, data, expiry)| {
-                Response::new(CollectResponse {
-                    bundle_id,
-                    data,
-                    expiry: Some(to_timestamp(expiry)),
-                })
-            })
-            .map_err(Status::from_error)
+            .map_err(Status::from_error)?
+        else {
+            return Err(Status::not_found("No such bundle"));
+        };
+
+        Ok(Response::new(CollectResponse {
+            bundle_id,
+            data,
+            expiry: Some(to_timestamp(expiry)),
+        }))
     }
 
     type PollStream = tokio_stream::wrappers::ReceiverStream<Result<PollResponse, Status>>;
