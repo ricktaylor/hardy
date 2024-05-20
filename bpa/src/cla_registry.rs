@@ -154,9 +154,7 @@ impl Endpoint {
             .into_inner();
 
         let delay = if let Some(t) = r.delay {
-            let delay = time::OffsetDateTime::from_unix_timestamp(t.seconds)
-                .map_err(<time::error::ComponentRange as Into<Error>>::into)?
-                + time::Duration::nanoseconds(t.nanos.into());
+            let delay = services::from_timestamp(t)?;
             if delay <= time::OffsetDateTime::now_utc() {
                 None
             } else {

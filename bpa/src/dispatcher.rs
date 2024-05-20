@@ -1,6 +1,5 @@
 use super::*;
 use hardy_cbor as cbor;
-use hardy_proto::application::*;
 use tokio::sync::mpsc::*;
 use utils::{cancel::cancellable_sleep, settings};
 
@@ -346,7 +345,7 @@ impl Dispatcher {
         /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
         let mut data = None;
-        let mut data_time_sensitive = false;
+        let mut data_is_time_sensitive = false;
         let mut previous = false;
         let mut retries = 0;
         let mut congestion_wait = None;
@@ -385,7 +384,7 @@ impl Dispatcher {
                     if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
                         // Get bundle data from store, now we know we need it!
                         if data.is_none() {
-                            (data, data_time_sensitive) = match self
+                            (data, data_is_time_sensitive) = match self
                                 .store
                                 .load_data(&metadata.storage_name)
                                 .await
@@ -523,7 +522,7 @@ impl Dispatcher {
                         break Some(bundle::StatusReportReasonCode::LifetimeExpired);
                     }
 
-                    if data_time_sensitive {
+                    if data_is_time_sensitive {
                         // Force a reload of current data, because Bundle Age may have changed
                         data = None;
                     }
@@ -595,7 +594,7 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        let mut time_sensitive = false;
+        let mut is_time_sensitive = false;
         if let Some(bundle_age) = bundle
             .age
             .map_or_else(
@@ -618,13 +617,13 @@ impl Dispatcher {
                 .build();
 
             // If we have a bundle age, then we are time sensitive
-            time_sensitive = true;
+            is_time_sensitive = true;
         }
 
         editor
             .build(data)
             .map(|(_, data)| data)
-            .map(|data| (data, time_sensitive))
+            .map(|data| (data, is_time_sensitive))
     }
 
     #[instrument(skip(self))]
@@ -778,7 +777,8 @@ impl Dispatcher {
         destination: bundle::Eid,
         data: Vec<u8>,
         lifetime: Option<u64>,
-        flags: Option<u32>,
+        app_ack_requested: bool,
+        do_not_fragment: bool,
     ) -> Result<(), Error> {
         // Build the bundle
         let mut b = bundle::Builder::new()
@@ -786,14 +786,11 @@ impl Dispatcher {
             .destination(&destination);
 
         // Set flags
-        if let Some(flags) = flags {
-            if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
-                b = b.app_ack_requested(true);
-            }
-            if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
-                b = b.do_not_fragment(true)
-            }
-            b = b.report_to(&self.config.admin_endpoints.get_admin_endpoint(&destination));
+        if app_ack_requested || do_not_fragment {
+            b = b
+                .app_ack_requested(app_ack_requested)
+                .do_not_fragment(do_not_fragment)
+                .report_to(&self.config.admin_endpoints.get_admin_endpoint(&destination));
         }
 
         // Lifetime
@@ -820,6 +817,23 @@ impl Dispatcher {
         _metadata: bundle::Metadata,
         _bundle: bundle::Bundle,
     ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, Error> {
+        todo!()
+    }
+
+    pub async fn collect(
+        &self,
+        destination: bundle::Eid,
+        bundle_id: String,
+    ) -> Result<(String, Vec<u8>, time::OffsetDateTime), Error> {
+        todo!();
+
+        //Ok((bundle_id,data,expiry))
+    }
+
+    pub async fn poll_for_collection(
+        &self,
+        destination: bundle::Eid,
+    ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
         todo!()
     }
 }

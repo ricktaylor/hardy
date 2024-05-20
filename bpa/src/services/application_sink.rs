@@ -1,6 +1,7 @@
 use super::*;
 use application_sink_server::{ApplicationSink, ApplicationSinkServer};
 use hardy_proto::application::*;
+use tokio::sync::mpsc::*;
 use tonic::{Request, Response, Status};
 
 pub struct Service {
@@ -58,6 +59,17 @@ impl ApplicationSink for Service {
             eid => eid,
         };
 
+        let mut app_ack_requested = false;
+        let mut do_not_fragment = false;
+        if let Some(flags) = request.flags {
+            if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
+                app_ack_requested = true;
+            }
+            if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
+                do_not_fragment = true;
+            }
+        }
+
         let source = self.app_registry.find_by_token(&request.token)?;
         self.dispatcher
             .local_dispatch(
@@ -65,11 +77,68 @@ impl ApplicationSink for Service {
                 destination,
                 request.data,
                 request.lifetime,
-                request.flags,
+                app_ack_requested,
+                do_not_fragment,
             )
             .await
             .map(|_| Response::new(SendResponse {}))
             .map_err(Status::from_error)
+    }
+
+    #[instrument(skip(self))]
+    async fn collect(
+        &self,
+        request: Request<CollectRequest>,
+    ) -> Result<Response<CollectResponse>, Status> {
+        let request = request.into_inner();
+        self.dispatcher
+            .collect(
+                self.app_registry.find_by_token(&request.token)?,
+                request.bundle_id,
+            )
+            .await
+            .map(|(bundle_id, data, expiry)| {
+                Response::new(CollectResponse {
+                    bundle_id,
+                    data,
+                    expiry: Some(to_timestamp(expiry)),
+                })
+            })
+            .map_err(Status::from_error)
+    }
+
+    type PollStream = tokio_stream::wrappers::ReceiverStream<Result<PollResponse, Status>>;
+
+    #[instrument(skip(self))]
+    async fn poll(
+        &self,
+        request: Request<PollRequest>,
+    ) -> Result<Response<Self::PollStream>, Status> {
+        let request = request.into_inner();
+        let (tx, rx) = channel(4);
+        let dispatcher = self.dispatcher.clone();
+
+        // Get the items
+        let items = dispatcher
+            .poll_for_collection(self.app_registry.find_by_token(&request.token)?)
+            .await
+            .map_err(Status::from_error)?;
+
+        // Stream the response
+        tokio::spawn(async move {
+            for (bundle_id, expiry) in items {
+                tx.send(Ok(PollResponse {
+                    bundle_id,
+                    expiry: Some(to_timestamp(expiry)),
+                }))
+                .await
+                .trace_expect("Failed to send collect_all response to stream channel");
+            }
+        });
+
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
     }
 }
 

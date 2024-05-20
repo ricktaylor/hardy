@@ -1,11 +1,15 @@
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
+
 package application;
 
 service application_sink {
     rpc RegisterApplication(RegisterApplicationRequest) returns (RegisterApplicationResponse);
     rpc UnregisterApplication(UnregisterApplicationRequest) returns (UnregisterApplicationResponse);
     rpc Send(SendRequest) returns (SendResponse);
+    rpc Collect(CollectRequest) returns (CollectResponse);
+    rpc Poll(PollRequest) returns (stream PollResponse);
 }
 
 message RegisterApplicationRequest {
@@ -45,8 +49,29 @@ message SendRequest {
 message SendResponse {
 }
 
+message CollectRequest {
+    string Token = 1;
+    string BundleId = 2;
+}
+
+message CollectResponse {
+    string BundleId = 1;
+    google.protobuf.Timestamp expiry = 2;
+    bytes Data = 3;
+}
+
+message PollRequest {
+    string Token = 1;
+}
+
+message PollResponse {
+    string BundleId = 1;
+    google.protobuf.Timestamp expiry = 2;
+}
+
 service application {
-    rpc CollectionNotify(CollectionNotifyRequest) returns (CollectionNotifyResponse);
+    rpc CollectionNotify(CollectionNotifyRequest) returns (CollectionNotifyResponse);  // Bundle is ready for collection
+    rpc DeliveryNotify(DeliveryNotifyRequest) returns (DeliveryNotifyResponse); // Bundle has been delivered to the destination application
 }
 
 message CollectionNotifyRequest {
@@ -55,4 +80,15 @@ message CollectionNotifyRequest {
 }
 
 message CollectionNotifyResponse {
+}
+
+message DeliveryNotifyRequest {
+    string Token = 1;
+    string BundleId = 2;
+    bool Success = 3;
+    uint64 Reason = 4;
+    optional google.protobuf.Timestamp DeliveryTime = 5;
+}
+
+message DeliveryNotifyResponse {
 }
