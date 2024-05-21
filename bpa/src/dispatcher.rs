@@ -848,11 +848,11 @@ impl Dispatcher {
             // By the time we get here, we're safe to report delivery
             self.report_bundle_delivery(&metadata, &bundle).await?;
 
-            Ok(Some((
-                bundle.id.to_key(),
-                (*data).as_ref().to_vec(),
-                expiry,
-            )))
+            // Prepare the response
+            let r = Some((bundle.id.to_key(), (*data).as_ref().to_vec(), expiry));
+
+            // And we can now tombstone the bundle
+            self.store.remove(&metadata.storage_name).await.map(|_| r)
         } else {
             Ok(None)
         }
