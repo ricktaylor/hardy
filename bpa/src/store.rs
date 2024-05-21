@@ -135,7 +135,7 @@ impl Store {
                 tokio::runtime::Handle::current().block_on(async {
                     // The data associated with `bundle` has gone!
                     dispatcher
-                        .report_bundle_deleted(
+                        .report_bundle_deletion(
                             &metadata,
                             &bundle,
                             bundle::StatusReportReasonCode::DepletedStorage,

@@ -26,7 +26,7 @@ pub enum DecodeError {
 }
 
 impl TryFrom<u64> for CrcType {
-    type Error = Error;
+    type Error = self::Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {

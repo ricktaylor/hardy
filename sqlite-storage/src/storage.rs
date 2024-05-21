@@ -1,9 +1,6 @@
 use super::*;
 use base64::prelude::*;
-use hardy_bpa_core::{
-    async_trait,
-    bundle, storage,
-};
+use hardy_bpa_core::{async_trait, bundle, storage};
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
 use std::{

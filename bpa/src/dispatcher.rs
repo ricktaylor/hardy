@@ -634,7 +634,7 @@ impl Dispatcher {
         reason: Option<bundle::StatusReportReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
-            self.report_bundle_deleted(&metadata, &bundle, reason)
+            self.report_bundle_deletion(&metadata, &bundle, reason)
                 .await?;
         }
         trace!("Discarding bundle, leaving tombstone");
@@ -673,7 +673,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        trace!("Reporting bundle forwarded to {}", &bundle.report_to);
+        trace!("Reporting bundle as forwarded to {}", &bundle.report_to);
 
         self.dispatch_status_report(
             new_bundle_status_report(
@@ -690,17 +690,17 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    async fn report_bundle_delivered(
+    async fn report_bundle_delivery(
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.flags.forward_report_requested {
+        if !self.config.status_reports || !bundle.flags.delivery_report_requested {
             return Ok(());
         }
 
-        trace!("Reporting bundle delivered to {}", &bundle.report_to);
+        trace!("Reporting bundle delivery to {}", &bundle.report_to);
 
         // Create a bundle report
         self.dispatch_status_report(
@@ -718,7 +718,7 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    pub async fn report_bundle_deleted(
+    pub async fn report_bundle_deletion(
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
@@ -729,7 +729,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        trace!("Reporting bundle deleted to {}", &bundle.report_to);
+        trace!("Reporting bundle deletion to {}", &bundle.report_to);
 
         // Create a bundle report
         self.dispatch_status_report(
@@ -846,7 +846,7 @@ impl Dispatcher {
             let data = self.store.load_data(&metadata.storage_name).await?;
 
             // By the time we get here, we're safe to report delivery
-            self.report_bundle_delivered(&metadata, &bundle).await?;
+            self.report_bundle_delivery(&metadata, &bundle).await?;
 
             Ok(Some((
                 bundle.id.to_key(),

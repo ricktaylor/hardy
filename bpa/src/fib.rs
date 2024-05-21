@@ -75,7 +75,7 @@ impl std::fmt::Display for Destination {
 }
 
 impl TryFrom<bundle::Eid> for Destination {
-    type Error = Error;
+    type Error = self::Error;
 
     fn try_from(value: bundle::Eid) -> Result<Self, Self::Error> {
         match value {

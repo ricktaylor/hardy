@@ -213,7 +213,7 @@ impl Ingress {
 
             // Not valid, drop it
             self.dispatcher
-                .report_bundle_deleted(
+                .report_bundle_deletion(
                     &metadata,
                     &bundle,
                     bundle::StatusReportReasonCode::BlockUnintelligible,
@@ -347,7 +347,7 @@ impl Ingress {
         if let Some(reason) = reason {
             // Not valid, drop it
             self.dispatcher
-                .report_bundle_deleted(&metadata, &bundle, reason)
+                .report_bundle_deletion(&metadata, &bundle, reason)
                 .await?;
 
             // Drop the bundle

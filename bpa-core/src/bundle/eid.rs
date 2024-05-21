@@ -230,7 +230,7 @@ impl cbor::encode::ToCbor for &Eid {
 }
 
 impl cbor::decode::FromCbor for Eid {
-    type Error = Error;
+    type Error = self::Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_array(data, |a, tags| {
