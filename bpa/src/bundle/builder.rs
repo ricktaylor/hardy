@@ -151,7 +151,7 @@ impl Builder {
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
         let timestamp = time::OffsetDateTime::now_utc();
         let timestamp = CreationTimestamp {
-            creation_time: as_dtn_time(&timestamp),
+            creation_time: to_dtn_time(&timestamp),
             sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
         };
 
@@ -167,9 +167,9 @@ impl Builder {
                     // Version
                     a.emit(7);
                     // Flags
-                    a.emit(self.bundle_flags);
+                    a.emit::<u64>(self.bundle_flags.into());
                     // CRC
-                    a.emit(self.crc_type);
+                    a.emit::<u64>(self.crc_type.into());
                     // EIDs
                     a.emit(&self.destination);
                     a.emit(&self.source);
@@ -285,13 +285,13 @@ impl BlockTemplate {
                 }),
                 |a| {
                     // Block Type
-                    a.emit(self.block_type);
+                    a.emit::<u64>(self.block_type.into());
                     // Block Number
                     a.emit(block_number);
                     // Flags
-                    a.emit(self.flags);
+                    a.emit::<u64>(self.flags.into());
                     // CRC Type
-                    a.emit(self.crc_type);
+                    a.emit::<u64>(self.crc_type.into());
                     // Payload
                     a.emit(&self.data);
 

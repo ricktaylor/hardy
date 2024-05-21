@@ -52,9 +52,3 @@ impl cbor::decode::FromCbor for CrcType {
         Ok((code.try_into()?, len, tags))
     }
 }
-
-impl cbor::encode::ToCbor for CrcType {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit::<u64>(self.into())
-    }
-}

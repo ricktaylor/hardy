@@ -47,17 +47,3 @@ impl From<u64> for BlockFlags {
         flags
     }
 }
-
-impl cbor::encode::ToCbor for BlockFlags {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit::<u64>(self.into())
-    }
-}
-
-impl cbor::decode::FromCbor for BlockFlags {
-    type Error = cbor::decode::Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        cbor::decode::parse_detail::<u64>(data).map(|(v, len, tags)| (v.into(), len, tags))
-    }
-}

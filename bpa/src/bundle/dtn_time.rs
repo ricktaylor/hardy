@@ -2,10 +2,14 @@ use super::*;
 
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
-pub fn as_dtn_time(instant: &time::OffsetDateTime) -> u64 {
+pub fn to_dtn_time(instant: &time::OffsetDateTime) -> u64 {
     (*instant - DTN_EPOCH)
         .whole_milliseconds()
         .clamp(0, u64::MAX as i128) as u64
+}
+
+pub fn from_dtn_time(milliseconds: u64) -> time::OffsetDateTime {
+    DTN_EPOCH.saturating_add(millis_to_duration(milliseconds))
 }
 
 fn millis_to_duration(ms: u64) -> time::Duration {

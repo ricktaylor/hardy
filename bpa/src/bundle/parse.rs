@@ -136,9 +136,10 @@ fn parse_primary_block(
     }
 
     // Parse flags
-    let flags = block
-        .parse::<BundleFlags>()
-        .map_field_err("Bundle Processing Control Flags")?;
+    let flags: BundleFlags = block
+        .parse::<u64>()
+        .map_field_err("Bundle Processing Control Flags")?
+        .into();
 
     // Parse CRC Type
     let crc_type = block.parse::<CrcType>().map_field_err("CRC Type");
@@ -284,8 +285,9 @@ fn parse_block(
     }
 
     let block_type = block
-        .parse::<BlockType>()
-        .map_field_err("Block type code")?;
+        .parse::<u64>()
+        .map_field_err("Block type code")?
+        .into();
 
     let block_number = block.parse::<u64>().map_field_err("Block number")?;
     if block_number == 0 {
@@ -293,8 +295,9 @@ fn parse_block(
     }
 
     let flags = block
-        .parse::<BlockFlags>()
-        .map_field_err("Block processing control flags")?;
+        .parse::<u64>()
+        .map_field_err("Block processing control flags")?
+        .into();
     let crc_type = block.parse::<CrcType>().map_field_err("CRC type")?;
 
     // Stash start of data

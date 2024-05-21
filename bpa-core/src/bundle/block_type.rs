@@ -46,17 +46,3 @@ impl From<u64> for BlockType {
         }
     }
 }
-
-impl cbor::encode::ToCbor for BlockType {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit::<u64>(self.into())
-    }
-}
-
-impl cbor::decode::FromCbor for BlockType {
-    type Error = cbor::decode::Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        cbor::decode::parse_detail::<u64>(data).map(|(v, len, tags)| (v.into(), len, tags))
-    }
-}
