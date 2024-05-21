@@ -142,6 +142,34 @@ impl AdminEndpoints {
             },
         }
     }
+
+    pub fn is_admin_endpoint(&self, eid: &Eid) -> bool {
+        match eid {
+            Eid::Null => false,
+            Eid::LocalNode { service_number } => *service_number == 0,
+            Eid::Ipn2 {
+                allocator_id,
+                node_number,
+                service_number,
+            }
+            | Eid::Ipn3 {
+                allocator_id,
+                node_number,
+                service_number,
+            } => match &self.ipn {
+                Some(node_id) => {
+                    node_id.allocator_id == *allocator_id
+                        && node_id.node_number == *node_number
+                        && *service_number == 0
+                }
+                _ => false,
+            },
+            Eid::Dtn { node_name, demux } => match &self.dtn {
+                Some(node_id) => node_id.node_name == *node_name && demux.is_empty(),
+                _ => false,
+            },
+        }
+    }
 }
 
 #[derive(Error, Debug)]

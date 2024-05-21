@@ -230,6 +230,14 @@ impl Dispatcher {
                     // Reassembly!!
                     trace!("Bundle requires fragment reassembly");
                     bundle::BundleStatus::ReassemblyPending
+                } else if self
+                    .config
+                    .admin_endpoints
+                    .is_admin_endpoint(&bundle.destination)
+                {
+                    // The bundle is for the Administrative Endpoint
+                    trace!("Bundle is destined for one of our administrative endpoints");
+                    return self.administrative_bundle(metadata, bundle).await;
                 } else {
                     // The bundle is ready for collection
                     trace!("Bundle is ready for local delivery");
@@ -656,7 +664,20 @@ impl Dispatcher {
         trace!("Reporting bundle reception to {}", &bundle.report_to);
 
         self.dispatch_status_report(
-            new_bundle_status_report(metadata, bundle, reason, None, None, None),
+            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
+                bundle::BundleStatusReport {
+                    bundle_id: bundle.id.clone(),
+                    received: Some(bundle::StatusAssertion(
+                        if bundle.flags.report_status_time {
+                            metadata.received_at
+                        } else {
+                            None
+                        },
+                    )),
+                    reason,
+                    ..Default::default()
+                },
+            )),
             &bundle.report_to,
         )
         .await
@@ -676,14 +697,18 @@ impl Dispatcher {
         trace!("Reporting bundle as forwarded to {}", &bundle.report_to);
 
         self.dispatch_status_report(
-            new_bundle_status_report(
-                metadata,
-                bundle,
-                bundle::StatusReportReasonCode::NoAdditionalInformation,
-                Some(time::OffsetDateTime::now_utc()),
-                None,
-                None,
-            ),
+            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
+                bundle::BundleStatusReport {
+                    bundle_id: bundle.id.clone(),
+                    forwarded: Some(bundle::StatusAssertion(
+                        bundle
+                            .flags
+                            .report_status_time
+                            .then(time::OffsetDateTime::now_utc),
+                    )),
+                    ..Default::default()
+                },
+            )),
             &bundle.report_to,
         )
         .await
@@ -704,14 +729,18 @@ impl Dispatcher {
 
         // Create a bundle report
         self.dispatch_status_report(
-            new_bundle_status_report(
-                metadata,
-                bundle,
-                bundle::StatusReportReasonCode::NoAdditionalInformation,
-                None,
-                Some(time::OffsetDateTime::now_utc()),
-                None,
-            ),
+            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
+                bundle::BundleStatusReport {
+                    bundle_id: bundle.id.clone(),
+                    delivered: Some(bundle::StatusAssertion(
+                        bundle
+                            .flags
+                            .report_status_time
+                            .then(time::OffsetDateTime::now_utc),
+                    )),
+                    ..Default::default()
+                },
+            )),
             &bundle.report_to,
         )
         .await
@@ -733,14 +762,19 @@ impl Dispatcher {
 
         // Create a bundle report
         self.dispatch_status_report(
-            new_bundle_status_report(
-                metadata,
-                bundle,
-                reason,
-                None,
-                None,
-                Some(time::OffsetDateTime::now_utc()),
-            ),
+            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
+                bundle::BundleStatusReport {
+                    bundle_id: bundle.id.clone(),
+                    deleted: Some(bundle::StatusAssertion(
+                        bundle
+                            .flags
+                            .report_status_time
+                            .then(time::OffsetDateTime::now_utc),
+                    )),
+                    reason,
+                    ..Default::default()
+                },
+            )),
             &bundle.report_to,
         )
         .await
@@ -812,12 +846,30 @@ impl Dispatcher {
         self.enqueue_bundle(metadata, bundle).await
     }
 
+    #[instrument(skip(self))]
     async fn reassemble(
         &self,
         _metadata: bundle::Metadata,
         _bundle: bundle::Bundle,
     ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, Error> {
+        // TODO: We need to handle the case when the reassembled fragment is larger than our total RAM!
+
         todo!()
+    }
+
+    #[instrument(skip(self))]
+    async fn administrative_bundle(
+        &self,
+        metadata: bundle::Metadata,
+        _bundle: bundle::Bundle,
+    ) -> Result<(), Error> {
+        // This is a bundle for an Admin Endpoint
+        let data = self.store.load_data(&metadata.storage_name).await?;
+        match cbor::decode::parse::<bundle::AdministrativeRecord>((*data).as_ref())? {
+            bundle::AdministrativeRecord::BundleStatusReport(report) => {
+                todo!()
+            }
+        }
     }
 
     #[instrument(skip(self))]
@@ -865,99 +917,4 @@ impl Dispatcher {
     ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
         self.store.poll_for_collection(destination).await
     }
-}
-
-fn new_bundle_status_report(
-    metadata: &bundle::Metadata,
-    bundle: &bundle::Bundle,
-    reason: bundle::StatusReportReasonCode,
-    forwarded: Option<time::OffsetDateTime>,
-    delivered: Option<time::OffsetDateTime>,
-    deleted: Option<time::OffsetDateTime>,
-) -> Vec<u8> {
-    cbor::encode::emit_array(Some(2), |a| {
-        a.emit(1);
-        a.emit_array(Some(bundle.id.fragment_info.map_or(4, |_| 6)), |a| {
-            // Statuses
-            a.emit_array(Some(4), |a| {
-                // Report node received bundle
-                match metadata.received_at {
-                    Some(received_at)
-                        if bundle.flags.report_status_time
-                            && bundle.flags.receipt_report_requested =>
-                    {
-                        a.emit_array(Some(2), |a| {
-                            a.emit(true);
-                            a.emit(bundle::as_dtn_time(&received_at))
-                        })
-                    }
-                    _ => a.emit_array(Some(1), |a| a.emit(bundle.flags.receipt_report_requested)),
-                }
-
-                // Report node forwarded the bundle
-                match forwarded {
-                    Some(forwarded)
-                        if bundle.flags.report_status_time
-                            && bundle.flags.forward_report_requested =>
-                    {
-                        a.emit_array(Some(2), |a| {
-                            a.emit(true);
-                            a.emit(bundle::as_dtn_time(&forwarded))
-                        })
-                    }
-                    Some(_) => {
-                        a.emit_array(Some(1), |a| a.emit(bundle.flags.forward_report_requested))
-                    }
-                    _ => a.emit_array(Some(1), |a| a.emit(false)),
-                }
-
-                // Report node delivered the bundle
-                match delivered {
-                    Some(delivered)
-                        if bundle.flags.report_status_time
-                            && bundle.flags.delivery_report_requested =>
-                    {
-                        a.emit_array(Some(2), |a| {
-                            a.emit(true);
-                            a.emit(bundle::as_dtn_time(&delivered))
-                        })
-                    }
-                    Some(_) => {
-                        a.emit_array(Some(1), |a| a.emit(bundle.flags.delivery_report_requested))
-                    }
-                    _ => a.emit_array(Some(1), |a| a.emit(false)),
-                }
-
-                // Report node deleted the bundle
-                match deleted {
-                    Some(deleted)
-                        if bundle.flags.report_status_time
-                            && bundle.flags.delete_report_requested =>
-                    {
-                        a.emit_array(Some(2), |a| {
-                            a.emit(true);
-                            a.emit(bundle::as_dtn_time(&deleted))
-                        })
-                    }
-                    Some(_) => {
-                        a.emit_array(Some(1), |a| a.emit(bundle.flags.delete_report_requested))
-                    }
-                    _ => a.emit_array(Some(1), |a| a.emit(false)),
-                }
-            });
-
-            // Reason code
-            a.emit(reason);
-            // Source EID
-            a.emit(&bundle.id.source);
-            // Creation Timestamp
-            a.emit(&bundle.id.timestamp);
-
-            if let Some(fragment_info) = &bundle.id.fragment_info {
-                // Add fragment info
-                a.emit(fragment_info.offset);
-                a.emit(fragment_info.total_len);
-            }
-        })
-    })
 }
