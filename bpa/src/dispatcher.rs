@@ -392,22 +392,22 @@ impl Dispatcher {
                     if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
                         // Get bundle data from store, now we know we need it!
                         if data.is_none() {
-                            (data, data_is_time_sensitive) = match self
-                                .store
-                                .load_data(&metadata.storage_name)
-                                .await
-                            {
-                                Ok(data) => self
-                                    .update_extension_blocks(&metadata, &bundle, (*data).as_ref())
-                                    .map(|(data, data_time_sensitive)| {
-                                        (Some(data), data_time_sensitive)
-                                    })?,
-                                Err(e) => {
-                                    // The bundle data has gone!
-                                    warn!("Failed to load bundle data: {e}");
-                                    break Some(bundle::StatusReportReasonCode::DepletedStorage);
-                                }
+                            let Some(source_data) = self.load_data(&metadata, &bundle).await?
+                            else {
+                                // Bundle data was deleted sometime during processing
+                                return Ok(());
                             };
+
+                            // Increment Hop Count, etc...
+                            (data, data_is_time_sensitive) = self
+                                .update_extension_blocks(
+                                    &metadata,
+                                    &bundle,
+                                    (*source_data).as_ref(),
+                                )
+                                .map(|(data, data_is_time_sensitive)| {
+                                    (Some(data), data_is_time_sensitive)
+                                })?;
                         }
 
                         match endpoint
@@ -857,16 +857,43 @@ impl Dispatcher {
         todo!()
     }
 
+    async fn load_data(
+        &self,
+        metadata: &bundle::Metadata,
+        bundle: &bundle::Bundle,
+    ) -> Result<Option<hardy_bpa_core::storage::DataRef>, Error> {
+        // Try to load the data, but treat errors as 'Storage Depleted'
+        let data = self.store.load_data(&metadata.storage_name).await?;
+        if data.is_none() {
+            // Report the bundle has gone
+            self.report_bundle_deletion(
+                metadata,
+                bundle,
+                bundle::StatusReportReasonCode::DepletedStorage,
+            )
+            .await?;
+        }
+        Ok(data)
+    }
+
     #[instrument(skip(self))]
     async fn administrative_bundle(
         &self,
         metadata: bundle::Metadata,
-        _bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
     ) -> Result<(), Error> {
         // This is a bundle for an Admin Endpoint
-        let data = self.store.load_data(&metadata.storage_name).await?;
-        match cbor::decode::parse::<bundle::AdministrativeRecord>((*data).as_ref())? {
-            bundle::AdministrativeRecord::BundleStatusReport(report) => {
+        let Some(data) = self.load_data(&metadata, &bundle).await? else {
+            // Bundle data was deleted sometime during processing
+            return Ok(());
+        };
+
+        match cbor::decode::parse::<bundle::AdministrativeRecord>((*data).as_ref()) {
+            Err(e) => {
+                trace!("Failed to parse administrative record: {e}");
+                Ok(())
+            }
+            Ok(bundle::AdministrativeRecord::BundleStatusReport(report)) => {
                 todo!()
             }
         }
@@ -895,7 +922,10 @@ impl Dispatcher {
             }
 
             // Get the data!
-            let data = self.store.load_data(&metadata.storage_name).await?;
+            let Some(data) = self.load_data(&metadata, &bundle).await? else {
+                // Bundle data was deleted sometime during processing
+                return Ok(None);
+            };
 
             // By the time we get here, we're safe to report delivery
             self.report_bundle_delivery(&metadata, &bundle).await?;

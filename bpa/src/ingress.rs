@@ -170,7 +170,11 @@ impl Ingress {
     ) -> Result<(), Error> {
         // Parse the bundle
         let (metadata, bundle, valid) = {
-            let data = self.store.load_data(&storage_name).await?;
+            let Some(data) = self.store.load_data(&storage_name).await? else {
+                // Bundle data was deleted sometime during processing
+                return Ok(());
+            };
+
             match bundle::parse((*data).as_ref()) {
                 Ok((bundle, valid)) => (
                     bundle::Metadata {
@@ -426,7 +430,14 @@ impl Ingress {
             }
 
             // Load up the source bundle data
-            let source_data = self.store.load_data(&metadata.storage_name).await?;
+            let Some(source_data) = self.store.load_data(&metadata.storage_name).await? else {
+                // Bundle data was deleted sometime during processing
+                return Ok((
+                    Some(bundle::StatusReportReasonCode::DepletedStorage),
+                    metadata,
+                    bundle,
+                ));
+            };
 
             // Edit the bundle
             let data;

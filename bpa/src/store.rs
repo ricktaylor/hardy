@@ -182,8 +182,20 @@ impl Store {
             })
     }
 
-    pub async fn load_data(&self, storage_name: &str) -> Result<storage::DataRef, Error> {
-        self.bundle_storage.load(storage_name).await
+    pub async fn load_data(&self, storage_name: &str) -> Result<Option<storage::DataRef>, Error> {
+        // Try to load the data, but treat errors as 'Storage Depleted'
+        match self.bundle_storage.load(storage_name).await {
+            Ok(data) => Ok(Some(data)),
+            Err(e) => {
+                warn!("Failed to load bundle data from bundle_store: {e}");
+
+                // Hard delete the record from the metadata store, we lost it somehow
+                self.metadata_storage
+                    .remove(storage_name)
+                    .await
+                    .map(|_| None)
+            }
+        }
     }
 
     pub async fn store_data(&self, data: Vec<u8>) -> Result<String, Error> {
