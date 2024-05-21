@@ -187,7 +187,8 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn try_parse<T>(&mut self) -> Result<Option<T>, T::Error>
     where
-        T: FromCbor<Error: From<self::Error>>,
+        T: FromCbor,
+        T::Error: From<self::Error>,
     {
         // Check for end of array
         if self.check_for_end()? {
@@ -204,7 +205,8 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn parse<T>(&mut self) -> Result<T, T::Error>
     where
-        T: FromCbor<Error: From<self::Error>>,
+        T: FromCbor,
+        T::Error: From<self::Error>,
     {
         let r: Result<Option<T>, <T as FromCbor>::Error> = self.try_parse();
         r?.ok_or(Error::NotEnoughData.into())
@@ -534,14 +536,16 @@ where
 
 pub fn parse_detail<T>(data: &[u8]) -> Result<(T, usize, Vec<u64>), T::Error>
 where
-    T: FromCbor<Error: From<self::Error>>,
+    T: FromCbor,
+    T::Error: From<self::Error>,
 {
     T::from_cbor(data)
 }
 
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
-    T: FromCbor<Error: From<self::Error>>,
+    T: FromCbor,
+    T::Error: From<self::Error>,
 {
     T::from_cbor(data).map(|(v, _, _)| v)
 }
@@ -723,7 +727,8 @@ impl FromCbor for String {
 
 impl<T> FromCbor for Option<T>
 where
-    T: FromCbor<Error: From<self::Error>>,
+    T: FromCbor,
+    T::Error: From<self::Error>,
 {
     type Error = T::Error;
 
