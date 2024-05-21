@@ -13,6 +13,14 @@ pub struct Endpoint {
     token: String,
 }
 
+#[derive(Debug)]
+pub enum StatusKind {
+    Received = 1,
+    Forwarded = 2,
+    Delivered = 3,
+    Deleted = 4,
+}
+
 struct Application {
     eid: bundle::Eid,
     token: String,
@@ -203,6 +211,30 @@ impl Endpoint {
                 }))
                 .await
                 .inspect_err(|s| info!("collection_notify failed: {s}"));
+        }
+    }
+
+    #[instrument(skip(self))]
+    pub async fn status_notify(
+        &self,
+        bundle_id: &bundle::BundleId,
+        kind: StatusKind,
+        reason: bundle::StatusReportReasonCode,
+        timestamp: Option<time::OffsetDateTime>,
+    ) {
+        if let Some(endpoint) = &self.inner {
+            let _ = endpoint
+                .lock()
+                .await
+                .status_notify(tonic::Request::new(StatusNotifyRequest {
+                    token: self.token.clone(),
+                    bundle_id: bundle_id.to_key(),
+                    kind: kind as i32,
+                    reason: reason.into(),
+                    timestamp: timestamp.map(services::to_timestamp),
+                }))
+                .await
+                .inspect_err(|s| info!("status_notify failed: {s}"));
         }
     }
 }

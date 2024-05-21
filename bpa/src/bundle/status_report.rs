@@ -118,6 +118,7 @@ impl TryFrom<u64> for StatusReportReasonCode {
     }
 }
 
+#[derive(Debug)]
 pub struct StatusAssertion(pub Option<time::OffsetDateTime>);
 
 impl cbor::encode::ToCbor for StatusAssertion {
@@ -133,7 +134,7 @@ impl cbor::encode::ToCbor for StatusAssertion {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct BundleStatusReport {
     pub bundle_id: bundle::BundleId,
     pub received: Option<StatusAssertion>,
@@ -250,6 +251,7 @@ impl cbor::decode::FromCbor for BundleStatusReport {
     }
 }
 
+#[derive(Debug)]
 pub enum AdministrativeRecord {
     BundleStatusReport(BundleStatusReport),
 }

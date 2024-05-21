@@ -77,7 +77,7 @@ message PollResponse {
 
 service application {
     rpc CollectionNotify(CollectionNotifyRequest) returns (CollectionNotifyResponse);  // Bundle is ready for collection
-    rpc DeliveryNotify(DeliveryNotifyRequest) returns (DeliveryNotifyResponse); // Bundle has been delivered to the destination application
+    rpc StatusNotify(StatusNotifyRequest) returns (StatusNotifyResponse); // Something has happened to the bundle
 }
 
 message CollectionNotifyRequest {
@@ -88,13 +88,20 @@ message CollectionNotifyRequest {
 message CollectionNotifyResponse {
 }
 
-message DeliveryNotifyRequest {
+message StatusNotifyRequest {
+    enum StatusKind {
+        _Unknown = 0;
+        Received = 1;
+        Forwarded = 2;
+        Delivered = 3;
+        Deleted = 4;
+    }
     string Token = 1;
     string BundleId = 2;
-    bool Success = 3;
+    StatusKind Kind = 3;
     uint64 Reason = 4;
-    optional google.protobuf.Timestamp DeliveryTime = 5;
+    optional google.protobuf.Timestamp Timestamp = 5;
 }
 
-message DeliveryNotifyResponse {
+message StatusNotifyResponse {
 }
