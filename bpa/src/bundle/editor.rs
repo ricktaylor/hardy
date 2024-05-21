@@ -180,26 +180,12 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn must_replicate(mut self, must_replicate: bool) -> Self {
-        self.template.flags.must_replicate = must_replicate;
+    pub fn flags(mut self, flags: bundle::BlockFlags) -> Self {
+        self.template.flags = flags;
         self
     }
 
-    /*pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
-        self.template.flags.report_on_failure = report_on_failure;
-        self
-    }
-
-    pub fn delete_bundle_on_failure(mut self, delete_bundle_on_failure: bool) -> Self {
-        self.template.flags.delete_bundle_on_failure = delete_bundle_on_failure;
-        self
-    }
-
-    pub fn delete_block_on_failure(mut self, delete_block_on_failure: bool) -> Self {
-        self.template.flags.delete_block_on_failure = delete_block_on_failure;
-        self
-    }
-
+    /*
     pub fn crc_type(mut self, crc_type: CrcType) -> Self {
         self.template.crc_type = crc_type;
         self

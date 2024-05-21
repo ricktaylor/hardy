@@ -43,48 +43,12 @@ impl Builder {
         }
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub fn is_admin_record(mut self, is_admin_record: bool) -> Self {
-        self.bundle_flags.is_admin_record = is_admin_record;
+    pub fn flags(mut self, flags: bundle::BundleFlags) -> Self {
+        self.bundle_flags = flags;
         self
     }
 
-    pub fn do_not_fragment(mut self, do_not_fragment: bool) -> Self {
-        self.bundle_flags.do_not_fragment = do_not_fragment;
-        self
-    }
-
-    pub fn app_ack_requested(mut self, app_ack_requested: bool) -> Self {
-        self.bundle_flags.app_ack_requested = app_ack_requested;
-        self
-    }
-
-    /*pub fn report_status_time(mut self, report_status_time: bool) -> Self {
-        self.bundle_flags.report_status_time = report_status_time;
-        self
-    }
-
-    pub fn receipt_report_requested(mut self, receipt_report_requested: bool) -> Self {
-        self.bundle_flags.receipt_report_requested = receipt_report_requested;
-        self
-    }
-
-    pub fn forward_report_requested(mut self, forward_report_requested: bool) -> Self {
-        self.bundle_flags.forward_report_requested = forward_report_requested;
-        self
-    }
-
-    pub fn delivery_report_requested(mut self, delivery_report_requested: bool) -> Self {
-        self.bundle_flags.delivery_report_requested = delivery_report_requested;
-        self
-    }
-
-    pub fn delete_report_requested(mut self, delete_report_requested: bool) -> Self {
-        self.bundle_flags.delete_report_requested = delete_report_requested;
-        self
-    }
-
-    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
+    /*pub fn crc_type(mut self, crc_type: CrcType) -> Self {
         self.crc_type = crc_type;
         self
     }*/

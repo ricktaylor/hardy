@@ -34,6 +34,22 @@ impl Config {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct SendRequest {
+    pub source: bundle::Eid,
+    pub destination: bundle::Eid,
+    pub data: Vec<u8>,
+    pub lifetime: Option<u64>,
+    pub flags: Option<bundle::BundleFlags>,
+}
+
+pub struct CollectResponse {
+    pub bundle_id: String,
+    pub expiry: time::OffsetDateTime,
+    pub acknowledge: bool,
+    pub data: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub struct Dispatcher {
     config: Config,
@@ -577,7 +593,12 @@ impl Dispatcher {
         let mut editor = bundle::Editor::new(bundle)
             // Previous Node Block
             .replace_extension_block(bundle::BlockType::PreviousNode)
-            .must_replicate(true)
+            .flags(bundle::BlockFlags {
+                must_replicate: true,
+                report_on_failure: true,
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
             .data(cbor::encode::emit_array(Some(1), |a| {
                 a.emit(
                     &self
@@ -592,7 +613,12 @@ impl Dispatcher {
         if let Some(mut hop_count) = bundle.hop_count {
             editor = editor
                 .replace_extension_block(bundle::BlockType::HopCount)
-                .must_replicate(true)
+                .flags(bundle::BlockFlags {
+                    must_replicate: true,
+                    report_on_failure: true,
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                })
                 .data(cbor::encode::emit_array(Some(2), |a| {
                     hop_count.count += 1;
                     a.emit(hop_count.limit);
@@ -620,7 +646,12 @@ impl Dispatcher {
         {
             editor = editor
                 .replace_extension_block(bundle::BlockType::BundleAge)
-                .must_replicate(true)
+                .flags(bundle::BlockFlags {
+                    must_replicate: true,
+                    report_on_failure: true,
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                })
                 .data(cbor::encode::emit_array(Some(1), |a| a.emit(bundle_age)))
                 .build();
 
@@ -787,7 +818,10 @@ impl Dispatcher {
     ) -> Result<(), Error> {
         // Create a bundle report
         let (bundle, data) = bundle::Builder::new()
-            .is_admin_record(true)
+            .flags(bundle::BundleFlags {
+                is_admin_record: true,
+                ..Default::default()
+            })
             .source(&self.config.admin_endpoints.get_admin_endpoint(report_to))
             .destination(report_to)
             .add_payload_block(payload)
@@ -805,35 +839,29 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    pub async fn local_dispatch(
-        &self,
-        source: bundle::Eid,
-        destination: bundle::Eid,
-        data: Vec<u8>,
-        lifetime: Option<u64>,
-        app_ack_requested: bool,
-        do_not_fragment: bool,
-    ) -> Result<(), Error> {
+    pub async fn local_dispatch(&self, request: SendRequest) -> Result<(), Error> {
         // Build the bundle
         let mut b = bundle::Builder::new()
-            .source(&source)
-            .destination(&destination);
+            .source(&request.source)
+            .destination(&request.destination);
 
         // Set flags
-        if app_ack_requested || do_not_fragment {
-            b = b
-                .app_ack_requested(app_ack_requested)
-                .do_not_fragment(do_not_fragment)
-                .report_to(&self.config.admin_endpoints.get_admin_endpoint(&destination));
+        if let Some(flags) = request.flags {
+            b = b.flags(flags).report_to(
+                &self
+                    .config
+                    .admin_endpoints
+                    .get_admin_endpoint(&request.destination),
+            );
         }
 
         // Lifetime
-        if let Some(lifetime) = lifetime {
+        if let Some(lifetime) = request.lifetime {
             b = b.lifetime(lifetime);
         }
 
         // Add payload and build
-        let (bundle, data) = b.add_payload_block(data).build()?;
+        let (bundle, data) = b.add_payload_block(request.data).build()?;
 
         // Store to store
         let metadata = self
@@ -904,7 +932,7 @@ impl Dispatcher {
         &self,
         destination: bundle::Eid,
         bundle_id: String,
-    ) -> Result<Option<(String, Vec<u8>, time::OffsetDateTime)>, Error> {
+    ) -> Result<Option<CollectResponse>, Error> {
         // Lookup bundle
         let Some((metadata, bundle)) = self
             .store
@@ -931,10 +959,18 @@ impl Dispatcher {
             self.report_bundle_delivery(&metadata, &bundle).await?;
 
             // Prepare the response
-            let r = Some((bundle.id.to_key(), (*data).as_ref().to_vec(), expiry));
+            let response = CollectResponse {
+                bundle_id: bundle.id.to_key(),
+                data: (*data).as_ref().to_vec(),
+                expiry,
+                acknowledge: bundle.flags.app_ack_requested,
+            };
 
             // And we can now tombstone the bundle
-            self.store.remove(&metadata.storage_name).await.map(|_| r)
+            self.store
+                .remove(&metadata.storage_name)
+                .await
+                .map(|_| Some(response))
         } else {
             Ok(None)
         }

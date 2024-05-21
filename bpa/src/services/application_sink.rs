@@ -48,38 +48,51 @@ impl ApplicationSink for Service {
     #[instrument(skip(self))]
     async fn send(&self, request: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
         let request = request.into_inner();
-        let destination = match request
-            .destination
-            .parse::<bundle::Eid>()
-            .map_err(|e| Status::from_error(e.into()))?
-        {
-            bundle::Eid::Null => {
-                return Err(Status::invalid_argument("Cannot send to Null endpoint"))
-            }
-            eid => eid,
+        let mut send_request = dispatcher::SendRequest {
+            source: self.app_registry.find_by_token(&request.token)?,
+            destination: match request
+                .destination
+                .parse::<bundle::Eid>()
+                .map_err(|e| Status::from_error(e.into()))?
+            {
+                bundle::Eid::Null => {
+                    return Err(Status::invalid_argument("Cannot send to Null endpoint"))
+                }
+                eid => eid,
+            },
+            data: request.data,
+            lifetime: request.lifetime,
+            ..Default::default()
         };
 
-        let mut app_ack_requested = false;
-        let mut do_not_fragment = false;
         if let Some(flags) = request.flags {
-            if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
-                app_ack_requested = true;
-            }
+            let mut bundle_flags = bundle::BundleFlags::default();
             if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
-                do_not_fragment = true;
+                bundle_flags.do_not_fragment = true;
             }
+            if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
+                bundle_flags.app_ack_requested = true;
+            }
+            if flags & (send_request::SendFlags::ReportStatusTime as u32) != 0 {
+                bundle_flags.report_status_time = true;
+            }
+            if flags & (send_request::SendFlags::NotifyReception as u32) != 0 {
+                bundle_flags.receipt_report_requested = true;
+            }
+            if flags & (send_request::SendFlags::NotifyForwarding as u32) != 0 {
+                bundle_flags.forward_report_requested = true;
+            }
+            if flags & (send_request::SendFlags::NotifyDelivery as u32) != 0 {
+                bundle_flags.delivery_report_requested = true;
+            }
+            if flags & (send_request::SendFlags::NotifyDeletion as u32) != 0 {
+                bundle_flags.delete_report_requested = true;
+            }
+            send_request.flags = Some(bundle_flags);
         }
 
-        let source = self.app_registry.find_by_token(&request.token)?;
         self.dispatcher
-            .local_dispatch(
-                source,
-                destination,
-                request.data,
-                request.lifetime,
-                app_ack_requested,
-                do_not_fragment,
-            )
+            .local_dispatch(send_request)
             .await
             .map(|_| Response::new(SendResponse {}))
             .map_err(Status::from_error)
@@ -91,7 +104,7 @@ impl ApplicationSink for Service {
         request: Request<CollectRequest>,
     ) -> Result<Response<CollectResponse>, Status> {
         let request = request.into_inner();
-        let Some((bundle_id, data, expiry)) = self
+        let Some(response) = self
             .dispatcher
             .collect(
                 self.app_registry.find_by_token(&request.token)?,
@@ -104,9 +117,10 @@ impl ApplicationSink for Service {
         };
 
         Ok(Response::new(CollectResponse {
-            bundle_id,
-            data,
-            expiry: Some(to_timestamp(expiry)),
+            bundle_id: response.bundle_id,
+            data: response.data,
+            expiry: Some(to_timestamp(response.expiry)),
+            acknowledge: response.acknowledge,
         }))
     }
 

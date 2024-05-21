@@ -38,6 +38,11 @@ message SendRequest {
         _Unused = 0;
         DoNotFragment = 4;
         Acknowledge = 0x20;
+        ReportStatusTime = 0x40;
+        NotifyReception = 0x4000;
+        NotifyForwarding = 0x10000;
+        NotifyDelivery = 0x20000;
+        NotifyDeletion = 0x40000;
     }
     string Token = 1;
     string Destination = 2;
@@ -57,7 +62,8 @@ message CollectRequest {
 message CollectResponse {
     string BundleId = 1;
     google.protobuf.Timestamp expiry = 2;
-    bytes Data = 3;
+    bool Acknowledge = 3;
+    bytes Data = 4;
 }
 
 message PollRequest {
