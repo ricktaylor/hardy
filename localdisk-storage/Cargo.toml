@@ -25,7 +25,7 @@ time = "0.3.36"
 cfg-if = "1.0.0"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.153"
+libc = "0.2.155"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
