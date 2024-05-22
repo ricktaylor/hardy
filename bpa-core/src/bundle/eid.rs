@@ -287,23 +287,18 @@ impl std::str::FromStr for Eid {
         } else if let Some(s) = s.strip_prefix("ipn:") {
             let parts = s.split('.').collect::<Vec<&str>>();
             if parts.len() == 2 {
-                let v1 = parts[0].parse::<u32>().map_field_err("Node Number")?;
-                let v2 = parts[1].parse::<u32>().map_field_err("Service Number")?;
                 Ok(Self::Ipn3 {
                     allocator_id: 0,
-                    node_number: v1,
-                    service_number: v2,
+                    node_number: parts[0].parse::<u32>().map_field_err("Node Number")?,
+                    service_number: parts[1].parse::<u32>().map_field_err("Service Number")?,
                 })
             } else if parts.len() == 3 {
-                let v1 = parts[0]
-                    .parse::<u32>()
-                    .map_field_err("Allocator Identifier")?;
-                let v2 = parts[1].parse::<u32>().map_field_err("Node Number")?;
-                let v3 = parts[2].parse::<u32>().map_field_err("Service Number")?;
                 Ok(Self::Ipn3 {
-                    allocator_id: v1,
-                    node_number: v2,
-                    service_number: v3,
+                    allocator_id: parts[0]
+                        .parse::<u32>()
+                        .map_field_err("Allocator Identifier")?,
+                    node_number: parts[1].parse::<u32>().map_field_err("Node Number")?,
+                    service_number: parts[2].parse::<u32>().map_field_err("Service Number")?,
                 })
             } else {
                 Err(Error::IpnAdditionalItems)
