@@ -46,7 +46,7 @@ pub struct SendRequest {
 pub struct CollectResponse {
     pub bundle_id: String,
     pub expiry: time::OffsetDateTime,
-    pub acknowledge: bool,
+    pub app_ack_requested: bool,
     pub data: Vec<u8>,
 }
 
@@ -1032,7 +1032,7 @@ impl Dispatcher {
                 bundle_id: bundle.id.to_key(),
                 data: (*data).as_ref().to_vec(),
                 expiry,
-                acknowledge: bundle.flags.app_ack_requested,
+                app_ack_requested: bundle.flags.app_ack_requested,
             };
 
             // And we can now tombstone the bundle

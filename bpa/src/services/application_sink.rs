@@ -70,7 +70,7 @@ impl ApplicationSink for Service {
             if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
                 bundle_flags.do_not_fragment = true;
             }
-            if flags & (send_request::SendFlags::Acknowledge as u32) != 0 {
+            if flags & (send_request::SendFlags::RequestAck as u32) != 0 {
                 bundle_flags.app_ack_requested = true;
             }
             if flags & (send_request::SendFlags::ReportStatusTime as u32) != 0 {
@@ -120,7 +120,7 @@ impl ApplicationSink for Service {
             bundle_id: response.bundle_id,
             data: response.data,
             expiry: Some(to_timestamp(response.expiry)),
-            acknowledge: response.acknowledge,
+            ack_requested: response.app_ack_requested,
         }))
     }
 

@@ -37,7 +37,7 @@ message SendRequest {
     enum SendFlags {
         _Unused = 0;
         DoNotFragment = 4;
-        Acknowledge = 0x20;
+        RequestAck = 0x20;
         ReportStatusTime = 0x40;
         NotifyReception = 0x4000;
         NotifyForwarding = 0x10000;
@@ -62,7 +62,7 @@ message CollectRequest {
 message CollectResponse {
     string BundleId = 1;
     google.protobuf.Timestamp expiry = 2;
-    bool Acknowledge = 3;
+    bool AckRequested = 3;
     bytes Data = 4;
 }
 
