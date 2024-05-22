@@ -43,7 +43,7 @@ impl Builder {
         }
     }
 
-    pub fn flags(mut self, flags: bundle::BundleFlags) -> Self {
+    pub fn flags(mut self, flags: BundleFlags) -> Self {
         self.bundle_flags = flags;
         self
     }
@@ -115,7 +115,7 @@ impl Builder {
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
         let timestamp = time::OffsetDateTime::now_utc();
         let timestamp = CreationTimestamp {
-            creation_time: to_dtn_time(&timestamp),
+            creation_time: dtn_time::to_dtn_time(&timestamp),
             sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
         };
 

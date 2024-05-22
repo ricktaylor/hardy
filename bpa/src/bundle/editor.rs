@@ -180,7 +180,7 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn flags(mut self, flags: bundle::BlockFlags) -> Self {
+    pub fn flags(mut self, flags: BlockFlags) -> Self {
         self.template.flags = flags;
         self
     }

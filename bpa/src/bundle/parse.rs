@@ -26,10 +26,10 @@ pub enum Error {
     InvalidBlockNumber,
 
     #[error("Bundle has multiple {0:?} blocks")]
-    DuplicateBlocks(bundle::BlockType),
+    DuplicateBlocks(BlockType),
 
     #[error("{0:?} block has additional data")]
-    BlockAdditionalData(bundle::BlockType),
+    BlockAdditionalData(BlockType),
 
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
     MissingBundleAge,
