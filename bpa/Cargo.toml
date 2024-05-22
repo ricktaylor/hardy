@@ -41,4 +41,4 @@ tokio-stream = "0.1.15"
 prost-types = "0.12.6"
 
 [build-dependencies]
-built = "0.7.2"
+built = "0.7.3"
