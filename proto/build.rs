@@ -1,5 +1,22 @@
+use std::path::Path;
+
+// Clone of tonic_build::compile_protos() to add --experimental_allow_proto3_optional
+fn compile_proto(proto: impl AsRef<Path>) -> std::io::Result<()> {
+    let proto_path: &Path = proto.as_ref();
+
+    // directory the main .proto file resides in
+    let proto_dir = proto_path
+        .parent()
+        .expect("proto file should reside in a directory");
+
+    tonic_build::configure()
+        .protoc_arg("--experimental_allow_proto3_optional") // for older systems
+        .compile(&[proto_path], &[proto_dir])
+        .map_err(|e| e.into())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::compile_protos("cla.proto")?;
-    tonic_build::compile_protos("application.proto")?;
+    compile_proto("cla.proto")?;
+    compile_proto("application.proto")?;
     Ok(())
 }
