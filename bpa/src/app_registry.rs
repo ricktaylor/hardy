@@ -88,7 +88,9 @@ impl AppRegistry {
                         "Cannot register the administrative endpoint",
                     ));
                 } else if let Some(node_id) = &self.admin_endpoints.dtn {
-                    node_id.to_eid(s)
+                    node_id
+                        .to_eid(s)
+                        .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?
                 } else {
                     return Err(tonic::Status::not_found(
                         "Node does not have a dtn scheme node-name",
@@ -110,10 +112,12 @@ impl AppRegistry {
             }
             None => loop {
                 let eid = match (&self.admin_endpoints.ipn, &self.admin_endpoints.dtn) {
-                    (None, Some(node_id)) => node_id.to_eid(&format!(
-                        "auto/{}",
-                        Alphanumeric.sample_string(&mut rng, 16)
-                    )),
+                    (None, Some(node_id)) => node_id
+                        .to_eid(&format!(
+                            "auto/{}",
+                            Alphanumeric.sample_string(&mut rng, 16)
+                        ))
+                        .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?,
                     (Some(node_id), _) => node_id.to_eid(
                         (Into::<u16>::into(rng.gen::<std::num::NonZeroU16>()) & 0x7F7Fu16) as u32,
                     ),

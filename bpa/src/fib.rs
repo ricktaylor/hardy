@@ -33,7 +33,7 @@ pub enum Destination {
     },
     Dtn {
         node_name: String,
-        demux: String,
+        demux: Vec<String>,
     },
 }
 
@@ -50,16 +50,6 @@ impl std::fmt::Display for Destination {
                 )
             }
             Destination::Ipn2 {
-                allocator_id: 0,
-                node_number,
-                service_number,
-            }
-            | Destination::Ipn3 {
-                allocator_id: 0,
-                node_number,
-                service_number,
-            } => write!(f, "ipn:{node_number}.{service_number}"),
-            Destination::Ipn2 {
                 allocator_id,
                 node_number,
                 service_number,
@@ -68,8 +58,17 @@ impl std::fmt::Display for Destination {
                 allocator_id,
                 node_number,
                 service_number,
-            } => write!(f, "ipn:{allocator_id}.{node_number}.{service_number}"),
-            Destination::Dtn { node_name, demux } => write!(f, "dtn://{node_name}/{demux}"),
+            } => bundle::Eid::Ipn3 {
+                allocator_id: *allocator_id,
+                node_number: *node_number,
+                service_number: *service_number,
+            }
+            .fmt(f),
+            Destination::Dtn { node_name, demux } => bundle::Eid::Dtn {
+                node_name: node_name.clone(),
+                demux: demux.clone(),
+            }
+            .fmt(f),
         }
     }
 }

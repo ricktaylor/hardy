@@ -34,11 +34,10 @@ pub struct DtnNodeId {
 }
 
 impl DtnNodeId {
-    pub fn to_eid(&self, demux: &str) -> Eid {
-        Eid::Dtn {
-            node_name: self.node_name.clone(),
-            demux: demux.to_string(),
-        }
+    pub fn to_eid(&self, demux: &str) -> Result<Eid, super::Error> {
+        format!("dtn://{}/{demux}", self.node_name)
+            .parse::<Eid>()
+            .map_err(|e| e.into())
     }
 }
 
@@ -79,7 +78,10 @@ impl AdminEndpoints {
 
     pub fn get_admin_endpoint(&self, destination: &Eid) -> Eid {
         match (&self.ipn, &self.dtn) {
-            (None, Some(node_id)) => node_id.to_eid(""),
+            (None, Some(node_id)) => Eid::Dtn {
+                node_name: node_id.node_name.clone(),
+                demux: Vec::new(),
+            },
             (Some(node_id), None) => match destination {
                 Eid::LocalNode { service_number: _ } => Eid::LocalNode { service_number: 0 },
                 Eid::Ipn2 {
@@ -107,7 +109,10 @@ impl AdminEndpoints {
                 Eid::Dtn {
                     node_name: _,
                     demux: _,
-                } => dtn_node_id.to_eid(""),
+                } => Eid::Dtn {
+                    node_name: dtn_node_id.node_name.clone(),
+                    demux: Vec::new(),
+                },
                 _ => ipn_node_id.to_eid(0),
             },
             _ => unreachable!(),
