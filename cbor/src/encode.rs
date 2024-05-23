@@ -421,6 +421,13 @@ impl ToCbor for bool {
     }
 }
 
+impl ToCbor for String {
+    fn to_cbor(self, encoder: &mut Encoder) {
+        encoder.emit_uint_minor(3, self.len() as u64);
+        encoder.data.extend(self.as_bytes())
+    }
+}
+
 impl ToCbor for &str {
     fn to_cbor(self, encoder: &mut Encoder) {
         encoder.emit_uint_minor(3, self.len() as u64);

@@ -20,7 +20,7 @@ pub enum Eid {
     },
     Dtn {
         node_name: String,
-        demux: String,
+        demux: Vec<String>,
     },
 }
 
@@ -67,6 +67,9 @@ pub enum Error {
 
     #[error("Expecting CBOR array")]
     ArrayExpected(#[from] cbor::decode::Error),
+
+    #[error(transparent)]
+    InvalidUtf8(#[from] std::string::FromUtf8Error),
 }
 
 trait CaptureFieldErr<T> {
@@ -84,6 +87,29 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
+fn parse_dtn_parts(s: &str) -> Result<Eid, Error> {
+    if let Some((s1, s2)) = s.split_once('/') {
+        if s1.is_empty() {
+            Err(Error::DtnNodeNameEmpty)
+        } else {
+            Ok(Eid::Dtn {
+                node_name: s1.to_string(),
+                demux: s2.split('/').try_fold(Vec::new(), |mut v, s| {
+                    let s = urlencoding::decode(s)?;
+                    if !s.is_ascii() {
+                        Err(Error::DtnNotASCII)
+                    } else {
+                        v.push(s.into_owned());
+                        Ok(v)
+                    }
+                })?,
+            })
+        }
+    } else {
+        Err(Error::DtnMissingSlash)
+    }
+}
+
 impl Eid {
     fn parse_dtn_eid(value: cbor::decode::Value) -> Result<Eid, Error> {
         match value {
@@ -93,21 +119,8 @@ impl Eid {
                 Ok(Self::Null)
             }
             cbor::decode::Value::Text(s, _) => {
-                if !s.is_ascii() {
-                    Err(Error::DtnNotASCII)
-                } else if let Some(s) = s.strip_prefix("//") {
-                    if let Some((s1, s2)) = s.split_once('/') {
-                        if s1.is_empty() {
-                            Err(Error::DtnNodeNameEmpty)
-                        } else {
-                            Ok(Self::Dtn {
-                                node_name: s1.to_string(),
-                                demux: s2.to_string(),
-                            })
-                        }
-                    } else {
-                        Err(Error::DtnMissingSlash)
-                    }
+                if let Some(s) = s.strip_prefix("//") {
+                    parse_dtn_parts(s)
                 } else {
                     Err(Error::DtnMissingPrefix)
                 }
@@ -182,7 +195,15 @@ impl cbor::encode::ToCbor for &Eid {
             }),
             Eid::Dtn { node_name, demux } => encoder.emit_array(Some(2), |a| {
                 a.emit(1);
-                a.emit(["/", node_name.as_str(), demux.as_str()].join("/").as_str())
+                a.emit(format!(
+                    "//{}/{}",
+                    node_name,
+                    demux
+                        .iter()
+                        .map(|s| urlencoding::encode(s))
+                        .collect::<Vec<std::borrow::Cow<str>>>()
+                        .join("/")
+                ))
             }),
             Eid::Ipn2 {
                 allocator_id,
@@ -270,20 +291,7 @@ impl std::str::FromStr for Eid {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(s) = s.strip_prefix("dtn://") {
-            if !s.is_ascii() {
-                Err(Error::DtnNotASCII)
-            } else if let Some((s1, s2)) = s.split_once('/') {
-                if s1.is_empty() {
-                    Err(Error::DtnNodeNameEmpty)
-                } else {
-                    Ok(Self::Dtn {
-                        node_name: s1.to_string(),
-                        demux: s2.to_string(),
-                    })
-                }
-            } else {
-                Err(Error::DtnMissingSlash)
-            }
+            parse_dtn_parts(s)
         } else if let Some(s) = s.strip_prefix("ipn:") {
             let parts = s.split('.').collect::<Vec<&str>>();
             if parts.len() == 2 {
@@ -358,7 +366,15 @@ impl std::fmt::Display for Eid {
                 node_number,
                 service_number,
             } => write!(f, "ipn:{allocator_id}.{node_number}.{service_number}"),
-            Eid::Dtn { node_name, demux } => write!(f, "dtn://{node_name}/{demux}"),
+            Eid::Dtn { node_name, demux } => write!(
+                f,
+                "dtn://{node_name}/{}",
+                demux
+                    .iter()
+                    .map(|s| urlencoding::encode(s))
+                    .collect::<Vec<std::borrow::Cow<str>>>()
+                    .join("/")
+            ),
         }
     }
 }
