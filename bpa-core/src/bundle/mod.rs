@@ -11,6 +11,7 @@ mod bundle_type;
 mod crc;
 mod creation_timestamp;
 mod eid;
+mod eid_pattern;
 mod metadata;
 
 pub use block::Block;
@@ -23,4 +24,5 @@ pub use bundle_type::{Bundle, HopInfo};
 pub use crc::CrcType;
 pub use creation_timestamp::CreationTimestamp;
 pub use eid::{Eid, EidError};
+pub use eid_pattern::EidPattern;
 pub use metadata::Metadata;
