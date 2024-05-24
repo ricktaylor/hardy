@@ -22,5 +22,5 @@ pub use bundle_status::BundleStatus;
 pub use bundle_type::{Bundle, HopInfo};
 pub use crc::CrcType;
 pub use creation_timestamp::CreationTimestamp;
-pub use eid::Eid;
+pub use eid::{Eid, EidError};
 pub use metadata::Metadata;
