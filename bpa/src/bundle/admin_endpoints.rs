@@ -35,15 +35,20 @@ pub struct DtnNodeId {
 
 impl DtnNodeId {
     pub fn to_eid(&self, demux: &str) -> Result<Eid, super::Error> {
-        format!("dtn://{}/{demux}", self.node_name)
-            .parse::<Eid>()
-            .map_err(|e| e.into())
+        // Roundtrip via String for PctEncoding safety
+        let mut s = self.to_string();
+        s.push_str(demux);
+        s.parse::<Eid>().map_err(|e| e.into())
     }
 }
 
 impl std::fmt::Display for DtnNodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "dtn://{}/", self.node_name)
+        Eid::Dtn {
+            node_name: self.node_name.clone(),
+            demux: Vec::new(),
+        }
+        .fmt(f)
     }
 }
 
@@ -182,20 +187,14 @@ enum Error {
     #[error("Value must be a string, table, or array")]
     InvalidValue,
 
-    #[error("dtn URIs must be ASCII")]
-    DtnNotASCII,
-
-    #[error("dtn node-name is empty")]
-    DtnNodeNameEmpty,
-
     #[error("dtn administrative endpoints must not have a demux part")]
     DtnHasDemux,
 
     #[error("Administrative endpoints must not be Null")]
     NotNone,
 
-    #[error("More than 3 components in an ipn administrative endpoint")]
-    IpnAdditionalItems,
+    #[error("Administrative endpoints must not be LocalNode")]
+    NotLocalNode,
 
     #[error("ipn administrative endpoints must have service number 0")]
     IpnNonZeroServiceNumber,
@@ -212,26 +211,11 @@ enum Error {
     #[error("No administrative endpoints in configuration")]
     NoEndpoints,
 
-    #[error("Failed to parse {field}: {source}")]
-    InvalidField {
-        field: &'static str,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-}
+    #[error(transparent)]
+    Parser(#[from] bundle::EidError),
 
-trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
-}
-
-impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
-    for std::result::Result<T, E>
-{
-    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
-        self.map_err(|e| Error::InvalidField {
-            field,
-            source: e.into(),
-        })
-    }
+    #[error(transparent)]
+    Config(#[from] config::ConfigError),
 }
 
 fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
@@ -243,98 +227,42 @@ fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
     }
 }
 
-fn init_from_dtn(s: &str) -> Result<AdminEndpoints, Error> {
-    if !s.is_ascii() {
-        Err(Error::DtnNotASCII)
-    } else if let Some((s1, s2)) = s.split_once('/') {
-        if s1.is_empty() {
-            Err(Error::DtnNodeNameEmpty)
-        } else if !s2.is_empty() {
-            Err(Error::DtnHasDemux)
-        } else {
-            Ok(AdminEndpoints {
-                dtn: Some(DtnNodeId {
-                    node_name: s1.to_string(),
-                }),
-                ipn: None,
-            })
-        }
-    } else {
-        Ok(AdminEndpoints {
-            dtn: Some(DtnNodeId {
-                node_name: s.to_string(),
-            }),
-            ipn: None,
-        })
-    }
-}
-
-fn init_from_ipn(s: &str) -> Result<AdminEndpoints, Error> {
-    let parts = s.split('.').collect::<Vec<&str>>();
-    if parts.len() == 1 {
-        let node_number = parts[0].parse::<u32>().map_field_err("Node Number")?;
-        if node_number == 0 {
-            Err(Error::NotNone)
-        } else {
-            Ok(AdminEndpoints {
-                ipn: Some(IpnNodeId {
-                    allocator_id: 0,
-                    node_number,
-                }),
-                dtn: None,
-            })
-        }
-    } else if parts.len() == 2 {
-        let node_number = parts[0].parse::<u32>().map_field_err("Node Number")?;
-        let service_number = parts[1].parse::<u32>().map_field_err("Service Number")?;
-        if service_number != 0 {
-            Err(Error::IpnNonZeroServiceNumber)
-        } else if node_number == 0 {
-            Err(Error::NotNone)
-        } else {
-            Ok(AdminEndpoints {
-                ipn: Some(IpnNodeId {
-                    allocator_id: 0,
-                    node_number,
-                }),
-                dtn: None,
-            })
-        }
-    } else if parts.len() == 3 {
-        let allocator_id = parts[0]
-            .parse::<u32>()
-            .map_field_err("Allocator Identifier")?;
-        let node_number = parts[1].parse::<u32>().map_field_err("Node Number")?;
-        let service_number = parts[2].parse::<u32>().map_field_err("Service Number")?;
-        if service_number != 0 {
-            Err(Error::IpnNonZeroServiceNumber)
-        } else if allocator_id == 0 && node_number == 0 {
-            Err(Error::NotNone)
-        } else {
-            Ok(AdminEndpoints {
-                ipn: Some(IpnNodeId {
-                    allocator_id,
-                    node_number,
-                }),
-                dtn: None,
-            })
-        }
-    } else {
-        Err(Error::IpnAdditionalItems)
-    }
-}
-
 fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
-    if let Some(s) = s.strip_prefix("dtn://") {
-        init_from_dtn(s)
-    } else if let Some(s) = s.strip_prefix("ipn:") {
-        init_from_ipn(s)
-    } else if s == "dtn:none" {
-        Err(Error::NotNone)
-    } else if let Some((schema, _)) = s.split_once(':') {
-        Err(Error::UnsupportedScheme(schema.to_string()))
-    } else {
-        Err(Error::UnsupportedScheme(s.to_string()))
+    match s.parse::<bundle::Eid>()? {
+        Eid::Null => Err(Error::NotNone),
+        Eid::LocalNode { service_number: _ } => Err(Error::NotLocalNode),
+        Eid::Ipn2 {
+            allocator_id,
+            node_number,
+            service_number,
+        }
+        | Eid::Ipn3 {
+            allocator_id,
+            node_number,
+            service_number,
+        } => {
+            if service_number != 0 {
+                Err(Error::IpnNonZeroServiceNumber)
+            } else {
+                Ok(AdminEndpoints {
+                    ipn: Some(IpnNodeId {
+                        allocator_id,
+                        node_number,
+                    }),
+                    dtn: None,
+                })
+            }
+        }
+        Eid::Dtn { node_name, demux } => {
+            if !demux.is_empty() {
+                Err(Error::DtnHasDemux)
+            } else {
+                Ok(AdminEndpoints {
+                    dtn: Some(DtnNodeId { node_name }),
+                    ipn: None,
+                })
+            }
+        }
     }
 }
 
@@ -346,11 +274,11 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<AdminEndpoints, 
     for (k, v) in t {
         let n = match k.as_str() {
             "dtn" => {
-                let s = v.into_string().map_field_err("dtn node id")?;
+                let s = v.into_string()?;
                 if s == "none" {
                     Err(Error::NotNone)
                 } else {
-                    init_from_dtn(&s)
+                    init_from_string(format!("dtn://{s}"))
                 }
             }
             "ipn" => match v.kind {
@@ -383,8 +311,8 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<AdminEndpoints, 
                     }),
                 }),
                 _ => {
-                    let s = v.into_string().map_field_err("ipn node id")?;
-                    init_from_ipn(&s)
+                    let s = v.into_string()?;
+                    init_from_string(format!("ipn:{s}"))
                 }
             },
             _ => return Err(Error::UnsupportedScheme(k)),
