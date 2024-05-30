@@ -1,5 +1,5 @@
 use super::*;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use thiserror::Error;
 
 #[derive(Default, Debug, Clone)]
@@ -63,7 +63,7 @@ fn url_decode(s: &str, span: &mut Span) -> Result<String, Error> {
         })
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 pub enum EidPattern {
     Set(Vec<EidPatternItem>),
     Any,
@@ -113,7 +113,65 @@ impl std::str::FromStr for EidPattern {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+impl From<Eid> for EidPattern {
+    fn from(value: Eid) -> Self {
+        match value {
+            Eid::Null => EidPattern::Set(vec![
+                EidPatternItem::DtnPatternItem(DtnPatternItem::None),
+                EidPatternItem::IpnPatternItem(IpnPatternItem {
+                    allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                    node_number: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                    service_number: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                }),
+            ]),
+            Eid::LocalNode { service_number } => {
+                EidPattern::Set(vec![EidPatternItem::IpnPatternItem(IpnPatternItem {
+                    allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                    node_number: IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)]),
+                    service_number: IpnPattern::Range(vec![IpnInterval::Number(service_number)]),
+                })])
+            }
+            Eid::Ipn2 {
+                allocator_id,
+                node_number,
+                service_number,
+            }
+            | Eid::Ipn3 {
+                allocator_id,
+                node_number,
+                service_number,
+            } => EidPattern::Set(vec![EidPatternItem::IpnPatternItem(IpnPatternItem {
+                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(allocator_id)]),
+                node_number: IpnPattern::Range(vec![IpnInterval::Number(node_number)]),
+                service_number: IpnPattern::Range(vec![IpnInterval::Number(service_number)]),
+            })]),
+            Eid::Dtn {
+                node_name,
+                mut demux,
+            } => EidPattern::Set(vec![EidPatternItem::DtnPatternItem(
+                DtnPatternItem::DtnSsp(DtnSsp {
+                    authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact(node_name)),
+                    last: demux
+                        .pop()
+                        .map(|s| {
+                            DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
+                                PatternMatch::Exact(s),
+                            ))
+                        })
+                        .unwrap_or(DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
+                            PatternMatch::Exact("".to_string()),
+                        ))),
+                    singles: demux
+                        .into_iter()
+                        .map(|s| DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)))
+                        .collect(),
+                }),
+            )]),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum EidPatternItem {
     IpnPatternItem(IpnPatternItem),
     DtnPatternItem(DtnPatternItem),
@@ -126,10 +184,6 @@ impl EidPatternItem {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.is_match(eid),
             EidPatternItem::DtnPatternItem(i) => i.is_match(eid),
-            EidPatternItem::AnyTextScheme(s) if *s == "dtn" => is_dtn_eid(eid),
-            EidPatternItem::AnyTextScheme(s) if *s == "ipn" => is_ipn_eid(eid),
-            EidPatternItem::AnyNumericScheme(1) => is_dtn_eid(eid),
-            EidPatternItem::AnyNumericScheme(2) => is_ipn_eid(eid),
             _ => false,
         }
     }
@@ -173,9 +227,13 @@ impl EidPatternItem {
             }
             _ => match s1.chars().nth(0) {
                 Some('1'..='9') => {
-                    let Ok(s) = s1.parse::<u64>() else {
+                    let Ok(v) = s1.parse::<u64>() else {
                         return Err(Error::InvalidScheme(span.subset(s1.chars().count())));
                     };
+
+                    if v == 0 {
+                        return Err(Error::InvalidScheme(span.subset(s1.chars().count())));
+                    }
 
                     span.inc(s1.chars().count() + 1);
                     if s2 != "**" {
@@ -185,7 +243,11 @@ impl EidPatternItem {
                         ));
                     }
                     span.inc(2);
-                    Ok(EidPatternItem::AnyNumericScheme(s))
+                    match v {
+                        1 => Ok(EidPatternItem::IpnPatternItem(IpnPatternItem::new_any())),
+                        2 => Ok(EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())),
+                        _ => Ok(EidPatternItem::AnyNumericScheme(v)),
+                    }
                 }
                 Some('A'..='Z') | Some('a'..='z') => {
                     for c in s1.chars() {
@@ -203,7 +265,11 @@ impl EidPatternItem {
                         ));
                     }
                     span.inc(2);
-                    Ok(EidPatternItem::AnyTextScheme(s1.to_string()))
+                    match s1 {
+                        "ipn" => Ok(EidPatternItem::IpnPatternItem(IpnPatternItem::new_any())),
+                        "dtn" => Ok(EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())),
+                        _ => Ok(EidPatternItem::AnyTextScheme(s1.to_string())),
+                    }
                 }
                 _ => Err(Error::InvalidScheme(span.subset(s1.chars().count()))),
             },
@@ -211,42 +277,21 @@ impl EidPatternItem {
     }
 }
 
-fn is_dtn_eid(eid: &Eid) -> bool {
-    matches!(
-        eid,
-        Eid::Null
-            | Eid::Dtn {
-                node_name: _,
-                demux: _,
-            }
-    )
-}
-
-fn is_ipn_eid(eid: &Eid) -> bool {
-    matches!(
-        eid,
-        Eid::Null
-            | Eid::LocalNode { service_number: _ }
-            | Eid::Ipn2 {
-                allocator_id: _,
-                node_number: _,
-                service_number: _,
-            }
-            | Eid::Ipn3 {
-                allocator_id: _,
-                node_number: _,
-                service_number: _,
-            }
-    )
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 pub enum DtnPatternItem {
     DtnSsp(DtnSsp),
     None,
 }
 
 impl DtnPatternItem {
+    fn new_any() -> Self {
+        DtnPatternItem::DtnSsp(DtnSsp {
+            authority: DtnAuthPattern::MultiWildcard,
+            singles: Vec::new(),
+            last: DtnLastPattern::MultiWildcard,
+        })
+    }
+
     fn is_match(&self, eid: &Eid) -> bool {
         match self {
             DtnPatternItem::None => matches!(eid, Eid::Null),
@@ -275,7 +320,7 @@ impl DtnPatternItem {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 pub struct DtnSsp {
     authority: DtnAuthPattern,
     singles: Vec<DtnSinglePattern>,
@@ -358,7 +403,7 @@ impl DtnSsp {
         let mut parts = s2.split('/');
         let Some(last) = parts.nth_back(0) else {
             return Err(Error::Expecting(
-                "**".to_string(),
+                "/".to_string(),
                 span.subset(s2.chars().count()),
             ));
         };
@@ -377,7 +422,7 @@ impl DtnSsp {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 enum DtnAuthPattern {
     PatternMatch(PatternMatch),
     MultiWildcard,
@@ -411,7 +456,7 @@ impl DtnAuthPattern {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 enum DtnSinglePattern {
     PatternMatch(PatternMatch),
     Wildcard,
@@ -451,35 +496,6 @@ impl DtnSinglePattern {
 enum PatternMatch {
     Exact(String),
     RegExp(regex::Regex),
-}
-
-impl std::cmp::PartialEq for PatternMatch {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Exact(l), Self::Exact(r)) => l == r,
-            (Self::RegExp(l), Self::RegExp(r)) => l.as_str() == r.as_str(),
-            _ => false,
-        }
-    }
-}
-
-impl std::cmp::Eq for PatternMatch {}
-
-impl std::cmp::PartialOrd for PatternMatch {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for PatternMatch {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (PatternMatch::Exact(l), PatternMatch::Exact(r)) => l.cmp(r),
-            (PatternMatch::Exact(_), PatternMatch::RegExp(_)) => std::cmp::Ordering::Less,
-            (PatternMatch::RegExp(_), PatternMatch::Exact(_)) => std::cmp::Ordering::Greater,
-            (PatternMatch::RegExp(l), PatternMatch::RegExp(r)) => l.as_str().cmp(r.as_str()),
-        }
-    }
 }
 
 impl PatternMatch {
@@ -525,9 +541,10 @@ impl PatternMatch {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 enum DtnLastPattern {
     Single(DtnSinglePattern),
+    Empty,
     MultiWildcard,
 }
 
@@ -543,6 +560,7 @@ impl DtnLastPattern {
     fn is_exact(&self) -> Option<String> {
         match self {
             DtnLastPattern::Single(p) => p.is_exact(),
+            DtnLastPattern::Empty => Some("".to_string()),
             DtnLastPattern::MultiWildcard => None,
         }
     }
@@ -551,7 +569,9 @@ impl DtnLastPattern {
     dtn-last-pat = dtn-single-pat / multi-wildcard
     */
     fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
-        if s == "**" {
+        if s.is_empty() {
+            Ok(DtnLastPattern::Empty)
+        } else if s == "**" {
             span.inc(2);
             Ok(DtnLastPattern::MultiWildcard)
         } else {
@@ -560,14 +580,21 @@ impl DtnLastPattern {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 pub struct IpnPatternItem {
-    allocator_id: IpnPattern,
-    node_number: IpnPattern,
-    service_number: IpnPattern,
+    pub allocator_id: IpnPattern,
+    pub node_number: IpnPattern,
+    pub service_number: IpnPattern,
 }
 
 impl IpnPatternItem {
+    fn new_any() -> Self {
+        Self {
+            allocator_id: IpnPattern::Wildcard,
+            node_number: IpnPattern::Wildcard,
+            service_number: IpnPattern::Wildcard,
+        }
+    }
     fn is_match(&self, eid: &Eid) -> bool {
         match eid {
             Eid::Null => {
@@ -577,7 +604,7 @@ impl IpnPatternItem {
             }
             Eid::LocalNode { service_number } => {
                 self.allocator_id.is_match(0)
-                    && self.node_number.is_match((2 ^ 32) - 1)
+                    && self.node_number.is_match(u32::MAX)
                     && self.service_number.is_match(*service_number)
             }
             Eid::Ipn2 {
@@ -634,8 +661,8 @@ impl IpnPatternItem {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum IpnPattern {
+#[derive(Debug)]
+pub enum IpnPattern {
     Range(Vec<IpnInterval>),
     Wildcard,
 }
@@ -708,10 +735,10 @@ impl IpnPattern {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum IpnInterval {
+#[derive(Debug)]
+pub enum IpnInterval {
     Number(u32),
-    Range(Range<u32>),
+    Range(RangeInclusive<u32>),
 }
 
 impl IpnInterval {
@@ -741,7 +768,8 @@ impl IpnInterval {
             if start == end {
                 Ok(IpnInterval::Number(start))
             } else {
-                Ok(IpnInterval::Range(Range { start, end }))
+                // Inclusive range!
+                Ok(IpnInterval::Range(RangeInclusive::new(start, end)))
             }
         } else {
             Ok(IpnInterval::Number(Self::parse_number(s, span)?))
@@ -768,25 +796,6 @@ impl IpnInterval {
                 Ok(v)
             }
             _ => Err(Error::InvalidIpnNumber(span.subset(s.chars().count()))),
-        }
-    }
-}
-
-impl std::cmp::PartialOrd for IpnInterval {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for IpnInterval {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (IpnInterval::Number(l), IpnInterval::Number(r)) => l.cmp(r),
-            (IpnInterval::Number(_), IpnInterval::Range(_)) => std::cmp::Ordering::Less,
-            (IpnInterval::Range(_), IpnInterval::Number(_)) => std::cmp::Ordering::Greater,
-            (IpnInterval::Range(l), IpnInterval::Range(r)) => {
-                l.start.cmp(&r.start).then(l.end.cmp(&r.end))
-            }
         }
     }
 }

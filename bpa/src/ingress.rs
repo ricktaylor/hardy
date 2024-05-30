@@ -2,7 +2,7 @@ use super::*;
 use tokio::sync::mpsc::*;
 use utils::settings;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug /* , Clone, PartialEq, Eq, PartialOrd, Ord, Hash*/)]
 pub struct ClaAddress {
     pub protocol: String,
     pub name: String,
@@ -316,22 +316,33 @@ impl Ingress {
              * So we can confidently add routes if forwarding is enabled */
             if let (Some(from), Some(fib)) = (&from, &self.fib) {
                 // Record a route to 'from.address' via 'from.name'
-                let _ = fib.add(
-                    fib::Destination::Cla(from.clone()),
-                    0,
-                    fib::Action::Forward {
-                        protocol: from.protocol.clone(),
-                        address: from.address.clone(),
-                    },
-                );
+                let _ = fib
+                    .add_cla(
+                        fib::ClaAddress {
+                            protocol: from.protocol.clone(),
+                            address: from.address.clone(),
+                        },
+                        0,
+                        from.name.clone(),
+                    )
+                    .await;
 
                 // Record a route to 'previous_node' via 'from.address'
-                let _ = bundle
-                    .previous_node
-                    .clone()
-                    .unwrap_or(bundle.id.source.clone())
-                    .try_into()
-                    .map(|p| fib.add(p, 0, fib::Action::Via(fib::Destination::Cla(from.clone()))));
+                let _ = fib
+                    .add_eid(
+                        "".to_string(),
+                        &bundle
+                            .previous_node
+                            .clone()
+                            .unwrap_or(bundle.id.source.clone())
+                            .into(),
+                        0,
+                        fib::Action::Forward(fib::ClaAddress {
+                            protocol: from.protocol.clone(),
+                            address: from.address.clone(),
+                        }),
+                    )
+                    .await;
             }
         }
 

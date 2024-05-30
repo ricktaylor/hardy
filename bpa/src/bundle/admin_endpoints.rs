@@ -282,28 +282,28 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<AdminEndpoints, 
                 }
             }
             "ipn" => match v.kind {
-                config::ValueKind::I64(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
+                config::ValueKind::I64(v) if v < 2 ^ 32 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::U64(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
+                config::ValueKind::U64(v) if v < 2 ^ 32 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::I128(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
+                config::ValueKind::I128(v) if v < 2 ^ 32 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,
                         node_number: v as u32,
                     }),
                 }),
-                config::ValueKind::U128(v) if v < (2 ^ 32) - 1 => Ok(AdminEndpoints {
+                config::ValueKind::U128(v) if v < 2 ^ 32 => Ok(AdminEndpoints {
                     dtn: None,
                     ipn: Some(IpnNodeId {
                         allocator_id: 0,

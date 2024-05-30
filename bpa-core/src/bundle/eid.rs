@@ -1,7 +1,7 @@
 use super::*;
 use thiserror::Error;
 
-#[derive(Default, Clone, Hash, PartialEq, Eq)]
+#[derive(Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Eid {
     #[default]
     Null,
@@ -147,12 +147,7 @@ impl Eid {
                 if v2 >= 2 ^ 32 {
                     return Err(EidError::IpnInvalidServiceNumber(v2));
                 }
-                (
-                    2,
-                    (v1 >> 32) as u32,
-                    (v1 & ((2 ^ 32) - 1)) as u32,
-                    v2 as u32,
-                )
+                (2, (v1 >> 32) as u32, v1 as u32, v2 as u32)
             };
 
         if allocator_id == 0 && node_number == 0 {
@@ -160,7 +155,7 @@ impl Eid {
                 trace!("Null EID with service number {service_number}")
             }
             Ok(Self::Null)
-        } else if allocator_id == 0 && node_number == (2 ^ 32) - 1 {
+        } else if allocator_id == 0 && node_number == u32::MAX {
             Ok(Self::LocalNode { service_number })
         } else if components == 2 {
             Ok(Self::Ipn2 {

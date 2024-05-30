@@ -138,6 +138,7 @@ impl Endpoint {
     #[instrument(skip(self))]
     pub async fn forward_bundle(
         &self,
+        protocol: String,
         destination: Vec<u8>,
         bundle: Vec<u8>,
     ) -> Result<(Option<String>, Option<time::OffsetDateTime>), Error> {
