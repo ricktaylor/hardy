@@ -1,66 +1,30 @@
 use super::*;
 use tokio::sync::mpsc::*;
-use utils::settings;
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClaAddress {
-    pub protocol: String,
-    pub name: String,
-    pub address: Vec<u8>,
-}
-
-#[derive(Clone)]
-struct Config {
-    allow_null_sources: bool,
-}
-
-impl Config {
-    fn new(config: &config::Config) -> Self {
-        let config = Self {
-            allow_null_sources: settings::get_with_default(config, "allow_null_sources", false)
-                .trace_expect("Invalid 'allow_null_sources' value in configuration"),
-        };
-
-        if config.allow_null_sources {
-            info!("Bundles with Null source endpoints are permitted");
-        }
-
-        config
-    }
-}
 
 #[derive(Clone)]
 pub struct Ingress {
-    config: Config,
     store: store::Store,
-    receive_channel: Sender<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
+    receive_channel: Sender<(String, Option<time::OffsetDateTime>)>,
     restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
     dispatcher: dispatcher::Dispatcher,
-    fib: Option<fib::Fib>,
 }
 
 impl Ingress {
     pub fn new(
-        config: &config::Config,
+        _config: &config::Config,
         store: store::Store,
         dispatcher: dispatcher::Dispatcher,
-        fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
-        // Load config
-        let config = Config::new(config);
-
         // Create a channel for new bundles
         let (receive_channel, receive_channel_rx) = channel(16);
         let (ingress_channel, ingress_channel_rx) = channel(16);
         let ingress = Self {
-            config,
             store,
             receive_channel,
             restart_channel: ingress_channel,
             dispatcher,
-            fib,
         };
 
         // Spawn a bundle receiver
@@ -79,7 +43,7 @@ impl Ingress {
     }
 
     #[instrument(skip(self))]
-    pub async fn receive(&self, from: Option<ClaAddress>, data: Vec<u8>) -> Result<(), Error> {
+    pub async fn receive(&self, data: Vec<u8>) -> Result<(), Error> {
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
@@ -88,7 +52,7 @@ impl Ingress {
 
         // Put bundle into receive channel
         self.receive_channel
-            .send((from, storage_name, Some(received_at)))
+            .send((storage_name, Some(received_at)))
             .await
             .map_err(|e| e.into())
     }
@@ -100,7 +64,7 @@ impl Ingress {
     ) -> Result<(), Error> {
         // Put bundle into receive channel
         self.receive_channel
-            .send((None, storage_name.to_string(), received_at))
+            .send((storage_name.to_string(), received_at))
             .await
             .map_err(|e| e.into())
     }
@@ -120,7 +84,7 @@ impl Ingress {
     #[instrument(skip_all)]
     async fn pipeline_pump(
         self,
-        mut receive_channel: Receiver<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
+        mut receive_channel: Receiver<(String, Option<time::OffsetDateTime>)>,
         mut restart_channel: Receiver<(bundle::Metadata, bundle::Bundle)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
@@ -131,11 +95,11 @@ impl Ingress {
             tokio::select! {
                 msg = receive_channel.recv() => match msg {
                     None => break,
-                    Some((cla_source,storage_name,received_at)) => {
+                    Some((storage_name,received_at)) => {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.receive_bundle(cla_source,storage_name,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
+                            ingress.receive_bundle(storage_name,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
                         });
                     }
                 },
@@ -145,7 +109,7 @@ impl Ingress {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(None,metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
+                            ingress.process_bundle(metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -163,7 +127,6 @@ impl Ingress {
     #[instrument(skip(self))]
     async fn receive_bundle(
         &self,
-        from: Option<ClaAddress>,
         storage_name: String,
         received_at: Option<time::OffsetDateTime>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -230,14 +193,12 @@ impl Ingress {
         }
 
         // Process the bundle further
-        self.process_bundle(from, metadata, bundle, cancel_token)
-            .await
+        self.process_bundle(metadata, bundle, cancel_token).await
     }
 
     #[instrument(skip(self))]
     async fn process_bundle(
         &self,
-        from: Option<ClaAddress>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -263,77 +224,7 @@ impl Ingress {
                         bundle::StatusReportReasonCode::HopLimitExceeded
                     })
                 })
-            })
-            .or_else(|| {
-                // Source Eid checks
-                match bundle.id.source {
-                    hardy_bpa_core::bundle::Eid::Null => {
-                        trace!("Bundle has Null source");
-                        self.config
-                            .allow_null_sources
-                            .then_some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                    }
-                    hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                        trace!("Bundle has LocalNode");
-                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                    }
-                    _ => None,
-                }
-            })
-            .or_else(|| {
-                // Do the constant checks only on ingress bundles
-                if let bundle::BundleStatus::IngressPending = &metadata.status {
-                    // Destination Eid checks
-                    match bundle.destination {
-                        hardy_bpa_core::bundle::Eid::Null => {
-                            trace!("Bundle has Null destination");
-                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                        }
-                        hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                            trace!("Bundle has LocalNode destination");
-                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                        }
-                        _ => None,
-                    }
-                    .or_else(|| {
-                        // Report-To Eid checks
-                        if let hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } =
-                            bundle.report_to
-                        {
-                            trace!("Bundle has LocalNode report-to");
-                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
             });
-
-        if reason.is_none() {
-            /* By the time we get here, we are pretty confident that the bundle isn't garbage
-             * So we can confidently add routes if forwarding is enabled */
-            if let (Some(from), Some(fib)) = (&from, &self.fib) {
-                // Record a route to 'from.address' via 'from.name'
-                let _ = fib.add(
-                    fib::Destination::Cla(from.clone()),
-                    0,
-                    fib::Action::Forward {
-                        protocol: from.protocol.clone(),
-                        address: from.address.clone(),
-                    },
-                );
-
-                // Record a route to 'previous_node' via 'from.address'
-                let _ = bundle
-                    .previous_node
-                    .clone()
-                    .unwrap_or(bundle.id.source.clone())
-                    .try_into()
-                    .map(|p| fib.add(p, 0, fib::Action::Via(fib::Destination::Cla(from.clone()))));
-            }
-        }
 
         if reason.is_none() {
             // TODO: BPSec here!
@@ -452,7 +343,7 @@ impl Ingress {
     #[instrument(skip(self))]
     pub async fn confirm_forwarding(
         &self,
-        token: &str,
+        handle: u32,
         bundle_id: &str,
     ) -> Result<(), tonic::Status> {
         let Some((metadata, bundle)) = self
@@ -468,7 +359,7 @@ impl Ingress {
         };
 
         match &metadata.status {
-            bundle::BundleStatus::ForwardAckPending(t, _) if t == token => {
+            bundle::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
                 // Report bundle forwarded
                 self.dispatcher
                     .report_bundle_forwarded(&metadata, &bundle)

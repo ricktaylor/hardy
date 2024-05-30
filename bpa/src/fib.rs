@@ -1,276 +1,154 @@
 use super::*;
-use base64::prelude::*;
 use rand::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
-use thiserror::Error;
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use utils::settings;
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Invalid FIB entry EID: {0}")]
-    InvalidEid(bundle::Eid),
-
-    #[error("Must forward CLA addresses to CLAs of the same protocol")]
-    WrongProtocol,
-
-    #[error("Must forward CLA addresses to CLAs")]
-    NotCla,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Destination {
-    Cla(ingress::ClaAddress),
-    Ipn2 {
-        allocator_id: u32,
-        node_number: u32,
-        service_number: u32,
-    },
-    Ipn3 {
-        allocator_id: u32,
-        node_number: u32,
-        service_number: u32,
-    },
-    Dtn {
-        node_name: String,
-        demux: Vec<String>,
-    },
-}
-
-impl std::fmt::Display for Destination {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Destination::Cla(a) => {
-                write!(
-                    f,
-                    "{}: {}/{}",
-                    a.name,
-                    a.protocol,
-                    BASE64_STANDARD_NO_PAD.encode(&a.address)
-                )
-            }
-            Destination::Ipn2 {
-                allocator_id,
-                node_number,
-                service_number,
-            }
-            | Destination::Ipn3 {
-                allocator_id,
-                node_number,
-                service_number,
-            } => bundle::Eid::Ipn3 {
-                allocator_id: *allocator_id,
-                node_number: *node_number,
-                service_number: *service_number,
-            }
-            .fmt(f),
-            Destination::Dtn { node_name, demux } => bundle::Eid::Dtn {
-                node_name: node_name.clone(),
-                demux: demux.clone(),
-            }
-            .fmt(f),
-        }
-    }
-}
-
-impl TryFrom<bundle::Eid> for Destination {
-    type Error = self::Error;
-
-    fn try_from(value: bundle::Eid) -> Result<Self, Self::Error> {
-        match value {
-            bundle::Eid::Ipn2 {
-                allocator_id,
-                node_number,
-                service_number,
-            } => Ok(Self::Ipn2 {
-                allocator_id,
-                node_number,
-                service_number,
-            }),
-            bundle::Eid::Ipn3 {
-                allocator_id,
-                node_number,
-                service_number,
-            } => Ok(Self::Ipn3 {
-                allocator_id,
-                node_number,
-                service_number,
-            }),
-            bundle::Eid::Dtn { node_name, demux } => Ok(Self::Dtn { node_name, demux }),
-            _ => Err(Error::InvalidEid(value)),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
+    Forward(u32),                                 // Forward to CLA by Handle
+    Via(bundle::Eid),                             // Recursive lookup
     Wait(time::OffsetDateTime),                   // Wait for later availability
-    Forward { protocol: String, address: Vec<u8> }, // Forward to CLA by protocol + address
-    Via(Destination),                             // Recursive lookup
 }
 
 #[derive(Clone)]
 pub enum ForwardAction {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Wait(time::OffsetDateTime),                   // Wait for later availability
-    Forward(ingress::ClaAddress),                 // Forward to CLA by name
+    Forward(Vec<u32>, Option<time::OffsetDateTime>), // Forward to CLA by Handle
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct TableEntry {
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct EidTableEntry {
     priority: u32,
     action: Action,
 }
 
-type Table = HashMap<Destination, Vec<TableEntry>>;
+type EidTable = bundle::EidPatternMap<String, Vec<EidTableEntry>>;
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct Fib {
-    entries: Arc<RwLock<Table>>,
+    entries: Arc<RwLock<EidTable>>,
 }
 
 impl Fib {
     pub fn new(config: &config::Config) -> Option<Self> {
         settings::get_with_default::<bool, _>(config, "forwarding", true)
             .trace_expect("Invalid 'forwarding' value in configuration")
-            .then(|| Self {
-                entries: Default::default(),
-            })
+            .then(Self::default)
     }
 
     #[instrument(skip(self))]
-    pub fn add(&self, to: Destination, priority: u32, action: Action) -> Result<(), Error> {
-        // Validate CLA actions
-        if let Action::Forward {
-            protocol,
-            address: _,
-        } = &action
-        {
-            if let Destination::Cla(a) = &to {
-                if &a.protocol != protocol {
-                    return Err(Error::WrongProtocol);
-                }
-            } else {
-                return Err(Error::NotCla);
-            };
-        }
-
-        let mut table = self
-            .entries
-            .write()
-            .trace_expect("Failed to write-lock entries mutex");
-
-        let entry = TableEntry { priority, action };
-        if let Some(entries) = table.get_mut(&to) {
-            if entries.binary_search(&entry).is_err() {
-                entries.push(entry);
-                entries.sort();
+    pub async fn add(
+        &self,
+        id: String,
+        pattern: &bundle::EidPattern,
+        priority: u32,
+        action: Action,
+    ) -> Result<(), Error> {
+        let mut entries = self.entries.write().await;
+        let entry = EidTableEntry { priority, action };
+        if let Some(mut prev) = entries.insert(pattern, id.clone(), vec![entry.clone()]) {
+            // We have previous - de-dedup
+            if prev.binary_search(&entry).is_err() {
+                prev.push(entry);
             }
-        } else {
-            table.insert(to, vec![entry]);
+            entries.insert(pattern, id, prev);
         }
         Ok(())
     }
 
     #[instrument(skip(self))]
-    pub fn find(&self, to: &Destination) -> Vec<ForwardAction> {
-        let table = self
-            .entries
-            .read()
-            .trace_expect("Failed to read-lock entries mutex");
+    pub async fn find(&self, to: &bundle::Eid) -> ForwardAction {
+        let r = {
+            // Scope the lock
+            let entries = self.entries.read().await;
+            find_recurse(&entries, to, &mut HashSet::new())
+        };
 
-        let mut actions = find_recurse(&table, to, &mut HashSet::new());
-        if actions.len() > 1 {
-            // For ECMP, we need a random order
-            actions.shuffle(&mut rand::thread_rng());
+        match r {
+            ForwardAction::Forward(mut v, until) if v.len() > 1 => {
+                // For ECMP, we need a random order
+                v.shuffle(&mut rand::thread_rng());
+                ForwardAction::Forward(v, until)
+            }
+            r => r,
         }
-
-        // TODO: We currently pick the first Drop action we find, and do not tie-break on reason...
-
-        actions
     }
 }
 
+fn priority_subset<I, F1, F2, R>(iter: I, f1: F1, f2: F2) -> Vec<R>
+where
+    I: Iterator,
+    F1: Fn(&I::Item) -> u32,
+    F2: Fn(&I::Item) -> R,
+{
+    // This is a fairly brutal binning by priority, with 1 bin
+    let mut lowest_priority = None;
+    let mut entries = Vec::new();
+    for i in iter {
+        let p = f1(&i);
+        match lowest_priority {
+            Some(lowest_priority) if lowest_priority < p => continue,
+            Some(lowest_priority) if lowest_priority > p => entries.clear(),
+            _ => {}
+        }
+        lowest_priority = Some(p);
+        entries.push(f2(&i));
+    }
+    entries
+}
+
 #[instrument(skip(table, trail))]
-fn find_recurse<'a>(
-    table: &'a Table,
-    to: &'a Destination,
-    trail: &mut HashSet<&'a Destination>,
-) -> Vec<ForwardAction> {
+fn find_recurse(
+    table: &EidTable,
+    to: &bundle::Eid,
+    trail: &mut HashSet<bundle::Eid>,
+) -> ForwardAction {
+    // TODO: We currently pick the first Drop action we find, and do not tie-break on reason...
+
     let mut new_entries = Vec::new();
-    if trail.insert(to) {
-        if let Some(entries) = table.get(to) {
-            let mut priority = None;
-            for entry in entries {
-                // Ensure we equal priority if we have multiple actions (ECMP)
-                if let Some(priority) = priority {
-                    if priority < entry.priority {
-                        break;
-                    }
-                }
+    let mut wait = None;
 
-                match &entry.action {
-                    Action::Via(via) => {
-                        let entries = find_recurse(table, via, trail);
-                        match entries.first() {
-                            Some(ForwardAction::Drop(_)) => {
-                                // Drop trumps everything else
-                                return entries;
-                            }
-                            Some(_) => new_entries.extend(entries),
-                            None => {}
-                        }
+    // Recursion check
+    if trail.insert(to.clone()) {
+        // Flatten and Filter on lowest priority
+        let entries = priority_subset(
+            table.find(to).into_iter().flatten(),
+            |e| e.priority,
+            |e| e.action.clone(),
+        );
+        for action in entries {
+            match action {
+                Action::Via(via) => match find_recurse(table, &via, trail) {
+                    ForwardAction::Drop(reason) => return ForwardAction::Drop(reason),
+                    ForwardAction::Forward(entries, until) => {
+                        wait = match (wait, until) {
+                            (None, Some(_)) => until,
+                            (_, None) => wait,
+                            (Some(wait), Some(until)) => Some(wait.min(until)),
+                        };
+                        new_entries.extend(entries)
                     }
-                    Action::Forward { protocol, address } => {
-                        if let Destination::Cla(a) = &to {
-                            if &a.protocol == protocol {
-                                new_entries.push(ForwardAction::Forward(ingress::ClaAddress {
-                                    protocol: protocol.clone(),
-                                    name: a.name.clone(),
-                                    address: address.clone(),
-                                }))
-                            }
-                        }
-                    }
-                    Action::Drop(reason) => {
-                        // Drop trumps everything else
-                        return vec![ForwardAction::Drop(*reason)];
-                    }
-                    Action::Wait(until) => {
-                        // Check we don't have a deadline in the past
-                        if *until >= time::OffsetDateTime::now_utc() {
-                            new_entries.push(ForwardAction::Wait(*until))
-                        }
-                    }
+                },
+                Action::Forward(c) => {
+                    new_entries.push(c);
                 }
-
-                if !new_entries.is_empty() {
-                    priority = Some(entry.priority);
+                Action::Drop(reason) => {
+                    // Drop trumps everything else
+                    return ForwardAction::Drop(reason);
+                }
+                Action::Wait(until) => {
+                    // Check we don't have a deadline in the past
+                    if until >= time::OffsetDateTime::now_utc() {
+                        wait =
+                            wait.map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)));
+                    }
                 }
             }
         }
         trail.remove(to);
     }
-
-    // Remove any Wait actions, and remember the closest deadline
-    let mut wait = None;
-    new_entries = new_entries
-        .into_iter()
-        .filter_map(|a| match a {
-            ForwardAction::Wait(until) => {
-                wait = wait.map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)));
-                None
-            }
-            a => Some(a),
-        })
-        .collect();
-
-    // If we have no Forwarding actions, return the closest Wait action
-    if new_entries.is_empty() {
-        if let Some(until) = wait {
-            new_entries.push(ForwardAction::Wait(until))
-        }
-    }
-    new_entries
+    ForwardAction::Forward(new_entries, wait)
 }

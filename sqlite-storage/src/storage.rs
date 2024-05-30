@@ -24,15 +24,15 @@ pub enum Error {
 
 fn bundle_status_to_parts(
     value: &bundle::BundleStatus,
-) -> (i64, Option<String>, Option<time::OffsetDateTime>) {
+) -> (i64, Option<i64>, Option<time::OffsetDateTime>) {
     match value {
         bundle::BundleStatus::IngressPending => (0, None, None),
         bundle::BundleStatus::DispatchPending => (1, None, None),
         bundle::BundleStatus::ReassemblyPending => (2, None, None),
         bundle::BundleStatus::CollectionPending => (3, None, None),
         bundle::BundleStatus::ForwardPending => (4, None, None),
-        bundle::BundleStatus::ForwardAckPending(token, until) => {
-            (5, Some(token.clone()), Some(*until))
+        bundle::BundleStatus::ForwardAckPending(handle, until) => {
+            (5, Some(*handle as i64), Some(*until))
         }
         bundle::BundleStatus::Waiting(until) => (6, None, Some(*until)),
         bundle::BundleStatus::Tombstone => (7, None, None),
@@ -47,7 +47,7 @@ fn columns_to_bundle_status(
 ) -> rusqlite::Result<bundle::BundleStatus> {
     match (
         row.get::<usize, i64>(idx1)?,
-        row.get::<usize, Option<String>>(idx2)?,
+        row.get::<usize, Option<i64>>(idx2)?,
         row.get::<usize, Option<time::OffsetDateTime>>(idx3)?,
     ) {
         (0, None, None) => Ok(bundle::BundleStatus::IngressPending),
@@ -55,7 +55,10 @@ fn columns_to_bundle_status(
         (2, None, None) => Ok(bundle::BundleStatus::ReassemblyPending),
         (3, None, None) => Ok(bundle::BundleStatus::CollectionPending),
         (4, None, None) => Ok(bundle::BundleStatus::ForwardPending),
-        (5, Some(token), Some(until)) => Ok(bundle::BundleStatus::ForwardAckPending(token, until)),
+        (5, Some(handle), Some(until)) => Ok(bundle::BundleStatus::ForwardAckPending(
+            handle as u32,
+            until,
+        )),
         (6, None, Some(until)) => Ok(bundle::BundleStatus::Waiting(until)),
         (7, None, None) => Ok(bundle::BundleStatus::Tombstone),
         (v, t, d) => panic!("Invalid BundleStatus value combination {v}/{t:?}/{d:?}"),
@@ -220,7 +223,7 @@ fn unpack_bundles(
            17: bundles.hop_count,
            18: bundles.hop_limit,
            19: bundles.wait_until,
-           20: bundles.ack_token,
+           20: bundles.ack_handle,
            21: bundle_blocks.block_num,
            22: bundle_blocks.block_type,
            23: bundle_blocks.block_flags,
@@ -388,7 +391,7 @@ impl storage::MetadataStorage for Storage {
                                 hop_count,
                                 hop_limit,
                                 wait_until,
-                                ack_token
+                                ack_handle
                             FROM unconfirmed_bundles
                             JOIN bundles ON id = unconfirmed_bundles.bundle_id
                             LIMIT 16
@@ -494,7 +497,7 @@ impl storage::MetadataStorage for Storage {
                             hop_count,
                             hop_limit,
                             wait_until,
-                            ack_token,
+                            ack_handle,
                             block_num,
                             block_type,
                             block_flags,
@@ -563,7 +566,7 @@ impl storage::MetadataStorage for Storage {
                     hop_count,
                     hop_limit,
                     wait_until,
-                    ack_token,
+                    ack_handle,
                     block_num,
                     block_type,
                     block_flags,
@@ -603,7 +606,7 @@ impl storage::MetadataStorage for Storage {
             .lock()
             .trace_expect("Failed to lock connection mutex");
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let (status, ack_token, until) = bundle_status_to_parts(&metadata.status);
+        let (status, ack_handle, until) = bundle_status_to_parts(&metadata.status);
 
         // Insert bundle
         let bundle_id = trans
@@ -628,7 +631,7 @@ impl storage::MetadataStorage for Storage {
                 hop_count,
                 hop_limit,
                 wait_until,
-                ack_token
+                ack_handle
                 )
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
             RETURNING id;"#,
@@ -653,7 +656,7 @@ impl storage::MetadataStorage for Storage {
                     bundle.hop_count.map(|h| as_i64(h.count)),
                     bundle.hop_count.map(|h| as_i64(h.limit)),
                     until,
-                    ack_token
+                    ack_handle
                 ),
                 |row| Ok(as_u64(row.get(0)?)),
             )
@@ -762,7 +765,7 @@ impl storage::MetadataStorage for Storage {
             .lock()
             .trace_expect("Failed to lock connection mutex")
             .prepare_cached(
-                r#"SELECT status,ack_token,wait_until FROM bundles WHERE storage_name = ?1 LIMIT 1;"#,
+                r#"SELECT status,ack_handle,wait_until FROM bundles WHERE storage_name = ?1 LIMIT 1;"#,
             )?
             .query_row(
                 [storage_name],
@@ -777,15 +780,15 @@ impl storage::MetadataStorage for Storage {
         storage_name: &str,
         status: &bundle::BundleStatus,
     ) -> storage::Result<()> {
-        let (status, ack_token, until) = bundle_status_to_parts(status);
+        let (status, ack_handle, until) = bundle_status_to_parts(status);
         if !self
             .connection
             .lock()
             .trace_expect("Failed to lock connection mutex")
             .prepare_cached(
-                r#"UPDATE bundles SET status = ?1, ack_token = ?2, wait_until = ?3 WHERE storage_name = ?3;"#,
+                r#"UPDATE bundles SET status = ?1, ack_handle = ?2, wait_until = ?3 WHERE storage_name = ?3;"#,
             )?
-            .execute((status, ack_token, until, storage_name))
+            .execute((status, ack_handle, until, storage_name))
             .map(|count| count != 0)?
         {
             Err(Error::NotFound.into())
@@ -860,7 +863,7 @@ impl storage::MetadataStorage for Storage {
                         hop_count,
                         hop_limit,
                         wait_until,
-                        ack_token,
+                        ack_handle,
                         block_num,
                         block_type,
                         block_flags,
@@ -917,7 +920,7 @@ impl storage::MetadataStorage for Storage {
                         hop_count,
                         hop_limit,
                         wait_until,
-                        ack_token,
+                        ack_handle,
                         block_num,
                         block_type,
                         block_flags,

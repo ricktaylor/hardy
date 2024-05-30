@@ -322,18 +322,6 @@ impl Dispatcher {
         bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        // Check bundle expiry
-        if bundle::has_bundle_expired(&metadata, &bundle) {
-            trace!("Bundle lifetime has expired");
-            return self
-                .drop_bundle(
-                    metadata,
-                    bundle,
-                    Some(bundle::StatusReportReasonCode::LifetimeExpired),
-                )
-                .await;
-        }
-
         let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
@@ -348,46 +336,47 @@ impl Dispatcher {
                 .await;
         };
 
-        // Resolve destination
-        let Ok(mut destination) = bundle.destination.clone().try_into() else {
-            // Bundle destination is not a valid next-hop
-            trace!(
-                "Bundle has invalid destination for forwarding: {}",
-                bundle.destination
-            );
-            return self
-                .drop_bundle(
-                    metadata,
-                    bundle,
-                    Some(bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable),
-                )
-                .await;
-        };
-
         // TODO: Pluggable Egress filters!
 
         /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
         let mut data = None;
-        let mut data_is_time_sensitive = false;
         let mut previous = false;
         let mut retries = 0;
-        let mut congestion_wait = None;
-        let mut actions = fib.find(&destination).into_iter();
-        let reason = loop {
+        let mut destination = &bundle.destination;
+
+        loop {
+            // Check bundle expiry
+            if bundle::has_bundle_expired(&metadata, &bundle) {
+                trace!("Bundle lifetime has expired");
+                return self
+                    .drop_bundle(
+                        metadata,
+                        bundle,
+                        Some(bundle::StatusReportReasonCode::LifetimeExpired),
+                    )
+                    .await;
+            }
+
             // Lookup/Perform actions
-            match actions.next() {
-                Some(fib::ForwardAction::Drop(reason)) => {
+            let (clas, forwarding_wait) = match fib.find(destination).await {
+                fib::ForwardAction::Drop(reason) => {
                     trace!("Bundle is black-holed");
-                    break reason;
+                    return self.drop_bundle(metadata, bundle, reason).await;
                 }
-                Some(fib::ForwardAction::Wait(until)) => {
+                fib::ForwardAction::Forward(clas, Some(until)) if clas.is_empty() => {
                     // Check to see if waiting is even worth it
                     if until > bundle::get_bundle_expiry(&metadata, &bundle) {
                         trace!("Bundle lifetime is shorter than wait period");
-                        break Some(
-                            bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                        );
+                        return self
+                            .drop_bundle(
+                                metadata,
+                                bundle,
+                                Some(
+                                    bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+                                ),
+                            )
+                            .await;
                     }
 
                     // Wait a bit
@@ -399,165 +388,154 @@ impl Dispatcher {
                         return Ok(());
                     }
 
-                    // Restart lookup
+                    // Reset retry counter, we were just correctly told to wait
                     retries = 0;
-                    actions = fib.find(&destination).into_iter();
+                    continue;
                 }
-                Some(fib::ForwardAction::Forward(a)) => {
-                    // Find the named CLA
-                    if let Some(endpoint) = self.cla_registry.find_by_name(&a.name) {
-                        // Get bundle data from store, now we know we need it!
-                        if data.is_none() {
-                            let Some(source_data) = self.load_data(&metadata, &bundle).await?
-                            else {
-                                // Bundle data was deleted sometime during processing
-                                return Ok(());
-                            };
+                fib::ForwardAction::Forward(clas, wait) => (clas.into_iter(), wait),
+            };
 
-                            // Increment Hop Count, etc...
-                            (data, data_is_time_sensitive) = self
-                                .update_extension_blocks(
-                                    &metadata,
-                                    &bundle,
-                                    (*source_data).as_ref(),
-                                )
-                                .map(|(data, data_is_time_sensitive)| {
-                                    (Some(data), data_is_time_sensitive)
-                                })?;
-                        }
+            let mut data_is_time_sensitive = false;
+            let mut congestion_wait = None;
 
-                        match endpoint
-                            .forward_bundle(a.address.clone(), data.clone().unwrap())
-                            .await
-                        {
-                            Ok((None, None)) => {
-                                // We have successfully forwarded!
-                                self.report_bundle_forwarded(&metadata, &bundle).await?;
-                                break None;
-                            }
-                            Ok((Some(token), until)) => {
-                                // CLA will report successful forwarding
-                                // Don't wait longer than expiry
-                                let until = until.unwrap_or_else(|| {
-                                    warn!("CLA endpoint has not provided a suitable AckPending delay, defaulting to 1 minute");
-                                    time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
-                                }).min(bundle::get_bundle_expiry(&metadata, &bundle));
+            // For each CLA
+            for handle in clas {
+                // Find the named CLA
+                if let Some(endpoint) = self.cla_registry.find(handle) {
+                    // Get bundle data from store, now we know we need it!
+                    if data.is_none() {
+                        let Some(source_data) = self.load_data(&metadata, &bundle).await? else {
+                            // Bundle data was deleted sometime during processing
+                            return Ok(());
+                        };
 
-                                // Set the bundle status to 'Forward Acknowledgement Pending'
-                                metadata.status =
-                                    bundle::BundleStatus::ForwardAckPending(token, until);
-                                return self
-                                    .store
-                                    .set_status(&metadata.storage_name, &metadata.status)
-                                    .await;
-                            }
-                            Ok((None, until)) => {
-                                let until = until.unwrap_or_else(|| {
-                                    warn!("CLA endpoint has not provided a suitable Congestion delay, defaulting to 10 seconds");
-                                    time::OffsetDateTime::now_utc() + time::Duration::seconds(10)
-                                });
-                                trace!("CLA reported congestion, retry at: {until}");
-
-                                // Remember the shortest wait for a retry, in case we have ECMP
-                                congestion_wait = congestion_wait
-                                    .map_or(Some(until), |w: time::OffsetDateTime| {
-                                        Some(w.min(until))
-                                    })
-                            }
-                            Err(e) => trace!("CLA failed to forward {e}"),
-                        }
-                    } else {
-                        trace!("FIB has entry for unknown endpoint: {}", a.name);
+                        // Increment Hop Count, etc...
+                        (data, data_is_time_sensitive) = self
+                            .update_extension_blocks(&metadata, &bundle, (*source_data).as_ref())
+                            .map(|(data, data_is_time_sensitive)| {
+                                (Some(data), data_is_time_sensitive)
+                            })?;
                     }
-                    // Try the next CLA, this one is busy, broken or missing
-                }
-                None => {
-                    // Check for congestion
-                    if let Some(until) = congestion_wait {
-                        trace!("All available CLAs report congestion until {until}");
 
-                        // Check to see if waiting is even worth it
-                        if until > bundle::get_bundle_expiry(&metadata, &bundle) {
-                            trace!("Bundle lifetime is shorter than wait period");
-                            break Some(
+                    match endpoint
+                        .forward_bundle(destination, data.clone().unwrap())
+                        .await
+                    {
+                        Ok((None, None)) => {
+                            // We have successfully forwarded!
+                            self.report_bundle_forwarded(&metadata, &bundle).await?;
+                            return self.drop_bundle(metadata, bundle, None).await;
+                        }
+                        Ok((Some(handle), until)) => {
+                            // CLA will report successful forwarding
+                            // Don't wait longer than expiry
+                            let until = until.unwrap_or_else(|| {
+                                warn!("CLA endpoint has not provided a suitable AckPending delay, defaulting to 1 minute");
+                                time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
+                            }).min(bundle::get_bundle_expiry(&metadata, &bundle));
+
+                            // Set the bundle status to 'Forward Acknowledgement Pending'
+                            metadata.status =
+                                bundle::BundleStatus::ForwardAckPending(handle, until);
+                            return self
+                                .store
+                                .set_status(&metadata.storage_name, &metadata.status)
+                                .await;
+                        }
+                        Ok((None, until)) => {
+                            let until = until.unwrap_or_else(|| {
+                                warn!("CLA endpoint has not provided a suitable Congestion delay, defaulting to 10 seconds");
+                                time::OffsetDateTime::now_utc() + time::Duration::seconds(10)
+                            });
+                            trace!("CLA reported congestion, retry at: {until}");
+
+                            // Remember the shortest wait for a retry, in case we have ECMP
+                            congestion_wait = congestion_wait
+                                .map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)))
+                        }
+                        Err(e) => trace!("CLA failed to forward {e}"),
+                    }
+                } else {
+                    trace!("FIB has entry for unknown CLA: {}", handle);
+                }
+                // Try the next CLA, this one is busy, broken or missing
+            }
+
+            // By the time we get here, we have tried every CLA
+
+            // Check for congestion
+            if let Some(mut until) = congestion_wait {
+                trace!("All available CLAs report congestion until {until}");
+
+                // Limit congestion wait to the forwarding wait
+                if let Some(wait) = forwarding_wait {
+                    until = wait.min(until);
+                }
+
+                // Check to see if waiting is even worth it
+                if until > bundle::get_bundle_expiry(&metadata, &bundle) {
+                    trace!("Bundle lifetime is shorter than wait period");
+                    return self
+                        .drop_bundle(
+                            metadata,
+                            bundle,
+                            Some(
                                 bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                            );
-                        }
+                            ),
+                        )
+                        .await;
+                }
 
-                        // We must wait for a bit for the CLAs to calm down
-                        if !self
-                            .wait_to_forward(&metadata, until, &cancel_token)
-                            .await?
-                        {
-                            // Cancelled, or too long a wait for here
-                            return Ok(());
-                        }
+                // We must wait for a bit for the CLAs to calm down
+                if !self
+                    .wait_to_forward(&metadata, until, &cancel_token)
+                    .await?
+                {
+                    // Cancelled, or too long a wait for here
+                    return Ok(());
+                }
 
-                        // Reset retry counter, as we found a route, it's just busy
-                        congestion_wait = None;
-                        retries = 0;
-                    } else if retries > self.config.max_forwarding_delay {
-                        if previous {
-                            // We have delayed long enough trying to find a route to previous_node
-                            trace!("Timed out trying to forward bundle to previous node");
-                            break Some(
-                                bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
-                            );
-                        }
+                // Reset retry counter, as we found a route, it's just busy
+                retries = 0;
+            } else if retries > self.config.max_forwarding_delay {
+                if previous {
+                    // We have delayed long enough trying to find a route to previous_node
+                    trace!("Timed out trying to return bundle to previous node");
+                    return self
+                        .drop_bundle(
+                            metadata,
+                            bundle,
+                            Some(bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
+                        )
+                        .await;
+                }
 
-                        trace!("Timed out trying to forward bundle");
+                trace!("Timed out trying to forward bundle");
 
-                        // Return the bundle to the source via the 'previous_node' or 'bundle.source'
-                        if let Ok(previous_node) = bundle
-                            .previous_node
-                            .clone()
-                            .unwrap_or(bundle.id.source.clone())
-                            .try_into()
-                        {
-                            // Try the previous_node
-                            destination = previous_node;
-                        } else {
-                            // Previous node is not a valid next-hop
-                            trace!("Bundle has no valid previous node to return to");
-                            break Some(
-                                bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-                            );
-                        }
+                // Return the bundle to the source via the 'previous_node' or 'bundle.source'
+                destination = bundle.previous_node.as_ref().unwrap_or(&bundle.id.source);
+                trace!("Returning bundle to previous node: {destination}");
 
-                        // Reset retry counter as we are attempting to return the bundle
-                        trace!("Returning bundle to previous node: {destination}");
-                        previous = true;
-                        retries = 0;
-                    } else {
-                        retries = retries.saturating_add(1);
+                // Reset retry counter as we are attempting to return the bundle
+                retries = 0;
+                previous = true;
+            } else {
+                retries = retries.saturating_add(1);
 
-                        trace!("Retrying ({retries}) FIB lookup to allow FIB and CLAs to resync");
+                trace!("Retrying ({retries}) FIB lookup to allow FIB and CLAs to resync");
 
-                        // Async sleep for 1 second
-                        if !cancellable_sleep(time::Duration::seconds(1), &cancel_token).await {
-                            // Cancelled
-                            return Ok(());
-                        }
-                    }
-
-                    // Check bundle expiry
-                    if bundle::has_bundle_expired(&metadata, &bundle) {
-                        trace!("Bundle lifetime has expired");
-                        break Some(bundle::StatusReportReasonCode::LifetimeExpired);
-                    }
-
-                    if data_is_time_sensitive {
-                        // Force a reload of current data, because Bundle Age may have changed
-                        data = None;
-                    }
-
-                    // Lookup again
-                    actions = fib.find(&destination).into_iter();
+                // Async sleep for 1 second
+                if !cancellable_sleep(time::Duration::seconds(1), &cancel_token).await {
+                    // Cancelled
+                    return Ok(());
                 }
             }
-        };
 
-        self.drop_bundle(metadata, bundle, reason).await
+            if data_is_time_sensitive {
+                // Force a reload of current data, because Bundle Age may have changed
+                data = None;
+            }
+        }
     }
 
     async fn wait_to_forward(
