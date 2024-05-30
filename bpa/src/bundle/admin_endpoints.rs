@@ -254,15 +254,14 @@ fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
             }
         }
         Eid::Dtn { node_name, demux } => {
-            if !demux.is_empty() {
-                if demux.len() > 1 || !demux[0].is_empty() {
-                    return Err(Error::DtnHasDemux);
-                }
+            if !demux.is_empty() && (demux.len() > 1 || !demux[0].is_empty()) {
+                Err(Error::DtnHasDemux)
+            } else {
+                Ok(AdminEndpoints {
+                    dtn: Some(DtnNodeId { node_name }),
+                    ipn: None,
+                })
             }
-            Ok(AdminEndpoints {
-                dtn: Some(DtnNodeId { node_name }),
-                ipn: None,
-            })
         }
     }
 }
