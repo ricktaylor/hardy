@@ -1,20 +1,14 @@
 use super::*;
 use rand::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use utils::settings;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClaAddress {
-    pub protocol: String,
-    pub address: Vec<u8>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(ClaAddress),                          // Forward to CLA
+    Forward(String),                              // Forward to CLA
     Via(bundle::Eid),                             // Recursive lookup
     Wait(time::OffsetDateTime),                   // Wait for later availability
 }
@@ -22,7 +16,7 @@ pub enum Action {
 #[derive(Clone)]
 pub enum ForwardAction {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(Vec<(String, ClaAddress)>, Option<time::OffsetDateTime>), // Forward to CLA by name
+    Forward(Vec<String>, Option<time::OffsetDateTime>), // Forward to CLA by name
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -33,17 +27,9 @@ struct EidTableEntry {
 
 type EidTable = bundle::EidPatternMap<String, Vec<EidTableEntry>>;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ClaTableEntry {
-    priority: u32,
-    cla: String,
-}
-
-type ClaTable = HashMap<ClaAddress, Vec<ClaTableEntry>>;
-
 #[derive(Default, Clone)]
 pub struct Fib {
-    entries: Arc<RwLock<(EidTable, ClaTable)>>,
+    entries: Arc<RwLock<EidTable>>,
 }
 
 impl Fib {
@@ -54,57 +40,31 @@ impl Fib {
     }
 
     #[instrument(skip(self))]
-    pub async fn add_eid(
+    pub async fn add(
         &self,
         id: String,
         pattern: &bundle::EidPattern,
         priority: u32,
         action: Action,
     ) -> Result<(), Error> {
-        let mut table = self.entries.write().await;
+        let mut entries = self.entries.write().await;
         let entry = EidTableEntry { priority, action };
-        if let Some(mut prev) = table.0.insert(pattern, id.clone(), vec![entry.clone()]) {
+        if let Some(mut prev) = entries.insert(pattern, id.clone(), vec![entry.clone()]) {
             // We have previous - de-dedup
             if prev.binary_search(&entry).is_err() {
                 prev.push(entry);
             }
-            table.0.insert(pattern, id, prev);
-        }
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn add_cla(&self, to: ClaAddress, priority: u32, cla: String) -> Result<(), Error> {
-        let mut table = self.entries.write().await;
-        let entry = ClaTableEntry { priority, cla };
-        if let Some(entries) = table.1.get_mut(&to) {
-            if entries.binary_search(&entry).is_err() {
-                entries.push(entry);
-                entries.sort();
-            }
-        } else {
-            table.1.insert(to, vec![entry]);
+            entries.insert(pattern, id, prev);
         }
         Ok(())
     }
 
     #[instrument(skip(self))]
     pub async fn find(&self, to: &bundle::Eid) -> ForwardAction {
-        // Sanity check first
-        match to {
-            hardy_bpa_core::bundle::Eid::Null
-            | hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                return ForwardAction::Drop(Some(
-                    bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-                ));
-            }
-            _ => {}
-        }
-
         let r = {
             // Scope the lock
-            let table = self.entries.read().await;
-            find_recurse(&table.0, &table.1, to, &mut HashSet::new())
+            let entries = self.entries.read().await;
+            find_recurse(&entries, to, &mut HashSet::new())
         };
 
         match r {
@@ -140,10 +100,9 @@ where
     entries
 }
 
-#[instrument(skip(eid_table, cla_table, trail))]
+#[instrument(skip(table, trail))]
 fn find_recurse(
-    eid_table: &EidTable,
-    cla_table: &ClaTable,
+    table: &EidTable,
     to: &bundle::Eid,
     trail: &mut HashSet<bundle::Eid>,
 ) -> ForwardAction {
@@ -156,13 +115,13 @@ fn find_recurse(
     if trail.insert(to.clone()) {
         // Flatten and Filter on lowest priority
         let entries = priority_subset(
-            eid_table.find(to).into_iter().flatten(),
+            table.find(to).into_iter().flatten(),
             |e| e.priority,
             |e| e.action.clone(),
         );
         for action in entries {
             match action {
-                Action::Via(via) => match find_recurse(eid_table, cla_table, &via, trail) {
+                Action::Via(via) => match find_recurse(table, &via, trail) {
                     ForwardAction::Drop(reason) => return ForwardAction::Drop(reason),
                     ForwardAction::Forward(entries, until) => {
                         wait = match (wait, until) {
@@ -174,14 +133,7 @@ fn find_recurse(
                     }
                 },
                 Action::Forward(c) => {
-                    if let Some(entries) = cla_table.get(&c) {
-                        // Filter on lowest priority, and append
-                        new_entries.extend(
-                            priority_subset(entries.iter(), |e| e.priority, |e| e.cla.clone())
-                                .into_iter()
-                                .map(|name| (name, c.clone())),
-                        );
-                    }
+                    new_entries.push(c);
                 }
                 Action::Drop(reason) => {
                     // Drop trumps everything else

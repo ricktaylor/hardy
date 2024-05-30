@@ -50,16 +50,9 @@ impl ClaSink for Service {
         request: Request<ReceiveBundleRequest>,
     ) -> Result<Response<ReceiveBundleResponse>, Status> {
         let request = request.into_inner();
-        let (protocol, name) = self.cla_registry.find_by_token(&request.token)?;
+        self.cla_registry.token_exists(&request.token)?;
         self.ingress
-            .receive(
-                Some(ingress::ClaAddress {
-                    protocol,
-                    name,
-                    address: request.source,
-                }),
-                request.bundle,
-            )
+            .receive(request.bundle)
             .await
             .map(|_| Response::new(ReceiveBundleResponse {}))
             .map_err(Status::from_error)
@@ -73,7 +66,7 @@ impl ClaSink for Service {
         let request = request.into_inner();
 
         // Just check the token is valid
-        self.cla_registry.find_by_token(&request.token)?;
+        self.cla_registry.token_exists(&request.token)?;
 
         self.ingress
             .confirm_forwarding(&request.token, &request.bundle_id)

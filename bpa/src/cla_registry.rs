@@ -19,15 +19,9 @@ struct Cla {
     endpoint: Channel,
 }
 
-#[derive(Default)]
-struct Indexes {
-    clas_by_name: HashMap<String, Arc<Cla>>,
-    clas_by_token: HashMap<String, Arc<Cla>>,
-}
-
 #[derive(Default, Clone)]
 pub struct ClaRegistry {
-    clas: Arc<RwLock<Indexes>>,
+    clas: Arc<RwLock<HashMap<String, Arc<Cla>>>>,
 }
 
 impl ClaRegistry {
@@ -65,12 +59,12 @@ impl ClaRegistry {
             .trace_expect("Failed to write-lock CLA mutex");
 
         // Check token is unique
-        while clas.clas_by_token.contains_key(&token) {
+        while clas.contains_key(&token) {
             token = Alphanumeric.sample_string(&mut rng, 16);
         }
 
         // Do a linear search for re-registration with the same name
-        for (_, cla) in clas.clas_by_token.iter_mut() {
+        for (_, cla) in clas.iter_mut() {
             if cla.ident != request.ident {
                 return Err(tonic::Status::already_exists(format!(
                     "CLA {} already registered",
@@ -87,8 +81,7 @@ impl ClaRegistry {
             endpoint,
         });
 
-        clas.clas_by_token.insert(token.clone(), cla.clone());
-        clas.clas_by_name.insert(request.name, cla);
+        clas.insert(token.clone(), cla.clone());
         Ok(RegisterClaResponse { token })
     }
 
@@ -102,31 +95,31 @@ impl ClaRegistry {
             .write()
             .trace_expect("Failed to write-lock CLA mutex");
 
-        clas.clas_by_token
-            .remove(&request.token)
-            .and_then(|cla| clas.clas_by_name.remove(&cla.name))
+        clas.remove(&request.token)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
             .map(|_| UnregisterClaResponse {})
     }
 
     #[instrument(skip(self))]
-    pub fn find_by_token(&self, token: &str) -> Result<(String, String), tonic::Status> {
-        self.clas
+    pub fn token_exists(&self, token: &str) -> Result<(), tonic::Status> {
+        if !self
+            .clas
             .read()
             .trace_expect("Failed to read-lock CLA mutex")
-            .clas_by_token
-            .get(token)
-            .ok_or(tonic::Status::not_found("No such CLA registered"))
-            .map(|cla| (cla.protocol.clone(), cla.name.clone()))
+            .contains_key(token)
+        {
+            Err(tonic::Status::not_found("No such CLA registered"))
+        } else {
+            Ok(())
+        }
     }
 
     #[instrument(skip(self))]
-    pub fn find_by_name(&self, name: &str) -> Option<Endpoint> {
+    pub fn find(&self, token: &str) -> Option<Endpoint> {
         self.clas
             .read()
             .trace_expect("Failed to read-lock CLA mutex")
-            .clas_by_name
-            .get(name)
+            .get(token)
             .map(|cla| Endpoint {
                 token: cla.token.clone(),
                 inner: cla.endpoint.clone(),
@@ -138,8 +131,7 @@ impl Endpoint {
     #[instrument(skip(self))]
     pub async fn forward_bundle(
         &self,
-        protocol: String,
-        destination: Vec<u8>,
+        destination: &bundle::Eid,
         bundle: Vec<u8>,
     ) -> Result<(Option<String>, Option<time::OffsetDateTime>), Error> {
         let r = self
@@ -148,7 +140,7 @@ impl Endpoint {
             .await
             .forward_bundle(tonic::Request::new(ForwardBundleRequest {
                 token: self.token.clone(),
-                destination,
+                destination: destination.to_string(),
                 bundle,
             }))
             .await?

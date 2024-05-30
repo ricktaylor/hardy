@@ -52,7 +52,7 @@ service cla {
 
 message ForwardBundleRequest {
     string Token = 1;
-    bytes Destination = 2;
+    string Destination = 2;
     bytes Bundle = 3;
 }
 

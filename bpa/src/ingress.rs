@@ -33,10 +33,9 @@ impl Config {
 pub struct Ingress {
     config: Config,
     store: store::Store,
-    receive_channel: Sender<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
+    receive_channel: Sender<(String, Option<time::OffsetDateTime>)>,
     restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
     dispatcher: dispatcher::Dispatcher,
-    fib: Option<fib::Fib>,
 }
 
 impl Ingress {
@@ -44,7 +43,6 @@ impl Ingress {
         config: &config::Config,
         store: store::Store,
         dispatcher: dispatcher::Dispatcher,
-        fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
@@ -60,7 +58,6 @@ impl Ingress {
             receive_channel,
             restart_channel: ingress_channel,
             dispatcher,
-            fib,
         };
 
         // Spawn a bundle receiver
@@ -79,7 +76,7 @@ impl Ingress {
     }
 
     #[instrument(skip(self))]
-    pub async fn receive(&self, from: Option<ClaAddress>, data: Vec<u8>) -> Result<(), Error> {
+    pub async fn receive(&self, data: Vec<u8>) -> Result<(), Error> {
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
@@ -88,7 +85,7 @@ impl Ingress {
 
         // Put bundle into receive channel
         self.receive_channel
-            .send((from, storage_name, Some(received_at)))
+            .send((storage_name, Some(received_at)))
             .await
             .map_err(|e| e.into())
     }
@@ -100,7 +97,7 @@ impl Ingress {
     ) -> Result<(), Error> {
         // Put bundle into receive channel
         self.receive_channel
-            .send((None, storage_name.to_string(), received_at))
+            .send((storage_name.to_string(), received_at))
             .await
             .map_err(|e| e.into())
     }
@@ -120,7 +117,7 @@ impl Ingress {
     #[instrument(skip_all)]
     async fn pipeline_pump(
         self,
-        mut receive_channel: Receiver<(Option<ClaAddress>, String, Option<time::OffsetDateTime>)>,
+        mut receive_channel: Receiver<(String, Option<time::OffsetDateTime>)>,
         mut restart_channel: Receiver<(bundle::Metadata, bundle::Bundle)>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
@@ -131,11 +128,11 @@ impl Ingress {
             tokio::select! {
                 msg = receive_channel.recv() => match msg {
                     None => break,
-                    Some((cla_source,storage_name,received_at)) => {
+                    Some((storage_name,received_at)) => {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.receive_bundle(cla_source,storage_name,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
+                            ingress.receive_bundle(storage_name,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
                         });
                     }
                 },
@@ -145,7 +142,7 @@ impl Ingress {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(None,metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
+                            ingress.process_bundle(metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -163,7 +160,6 @@ impl Ingress {
     #[instrument(skip(self))]
     async fn receive_bundle(
         &self,
-        from: Option<ClaAddress>,
         storage_name: String,
         received_at: Option<time::OffsetDateTime>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -230,14 +226,12 @@ impl Ingress {
         }
 
         // Process the bundle further
-        self.process_bundle(from, metadata, bundle, cancel_token)
-            .await
+        self.process_bundle(metadata, bundle, cancel_token).await
     }
 
     #[instrument(skip(self))]
     async fn process_bundle(
         &self,
-        from: Option<ClaAddress>,
         mut metadata: bundle::Metadata,
         mut bundle: bundle::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -310,41 +304,6 @@ impl Ingress {
                     None
                 }
             });
-
-        if reason.is_none() {
-            /* By the time we get here, we are pretty confident that the bundle isn't garbage
-             * So we can confidently add routes if forwarding is enabled */
-            if let (Some(from), Some(fib)) = (&from, &self.fib) {
-                // Record a route to 'from.address' via 'from.name'
-                let _ = fib
-                    .add_cla(
-                        fib::ClaAddress {
-                            protocol: from.protocol.clone(),
-                            address: from.address.clone(),
-                        },
-                        0,
-                        from.name.clone(),
-                    )
-                    .await;
-
-                // Record a route to 'previous_node' via 'from.address'
-                let _ = fib
-                    .add_eid(
-                        "".to_string(),
-                        &bundle
-                            .previous_node
-                            .clone()
-                            .unwrap_or(bundle.id.source.clone())
-                            .into(),
-                        0,
-                        fib::Action::Forward(fib::ClaAddress {
-                            protocol: from.protocol.clone(),
-                            address: from.address.clone(),
-                        }),
-                    )
-                    .await;
-            }
-        }
 
         if reason.is_none() {
             // TODO: BPSec here!
