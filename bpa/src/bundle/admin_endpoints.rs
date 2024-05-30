@@ -406,49 +406,31 @@ mod tests {
             .unwrap()
     }
 
+    fn ipn_test(config: &str, expected: IpnNodeId) {
+        let a = init_from_value(fake_config(config)).unwrap();
+        assert!(a.dtn.is_none());
+        assert!(a.ipn.map_or(false, |node_id| node_id == expected ));
+    }
+
+    fn dtn_test(config: &str, expected: &str) {
+        let a = init_from_value(fake_config(config)).unwrap();
+        assert!(a.ipn.is_none());
+        assert!(a.dtn.map_or(false, |node_id| node_id.node_name == expected));
+    }
+
     #[test]
     fn test() {
-        let a = init_from_value(fake_config("ipn:1")).unwrap();
-        assert!(a.dtn.is_none());
-        assert!(a.ipn.map_or(false, |node_id| match node_id {
-            IpnNodeId {
+        ipn_test("ipn:1.0",IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
-            } => true,
-            _ => false,
-        }));
+            });
 
-        let a = init_from_value(fake_config("ipn:1.0")).unwrap();
-        assert!(a.dtn.is_none());
-        assert!(a.ipn.map_or(false, |node_id| match node_id {
-            IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            } => true,
-            _ => false,
-        }));
+        ipn_test("ipn:2.1.0",IpnNodeId {
+            allocator_id: 2,
+            node_number: 1,
+        });
 
-        let a = init_from_value(fake_config("ipn:2.1.0")).unwrap();
-        assert!(a.dtn.is_none());
-        assert!(a.ipn.map_or(false, |node_id| match node_id {
-            IpnNodeId {
-                allocator_id: 2,
-                node_number: 1,
-            } => true,
-            _ => false,
-        }));
-
-        let a = init_from_value(fake_config("dtn://node-name")).unwrap();
-        assert!(a.ipn.is_none());
-        assert!(a
-            .dtn
-            .map_or(false, |node_id| node_id.node_name == "node-name"));
-
-        let a = init_from_value(fake_config("dtn://node-name/")).unwrap();
-        assert!(a.ipn.is_none());
-        assert!(a
-            .dtn
-            .map_or(false, |node_id| node_id.node_name == "node-name"));
+        dtn_test("dtn://node-name/","node-name");
 
         /*#administrative_endpoint = { "ipn": N[.0], "dtn": "node-name" }
         #administrative_endpoint = [ "ipn:[A.]N.0", "dtn://node-name/"]*/
