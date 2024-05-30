@@ -255,13 +255,14 @@ fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
         }
         Eid::Dtn { node_name, demux } => {
             if !demux.is_empty() {
-                Err(Error::DtnHasDemux)
-            } else {
-                Ok(AdminEndpoints {
-                    dtn: Some(DtnNodeId { node_name }),
-                    ipn: None,
-                })
+                if demux.len() > 1 || !demux[0].is_empty() {
+                    return Err(Error::DtnHasDemux);
+                }
             }
+            Ok(AdminEndpoints {
+                dtn: Some(DtnNodeId { node_name }),
+                ipn: None,
+            })
         }
     }
 }
@@ -277,8 +278,10 @@ fn init_from_table(t: HashMap<String, config::Value>) -> Result<AdminEndpoints, 
                 let s = v.into_string()?;
                 if s == "none" {
                     Err(Error::NotNone)
-                } else {
+                } else if s.ends_with('/') {
                     init_from_string(format!("dtn://{s}"))
+                } else {
+                    init_from_string(format!("dtn://{s}/"))
                 }
             }
             "ipn" => match v.kind {
