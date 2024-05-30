@@ -185,7 +185,7 @@ impl EidPatternItem {
         }
     }
 
-    fn is_exact(&self) -> Option<Eid> {
+    pub fn is_exact(&self) -> Option<Eid> {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.is_exact(),
             EidPatternItem::DtnPatternItem(i) => i.is_exact(),

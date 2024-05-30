@@ -227,21 +227,21 @@ fn url_decode(s: &str, span: &mut Span) -> Result<String, Error> {
 #[derive(Debug)]
 pub enum PatternMatch {
     Exact(String),
-    RegExp(regex::Regex),
+    Regex(regex::Regex),
 }
 
 impl PatternMatch {
     fn is_match(&self, s: &str) -> bool {
         match self {
             PatternMatch::Exact(e) => e == s,
-            PatternMatch::RegExp(r) => r.is_match(s),
+            PatternMatch::Regex(r) => r.is_match(s),
         }
     }
 
     fn is_exact(&self) -> Option<String> {
         match self {
             PatternMatch::Exact(s) => Some(s.clone()),
-            PatternMatch::RegExp(_) => None,
+            PatternMatch::Regex(_) => None,
         }
     }
 
@@ -264,7 +264,7 @@ impl PatternMatch {
                     .map_err(|e| Error::InvalidRegEx(e, span.subset(s.chars().count() - 1)))
                     .map(|r| {
                         span.inc(s.chars().count() - 1);
-                        PatternMatch::RegExp(r)
+                        PatternMatch::Regex(r)
                     })
             }
         } else {
@@ -276,7 +276,6 @@ impl PatternMatch {
 #[derive(Debug)]
 pub enum DtnLastPattern {
     Single(DtnSinglePattern),
-    Empty,
     MultiWildcard,
 }
 
@@ -292,7 +291,6 @@ impl DtnLastPattern {
     fn is_exact(&self) -> Option<String> {
         match self {
             DtnLastPattern::Single(p) => p.is_exact(),
-            DtnLastPattern::Empty => Some("".to_string()),
             DtnLastPattern::MultiWildcard => None,
         }
     }
@@ -302,7 +300,9 @@ impl DtnLastPattern {
     */
     fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
         if s.is_empty() {
-            Ok(DtnLastPattern::Empty)
+            Ok(DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
+                PatternMatch::Exact("".to_string()),
+            )))
         } else if s == "**" {
             span.inc(2);
             Ok(DtnLastPattern::MultiWildcard)
