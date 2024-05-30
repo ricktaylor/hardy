@@ -2,13 +2,6 @@ use super::*;
 use tokio::sync::mpsc::*;
 use utils::settings;
 
-#[derive(Debug /* , Clone, PartialEq, Eq, PartialOrd, Ord, Hash*/)]
-pub struct ClaAddress {
-    pub protocol: String,
-    pub name: String,
-    pub address: Vec<u8>,
-}
-
 #[derive(Clone)]
 struct Config {
     allow_null_sources: bool,
@@ -31,7 +24,6 @@ impl Config {
 
 #[derive(Clone)]
 pub struct Ingress {
-    config: Config,
     store: store::Store,
     receive_channel: Sender<(String, Option<time::OffsetDateTime>)>,
     restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
@@ -40,20 +32,16 @@ pub struct Ingress {
 
 impl Ingress {
     pub fn new(
-        config: &config::Config,
+        _config: &config::Config,
         store: store::Store,
         dispatcher: dispatcher::Dispatcher,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
-        // Load config
-        let config = Config::new(config);
-
         // Create a channel for new bundles
         let (receive_channel, receive_channel_rx) = channel(16);
         let (ingress_channel, ingress_channel_rx) = channel(16);
         let ingress = Self {
-            config,
             store,
             receive_channel,
             restart_channel: ingress_channel,
@@ -257,52 +245,6 @@ impl Ingress {
                         bundle::StatusReportReasonCode::HopLimitExceeded
                     })
                 })
-            })
-            .or_else(|| {
-                // Source Eid checks
-                match bundle.id.source {
-                    hardy_bpa_core::bundle::Eid::Null => {
-                        trace!("Bundle has Null source");
-                        self.config
-                            .allow_null_sources
-                            .then_some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                    }
-                    hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                        trace!("Bundle has LocalNode");
-                        Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                    }
-                    _ => None,
-                }
-            })
-            .or_else(|| {
-                // Do the constant checks only on ingress bundles
-                if let bundle::BundleStatus::IngressPending = &metadata.status {
-                    // Destination Eid checks
-                    match bundle.destination {
-                        hardy_bpa_core::bundle::Eid::Null => {
-                            trace!("Bundle has Null destination");
-                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                        }
-                        hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } => {
-                            trace!("Bundle has LocalNode destination");
-                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                        }
-                        _ => None,
-                    }
-                    .or_else(|| {
-                        // Report-To Eid checks
-                        if let hardy_bpa_core::bundle::Eid::LocalNode { service_number: _ } =
-                            bundle.report_to
-                        {
-                            trace!("Bundle has LocalNode report-to");
-                            Some(bundle::StatusReportReasonCode::BlockUnintelligible)
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
             });
 
         if reason.is_none() {
