@@ -19,17 +19,19 @@ pub enum ForwardAction {
     Forward(Vec<u32>, Option<time::OffsetDateTime>), // Forward to CLA by Handle
 }
 
+type TableId = String;
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct EidTableEntry {
+struct TableEntry {
     priority: u32,
     action: Action,
 }
 
-type EidTable = bundle::EidPatternMap<String, Vec<EidTableEntry>>;
+type Table = bundle::EidPatternMap<TableId, Vec<TableEntry>>;
 
 #[derive(Default, Clone)]
 pub struct Fib {
-    entries: Arc<RwLock<EidTable>>,
+    entries: Arc<RwLock<Table>>,
 }
 
 impl Fib {
@@ -48,7 +50,7 @@ impl Fib {
         action: Action,
     ) -> Result<(), Error> {
         let mut entries = self.entries.write().await;
-        let entry = EidTableEntry { priority, action };
+        let entry = TableEntry { priority, action };
         if let Some(mut prev) = entries.insert(pattern, id.clone(), vec![entry.clone()]) {
             // We have previous - de-dedup
             if prev.binary_search(&entry).is_err() {
@@ -78,31 +80,9 @@ impl Fib {
     }
 }
 
-fn priority_subset<I, F1, F2, R>(iter: I, f1: F1, f2: F2) -> Vec<R>
-where
-    I: Iterator,
-    F1: Fn(&I::Item) -> u32,
-    F2: Fn(&I::Item) -> R,
-{
-    // This is a fairly brutal binning by priority, with 1 bin
-    let mut lowest_priority = None;
-    let mut entries = Vec::new();
-    for i in iter {
-        let p = f1(&i);
-        match lowest_priority {
-            Some(lowest_priority) if lowest_priority < p => continue,
-            Some(lowest_priority) if lowest_priority > p => entries.clear(),
-            _ => {}
-        }
-        lowest_priority = Some(p);
-        entries.push(f2(&i));
-    }
-    entries
-}
-
 #[instrument(skip(table, trail))]
 fn find_recurse(
-    table: &EidTable,
+    table: &Table,
     to: &bundle::Eid,
     trail: &mut HashSet<bundle::Eid>,
 ) -> ForwardAction {
@@ -114,11 +94,19 @@ fn find_recurse(
     // Recursion check
     if trail.insert(to.clone()) {
         // Flatten and Filter on lowest priority
-        let entries = priority_subset(
-            table.find(to).into_iter().flatten(),
-            |e| e.priority,
-            |e| e.action.clone(),
-        );
+        // This is a fairly brutal binning by priority, with 1 bin
+        let mut priority = None;
+        let mut entries = Vec::new();
+        for entry in table.find(to).into_iter().flatten() {
+            match priority {
+                Some(lowest_priority) if lowest_priority < entry.priority => continue,
+                Some(lowest_priority) if lowest_priority > entry.priority => entries.clear(),
+                _ => {}
+            }
+            priority = Some(entry.priority);
+            entries.push(entry.action.clone());
+        }
+
         for action in entries {
             match action {
                 Action::Via(via) => match find_recurse(table, &via, trail) {
