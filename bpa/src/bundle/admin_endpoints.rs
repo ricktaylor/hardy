@@ -409,7 +409,7 @@ mod tests {
     fn ipn_test(config: &str, expected: IpnNodeId) {
         let a = init_from_value(fake_config(config)).unwrap();
         assert!(a.dtn.is_none());
-        assert!(a.ipn.map_or(false, |node_id| node_id == expected ));
+        assert!(a.ipn.map_or(false, |node_id| node_id == expected));
     }
 
     fn dtn_test(config: &str, expected: &str) {
@@ -420,17 +420,23 @@ mod tests {
 
     #[test]
     fn test() {
-        ipn_test("ipn:1.0",IpnNodeId {
+        ipn_test(
+            "ipn:1.0",
+            IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
-            });
+            },
+        );
 
-        ipn_test("ipn:2.1.0",IpnNodeId {
-            allocator_id: 2,
-            node_number: 1,
-        });
+        ipn_test(
+            "ipn:2.1.0",
+            IpnNodeId {
+                allocator_id: 2,
+                node_number: 1,
+            },
+        );
 
-        dtn_test("dtn://node-name/","node-name");
+        dtn_test("dtn://node-name/", "node-name");
 
         /*#administrative_endpoint = { "ipn": N[.0], "dtn": "node-name" }
         #administrative_endpoint = [ "ipn:[A.]N.0", "dtn://node-name/"]*/
