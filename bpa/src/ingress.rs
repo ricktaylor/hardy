@@ -343,7 +343,7 @@ impl Ingress {
     #[instrument(skip(self))]
     pub async fn confirm_forwarding(
         &self,
-        token: &str,
+        handle: u32,
         bundle_id: &str,
     ) -> Result<(), tonic::Status> {
         let Some((metadata, bundle)) = self
@@ -359,7 +359,7 @@ impl Ingress {
         };
 
         match &metadata.status {
-            bundle::BundleStatus::ForwardAckPending(t, _) if t == token => {
+            bundle::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
                 // Report bundle forwarded
                 self.dispatcher
                     .report_bundle_forwarded(&metadata, &bundle)

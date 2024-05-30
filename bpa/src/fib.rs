@@ -8,7 +8,7 @@ use utils::settings;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(String),                              // Forward to CLA
+    Forward(u32),                                 // Forward to CLA by Handle
     Via(bundle::Eid),                             // Recursive lookup
     Wait(time::OffsetDateTime),                   // Wait for later availability
 }
@@ -16,7 +16,7 @@ pub enum Action {
 #[derive(Clone)]
 pub enum ForwardAction {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(Vec<String>, Option<time::OffsetDateTime>), // Forward to CLA by name
+    Forward(Vec<u32>, Option<time::OffsetDateTime>), // Forward to CLA by Handle
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]

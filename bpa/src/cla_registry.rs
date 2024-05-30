@@ -1,6 +1,6 @@
 use super::*;
 use hardy_proto::cla::*;
-use rand::distributions::{Alphanumeric, DistString};
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -8,20 +8,17 @@ type Channel = Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Ch
 
 pub struct Endpoint {
     inner: Channel,
-    token: String,
+    handle: u32,
 }
 
 struct Cla {
-    token: String,
-    name: String,
     ident: String,
-    protocol: String,
     endpoint: Channel,
 }
 
 #[derive(Default, Clone)]
 pub struct ClaRegistry {
-    clas: Arc<RwLock<HashMap<String, Arc<Cla>>>>,
+    clas: Arc<RwLock<HashMap<u32, Arc<Cla>>>>,
 }
 
 impl ClaRegistry {
@@ -49,18 +46,18 @@ impl ClaRegistry {
                 })?,
         ));
 
-        // Compose a token
+        // Compose a handle
         let mut rng = rand::thread_rng();
-        let mut token = Alphanumeric.sample_string(&mut rng, 16);
+        let mut handle = rng.gen::<std::num::NonZeroU32>().into();
 
         let mut clas = self
             .clas
             .write()
             .trace_expect("Failed to write-lock CLA mutex");
 
-        // Check token is unique
-        while clas.contains_key(&token) {
-            token = Alphanumeric.sample_string(&mut rng, 16);
+        // Check handle is unique
+        while clas.contains_key(&handle) {
+            handle = rng.gen::<std::num::NonZeroU32>().into();
         }
 
         // Do a linear search for re-registration with the same name
@@ -74,15 +71,12 @@ impl ClaRegistry {
         }
 
         let cla = Arc::new(Cla {
-            token: token.clone(),
-            name: request.name.clone(),
             ident: request.ident,
-            protocol: request.protocol,
             endpoint,
         });
 
-        clas.insert(token.clone(), cla.clone());
-        Ok(RegisterClaResponse { token })
+        clas.insert(handle, cla.clone());
+        Ok(RegisterClaResponse { handle })
     }
 
     #[instrument(skip(self))]
@@ -95,18 +89,18 @@ impl ClaRegistry {
             .write()
             .trace_expect("Failed to write-lock CLA mutex");
 
-        clas.remove(&request.token)
+        clas.remove(&request.handle)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
             .map(|_| UnregisterClaResponse {})
     }
 
     #[instrument(skip(self))]
-    pub fn token_exists(&self, token: &str) -> Result<(), tonic::Status> {
+    pub fn exists(&self, handle: u32) -> Result<(), tonic::Status> {
         if !self
             .clas
             .read()
             .trace_expect("Failed to read-lock CLA mutex")
-            .contains_key(token)
+            .contains_key(&handle)
         {
             Err(tonic::Status::not_found("No such CLA registered"))
         } else {
@@ -115,13 +109,13 @@ impl ClaRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn find(&self, token: &str) -> Option<Endpoint> {
+    pub fn find(&self, handle: u32) -> Option<Endpoint> {
         self.clas
             .read()
             .trace_expect("Failed to read-lock CLA mutex")
-            .get(token)
+            .get(&handle)
             .map(|cla| Endpoint {
-                token: cla.token.clone(),
+                handle,
                 inner: cla.endpoint.clone(),
             })
     }
@@ -133,13 +127,13 @@ impl Endpoint {
         &self,
         destination: &bundle::Eid,
         bundle: Vec<u8>,
-    ) -> Result<(Option<String>, Option<time::OffsetDateTime>), Error> {
+    ) -> Result<(Option<u32>, Option<time::OffsetDateTime>), Error> {
         let r = self
             .inner
             .lock()
             .await
             .forward_bundle(tonic::Request::new(ForwardBundleRequest {
-                token: self.token.clone(),
+                handle: self.handle,
                 destination: destination.to_string(),
                 bundle,
             }))
@@ -161,7 +155,7 @@ impl Endpoint {
         match r.result {
             v if v == (forward_bundle_response::ForwardingResult::Sent as i32) => Ok((None, None)),
             v if v == (forward_bundle_response::ForwardingResult::Pending as i32) => {
-                Ok((Some(self.token.clone()), delay))
+                Ok((Some(self.handle), delay))
             }
             v if v == (forward_bundle_response::ForwardingResult::Congested as i32) => {
                 Ok((None, delay))

@@ -12,25 +12,23 @@ service cla_sink {
 }
 
 message RegisterClaRequest {
-    string Name = 1;
-    string Ident = 2;
-    string Protocol = 3;
-    string GrpcAddress = 4;
+    string Ident = 1;
+    string GrpcAddress = 2;
 }
 
 message RegisterClaResponse {
-    string Token = 1;
+    uint32 Handle = 1;
 }
 
 message UnregisterClaRequest {
-    string Token = 1;
+    uint32 Handle = 1;
 }
 
 message UnregisterClaResponse {
 }
 
 message ReceiveBundleRequest {
-    string Token = 1;
+    uint32 Handle = 1;
     bytes Source = 2;
     bytes Bundle = 3;
 }
@@ -39,7 +37,7 @@ message ReceiveBundleResponse {
 }
 
 message ConfirmForwardingRequest {
-    string Token = 1;
+    uint32 Handle = 1;
     string BundleId = 2;
 }
 
@@ -51,7 +49,7 @@ service cla {
 }
 
 message ForwardBundleRequest {
-    string Token = 1;
+    uint32 Handle = 1;
     string Destination = 2;
     bytes Bundle = 3;
 }

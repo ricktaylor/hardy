@@ -50,7 +50,7 @@ impl ClaSink for Service {
         request: Request<ReceiveBundleRequest>,
     ) -> Result<Response<ReceiveBundleResponse>, Status> {
         let request = request.into_inner();
-        self.cla_registry.token_exists(&request.token)?;
+        self.cla_registry.exists(request.handle)?;
         self.ingress
             .receive(request.bundle)
             .await
@@ -65,11 +65,11 @@ impl ClaSink for Service {
     ) -> Result<Response<ConfirmForwardingResponse>, Status> {
         let request = request.into_inner();
 
-        // Just check the token is valid
-        self.cla_registry.token_exists(&request.token)?;
+        // Just check the handle is valid
+        self.cla_registry.exists(request.handle)?;
 
         self.ingress
-            .confirm_forwarding(&request.token, &request.bundle_id)
+            .confirm_forwarding(request.handle, &request.bundle_id)
             .await
             .map(|_| Response::new(ConfirmForwardingResponse {}))
     }

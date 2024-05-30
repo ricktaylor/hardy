@@ -399,9 +399,9 @@ impl Dispatcher {
             let mut congestion_wait = None;
 
             // For each CLA
-            for token in clas {
+            for handle in clas {
                 // Find the named CLA
-                if let Some(endpoint) = self.cla_registry.find(&token) {
+                if let Some(endpoint) = self.cla_registry.find(handle) {
                     // Get bundle data from store, now we know we need it!
                     if data.is_none() {
                         let Some(source_data) = self.load_data(&metadata, &bundle).await? else {
@@ -426,7 +426,7 @@ impl Dispatcher {
                             self.report_bundle_forwarded(&metadata, &bundle).await?;
                             return self.drop_bundle(metadata, bundle, None).await;
                         }
-                        Ok((Some(token), until)) => {
+                        Ok((Some(handle), until)) => {
                             // CLA will report successful forwarding
                             // Don't wait longer than expiry
                             let until = until.unwrap_or_else(|| {
@@ -435,7 +435,8 @@ impl Dispatcher {
                             }).min(bundle::get_bundle_expiry(&metadata, &bundle));
 
                             // Set the bundle status to 'Forward Acknowledgement Pending'
-                            metadata.status = bundle::BundleStatus::ForwardAckPending(token, until);
+                            metadata.status =
+                                bundle::BundleStatus::ForwardAckPending(handle, until);
                             return self
                                 .store
                                 .set_status(&metadata.storage_name, &metadata.status)
@@ -455,7 +456,7 @@ impl Dispatcher {
                         Err(e) => trace!("CLA failed to forward {e}"),
                     }
                 } else {
-                    trace!("FIB has entry for unknown CLA: {}", token);
+                    trace!("FIB has entry for unknown CLA: {}", handle);
                 }
                 // Try the next CLA, this one is busy, broken or missing
             }
