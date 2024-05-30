@@ -1,26 +1,5 @@
 use super::*;
 use tokio::sync::mpsc::*;
-use utils::settings;
-
-#[derive(Clone)]
-struct Config {
-    allow_null_sources: bool,
-}
-
-impl Config {
-    fn new(config: &config::Config) -> Self {
-        let config = Self {
-            allow_null_sources: settings::get_with_default(config, "allow_null_sources", false)
-                .trace_expect("Invalid 'allow_null_sources' value in configuration"),
-        };
-
-        if config.allow_null_sources {
-            info!("Bundles with Null source endpoints are permitted");
-        }
-
-        config
-    }
-}
 
 #[derive(Clone)]
 pub struct Ingress {
