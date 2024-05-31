@@ -39,14 +39,6 @@ impl<T> IntervalMap<T>
 where
     T: Clone,
 {
-    fn new() -> Self {
-        Self {
-            any: None,
-            exact: HashMap::new(),
-            ranges: Vec::new(),
-        }
-    }
-
     fn insert<F>(&mut self, i: &Interval, f: F) -> &mut T
     where
         F: FnOnce() -> T,
@@ -139,9 +131,9 @@ where
                 for i3 in service_numbers.iter() {
                     prev = self
                         .intervals
-                        .insert(&i1, IntervalMap::new)
-                        .insert(i2, IntervalMap::new)
-                        .insert(i3, HashMap::new)
+                        .insert(&i1, IntervalMap::default)
+                        .insert(i2, IntervalMap::default)
+                        .insert(i3, HashMap::default)
                         .insert(id.clone(), value.clone())
                         .or(prev);
                 }
