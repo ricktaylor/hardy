@@ -88,12 +88,8 @@ impl AdminEndpoints {
                 demux: Vec::new(),
             },
             (Some(node_id), None) => match destination {
-                Eid::LocalNode { service_number: _ } => Eid::LocalNode { service_number: 0 },
-                Eid::Ipn2 {
-                    allocator_id: _,
-                    node_number: _,
-                    service_number: _,
-                } => Eid::Ipn2 {
+                Eid::LocalNode { .. } => Eid::LocalNode { service_number: 0 },
+                Eid::Ipn2 { .. } => Eid::Ipn2 {
                     allocator_id: node_id.allocator_id,
                     node_number: node_id.node_number,
                     service_number: 0,
@@ -101,20 +97,13 @@ impl AdminEndpoints {
                 _ => node_id.to_eid(0),
             },
             (Some(ipn_node_id), Some(dtn_node_id)) => match destination {
-                Eid::LocalNode { service_number: _ } => Eid::LocalNode { service_number: 0 },
-                Eid::Ipn2 {
-                    allocator_id: _,
-                    node_number: _,
-                    service_number: _,
-                } => Eid::Ipn2 {
+                Eid::LocalNode { .. } => Eid::LocalNode { service_number: 0 },
+                Eid::Ipn2 { .. } => Eid::Ipn2 {
                     allocator_id: ipn_node_id.allocator_id,
                     node_number: ipn_node_id.node_number,
                     service_number: 0,
                 },
-                Eid::Dtn {
-                    node_name: _,
-                    demux: _,
-                } => Eid::Dtn {
+                Eid::Dtn { .. } => Eid::Dtn {
                     node_name: dtn_node_id.node_name.clone(),
                     demux: Vec::new(),
                 },
@@ -127,26 +116,23 @@ impl AdminEndpoints {
     pub fn is_local_service(&self, eid: &Eid) -> bool {
         match eid {
             Eid::Null => false,
-            Eid::LocalNode { service_number: _ } => true,
+            Eid::LocalNode { .. } => true,
             Eid::Ipn2 {
                 allocator_id,
                 node_number,
-                service_number: _,
+                ..
             }
             | Eid::Ipn3 {
                 allocator_id,
                 node_number,
-                service_number: _,
+                ..
             } => match &self.ipn {
                 Some(node_id) => {
                     node_id.allocator_id == *allocator_id && node_id.node_number == *node_number
                 }
                 _ => false,
             },
-            Eid::Dtn {
-                node_name,
-                demux: _,
-            } => match &self.dtn {
+            Eid::Dtn { node_name, .. } => match &self.dtn {
                 Some(node_id) => node_id.node_name == *node_name,
                 _ => false,
             },
@@ -230,7 +216,7 @@ fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
 fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
     match s.parse::<bundle::Eid>()? {
         Eid::Null => Err(Error::NotNone),
-        Eid::LocalNode { service_number: _ } => Err(Error::NotLocalNode),
+        Eid::LocalNode { .. } => Err(Error::NotLocalNode),
         Eid::Ipn2 {
             allocator_id,
             node_number,

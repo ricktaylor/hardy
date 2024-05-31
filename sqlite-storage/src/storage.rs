@@ -123,7 +123,7 @@ impl Storage {
             Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error {
                     code: rusqlite::ffi::ErrorCode::CannotOpen,
-                    extended_code: _,
+                    ..
                 },
                 _,
             )) => {
