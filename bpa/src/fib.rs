@@ -13,11 +13,12 @@ pub enum Action {
     Wait(time::OffsetDateTime),                   // Wait for later availability
 }
 
-#[derive(Clone)]
-pub enum ForwardAction {
-    Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(Vec<u32>, Option<time::OffsetDateTime>), // Forward to CLA by Handle
+pub struct ForwardAction {
+    pub clas: Vec<u32>,                     // Available endpoints for forwarding
+    pub wait: Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
 }
+
+type ForwardResult = Result<ForwardAction, Option<bundle::StatusReportReasonCode>>;
 
 type TableId = String;
 
@@ -62,21 +63,18 @@ impl Fib {
     }
 
     #[instrument(skip(self))]
-    pub async fn find(&self, to: &bundle::Eid) -> ForwardAction {
-        let r = {
+    pub async fn find(&self, to: &bundle::Eid) -> ForwardResult {
+        let mut action = {
             // Scope the lock
             let entries = self.entries.read().await;
-            find_recurse(&entries, to, &mut HashSet::new())
+            find_recurse(&entries, to, &mut HashSet::new())?
         };
 
-        match r {
-            ForwardAction::Forward(mut v, until) if v.len() > 1 => {
-                // For ECMP, we need a random order
-                v.shuffle(&mut rand::thread_rng());
-                ForwardAction::Forward(v, until)
-            }
-            r => r,
+        if action.clas.len() > 1 {
+            // For ECMP, we need a random order
+            action.clas.shuffle(&mut rand::thread_rng());
         }
+        Ok(action)
     }
 }
 
@@ -85,16 +83,18 @@ fn find_recurse(
     table: &Table,
     to: &bundle::Eid,
     trail: &mut HashSet<bundle::Eid>,
-) -> ForwardAction {
+) -> ForwardResult {
     // TODO: We currently pick the first Drop action we find, and do not tie-break on reason...
 
-    let mut new_entries = Vec::new();
-    let mut wait = None;
+    let mut new_action = ForwardAction {
+        clas: Vec::new(),
+        wait: None,
+    };
 
     // Recursion check
     if trail.insert(to.clone()) {
         // Flatten and Filter on lowest priority
-        // This is a fairly brutal binning by priority, with 1 bin
+        // TODO: This is a fairly brutal binning by priority, keeping the lowest bin
         let mut priority = None;
         let mut entries = Vec::new();
         for entry in table.find(to).into_iter().flatten() {
@@ -109,34 +109,35 @@ fn find_recurse(
 
         for action in entries {
             match action {
-                Action::Via(via) => match find_recurse(table, &via, trail) {
-                    ForwardAction::Drop(reason) => return ForwardAction::Drop(reason),
-                    ForwardAction::Forward(entries, until) => {
-                        wait = match (wait, until) {
-                            (None, Some(_)) => until,
-                            (_, None) => wait,
-                            (Some(wait), Some(until)) => Some(wait.min(until)),
-                        };
-                        new_entries.extend(entries)
-                    }
-                },
+                Action::Via(via) => {
+                    let action = find_recurse(table, &via, trail)?;
+                    new_action.wait = match (new_action.wait, action.wait) {
+                        (None, Some(_)) => action.wait,
+                        (_, None) => new_action.wait,
+                        (Some(wait), Some(until)) => Some(wait.min(until)),
+                    };
+                    new_action.clas.extend(action.clas)
+                }
                 Action::Forward(c) => {
-                    new_entries.push(c);
+                    new_action.clas.push(c);
                 }
                 Action::Drop(reason) => {
                     // Drop trumps everything else
-                    return ForwardAction::Drop(reason);
+                    return Err(reason);
                 }
                 Action::Wait(until) => {
                     // Check we don't have a deadline in the past
                     if until >= time::OffsetDateTime::now_utc() {
-                        wait =
-                            wait.map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)));
+                        new_action.wait = match new_action.wait {
+                            None => Some(until),
+                            Some(wait) if wait > until => Some(until),
+                            w => w,
+                        };
                     }
                 }
             }
         }
         trail.remove(to);
     }
-    ForwardAction::Forward(new_entries, wait)
+    Ok(new_action)
 }

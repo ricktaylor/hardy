@@ -359,31 +359,31 @@ impl Dispatcher {
             }
 
             // Lookup/Perform actions
-            let (clas, forwarding_wait) = match fib.find(destination).await {
-                fib::ForwardAction::Drop(reason) => {
+            let action = match fib.find(destination).await {
+                Err(reason) => {
                     trace!("Bundle is black-holed");
                     return self.drop_bundle(metadata, bundle, reason).await;
                 }
-                fib::ForwardAction::Forward(clas, Some(until)) if clas.is_empty() => {
+                Ok(fib::ForwardAction {
+                    clas,
+                    wait: Some(wait),
+                }) if clas.is_empty() => {
                     // Check to see if waiting is even worth it
-                    if until > bundle::get_bundle_expiry(&metadata, &bundle) {
+                    if wait > bundle::get_bundle_expiry(&metadata, &bundle) {
                         trace!("Bundle lifetime is shorter than wait period");
                         return self
-                            .drop_bundle(
-                                metadata,
-                                bundle,
-                                Some(
-                                    bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                                ),
-                            )
-                            .await;
+                                .drop_bundle(
+                                    metadata,
+                                    bundle,
+                                    Some(
+                                        bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+                                    ),
+                                )
+                                .await;
                     }
 
                     // Wait a bit
-                    if !self
-                        .wait_to_forward(&metadata, until, &cancel_token)
-                        .await?
-                    {
+                    if !self.wait_to_forward(&metadata, wait, &cancel_token).await? {
                         // Cancelled, or too long a wait for here
                         return Ok(());
                     }
@@ -392,14 +392,14 @@ impl Dispatcher {
                     retries = 0;
                     continue;
                 }
-                fib::ForwardAction::Forward(clas, wait) => (clas.into_iter(), wait),
+                Ok(action) => action,
             };
 
             let mut data_is_time_sensitive = false;
             let mut congestion_wait = None;
 
             // For each CLA
-            for handle in clas {
+            for handle in action.clas {
                 // Find the named CLA
                 if let Some(endpoint) = self.cla_registry.find(handle) {
                     // Get bundle data from store, now we know we need it!
@@ -468,7 +468,7 @@ impl Dispatcher {
                 trace!("All available CLAs report congestion until {until}");
 
                 // Limit congestion wait to the forwarding wait
-                if let Some(wait) = forwarding_wait {
+                if let Some(wait) = action.wait {
                     until = wait.min(until);
                 }
 
