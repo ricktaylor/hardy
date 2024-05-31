@@ -6,15 +6,21 @@ use tokio::sync::RwLock;
 use utils::settings;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Endpoint {
+    pub handle: u32, // The CLA endpoint handle
+                     // TODO: Metrics, e.g.: Bandwidth, Contact deadline
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(u32),                                 // Forward to CLA by Handle
+    Forward(Endpoint),                            // Forward to CLA by Handle
     Via(bundle::Eid),                             // Recursive lookup
     Wait(time::OffsetDateTime),                   // Wait for later availability
 }
 
 pub struct ForwardAction {
-    pub clas: Vec<u32>,                     // Available endpoints for forwarding
+    pub clas: Vec<Endpoint>,                // Available endpoints for forwarding
     pub wait: Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
 }
 

@@ -399,9 +399,9 @@ impl Dispatcher {
             let mut congestion_wait = None;
 
             // For each CLA
-            for handle in action.clas {
+            for endpoint in action.clas {
                 // Find the named CLA
-                if let Some(endpoint) = self.cla_registry.find(handle) {
+                if let Some(e) = self.cla_registry.find(endpoint.handle) {
                     // Get bundle data from store, now we know we need it!
                     if data.is_none() {
                         let Some(source_data) = self.load_data(&metadata, &bundle).await? else {
@@ -417,10 +417,7 @@ impl Dispatcher {
                             })?;
                     }
 
-                    match endpoint
-                        .forward_bundle(destination, data.clone().unwrap())
-                        .await
-                    {
+                    match e.forward_bundle(destination, data.clone().unwrap()).await {
                         Ok((None, None)) => {
                             // We have successfully forwarded!
                             self.report_bundle_forwarded(&metadata, &bundle).await?;
@@ -456,7 +453,7 @@ impl Dispatcher {
                         Err(e) => trace!("CLA failed to forward {e}"),
                     }
                 } else {
-                    trace!("FIB has entry for unknown CLA: {}", handle);
+                    trace!("FIB has entry for unknown CLA: {endpoint:?}");
                 }
                 // Try the next CLA, this one is busy, broken or missing
             }
