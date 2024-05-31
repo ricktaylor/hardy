@@ -173,7 +173,7 @@ impl IpnInterval {
     fn is_exact(&self) -> Option<u32> {
         match self {
             IpnInterval::Number(n) => Some(*n),
-            IpnInterval::Range(_) => todo!(),
+            IpnInterval::Range(_) => None,
         }
     }
 
