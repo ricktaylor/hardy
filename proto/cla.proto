@@ -13,7 +13,8 @@ service cla_sink {
 
 message RegisterClaRequest {
     string Ident = 1;
-    string GrpcAddress = 2;
+    string Name = 2;
+    string GrpcAddress = 3;
 }
 
 message RegisterClaResponse {

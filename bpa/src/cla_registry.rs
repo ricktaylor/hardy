@@ -14,6 +14,7 @@ pub struct Endpoint {
 
 struct Cla {
     ident: String,
+    name: String,
     endpoint: Channel,
 }
 
@@ -70,6 +71,7 @@ impl ClaRegistry {
 
         let cla = Arc::new(Cla {
             ident: request.ident,
+            name: request.name,
             endpoint,
         });
 
@@ -101,9 +103,9 @@ impl ClaRegistry {
     #[instrument(skip(self))]
     pub async fn find(&self, handle: u32) -> Option<Endpoint> {
         self.clas.read().await.get(&handle).map(|cla| Endpoint {
-                handle,
-                inner: cla.endpoint.clone(),
-            })
+            handle,
+            inner: cla.endpoint.clone(),
+        })
     }
 }
 
