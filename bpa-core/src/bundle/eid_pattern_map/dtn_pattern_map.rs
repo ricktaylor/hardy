@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Clone)]
 struct HashableRegEx(regex::Regex);
 
 impl std::cmp::PartialEq for HashableRegEx {
@@ -18,17 +19,18 @@ impl std::hash::Hash for HashableRegEx {
 
 struct Matches<'a, I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
     sub_nodes: Vec<&'a Node<I, T>>,
     values: Vec<&'a T>,
 }
 
+#[derive(Default, Clone)]
 struct Node<I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
     exact: HashMap<String, Box<Node<I, T>>>,
     regex: HashMap<HashableRegEx, Box<Node<I, T>>>,
@@ -39,8 +41,8 @@ where
 
 impl<I, T> Node<I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
     fn find(&self, s: &str) -> Matches<I, T> {
         let mut m = Matches {
@@ -65,35 +67,19 @@ where
     }
 }
 
-impl<I, T> Default for Node<I, T>
-where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
-{
-    fn default() -> Self {
-        Self {
-            exact: Default::default(),
-            regex: Default::default(),
-            any: Default::default(),
-            all: Default::default(),
-            values: Default::default(),
-        }
-    }
-}
-
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct DtnPatternMap<I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
     auths: Node<I, T>,
 }
 
 impl<I, T> DtnPatternMap<I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
     pub fn insert(&mut self, key: &DtnSsp, id: I, value: T) -> Option<T> {
         let mut demux = match &key.authority {

@@ -106,7 +106,7 @@ where
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct IpnPatternMap<I, T>
 where
     I: Eq + std::hash::Hash + Clone,

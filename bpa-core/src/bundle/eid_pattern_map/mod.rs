@@ -7,11 +7,11 @@ mod ipn_pattern_map;
 
 type Entries<I, T> = HashMap<I, T>;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct EidPatternMap<I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
     exact: HashMap<Eid, Entries<I, T>>,
     any: Entries<I, T>,
@@ -24,9 +24,13 @@ where
 
 impl<I, T> EidPatternMap<I, T>
 where
-    I: Eq + std::hash::Hash + Clone,
-    T: Clone,
+    I: Eq + std::hash::Hash + Clone + Default,
+    T: Clone + Default,
 {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
     pub fn insert(&mut self, key: &EidPattern, id: I, value: T) -> Option<T> {
         if let Some(eid) = key.is_exact() {
             self.exact.entry(eid).or_default().insert(id, value)
