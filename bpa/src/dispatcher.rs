@@ -417,7 +417,7 @@ impl Dispatcher {
             // For each CLA
             for endpoint in action.clas {
                 // Find the named CLA
-                if let Some(e) = self.cla_registry.find(endpoint.handle) {
+                if let Some(e) = self.cla_registry.find(endpoint.handle).await {
                     // Get bundle data from store, now we know we need it!
                     if data.is_none() {
                         let Some(source_data) = self.load_data(&metadata, &bundle).await? else {

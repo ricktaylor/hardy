@@ -2,9 +2,10 @@ use super::*;
 use hardy_proto::cla::*;
 use rand::Rng;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
 
-type Channel = Arc<tokio::sync::Mutex<cla_client::ClaClient<tonic::transport::Channel>>>;
+type Channel = Arc<Mutex<cla_client::ClaClient<tonic::transport::Channel>>>;
 
 pub struct Endpoint {
     inner: Channel,
@@ -34,7 +35,7 @@ impl ClaRegistry {
         request: RegisterClaRequest,
     ) -> Result<RegisterClaResponse, tonic::Status> {
         // Connect to client gRPC address
-        let endpoint = Arc::new(tokio::sync::Mutex::new(
+        let endpoint = Arc::new(Mutex::new(
             cla_client::ClaClient::connect(request.grpc_address.clone())
                 .await
                 .map_err(|e| {
@@ -46,14 +47,11 @@ impl ClaRegistry {
                 })?,
         ));
 
+        let mut clas = self.clas.write().await;
+
         // Compose a handle
         let mut rng = rand::thread_rng();
         let mut handle = rng.gen::<std::num::NonZeroU32>().into();
-
-        let mut clas = self
-            .clas
-            .write()
-            .trace_expect("Failed to write-lock CLA mutex");
 
         // Check handle is unique
         while clas.contains_key(&handle) {
@@ -80,14 +78,11 @@ impl ClaRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn unregister(
+    pub async fn unregister(
         &self,
         request: UnregisterClaRequest,
     ) -> Result<UnregisterClaResponse, tonic::Status> {
-        let mut clas = self
-            .clas
-            .write()
-            .trace_expect("Failed to write-lock CLA mutex");
+        let mut clas = self.clas.write().await;
 
         clas.remove(&request.handle)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
@@ -95,13 +90,8 @@ impl ClaRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn exists(&self, handle: u32) -> Result<(), tonic::Status> {
-        if !self
-            .clas
-            .read()
-            .trace_expect("Failed to read-lock CLA mutex")
-            .contains_key(&handle)
-        {
+    pub async fn exists(&self, handle: u32) -> Result<(), tonic::Status> {
+        if !self.clas.read().await.contains_key(&handle) {
             Err(tonic::Status::not_found("No such CLA registered"))
         } else {
             Ok(())
@@ -109,12 +99,8 @@ impl ClaRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn find(&self, handle: u32) -> Option<Endpoint> {
-        self.clas
-            .read()
-            .trace_expect("Failed to read-lock CLA mutex")
-            .get(&handle)
-            .map(|cla| Endpoint {
+    pub async fn find(&self, handle: u32) -> Option<Endpoint> {
+        self.clas.read().await.get(&handle).map(|cla| Endpoint {
                 handle,
                 inner: cla.endpoint.clone(),
             })

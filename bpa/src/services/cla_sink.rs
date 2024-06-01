@@ -41,6 +41,7 @@ impl ClaSink for Service {
     ) -> Result<Response<UnregisterClaResponse>, Status> {
         self.cla_registry
             .unregister(request.into_inner())
+            .await
             .map(Response::new)
     }
 
@@ -50,7 +51,7 @@ impl ClaSink for Service {
         request: Request<ReceiveBundleRequest>,
     ) -> Result<Response<ReceiveBundleResponse>, Status> {
         let request = request.into_inner();
-        self.cla_registry.exists(request.handle)?;
+        self.cla_registry.exists(request.handle).await?;
         self.ingress
             .receive(request.bundle)
             .await
@@ -66,7 +67,7 @@ impl ClaSink for Service {
         let request = request.into_inner();
 
         // Just check the handle is valid
-        self.cla_registry.exists(request.handle)?;
+        self.cla_registry.exists(request.handle).await?;
 
         self.ingress
             .confirm_forwarding(request.handle, &request.bundle_id)
