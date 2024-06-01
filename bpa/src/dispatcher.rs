@@ -10,7 +10,21 @@ struct Config {
     admin_endpoints: bundle::AdminEndpoints,
     status_reports: bool,
     max_forwarding_delay: u32,
-    ipn_2_element: bool,
+    ipn_2_element: bundle::EidPatternMap<(), ()>,
+}
+
+fn load_ipn_2_element(config: &config::Config) -> bundle::EidPatternMap<(), ()> {
+    let mut m = bundle::EidPatternMap::new();
+    for s in config
+        .get::<Vec<String>>("ipn_2_element")
+        .unwrap_or_default()
+    {
+        let p = s
+            .parse::<bundle::EidPattern>()
+            .trace_expect("Invalid EID pattern '{s}");
+        m.insert(&p, (), ());
+    }
+    m
 }
 
 impl Config {
@@ -21,8 +35,7 @@ impl Config {
                 .trace_expect("Invalid 'status_reports' value in configuration"),
             max_forwarding_delay: settings::get_with_default(config, "max_forwarding_delay", 5u32)
                 .trace_expect("Invalid 'max_forwarding_delay' value in configuration"),
-            ipn_2_element: settings::get_with_default(config, "ipn_2_element", true)
-                .trace_expect("Invalid 'ipn_2_element' value in configuration"),
+            ipn_2_element: load_ipn_2_element(config),
         };
 
         if !config.status_reports {
@@ -819,38 +832,36 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn local_dispatch(&self, mut request: SendRequest) -> Result<(), Error> {
         // Check to see if we should use ipn 2-element encoding
-        if self.config.ipn_2_element {
-            if let (
-                bundle::Eid::Ipn3 {
-                    allocator_id: da,
-                    node_number: dn,
-                    service_number: ds,
-                },
-                Some(fib),
-            ) = (&request.destination, &self.fib)
+        if let bundle::Eid::Ipn3 {
+            allocator_id: da,
+            node_number: dn,
+            service_number: ds,
+        } = &request.destination
+        {
+            // Check configured entries
+            if !self
+                .config
+                .ipn_2_element
+                .find(&request.destination)
+                .is_empty()
             {
-                // Check FIB
-                if let Ok(action) = fib.find(&request.destination).await {
-                    if action.clas.iter().any(|e| e.ipn_2_element) {
-                        if let bundle::Eid::Ipn3 {
-                            allocator_id: sa,
-                            node_number: sn,
-                            service_number: ss,
-                        } = &request.source
-                        {
-                            request.source = bundle::Eid::Ipn2 {
-                                allocator_id: *sa,
-                                node_number: *sn,
-                                service_number: *ss,
-                            };
-                        }
-                        request.destination = bundle::Eid::Ipn2 {
-                            allocator_id: *da,
-                            node_number: *dn,
-                            service_number: *ds,
-                        };
-                    }
+                if let bundle::Eid::Ipn3 {
+                    allocator_id: sa,
+                    node_number: sn,
+                    service_number: ss,
+                } = &request.source
+                {
+                    request.source = bundle::Eid::Ipn2 {
+                        allocator_id: *sa,
+                        node_number: *sn,
+                        service_number: *ss,
+                    };
                 }
+                request.destination = bundle::Eid::Ipn2 {
+                    allocator_id: *da,
+                    node_number: *dn,
+                    service_number: *ds,
+                };
             }
         }
 

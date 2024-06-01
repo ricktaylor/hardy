@@ -8,7 +8,6 @@ use utils::settings;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Endpoint {
     pub handle: u32, // The CLA handle
-    pub ipn_2_element: bool, // The endpoint requires ipn 2-element encoding
                      // TODO: Metrics, e.g.: Bandwidth, Contact deadline
 }
 
