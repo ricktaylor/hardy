@@ -2,15 +2,12 @@ pub trait ToCbor {
     fn to_cbor(self, encoder: &mut Encoder);
 }
 
+#[derive(Default)]
 pub struct Encoder {
     data: Vec<u8>,
 }
 
 impl Encoder {
-    fn new() -> Self {
-        Self { data: Vec::new() }
-    }
-
     fn emit_uint_minor(&mut self, major: u8, val: u64) {
         if val < 24 {
             self.data.push((major << 5) | (val as u8))
@@ -130,12 +127,6 @@ impl Encoder {
     {
         self.emit_tags(tags);
         self.emit_map(count, f)
-    }
-}
-
-impl Default for Encoder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
