@@ -29,9 +29,9 @@ type ForwardResult = Result<ForwardAction, Option<bundle::StatusReportReasonCode
 type TableId = String;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct TableEntry {
-    priority: u32,
-    action: Action,
+pub struct TableEntry {
+    pub priority: u32,
+    pub action: Action,
 }
 
 type Table = bundle::EidPatternMap<TableId, Vec<TableEntry>>;
@@ -66,6 +66,15 @@ impl Fib {
             entries.insert(pattern, id, prev);
         }
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn remove(
+        &self,
+        id: String,
+        pattern: &bundle::EidPattern,
+    ) -> Option<Vec<TableEntry>> {
+        self.entries.write().await.remove(pattern, &id)
     }
 
     #[instrument(skip(self))]

@@ -39,12 +39,12 @@ async fn main() {
     // New store
     let store = store::Store::new(&config, upgrade);
 
-    // New registries
-    let cla_registry = cla_registry::ClaRegistry::new(&config);
-    let app_registry = app_registry::AppRegistry::new(&config, administrative_endpoints.clone());
-
     // New FIB
     let fib = fib::Fib::new(&config);
+
+    // New registries
+    let cla_registry = cla_registry::ClaRegistry::new(&config, fib.clone());
+    let app_registry = app_registry::AppRegistry::new(&config, administrative_endpoints.clone());
 
     // Prepare for graceful shutdown
     let (mut task_set, cancel_token) = utils::cancel::new_cancellable_set();

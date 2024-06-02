@@ -4,6 +4,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+use utils::settings;
 
 type Channel = Arc<Mutex<cla_client::ClaClient<tonic::transport::Channel>>>;
 
@@ -18,15 +19,33 @@ struct Cla {
     endpoint: Channel,
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
+struct Config {
+    neighbour_priority: u32,
+}
+
+impl Config {
+    fn new(config: &config::Config) -> Self {
+        Self {
+            neighbour_priority: settings::get_with_default(config, "neighbour_priority", 0u32)
+                .trace_expect("Invalid 'neighbour_priority' value in configuration"),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ClaRegistry {
+    config: Config,
     clas: Arc<RwLock<HashMap<u32, Arc<Cla>>>>,
+    fib: Option<fib::Fib>,
 }
 
 impl ClaRegistry {
-    pub fn new(_config: &config::Config) -> Self {
+    pub fn new(config: &config::Config, fib: Option<fib::Fib>) -> Self {
         Self {
-            ..Default::default()
+            config: Config::new(config),
+            fib,
+            clas: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -106,6 +125,70 @@ impl ClaRegistry {
             handle,
             inner: cla.endpoint.clone(),
         })
+    }
+
+    #[instrument(skip(self))]
+    pub async fn add_neighbour(&self, request: AddNeighbourRequest) -> Result<(), tonic::Status> {
+        let cla = self
+            .clas
+            .read()
+            .await
+            .get(&request.handle)
+            .ok_or(tonic::Status::not_found("No such CLA registered"))?
+            .clone();
+
+        let Some(fib) = &self.fib else {
+            return Ok(());
+        };
+
+        let neighbour = request
+            .neighbour
+            .parse::<bundle::EidPattern>()
+            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+
+        fib.add(
+            format!("cla:{}", cla.name),
+            &neighbour,
+            self.config.neighbour_priority,
+            fib::Action::Forward(fib::Endpoint {
+                handle: request.handle,
+            }),
+        )
+        .await
+        .map_err(tonic::Status::from_error)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn remove_neighbour(
+        &self,
+        request: RemoveNeighbourRequest,
+    ) -> Result<(), tonic::Status> {
+        let cla = self
+            .clas
+            .read()
+            .await
+            .get(&request.handle)
+            .ok_or(tonic::Status::not_found("No such CLA registered"))?
+            .clone();
+
+        let Some(fib) = &self.fib else {
+            return Err(tonic::Status::not_found("No such neighbour"));
+        };
+
+        let neighbour = request
+            .neighbour
+            .parse::<bundle::EidPattern>()
+            .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
+
+        if fib
+            .remove(format!("cla:{}", cla.name), &neighbour)
+            .await
+            .is_none()
+        {
+            Err(tonic::Status::not_found("No such neighbour"))
+        } else {
+            Ok(())
+        }
     }
 }
 

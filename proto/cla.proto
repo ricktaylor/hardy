@@ -5,10 +5,19 @@ import "google/protobuf/timestamp.proto";
 package cla;
 
 service cla_sink {
+    // Register and Unregister a CLA
     rpc RegisterCla(RegisterClaRequest) returns (RegisterClaResponse);
     rpc UnregisterCla(UnregisterClaRequest) returns (UnregisterClaResponse);
+
+    // Send a bundle to the BPA
     rpc ReceiveBundle(ReceiveBundleRequest) returns (ReceiveBundleResponse);
+
+    // Inform the BPA that the CLA has forwarded a bundle
     rpc ConfirmForwarding(ConfirmForwardingRequest) returns (ConfirmForwardingResponse);
+
+    // Add/Remove neighbours
+    rpc AddNeighbour(AddNeighbourRequest) returns (AddNeighbourResponse);
+    rpc RemoveNeighbour(RemoveNeighbourRequest) returns (RemoveNeighbourResponse);
 }
 
 message RegisterClaRequest {
@@ -63,4 +72,20 @@ message ForwardBundleResponse {
     }
     ForwardingResult result = 1;
     optional google.protobuf.Timestamp delay = 2;
+}
+
+message AddNeighbourRequest {
+    uint32 Handle = 1;
+    string Neighbour = 2;
+}
+
+message AddNeighbourResponse {
+}
+
+message RemoveNeighbourRequest {
+    uint32 Handle = 1;
+    string Neighbour = 2;
+}
+
+message RemoveNeighbourResponse {
 }

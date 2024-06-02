@@ -65,14 +65,33 @@ impl ClaSink for Service {
         request: Request<ConfirmForwardingRequest>,
     ) -> Result<Response<ConfirmForwardingResponse>, Status> {
         let request = request.into_inner();
-
-        // Just check the handle is valid
         self.cla_registry.exists(request.handle).await?;
-
         self.ingress
             .confirm_forwarding(request.handle, &request.bundle_id)
             .await
             .map(|_| Response::new(ConfirmForwardingResponse {}))
+    }
+
+    #[instrument(skip(self))]
+    async fn add_neighbour(
+        &self,
+        request: Request<AddNeighbourRequest>,
+    ) -> Result<Response<AddNeighbourResponse>, Status> {
+        self.cla_registry
+            .add_neighbour(request.into_inner())
+            .await
+            .map(|_| Response::new(AddNeighbourResponse {}))
+    }
+
+    #[instrument(skip(self))]
+    async fn remove_neighbour(
+        &self,
+        request: Request<RemoveNeighbourRequest>,
+    ) -> Result<Response<RemoveNeighbourResponse>, Status> {
+        self.cla_registry
+            .remove_neighbour(request.into_inner())
+            .await
+            .map(|_| Response::new(RemoveNeighbourResponse {}))
     }
 }
 
