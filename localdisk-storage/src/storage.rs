@@ -32,16 +32,16 @@ impl Storage {
                     || {
                         cfg_if::cfg_if! {
                             if #[cfg(unix)] {
-                                Ok(Path::new("/var/spool").join(built_info::PKG_NAME))
+                                Path::new("/var/spool").join(built_info::PKG_NAME)
                             } else if #[cfg(windows)] {
-                                Ok(std::env::current_exe().join(built_info::PKG_NAME))
+                                std::env::current_exe().join(built_info::PKG_NAME)
                             } else {
                                 compile_error!("No idea how to determine default local store directory for target platform")
                             }
                         }
                     },
                     |project_dirs| {
-                        Ok(project_dirs.cache_dir().into())
+                        project_dirs.cache_dir().into()
                         // Lin: /home/alice/.cache/barapp
                         // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\cache
                         // Mac: /Users/Alice/Library/Caches/com.Foo-Corp.Bar-App
@@ -49,9 +49,9 @@ impl Storage {
                 )
             },
             |v| {
-                v.clone().into_string().map(|s| s.into())
+                v.clone().into_string().trace_expect("Invalid 'store_dir' value in configuration").into()
             },
-        ).trace_expect("Failed to determine bundle store directory");
+        );
 
         info!("Using bundle store directory: {}", store_root.display());
 
