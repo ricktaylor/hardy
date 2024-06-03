@@ -3,6 +3,7 @@ use hardy_cbor as cbor;
 use tokio::sync::mpsc::*;
 use utils::{cancel::cancellable_sleep, settings};
 
+// TODO:  This should probably be a configurable value
 const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
 
 #[derive(Clone)]
