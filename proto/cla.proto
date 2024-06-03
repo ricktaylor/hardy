@@ -76,7 +76,8 @@ message ForwardBundleResponse {
 
 message AddNeighbourRequest {
     uint32 Handle = 1;
-    string Neighbour = 2;
+    uint32 Priority = 2;
+    string Neighbour = 3;
 }
 
 message AddNeighbourResponse {

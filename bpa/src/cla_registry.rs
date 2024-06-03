@@ -4,7 +4,6 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use utils::settings;
 
 type Channel = Arc<Mutex<cla_client::ClaClient<tonic::transport::Channel>>>;
 
@@ -19,31 +18,28 @@ struct Cla {
     endpoint: Channel,
 }
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 struct Config {
-    neighbour_priority: u32,
 }
 
 impl Config {
     fn new(config: &config::Config) -> Self {
         Self {
-            neighbour_priority: settings::get_with_default(config, "neighbour_priority", 0u32)
-                .trace_expect("Invalid 'neighbour_priority' value in configuration"),
         }
     }
-}
+}*/
 
 #[derive(Clone)]
 pub struct ClaRegistry {
-    config: Config,
+    //config: Config,
     clas: Arc<RwLock<HashMap<u32, Arc<Cla>>>>,
     fib: Option<fib::Fib>,
 }
 
 impl ClaRegistry {
-    pub fn new(config: &config::Config, fib: Option<fib::Fib>) -> Self {
+    pub fn new(_config: &config::Config, fib: Option<fib::Fib>) -> Self {
         Self {
-            config: Config::new(config),
+            //config: Config::new(config),
             fib,
             clas: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -149,7 +145,7 @@ impl ClaRegistry {
         fib.add(
             format!("cla:{}", cla.name),
             &neighbour,
-            self.config.neighbour_priority,
+            request.priority,
             fib::Action::Forward(fib::Endpoint {
                 handle: request.handle,
             }),
