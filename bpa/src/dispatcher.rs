@@ -3,29 +3,17 @@ use hardy_cbor as cbor;
 use tokio::sync::mpsc::*;
 use utils::{cancel::cancellable_sleep, settings};
 
-// TODO:  This should probably be a configurable value
+// Defaults
 const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
+const MAX_FORWARDING_DELAY_SECS: u32 = 5;
 
 #[derive(Clone)]
 struct Config {
     admin_endpoints: bundle::AdminEndpoints,
     status_reports: bool,
+    wait_sample_interval: u64,
     max_forwarding_delay: u32,
     ipn_2_element: bundle::EidPatternMap<(), ()>,
-}
-
-fn load_ipn_2_element(config: &config::Config) -> bundle::EidPatternMap<(), ()> {
-    let mut m = bundle::EidPatternMap::new();
-    for s in config
-        .get::<Vec<String>>("ipn_2_element")
-        .unwrap_or_default()
-    {
-        let p = s
-            .parse::<bundle::EidPattern>()
-            .trace_expect("Invalid EID pattern '{s}");
-        m.insert(&p, (), ());
-    }
-    m
 }
 
 impl Config {
@@ -34,9 +22,20 @@ impl Config {
             admin_endpoints,
             status_reports: settings::get_with_default(config, "status_reports", false)
                 .trace_expect("Invalid 'status_reports' value in configuration"),
-            max_forwarding_delay: settings::get_with_default(config, "max_forwarding_delay", 5u32)
-                .trace_expect("Invalid 'max_forwarding_delay' value in configuration"),
-            ipn_2_element: load_ipn_2_element(config),
+            wait_sample_interval: settings::get_with_default(
+                config,
+                "wait_sample_interval",
+                WAIT_SAMPLE_INTERVAL_SECS,
+            )
+            .trace_expect("Invalid 'wait_sample_interval' value in configuration"),
+            max_forwarding_delay: settings::get_with_default::<u32, _>(
+                config,
+                "max_forwarding_delay",
+                MAX_FORWARDING_DELAY_SECS,
+            )
+            .trace_expect("Invalid 'max_forwarding_delay' value in configuration")
+            .min(1u32),
+            ipn_2_element: Self::load_ipn_2_element(config),
         };
 
         if !config.status_reports {
@@ -48,6 +47,20 @@ impl Config {
         }
 
         config
+    }
+
+    fn load_ipn_2_element(config: &config::Config) -> bundle::EidPatternMap<(), ()> {
+        let mut m = bundle::EidPatternMap::new();
+        for s in config
+            .get::<Vec<String>>("ipn_2_element")
+            .unwrap_or_default()
+        {
+            let p = s
+                .parse::<bundle::EidPattern>()
+                .trace_expect("Invalid EID pattern '{s}");
+            m.insert(&p, (), ());
+        }
+        m
     }
 }
 
@@ -89,13 +102,10 @@ impl Dispatcher {
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
-        // Load config
-        let config = Config::new(config, admin_endpoints);
-
         // Create a channel for bundles
         let (tx, rx) = channel(16);
         let dispatcher = Self {
-            config,
+            config: Config::new(config, admin_endpoints),
             store,
             tx,
             cla_registry,
@@ -160,7 +170,9 @@ impl Dispatcher {
 
     #[instrument(skip_all)]
     async fn check_waiting(self, cancel_token: tokio_util::sync::CancellationToken) {
-        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(WAIT_SAMPLE_INTERVAL_SECS));
+        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(
+            self.config.wait_sample_interval,
+        ));
         tokio::pin!(timer);
 
         // We're going to spawn a bunch of tasks
@@ -170,10 +182,10 @@ impl Dispatcher {
             tokio::select! {
                 () = &mut timer => {
                     // Determine next interval before we do any other waiting
-                    let interval = tokio::time::Instant::now() + tokio::time::Duration::from_secs(WAIT_SAMPLE_INTERVAL_SECS);
+                    let interval = tokio::time::Instant::now() + tokio::time::Duration::from_secs(self.config.wait_sample_interval);
 
-                    // Get all bundles that are ready before now() + WAIT_SAMPLE_INTERVAL_SECS
-                    let waiting = self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0)).await.trace_expect("get_waiting_bundles failed");
+                    // Get all bundles that are ready before now() + self.config.wait_sample_interval
+                    let waiting = self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(self.config.wait_sample_interval as i64, 0)).await.trace_expect("get_waiting_bundles failed");
                     for (metadata,bundle,until) in waiting {
                         // Spawn a task for each ready bundle
                         let dispatcher = self.clone();
@@ -205,7 +217,7 @@ impl Dispatcher {
     ) -> Result<(), Error> {
         // Check if it's worth us waiting (safety check for metadata storage clock drift)
         let wait = until - time::OffsetDateTime::now_utc();
-        if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
             // Nothing to do now, it will be picked up later
             trace!("Bundle will wait offline until: {until}");
             return Ok(());
@@ -559,7 +571,7 @@ impl Dispatcher {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<bool, Error> {
         let wait = until - time::OffsetDateTime::now_utc();
-        if wait > time::Duration::new(WAIT_SAMPLE_INTERVAL_SECS as i64, 0) {
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
             trace!("Bundle will wait offline until: {until}");
             self.store
