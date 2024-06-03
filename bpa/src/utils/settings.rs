@@ -14,23 +14,26 @@ fn options() -> getopts::Options {
     opts
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> PathBuf {
     directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
         || {
-            if cfg!(all(
-                target_os = "linux",
-                not(feature = "packaged-installation")
-            )) {
-                Some(Path::new("/etc/opt").join(built_info::PKG_NAME))
-            } else if cfg!(unix) {
-                Some(Path::new("/etc").join(built_info::PKG_NAME))
-            } else {
-                warn!("Failed to determine default configuration directory");
-                None
+            cfg_if::cfg_if! {
+                if #[cfg(all(
+                    target_os = "linux",
+                    not(feature = "packaged-installation")
+                ))] {
+                    Path::new("/etc/opt").join(built_info::PKG_NAME)
+                } else if #[cfg(unix)] {
+                    Path::new("/etc").join(built_info::PKG_NAME)
+                } else if #[cfg(windows)] {
+                    std::env::current_exe().join(built_info::PKG_NAME)
+                } else {
+                    compile_error!("No idea how to determine default config directory for target platform")
+                }
             }
         },
         |proj_dirs| {
-            Some(proj_dirs.config_local_dir().to_path_buf())
+            proj_dirs.config_local_dir().to_path_buf()
             // Lin: /home/alice/.config/barapp
             // Win: C:\Users\Alice\AppData\Roaming\Foo Corp\Bar App\config
             // Mac: /Users/Alice/Library/Application Support/com.Foo-Corp.Bar-App
@@ -84,7 +87,8 @@ pub fn init() -> Option<(config::Config, bool, String)> {
     } else if let Ok(source) = std::env::var("HARDY_BPA_CONFIG_FILE") {
         config_source = format!("Using base configuration file '{source}' specified by HARDY_BPA_CONFIG_FILE environment variable");
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
-    } else if let Some(path) = config_dir() {
+    } else {
+        let path = config_dir().join(format!("{}.config", built_info::PKG_NAME));
         config_source = format!(
             "Using optional base configuration file '{}'",
             path.display()
@@ -94,9 +98,6 @@ pub fn init() -> Option<(config::Config, bool, String)> {
                 .required(false)
                 .format(config::FileFormat::Toml),
         )
-    } else {
-        config_source =
-            "No base configuration file specified, and no suitable default found".to_string();
     }
 
     // Pull in environment vars
