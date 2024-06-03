@@ -26,7 +26,7 @@ pub struct ForwardAction {
 
 type ForwardResult = Result<ForwardAction, Option<bundle::StatusReportReasonCode>>;
 
-type TableId = String;
+type TableKey = String;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TableEntry {
@@ -34,7 +34,7 @@ pub struct TableEntry {
     pub action: Action,
 }
 
-type Table = bundle::EidPatternMap<TableId, Vec<TableEntry>>;
+type Table = bundle::EidPatternMap<TableKey, Vec<TableEntry>>;
 
 #[derive(Default, Clone)]
 pub struct Fib {
