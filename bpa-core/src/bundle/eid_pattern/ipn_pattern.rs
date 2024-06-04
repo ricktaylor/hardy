@@ -1,7 +1,7 @@
 use super::*;
 use std::ops::RangeInclusive;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IpnPatternItem {
     pub allocator_id: IpnPattern,
     pub node_number: IpnPattern,
@@ -82,7 +82,7 @@ impl IpnPatternItem {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IpnPattern {
     Range(Vec<IpnInterval>),
     Wildcard,
@@ -156,7 +156,7 @@ impl IpnPattern {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IpnInterval {
     Number(u32),
     Range(RangeInclusive<u32>),

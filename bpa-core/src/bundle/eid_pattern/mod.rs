@@ -60,7 +60,7 @@ pub enum Error {
     InvalidUtf8(#[source] std::string::FromUtf8Error, Span),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EidPattern {
     Set(Vec<EidPatternItem>),
     Any,
@@ -168,7 +168,7 @@ impl From<Eid> for EidPattern {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EidPatternItem {
     IpnPatternItem(IpnPatternItem),
     DtnPatternItem(DtnPatternItem),

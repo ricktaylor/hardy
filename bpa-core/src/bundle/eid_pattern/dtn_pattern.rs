@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DtnPatternItem {
     DtnSsp(DtnSsp),
     None,
@@ -43,7 +43,7 @@ impl DtnPatternItem {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DtnSsp {
     pub authority: DtnAuthPattern,
     pub singles: Vec<DtnSinglePattern>,
@@ -145,7 +145,7 @@ impl DtnSsp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DtnAuthPattern {
     PatternMatch(PatternMatch),
     MultiWildcard,
@@ -179,7 +179,7 @@ impl DtnAuthPattern {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DtnSinglePattern {
     PatternMatch(PatternMatch),
     Wildcard,
@@ -224,7 +224,7 @@ fn url_decode(s: &str, span: &mut Span) -> Result<String, Error> {
         })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PatternMatch {
     Exact(String),
     Regex(regex::Regex),
@@ -273,7 +273,29 @@ impl PatternMatch {
     }
 }
 
-#[derive(Debug)]
+impl std::cmp::PartialEq for PatternMatch {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Exact(l), Self::Exact(r)) => l == r,
+            (Self::Regex(l), Self::Regex(r)) => l.as_str() == r.as_str(),
+            _ => false,
+        }
+    }
+}
+
+impl std::cmp::Eq for PatternMatch {}
+
+impl std::hash::Hash for PatternMatch {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            PatternMatch::Exact(s) => s.hash(state),
+            PatternMatch::Regex(r) => r.as_str().hash(state),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DtnLastPattern {
     Single(DtnSinglePattern),
     MultiWildcard,
