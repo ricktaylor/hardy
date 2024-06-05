@@ -57,7 +57,7 @@ impl Config {
         {
             let p = s
                 .parse::<bundle::EidPattern>()
-                .trace_expect("Invalid EID pattern '{s}");
+                .trace_expect(&format!("Invalid EID pattern '{s}"));
             m.insert(&p, (), ());
         }
         m
