@@ -24,7 +24,7 @@ pub use bundle_status::BundleStatus;
 pub use crc::CrcType;
 pub use creation_timestamp::CreationTimestamp;
 pub use eid::{Eid, EidError};
-pub use eid_pattern::EidPattern;
+pub use eid_pattern::{EidPattern, EidPatternError};
 pub use eid_pattern_map::EidPatternMap;
 pub use metadata::Metadata;
 

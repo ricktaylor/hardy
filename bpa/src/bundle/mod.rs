@@ -16,5 +16,6 @@ pub use editor::*;
 pub use hardy_bpa_core::bundle::*;
 pub use parse::parse;
 pub use status_report::{
-    AdministrativeRecord, BundleStatusReport, StatusAssertion, StatusReportReasonCode,
+    AdministrativeRecord, BundleStatusReport, StatusAssertion, StatusReportError,
+    StatusReportReasonCode,
 };

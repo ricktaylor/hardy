@@ -8,7 +8,7 @@ mod ipn_pattern;
 pub use dtn_pattern::*;
 pub use ipn_pattern::*;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Span(Range<usize>);
 
 impl Span {
@@ -40,7 +40,7 @@ impl std::fmt::Display for Span {
 }
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum EidPatternError {
     #[error("Expecting '{0}' at {1}")]
     Expecting(String, Span),
 
@@ -94,14 +94,14 @@ any-scheme-item = wildcard ":" multi-wildcard
 eid-pattern-set = eid-pattern-item *( "|" eid-pattern-item )
 */
 impl std::str::FromStr for EidPattern {
-    type Err = Error;
+    type Err = EidPatternError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "*:**" {
             Ok(EidPattern::Any)
         } else {
             let mut v = Vec::new();
-            let mut span = Span::default();
+            let mut span = Span(Range { start: 1, end: 1 });
             for s in s.split('|') {
                 v.push(EidPatternItem::parse(s, &mut span)?);
             }
@@ -200,9 +200,9 @@ impl EidPatternItem {
     scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
     non-zero-number = (%x31-39 *DIGIT)
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         let Some((s1, s2)) = s.split_once(':') else {
-            return Err(Error::Expecting(
+            return Err(EidPatternError::Expecting(
                 ":".to_string(),
                 span.subset(s.chars().count()),
             ));
@@ -225,16 +225,20 @@ impl EidPatternItem {
             _ => match s1.chars().nth(0) {
                 Some('1'..='9') => {
                     let Ok(v) = s1.parse::<u64>() else {
-                        return Err(Error::InvalidScheme(span.subset(s1.chars().count())));
+                        return Err(EidPatternError::InvalidScheme(
+                            span.subset(s1.chars().count()),
+                        ));
                     };
 
                     if v == 0 {
-                        return Err(Error::InvalidScheme(span.subset(s1.chars().count())));
+                        return Err(EidPatternError::InvalidScheme(
+                            span.subset(s1.chars().count()),
+                        ));
                     }
 
                     span.inc(s1.chars().count() + 1);
                     if s2 != "**" {
-                        return Err(Error::Expecting(
+                        return Err(EidPatternError::Expecting(
                             "**".to_string(),
                             span.subset(s2.chars().count()),
                         ));
@@ -249,14 +253,16 @@ impl EidPatternItem {
                 Some('A'..='Z') | Some('a'..='z') => {
                     for c in s1.chars() {
                         if !matches!(c,'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '-' | '.') {
-                            return Err(Error::InvalidScheme(span.subset(s1.chars().count())));
+                            return Err(EidPatternError::InvalidScheme(
+                                span.subset(s1.chars().count()),
+                            ));
                         }
                         span.inc(1);
                     }
 
                     span.inc(1);
                     if s2 != "**" {
-                        return Err(Error::Expecting(
+                        return Err(EidPatternError::Expecting(
                             "**".to_string(),
                             span.subset(s2.chars().count()),
                         ));
@@ -268,7 +274,9 @@ impl EidPatternItem {
                         _ => Ok(EidPatternItem::AnyTextScheme(s1.to_string())),
                     }
                 }
-                _ => Err(Error::InvalidScheme(span.subset(s1.chars().count()))),
+                _ => Err(EidPatternError::InvalidScheme(
+                    span.subset(s1.chars().count()),
+                )),
             },
         }
     }

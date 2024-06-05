@@ -33,7 +33,7 @@ impl DtnPatternItem {
     dtn-ssp = dtn-wkssp-exact / dtn-fullssp
     dtn-wkssp-exact = "none"
     */
-    pub fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    pub fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s == "none" {
             span.inc(4);
             Ok(DtnPatternItem::None)
@@ -102,9 +102,9 @@ impl DtnSsp {
     dtn-single-pat = exact / regexp / wildcard
     dtn-last-pat = dtn-single-pat / multi-wildcard
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         let Some(s) = s.strip_prefix("//") else {
-            return Err(Error::Expecting(
+            return Err(EidPatternError::Expecting(
                 "//".to_string(),
                 span.subset(s.chars().count().min(2)),
             ));
@@ -113,7 +113,7 @@ impl DtnSsp {
         span.0.end += 2;
 
         let Some((s1, s2)) = s.split_once('/') else {
-            return Err(Error::Expecting(
+            return Err(EidPatternError::Expecting(
                 "/".to_string(),
                 span.subset(s.chars().count()),
             ));
@@ -125,7 +125,7 @@ impl DtnSsp {
 
         let mut parts = s2.split('/');
         let Some(last) = parts.nth_back(0) else {
-            return Err(Error::Expecting(
+            return Err(EidPatternError::Expecting(
                 "/".to_string(),
                 span.subset(s2.chars().count()),
             ));
@@ -134,7 +134,7 @@ impl DtnSsp {
         let singles = parts.try_fold(Vec::new(), |mut v, s| {
             v.push(DtnSinglePattern::parse(s, span)?);
             span.inc(1);
-            Ok::<Vec<DtnSinglePattern>, Error>(v)
+            Ok::<Vec<DtnSinglePattern>, EidPatternError>(v)
         })?;
 
         Ok(DtnSsp {
@@ -169,7 +169,7 @@ impl DtnAuthPattern {
     /*
     dtn-authority-pat = exact / regexp / multi-wildcard
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s == "**" {
             span.inc(2);
             Ok(DtnAuthPattern::MultiWildcard)
@@ -203,7 +203,7 @@ impl DtnSinglePattern {
     /*
     dtn-single-pat = exact / regexp / wildcard
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s == "*" {
             span.inc(1);
             Ok(DtnSinglePattern::Wildcard)
@@ -215,9 +215,9 @@ impl DtnSinglePattern {
     }
 }
 
-fn url_decode(s: &str, span: &mut Span) -> Result<String, Error> {
+fn url_decode(s: &str, span: &mut Span) -> Result<String, EidPatternError> {
     urlencoding::decode(s)
-        .map_err(|e| Error::InvalidUtf8(e, span.subset(s.chars().count())))
+        .map_err(|e| EidPatternError::InvalidUtf8(e, span.subset(s.chars().count())))
         .map(|s2| {
             span.inc(s.chars().count());
             s2.into_owned()
@@ -245,10 +245,10 @@ impl PatternMatch {
         }
     }
 
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s.starts_with('[') {
             if !s.ends_with(']') {
-                Err(Error::Expecting(
+                Err(EidPatternError::Expecting(
                     "]".to_string(),
                     Span::new(
                         span.0.start + s.chars().count() - 1,
@@ -256,12 +256,16 @@ impl PatternMatch {
                     ),
                 ))
             } else if s.len() == 2 {
-                Err(Error::ExpectingRegEx(span.subset(s.chars().count())))
+                Err(EidPatternError::ExpectingRegEx(
+                    span.subset(s.chars().count()),
+                ))
             } else {
                 span.inc(1);
 
                 regex::Regex::new(url_decode(&s[1..s.len() - 1], &mut span.clone())?.as_str())
-                    .map_err(|e| Error::InvalidRegEx(e, span.subset(s.chars().count() - 1)))
+                    .map_err(|e| {
+                        EidPatternError::InvalidRegEx(e, span.subset(s.chars().count() - 1))
+                    })
                     .map(|r| {
                         span.inc(s.chars().count() - 1);
                         PatternMatch::Regex(r)
@@ -320,7 +324,7 @@ impl DtnLastPattern {
     /*
     dtn-last-pat = dtn-single-pat / multi-wildcard
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s.is_empty() {
             Ok(DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
                 PatternMatch::Exact("".to_string()),

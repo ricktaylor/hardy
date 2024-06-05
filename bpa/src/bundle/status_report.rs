@@ -2,7 +2,7 @@ use super::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum StatusReportError {
     #[error("Unknown administrative record type {0}")]
     UnknownAdminRecordType(u64),
 
@@ -23,14 +23,14 @@ pub enum Error {
 }
 
 trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
+    fn map_field_err(self, field: &'static str) -> Result<T, StatusReportError>;
 }
 
 impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     for std::result::Result<T, E>
 {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
-        self.map_err(|e| Error::InvalidField {
+    fn map_field_err(self, field: &'static str) -> Result<T, StatusReportError> {
+        self.map_err(|e| StatusReportError::InvalidField {
             field,
             source: e.into(),
         })
@@ -91,7 +91,7 @@ impl From<StatusReportReasonCode> for u64 {
 }
 
 impl TryFrom<u64> for StatusReportReasonCode {
-    type Error = self::Error;
+    type Error = self::StatusReportError;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
@@ -112,7 +112,7 @@ impl TryFrom<u64> for StatusReportReasonCode {
             14 => Ok(StatusReportReasonCode::UnexpectedSecurityOperation),
             15 => Ok(StatusReportReasonCode::FailedSecurityOperation),
             16 => Ok(StatusReportReasonCode::ConflictingSecurityOperation),
-            255 => Err(Error::ReservedStatusReportReason),
+            255 => Err(StatusReportError::ReservedStatusReportReason),
             v => Ok(StatusReportReasonCode::Unassigned(v)),
         }
     }
@@ -189,7 +189,7 @@ impl cbor::encode::ToCbor for BundleStatusReport {
 }
 
 impl cbor::decode::FromCbor for BundleStatusReport {
-    type Error = self::Error;
+    type Error = self::StatusReportError;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_array(data, |a, tags| {
@@ -268,7 +268,7 @@ impl cbor::encode::ToCbor for AdministrativeRecord {
 }
 
 impl cbor::decode::FromCbor for AdministrativeRecord {
-    type Error = self::Error;
+    type Error = self::StatusReportError;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
         cbor::decode::parse_array(data, |a, tags| {
@@ -276,11 +276,11 @@ impl cbor::decode::FromCbor for AdministrativeRecord {
                 1u64 => {
                     let report = a.parse().map_field_err("Bundle Status Report")?;
                     if a.end()?.is_none() {
-                        return Err(Error::AdditionalItems);
+                        return Err(StatusReportError::AdditionalItems);
                     }
                     Ok((Self::BundleStatusReport(report), tags.to_vec()))
                 }
-                v => Err(Error::UnknownAdminRecordType(v)),
+                v => Err(StatusReportError::UnknownAdminRecordType(v)),
             }
         })
         .map(|((t, tags), len)| (t, len, tags))

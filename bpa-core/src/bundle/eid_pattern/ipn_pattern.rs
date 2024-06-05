@@ -57,10 +57,10 @@ impl IpnPatternItem {
     /*
     ipn-ssp = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
     */
-    pub fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    pub fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         let Some((s1, s)) = s.split_once('.') else {
             IpnPattern::parse(s, span)?;
-            return Err(Error::Expecting(".".to_string(), span.clone()));
+            return Err(EidPatternError::Expecting(".".to_string(), span.clone()));
         };
 
         let allocator_id = IpnPattern::parse(s1, span)?;
@@ -68,7 +68,7 @@ impl IpnPatternItem {
 
         let Some((s1, s)) = s.split_once('.') else {
             IpnPattern::parse(s, span)?;
-            return Err(Error::Expecting(".".to_string(), span.clone()));
+            return Err(EidPatternError::Expecting(".".to_string(), span.clone()));
         };
 
         let node_number = IpnPattern::parse(s1, span)?;
@@ -114,25 +114,29 @@ impl IpnPattern {
     ipn-number = "0" / non-zero-number
     ipn-range = "[" ipn-interval *( "," ipn-interval ) "]"
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         match s.chars().nth(0) {
             Some('0') => {
                 if s.len() > 1 {
-                    return Err(Error::InvalidIpnNumber(span.subset(s.chars().count())));
+                    return Err(EidPatternError::InvalidIpnNumber(
+                        span.subset(s.chars().count()),
+                    ));
                 }
                 span.inc(1);
                 Ok(IpnPattern::Range(vec![IpnInterval::Number(0)]))
             }
             Some('1'..='9') => {
                 let Ok(v) = s.parse::<u32>() else {
-                    return Err(Error::InvalidIpnNumber(span.subset(s.chars().count())));
+                    return Err(EidPatternError::InvalidIpnNumber(
+                        span.subset(s.chars().count()),
+                    ));
                 };
                 span.inc(s.chars().count());
                 Ok(IpnPattern::Range(vec![IpnInterval::Number(v)]))
             }
             Some('[') => {
                 if !s.ends_with(']') {
-                    return Err(Error::Expecting(
+                    return Err(EidPatternError::Expecting(
                         "]".to_string(),
                         Span::new(
                             span.0.start + s.chars().count() - 1,
@@ -147,11 +151,13 @@ impl IpnPattern {
                     |mut v, s| {
                         v.push(IpnInterval::parse(s, span)?);
                         span.inc(1);
-                        Ok::<Vec<IpnInterval>, Error>(v)
+                        Ok::<Vec<IpnInterval>, EidPatternError>(v)
                     },
                 )?))
             }
-            _ => Err(Error::InvalidIpnNumber(span.subset(s.chars().count()))),
+            _ => Err(EidPatternError::InvalidIpnNumber(
+                span.subset(s.chars().count()),
+            )),
         }
     }
 }
@@ -180,7 +186,7 @@ impl IpnInterval {
     /*
     ipn-interval = ipn-number [ "-" ipn-number ]
     */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, Error> {
+    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if let Some((s1, s2)) = s.split_once('-') {
             let start = Self::parse_number(s1, span)?;
             span.inc(1);
@@ -200,23 +206,29 @@ impl IpnInterval {
     /*
     ipn-number = "0" / non-zero-number
     */
-    fn parse_number(s: &str, span: &mut Span) -> Result<u32, Error> {
+    fn parse_number(s: &str, span: &mut Span) -> Result<u32, EidPatternError> {
         match s.chars().nth(0) {
             Some('0') => {
                 if s.len() > 1 {
-                    return Err(Error::InvalidIpnNumber(span.subset(s.chars().count())));
+                    return Err(EidPatternError::InvalidIpnNumber(
+                        span.subset(s.chars().count()),
+                    ));
                 }
                 span.inc(1);
                 Ok(0)
             }
             Some('1'..='9') => {
                 let Ok(v) = s.parse::<u32>() else {
-                    return Err(Error::InvalidIpnNumber(span.subset(s.chars().count())));
+                    return Err(EidPatternError::InvalidIpnNumber(
+                        span.subset(s.chars().count()),
+                    ));
                 };
                 span.inc(s.chars().count());
                 Ok(v)
             }
-            _ => Err(Error::InvalidIpnNumber(span.subset(s.chars().count()))),
+            _ => Err(EidPatternError::InvalidIpnNumber(
+                span.subset(s.chars().count()),
+            )),
         }
     }
 }
