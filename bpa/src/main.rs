@@ -5,6 +5,7 @@ mod dispatcher;
 mod fib;
 mod ingress;
 mod services;
+mod static_routes;
 mod store;
 mod utils;
 
@@ -69,6 +70,11 @@ async fn main() {
         &mut task_set,
         cancel_token.clone(),
     );
+
+    // Load static routes
+    if let Some(fib) = fib {
+        static_routes::init(&config, fib, &mut task_set, cancel_token.clone()).await;
+    }
 
     // Init gRPC services
     services::init(
