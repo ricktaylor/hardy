@@ -548,6 +548,7 @@ dependencies = [
  "base64 0.22.1",
  "config",
  "hardy-cbor",
+ "hex-literal",
  "regex",
  "sha2",
  "thiserror",

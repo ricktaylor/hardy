@@ -6,6 +6,9 @@ mod parse;
 #[cfg(test)]
 mod str_tests;
 
+#[cfg(test)]
+mod cbor_tests;
+
 pub use error::EidError;
 
 #[derive(Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
