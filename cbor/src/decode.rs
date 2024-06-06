@@ -41,6 +41,7 @@ pub trait FromCbor: Sized {
     fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error>;
 }
 
+#[derive(Debug)]
 pub enum Value<'a, 'b: 'a> {
     UnsignedInteger(u64),
     NegativeInteger(u64),
@@ -86,12 +87,54 @@ pub struct Sequence<'a, const D: usize> {
 
 impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if D == 1 {
-            f.debug_struct("Array").field("count", &self.count).finish()
-        } else {
-            f.debug_struct("Map")
-                .field("count", &self.count.map(|c| c / D))
-                .finish()
+        let mut offset = 0;
+        {
+            let mut self_cloned = Sequence::<D> {
+                data: &self.data[*self.offset..],
+                count: self.count,
+                offset: &mut offset,
+                idx: self.idx,
+            };
+            if D == 1 {
+                let mut l = f.debug_list();
+                loop {
+                    let v = self_cloned
+                        .try_parse_value(|value, _, _| {
+                            l.entry(&value);
+                            Ok::<(), Error>(())
+                        })
+                        .unwrap_or(None);
+                    if v.is_none() {
+                        break;
+                    }
+                }
+                l.finish()
+            } else {
+                let mut s = f.debug_map();
+                loop {
+                    let v = self_cloned
+                        .try_parse_value(|value, _, _| {
+                            s.key(&value);
+                            Ok::<(), Error>(())
+                        })
+                        .unwrap_or(None);
+                    if v.is_none() {
+                        break;
+                    }
+
+                    let v = self_cloned
+                        .try_parse_value(|value, _, _| {
+                            s.value(&value);
+                            Ok::<(), Error>(())
+                        })
+                        .unwrap_or(None);
+                    if v.is_none() {
+                        s.value(&"<Missing>");
+                        break;
+                    }
+                }
+                s.finish()
+            }
         }
     }
 }
