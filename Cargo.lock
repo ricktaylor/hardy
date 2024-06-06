@@ -557,6 +557,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-bpa-core-fuzz"
+version = "0.0.0"
+dependencies = [
+ "hardy-bpa-core",
+ "libfuzzer-sys",
+]
+
+[[package]]
 name = "hardy-cbor"
 version = "0.1.0"
 dependencies = [
