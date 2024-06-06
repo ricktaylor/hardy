@@ -19,7 +19,7 @@ where
     dtn_map: dtn_pattern_map::DtnPatternMap<I, T>,
     ipn_map: ipn_pattern_map::IpnPatternMap<I, T>,
     numeric_schemes: HashMap<u64, Entries<I, T>>,
-    text_schemes: HashMap<String, Entries<I, T>>,
+    //text_schemes: HashMap<String, Entries<I, T>>,
 }
 
 impl<I, T> EidPatternMap<I, T>
@@ -79,13 +79,13 @@ where
                     .insert(id, value)
                     .or(prev);
             }
-            EidPatternItem::AnyTextScheme(s) => {
-                prev = self
-                    .text_schemes
-                    .entry(s.clone())
-                    .or_default()
-                    .insert(id, value)
-                    .or(prev);
+            EidPatternItem::AnyTextScheme(_s) => {
+                /*prev = self
+                .text_schemes
+                .entry(s.clone())
+                .or_default()
+                .insert(id, value)
+                .or(prev);*/
             }
         }
         prev
@@ -135,14 +135,15 @@ where
                     None
                 }
             }
-            EidPatternItem::AnyTextScheme(s) => {
-                if let Some(e) = self.text_schemes.get_mut(s) {
+            EidPatternItem::AnyTextScheme(_s) => {
+                /*if let Some(e) = self.text_schemes.get_mut(s) {
                     let r = e.remove(id);
                     if r.is_some() && e.is_empty() {
                         self.text_schemes.remove(s);
                     }
                     r
-                } else {
+                } else*/
+                {
                     None
                 }
             }
