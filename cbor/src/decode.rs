@@ -267,6 +267,16 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, usize), Error> {
     Ok((tags, offset))
 }
 
+fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
+    if data.len() < N {
+        Err(Error::NotEnoughData)
+    } else if data.len() == N {
+        Ok(data.try_into().unwrap())
+    } else {
+        Ok(data[0..N].try_into().unwrap())
+    }
+}
+
 fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, usize), Error> {
     match minor {
         24 => {
@@ -276,18 +286,9 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, usize), Error> {
                 Ok((data[0] as u64, 1))
             }
         }
-        25 => Ok((
-            u16::from_be_bytes(data.try_into().map_err(|_| Error::NotEnoughData)?) as u64,
-            2,
-        )),
-        26 => Ok((
-            u32::from_be_bytes(data.try_into().map_err(|_| Error::NotEnoughData)?) as u64,
-            4,
-        )),
-        27 => Ok((
-            u64::from_be_bytes(data.try_into().map_err(|_| Error::NotEnoughData)?),
-            8,
-        )),
+        25 => Ok((u16::from_be_bytes(to_array(data)?) as u64, 2)),
+        26 => Ok((u32::from_be_bytes(to_array(data)?) as u64, 4)),
+        27 => Ok((u64::from_be_bytes(to_array(data)?), 8)),
         val if val < 24 => Ok((val as u64, 0)),
         _ => Err(Error::InvalidMinorValue(minor)),
     }
@@ -468,31 +469,19 @@ where
         }
         (7, 25) => {
             /* FP16 */
-            let v = half::f16::from_be_bytes(
-                data[offset + 1..]
-                    .try_into()
-                    .map_err(|_| Error::NotEnoughData)?,
-            );
+            let v = half::f16::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 3;
             f(Value::Float(v.into()), &tags)
         }
         (7, 26) => {
             /* FP32 */
-            let v = f32::from_be_bytes(
-                data[offset + 1..]
-                    .try_into()
-                    .map_err(|_| Error::NotEnoughData)?,
-            );
+            let v = f32::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 5;
             f(Value::Float(v.into()), &tags)
         }
         (7, 27) => {
             /* FP64 */
-            let v = f64::from_be_bytes(
-                data[offset + 1..]
-                    .try_into()
-                    .map_err(|_| Error::NotEnoughData)?,
-            );
+            let v = f64::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 9;
             f(Value::Float(v), &tags)
         }
