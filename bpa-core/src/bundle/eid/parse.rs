@@ -7,13 +7,19 @@ fn parse_dtn_parts(s: &str) -> Result<Eid, EidError> {
         if s1.is_empty() {
             Err(EidError::DtnNodeNameEmpty)
         } else {
-            Ok(Eid::Dtn {
-                node_name: urlencoding::decode(s1)?.into_owned(),
-                demux: s2.split('/').try_fold(Vec::new(), |mut v, s| {
-                    v.push(urlencoding::decode(s)?.into_owned());
-                    Ok::<Vec<String>, EidError>(v)
-                })?,
-            })
+            let node_name = urlencoding::decode(s1)?.into_owned();
+            let demux = s2.split('/').try_fold(Vec::new(), |mut v, s| {
+                v.push(urlencoding::decode(s)?.into_owned());
+                Ok::<Vec<String>, EidError>(v)
+            })?;
+
+            for (idx, s) in demux.iter().enumerate() {
+                if s.is_empty() && idx != demux.len() - 1 {
+                    return Err(EidError::DtnEmptyDemuxPart);
+                }
+            }
+
+            Ok(Eid::Dtn { node_name, demux })
         }
     } else {
         Err(EidError::DtnMissingSlash)

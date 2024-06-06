@@ -63,6 +63,14 @@ fn tests() {
         expect_error("dtn:///else"),
         EidError::DtnNodeNameEmpty
     ));
+    assert!(matches!(
+        expect_error("dtn://somewhere//"),
+        EidError::DtnEmptyDemuxPart
+    ));
+    assert!(matches!(
+        expect_error("dtn://somewhere//else"),
+        EidError::DtnEmptyDemuxPart
+    ));
 
     assert!(matches!(
         expect_error("ipn:"),

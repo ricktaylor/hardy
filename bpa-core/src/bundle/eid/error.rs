@@ -12,6 +12,9 @@ pub enum EidError {
     #[error("dtn URIs must start with '//'")]
     DtnMissingPrefix,
 
+    #[error("dtn URI demux part is empty")]
+    DtnEmptyDemuxPart,
+
     #[error("dtn URI is not a CBOR text string or 0")]
     DtnInvalidEncoding,
 
