@@ -71,21 +71,25 @@ fn ipn_from_str(s: &str) -> Result<Eid, EidError> {
             parts[2].parse::<u32>().map_field_err("Service Number")?,
         )
     } else {
-        return Err(EidError::IpnAdditionalItems);
+        return Err(EidError::IpnInvalidComponents);
     }
 }
 
 pub fn eid_from_str(s: &str) -> Result<Eid, EidError> {
-    if let Some(s) = s.strip_prefix("dtn://") {
-        parse_dtn_parts(s)
+    if let Some(s) = s.strip_prefix("dtn:") {
+        if let Some(s) = s.strip_prefix("//") {
+            parse_dtn_parts(s)
+        } else if s == "none" {
+            Ok(Eid::Null)
+        } else {
+            Err(EidError::DtnMissingPrefix)
+        }
     } else if let Some(s) = s.strip_prefix("ipn:") {
         ipn_from_str(s)
-    } else if s == "dtn:none" {
-        Ok(Eid::Null)
     } else if let Some((schema, _)) = s.split_once(':') {
         Err(EidError::UnsupportedScheme(schema.to_string()))
     } else {
-        Err(EidError::UnsupportedScheme(s.to_string()))
+        Err(EidError::MissingScheme)
     }
 }
 
@@ -125,7 +129,7 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
         }
 
         if value.end()?.is_none() {
-            return Err(EidError::IpnAdditionalItems);
+            return Err(EidError::IpnInvalidComponents);
         }
         ipn_from_parts(3, v1 as u32, v2 as u32, v3 as u32)
     } else {

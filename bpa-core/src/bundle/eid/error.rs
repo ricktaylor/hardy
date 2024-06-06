@@ -24,8 +24,11 @@ pub enum EidError {
     #[error("Invalid ipn service number {0}")]
     IpnInvalidServiceNumber(u64),
 
-    #[error("More than 3 components in an ipn URI")]
-    IpnAdditionalItems,
+    #[error("Only 2 or 3 components in an ipn URI")]
+    IpnInvalidComponents,
+
+    #[error("Missing scheme separator")]
+    MissingScheme,
 
     #[error("Unsupported EID scheme {0}")]
     UnsupportedScheme(String),

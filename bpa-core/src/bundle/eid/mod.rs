@@ -4,7 +4,7 @@ mod error;
 mod parse;
 
 #[cfg(test)]
-mod tests;
+mod str_tests;
 
 pub use error::EidError;
 
