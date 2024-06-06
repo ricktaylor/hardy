@@ -1,39 +1,11 @@
 use super::*;
-use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
-    num::ParseIntError,
     path::PathBuf,
 };
 use thiserror::Error;
 use time::macros::format_description;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use utils::settings;
-
-#[derive(Clone, Deserialize)]
-struct Config {
-    #[serde(default = "Config::default_path")]
-    route_file: PathBuf,
-
-    #[serde(default = "Config::default_priority")]
-    priority: u32,
-}
-
-impl Config {
-    fn default_path() -> PathBuf {
-        settings::config_dir().join("static_routes")
-    }
-
-    fn default_priority() -> u32 {
-        100
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct StaticRoute {
-    priority: Option<u32>,
-    action: fib::Action,
-}
 
 #[derive(Error, Debug)]
 enum ParseError {
@@ -59,7 +31,7 @@ enum ParseError {
     Time(#[from] time::error::Parse),
 
     #[error(transparent)]
-    Integer(#[from] ParseIntError),
+    Integer(#[from] std::num::ParseIntError),
 
     #[error(transparent)]
     StatusReport(#[from] bundle::StatusReportError),
@@ -199,129 +171,34 @@ impl std::str::FromStr for RouteLine {
     }
 }
 
-#[derive(Clone)]
-pub struct StaticRoutes {
-    config: Config,
-    fib: fib::Fib,
-    routes: HashMap<bundle::EidPattern, StaticRoute>,
-}
+pub async fn load_routes(
+    route_file: &PathBuf,
+) -> Result<Vec<(bundle::EidPattern, StaticRoute)>, Error> {
+    let file = match tokio::fs::File::open(route_file).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            trace!(
+                "Static routes file: '{}' not found",
+                route_file.to_string_lossy()
+            );
+            return Ok(Vec::new());
+        }
+        r => r?,
+    };
 
-impl StaticRoutes {
-    async fn init(
-        mut self,
-        _task_set: &mut tokio::task::JoinSet<()>,
-        _cancel_token: tokio_util::sync::CancellationToken,
-    ) {
-        info!(
-            "Loading static routes from '{}'",
-            self.config.route_file.to_string_lossy()
-        );
-
-        self.refresh_routes().await.trace_expect(&format!(
-            "Failed to read static_routes file '{}'",
-            self.config.route_file.to_string_lossy()
-        ));
-
-        // Set up file watcher
-        //let self_cloned = self.clone();
-        //task_set.spawn_blocking(move || self_cloned.watch());
+    let mut routes = Vec::new();
+    let mut lines = BufReader::new(file).lines();
+    let mut idx: usize = 1;
+    while let Some(line) = lines.next_line().await? {
+        match line.parse::<RouteLine>() {
+            Err(e) => error!(
+                "Failed to parse '{line}' at line {idx} in static routes file '{}': {}",
+                route_file.to_string_lossy(),
+                e.to_string()
+            ),
+            Ok(RouteLine(Some(line))) => routes.push(line),
+            _ => {}
+        }
+        idx += 1;
     }
-
-    async fn refresh_routes(&mut self) -> Result<(), Error> {
-        // Reload the routes
-        let mut drop_routes = Vec::new();
-        let mut add_routes = Vec::new();
-        for r in self.load_routes().await? {
-            if let Some(v2) = self.routes.get(&r.0) {
-                if &r.1 != v2 {
-                    drop_routes.push(r.0.clone());
-                    add_routes.push(r);
-                }
-            } else {
-                add_routes.push(r);
-            }
-        }
-
-        // Drop routes
-        for k in drop_routes {
-            self.routes.remove(&k);
-            self.fib.remove(String::new(), &k).await;
-        }
-
-        // Add routes
-        for (k, v) in add_routes {
-            if let Err(e) = self
-                .fib
-                .add(
-                    String::new(),
-                    &k,
-                    v.priority.unwrap_or(self.config.priority),
-                    v.action.clone(),
-                )
-                .await
-            {
-                error!("Failed to insert static route: {k:?}: {}", e.to_string());
-            } else {
-                self.routes.insert(k, v);
-            }
-        }
-        Ok(())
-    }
-
-    async fn load_routes(&mut self) -> Result<Vec<(bundle::EidPattern, StaticRoute)>, Error> {
-        let file = match tokio::fs::File::open(&self.config.route_file).await {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                trace!(
-                    "Static routes file: '{}' not found",
-                    self.config.route_file.to_string_lossy()
-                );
-                return Ok(Vec::new());
-            }
-            r => r?,
-        };
-
-        let mut routes = Vec::new();
-        let mut lines = BufReader::new(file).lines();
-        let mut idx: usize = 1;
-        while let Some(line) = lines.next_line().await? {
-            match line.parse::<RouteLine>() {
-                Err(e) => error!(
-                    "Failed to parse '{line}' at line {idx} in static routes file '{}': {}",
-                    self.config.route_file.to_string_lossy(),
-                    e.to_string()
-                ),
-                Ok(RouteLine(Some(line))) => routes.push(line),
-                _ => {}
-            }
-            idx += 1;
-        }
-        Ok(routes)
-    }
-
-    /*fn watch(mut self) {
-        todo!()
-    }*/
-}
-
-#[instrument(skip_all)]
-pub async fn init(
-    config: &config::Config,
-    fib: fib::Fib,
-    task_set: &mut tokio::task::JoinSet<()>,
-    cancel_token: tokio_util::sync::CancellationToken,
-) {
-    if let Some(config) =
-        settings::get_with_default::<Option<Config>, _>(config, "static_routes", None)
-            .trace_expect("Invalid 'static_routes' section in configuration")
-    {
-        StaticRoutes {
-            config,
-            fib,
-            routes: HashMap::new(),
-        }
-        .init(task_set, cancel_token)
-        .await;
-    } else {
-        info!("No static routes configured");
-    }
+    Ok(routes)
 }
