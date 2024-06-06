@@ -136,13 +136,8 @@ impl IpnPattern {
             }
             Some('[') => {
                 if !s.ends_with(']') {
-                    return Err(EidPatternError::Expecting(
-                        "]".to_string(),
-                        Span::new(
-                            span.0.start + s.chars().count() - 1,
-                            span.0.start + s.chars().count(),
-                        ),
-                    ));
+                    span.offset(s.chars().count() - 1);
+                    return Err(EidPatternError::Expecting("]".to_string(), span.subset(1)));
                 }
 
                 span.inc(1);

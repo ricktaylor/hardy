@@ -109,8 +109,7 @@ impl DtnSsp {
                 span.subset(s.chars().count().min(2)),
             ));
         };
-        span.0.start += 2;
-        span.0.end += 2;
+        span.offset(2);
 
         let Some((s1, s2)) = s.split_once('/') else {
             return Err(EidPatternError::Expecting(
@@ -248,13 +247,8 @@ impl PatternMatch {
     fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s.starts_with('[') {
             if !s.ends_with(']') {
-                Err(EidPatternError::Expecting(
-                    "]".to_string(),
-                    Span::new(
-                        span.0.start + s.chars().count() - 1,
-                        span.0.start + s.chars().count(),
-                    ),
-                ))
+                span.offset(s.chars().count() - 1);
+                Err(EidPatternError::Expecting("]".to_string(), span.subset(1)))
             } else if s.len() == 2 {
                 Err(EidPatternError::ExpectingRegEx(
                     span.subset(s.chars().count()),

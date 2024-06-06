@@ -1,64 +1,14 @@
 use super::*;
-use std::ops::Range;
-use thiserror::Error;
 
 mod dtn_pattern;
+mod error;
 mod ipn_pattern;
 
+use error::Span;
+
 pub use dtn_pattern::*;
+pub use error::EidPatternError;
 pub use ipn_pattern::*;
-
-#[derive(Debug, Clone)]
-pub struct Span(Range<usize>);
-
-impl Span {
-    fn new(start: usize, end: usize) -> Self {
-        Self(Range { start, end })
-    }
-
-    fn subset(&self, l: usize) -> Self {
-        Self(Range {
-            start: self.0.start,
-            end: self.0.start + l,
-        })
-    }
-
-    fn inc(&mut self, i: usize) {
-        self.0.start += i;
-        self.0.end = self.0.start;
-    }
-}
-
-impl std::fmt::Display for Span {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.start == self.0.end {
-            write!(f, "{}", self.0.start)
-        } else {
-            write!(f, "{}..{}", self.0.start, self.0.end)
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum EidPatternError {
-    #[error("Expecting '{0}' at {1}")]
-    Expecting(String, Span),
-
-    #[error("Invalid scheme at {0}")]
-    InvalidScheme(Span),
-
-    #[error("Invalid number or number range as {0}")]
-    InvalidIpnNumber(Span),
-
-    #[error("Expecting regular expression as {0}")]
-    ExpectingRegEx(Span),
-
-    #[error("{1} at {0}")]
-    InvalidRegEx(#[source] regex::Error, Span),
-
-    #[error("{0} at {1}")]
-    InvalidUtf8(#[source] std::string::FromUtf8Error, Span),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EidPattern {
@@ -101,7 +51,7 @@ impl std::str::FromStr for EidPattern {
             Ok(EidPattern::Any)
         } else {
             let mut v = Vec::new();
-            let mut span = Span(Range { start: 1, end: 1 });
+            let mut span = Span::new(1, 1);
             for s in s.split('|') {
                 v.push(EidPatternItem::parse(s, &mut span)?);
             }
