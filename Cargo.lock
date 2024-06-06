@@ -561,6 +561,7 @@ name = "hardy-bpa-core-fuzz"
 version = "0.0.0"
 dependencies = [
  "hardy-bpa-core",
+ "hardy-cbor",
  "libfuzzer-sys",
 ]
 

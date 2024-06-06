@@ -9,13 +9,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-
-[dependencies.hardy-bpa-core]
-path = ".."
+hardy-bpa-core = { path = ".." }
+hardy-cbor = { path = "../../cbor" }
 
 [[bin]]
-name = "eid"
-path = "fuzz_targets/eid.rs"
+name = "eid_str"
+path = "fuzz_targets/eid_str.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eid_cbor"
+path = "fuzz_targets/eid_cbor.rs"
 test = false
 doc = false
 bench = false
