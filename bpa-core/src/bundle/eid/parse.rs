@@ -126,11 +126,11 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
     let v2 = value.parse::<u64>().map_field_err("Second component")?;
 
     if let Some(v3) = value.try_parse::<u64>().map_field_err("Service Number")? {
-        if v1 >= 2 ^ 32 {
+        if v1 > u32::MAX as u64 {
             return Err(EidError::IpnInvalidAllocatorId(v1));
-        } else if v2 >= 2 ^ 32 {
+        } else if v2 > u32::MAX as u64 {
             return Err(EidError::IpnInvalidNodeNumber(v2));
-        } else if v3 >= 2 ^ 32 {
+        } else if v3 > u32::MAX as u64 {
             return Err(EidError::IpnInvalidServiceNumber(v3));
         }
 
@@ -139,7 +139,7 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
         }
         ipn_from_parts(3, v1 as u32, v2 as u32, v3 as u32)
     } else {
-        if v2 >= 2 ^ 32 {
+        if v2 > u32::MAX as u64 {
             return Err(EidError::IpnInvalidServiceNumber(v2));
         }
         ipn_from_parts(2, (v1 >> 32) as u32, v1 as u32, v2 as u32)
