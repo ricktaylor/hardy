@@ -36,6 +36,10 @@ impl Encoder {
         }
     }
 
+    pub fn emit_raw(&mut self, value: &[u8]) {
+        self.data.extend_from_slice(value)
+    }
+
     pub fn emit<V>(&mut self, value: V)
     where
         V: ToCbor,
@@ -204,6 +208,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
             }
             None => self.encoder.data.push(0xFF),
         }
+    }
+
+    pub fn emit_raw(&mut self, value: &[u8]) {
+        self.encoder.emit_raw(value)
     }
 
     pub fn emit<V>(&mut self, value: V)
