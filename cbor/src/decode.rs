@@ -268,12 +268,10 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, usize), Error> {
 }
 
 fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
-    if data.len() < N {
-        Err(Error::NotEnoughData)
-    } else if data.len() == N {
-        Ok(data.try_into().unwrap())
-    } else {
-        Ok(data[0..N].try_into().unwrap())
+    match data.len().cmp(&N) {
+        std::cmp::Ordering::Less => Err(Error::NotEnoughData),
+        std::cmp::Ordering::Equal => Ok(data.try_into().unwrap()),
+        std::cmp::Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
     }
 }
 
