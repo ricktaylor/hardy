@@ -24,28 +24,27 @@ fn tests() {
         expect_error(&hex!(
             "82 02 83 1B 0000000800000001 1B 0000000800000001 1B 0000000800000001"
         )),
-        EidError::InvalidField { .. }
+        EidError::IpnInvalidAllocatorId(_)
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 83 01 1B 0000000800000001 1B 0000000800000001")),
-        EidError::InvalidField { .. }
+        EidError::IpnInvalidNodeNumber(_)
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 83 01 01 1B 0000000800000001")),
-        EidError::InvalidField { .. }
+        EidError::IpnInvalidServiceNumber(_)
     ));
-
     assert!(matches!(
         expect_error(&hex!("82 02 81 00")),
-        EidError::InvalidField { .. }
+        EidError::IpnInvalidComponents
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 84 00 00 00 00")),
-        EidError::InvalidField { .. }
+        EidError::IpnInvalidComponents
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 82 1B 000EE868 00000001 1B 0000000800000001")),
-        EidError::InvalidField { .. }
+        EidError::IpnInvalidServiceNumber(_)
     ));
 }
 

@@ -122,8 +122,12 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
         trace!("Parsing ipn EID as indefinite array");
     }
 
-    let v1 = value.parse::<u64>().map_field_err("First component")?;
-    let v2 = value.parse::<u64>().map_field_err("Second component")?;
+    let Some(v1) = value.try_parse::<u64>().map_field_err("First component")? else {
+        return Err(EidError::IpnInvalidComponents);
+    };
+    let Some(v2) = value.try_parse::<u64>().map_field_err("Second component")? else {
+        return Err(EidError::IpnInvalidComponents);
+    };
 
     if let Some(v3) = value.try_parse::<u64>().map_field_err("Service Number")? {
         if v1 > u32::MAX as u64 {
@@ -152,23 +156,21 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<(Eid, usize, Vec<u64>), EidError> {
             trace!("Parsing EID array of indefinite length")
         }
         let schema = a.parse::<u64>().map_field_err("Scheme")?;
-        let (eid, _) = a
-            .parse_value(|value, _, tags2| {
-                if !tags2.is_empty() {
-                    trace!("Parsing EID value with tags");
-                }
-                match (schema, value) {
-                    (1, value) => dtn_from_cbor(value),
-                    (2, cbor::decode::Value::Array(a)) => ipn_from_cbor(a),
-                    (2, value) => Err(cbor::decode::Error::IncorrectType(
-                        "Array".to_string(),
-                        value.type_name(),
-                    )
-                    .into()),
-                    _ => Err(EidError::UnsupportedScheme(schema.to_string())),
-                }
-            })
-            .map_field_err("Scheme-specific part")?;
+        let (eid, _) = a.parse_value(|value, _, tags2| {
+            if !tags2.is_empty() {
+                trace!("Parsing EID value with tags");
+            }
+            match (schema, value) {
+                (1, value) => dtn_from_cbor(value),
+                (2, cbor::decode::Value::Array(a)) => ipn_from_cbor(a),
+                (2, value) => Err(cbor::decode::Error::IncorrectType(
+                    "Array".to_string(),
+                    value.type_name(),
+                )
+                .into()),
+                _ => Err(EidError::UnsupportedScheme(schema.to_string())),
+            }
+        })?;
         if a.end()?.is_none() {
             Err(EidError::AdditionalItems)
         } else {
