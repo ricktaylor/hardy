@@ -115,7 +115,6 @@ impl AdminEndpoints {
 
     pub fn is_local_service(&self, eid: &Eid) -> bool {
         match eid {
-            Eid::Null => false,
             Eid::LocalNode { .. } => true,
             Eid::Ipn2 {
                 allocator_id,
@@ -136,12 +135,12 @@ impl AdminEndpoints {
                 Some(node_id) => node_id.node_name == *node_name,
                 _ => false,
             },
+            _ => false,
         }
     }
 
     pub fn is_admin_endpoint(&self, eid: &Eid) -> bool {
         match eid {
-            Eid::Null => false,
             Eid::LocalNode { service_number } => *service_number == 0,
             Eid::Ipn2 {
                 allocator_id,
@@ -164,6 +163,7 @@ impl AdminEndpoints {
                 Some(node_id) => node_id.node_name == *node_name && demux.is_empty(),
                 _ => false,
             },
+            _ => false,
         }
     }
 }
@@ -249,6 +249,7 @@ fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
                 })
             }
         }
+        _ => unreachable!(),
     }
 }
 

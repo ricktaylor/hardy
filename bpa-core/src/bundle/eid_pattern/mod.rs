@@ -114,6 +114,9 @@ impl From<Eid> for EidPattern {
                         .collect(),
                 }),
             )]),
+            Eid::Unknown { scheme, .. } => {
+                EidPattern::Set(vec![EidPatternItem::AnyNumericScheme(scheme)])
+            }
         }
     }
 }

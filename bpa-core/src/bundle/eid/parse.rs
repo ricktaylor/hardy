@@ -155,22 +155,40 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<(Eid, usize, Vec<u64>), EidError> {
         if a.count().is_none() {
             trace!("Parsing EID array of indefinite length")
         }
-        let schema = a.parse::<u64>().map_field_err("Scheme")?;
-        let (eid, _) = a.parse_value(|value, _, tags2| {
-            if !tags2.is_empty() {
-                trace!("Parsing EID value with tags");
+
+        let scheme = a.parse::<u64>().map_field_err("Scheme")?;
+        if scheme == 0 {
+            return Err(EidError::UnsupportedScheme(scheme.to_string()));
+        }
+
+        let eid = if scheme > 2 {
+            let (start, len) = a.parse_value(|_, start, _| Ok::<_, EidError>(start))?;
+            Eid::Unknown {
+                scheme,
+                data: data[start..start + len].to_vec(),
             }
-            match (schema, value) {
-                (1, value) => dtn_from_cbor(value),
-                (2, cbor::decode::Value::Array(a)) => ipn_from_cbor(a),
-                (2, value) => Err(cbor::decode::Error::IncorrectType(
-                    "Array".to_string(),
-                    value.type_name(),
-                )
-                .into()),
-                _ => Err(EidError::UnsupportedScheme(schema.to_string())),
-            }
-        })?;
+        } else {
+            a.parse_value(|value, _, tags| {
+                if !tags.is_empty() {
+                    trace!("Parsing EID value with tags");
+                }
+
+                if scheme == 2 {
+                    if let cbor::decode::Value::Array(a) = value {
+                        ipn_from_cbor(a)
+                    } else {
+                        Err(cbor::decode::Error::IncorrectType(
+                            "Array".to_string(),
+                            value.type_name(),
+                        )
+                        .into())
+                    }
+                } else {
+                    dtn_from_cbor(value)
+                }
+            })?
+            .0
+        };
         if a.end()?.is_none() {
             Err(EidError::AdditionalItems)
         } else {

@@ -185,6 +185,11 @@ where
             Eid::Dtn { node_name, demux } => {
                 results.extend(self.dtn_map.find(node_name, demux));
             }
+            Eid::Unknown { scheme, .. } => {
+                if let Some(v) = self.numeric_schemes.get(scheme) {
+                    results.extend(v.values())
+                }
+            }
         }
         results
     }
