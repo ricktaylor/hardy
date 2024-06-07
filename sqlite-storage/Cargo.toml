@@ -15,7 +15,7 @@ rusqlite = { version = "0.31.0", features = ["bundled","time"] }
 tokio = { version = "1.37.0", features = ["rt-multi-thread"] }
 thiserror = "1.0.61"
 serde = { version = "1.0.203", features = ["derive"] }
-config = "0.14.0"
+config = { version = "0.14.0", features = ["toml"] }
 directories = "5.0.1"
 tracing = "0.1.40"
 base64 = "0.22.1"

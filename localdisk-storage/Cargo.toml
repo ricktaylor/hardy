@@ -17,7 +17,7 @@ hardy-bpa-core = { path = "../bpa-core" }
 tokio = { version = "1.37.0", features = ["rt-multi-thread","fs"] }
 serde = { version = "1.0.203", features = ["derive"] }
 rand = "0.8.5"
-config = "0.14.0"
+config = { version = "0.14.0", features = ["toml"] }
 directories = "5.0.1"
 tracing = "0.1.40"
 memmap2 = { version = "0.9.4", optional = true }
