@@ -224,11 +224,7 @@ impl EidPatternItem {
                         ));
                     }
                     span.inc(2);
-                    match s1 {
-                        "ipn" => Ok(EidPatternItem::IpnPatternItem(IpnPatternItem::new_any())),
-                        "dtn" => Ok(EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())),
-                        _ => Ok(EidPatternItem::AnyTextScheme(s1.to_string())),
-                    }
+                    Ok(EidPatternItem::AnyTextScheme(s1.to_string()))
                 }
                 _ => Err(EidPatternError::InvalidScheme(
                     span.subset(s1.chars().count()),

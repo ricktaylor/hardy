@@ -34,11 +34,16 @@ impl DtnPatternItem {
     dtn-wkssp-exact = "none"
     */
     pub fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if s == "none" {
-            span.inc(4);
-            Ok(DtnPatternItem::None)
-        } else {
-            Ok(DtnPatternItem::DtnSsp(DtnSsp::parse(s, span)?))
+        match s {
+            "**" => {
+                span.inc(2);
+                Ok(DtnPatternItem::new_any())
+            }
+            "none" => {
+                span.inc(4);
+                Ok(DtnPatternItem::None)
+            }
+            _ => Ok(DtnPatternItem::DtnSsp(DtnSsp::parse(s, span)?)),
         }
     }
 }
