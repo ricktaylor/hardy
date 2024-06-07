@@ -101,43 +101,43 @@ fn tests() {
 
     dtn_match(
         "dtn://node/service",
-        DtnPatternItem::DtnSsp(DtnSsp {
+        DtnSsp {
             authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact("node".to_string())),
             singles: Vec::new(),
             last: DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Exact(
                 "service".to_string(),
             ))),
-        }),
+        },
     );
     dtn_match(
         "dtn://node/*",
-        DtnPatternItem::DtnSsp(DtnSsp {
+        DtnSsp {
             authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact("node".to_string())),
             singles: Vec::new(),
             last: DtnLastPattern::Single(DtnSinglePattern::Wildcard),
-        }),
+        },
     );
     dtn_match(
         "dtn://node/**",
-        DtnPatternItem::DtnSsp(DtnSsp {
+        DtnSsp {
             authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact("node".to_string())),
             singles: Vec::new(),
             last: DtnLastPattern::MultiWildcard,
-        }),
+        },
     );
     dtn_match(
         "dtn://node/pre/**",
-        DtnPatternItem::DtnSsp(DtnSsp {
+        DtnSsp {
             authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact("node".to_string())),
             singles: vec![DtnSinglePattern::PatternMatch(PatternMatch::Exact(
                 "pre".to_string(),
             ))],
             last: DtnLastPattern::MultiWildcard,
-        }),
+        },
     );
     dtn_match(
         "dtn://**/some/serv",
-        DtnPatternItem::DtnSsp(DtnSsp {
+        DtnSsp {
             authority: DtnAuthPattern::MultiWildcard,
             singles: vec![DtnSinglePattern::PatternMatch(PatternMatch::Exact(
                 "some".to_string(),
@@ -145,17 +145,35 @@ fn tests() {
             last: DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Exact(
                 "serv".to_string(),
             ))),
-        }),
+        },
     );
     dtn_match(
         "dtn://**/[^a]",
-        DtnPatternItem::DtnSsp(DtnSsp {
+        DtnSsp {
             authority: DtnAuthPattern::MultiWildcard,
             singles: Vec::new(),
             last: DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Regex(
                 regex::Regex::new("^a").unwrap(),
             ))),
-        }),
+        },
+    );
+
+    assert_eq!(
+        "dtn:none".parse::<EidPattern>().expect("Failed to parse"),
+        EidPattern::Set(vec![EidPatternItem::DtnPatternItem(DtnPatternItem::None)])
+    );
+
+    assert_eq!(
+        "dtn:**".parse::<EidPattern>().expect("Failed to parse"),
+        EidPattern::Set(vec![EidPatternItem::DtnPatternItem(
+            DtnPatternItem::new_any()
+        )])
+    );
+    assert_eq!(
+        "1:**".parse::<EidPattern>().expect("Failed to parse"),
+        EidPattern::Set(vec![EidPatternItem::DtnPatternItem(
+            DtnPatternItem::new_any()
+        )])
     );
 
     assert_eq!(
@@ -196,14 +214,14 @@ fn ipn_match(s: &str, expected: IpnPatternItem) {
     }
 }
 
-fn dtn_match(s: &str, expected: DtnPatternItem) {
+fn dtn_match(s: &str, expected: DtnSsp) {
     match s.parse::<EidPattern>().expect("Failed to parse") {
         EidPattern::Set(v) => {
             if v.len() != 1 {
                 panic!("More than 1 pattern item!");
             }
 
-            let EidPatternItem::DtnPatternItem(i) = &v[0] else {
+            let EidPatternItem::DtnPatternItem(DtnPatternItem::DtnSsp(i)) = &v[0] else {
                 panic!("Not a dtn pattern item!")
             };
 
