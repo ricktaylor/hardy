@@ -53,10 +53,10 @@ fn expect_error(data: &[u8]) -> EidError {
 }
 
 fn null_check(data: &[u8]) {
-    assert!(matches!(
+    assert_eq!(
         cbor::decode::parse::<Eid>(data).expect("Failed to parse"),
         Eid::Null
-    ));
+    );
 }
 
 fn ipn_check2(
