@@ -4,6 +4,9 @@ mod dtn_pattern;
 mod error;
 mod ipn_pattern;
 
+#[cfg(test)]
+mod str_tests;
+
 use error::Span;
 
 pub use dtn_pattern::*;
@@ -198,8 +201,8 @@ impl EidPatternItem {
                     }
                     span.inc(2);
                     match v {
-                        1 => Ok(EidPatternItem::IpnPatternItem(IpnPatternItem::new_any())),
-                        2 => Ok(EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())),
+                        1 => Ok(EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())),
+                        2 => Ok(EidPatternItem::IpnPatternItem(IpnPatternItem::new_any())),
                         _ => Ok(EidPatternItem::AnyNumericScheme(v)),
                     }
                 }

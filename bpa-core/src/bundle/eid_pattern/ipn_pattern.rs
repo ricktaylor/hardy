@@ -58,6 +58,10 @@ impl IpnPatternItem {
     ipn-ssp = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
     */
     pub fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
+        if s == "**" {
+            return Ok(IpnPatternItem::new_any());
+        }
+
         let Some((s1, s)) = s.split_once('.') else {
             IpnPattern::parse(s, span)?;
             return Err(EidPatternError::Expecting(".".to_string(), span.clone()));
@@ -115,44 +119,104 @@ impl IpnPattern {
     ipn-range = "[" ipn-interval *( "," ipn-interval ) "]"
     */
     fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        match s.chars().nth(0) {
-            Some('0') => {
-                if s.len() > 1 {
-                    return Err(EidPatternError::InvalidIpnNumber(
-                        span.subset(s.chars().count()),
-                    ));
-                }
+        match s {
+            "*" => {
+                span.inc(1);
+                Ok(IpnPattern::Wildcard)
+            }
+            "0" => {
                 span.inc(1);
                 Ok(IpnPattern::Range(vec![IpnInterval::Number(0)]))
             }
-            Some('1'..='9') => {
-                let Ok(v) = s.parse::<u32>() else {
-                    return Err(EidPatternError::InvalidIpnNumber(
-                        span.subset(s.chars().count()),
-                    ));
-                };
-                span.inc(s.chars().count());
-                Ok(IpnPattern::Range(vec![IpnInterval::Number(v)]))
-            }
-            Some('[') => {
-                if !s.ends_with(']') {
-                    span.offset(s.chars().count() - 1);
-                    return Err(EidPatternError::Expecting("]".to_string(), span.subset(1)));
+            _ => match s.chars().nth(0) {
+                Some('1'..='9') => {
+                    let Ok(v) = s.parse::<u32>() else {
+                        return Err(EidPatternError::InvalidIpnNumber(
+                            span.subset(s.chars().count()),
+                        ));
+                    };
+                    span.inc(s.chars().count());
+                    Ok(IpnPattern::Range(vec![IpnInterval::Number(v)]))
                 }
+                Some('[') => {
+                    if !s.ends_with(']') {
+                        span.offset(s.chars().count() - 1);
+                        return Err(EidPatternError::Expecting("]".to_string(), span.subset(1)));
+                    }
 
-                span.inc(1);
-                Ok(IpnPattern::Range(s[1..s.len() - 1].split(',').try_fold(
-                    Vec::new(),
-                    |mut v, s| {
-                        v.push(IpnInterval::parse(s, span)?);
+                    // Parse intervals
+                    let mut intervals =
+                        s[1..s.len() - 1]
+                            .split(',')
+                            .try_fold(Vec::new(), |mut v, s| {
+                                v.push(IpnInterval::parse(s, span)?);
+                                span.inc(1);
+                                Ok::<Vec<IpnInterval>, EidPatternError>(v)
+                            })?;
+
+                    if intervals.is_empty() {
+                        Err(EidPatternError::InvalidIpnNumber(
+                            span.subset(s.chars().count()),
+                        ))
+                    } else {
+                        // Sort
+                        intervals.sort();
+
+                        // Dedup
+                        intervals.dedup();
+
+                        // Merge intervals
+                        let mut i = intervals.into_iter();
+                        let mut intervals = Vec::new();
+                        let mut curr = i.next().unwrap();
+                        for next in i {
+                            match (&curr, &next) {
+                                (IpnInterval::Number(n1), IpnInterval::Number(n2))
+                                    if *n2 == n1 + 1 =>
+                                {
+                                    curr = IpnInterval::Range(RangeInclusive::new(*n1, *n2));
+                                }
+                                (IpnInterval::Number(n), IpnInterval::Range(r))
+                                    if n == r.start() =>
+                                {
+                                    curr = next;
+                                }
+                                (IpnInterval::Number(n), IpnInterval::Range(r))
+                                    if n + 1 == *r.start() =>
+                                {
+                                    curr = IpnInterval::Range(RangeInclusive::new(*n, *r.end()));
+                                }
+                                (IpnInterval::Range(r), IpnInterval::Number(n))
+                                    if r.contains(n) => {}
+                                (IpnInterval::Range(r), IpnInterval::Number(n))
+                                    if r.end() + 1 == *n =>
+                                {
+                                    curr = IpnInterval::Range(RangeInclusive::new(*r.start(), *n));
+                                }
+                                (IpnInterval::Range(r1), IpnInterval::Range(r2))
+                                    if *r2.start() <= r1.end() + 1 =>
+                                {
+                                    curr = IpnInterval::Range(RangeInclusive::new(
+                                        *r1.start(),
+                                        *r2.end(),
+                                    ));
+                                }
+                                _ => {
+                                    intervals.push(curr);
+                                    curr = next;
+                                }
+                            }
+                        }
+                        intervals.push(curr);
+
                         span.inc(1);
-                        Ok::<Vec<IpnInterval>, EidPatternError>(v)
-                    },
-                )?))
-            }
-            _ => Err(EidPatternError::InvalidIpnNumber(
-                span.subset(s.chars().count()),
-            )),
+                        Ok(IpnPattern::Range(intervals))
+                    }
+                }
+                _ => Err(EidPatternError::InvalidIpnNumber(
+                    span.subset(s.chars().count()),
+                )),
+            },
         }
     }
 }
@@ -161,6 +225,30 @@ impl IpnPattern {
 pub enum IpnInterval {
     Number(u32),
     Range(RangeInclusive<u32>),
+}
+
+impl std::cmp::PartialOrd for IpnInterval {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::cmp::Ord for IpnInterval {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (IpnInterval::Number(n1), IpnInterval::Number(n2)) => n1.cmp(n2),
+            (IpnInterval::Number(n), IpnInterval::Range(r)) => {
+                n.cmp(r.start()).then((r.end() - r.start()).cmp(&1))
+            }
+            (IpnInterval::Range(r), IpnInterval::Number(n)) => {
+                r.start().cmp(n).then(1.cmp(&(r.end() - r.start())))
+            }
+            (IpnInterval::Range(r1), IpnInterval::Range(r2)) => r1
+                .start()
+                .cmp(r2.start())
+                .then((r1.end() - r1.start()).cmp(&(r2.end() - r2.start()))),
+        }
+    }
 }
 
 impl IpnInterval {
