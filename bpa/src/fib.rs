@@ -73,7 +73,7 @@ impl Fib {
         priority: u32,
         action: Action,
     ) -> Result<(), Error> {
-        info!("Add route {{{id}:{pattern} => {action} priority {priority}}}");
+        info!("Add route {pattern} => {action}, priority {priority}, source '{id}'");
 
         let mut entries = self.entries.write().await;
         let entry = TableEntry { priority, action };
@@ -89,7 +89,7 @@ impl Fib {
 
     #[instrument(skip_all)]
     pub async fn remove(&self, id: &str, pattern: &bundle::EidPattern) -> Option<Vec<TableEntry>> {
-        info!("Remove route {id}:{pattern}");
+        info!("Remove route {pattern}, source '{id}'");
 
         self.entries.write().await.remove(pattern, id)
     }
