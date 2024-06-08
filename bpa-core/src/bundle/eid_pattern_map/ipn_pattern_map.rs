@@ -142,7 +142,11 @@ where
         prev
     }
 
-    pub fn remove(&mut self, key: &IpnPatternItem, id: &I) -> Option<T> {
+    pub fn remove<J>(&mut self, key: &IpnPatternItem, id: &J) -> Option<T>
+    where
+        I: std::borrow::Borrow<J>,
+        J: std::hash::Hash + Eq + ?Sized,
+    {
         let allocators = unpack_intervals(&key.allocator_id);
         let node_numbers = unpack_intervals(&key.node_number);
         let service_numbers = unpack_intervals(&key.service_number);

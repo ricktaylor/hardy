@@ -91,7 +91,11 @@ where
         prev
     }
 
-    pub fn remove(&mut self, key: &EidPattern, id: &I) -> Option<T> {
+    pub fn remove<J>(&mut self, key: &EidPattern, id: &J) -> Option<T>
+    where
+        I: std::borrow::Borrow<J>,
+        J: std::hash::Hash + Eq + ?Sized,
+    {
         if let Some(eid) = key.is_exact() {
             self.exact.get_mut(&eid).and_then(|e| e.remove(id))
         } else {
@@ -108,7 +112,11 @@ where
         }
     }
 
-    fn remove_item(&mut self, item: &EidPatternItem, id: &I) -> Option<T> {
+    fn remove_item<J>(&mut self, item: &EidPatternItem, id: &J) -> Option<T>
+    where
+        I: std::borrow::Borrow<J>,
+        J: std::hash::Hash + Eq + ?Sized,
+    {
         if let Some(eid) = item.is_exact() {
             self.exact.get_mut(&eid).and_then(|e| e.remove(id));
         }

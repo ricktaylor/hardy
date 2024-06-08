@@ -177,7 +177,7 @@ impl ClaRegistry {
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         if fib
-            .remove(format!("cla:{}", cla.name), &neighbour)
+            .remove(&format!("cla:{}", cla.name), &neighbour)
             .await
             .is_none()
         {

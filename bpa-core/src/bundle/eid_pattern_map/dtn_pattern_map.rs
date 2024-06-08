@@ -127,7 +127,11 @@ where
         demux.values.insert(id, value)
     }
 
-    pub fn remove(&mut self, key: &DtnSsp, id: &I) -> Option<T> {
+    pub fn remove<J>(&mut self, key: &DtnSsp, id: &J) -> Option<T>
+    where
+        I: std::borrow::Borrow<J>,
+        J: std::hash::Hash + Eq + ?Sized,
+    {
         let mut demux = match &key.authority {
             DtnAuthPattern::PatternMatch(PatternMatch::Exact(s)) => self.auths.exact.get_mut(s),
             DtnAuthPattern::PatternMatch(PatternMatch::Regex(r)) => {
