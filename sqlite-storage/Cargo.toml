@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 trace-err = { path = "../trace-err" }
 hardy-bpa-core = { path = "../bpa-core" }
 hardy-cbor = { path = "../cbor" }
-rusqlite = { version = "0.31.0", features = ["bundled","time"] }
+rusqlite = { version = "0.31.0", features = ["bundled", "time"] }
 tokio = { version = "1.38.0", features = ["rt-multi-thread"] }
 thiserror = "1.0.61"
 serde = { version = "1.0.203", features = ["derive"] }
