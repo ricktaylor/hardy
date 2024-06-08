@@ -25,3 +25,10 @@ path = "fuzz_targets/eid_cbor.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "eid_pattern_str"
+path = "fuzz_targets/eid_pattern_str.rs"
+test = false
+doc = false
+bench = false
