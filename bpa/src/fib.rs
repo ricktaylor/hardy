@@ -89,9 +89,14 @@ impl Fib {
 
     #[instrument(skip_all)]
     pub async fn remove(&self, id: &str, pattern: &bundle::EidPattern) -> Option<Vec<TableEntry>> {
-        info!("Remove route {pattern}, source '{id}'");
-
-        self.entries.write().await.remove(pattern, id)
+        self.entries.write().await.remove(pattern, id).inspect(|v| {
+            for e in v {
+                info!(
+                    "Removed route {pattern} => {}, priority {}, source '{id}'",
+                    e.action, e.priority
+                );
+            }
+        })
     }
 
     #[instrument(skip(self))]
