@@ -19,6 +19,23 @@ pub enum Action {
     Wait(time::OffsetDateTime),                   // Wait for later availability
 }
 
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Drop(reason) => {
+                if let Some(reason) = reason {
+                    write!(f, "drop({:?})", reason)
+                } else {
+                    write!(f, "drop")
+                }
+            }
+            Action::Forward(c) => write!(f, "forward {}", c.handle),
+            Action::Via(eid) => write!(f, "via {eid}"),
+            Action::Wait(until) => write!(f, "Wait until {until}"),
+        }
+    }
+}
+
 pub struct ForwardAction {
     pub clas: Vec<Endpoint>,                // Available endpoints for forwarding
     pub wait: Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
