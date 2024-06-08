@@ -1,8 +1,5 @@
 use super::*;
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use std::collections::HashSet;
 use thiserror::Error;
 use time::macros::format_description;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -172,13 +169,23 @@ impl std::str::FromStr for RouteLine {
 }
 
 pub async fn load_routes(
-    route_file: &PathBuf,
+    routes_file: &PathBuf,
+    ignore_errors: bool,
+    watching: bool,
 ) -> Result<Vec<(bundle::EidPattern, StaticRoute)>, Error> {
-    let file = match tokio::fs::File::open(route_file).await {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let file = match tokio::fs::File::open(routes_file).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
             trace!(
                 "Static routes file: '{}' not found",
-                route_file.to_string_lossy()
+                routes_file.to_string_lossy()
+            );
+            return Ok(Vec::new());
+        }
+        Err(e) if ignore_errors => {
+            error!(
+                "Failed to open static routes file '{}': {}",
+                routes_file.to_string_lossy(),
+                e.to_string()
             );
             return Ok(Vec::new());
         }
@@ -190,11 +197,12 @@ pub async fn load_routes(
     let mut idx: usize = 1;
     while let Some(line) = lines.next_line().await? {
         match line.parse::<RouteLine>() {
-            Err(e) => error!(
+            Err(e) if ignore_errors => error!(
                 "Failed to parse '{line}' at line {idx} in static routes file '{}': {}",
-                route_file.to_string_lossy(),
+                routes_file.to_string_lossy(),
                 e.to_string()
             ),
+            Err(e) => return Err(e.into()),
             Ok(RouteLine(Some(line))) => routes.push(line),
             _ => {}
         }
