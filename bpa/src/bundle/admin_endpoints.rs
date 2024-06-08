@@ -170,7 +170,7 @@ impl AdminEndpoints {
 
 #[derive(Error, Debug)]
 enum Error {
-    #[error("Value must be a string, table, or array")]
+    #[error("Value must be a string or array of strings")]
     InvalidValue,
 
     #[error("dtn administrative endpoints must not have a demux part")]
@@ -184,9 +184,6 @@ enum Error {
 
     #[error("ipn administrative endpoints must have service number 0")]
     IpnNonZeroServiceNumber,
-
-    #[error("Unsupported EID scheme {0}")]
-    UnsupportedScheme(String),
 
     #[error("Multiple dtn administrative endpoints in configuration: {0}")]
     MultipleDtn(DtnNodeId),
@@ -207,7 +204,6 @@ enum Error {
 fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
     match v.kind {
         config::ValueKind::String(s) => init_from_string(s),
-        config::ValueKind::Table(t) => init_from_table(t),
         config::ValueKind::Array(v) => init_from_array(v),
         _ => Err(Error::InvalidValue),
     }
@@ -250,92 +246,6 @@ fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
             }
         }
         _ => unreachable!(),
-    }
-}
-
-fn init_from_table(t: HashMap<String, config::Value>) -> Result<AdminEndpoints, Error> {
-    let mut admin_endpoints = AdminEndpoints {
-        ipn: None,
-        dtn: None,
-    };
-    for (k, v) in t {
-        let n = match k.as_str() {
-            "dtn" => {
-                let s = v.into_string()?;
-                if s == "none" {
-                    Err(Error::NotNone)
-                } else if s.ends_with('/') {
-                    init_from_string(format!("dtn://{s}"))
-                } else {
-                    init_from_string(format!("dtn://{s}/"))
-                }
-            }
-            "ipn" => match v.kind {
-                config::ValueKind::I64(v) if v <= u32::MAX as i64 => Ok(AdminEndpoints {
-                    dtn: None,
-                    ipn: Some(IpnNodeId {
-                        allocator_id: 0,
-                        node_number: v as u32,
-                    }),
-                }),
-                config::ValueKind::U64(v) if v <= u32::MAX as u64 => Ok(AdminEndpoints {
-                    dtn: None,
-                    ipn: Some(IpnNodeId {
-                        allocator_id: 0,
-                        node_number: v as u32,
-                    }),
-                }),
-                config::ValueKind::I128(v) if v <= u32::MAX as i128 => Ok(AdminEndpoints {
-                    dtn: None,
-                    ipn: Some(IpnNodeId {
-                        allocator_id: 0,
-                        node_number: v as u32,
-                    }),
-                }),
-                config::ValueKind::U128(v) if v <= u32::MAX as u128 => Ok(AdminEndpoints {
-                    dtn: None,
-                    ipn: Some(IpnNodeId {
-                        allocator_id: 0,
-                        node_number: v as u32,
-                    }),
-                }),
-                _ => {
-                    let s = v.into_string()?;
-                    init_from_string(format!("ipn:{s}"))
-                }
-            },
-            _ => return Err(Error::UnsupportedScheme(k)),
-        }?;
-
-        match (&admin_endpoints.dtn, n.dtn) {
-            (None, Some(dtn_node_id)) => admin_endpoints.dtn = Some(dtn_node_id),
-            (Some(dtn_node_id1), Some(dtn_node_id2)) => {
-                if *dtn_node_id1 == dtn_node_id2 {
-                    info!("Duplicate \"administrative_endpoint\" in configuration: {dtn_node_id1}")
-                } else {
-                    return Err(Error::MultipleDtn(dtn_node_id2));
-                }
-            }
-            _ => {}
-        }
-        match (&admin_endpoints.ipn, n.ipn) {
-            (None, Some(ipn_node_id)) => admin_endpoints.ipn = Some(ipn_node_id),
-            (Some(ipn_node_id1), Some(ipn_node_id2)) => {
-                if *ipn_node_id1 == ipn_node_id2 {
-                    info!("Duplicate \"administrative_endpoint\" in configuration: {ipn_node_id1}")
-                } else {
-                    return Err(Error::MultipleIpn(ipn_node_id2));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Check we have at least one endpoint!
-    if admin_endpoints.ipn.is_none() && admin_endpoints.dtn.is_none() {
-        Err(Error::NoEndpoints)
-    } else {
-        Ok(admin_endpoints)
     }
 }
 
@@ -424,7 +334,7 @@ mod tests {
 
         dtn_test("dtn://node-name/", "node-name");
 
-        /*#administrative_endpoint = { "ipn": N[.0], "dtn": "node-name" }
+        /*
         #administrative_endpoint = [ "ipn:[A.]N.0", "dtn://node-name/"]*/
     }
 }
