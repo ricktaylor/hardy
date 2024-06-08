@@ -48,6 +48,15 @@ impl DtnPatternItem {
     }
 }
 
+impl std::fmt::Display for DtnPatternItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DtnPatternItem::None => write!(f, "none"),
+            DtnPatternItem::DtnSsp(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DtnSsp {
     pub authority: DtnAuthPattern,
@@ -149,6 +158,16 @@ impl DtnSsp {
     }
 }
 
+impl std::fmt::Display for DtnSsp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "//{}", self.authority)?;
+        for s in &self.singles {
+            write!(f, "/{s}")?;
+        }
+        write!(f, "/{}", self.last)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DtnAuthPattern {
     PatternMatch(PatternMatch),
@@ -179,6 +198,15 @@ impl DtnAuthPattern {
             Ok(DtnAuthPattern::MultiWildcard)
         } else {
             Ok(DtnAuthPattern::PatternMatch(PatternMatch::parse(s, span)?))
+        }
+    }
+}
+
+impl std::fmt::Display for DtnAuthPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DtnAuthPattern::PatternMatch(p) => write!(f, "{p}"),
+            DtnAuthPattern::MultiWildcard => write!(f, "**"),
         }
     }
 }
@@ -215,6 +243,15 @@ impl DtnSinglePattern {
             Ok(DtnSinglePattern::PatternMatch(PatternMatch::parse(
                 s, span,
             )?))
+        }
+    }
+}
+
+impl std::fmt::Display for DtnSinglePattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DtnSinglePattern::PatternMatch(p) => write!(f, "{p}"),
+            DtnSinglePattern::Wildcard => write!(f, "*"),
         }
     }
 }
@@ -276,6 +313,15 @@ impl PatternMatch {
     }
 }
 
+impl std::fmt::Display for PatternMatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatternMatch::Exact(s) => write!(f, "{s}"),
+            PatternMatch::Regex(r) => write!(f, "[{}]", r.as_str()),
+        }
+    }
+}
+
 impl std::cmp::PartialEq for PatternMatch {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -333,6 +379,15 @@ impl DtnLastPattern {
             Ok(DtnLastPattern::MultiWildcard)
         } else {
             Ok(DtnLastPattern::Single(DtnSinglePattern::parse(s, span)?))
+        }
+    }
+}
+
+impl std::fmt::Display for DtnLastPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DtnLastPattern::Single(p) => write!(f, "{p}"),
+            DtnLastPattern::MultiWildcard => write!(f, "**"),
         }
     }
 }

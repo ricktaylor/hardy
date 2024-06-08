@@ -86,6 +86,16 @@ impl IpnPatternItem {
     }
 }
 
+impl std::fmt::Display for IpnPatternItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}.{}.{}",
+            self.allocator_id, self.node_number, self.service_number
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IpnPattern {
     Range(Vec<IpnInterval>),
@@ -221,10 +231,37 @@ impl IpnPattern {
     }
 }
 
+impl std::fmt::Display for IpnPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpnPattern::Range(r) => {
+                write!(f, "[")?;
+                for (i, r) in r.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "{r}")?;
+                }
+                write!(f, "]")
+            }
+            IpnPattern::Wildcard => write!(f, "*"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IpnInterval {
     Number(u32),
     Range(RangeInclusive<u32>),
+}
+
+impl std::fmt::Display for IpnInterval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpnInterval::Number(n) => write!(f, "{n}"),
+            IpnInterval::Range(r) => write!(f, "{}-{}", r.start(), r.end()),
+        }
+    }
 }
 
 impl std::cmp::PartialOrd for IpnInterval {

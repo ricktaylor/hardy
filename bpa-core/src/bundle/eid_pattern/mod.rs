@@ -124,6 +124,26 @@ impl From<Eid> for EidPattern {
     }
 }
 
+impl std::fmt::Display for EidPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EidPattern::Any => write!(f, "*:**"),
+            EidPattern::Set(items) => {
+                let mut first = true;
+                for i in items {
+                    if first {
+                        first = false;
+                    } else {
+                        write!(f, "|")?;
+                    }
+                    write!(f, "{i}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EidPatternItem {
     IpnPatternItem(IpnPatternItem),
@@ -230,6 +250,17 @@ impl EidPatternItem {
                     span.subset(s1.chars().count()),
                 )),
             },
+        }
+    }
+}
+
+impl std::fmt::Display for EidPatternItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EidPatternItem::IpnPatternItem(i) => write!(f, "ipn:{i}"),
+            EidPatternItem::DtnPatternItem(i) => write!(f, "dtn:{i}"),
+            EidPatternItem::AnyNumericScheme(v) => write!(f, "{v}:**"),
+            EidPatternItem::AnyTextScheme(v) => write!(f, "{v}:**"),
         }
     }
 }
