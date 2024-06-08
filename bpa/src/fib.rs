@@ -65,7 +65,7 @@ impl Fib {
             .then(Self::default)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn add(
         &self,
         id: String,
@@ -73,6 +73,8 @@ impl Fib {
         priority: u32,
         action: Action,
     ) -> Result<(), Error> {
+        info!("Add route {{{id}:{pattern} => {action} priority {priority}}}");
+
         let mut entries = self.entries.write().await;
         let entry = TableEntry { priority, action };
         if let Some(mut prev) = entries.insert(pattern, id.clone(), vec![entry.clone()]) {
@@ -85,13 +87,11 @@ impl Fib {
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    pub async fn remove(
-        &self,
-        id: String,
-        pattern: &bundle::EidPattern,
-    ) -> Option<Vec<TableEntry>> {
-        self.entries.write().await.remove(pattern, &id)
+    #[instrument(skip_all)]
+    pub async fn remove(&self, id: &str, pattern: &bundle::EidPattern) -> Option<Vec<TableEntry>> {
+        info!("Remove route {id}:{pattern}");
+
+        self.entries.write().await.remove(pattern, id)
     }
 
     #[instrument(skip(self))]
