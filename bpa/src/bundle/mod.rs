@@ -13,7 +13,7 @@ pub use admin_endpoints::*;
 pub use builder::*;
 pub use dtn_time::{get_bundle_creation, get_bundle_expiry, has_bundle_expired};
 pub use editor::*;
-pub use hardy_bpa_core::bundle::*;
+pub use hardy_bpv7::prelude::*;
 pub use parse::parse;
 pub use status_report::{
     AdministrativeRecord, BundleStatusReport, StatusAssertion, StatusReportError,

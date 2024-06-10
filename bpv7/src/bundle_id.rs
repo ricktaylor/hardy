@@ -4,8 +4,8 @@ use thiserror::Error;
 
 #[derive(Default, Debug, Clone)]
 pub struct BundleId {
-    pub source: Eid,
-    pub timestamp: CreationTimestamp,
+    pub source: prelude::Eid,
+    pub timestamp: prelude::CreationTimestamp,
     pub fragment_info: Option<FragmentInfo>,
 }
 

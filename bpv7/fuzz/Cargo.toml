@@ -1,5 +1,5 @@
 [package]
-name = "hardy-bpa-core-fuzz"
+name = "hardy-bpv7-fuzz"
 version = "0.0.0"
 publish = false
 edition.workspace = true
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-bpa-core = { path = ".." }
+hardy-bpv7 = { path = ".." }
 hardy-cbor = { path = "../../cbor" }
 
 [[bin]]

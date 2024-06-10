@@ -1,4 +1,3 @@
-pub mod bundle;
 pub mod storage;
 
 // Re-export

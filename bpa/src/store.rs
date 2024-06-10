@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa_core::storage;
+use hardy_bpa_api::storage;
 use std::sync::Arc;
 use utils::settings;
 

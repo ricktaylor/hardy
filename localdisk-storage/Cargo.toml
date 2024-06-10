@@ -13,7 +13,7 @@ mmap = ["dep:memmap2"]
 
 [dependencies]
 trace-err = { path = "../trace-err" }
-hardy-bpa-core = { path = "../bpa-core" }
+hardy-bpa-api = { path = "../bpa-api" }
 tokio = { version = "1.38.0", features = ["rt-multi-thread", "fs"] }
 serde = { version = "1.0.203", features = ["derive"] }
 rand = "0.8.5"

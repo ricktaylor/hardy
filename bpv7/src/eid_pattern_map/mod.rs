@@ -1,5 +1,6 @@
 use super::*;
 use eid_pattern::*;
+use prelude::*;
 use std::collections::HashMap;
 
 mod dtn_pattern_map;

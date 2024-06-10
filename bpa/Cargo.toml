@@ -16,7 +16,8 @@ packaged-installation = []
 
 [dependencies]
 trace-err = { path = "../trace-err" }
-hardy-bpa-core = { path = "../bpa-core" }
+hardy-bpa-api = { path = "../bpa-api" }
+hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
 hardy-proto = { path = "../proto" }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }

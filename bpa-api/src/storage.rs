@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::prelude as bpv7;
 use sha2::Digest;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -8,28 +9,27 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub trait MetadataStorage: Send + Sync {
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool>,
+        f: &mut dyn FnMut(bpv7::Metadata, bpv7::Bundle) -> Result<bool>,
     ) -> Result<()>;
 
     fn restart(
         &self,
-        f: &mut dyn FnMut(bundle::Metadata, bundle::Bundle) -> Result<bool>,
+        f: &mut dyn FnMut(bpv7::Metadata, bpv7::Bundle) -> Result<bool>,
     ) -> Result<()>;
 
     async fn load(
         &self,
-        bundle_id: &bundle::BundleId,
-    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>>;
+        bundle_id: &bpv7::BundleId,
+    ) -> Result<Option<(bpv7::Metadata, bpv7::Bundle)>>;
 
-    async fn store(&self, metadata: &bundle::Metadata, bundle: &bundle::Bundle) -> Result<bool>;
+    async fn store(&self, metadata: &bpv7::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
 
-    async fn check_bundle_status(&self, storage_name: &str)
-        -> Result<Option<bundle::BundleStatus>>;
+    async fn check_bundle_status(&self, storage_name: &str) -> Result<Option<bpv7::BundleStatus>>;
 
     async fn set_bundle_status(
         &self,
         storage_name: &str,
-        status: &bundle::BundleStatus,
+        status: &bpv7::BundleStatus,
     ) -> Result<()>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
@@ -43,12 +43,12 @@ pub trait MetadataStorage: Send + Sync {
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>>;
+    ) -> Result<Vec<(bpv7::Metadata, bpv7::Bundle, time::OffsetDateTime)>>;
 
     async fn poll_for_collection(
         &self,
-        destination: bundle::Eid,
-    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle)>>;
+        destination: bpv7::Eid,
+    ) -> Result<Vec<(bpv7::Metadata, bpv7::Bundle)>>;
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;

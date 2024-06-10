@@ -565,7 +565,8 @@ dependencies = [
  "crc",
  "directories",
  "getopts",
- "hardy-bpa-core",
+ "hardy-bpa-api",
+ "hardy-bpv7",
  "hardy-cbor",
  "hardy-localdisk-storage",
  "hardy-proto",
@@ -588,7 +589,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-bpa-core"
+name = "hardy-bpa-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hardy-bpv7",
+ "sha2",
+ "time",
+]
+
+[[package]]
+name = "hardy-bpv7"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -605,10 +616,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-bpa-core-fuzz"
+name = "hardy-bpv7-fuzz"
 version = "0.0.0"
 dependencies = [
- "hardy-bpa-core",
+ "hardy-bpv7",
  "hardy-cbor",
  "libfuzzer-sys",
 ]
@@ -639,7 +650,7 @@ dependencies = [
  "cfg-if",
  "config",
  "directories",
- "hardy-bpa-core",
+ "hardy-bpa-api",
  "libc",
  "memmap2",
  "rand",
@@ -671,7 +682,8 @@ dependencies = [
  "cfg-if",
  "config",
  "directories",
- "hardy-bpa-core",
+ "hardy-bpa-api",
+ "hardy-bpv7",
  "hardy-cbor",
  "regex",
  "rusqlite",

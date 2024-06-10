@@ -9,7 +9,8 @@ crate-type = ["rlib"]
 
 [dependencies]
 trace-err = { path = "../trace-err" }
-hardy-bpa-core = { path = "../bpa-core" }
+hardy-bpa-api = { path = "../bpa-api" }
+hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.31.0", features = ["bundled", "time"] }
 tokio = { version = "1.38.0", features = ["rt-multi-thread"] }

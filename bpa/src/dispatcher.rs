@@ -927,7 +927,7 @@ impl Dispatcher {
         &self,
         metadata: &bundle::Metadata,
         bundle: &bundle::Bundle,
-    ) -> Result<Option<hardy_bpa_core::storage::DataRef>, Error> {
+    ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
         // Try to load the data, but treat errors as 'Storage Depleted'
         let data = self.store.load_data(&metadata.storage_name).await?;
         if data.is_none() {
