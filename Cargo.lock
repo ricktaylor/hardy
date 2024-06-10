@@ -600,14 +600,11 @@ dependencies = [
 name = "hardy-bpv7"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
- "config",
  "crc",
  "hardy-cbor",
  "hex-literal",
  "regex",
- "sha2",
  "thiserror",
  "time",
  "tracing",
