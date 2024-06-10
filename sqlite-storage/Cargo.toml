@@ -25,6 +25,6 @@ cfg-if = "1.0.0"
 
 [build-dependencies]
 built = "0.7.3"
-regex = "1.10.4"
+regex = "1.10.5"
 sha1 = "0.10.6"
 base64 = "0.22.1"
