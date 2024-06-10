@@ -13,10 +13,10 @@ pub struct Endpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
-    Drop(Option<bundle::StatusReportReasonCode>), // Drop the bundle
-    Forward(Endpoint),                            // Forward to CLA by Handle
-    Via(bundle::Eid),                             // Recursive lookup
-    Wait(time::OffsetDateTime),                   // Wait for later availability
+    Drop(Option<bpv7::StatusReportReasonCode>), // Drop the bundle
+    Forward(Endpoint),                          // Forward to CLA by Handle
+    Via(bpv7::Eid),                             // Recursive lookup
+    Wait(time::OffsetDateTime),                 // Wait for later availability
 }
 
 impl std::fmt::Display for Action {
@@ -41,7 +41,7 @@ pub struct ForwardAction {
     pub wait: Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
 }
 
-type ForwardResult = Result<ForwardAction, Option<bundle::StatusReportReasonCode>>;
+type ForwardResult = Result<ForwardAction, Option<bpv7::StatusReportReasonCode>>;
 
 type TableKey = String;
 
@@ -51,7 +51,7 @@ pub struct TableEntry {
     pub action: Action,
 }
 
-type Table = bundle::EidPatternMap<TableKey, Vec<TableEntry>>;
+type Table = bpv7::EidPatternMap<TableKey, Vec<TableEntry>>;
 
 #[derive(Default, Clone)]
 pub struct Fib {
@@ -69,7 +69,7 @@ impl Fib {
     pub async fn add(
         &self,
         id: String,
-        pattern: &bundle::EidPattern,
+        pattern: &bpv7::EidPattern,
         priority: u32,
         action: Action,
     ) -> Result<(), Error> {
@@ -88,7 +88,7 @@ impl Fib {
     }
 
     #[instrument(skip_all)]
-    pub async fn remove(&self, id: &str, pattern: &bundle::EidPattern) -> Option<Vec<TableEntry>> {
+    pub async fn remove(&self, id: &str, pattern: &bpv7::EidPattern) -> Option<Vec<TableEntry>> {
         self.entries.write().await.remove(pattern, id).inspect(|v| {
             for e in v {
                 info!(
@@ -100,7 +100,7 @@ impl Fib {
     }
 
     #[instrument(skip(self))]
-    pub async fn find(&self, to: &bundle::Eid) -> ForwardResult {
+    pub async fn find(&self, to: &bpv7::Eid) -> ForwardResult {
         let mut action = {
             // Scope the lock
             let entries = self.entries.read().await;
@@ -116,11 +116,7 @@ impl Fib {
 }
 
 #[instrument(skip(table, trail))]
-fn find_recurse(
-    table: &Table,
-    to: &bundle::Eid,
-    trail: &mut HashSet<bundle::Eid>,
-) -> ForwardResult {
+fn find_recurse(table: &Table, to: &bpv7::Eid, trail: &mut HashSet<bpv7::Eid>) -> ForwardResult {
     // TODO: We currently pick the first Drop action we find, and do not tie-break on reason...
 
     let mut new_action = ForwardAction {

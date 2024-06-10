@@ -22,7 +22,7 @@ pub enum StatusKind {
 }
 
 struct Application {
-    eid: bundle::Eid,
+    eid: bpv7::Eid,
     token: String,
     ident: String,
     endpoint: Option<Channel>,
@@ -30,18 +30,21 @@ struct Application {
 
 #[derive(Default)]
 struct Indexes {
-    applications_by_eid: HashMap<bundle::Eid, Arc<Application>>,
+    applications_by_eid: HashMap<bpv7::Eid, Arc<Application>>,
     applications_by_token: HashMap<String, Arc<Application>>,
 }
 
 #[derive(Clone)]
 pub struct AppRegistry {
-    admin_endpoints: bundle::AdminEndpoints,
+    admin_endpoints: utils::admin_endpoints::AdminEndpoints,
     applications: Arc<RwLock<Indexes>>,
 }
 
 impl AppRegistry {
-    pub fn new(_config: &config::Config, admin_endpoints: bundle::AdminEndpoints) -> Self {
+    pub fn new(
+        _config: &config::Config,
+        admin_endpoints: utils::admin_endpoints::AdminEndpoints,
+    ) -> Self {
         Self {
             admin_endpoints,
             applications: Default::default(),
@@ -178,7 +181,7 @@ impl AppRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn find_by_token(&self, token: &str) -> Result<bundle::Eid, tonic::Status> {
+    pub fn find_by_token(&self, token: &str) -> Result<bpv7::Eid, tonic::Status> {
         self.applications
             .read()
             .trace_expect("Failed to read-lock applications mutex")
@@ -189,7 +192,7 @@ impl AppRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn find_by_eid(&self, eid: &bundle::Eid) -> Option<Endpoint> {
+    pub fn find_by_eid(&self, eid: &bpv7::Eid) -> Option<Endpoint> {
         self.applications
             .read()
             .trace_expect("Failed to read-lock applications mutex")
@@ -204,7 +207,7 @@ impl AppRegistry {
 
 impl Endpoint {
     #[instrument(skip(self))]
-    pub async fn collection_notify(&self, bundle_id: &bundle::BundleId) {
+    pub async fn collection_notify(&self, bundle_id: &bpv7::BundleId) {
         if let Some(endpoint) = &self.inner {
             let _ = endpoint
                 .lock()
@@ -221,9 +224,9 @@ impl Endpoint {
     #[instrument(skip(self))]
     pub async fn status_notify(
         &self,
-        bundle_id: &bundle::BundleId,
+        bundle_id: &bpv7::BundleId,
         kind: StatusKind,
-        reason: bundle::StatusReportReasonCode,
+        reason: bpv7::StatusReportReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
         if let Some(endpoint) = &self.inner {

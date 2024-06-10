@@ -113,10 +113,10 @@ impl Store {
         ingress: ingress::Ingress,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        self.metadata_storage.restart(&mut |metadata, bundle| {
+        self.metadata_storage.restart(&mut |bundle| {
             tokio::runtime::Handle::current().block_on(async {
                 // Just shove bundles into the Ingress
-                ingress.recheck_bundle(metadata, bundle).await
+                ingress.recheck_bundle(bundle).await
             })?;
 
             // Just dumb poll the cancel token now - try to avoid mismatched state again
@@ -130,28 +130,23 @@ impl Store {
         dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        self.metadata_storage
-            .check_orphans(&mut |metadata, bundle| {
-                tokio::runtime::Handle::current().block_on(async {
-                    // The data associated with `bundle` has gone!
-                    dispatcher
-                        .report_bundle_deletion(
-                            &metadata,
-                            &bundle,
-                            bundle::StatusReportReasonCode::DepletedStorage,
-                        )
-                        .await?;
+        self.metadata_storage.check_orphans(&mut |bundle| {
+            tokio::runtime::Handle::current().block_on(async {
+                // The data associated with `bundle` has gone!
+                dispatcher
+                    .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+                    .await?;
 
-                    // Delete it
-                    self.metadata_storage
-                        .remove(&metadata.storage_name)
-                        .await
-                        .map(|_| ())
-                })?;
+                // Delete it
+                self.metadata_storage
+                    .remove(&bundle.metadata.storage_name)
+                    .await
+                    .map(|_| ())
+            })?;
 
-                // Just dumb poll the cancel token now - try to avoid mismatched state again
-                Ok(!cancel_token.is_cancelled())
-            })
+            // Just dumb poll the cancel token now - try to avoid mismatched state again
+            Ok(!cancel_token.is_cancelled())
+        })
     }
 
     #[instrument(skip_all)]
@@ -205,8 +200,8 @@ impl Store {
 
     pub async fn store_metadata(
         &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
+        metadata: &metadata::Metadata,
+        bundle: &bpv7::Bundle,
     ) -> Result<bool, Error> {
         // Write to metadata store
         self.metadata_storage.store(metadata, bundle).await
@@ -214,19 +209,19 @@ impl Store {
 
     pub async fn load(
         &self,
-        bundle_id: &bundle::BundleId,
-    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, Error> {
+        bundle_id: &bpv7::BundleId,
+    ) -> Result<Option<metadata::Bundle>, Error> {
         self.metadata_storage.load(bundle_id).await
     }
 
     #[instrument(skip(self, data))]
     pub async fn store(
         &self,
-        bundle: &bundle::Bundle,
+        bundle: &bpv7::Bundle,
         data: Vec<u8>,
-        status: bundle::BundleStatus,
+        status: metadata::BundleStatus,
         received_at: Option<time::OffsetDateTime>,
-    ) -> Result<Option<bundle::Metadata>, Error> {
+    ) -> Result<Option<metadata::Metadata>, Error> {
         // Calculate hash
         let hash = self.hash(&data);
 
@@ -234,7 +229,7 @@ impl Store {
         let storage_name = self.bundle_storage.store(data).await?;
 
         // Compose metadata
-        let metadata = bundle::Metadata {
+        let metadata = metadata::Metadata {
             status,
             storage_name,
             hash: hash.to_vec(),
@@ -261,25 +256,25 @@ impl Store {
     pub async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> Result<Vec<(bundle::Metadata, bundle::Bundle, time::OffsetDateTime)>, Error> {
+    ) -> Result<Vec<(metadata::Bundle, time::OffsetDateTime)>, Error> {
         self.metadata_storage.get_waiting_bundles(limit).await
     }
 
     pub async fn poll_for_collection(
         &self,
-        destination: bundle::Eid,
+        destination: bpv7::Eid,
     ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
         self.metadata_storage
             .poll_for_collection(destination)
             .await
             .map(|v| {
                 v.into_iter()
-                    .filter_map(|(metadata, bundle)| {
+                    .filter_map(|bundle| {
                         // Double check that we are returning something valid
-                        if let bundle::BundleStatus::CollectionPending = &metadata.status {
-                            let expiry = bundle::get_bundle_expiry(&metadata, &bundle);
+                        if let metadata::BundleStatus::CollectionPending = &bundle.metadata.status {
+                            let expiry = bundle.expiry();
                             if expiry > time::OffsetDateTime::now_utc() {
-                                return Some((bundle.id.to_key(), expiry));
+                                return Some((bundle.bundle.id.to_key(), expiry));
                             }
                         }
                         None
@@ -291,9 +286,9 @@ impl Store {
     #[instrument(skip(self, data))]
     pub async fn replace_data(
         &self,
-        metadata: &bundle::Metadata,
+        metadata: &metadata::Metadata,
         data: Vec<u8>,
-    ) -> Result<bundle::Metadata, Error> {
+    ) -> Result<metadata::Metadata, Error> {
         // Calculate hash
         let hash = self.hash(&data);
 
@@ -312,7 +307,7 @@ impl Store {
             .commit_replace(&metadata.storage_name, &hash)
             .await?;
 
-        Ok(bundle::Metadata {
+        Ok(metadata::Metadata {
             status: metadata.status.clone(),
             storage_name: metadata.storage_name.clone(),
             hash: hash.to_vec(),
@@ -324,7 +319,7 @@ impl Store {
     pub async fn check_status(
         &self,
         storage_name: &str,
-    ) -> Result<Option<bundle::BundleStatus>, Error> {
+    ) -> Result<Option<metadata::BundleStatus>, Error> {
         self.metadata_storage
             .check_bundle_status(storage_name)
             .await
@@ -333,7 +328,7 @@ impl Store {
     pub async fn set_status(
         &self,
         storage_name: &str,
-        status: &bundle::BundleStatus,
+        status: &metadata::BundleStatus,
     ) -> Result<(), Error> {
         self.metadata_storage
             .set_bundle_status(storage_name, status)
@@ -355,7 +350,7 @@ impl Store {
 
         // But leave a tombstone in the metadata, so we can ignore duplicates
         self.metadata_storage
-            .set_bundle_status(storage_name, &bundle::BundleStatus::Tombstone)
+            .set_bundle_status(storage_name, &metadata::BundleStatus::Tombstone)
             .await?;
         Ok(())
     }

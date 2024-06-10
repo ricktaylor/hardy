@@ -1,3 +1,4 @@
+pub mod metadata;
 pub mod storage;
 
 // Re-export

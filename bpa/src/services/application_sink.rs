@@ -52,10 +52,10 @@ impl ApplicationSink for Service {
             source: self.app_registry.find_by_token(&request.token)?,
             destination: match request
                 .destination
-                .parse::<bundle::Eid>()
+                .parse::<bpv7::Eid>()
                 .map_err(|e| Status::from_error(e.into()))?
             {
-                bundle::Eid::Null => {
+                bpv7::Eid::Null => {
                     return Err(Status::invalid_argument("Cannot send to Null endpoint"))
                 }
                 eid => eid,
@@ -66,7 +66,7 @@ impl ApplicationSink for Service {
         };
 
         if let Some(flags) = request.flags {
-            let mut bundle_flags = bundle::BundleFlags::default();
+            let mut bundle_flags = bpv7::BundleFlags::default();
             if flags & (send_request::SendFlags::DoNotFragment as u32) != 0 {
                 bundle_flags.do_not_fragment = true;
             }

@@ -38,7 +38,7 @@ pub enum Eid {
     },
 }
 
-impl cbor::encode::ToCbor for &Eid {
+impl cbor::encode::ToCbor for Eid {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| match self {
             Eid::Null => {
@@ -49,7 +49,7 @@ impl cbor::encode::ToCbor for &Eid {
                 a.emit(1);
                 a.emit(format!(
                     "//{}/{}",
-                    urlencoding::encode(node_name),
+                    urlencoding::encode(&node_name),
                     demux
                         .iter()
                         .map(|s| urlencoding::encode(s))
@@ -64,8 +64,8 @@ impl cbor::encode::ToCbor for &Eid {
             } => {
                 a.emit(2);
                 a.emit_array(Some(2), |a| {
-                    a.emit((*allocator_id as u64) << 32 | *node_number as u64);
-                    a.emit(*service_number);
+                    a.emit((allocator_id as u64) << 32 | node_number as u64);
+                    a.emit(service_number);
                 })
             }
             Eid::Ipn3 {
@@ -75,8 +75,8 @@ impl cbor::encode::ToCbor for &Eid {
             } => {
                 a.emit(2);
                 a.emit_array(Some(2), |a| {
-                    a.emit(*node_number);
-                    a.emit(*service_number)
+                    a.emit(node_number);
+                    a.emit(service_number)
                 })
             }
             Eid::Ipn3 {
@@ -86,21 +86,21 @@ impl cbor::encode::ToCbor for &Eid {
             } => {
                 a.emit(2);
                 a.emit_array(Some(3), |a| {
-                    a.emit(*allocator_id);
-                    a.emit(*node_number);
-                    a.emit(*service_number)
+                    a.emit(allocator_id);
+                    a.emit(node_number);
+                    a.emit(service_number)
                 })
             }
             Eid::LocalNode { service_number } => {
                 a.emit(2);
                 a.emit_array(Some(2), |a| {
-                    a.emit((2u64 ^ 32) - 1);
-                    a.emit(*service_number)
+                    a.emit(u32::MAX);
+                    a.emit(service_number)
                 })
             }
             Eid::Unknown { scheme, data } => {
-                a.emit(*scheme);
-                a.emit_raw(data)
+                a.emit(scheme);
+                a.emit_raw(&data)
             }
         })
     }

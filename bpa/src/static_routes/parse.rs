@@ -19,10 +19,10 @@ enum ParseError {
     MissingParameter(&'static str),
 
     #[error(transparent)]
-    Eid(#[from] bundle::EidError),
+    Eid(#[from] bpv7::EidError),
 
     #[error(transparent)]
-    Pattern(#[from] bundle::EidPatternError),
+    Pattern(#[from] bpv7::EidPatternError),
 
     #[error(transparent)]
     Time(#[from] time::error::Parse),
@@ -31,11 +31,11 @@ enum ParseError {
     Integer(#[from] std::num::ParseIntError),
 
     #[error(transparent)]
-    StatusReport(#[from] bundle::StatusReportError),
+    StatusReport(#[from] bpv7::StatusReportError),
 }
 
 #[derive(Debug)]
-struct RouteLine(Option<(bundle::EidPattern, StaticRoute)>);
+struct RouteLine(Option<(bpv7::EidPattern, StaticRoute)>);
 
 enum ArgOption {
     //None,
@@ -112,7 +112,7 @@ impl std::str::FromStr for RouteLine {
         let pattern = match parts.next() {
             None => return Ok(Self(None)),
             Some(s) if s.starts_with('#') => return Ok(Self(None)),
-            Some(s) => s.parse::<bundle::EidPattern>()?,
+            Some(s) => s.parse::<bpv7::EidPattern>()?,
         };
 
         let parts = parse_args(
@@ -172,7 +172,7 @@ pub async fn load_routes(
     routes_file: &PathBuf,
     ignore_errors: bool,
     watching: bool,
-) -> Result<Vec<(bundle::EidPattern, StaticRoute)>, Error> {
+) -> Result<Vec<(bpv7::EidPattern, StaticRoute)>, Error> {
     let file = match tokio::fs::File::open(routes_file).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
             trace!(

@@ -25,7 +25,7 @@ struct StaticRoute {
 pub struct StaticRoutes {
     config: config::Config,
     fib: fib::Fib,
-    routes: HashMap<bundle::EidPattern, StaticRoute>,
+    routes: HashMap<bpv7::EidPattern, StaticRoute>,
 }
 
 impl StaticRoutes {

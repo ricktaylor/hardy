@@ -77,7 +77,7 @@ impl<'a> Editor<'a> {
         self
     }
 
-    pub fn build(mut self, source_data: &[u8]) -> Result<(Bundle, Vec<u8>), Error> {
+    pub fn build(mut self, source_data: &[u8]) -> Result<(Bundle, Vec<u8>), BundleError> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
         let mut blocks = HashMap::new();
@@ -126,7 +126,7 @@ impl<'a> Editor<'a> {
         };
 
         // Update values from supported extension blocks
-        parse::check_blocks(&mut bundle, &data)?;
+        bundle.parse_extension_blocks(&data)?;
 
         Ok((bundle, data))
     }

@@ -119,14 +119,14 @@ impl TryFrom<u64> for StatusReportReasonCode {
 }
 
 #[derive(Debug)]
-pub struct StatusAssertion(pub Option<time::OffsetDateTime>);
+pub struct StatusAssertion(pub Option<DtnTime>);
 
 impl cbor::encode::ToCbor for StatusAssertion {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         if let Some(timestamp) = self.0 {
             encoder.emit_array(Some(2), |a| {
                 a.emit(true);
-                a.emit(dtn_time::to_dtn_time(&timestamp))
+                a.emit(timestamp);
             })
         } else {
             encoder.emit_array(Some(1), |a| a.emit(true))
@@ -175,9 +175,9 @@ impl cbor::encode::ToCbor for BundleStatusReport {
             // Reason code
             a.emit::<u64>(self.reason.into());
             // Source EID
-            a.emit(&self.bundle_id.source);
+            a.emit(self.bundle_id.source);
             // Creation Timestamp
-            a.emit(&self.bundle_id.timestamp);
+            a.emit(self.bundle_id.timestamp);
 
             if let Some(fragment_info) = &self.bundle_id.fragment_info {
                 // Add fragment info
@@ -201,30 +201,22 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                 // This is a horrible format!
                 if a.parse::<bool>().map_field_err("Received Status")? {
                     report.received = Some(StatusAssertion(
-                        a.try_parse::<u64>()
-                            .map(|milliseconds| milliseconds.map(dtn_time::from_dtn_time))
-                            .map_field_err("Received Timestamp")?,
+                        a.parse().map_field_err("Received Timestamp")?,
                     ))
                 }
                 if a.parse::<bool>().map_field_err("Forwarded Status")? {
                     report.forwarded = Some(StatusAssertion(
-                        a.try_parse::<u64>()
-                            .map(|milliseconds| milliseconds.map(dtn_time::from_dtn_time))
-                            .map_field_err("Forwarded Timestamp")?,
+                        a.parse().map_field_err("Forwarded Timestamp")?,
                     ))
                 }
                 if a.parse::<bool>().map_field_err("Delivered Status")? {
                     report.delivered = Some(StatusAssertion(
-                        a.try_parse::<u64>()
-                            .map(|milliseconds| milliseconds.map(dtn_time::from_dtn_time))
-                            .map_field_err("Delivered Timestamp")?,
+                        a.parse().map_field_err("Delivered Timestamp")?,
                     ))
                 }
                 if a.parse::<bool>().map_field_err("Deleted Status")? {
                     report.deleted = Some(StatusAssertion(
-                        a.try_parse::<u64>()
-                            .map(|milliseconds| milliseconds.map(dtn_time::from_dtn_time))
-                            .map_field_err("Deleted Timestamp")?,
+                        a.parse().map_field_err("Deleted Timestamp")?,
                     ))
                 }
                 Ok::<(), Self::Error>(())

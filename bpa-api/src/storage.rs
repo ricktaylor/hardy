@@ -7,29 +7,23 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
-    fn check_orphans(
+    fn check_orphans(&self, f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>) -> Result<()>;
+
+    fn restart(&self, f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>) -> Result<()>;
+
+    async fn load(&self, bundle_id: &bpv7::BundleId) -> Result<Option<metadata::Bundle>>;
+
+    async fn store(&self, metadata: &metadata::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
+
+    async fn check_bundle_status(
         &self,
-        f: &mut dyn FnMut(bpv7::Metadata, bpv7::Bundle) -> Result<bool>,
-    ) -> Result<()>;
-
-    fn restart(
-        &self,
-        f: &mut dyn FnMut(bpv7::Metadata, bpv7::Bundle) -> Result<bool>,
-    ) -> Result<()>;
-
-    async fn load(
-        &self,
-        bundle_id: &bpv7::BundleId,
-    ) -> Result<Option<(bpv7::Metadata, bpv7::Bundle)>>;
-
-    async fn store(&self, metadata: &bpv7::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
-
-    async fn check_bundle_status(&self, storage_name: &str) -> Result<Option<bpv7::BundleStatus>>;
+        storage_name: &str,
+    ) -> Result<Option<metadata::BundleStatus>>;
 
     async fn set_bundle_status(
         &self,
         storage_name: &str,
-        status: &bpv7::BundleStatus,
+        status: &metadata::BundleStatus,
     ) -> Result<()>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
@@ -43,12 +37,9 @@ pub trait MetadataStorage: Send + Sync {
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> Result<Vec<(bpv7::Metadata, bpv7::Bundle, time::OffsetDateTime)>>;
+    ) -> Result<Vec<(metadata::Bundle, time::OffsetDateTime)>>;
 
-    async fn poll_for_collection(
-        &self,
-        destination: bpv7::Eid,
-    ) -> Result<Vec<(bpv7::Metadata, bpv7::Bundle)>>;
+    async fn poll_for_collection(&self, destination: bpv7::Eid) -> Result<Vec<metadata::Bundle>>;
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;

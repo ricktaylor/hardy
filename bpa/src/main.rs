@@ -1,5 +1,4 @@
 mod app_registry;
-mod bundle;
 mod cla_registry;
 mod dispatcher;
 mod fib;
@@ -19,6 +18,8 @@ mod built_info {
 }
 
 // This is the effective prelude
+use hardy_bpa_api::metadata;
+use hardy_bpv7::prelude as bpv7;
 use trace_err::*;
 use tracing::{error, info, instrument, trace, warn};
 
@@ -35,7 +36,7 @@ async fn main() {
     info!("{config_source}");
 
     // Get administrative endpoints
-    let administrative_endpoints = bundle::AdminEndpoints::init(&config);
+    let administrative_endpoints = utils::admin_endpoints::AdminEndpoints::init(&config);
 
     // New store
     let store = store::Store::new(&config, upgrade);

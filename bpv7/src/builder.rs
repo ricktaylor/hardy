@@ -29,8 +29,8 @@ pub struct BlockBuilder {
     template: BlockTemplate,
 }
 
-impl Builder {
-    pub fn new() -> Self {
+impl Default for Builder {
+    fn default() -> Self {
         Self {
             bundle_flags: BundleFlags::default(),
             crc_type: DEFAULT_CRC_TYPE,
@@ -41,6 +41,12 @@ impl Builder {
             payload: BlockTemplate::new(BlockType::Payload, DEFAULT_CRC_TYPE),
             extensions: Vec::new(),
         }
+    }
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Default::default()
     }
 
     pub fn flags(mut self, flags: BundleFlags) -> Self {
@@ -83,7 +89,7 @@ impl Builder {
             .build()
     }
 
-    pub fn build(self) -> Result<(Bundle, Vec<u8>), Error> {
+    pub fn build(self) -> Result<(Bundle, Vec<u8>), BundleError> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
@@ -107,17 +113,13 @@ impl Builder {
         data.push(0xFF);
 
         // Update values from supported extension blocks
-        parse::check_blocks(&mut bundle, &data)?;
+        bundle.parse_extension_blocks(&data)?;
 
         Ok((bundle, data))
     }
 
     fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
-        let timestamp = time::OffsetDateTime::now_utc();
-        let timestamp = CreationTimestamp {
-            creation_time: dtn_time::to_dtn_time(&timestamp),
-            sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
-        };
+        let timestamp = CreationTimestamp::now();
 
         let block_data = crc::emit_crc_value(
             self.crc_type,
@@ -135,11 +137,11 @@ impl Builder {
                     // CRC
                     a.emit::<u64>(self.crc_type.into());
                     // EIDs
-                    a.emit(&self.destination);
-                    a.emit(&self.source);
-                    a.emit(&self.report_to);
+                    a.emit(self.destination.clone());
+                    a.emit(self.source.clone());
+                    a.emit(self.report_to.clone());
                     // Timestamp
-                    a.emit(&timestamp);
+                    a.emit(timestamp);
                     // Lifetime
                     a.emit(self.lifetime);
                 },

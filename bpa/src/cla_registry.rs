@@ -139,7 +139,7 @@ impl ClaRegistry {
 
         let neighbour = request
             .neighbour
-            .parse::<bundle::EidPattern>()
+            .parse::<bpv7::EidPattern>()
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         fib.add(
@@ -173,7 +173,7 @@ impl ClaRegistry {
 
         let neighbour = request
             .neighbour
-            .parse::<bundle::EidPattern>()
+            .parse::<bpv7::EidPattern>()
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         if fib
@@ -192,7 +192,7 @@ impl Endpoint {
     #[instrument(skip(self))]
     pub async fn forward_bundle(
         &self,
-        destination: &bundle::Eid,
+        destination: &bpv7::Eid,
         bundle: Vec<u8>,
     ) -> Result<(Option<u32>, Option<time::OffsetDateTime>), Error> {
         let r = self

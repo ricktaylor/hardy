@@ -1,4 +1,5 @@
 use super::*;
+use bpv7::Eid;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +195,7 @@ enum Error {
     NoEndpoints,
 
     #[error(transparent)]
-    Parser(#[from] bundle::EidError),
+    Parser(#[from] bpv7::EidError),
 
     #[error(transparent)]
     Config(#[from] config::ConfigError),
@@ -209,7 +210,7 @@ fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
 }
 
 fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
-    match s.parse::<bundle::Eid>()? {
+    match s.parse::<bpv7::Eid>()? {
         Eid::Null => Err(Error::NotNone),
         Eid::LocalNode { .. } => Err(Error::NotLocalNode),
         Eid::Ipn2 {

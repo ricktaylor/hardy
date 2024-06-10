@@ -1,11 +1,12 @@
 use super::*;
+use hardy_cbor as cbor;
 use tokio::sync::mpsc::*;
 
 #[derive(Clone)]
 pub struct Ingress {
     store: store::Store,
     receive_channel: Sender<(String, Option<time::OffsetDateTime>)>,
-    restart_channel: Sender<(bundle::Metadata, bundle::Bundle)>,
+    restart_channel: Sender<metadata::Bundle>,
     dispatcher: dispatcher::Dispatcher,
 }
 
@@ -69,14 +70,10 @@ impl Ingress {
             .map_err(|e| e.into())
     }
 
-    pub async fn recheck_bundle(
-        &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
-    ) -> Result<(), Error> {
+    pub async fn recheck_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
         // Put bundle into ingress channel
         self.restart_channel
-            .send((metadata, bundle))
+            .send(bundle)
             .await
             .map_err(|e| e.into())
     }
@@ -85,7 +82,7 @@ impl Ingress {
     async fn pipeline_pump(
         self,
         mut receive_channel: Receiver<(String, Option<time::OffsetDateTime>)>,
-        mut restart_channel: Receiver<(bundle::Metadata, bundle::Bundle)>,
+        mut restart_channel: Receiver<metadata::Bundle>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -105,11 +102,11 @@ impl Ingress {
                 },
                 msg = restart_channel.recv() => match msg {
                     None => break,
-                    Some((metadata,bundle)) => {
+                    Some(bundle) => {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
+                            ingress.process_bundle(bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -132,37 +129,36 @@ impl Ingress {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         // Parse the bundle
-        let (metadata, bundle, valid) = {
-            let Some(data) = self.store.load_data(&storage_name).await? else {
-                // Bundle data was deleted sometime during processing
-                return Ok(());
-            };
+        let Some(data) = self.store.load_data(&storage_name).await? else {
+            // Bundle data was deleted sometime during processing
+            return Ok(());
+        };
 
-            match bundle::parse((*data).as_ref()) {
-                Ok((bundle, valid)) => (
-                    bundle::Metadata {
-                        status: bundle::BundleStatus::IngressPending,
-                        storage_name,
-                        hash: self.store.hash((*data).as_ref()),
-                        received_at,
-                    },
-                    bundle,
-                    valid,
-                ),
-                Err(e) => {
-                    // Parse failed badly, no idea who to report to
-                    trace!("Bundle parsing failed: {e}");
-                    return Ok(());
-                }
+        let (bundle, valid) = match cbor::decode::parse::<bpv7::ValidBundle>((*data).as_ref()) {
+            Ok(bpv7::ValidBundle::Valid(bundle)) => (bundle, true),
+            Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
+            Err(e) => {
+                // Parse failed badly, no idea who to report to
+                trace!("Bundle parsing failed: {e}");
+                return Ok(());
             }
+        };
+
+        let bundle = metadata::Bundle {
+            metadata: metadata::Metadata {
+                status: metadata::BundleStatus::IngressPending,
+                storage_name,
+                hash: self.store.hash((*data).as_ref()),
+                received_at,
+            },
+            bundle,
         };
 
         // Report we have received the bundle
         self.dispatcher
             .report_bundle_reception(
-                &metadata,
                 &bundle,
-                bundle::StatusReportReasonCode::NoAdditionalInformation,
+                bpv7::StatusReportReasonCode::NoAdditionalInformation,
             )
             .await?;
 
@@ -173,55 +169,53 @@ impl Ingress {
          */
 
         // Store the bundle metadata in the store
-        self.store.store_metadata(&metadata, &bundle).await?;
+        self.store
+            .store_metadata(&bundle.metadata, &bundle.bundle)
+            .await?;
 
         if !valid {
             trace!("Bundle is unintelligible");
 
             // Not valid, drop it
             self.dispatcher
-                .report_bundle_deletion(
-                    &metadata,
-                    &bundle,
-                    bundle::StatusReportReasonCode::BlockUnintelligible,
-                )
+                .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::BlockUnintelligible)
                 .await?;
 
             // Drop the bundle
             trace!("Deleting bundle");
-            return self.store.delete(&metadata.storage_name).await;
+            return self.store.delete(&bundle.metadata.storage_name).await;
         }
 
         // Process the bundle further
-        self.process_bundle(metadata, bundle, cancel_token).await
+        self.process_bundle(bundle, cancel_token).await
     }
 
     #[instrument(skip(self))]
     async fn process_bundle(
         &self,
-        mut metadata: bundle::Metadata,
-        mut bundle: bundle::Bundle,
+        mut bundle: metadata::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         /* Always check bundles,  no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
         // Check some basic semantic validity, lifetime first
-        let mut reason = bundle::has_bundle_expired(&metadata, &bundle)
+        let mut reason = bundle
+            .has_expired()
             .then(|| {
                 trace!("Bundle lifetime has expired");
-                bundle::StatusReportReasonCode::LifetimeExpired
+                bpv7::StatusReportReasonCode::LifetimeExpired
             })
             .or_else(|| {
                 // Check hop count exceeded
-                bundle.hop_count.and_then(|hop_info| {
+                bundle.bundle.hop_count.and_then(|hop_info| {
                     (hop_info.count >= hop_info.limit).then(|| {
                         trace!(
                             "Bundle hop-limit {}/{} exceeded",
                             hop_info.count,
                             hop_info.limit
                         );
-                        bundle::StatusReportReasonCode::HopLimitExceeded
+                        bpv7::StatusReportReasonCode::HopLimitExceeded
                     })
                 })
             });
@@ -236,73 +230,58 @@ impl Ingress {
 
         // Check extension blocks - do this last as it can rewrite the bundle
         if reason.is_none() {
-            (reason, metadata, bundle) = self.check_extension_blocks(metadata, bundle).await?;
+            (reason, bundle) = self.check_extension_blocks(bundle).await?;
         }
 
         if let Some(reason) = reason {
             // Not valid, drop it
             self.dispatcher
-                .report_bundle_deletion(&metadata, &bundle, reason)
+                .report_bundle_deletion(&bundle, reason)
                 .await?;
 
             // Drop the bundle
             trace!("Discarding bundle, leaving tombstone");
-            return self.store.remove(&metadata.storage_name).await;
+            return self.store.remove(&bundle.metadata.storage_name).await;
         }
 
-        if let bundle::BundleStatus::IngressPending = &metadata.status {
+        if let metadata::BundleStatus::IngressPending = &bundle.metadata.status {
             // Update the status
-            metadata.status = bundle::BundleStatus::DispatchPending;
+            bundle.metadata.status = metadata::BundleStatus::DispatchPending;
             self.store
-                .set_status(&metadata.storage_name, &metadata.status)
+                .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
                 .await?;
         }
 
         // Just pass it on to the dispatcher to deal with
-        self.dispatcher
-            .process_bundle(metadata, bundle, cancel_token)
-            .await
+        self.dispatcher.process_bundle(bundle, cancel_token).await
     }
 
     async fn check_extension_blocks(
         &self,
-        mut metadata: bundle::Metadata,
-        mut bundle: bundle::Bundle,
-    ) -> Result<
-        (
-            Option<bundle::StatusReportReasonCode>,
-            bundle::Metadata,
-            bundle::Bundle,
-        ),
-        Error,
-    > {
+        mut bundle: metadata::Bundle,
+    ) -> Result<(Option<bpv7::StatusReportReasonCode>, metadata::Bundle), Error> {
         // Check for unsupported block types
         let mut blocks_to_remove = Vec::new();
 
-        for (block_number, block) in &bundle.blocks {
+        for (block_number, block) in &bundle.bundle.blocks {
             match &block.block_type {
-                bundle::BlockType::PreviousNode | bundle::BlockType::BundleAge => {
+                bpv7::BlockType::PreviousNode | bpv7::BlockType::BundleAge => {
                     // Always remove the Previous Node and Bundle Age blocks, as we have the data recorded
                     // And we must replace them before forwarding anyway
                     blocks_to_remove.push(*block_number);
                 }
-                bundle::BlockType::Private(_) => {
+                bpv7::BlockType::Private(_) => {
                     if block.flags.report_on_failure {
                         self.dispatcher
                             .report_bundle_reception(
-                                &metadata,
                                 &bundle,
-                                bundle::StatusReportReasonCode::BlockUnsupported,
+                                bpv7::StatusReportReasonCode::BlockUnsupported,
                             )
                             .await?;
                     }
 
                     if block.flags.delete_bundle_on_failure {
-                        return Ok((
-                            Some(bundle::StatusReportReasonCode::BlockUnsupported),
-                            metadata,
-                            bundle,
-                        ));
+                        return Ok((Some(bpv7::StatusReportReasonCode::BlockUnsupported), bundle));
                     }
 
                     if block.flags.delete_block_on_failure {
@@ -315,29 +294,30 @@ impl Ingress {
 
         // Rewrite bundle if needed
         if !blocks_to_remove.is_empty() {
-            let mut editor = bundle::Editor::new(&bundle);
+            let mut editor = bpv7::Editor::new(&bundle.bundle);
             for block_number in blocks_to_remove {
                 editor = editor.remove_extension_block(block_number);
             }
 
             // Load up the source bundle data
-            let Some(source_data) = self.store.load_data(&metadata.storage_name).await? else {
+            let Some(source_data) = self.store.load_data(&bundle.metadata.storage_name).await?
+            else {
                 // Bundle data was deleted sometime during processing
-                return Ok((
-                    Some(bundle::StatusReportReasonCode::DepletedStorage),
-                    metadata,
-                    bundle,
-                ));
+                return Ok((Some(bpv7::StatusReportReasonCode::DepletedStorage), bundle));
             };
 
             // Edit the bundle
-            let data;
-            (bundle, data) = editor.build((*source_data).as_ref())?;
+            let (new_bundle, data) = editor.build((*source_data).as_ref())?;
 
             // Replace in store
-            metadata = self.store.replace_data(&metadata, data).await?;
+            let metadata = self.store.replace_data(&bundle.metadata, data).await?;
+
+            bundle = metadata::Bundle {
+                metadata,
+                bundle: new_bundle,
+            };
         }
-        Ok((None, metadata, bundle))
+        Ok((None, bundle))
     }
 
     #[instrument(skip(self))]
@@ -346,10 +326,10 @@ impl Ingress {
         handle: u32,
         bundle_id: &str,
     ) -> Result<(), tonic::Status> {
-        let Some((metadata, bundle)) = self
+        let Some(bundle) = self
             .store
             .load(
-                &bundle::BundleId::from_key(bundle_id)
+                &bpv7::BundleId::from_key(bundle_id)
                     .map_err(|e| tonic::Status::from_error(e.into()))?,
             )
             .await
@@ -358,17 +338,17 @@ impl Ingress {
             return Err(tonic::Status::not_found("No such bundle"));
         };
 
-        match &metadata.status {
-            bundle::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
+        match &bundle.metadata.status {
+            metadata::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
                 // Report bundle forwarded
                 self.dispatcher
-                    .report_bundle_forwarded(&metadata, &bundle)
+                    .report_bundle_forwarded(&bundle)
                     .await
                     .map_err(tonic::Status::from_error)?;
 
                 // And tombstone the bundle
                 self.store
-                    .remove(&metadata.storage_name)
+                    .remove(&bundle.metadata.storage_name)
                     .await
                     .map_err(tonic::Status::from_error)
             }

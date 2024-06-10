@@ -4,8 +4,8 @@ use thiserror::Error;
 
 #[derive(Default, Debug, Clone)]
 pub struct BundleId {
-    pub source: prelude::Eid,
-    pub timestamp: prelude::CreationTimestamp,
+    pub source: Eid,
+    pub timestamp: CreationTimestamp,
     pub fragment_info: Option<FragmentInfo>,
 }
 
@@ -76,15 +76,15 @@ impl BundleId {
     pub fn to_key(&self) -> String {
         BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = self.fragment_info {
             cbor::encode::emit_array(Some(4), |array| {
-                array.emit(&self.source);
-                array.emit(&self.timestamp);
+                array.emit(self.source.clone());
+                array.emit(self.timestamp);
                 array.emit(fragment_info.offset);
                 array.emit(fragment_info.total_len);
             })
         } else {
             cbor::encode::emit_array(Some(2), |array| {
-                array.emit(&self.source);
-                array.emit(&self.timestamp);
+                array.emit(self.source.clone());
+                array.emit(self.timestamp);
             })
         })
     }

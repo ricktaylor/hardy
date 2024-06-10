@@ -9,15 +9,18 @@ const MAX_FORWARDING_DELAY_SECS: u32 = 5;
 
 #[derive(Clone)]
 struct Config {
-    admin_endpoints: bundle::AdminEndpoints,
+    admin_endpoints: utils::admin_endpoints::AdminEndpoints,
     status_reports: bool,
     wait_sample_interval: u64,
     max_forwarding_delay: u32,
-    ipn_2_element: bundle::EidPatternMap<(), ()>,
+    ipn_2_element: bpv7::EidPatternMap<(), ()>,
 }
 
 impl Config {
-    fn new(config: &config::Config, admin_endpoints: bundle::AdminEndpoints) -> Self {
+    fn new(
+        config: &config::Config,
+        admin_endpoints: utils::admin_endpoints::AdminEndpoints,
+    ) -> Self {
         let config = Self {
             admin_endpoints,
             status_reports: settings::get_with_default(config, "status_reports", false)
@@ -49,14 +52,14 @@ impl Config {
         config
     }
 
-    fn load_ipn_2_element(config: &config::Config) -> bundle::EidPatternMap<(), ()> {
-        let mut m = bundle::EidPatternMap::new();
+    fn load_ipn_2_element(config: &config::Config) -> bpv7::EidPatternMap<(), ()> {
+        let mut m = bpv7::EidPatternMap::new();
         for s in config
             .get::<Vec<String>>("ipn_2_element")
             .unwrap_or_default()
         {
             let p = s
-                .parse::<bundle::EidPattern>()
+                .parse::<bpv7::EidPattern>()
                 .trace_expect(&format!("Invalid EID pattern '{s}"));
             m.insert(&p, (), ());
         }
@@ -66,11 +69,11 @@ impl Config {
 
 #[derive(Default, Debug)]
 pub struct SendRequest {
-    pub source: bundle::Eid,
-    pub destination: bundle::Eid,
+    pub source: bpv7::Eid,
+    pub destination: bpv7::Eid,
     pub data: Vec<u8>,
     pub lifetime: Option<u64>,
-    pub flags: Option<bundle::BundleFlags>,
+    pub flags: Option<bpv7::BundleFlags>,
 }
 
 pub struct CollectResponse {
@@ -84,7 +87,7 @@ pub struct CollectResponse {
 pub struct Dispatcher {
     config: Config,
     store: store::Store,
-    tx: Sender<(bundle::Metadata, bundle::Bundle)>,
+    tx: Sender<metadata::Bundle>,
     cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
     fib: Option<fib::Fib>,
@@ -94,7 +97,7 @@ impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &config::Config,
-        admin_endpoints: bundle::AdminEndpoints,
+        admin_endpoints: utils::admin_endpoints::AdminEndpoints,
         store: store::Store,
         cla_registry: cla_registry::ClaRegistry,
         app_registry: app_registry::AppRegistry,
@@ -127,19 +130,15 @@ impl Dispatcher {
         dispatcher
     }
 
-    async fn enqueue_bundle(
-        &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
-    ) -> Result<(), Error> {
+    async fn enqueue_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
         // Put bundle into channel
-        self.tx.send((metadata, bundle)).await.map_err(|e| e.into())
+        self.tx.send(bundle).await.map_err(|e| e.into())
     }
 
     #[instrument(skip_all)]
     async fn pipeline_pump(
         self,
-        mut rx: Receiver<(bundle::Metadata, bundle::Bundle)>,
+        mut rx: Receiver<metadata::Bundle>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -149,11 +148,11 @@ impl Dispatcher {
             tokio::select! {
                 bundle = rx.recv() => match bundle {
                     None => break,
-                    Some((metadata,bundle)) => {
+                    Some(bundle) => {
                         let dispatcher = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(metadata,bundle,cancel_token_cloned).await.trace_expect("Failed to process bundle");
+                            dispatcher.process_bundle(bundle,cancel_token_cloned).await.trace_expect("Failed to process bundle");
                         });
                     }
                 },
@@ -186,12 +185,12 @@ impl Dispatcher {
 
                     // Get all bundles that are ready before now() + self.config.wait_sample_interval
                     let waiting = self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(self.config.wait_sample_interval as i64, 0)).await.trace_expect("get_waiting_bundles failed");
-                    for (metadata,bundle,until) in waiting {
+                    for (bundle,until) in waiting {
                         // Spawn a task for each ready bundle
                         let dispatcher = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            dispatcher.delay_bundle(metadata,bundle, until,cancel_token_cloned).await.trace_expect("Failed to process bundle");
+                            dispatcher.delay_bundle(bundle, until,cancel_token_cloned).await.trace_expect("Failed to process bundle");
                         });
                     }
 
@@ -210,8 +209,7 @@ impl Dispatcher {
 
     async fn delay_bundle(
         &self,
-        mut metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
+        mut bundle: metadata::Bundle,
         until: time::OffsetDateTime,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
@@ -223,7 +221,7 @@ impl Dispatcher {
             return Ok(());
         }
 
-        if let bundle::BundleStatus::ForwardAckPending(_, _) = &metadata.status {
+        if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
             trace!("Waiting for bundle forwarding acknowledgement inline until: {until}");
         } else {
             trace!("Waiting to forward bundle inline until: {until}");
@@ -235,10 +233,12 @@ impl Dispatcher {
             return Ok(());
         }
 
-        if let bundle::BundleStatus::ForwardAckPending(_, _) = &metadata.status {
+        if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
             // Check if the bundle has been acknowledged while we slept
-            let Some(bundle::BundleStatus::ForwardAckPending(_, _)) =
-                self.store.check_status(&metadata.storage_name).await?
+            let Some(metadata::BundleStatus::ForwardAckPending(_, _)) = self
+                .store
+                .check_status(&bundle.metadata.storage_name)
+                .await?
             else {
                 // It's not longer waiting, our work here is done
                 return Ok(());
@@ -248,107 +248,104 @@ impl Dispatcher {
         trace!("Forwarding bundle");
 
         // Set status to ForwardPending
-        metadata.status = bundle::BundleStatus::ForwardPending;
+        bundle.metadata.status = metadata::BundleStatus::ForwardPending;
         self.store
-            .set_status(&metadata.storage_name, &metadata.status)
+            .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
             .await?;
 
         // And forward it!
-        self.forward_bundle(metadata, bundle, cancel_token).await
+        self.forward_bundle(bundle, cancel_token).await
     }
 
     #[instrument(skip(self))]
     pub async fn process_bundle(
         &self,
-        mut metadata: bundle::Metadata,
-        mut bundle: bundle::Bundle,
+        mut bundle: metadata::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        if let bundle::BundleStatus::DispatchPending = &metadata.status {
+        if let metadata::BundleStatus::DispatchPending = &bundle.metadata.status {
             // Check if we are the final destination
-            metadata.status = if self
+            bundle.metadata.status = if self
                 .config
                 .admin_endpoints
-                .is_local_service(&bundle.destination)
+                .is_local_service(&bundle.bundle.destination)
             {
-                if bundle.id.fragment_info.is_some() {
+                if bundle.bundle.id.fragment_info.is_some() {
                     // Reassembly!!
                     trace!("Bundle requires fragment reassembly");
-                    bundle::BundleStatus::ReassemblyPending
+                    metadata::BundleStatus::ReassemblyPending
                 } else if self
                     .config
                     .admin_endpoints
-                    .is_admin_endpoint(&bundle.destination)
+                    .is_admin_endpoint(&bundle.bundle.destination)
                 {
                     // The bundle is for the Administrative Endpoint
                     trace!("Bundle is destined for one of our administrative endpoints");
-                    return self.administrative_bundle(metadata, bundle).await;
+                    return self.administrative_bundle(bundle).await;
                 } else {
                     // The bundle is ready for collection
                     trace!("Bundle is ready for local delivery");
-                    bundle::BundleStatus::CollectionPending
+                    metadata::BundleStatus::CollectionPending
                 }
             } else {
                 // Forward to another BPA
                 trace!("Forwarding bundle");
-                bundle::BundleStatus::ForwardPending
+                metadata::BundleStatus::ForwardPending
             };
 
             self.store
-                .set_status(&metadata.storage_name, &metadata.status)
+                .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
                 .await?;
         }
 
-        if let bundle::BundleStatus::ReassemblyPending = &metadata.status {
+        if let metadata::BundleStatus::ReassemblyPending = &bundle.metadata.status {
             // Attempt reassembly
-            let Some((m, b)) = self.reassemble(metadata, bundle).await? else {
+            let Some(b) = self.reassemble(bundle).await? else {
                 // Waiting for more fragments to arrive
                 return Ok(());
             };
-            (metadata, bundle) = (m, b);
+            bundle = b;
         }
 
-        match &metadata.status {
-            bundle::BundleStatus::IngressPending
-            | bundle::BundleStatus::DispatchPending
-            | bundle::BundleStatus::ReassemblyPending => {
+        match &bundle.metadata.status {
+            metadata::BundleStatus::IngressPending
+            | metadata::BundleStatus::DispatchPending
+            | metadata::BundleStatus::ReassemblyPending => {
                 unreachable!()
             }
-            bundle::BundleStatus::CollectionPending => {
+            metadata::BundleStatus::CollectionPending => {
                 // Check if we have a local service registered
-                if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.destination) {
+                if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.bundle.destination) {
                     // Notify that the bundle is ready for collection
                     trace!("Notifying application that bundle is ready for collection");
-                    endpoint.collection_notify(&bundle.id).await;
+                    endpoint.collection_notify(&bundle.bundle.id).await;
                 }
                 Ok(())
             }
-            bundle::BundleStatus::ForwardAckPending(_, _) => {
+            metadata::BundleStatus::ForwardAckPending(_, _) => {
                 // Clear the pending ACK, we are reprocessing
-                metadata.status = bundle::BundleStatus::ForwardPending;
+                bundle.metadata.status = metadata::BundleStatus::ForwardPending;
                 self.store
-                    .set_status(&metadata.storage_name, &metadata.status)
+                    .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
                     .await?;
 
                 // And just forward
-                self.forward_bundle(metadata, bundle, cancel_token).await
+                self.forward_bundle(bundle, cancel_token).await
             }
-            bundle::BundleStatus::ForwardPending => {
-                self.forward_bundle(metadata, bundle, cancel_token).await
+            metadata::BundleStatus::ForwardPending => {
+                self.forward_bundle(bundle, cancel_token).await
             }
-            bundle::BundleStatus::Waiting(until) => {
+            metadata::BundleStatus::Waiting(until) => {
                 let until = *until;
-                self.delay_bundle(metadata, bundle, until, cancel_token)
-                    .await
+                self.delay_bundle(bundle, until, cancel_token).await
             }
-            bundle::BundleStatus::Tombstone => Ok(()),
+            metadata::BundleStatus::Tombstone => Ok(()),
         }
     }
 
     async fn forward_bundle(
         &self,
-        mut metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
+        mut bundle: metadata::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         let Some(fib) = &self.fib else {
@@ -358,9 +355,8 @@ impl Dispatcher {
             trace!("Bundle should be forwarded, but forwarding is disabled");
             return self
                 .drop_bundle(
-                    metadata,
                     bundle,
-                    Some(bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable),
+                    Some(bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable),
                 )
                 .await;
         };
@@ -372,18 +368,14 @@ impl Dispatcher {
         let mut data = None;
         let mut previous = false;
         let mut retries = 0;
-        let mut destination = &bundle.destination;
+        let mut destination = &bundle.bundle.destination;
 
         loop {
             // Check bundle expiry
-            if bundle::has_bundle_expired(&metadata, &bundle) {
+            if bundle.has_expired() {
                 trace!("Bundle lifetime has expired");
                 return self
-                    .drop_bundle(
-                        metadata,
-                        bundle,
-                        Some(bundle::StatusReportReasonCode::LifetimeExpired),
-                    )
+                    .drop_bundle(bundle, Some(bpv7::StatusReportReasonCode::LifetimeExpired))
                     .await;
             }
 
@@ -391,28 +383,30 @@ impl Dispatcher {
             let action = match fib.find(destination).await {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
-                    return self.drop_bundle(metadata, bundle, reason).await;
+                    return self.drop_bundle(bundle, reason).await;
                 }
                 Ok(fib::ForwardAction {
                     clas,
                     wait: Some(wait),
                 }) if clas.is_empty() => {
                     // Check to see if waiting is even worth it
-                    if wait > bundle::get_bundle_expiry(&metadata, &bundle) {
+                    if wait > bundle.expiry() {
                         trace!("Bundle lifetime is shorter than wait period");
                         return self
                                 .drop_bundle(
-                                    metadata,
                                     bundle,
                                     Some(
-                                        bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+                                        bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
                                     ),
                                 )
                                 .await;
                     }
 
                     // Wait a bit
-                    if !self.wait_to_forward(&metadata, wait, &cancel_token).await? {
+                    if !self
+                        .wait_to_forward(&bundle.metadata, wait, &cancel_token)
+                        .await?
+                    {
                         // Cancelled, or too long a wait for here
                         return Ok(());
                     }
@@ -433,14 +427,14 @@ impl Dispatcher {
                 if let Some(e) = self.cla_registry.find(endpoint.handle).await {
                     // Get bundle data from store, now we know we need it!
                     if data.is_none() {
-                        let Some(source_data) = self.load_data(&metadata, &bundle).await? else {
+                        let Some(source_data) = self.load_data(&bundle).await? else {
                             // Bundle data was deleted sometime during processing
                             return Ok(());
                         };
 
                         // Increment Hop Count, etc...
                         (data, data_is_time_sensitive) = self
-                            .update_extension_blocks(&metadata, &bundle, (*source_data).as_ref())
+                            .update_extension_blocks(&bundle, (*source_data).as_ref())
                             .map(|(data, data_is_time_sensitive)| {
                                 (Some(data), data_is_time_sensitive)
                             })?;
@@ -449,8 +443,8 @@ impl Dispatcher {
                     match e.forward_bundle(destination, data.clone().unwrap()).await {
                         Ok((None, None)) => {
                             // We have successfully forwarded!
-                            self.report_bundle_forwarded(&metadata, &bundle).await?;
-                            return self.drop_bundle(metadata, bundle, None).await;
+                            self.report_bundle_forwarded(&bundle).await?;
+                            return self.drop_bundle(bundle, None).await;
                         }
                         Ok((Some(handle), until)) => {
                             // CLA will report successful forwarding
@@ -458,14 +452,14 @@ impl Dispatcher {
                             let until = until.unwrap_or_else(|| {
                                 warn!("CLA endpoint has not provided a suitable AckPending delay, defaulting to 1 minute");
                                 time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
-                            }).min(bundle::get_bundle_expiry(&metadata, &bundle));
+                            }).min(bundle.expiry());
 
                             // Set the bundle status to 'Forward Acknowledgement Pending'
-                            metadata.status =
-                                bundle::BundleStatus::ForwardAckPending(handle, until);
+                            bundle.metadata.status =
+                                metadata::BundleStatus::ForwardAckPending(handle, until);
                             return self
                                 .store
-                                .set_status(&metadata.storage_name, &metadata.status)
+                                .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
                                 .await;
                         }
                         Ok((None, until)) => {
@@ -499,22 +493,19 @@ impl Dispatcher {
                 }
 
                 // Check to see if waiting is even worth it
-                if until > bundle::get_bundle_expiry(&metadata, &bundle) {
+                if until > bundle.expiry() {
                     trace!("Bundle lifetime is shorter than wait period");
                     return self
                         .drop_bundle(
-                            metadata,
                             bundle,
-                            Some(
-                                bundle::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                            ),
+                            Some(bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute),
                         )
                         .await;
                 }
 
                 // We must wait for a bit for the CLAs to calm down
                 if !self
-                    .wait_to_forward(&metadata, until, &cancel_token)
+                    .wait_to_forward(&bundle.metadata, until, &cancel_token)
                     .await?
                 {
                     // Cancelled, or too long a wait for here
@@ -529,9 +520,8 @@ impl Dispatcher {
                     trace!("Timed out trying to return bundle to previous node");
                     return self
                         .drop_bundle(
-                            metadata,
                             bundle,
-                            Some(bundle::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
+                            Some(bpv7::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
                         )
                         .await;
                 }
@@ -539,7 +529,11 @@ impl Dispatcher {
                 trace!("Timed out trying to forward bundle");
 
                 // Return the bundle to the source via the 'previous_node' or 'bundle.source'
-                destination = bundle.previous_node.as_ref().unwrap_or(&bundle.id.source);
+                destination = bundle
+                    .bundle
+                    .previous_node
+                    .as_ref()
+                    .unwrap_or(&bundle.bundle.id.source);
                 trace!("Returning bundle to previous node: {destination}");
 
                 // Reset retry counter as we are attempting to return the bundle
@@ -566,7 +560,7 @@ impl Dispatcher {
 
     async fn wait_to_forward(
         &self,
-        metadata: &bundle::Metadata,
+        metadata: &metadata::Metadata,
         until: time::OffsetDateTime,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<bool, Error> {
@@ -577,7 +571,7 @@ impl Dispatcher {
             self.store
                 .set_status(
                     &metadata.storage_name,
-                    &bundle::BundleStatus::Waiting(until),
+                    &metadata::BundleStatus::Waiting(until),
                 )
                 .await?;
             return Ok(false);
@@ -590,14 +584,13 @@ impl Dispatcher {
 
     fn update_extension_blocks(
         &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
+        bundle: &metadata::Bundle,
         data: &[u8],
     ) -> Result<(Vec<u8>, bool), Error> {
-        let mut editor = bundle::Editor::new(bundle)
+        let mut editor = bpv7::Editor::new(&bundle.bundle)
             // Previous Node Block
-            .replace_extension_block(bundle::BlockType::PreviousNode)
-            .flags(bundle::BlockFlags {
+            .replace_extension_block(bpv7::BlockType::PreviousNode)
+            .flags(bpv7::BlockFlags {
                 must_replicate: true,
                 report_on_failure: true,
                 delete_bundle_on_failure: true,
@@ -605,19 +598,18 @@ impl Dispatcher {
             })
             .data(cbor::encode::emit_array(Some(1), |a| {
                 a.emit(
-                    &self
-                        .config
+                    self.config
                         .admin_endpoints
-                        .get_admin_endpoint(&bundle.destination),
+                        .get_admin_endpoint(&bundle.bundle.destination),
                 )
             }))
             .build();
 
         // Increment Hop Count
-        if let Some(mut hop_count) = bundle.hop_count {
+        if let Some(mut hop_count) = bundle.bundle.hop_count {
             editor = editor
-                .replace_extension_block(bundle::BlockType::HopCount)
-                .flags(bundle::BlockFlags {
+                .replace_extension_block(bpv7::BlockType::HopCount)
+                .flags(bpv7::BlockFlags {
                     must_replicate: true,
                     report_on_failure: true,
                     delete_bundle_on_failure: true,
@@ -633,24 +625,16 @@ impl Dispatcher {
 
         // Update Bundle Age, if required
         let mut is_time_sensitive = false;
-        if let Some(bundle_age) = bundle
-            .age
-            .map_or_else(
-                || {
-                    (bundle.id.timestamp.creation_time == 0)
-                        .then(|| bundle::get_bundle_creation(metadata, bundle))
-                },
-                |_| Some(bundle::get_bundle_creation(metadata, bundle)),
-            )
-            .map(|creation| {
-                (time::OffsetDateTime::now_utc() - creation)
-                    .whole_milliseconds()
-                    .clamp(0, u64::MAX as i128) as u64
-            })
-        {
+        if bundle.bundle.age.is_some() || bundle.bundle.id.timestamp.creation_time.is_none() {
+            // We have a bundle age block already, or no valid clock at bundle source
+            // So we must add an updated bundle age block
+            let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
+                .whole_milliseconds()
+                .clamp(0, u64::MAX as i128) as u64;
+
             editor = editor
-                .replace_extension_block(bundle::BlockType::BundleAge)
-                .flags(bundle::BlockFlags {
+                .replace_extension_block(bpv7::BlockType::BundleAge)
+                .flags(bpv7::BlockFlags {
                     must_replicate: true,
                     report_on_failure: true,
                     delete_bundle_on_failure: true,
@@ -665,46 +649,47 @@ impl Dispatcher {
 
         editor
             .build(data)
-            .map(|(_, data)| data)
-            .map(|data| (data, is_time_sensitive))
+            .map(|(_, data)| (data, is_time_sensitive))
+            .map_err(|e| e.into())
     }
 
     #[instrument(skip(self))]
     async fn drop_bundle(
         &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
-        reason: Option<bundle::StatusReportReasonCode>,
+        bundle: metadata::Bundle,
+        reason: Option<bpv7::StatusReportReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
-            self.report_bundle_deletion(&metadata, &bundle, reason)
-                .await?;
+            self.report_bundle_deletion(&bundle, reason).await?;
         }
         trace!("Discarding bundle, leaving tombstone");
-        self.store.remove(&metadata.storage_name).await
+        self.store.remove(&bundle.metadata.storage_name).await
     }
 
     #[instrument(skip(self))]
     pub async fn report_bundle_reception(
         &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
-        reason: bundle::StatusReportReasonCode,
+        bundle: &metadata::Bundle,
+        reason: bpv7::StatusReportReasonCode,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.flags.receipt_report_requested {
+        if !self.config.status_reports || !bundle.bundle.flags.receipt_report_requested {
             return Ok(());
         }
 
-        trace!("Reporting bundle reception to {}", &bundle.report_to);
+        trace!("Reporting bundle reception to {}", &bundle.bundle.report_to);
 
         self.dispatch_status_report(
-            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
-                bundle::BundleStatusReport {
-                    bundle_id: bundle.id.clone(),
-                    received: Some(bundle::StatusAssertion(
-                        if bundle.flags.report_status_time {
-                            metadata.received_at
+            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+                bpv7::BundleStatusReport {
+                    bundle_id: bundle.bundle.id.clone(),
+                    received: Some(bpv7::StatusAssertion(
+                        if bundle.bundle.flags.report_status_time {
+                            if let Some(t) = bundle.metadata.received_at {
+                                Some(t.try_into()?)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         },
@@ -713,70 +698,67 @@ impl Dispatcher {
                     ..Default::default()
                 },
             )),
-            &bundle.report_to,
+            &bundle.bundle.report_to,
         )
         .await
     }
 
     #[instrument(skip(self))]
-    pub async fn report_bundle_forwarded(
-        &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
-    ) -> Result<(), Error> {
+    pub async fn report_bundle_forwarded(&self, bundle: &metadata::Bundle) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.flags.forward_report_requested {
+        if !self.config.status_reports || !bundle.bundle.flags.forward_report_requested {
             return Ok(());
         }
 
-        trace!("Reporting bundle as forwarded to {}", &bundle.report_to);
+        trace!(
+            "Reporting bundle as forwarded to {}",
+            &bundle.bundle.report_to
+        );
 
         self.dispatch_status_report(
-            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
-                bundle::BundleStatusReport {
-                    bundle_id: bundle.id.clone(),
-                    forwarded: Some(bundle::StatusAssertion(
+            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+                bpv7::BundleStatusReport {
+                    bundle_id: bundle.bundle.id.clone(),
+                    forwarded: Some(bpv7::StatusAssertion(
                         bundle
+                            .bundle
                             .flags
                             .report_status_time
-                            .then(time::OffsetDateTime::now_utc),
+                            .then(bpv7::DtnTime::now),
                     )),
                     ..Default::default()
                 },
             )),
-            &bundle.report_to,
+            &bundle.bundle.report_to,
         )
         .await
     }
 
     #[instrument(skip(self))]
-    async fn report_bundle_delivery(
-        &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
-    ) -> Result<(), Error> {
+    async fn report_bundle_delivery(&self, bundle: &metadata::Bundle) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.flags.delivery_report_requested {
+        if !self.config.status_reports || !bundle.bundle.flags.delivery_report_requested {
             return Ok(());
         }
 
-        trace!("Reporting bundle delivery to {}", &bundle.report_to);
+        trace!("Reporting bundle delivery to {}", &bundle.bundle.report_to);
 
         // Create a bundle report
         self.dispatch_status_report(
-            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
-                bundle::BundleStatusReport {
-                    bundle_id: bundle.id.clone(),
-                    delivered: Some(bundle::StatusAssertion(
+            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+                bpv7::BundleStatusReport {
+                    bundle_id: bundle.bundle.id.clone(),
+                    delivered: Some(bpv7::StatusAssertion(
                         bundle
+                            .bundle
                             .flags
                             .report_status_time
-                            .then(time::OffsetDateTime::now_utc),
+                            .then(bpv7::DtnTime::now),
                     )),
                     ..Default::default()
                 },
             )),
-            &bundle.report_to,
+            &bundle.bundle.report_to,
         )
         .await
     }
@@ -784,33 +766,33 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn report_bundle_deletion(
         &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
-        reason: bundle::StatusReportReasonCode,
+        bundle: &metadata::Bundle,
+        reason: bpv7::StatusReportReasonCode,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.flags.delete_report_requested {
+        if !self.config.status_reports || !bundle.bundle.flags.delete_report_requested {
             return Ok(());
         }
 
-        trace!("Reporting bundle deletion to {}", &bundle.report_to);
+        trace!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
 
         // Create a bundle report
         self.dispatch_status_report(
-            cbor::encode::emit(bundle::AdministrativeRecord::BundleStatusReport(
-                bundle::BundleStatusReport {
-                    bundle_id: bundle.id.clone(),
-                    deleted: Some(bundle::StatusAssertion(
+            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+                bpv7::BundleStatusReport {
+                    bundle_id: bundle.bundle.id.clone(),
+                    deleted: Some(bpv7::StatusAssertion(
                         bundle
+                            .bundle
                             .flags
                             .report_status_time
-                            .then(time::OffsetDateTime::now_utc),
+                            .then(bpv7::DtnTime::now),
                     )),
                     reason,
                     ..Default::default()
                 },
             )),
-            &bundle.report_to,
+            &bundle.bundle.report_to,
         )
         .await
     }
@@ -818,11 +800,11 @@ impl Dispatcher {
     async fn dispatch_status_report(
         &self,
         payload: Vec<u8>,
-        report_to: &bundle::Eid,
+        report_to: &bpv7::Eid,
     ) -> Result<(), Error> {
         // Create a bundle report
-        let (bundle, data) = bundle::Builder::new()
-            .flags(bundle::BundleFlags {
+        let (bundle, data) = bpv7::Builder::new()
+            .flags(bpv7::BundleFlags {
                 is_admin_record: true,
                 ..Default::default()
             })
@@ -834,18 +816,19 @@ impl Dispatcher {
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
+            .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
             .await?
             .trace_expect("Duplicate bundle created by builder!");
 
         // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+        self.enqueue_bundle(metadata::Bundle { metadata, bundle })
+            .await
     }
 
     #[instrument(skip(self))]
     pub async fn local_dispatch(&self, mut request: SendRequest) -> Result<(), Error> {
         // Check to see if we should use ipn 2-element encoding
-        if let bundle::Eid::Ipn3 {
+        if let bpv7::Eid::Ipn3 {
             allocator_id: da,
             node_number: dn,
             service_number: ds,
@@ -858,19 +841,19 @@ impl Dispatcher {
                 .find(&request.destination)
                 .is_empty()
             {
-                if let bundle::Eid::Ipn3 {
+                if let bpv7::Eid::Ipn3 {
                     allocator_id: sa,
                     node_number: sn,
                     service_number: ss,
                 } = &request.source
                 {
-                    request.source = bundle::Eid::Ipn2 {
+                    request.source = bpv7::Eid::Ipn2 {
                         allocator_id: *sa,
                         node_number: *sn,
                         service_number: *ss,
                     };
                 }
-                request.destination = bundle::Eid::Ipn2 {
+                request.destination = bpv7::Eid::Ipn2 {
                     allocator_id: *da,
                     node_number: *dn,
                     service_number: *ds,
@@ -879,7 +862,7 @@ impl Dispatcher {
         }
 
         // Build the bundle
-        let mut b = bundle::Builder::new()
+        let mut b = bpv7::Builder::new()
             .source(&request.source)
             .destination(&request.destination);
 
@@ -904,20 +887,20 @@ impl Dispatcher {
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, bundle::BundleStatus::DispatchPending, None)
+            .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
             .await?
             .trace_expect("Duplicate bundle created by builder!");
 
         // And queue it up
-        self.enqueue_bundle(metadata, bundle).await
+        self.enqueue_bundle(metadata::Bundle { metadata, bundle })
+            .await
     }
 
     #[instrument(skip(self))]
     async fn reassemble(
         &self,
-        _metadata: bundle::Metadata,
-        _bundle: bundle::Bundle,
-    ) -> Result<Option<(bundle::Metadata, bundle::Bundle)>, Error> {
+        _bundle: metadata::Bundle,
+    ) -> Result<Option<metadata::Bundle>, Error> {
         // TODO: We need to handle the case when the reassembled fragment is larger than our total RAM!
 
         todo!()
@@ -925,52 +908,42 @@ impl Dispatcher {
 
     async fn load_data(
         &self,
-        metadata: &bundle::Metadata,
-        bundle: &bundle::Bundle,
+        bundle: &metadata::Bundle,
     ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
         // Try to load the data, but treat errors as 'Storage Depleted'
-        let data = self.store.load_data(&metadata.storage_name).await?;
+        let data = self.store.load_data(&bundle.metadata.storage_name).await?;
         if data.is_none() {
             // Report the bundle has gone
-            self.report_bundle_deletion(
-                metadata,
-                bundle,
-                bundle::StatusReportReasonCode::DepletedStorage,
-            )
-            .await?;
+            self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+                .await?;
         }
         Ok(data)
     }
 
     #[instrument(skip(self))]
-    async fn administrative_bundle(
-        &self,
-        metadata: bundle::Metadata,
-        bundle: bundle::Bundle,
-    ) -> Result<(), Error> {
+    async fn administrative_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
         // This is a bundle for an Admin Endpoint
-        if !bundle.flags.is_admin_record {
+        if !bundle.bundle.flags.is_admin_record {
             trace!("Received a bundle for an administrative endpoint that isn't marked as an administrative record");
             return self
                 .drop_bundle(
-                    metadata,
                     bundle,
-                    Some(bundle::StatusReportReasonCode::BlockUnintelligible),
+                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
                 )
                 .await;
         }
 
-        let Some(data) = self.load_data(&metadata, &bundle).await? else {
+        let Some(data) = self.load_data(&bundle).await? else {
             // Bundle data was deleted sometime during processing
             return Ok(());
         };
 
-        let reason = match cbor::decode::parse::<bundle::AdministrativeRecord>((*data).as_ref()) {
+        let reason = match cbor::decode::parse::<bpv7::AdministrativeRecord>((*data).as_ref()) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
-                Some(bundle::StatusReportReasonCode::BlockUnintelligible)
+                Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
             }
-            Ok(bundle::AdministrativeRecord::BundleStatusReport(report)) => {
+            Ok(bpv7::AdministrativeRecord::BundleStatusReport(report)) => {
                 // Check if the report is for a bundle sourced from a local service
                 if !self
                     .config
@@ -978,7 +951,7 @@ impl Dispatcher {
                     .is_local_service(&report.bundle_id.source)
                 {
                     trace!("Received spurious bundle status report {:?}", report);
-                    Some(bundle::StatusReportReasonCode::DestinationEndpointIDUnavailable)
+                    Some(bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable)
                 } else {
                     // Find a live service to notify
                     if let Some(endpoint) = self.app_registry.find_by_eid(&report.bundle_id.source)
@@ -990,7 +963,7 @@ impl Dispatcher {
                                     &report.bundle_id,
                                     app_registry::StatusKind::Received,
                                     report.reason,
-                                    assertion.0,
+                                    assertion.0.map(|t| t.into()),
                                 )
                                 .await
                         }
@@ -1000,7 +973,7 @@ impl Dispatcher {
                                     &report.bundle_id,
                                     app_registry::StatusKind::Forwarded,
                                     report.reason,
-                                    assertion.0,
+                                    assertion.0.map(|t| t.into()),
                                 )
                                 .await
                         }
@@ -1010,7 +983,7 @@ impl Dispatcher {
                                     &report.bundle_id,
                                     app_registry::StatusKind::Delivered,
                                     report.reason,
-                                    assertion.0,
+                                    assertion.0.map(|t| t.into()),
                                 )
                                 .await
                         }
@@ -1020,62 +993,63 @@ impl Dispatcher {
                                     &report.bundle_id,
                                     app_registry::StatusKind::Deleted,
                                     report.reason,
-                                    assertion.0,
+                                    assertion.0.map(|t| t.into()),
                                 )
                                 .await
                         }
                     }
-                    Some(bundle::StatusReportReasonCode::NoAdditionalInformation)
+                    Some(bpv7::StatusReportReasonCode::NoAdditionalInformation)
                 }
             }
         };
 
         // Done with the bundle
-        self.drop_bundle(metadata, bundle, reason).await
+        self.drop_bundle(bundle, reason).await
     }
 
     #[instrument(skip(self))]
     pub async fn collect(
         &self,
-        destination: bundle::Eid,
+        destination: bpv7::Eid,
         bundle_id: String,
     ) -> Result<Option<CollectResponse>, Error> {
         // Lookup bundle
-        let Some((metadata, bundle)) = self
+        let Some(bundle) = self
             .store
-            .load(&bundle::BundleId::from_key(&bundle_id)?)
+            .load(&bpv7::BundleId::from_key(&bundle_id)?)
             .await?
         else {
             return Ok(None);
         };
 
         // Double check that we are returning something valid
-        if let bundle::BundleStatus::CollectionPending = &metadata.status {
-            let expiry = bundle::get_bundle_expiry(&metadata, &bundle);
-            if expiry <= time::OffsetDateTime::now_utc() || bundle.destination != destination {
+        if let metadata::BundleStatus::CollectionPending = &bundle.metadata.status {
+            let expiry = bundle.expiry();
+            if expiry <= time::OffsetDateTime::now_utc() || bundle.bundle.destination != destination
+            {
                 return Ok(None);
             }
 
             // Get the data!
-            let Some(data) = self.load_data(&metadata, &bundle).await? else {
+            let Some(data) = self.load_data(&bundle).await? else {
                 // Bundle data was deleted sometime during processing
                 return Ok(None);
             };
 
             // By the time we get here, we're safe to report delivery
-            self.report_bundle_delivery(&metadata, &bundle).await?;
+            self.report_bundle_delivery(&bundle).await?;
 
             // Prepare the response
             let response = CollectResponse {
-                bundle_id: bundle.id.to_key(),
+                bundle_id: bundle.bundle.id.to_key(),
                 data: (*data).as_ref().to_vec(),
                 expiry,
-                app_ack_requested: bundle.flags.app_ack_requested,
+                app_ack_requested: bundle.bundle.flags.app_ack_requested,
             };
 
             // And we can now tombstone the bundle
             self.store
-                .remove(&metadata.storage_name)
+                .remove(&bundle.metadata.storage_name)
                 .await
                 .map(|_| Some(response))
         } else {
@@ -1086,7 +1060,7 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn poll_for_collection(
         &self,
-        destination: bundle::Eid,
+        destination: bpv7::Eid,
     ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
         self.store.poll_for_collection(destination).await
     }

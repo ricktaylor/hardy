@@ -558,11 +558,9 @@ dependencies = [
 name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "built",
  "cfg-if",
  "config",
- "crc",
  "directories",
  "getopts",
  "hardy-bpa-api",
@@ -605,6 +603,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "config",
+ "crc",
  "hardy-cbor",
  "hex-literal",
  "regex",

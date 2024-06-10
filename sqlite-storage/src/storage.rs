@@ -1,6 +1,6 @@
 use super::*;
 use base64::prelude::*;
-use hardy_bpa_api::{async_trait, storage};
+use hardy_bpa_api::{async_trait, metadata, storage};
 use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
@@ -24,19 +24,19 @@ pub enum Error {
 }
 
 fn bundle_status_to_parts(
-    value: &bpv7::BundleStatus,
+    value: &metadata::BundleStatus,
 ) -> (i64, Option<i64>, Option<time::OffsetDateTime>) {
     match value {
-        bpv7::BundleStatus::IngressPending => (0, None, None),
-        bpv7::BundleStatus::DispatchPending => (1, None, None),
-        bpv7::BundleStatus::ReassemblyPending => (2, None, None),
-        bpv7::BundleStatus::CollectionPending => (3, None, None),
-        bpv7::BundleStatus::ForwardPending => (4, None, None),
-        bpv7::BundleStatus::ForwardAckPending(handle, until) => {
+        metadata::BundleStatus::IngressPending => (0, None, None),
+        metadata::BundleStatus::DispatchPending => (1, None, None),
+        metadata::BundleStatus::ReassemblyPending => (2, None, None),
+        metadata::BundleStatus::CollectionPending => (3, None, None),
+        metadata::BundleStatus::ForwardPending => (4, None, None),
+        metadata::BundleStatus::ForwardAckPending(handle, until) => {
             (5, Some(*handle as i64), Some(*until))
         }
-        bpv7::BundleStatus::Waiting(until) => (6, None, Some(*until)),
-        bpv7::BundleStatus::Tombstone => (7, None, None),
+        metadata::BundleStatus::Waiting(until) => (6, None, Some(*until)),
+        metadata::BundleStatus::Tombstone => (7, None, None),
     }
 }
 
@@ -45,22 +45,23 @@ fn columns_to_bundle_status(
     idx1: usize,
     idx2: usize,
     idx3: usize,
-) -> rusqlite::Result<bpv7::BundleStatus> {
+) -> rusqlite::Result<metadata::BundleStatus> {
     match (
         row.get::<usize, i64>(idx1)?,
         row.get::<usize, Option<i64>>(idx2)?,
         row.get::<usize, Option<time::OffsetDateTime>>(idx3)?,
     ) {
-        (0, None, None) => Ok(bpv7::BundleStatus::IngressPending),
-        (1, None, None) => Ok(bpv7::BundleStatus::DispatchPending),
-        (2, None, None) => Ok(bpv7::BundleStatus::ReassemblyPending),
-        (3, None, None) => Ok(bpv7::BundleStatus::CollectionPending),
-        (4, None, None) => Ok(bpv7::BundleStatus::ForwardPending),
-        (5, Some(handle), Some(until)) => {
-            Ok(bpv7::BundleStatus::ForwardAckPending(handle as u32, until))
-        }
-        (6, None, Some(until)) => Ok(bpv7::BundleStatus::Waiting(until)),
-        (7, None, None) => Ok(bpv7::BundleStatus::Tombstone),
+        (0, None, None) => Ok(metadata::BundleStatus::IngressPending),
+        (1, None, None) => Ok(metadata::BundleStatus::DispatchPending),
+        (2, None, None) => Ok(metadata::BundleStatus::ReassemblyPending),
+        (3, None, None) => Ok(metadata::BundleStatus::CollectionPending),
+        (4, None, None) => Ok(metadata::BundleStatus::ForwardPending),
+        (5, Some(handle), Some(until)) => Ok(metadata::BundleStatus::ForwardAckPending(
+            handle as u32,
+            until,
+        )),
+        (6, None, Some(until)) => Ok(metadata::BundleStatus::Waiting(until)),
+        (7, None, None) => Ok(metadata::BundleStatus::Tombstone),
         (v, t, d) => panic!("Invalid BundleStatus value combination {v}/{t:?}/{d:?}"),
     }
 }
@@ -149,7 +150,7 @@ impl Storage {
                 r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
             SELECT id FROM bundles WHERE status != ?1;"#,
-                [bundle_status_to_parts(&bpv7::BundleStatus::Tombstone).0],
+                [bundle_status_to_parts(&metadata::BundleStatus::Tombstone).0],
             )
             .and_then(|_| {
                 // Create temporary tables for restarting
@@ -171,7 +172,7 @@ impl Storage {
 fn encode_eid(eid: &bpv7::Eid) -> rusqlite::types::Value {
     match eid {
         bpv7::Eid::Null => rusqlite::types::Value::Null,
-        _ => rusqlite::types::Value::Blob(cbor::encode::emit(eid)),
+        _ => rusqlite::types::Value::Blob(cbor::encode::emit(eid.clone())),
     }
 }
 
@@ -183,6 +184,26 @@ fn decode_eid(
         rusqlite::types::ValueRef::Blob(b) => Ok(cbor::decode::parse(b)?),
         rusqlite::types::ValueRef::Null => Ok(bpv7::Eid::Null),
         _ => panic!("EID encoded as unusual sqlite type"),
+    }
+}
+
+fn encode_creation_time(timestamp: Option<bpv7::DtnTime>) -> i64 {
+    if let Some(timestamp) = timestamp {
+        as_i64(timestamp.millisecs())
+    } else {
+        0
+    }
+}
+
+fn decode_creation_time(
+    row: &rusqlite::Row,
+    idx: usize,
+) -> rusqlite::Result<Option<bpv7::DtnTime>> {
+    let timestamp = row.get::<usize, i64>(idx)?;
+    if timestamp == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(bpv7::DtnTime::new(as_u64(timestamp))))
     }
 }
 
@@ -198,9 +219,7 @@ fn as_i64<T: Into<u64>>(v: T) -> i64 {
     v as i64
 }
 
-fn unpack_bundles(
-    mut rows: rusqlite::Rows,
-) -> storage::Result<Vec<(i64, bpv7::Metadata, bpv7::Bundle)>> {
+fn unpack_bundles(mut rows: rusqlite::Rows) -> storage::Result<Vec<(i64, metadata::Bundle)>> {
     /* Expected query MUST look like:
            0:  bundles.id,
            1:  bundles.status,
@@ -235,7 +254,7 @@ fn unpack_bundles(
     let mut row_result = rows.next()?;
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
-        let metadata = bpv7::Metadata {
+        let metadata = metadata::Metadata {
             status: columns_to_bundle_status(row, 1, 20, 19)?,
             storage_name: row.get(2)?,
             hash: BASE64_STANDARD_NO_PAD.decode(row.get::<usize, String>(3)?)?,
@@ -259,7 +278,7 @@ fn unpack_bundles(
             id: bpv7::BundleId {
                 source: decode_eid(row, 7)?,
                 timestamp: bpv7::CreationTimestamp {
-                    creation_time: as_u64(row.get(10)?),
+                    creation_time: decode_creation_time(row, 10)?,
                     sequence_number: as_u64(row.get(11)?),
                 },
                 fragment_info,
@@ -311,7 +330,7 @@ fn unpack_bundles(
             }
         }
 
-        bundles.push((bundle_id, metadata, bundle));
+        bundles.push((bundle_id, metadata::Bundle { bundle, metadata }));
     }
     Ok(bundles)
 }
@@ -359,7 +378,7 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip_all)]
     fn check_orphans(
         &self,
-        f: &mut dyn FnMut(bpv7::Metadata, bpv7::Bundle) -> storage::Result<bool>,
+        f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
     ) -> storage::Result<()> {
         // Loop through subsets of 16 bundles, so we don't fill all memory
         loop {
@@ -413,8 +432,8 @@ impl storage::MetadataStorage for Storage {
             }
 
             // Now enumerate the vector outside the query implicit transaction
-            for (_bundle_id, metadata, bundle) in bundles {
-                if !f(metadata, bundle)? {
+            for (_bundle_id, bundle) in bundles {
+                if !f(bundle)? {
                     break;
                 }
             }
@@ -425,7 +444,7 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip_all)]
     fn restart(
         &self,
-        f: &mut dyn FnMut(bpv7::Metadata, bpv7::Bundle) -> storage::Result<bool>,
+        f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
     ) -> storage::Result<()> {
         // Create a temporary table (because DELETE RETURNING cannot be used as a CTE)
         self.connection
@@ -515,8 +534,8 @@ impl storage::MetadataStorage for Storage {
             drop(conn);
 
             // Now enumerate the vector outside the transaction
-            for (_bundle_id, metadata, bundle) in bundles {
-                if !f(metadata, bundle)? {
+            for (_bundle_id, bundle) in bundles {
+                if !f(bundle)? {
                     break;
                 }
             }
@@ -535,10 +554,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn load(
-        &self,
-        bundle_id: &bpv7::BundleId,
-    ) -> storage::Result<Option<(bpv7::Metadata, bpv7::Bundle)>> {
+    async fn load(&self, bundle_id: &bpv7::BundleId) -> storage::Result<Option<metadata::Bundle>> {
         Ok(unpack_bundles(
             self.connection
                 .lock()
@@ -583,21 +599,21 @@ impl storage::MetadataStorage for Storage {
                 LIMIT 1;"#,
                 )?
                 .query((
-                    &encode_eid(&bundle_id.source),
-                    as_i64(bundle_id.timestamp.creation_time),
+                    encode_eid(&bundle_id.source),
+                    encode_creation_time(bundle_id.timestamp.creation_time),
                     as_i64(bundle_id.timestamp.sequence_number),
                     bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
                     bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
                 ))?,
         )?
         .pop()
-        .map(|(_, metadata, bundle)| (metadata, bundle)))
+        .map(|(_, bundle)| bundle))
     }
 
     #[instrument(skip(self))]
     async fn store(
         &self,
-        metadata: &bpv7::Metadata,
+        metadata: &metadata::Metadata,
         bundle: &bpv7::Bundle,
     ) -> storage::Result<bool> {
         let mut conn = self
@@ -642,10 +658,10 @@ impl storage::MetadataStorage for Storage {
                     BASE64_STANDARD_NO_PAD.encode(&metadata.hash),
                     as_i64(bundle.flags),
                     as_i64(bundle.crc_type),
-                    &encode_eid(&bundle.id.source),
-                    &encode_eid(&bundle.destination),
-                    &encode_eid(&bundle.report_to),
-                    as_i64(bundle.id.timestamp.creation_time),
+                    encode_eid(&bundle.id.source),
+                    encode_eid(&bundle.destination),
+                    encode_eid(&bundle.report_to),
+                    encode_creation_time(bundle.id.timestamp.creation_time),
                     as_i64(bundle.id.timestamp.sequence_number),
                     as_i64(bundle.lifetime),
                     bundle.id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
@@ -758,7 +774,7 @@ impl storage::MetadataStorage for Storage {
     async fn check_bundle_status(
         &self,
         storage_name: &str,
-    ) -> storage::Result<Option<bpv7::BundleStatus>> {
+    ) -> storage::Result<Option<metadata::BundleStatus>> {
         self
             .connection
             .lock()
@@ -777,7 +793,7 @@ impl storage::MetadataStorage for Storage {
     async fn set_bundle_status(
         &self,
         storage_name: &str,
-        status: &bpv7::BundleStatus,
+        status: &metadata::BundleStatus,
     ) -> storage::Result<()> {
         let (status, ack_handle, until) = bundle_status_to_parts(status);
         if !self
@@ -835,7 +851,7 @@ impl storage::MetadataStorage for Storage {
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> storage::Result<Vec<(bpv7::Metadata, bpv7::Bundle, time::OffsetDateTime)>> {
+    ) -> storage::Result<Vec<(metadata::Bundle, time::OffsetDateTime)>> {
         unpack_bundles(
             self.connection
                 .lock()
@@ -877,11 +893,11 @@ impl storage::MetadataStorage for Storage {
         )
         .map(|v| {
             v.into_iter()
-                .filter_map(|(_, metadata, bundle)| match &metadata.status {
-                    bpv7::BundleStatus::ForwardAckPending(_, until)
-                    | bpv7::BundleStatus::Waiting(until) => {
+                .filter_map(|(_, bundle)| match &bundle.metadata.status {
+                    metadata::BundleStatus::ForwardAckPending(_, until)
+                    | metadata::BundleStatus::Waiting(until) => {
                         let until = *until;
-                        Some((metadata, bundle, until))
+                        Some((bundle, until))
                     }
                     _ => None,
                 })
@@ -892,7 +908,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_for_collection(
         &self,
         destination: bpv7::Eid,
-    ) -> storage::Result<Vec<(bpv7::Metadata, bpv7::Bundle)>> {
+    ) -> storage::Result<Vec<metadata::Bundle>> {
         unpack_bundles(
             self.connection
                 .lock()
@@ -931,14 +947,10 @@ impl storage::MetadataStorage for Storage {
                     WHERE status = ?1 AND destination = ?2;"#,
                 )?
                 .query((
-                    bundle_status_to_parts(&bpv7::BundleStatus::CollectionPending).0,
+                    bundle_status_to_parts(&metadata::BundleStatus::CollectionPending).0,
                     encode_eid(&destination),
                 ))?,
         )
-        .map(|v| {
-            v.into_iter()
-                .map(|(_, metadata, bundle)| (metadata, bundle))
-                .collect()
-        })
+        .map(|v| v.into_iter().map(|(_, bundle)| bundle).collect())
     }
 }
