@@ -150,8 +150,8 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
     }
 }
 
-pub fn eid_from_cbor(data: &[u8]) -> Result<(Eid, usize, Vec<u64>), EidError> {
-    cbor::decode::parse_array(data, |a, tags| {
+pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidError> {
+    cbor::decode::try_parse_array(data, |a, tags| {
         if a.count().is_none() {
             trace!("Parsing EID array of indefinite length")
         }
@@ -192,8 +192,8 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<(Eid, usize, Vec<u64>), EidError> {
         if a.end()?.is_none() {
             Err(EidError::AdditionalItems)
         } else {
-            Ok((eid, tags.to_vec()))
+            Ok((eid, tags))
         }
     })
-    .map(|((eid, tags), len)| (eid, len, tags))
+    .map(|r| r.map(|((eid, tags), len)| (eid, len, tags)))
 }

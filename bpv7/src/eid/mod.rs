@@ -109,7 +109,7 @@ impl cbor::encode::ToCbor for Eid {
 impl cbor::decode::FromCbor for Eid {
     type Error = error::EidError;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
         parse::eid_from_cbor(data)
     }
 }

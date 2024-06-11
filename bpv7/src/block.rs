@@ -18,8 +18,8 @@ pub struct BlockWithNumber {
 impl cbor::decode::FromCbor for BlockWithNumber {
     type Error = BundleError;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        cbor::decode::parse_array(data, |block, tags| {
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |block, tags| {
             if block.count().is_none() {
                 trace!("Parsing extension block of indefinite length")
             }
@@ -75,9 +75,9 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                         data_len,
                     },
                 },
-                tags.to_vec(),
+                tags,
             ))
         })
-        .map(|((block, tags), len)| (block, len, tags))
+        .map(|r| r.map(|((block, tags), len)| (block, len, tags)))
     }
 }

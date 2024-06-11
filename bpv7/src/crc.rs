@@ -56,9 +56,12 @@ impl From<CrcType> for u64 {
 impl cbor::decode::FromCbor for CrcType {
     type Error = CrcError;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        let (code, len, tags) = cbor::decode::parse_detail::<u64>(data)?;
-        Ok((code.try_into()?, len, tags))
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+        if let Some((v, len, tags)) = u64::try_from_cbor_tagged(data)? {
+            Ok(Some((v.try_into()?, len, tags)))
+        } else {
+            Ok(None)
+        }
     }
 }
 

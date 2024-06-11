@@ -191,8 +191,8 @@ impl cbor::encode::ToCbor for BundleStatusReport {
 impl cbor::decode::FromCbor for BundleStatusReport {
     type Error = self::StatusReportError;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        cbor::decode::parse_array(data, |a, tags| {
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, tags| {
             let mut report = Self::default();
             a.parse_array(|a, _, tags| {
                 if !tags.is_empty() {
@@ -237,9 +237,9 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                     total_len: a.parse().map_field_err("Fragment length")?,
                 });
             }
-            Ok((report, tags.to_vec()))
+            Ok((report, tags))
         })
-        .map(|((t, tags), len)| (t, len, tags))
+        .map(|r| r.map(|((t, tags), len)| (t, len, tags)))
     }
 }
 
@@ -262,19 +262,19 @@ impl cbor::encode::ToCbor for AdministrativeRecord {
 impl cbor::decode::FromCbor for AdministrativeRecord {
     type Error = self::StatusReportError;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        cbor::decode::parse_array(data, |a, tags| {
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, tags| {
             match a.parse().map_field_err("Record Type Code")? {
                 1u64 => {
                     let report = a.parse().map_field_err("Bundle Status Report")?;
                     if a.end()?.is_none() {
                         return Err(StatusReportError::AdditionalItems);
                     }
-                    Ok((Self::BundleStatusReport(report), tags.to_vec()))
+                    Ok((Self::BundleStatusReport(report), tags))
                 }
                 v => Err(StatusReportError::UnknownAdminRecordType(v)),
             }
         })
-        .map(|((t, tags), len)| (t, len, tags))
+        .map(|r| r.map(|((t, tags), len)| (t, len, tags)))
     }
 }

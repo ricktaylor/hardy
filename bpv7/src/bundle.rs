@@ -1,5 +1,6 @@
 use super::*;
 use block::*;
+use cbor::decode::FromCbor;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -206,7 +207,7 @@ fn parse_primary_block(
 }
 
 fn parse_previous_node(block: &Block, data: &[u8]) -> Result<Eid, BundleError> {
-    cbor::decode::parse_detail(data)
+    Eid::from_cbor_tagged(data)
         .map_field_err("Previous Node ID")
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
@@ -221,7 +222,7 @@ fn parse_previous_node(block: &Block, data: &[u8]) -> Result<Eid, BundleError> {
 }
 
 fn parse_bundle_age(block: &Block, data: &[u8]) -> Result<u64, BundleError> {
-    cbor::decode::parse_detail(data)
+    u64::from_cbor_tagged(data)
         .map_field_err("Bundle Age")
         .map(|(v, end, tags)| {
             if !tags.is_empty() {
@@ -357,8 +358,8 @@ impl Bundle {
 impl cbor::decode::FromCbor for ValidBundle {
     type Error = BundleError;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        let ((bundle, valid, tags), len) = cbor::decode::parse_array(data, |blocks, tags| {
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+        let r = cbor::decode::try_parse_array(data, |blocks, tags| {
             // Parse Primary block
             let (((mut bundle, mut valid), block_start), block_len) = blocks
                 .parse_array(|block, block_start, tags| {
@@ -390,17 +391,25 @@ impl cbor::decode::FromCbor for ValidBundle {
                 valid = bundle.parse_blocks(blocks, data).is_ok()
             }
 
-            Ok::<_, BundleError>((bundle, valid, tags.to_vec()))
+            Ok::<_, BundleError>((bundle, valid, tags))
         })?;
 
-        if valid {
-            if len < data.len() {
-                Err(BundleError::AdditionalData)
-            } else {
-                Ok((ValidBundle::Valid(bundle), len, tags.to_vec()))
-            }
-        } else {
-            Ok((ValidBundle::Invalid(bundle), len, tags.to_vec()))
+        let Some(((bundle, mut valid, tags), len)) = r else {
+            return Ok(None);
+        };
+
+        if len < data.len() {
+            valid = false;
         }
+
+        Ok(Some((
+            if valid {
+                ValidBundle::Valid(bundle)
+            } else {
+                ValidBundle::Invalid(bundle)
+            },
+            len,
+            tags,
+        )))
     }
 }

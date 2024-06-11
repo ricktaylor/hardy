@@ -128,11 +128,11 @@ fn rfc_tests() {
     );
     assert_eq!(
         (1363896240, 6, vec![1]),
-        parse_detail(&hex!("c11a514b67b0")).unwrap()
+        i32::from_cbor_tagged(&hex!("c11a514b67b0")).unwrap()
     );
     assert_eq!(
         (1363896240.5, 10, vec![1]),
-        parse_detail(&hex!("c1fb41d452d9ec200000")).unwrap()
+        f32::from_cbor_tagged(&hex!("c1fb41d452d9ec200000")).unwrap()
     );
     assert_eq!(
         (true, 6),

@@ -32,9 +32,12 @@ impl cbor::encode::ToCbor for DtnTime {
 impl cbor::decode::FromCbor for DtnTime {
     type Error = cbor::decode::Error;
 
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error> {
-        let (millisecs, len, tags) = cbor::decode::parse_detail(data)?;
-        Ok((Self { millisecs }, len, tags))
+    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+        if let Some((millisecs, len, tags)) = u64::try_from_cbor_tagged(data)? {
+            Ok(Some((Self { millisecs }, len, tags)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
