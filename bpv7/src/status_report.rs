@@ -121,7 +121,7 @@ impl TryFrom<u64> for StatusReportReasonCode {
 #[derive(Debug)]
 pub struct StatusAssertion(pub Option<DtnTime>);
 
-impl cbor::encode::ToCbor for StatusAssertion {
+impl cbor::encode::ToCbor for &StatusAssertion {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         if let Some(timestamp) = self.0 {
             encoder.emit_array(Some(2), |a| {
@@ -144,28 +144,28 @@ pub struct BundleStatusReport {
     pub reason: StatusReportReasonCode,
 }
 
-impl cbor::encode::ToCbor for BundleStatusReport {
+impl cbor::encode::ToCbor for &BundleStatusReport {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         encoder.emit_array(Some(self.bundle_id.fragment_info.map_or(4, |_| 6)), |a| {
             // Statuses
             a.emit_array(Some(4), |a| {
                 // This is a horrible format!
-                if let Some(received) = self.received {
+                if let Some(received) = &self.received {
                     a.emit(received)
                 } else {
                     a.emit(false)
                 }
-                if let Some(forwarded) = self.forwarded {
+                if let Some(forwarded) = &self.forwarded {
                     a.emit(forwarded)
                 } else {
                     a.emit(false)
                 }
-                if let Some(delivered) = self.delivered {
+                if let Some(delivered) = &self.delivered {
                     a.emit(delivered)
                 } else {
                     a.emit(false)
                 }
-                if let Some(deleted) = self.deleted {
+                if let Some(deleted) = &self.deleted {
                     a.emit(deleted)
                 } else {
                     a.emit(false)
@@ -175,9 +175,9 @@ impl cbor::encode::ToCbor for BundleStatusReport {
             // Reason code
             a.emit::<u64>(self.reason.into());
             // Source EID
-            a.emit(self.bundle_id.source);
+            a.emit(&self.bundle_id.source);
             // Creation Timestamp
-            a.emit(self.bundle_id.timestamp);
+            a.emit(&self.bundle_id.timestamp);
 
             if let Some(fragment_info) = &self.bundle_id.fragment_info {
                 // Add fragment info
@@ -248,14 +248,20 @@ pub enum AdministrativeRecord {
     BundleStatusReport(BundleStatusReport),
 }
 
-impl cbor::encode::ToCbor for AdministrativeRecord {
+impl cbor::encode::ToCbor for &AdministrativeRecord {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| match self {
-            Self::BundleStatusReport(report) => {
+            AdministrativeRecord::BundleStatusReport(report) => {
                 a.emit(1);
                 a.emit(report);
             }
         })
+    }
+}
+
+impl cbor::encode::ToCbor for AdministrativeRecord {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        encoder.emit(&self)
     }
 }
 

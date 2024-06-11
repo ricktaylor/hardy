@@ -172,7 +172,7 @@ impl Storage {
 fn encode_eid(eid: &bpv7::Eid) -> rusqlite::types::Value {
     match eid {
         bpv7::Eid::Null => rusqlite::types::Value::Null,
-        _ => rusqlite::types::Value::Blob(cbor::encode::emit(eid.clone())),
+        _ => rusqlite::types::Value::Blob(cbor::encode::emit(eid)),
     }
 }
 

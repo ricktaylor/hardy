@@ -1,7 +1,7 @@
 use super::*;
 use thiserror::Error;
 
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct CreationTimestamp {
     pub creation_time: Option<DtnTime>,
     pub sequence_number: u64,
@@ -47,7 +47,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
-impl cbor::encode::ToCbor for CreationTimestamp {
+impl cbor::encode::ToCbor for &CreationTimestamp {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| {
             a.emit(self.creation_time);

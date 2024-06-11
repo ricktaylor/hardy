@@ -137,11 +137,11 @@ impl Builder {
                     // CRC
                     a.emit::<u64>(self.crc_type.into());
                     // EIDs
-                    a.emit(self.destination.clone());
-                    a.emit(self.source.clone());
-                    a.emit(self.report_to.clone());
+                    a.emit(&self.destination);
+                    a.emit(&self.source);
+                    a.emit(&self.report_to);
                     // Timestamp
-                    a.emit(timestamp);
+                    a.emit(&timestamp);
                     // Lifetime
                     a.emit(self.lifetime);
                 },
