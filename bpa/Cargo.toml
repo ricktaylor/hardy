@@ -15,7 +15,6 @@ localdisk-storage = ["dep:hardy-localdisk-storage"]
 packaged-installation = []
 
 [dependencies]
-trace-err = { path = "../trace-err" }
 hardy-bpa-api = { path = "../bpa-api" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
@@ -46,6 +45,7 @@ notify-debouncer-full = "0.3.1"
 notify = { version = "6.1.1", default-features = false, features = [
     "macos_kqueue",
 ] }
+trace-err = "0.1.0"
 
 [build-dependencies]
 built = "0.7.3"

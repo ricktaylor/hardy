@@ -10,7 +10,6 @@ members = [
     "localdisk-storage",
     "proto",
     "sqlite-storage",
-    "trace-err",
 ]
 
 [workspace.package]

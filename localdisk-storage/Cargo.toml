@@ -12,7 +12,6 @@ default = ["mmap"]
 mmap = ["dep:memmap2"]
 
 [dependencies]
-trace-err = { path = "../trace-err" }
 hardy-bpa-api = { path = "../bpa-api" }
 tokio = { version = "1.38.0", features = ["rt-multi-thread", "fs"] }
 serde = { version = "1.0.203", features = ["derive"] }
@@ -23,6 +22,7 @@ tracing = "0.1.40"
 memmap2 = { version = "0.9.4", optional = true }
 time = "0.3.36"
 cfg-if = "1.0.0"
+trace-err = "0.1.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.155"
