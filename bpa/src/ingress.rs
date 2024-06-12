@@ -55,7 +55,7 @@ impl Ingress {
         self.receive_channel
             .send((storage_name, Some(received_at)))
             .await
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     pub async fn enqueue_receive_bundle(
@@ -67,15 +67,12 @@ impl Ingress {
         self.receive_channel
             .send((storage_name.to_string(), received_at))
             .await
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     pub async fn recheck_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
         // Put bundle into ingress channel
-        self.restart_channel
-            .send(bundle)
-            .await
-            .map_err(|e| e.into())
+        self.restart_channel.send(bundle).await.map_err(Into::into)
     }
 
     #[instrument(skip_all)]

@@ -132,7 +132,7 @@ impl Dispatcher {
 
     async fn enqueue_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
         // Put bundle into channel
-        self.tx.send(bundle).await.map_err(|e| e.into())
+        self.tx.send(bundle).await.map_err(Into::into)
     }
 
     #[instrument(skip_all)]
@@ -650,7 +650,7 @@ impl Dispatcher {
         editor
             .build(data)
             .map(|(_, data)| (data, is_time_sensitive))
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self))]

@@ -221,9 +221,7 @@ impl BundleStorage for Storage {
     #[instrument(skip(self))]
     async fn remove(&self, storage_name: &str) -> storage::Result<()> {
         let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
-        tokio::fs::remove_file(&file_path)
-            .await
-            .map_err(|e| e.into())
+        tokio::fs::remove_file(&file_path).await.map_err(Into::into)
     }
 
     #[instrument(skip(self, data))]
@@ -243,7 +241,7 @@ impl BundleStorage for Storage {
         // Perform blocking I/O on dedicated worker task
         tokio::task::spawn_blocking(move || write(file_path_cloned, data))
             .await?
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 }
 

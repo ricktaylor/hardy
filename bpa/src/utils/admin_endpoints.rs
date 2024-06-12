@@ -38,7 +38,7 @@ impl DtnNodeId {
         // Roundtrip via String for PctEncoding safety
         let mut s = self.to_string();
         s.push_str(demux);
-        s.parse::<Eid>().map_err(|e| e.into())
+        s.parse::<Eid>().map_err(Into::into)
     }
 }
 

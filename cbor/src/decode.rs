@@ -449,7 +449,7 @@ where
             let (t, len) = parse_data_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
             f(
-                Value::Text(std::str::from_utf8(t).map_err(|e| e.into())?, false),
+                Value::Text(std::str::from_utf8(t).map_err(Into::into)?, false),
                 tags,
             )
         }
@@ -458,7 +458,7 @@ where
             offset += 1;
             let mut a = Array::new(data, None, &mut offset);
             let r = f(Value::Array(&mut a), tags)?;
-            a.complete().map(|_| r).map_err(|e| e.into())
+            a.complete().map(|_| r).map_err(Into::into)
         }
         (4, minor) => {
             /* Known length array */
@@ -469,14 +469,14 @@ where
             }
             let mut a = Array::new(data, Some(count as usize), &mut offset);
             let r = f(Value::Array(&mut a), tags)?;
-            a.complete().map(|_| r).map_err(|e| e.into())
+            a.complete().map(|_| r).map_err(Into::into)
         }
         (5, 31) => {
             /* Indefinite length map */
             offset += 1;
             let mut m = Map::new(data, None, &mut offset);
             let r = f(Value::Map(&mut m), tags)?;
-            m.complete().map(|_| r).map_err(|e| e.into())
+            m.complete().map(|_| r).map_err(Into::into)
         }
         (5, minor) => {
             /* Known length array */
@@ -487,7 +487,7 @@ where
             }
             let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
             let r = f(Value::Map(&mut m), tags)?;
-            m.complete().map(|_| r).map_err(|e| e.into())
+            m.complete().map(|_| r).map_err(Into::into)
         }
         (6, _) => unreachable!(),
         (7, 20) => {

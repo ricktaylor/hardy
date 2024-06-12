@@ -370,7 +370,7 @@ fn complete_replace(
         .prepare_cached(r#"DELETE FROM replacement_bundles WHERE bundle_id = ?1;"#)?
         .execute([bundle_id])
         .map(|_| Some(bundle_id))
-        .map_err(|e| e.into())
+        .map_err(Into::into)
 }
 
 #[async_trait]
@@ -550,7 +550,7 @@ impl storage::MetadataStorage for Storage {
                 DROP TABLE temp.restart_subset;
                 DROP TABLE temp.restart_bundles;"#,
             )
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -708,7 +708,7 @@ impl storage::MetadataStorage for Storage {
         trans
             .commit()
             .map(|_| bundle_id.is_some())
-            .map_err(|e| e.into())
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -786,7 +786,7 @@ impl storage::MetadataStorage for Storage {
                 [storage_name],
                 |row| columns_to_bundle_status(row,0,1,2),
             )
-            .optional().map_err(|e| e.into())
+            .optional().map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -844,7 +844,7 @@ impl storage::MetadataStorage for Storage {
         };
 
         // Commit the transaction
-        trans.commit().map_err(|e| e.into())
+        trans.commit().map_err(Into::into)
     }
 
     #[instrument(skip(self))]
