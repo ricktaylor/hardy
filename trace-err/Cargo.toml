@@ -9,3 +9,6 @@ crate-type = ["rlib"]
 
 [dependencies]
 tracing = "0.1.40"
+
+[dev-dependencies]
+tracing-subscriber = "0.3.18"

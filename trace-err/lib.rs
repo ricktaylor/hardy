@@ -35,3 +35,29 @@ impl<T> TraceErrOption<T> for core::option::Option<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tracing_subscriber;
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    fn setup() {
+        tracing_subscriber::fmt::init();
+    }
+
+    #[test]
+    #[should_panic(expected = "We caught: \"An Error!\"")]
+    fn test_expect() {
+        INIT.call_once(setup);
+        Result::<(), &str>::Err("An Error!").trace_expect("We caught");
+    }
+
+    #[test]
+    #[should_panic(expected = "It's None!")]
+    fn test_unwrap() {
+        INIT.call_once(setup);
+        let _ = Option::<()>::None.trace_expect("It's None!");
+    }
+}
