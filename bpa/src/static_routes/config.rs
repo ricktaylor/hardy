@@ -12,6 +12,9 @@ pub struct Config {
 
     #[serde(default = "Config::default_watch")]
     pub watch: bool,
+
+    #[serde(default = "Config::default_protocol_id")]
+    pub protocol_id: String,
 }
 
 impl Config {
@@ -48,5 +51,9 @@ impl Config {
 
     fn default_watch() -> bool {
         true
+    }
+
+    fn default_protocol_id() -> String {
+        "static_routes".to_string()
     }
 }

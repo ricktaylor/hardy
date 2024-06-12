@@ -12,9 +12,6 @@ use tokio::sync::mpsc::*;
 mod config;
 mod parse;
 
-// This ID of all routes added by this module
-const ID: &str = "static";
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct StaticRoute {
     priority: Option<u32>,
@@ -71,7 +68,7 @@ impl StaticRoutes {
         // Drop routes
         for k in drop_routes {
             self.routes.remove(&k);
-            self.fib.remove(ID, &k).await;
+            self.fib.remove(&self.config.protocol_id, &k).await;
         }
 
         // Add routes
@@ -79,7 +76,7 @@ impl StaticRoutes {
             if let Err(e) = self
                 .fib
                 .add(
-                    ID.to_string(),
+                    self.config.protocol_id.clone(),
                     &k,
                     v.priority.unwrap_or(self.config.priority),
                     v.action.clone(),
