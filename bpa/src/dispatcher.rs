@@ -1022,39 +1022,37 @@ impl Dispatcher {
             return Ok(None);
         };
 
-        // Double check that we are returning something valid
-        if let metadata::BundleStatus::CollectionPending = &bundle.metadata.status {
-            let expiry = bundle.expiry();
-            if expiry <= time::OffsetDateTime::now_utc() || bundle.bundle.destination != destination
-            {
-                return Ok(None);
-            }
-
-            // Get the data!
-            let Some(data) = self.load_data(&bundle).await? else {
-                // Bundle data was deleted sometime during processing
-                return Ok(None);
-            };
-
-            // By the time we get here, we're safe to report delivery
-            self.report_bundle_delivery(&bundle).await?;
-
-            // Prepare the response
-            let response = CollectResponse {
-                bundle_id: bundle.bundle.id.to_key(),
-                data: (*data).as_ref().to_vec(),
-                expiry,
-                app_ack_requested: bundle.bundle.flags.app_ack_requested,
-            };
-
-            // And we can now tombstone the bundle
-            self.store
-                .remove(&bundle.metadata.storage_name)
-                .await
-                .map(|_| Some(response))
-        } else {
-            Ok(None)
+        if bundle.bundle.destination != destination || bundle.has_expired() {
+            return Ok(None);
         }
+
+        // Double check that we are returning something valid
+        let metadata::BundleStatus::CollectionPending = &bundle.metadata.status else {
+            return Ok(None);
+        };
+
+        // Get the data!
+        let Some(data) = self.load_data(&bundle).await? else {
+            // Bundle data was deleted sometime during processing
+            return Ok(None);
+        };
+
+        // By the time we get here, we're safe to report delivery
+        self.report_bundle_delivery(&bundle).await?;
+
+        // Prepare the response
+        let response = CollectResponse {
+            bundle_id: bundle.bundle.id.to_key(),
+            data: (*data).as_ref().to_vec(),
+            expiry: bundle.expiry(),
+            app_ack_requested: bundle.bundle.flags.app_ack_requested,
+        };
+
+        // And we can now tombstone the bundle
+        self.store
+            .remove(&bundle.metadata.storage_name)
+            .await
+            .map(|_| Some(response))
     }
 
     #[instrument(skip(self))]
