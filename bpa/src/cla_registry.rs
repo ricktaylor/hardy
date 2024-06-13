@@ -84,6 +84,8 @@ impl ClaRegistry {
             }
         }
 
+        info!("Registered new CLA: {}/{}", request.name, request.ident);
+
         let cla = Arc::new(Cla {
             ident: request.ident,
             name: request.name,
@@ -103,7 +105,10 @@ impl ClaRegistry {
 
         clas.remove(&request.handle)
             .ok_or(tonic::Status::not_found("No such CLA registered"))
-            .map(|_| UnregisterClaResponse {})
+            .map(|cla| {
+                info!("Unregistered CLA: {}/{}", cla.name, cla.ident);
+                UnregisterClaResponse {}
+            })
     }
 
     #[instrument(skip(self))]
