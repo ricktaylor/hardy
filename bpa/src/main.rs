@@ -32,7 +32,11 @@ async fn main() {
 
     // Init logger
     utils::logger::init(&config);
-    info!("Version {} starting...", built_info::PKG_VERSION);
+    info!(
+        "{} version {} starting...",
+        built_info::PKG_NAME,
+        built_info::PKG_VERSION
+    );
     info!("{config_source}");
 
     // Get administrative endpoints

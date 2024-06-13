@@ -1,6 +1,6 @@
 [package]
 name = "hardy-bpa"
-description = "A BPv7 DTN Bundle process agent"
+description = "A BPv7 DTN Bundle processing agent"
 version = "0.1.0"
 edition.workspace = true
 
