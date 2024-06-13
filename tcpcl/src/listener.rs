@@ -1,0 +1,188 @@
+use super::*;
+use futures::sink::SinkExt;
+use futures::stream::StreamExt;
+use std::net::SocketAddr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::codec::Decoder;
+use utils::settings;
+
+#[derive(Clone)]
+struct Config {
+    tcp_address: SocketAddr,
+    contact_timeout: u64,
+    use_tls: bool,
+}
+
+impl Config {
+    fn new(config: &config::Config) -> Self {
+        Self {
+            tcp_address: settings::get_with_default::<SocketAddr, SocketAddr>(
+                config,
+                "tcp_address",
+                "[::1]:4556".parse().unwrap(),
+            )
+            .trace_expect("Invalid 'tcp_address' value in configuration"),
+            contact_timeout: settings::get_with_default(config, "contact_timeout", 15u64)
+                .trace_expect("Invalid 'contact_timeout' value in configuration"),
+            use_tls: false,
+        }
+    }
+}
+
+#[instrument(skip(config, cancel_token))]
+async fn new_passive_connection(
+    config: Config,
+    mut stream: tokio::net::TcpStream,
+    addr: SocketAddr,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    // Receive contact header
+    let mut buffer = vec![0u8; 6];
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(config.contact_timeout),
+        stream.read_exact(&mut buffer),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            // Parse contact header
+            if buffer[0..4] != *b"dtn!" {
+                return warn!("Invalid contact header from {addr}");
+            }
+
+            info!("Contact header received from {addr}");
+
+            // Always send our contact header in reply!
+            if let Err(e) = stream
+                .write_all(&[
+                    b'd',
+                    b't',
+                    b'n',
+                    b'!',
+                    4,
+                    if config.use_tls { 1 } else { 0 },
+                ])
+                .await
+            {
+                return error!("Failed to send contact header: {e}");
+            }
+
+            if buffer[4] != 4 {
+                warn!("Unsupported protocol version {}", buffer[4]);
+
+                // Send a SESS_TERM
+                let mut transport = codec::MessageCodec::new_framed(stream);
+                if let Err(e) = transport
+                    .send(codec::Message::SessionTerm(codec::SessionTermMessage {
+                        message_flags: codec::SessionTermMessageFlags::default(),
+                        reason_code: codec::SessionTermReasonCode::VersionMismatch.into(),
+                    }))
+                    .await
+                {
+                    return error!("Failed to send SESS_TERM message: {e}");
+                }
+
+                // Graceful shutdown - Check this call shutdown()
+                if let Err(e) = transport.close().await {
+                    return error!("Failed to shutdown stream: {e:?}");
+                }
+
+                // Read the SESS_TERM reply message
+                tokio::select! {
+                    r = tokio::time::timeout(
+                        tokio::time::Duration::from_secs(config.contact_timeout),
+                        transport.next(),
+                    ) => match r {
+                        Ok(Some(Ok(codec::Message::SessionTerm(codec::SessionTermMessage{
+                            message_flags: codec::SessionTermMessageFlags{reply: true},
+                            reason_code: codec::SessionTermReasonCode::VersionMismatch
+                        })))) => {
+                            trace!("Received SESS_TERM reply message with matching reason code");
+                        }
+                        Ok(Some(Ok(m))) => {
+                            warn!("Received unexpected message type {m:?} while waiting for SESS_TERM reply message");
+                        }
+                        Ok(Some(Err(e))) => {
+                            error!("Failed to read SESS_TERM reply message: {e:?}");
+                        }
+                        Ok(None) => {
+                            warn!("Other end hung up while we waited for SESS_TERM reply message");
+                        }
+                        Err(_) => {
+                            warn!("Timeout waiting for SESS_TERM reply message");
+                        }
+                    },
+                    _ = cancel_token.cancelled() => {}
+                }
+                return;
+            }
+
+            if buffer[5] & 0xFE != 0 {
+                info!(
+                    "Reserved flags {:#x} set in contact header from {addr}",
+                    buffer[5]
+                );
+            }
+
+            if config.use_tls && buffer[5] & 1 != 0 {
+                // TLS!!
+                todo!();
+            } else {
+            }
+        }
+        Ok(Err(e)) => {
+            error!("Failed to read contact header: {e}");
+        }
+        Err(_) => {
+            warn!("Timeout reading contact header");
+        }
+    }
+}
+
+#[instrument(skip_all)]
+async fn accept(config: Config, cancel_token: tokio_util::sync::CancellationToken) {
+    let listener = tokio::net::TcpListener::bind(config.tcp_address)
+        .await
+        .trace_expect("Failed to bind TCP listener");
+
+    info!("TCP server listening on {}", config.tcp_address);
+
+    let mut task_set = tokio::task::JoinSet::new();
+
+    loop {
+        tokio::select! {
+            r = listener.accept() => match r {
+                Ok((stream, addr)) => {
+                    let cancel_token_cloned = cancel_token.clone();
+                    let config_cloned = config.clone();
+                    task_set.spawn(new_passive_connection(config_cloned,stream,addr, cancel_token_cloned));
+                }
+                Err(e) => {
+                    warn!("Failed to accept connection: {e}");
+                }
+            },
+            Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
+            _ = cancel_token.cancelled() => break
+        }
+    }
+
+    // Wait for all sub-tasks to complete
+    while let Some(r) = task_set.join_next().await {
+        r.trace_expect("Task terminated unexpectedly")
+    }
+}
+
+#[instrument(skip_all)]
+pub fn init(
+    config: &config::Config,
+    task_set: &mut tokio::task::JoinSet<()>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    let config = Config::new(config);
+    if config.contact_timeout > 60 {
+        warn!("RFC9174 specifies contact timeout SHOULD be a maximum of 60 seconds");
+    }
+
+    // Start listening
+    task_set.spawn(accept(config, cancel_token));
+}

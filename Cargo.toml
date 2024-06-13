@@ -10,6 +10,7 @@ members = [
     "localdisk-storage",
     "proto",
     "sqlite-storage",
+    "tcpcl",
 ]
 
 [workspace.package]
