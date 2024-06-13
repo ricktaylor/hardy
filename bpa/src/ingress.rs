@@ -30,15 +30,12 @@ impl Ingress {
 
         // Spawn a bundle receiver
         let ingress_cloned = ingress.clone();
-        task_set.spawn(async move {
-            Self::pipeline_pump(
-                ingress_cloned,
-                receive_channel_rx,
-                ingress_channel_rx,
-                cancel_token,
-            )
-            .await
-        });
+        task_set.spawn(Self::pipeline_pump(
+            ingress_cloned,
+            receive_channel_rx,
+            ingress_channel_rx,
+            cancel_token,
+        ));
 
         ingress
     }

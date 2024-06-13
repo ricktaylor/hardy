@@ -119,13 +119,15 @@ impl Dispatcher {
         // Spawn a bundle receiver
         let dispatcher_cloned = dispatcher.clone();
         let cancel_token_cloned = cancel_token.clone();
-        task_set.spawn(async move {
-            Self::pipeline_pump(dispatcher_cloned, rx, cancel_token_cloned).await
-        });
+        task_set.spawn(Self::pipeline_pump(
+            dispatcher_cloned,
+            rx,
+            cancel_token_cloned,
+        ));
 
         // Spawn a waiter
         let dispatcher_cloned = dispatcher.clone();
-        task_set.spawn(async move { Self::check_waiting(dispatcher_cloned, cancel_token).await });
+        task_set.spawn(Self::check_waiting(dispatcher_cloned, cancel_token));
 
         dispatcher
     }
