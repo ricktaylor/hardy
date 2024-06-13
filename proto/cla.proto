@@ -54,6 +54,23 @@ message ConfirmForwardingRequest {
 message ConfirmForwardingResponse {
 }
 
+message AddNeighbourRequest {
+    uint32 Handle = 1;
+    uint32 Priority = 2;
+    string Neighbour = 3;
+}
+
+message AddNeighbourResponse {
+}
+
+message RemoveNeighbourRequest {
+    uint32 Handle = 1;
+    string Neighbour = 2;
+}
+
+message RemoveNeighbourResponse {
+}
+
 service cla {
     rpc ForwardBundle(ForwardBundleRequest) returns (ForwardBundleResponse);
 }
@@ -72,21 +89,4 @@ message ForwardBundleResponse {
     }
     ForwardingResult result = 1;
     optional google.protobuf.Timestamp delay = 2;
-}
-
-message AddNeighbourRequest {
-    uint32 Handle = 1;
-    uint32 Priority = 2;
-    string Neighbour = 3;
-}
-
-message AddNeighbourResponse {
-}
-
-message RemoveNeighbourRequest {
-    uint32 Handle = 1;
-    string Neighbour = 2;
-}
-
-message RemoveNeighbourResponse {
 }
