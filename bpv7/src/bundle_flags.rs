@@ -15,7 +15,7 @@ pub struct BundleFlags {
 
 impl From<u64> for BundleFlags {
     fn from(value: u64) -> Self {
-        let mut flags = BundleFlags::default();
+        let mut flags = Self::default();
         for b in 0..=20 {
             if value & (1 << b) != 0 {
                 match b {

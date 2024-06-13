@@ -29,7 +29,7 @@ impl From<BlockFlags> for u64 {
 
 impl From<u64> for BlockFlags {
     fn from(value: u64) -> Self {
-        let mut flags = BlockFlags::default();
+        let mut flags = Self::default();
         for b in 0..=6 {
             if value & (1 << b) != 0 {
                 match b {
