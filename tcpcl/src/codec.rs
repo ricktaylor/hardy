@@ -224,7 +224,7 @@ impl From<SessionInitExtensionFlags> for u8 {
 |      Reason Code (U8)       |
 +-----------------------------+ */
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SessionTermMessage {
     pub message_flags: SessionTermMessageFlags,
     pub reason_code: SessionTermReasonCode,
@@ -280,8 +280,9 @@ impl From<SessionTermMessageFlags> for u8 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum SessionTermReasonCode {
+    #[default]
     Unknown,
     IdleTimeout,
     VersionMismatch,
@@ -573,6 +574,20 @@ pub enum Message {
     TransferAck(TransferAckMessage),
     TransferRefuse(TransferRefuseMessage),
     Reject(MessageRejectMessage),
+}
+
+impl From<Message> for MessageType {
+    fn from(value: Message) -> Self {
+        match value {
+            Message::SessionInit(_) => MessageType::SESS_INIT,
+            Message::SessionTerm(_) => MessageType::SESS_TERM,
+            Message::Keepalive => MessageType::KEEPALIVE,
+            Message::TransferSegment(_) => MessageType::XFER_SEGMENT,
+            Message::TransferAck(_) => MessageType::XFER_ACK,
+            Message::TransferRefuse(_) => MessageType::XFER_REFUSE,
+            Message::Reject(_) => MessageType::MSG_REJECT,
+        }
+    }
 }
 
 /*

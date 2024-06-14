@@ -3,7 +3,6 @@ use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_util::codec::Decoder;
 use utils::settings;
 
 #[derive(Clone)]
@@ -30,7 +29,7 @@ impl Config {
 }
 
 #[instrument(skip(config, cancel_token))]
-async fn new_passive_connection(
+async fn new_contact(
     config: Config,
     mut stream: tokio::net::TcpStream,
     addr: SocketAddr,
@@ -70,49 +69,20 @@ async fn new_passive_connection(
             if buffer[4] != 4 {
                 warn!("Unsupported protocol version {}", buffer[4]);
 
-                // Send a SESS_TERM
+                // Terminate session
                 let mut transport = codec::MessageCodec::new_framed(stream);
-                if let Err(e) = transport
-                    .send(codec::Message::SessionTerm(codec::SessionTermMessage {
-                        message_flags: codec::SessionTermMessageFlags::default(),
-                        reason_code: codec::SessionTermReasonCode::VersionMismatch.into(),
-                    }))
-                    .await
-                {
-                    return error!("Failed to send SESS_TERM message: {e}");
-                }
-
-                // Graceful shutdown - Check this call shutdown()
-                if let Err(e) = transport.close().await {
-                    return error!("Failed to shutdown stream: {e:?}");
-                }
-
-                // Read the SESS_TERM reply message
-                tokio::select! {
-                    r = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(config.contact_timeout),
-                        transport.next(),
-                    ) => match r {
-                        Ok(Some(Ok(codec::Message::SessionTerm(codec::SessionTermMessage{
-                            message_flags: codec::SessionTermMessageFlags{reply: true},
-                            reason_code: codec::SessionTermReasonCode::VersionMismatch
-                        })))) => {
-                            trace!("Received SESS_TERM reply message with matching reason code");
-                        }
-                        Ok(Some(Ok(m))) => {
-                            warn!("Received unexpected message type {m:?} while waiting for SESS_TERM reply message");
-                        }
-                        Ok(Some(Err(e))) => {
-                            error!("Failed to read SESS_TERM reply message: {e:?}");
-                        }
-                        Ok(None) => {
-                            warn!("Other end hung up while we waited for SESS_TERM reply message");
-                        }
-                        Err(_) => {
-                            warn!("Timeout waiting for SESS_TERM reply message");
-                        }
+                if let Err(e) = session::send_session_term(
+                    &mut transport,
+                    codec::SessionTermMessage {
+                        reason_code: codec::SessionTermReasonCode::VersionMismatch,
+                        ..Default::default()
                     },
-                    _ = cancel_token.cancelled() => {}
+                    config.contact_timeout,
+                    &cancel_token,
+                )
+                .await
+                {
+                    warn!("Failed to send SESS_TERM message: {e}");
                 }
                 return;
             }
@@ -128,6 +98,18 @@ async fn new_passive_connection(
                 // TLS!!
                 todo!();
             } else {
+                let _session = match session::Session::new_passive(
+                    codec::MessageCodec::new_framed(stream),
+                    cancel_token,
+                )
+                .await
+                {
+                    Err(e) => {
+                        warn!("Failed to create session: {e}");
+                        return;
+                    }
+                    Ok(s) => s,
+                };
             }
         }
         Ok(Err(e)) => {
@@ -155,7 +137,7 @@ async fn accept(config: Config, cancel_token: tokio_util::sync::CancellationToke
                 Ok((stream, addr)) => {
                     let cancel_token_cloned = cancel_token.clone();
                     let config_cloned = config.clone();
-                    task_set.spawn(new_passive_connection(config_cloned,stream,addr, cancel_token_cloned));
+                    task_set.spawn(new_contact(config_cloned,stream,addr, cancel_token_cloned));
                 }
                 Err(e) => {
                     warn!("Failed to accept connection: {e}");

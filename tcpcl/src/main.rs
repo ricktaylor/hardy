@@ -1,7 +1,8 @@
 mod bpa;
 mod codec;
+mod grpc;
 mod listener;
-mod services;
+mod session;
 mod utils;
 
 // This is the generic Error type used almost everywhere
@@ -41,7 +42,7 @@ async fn main() {
     let (mut task_set, cancel_token) = utils::cancel::new_cancellable_set();
 
     // Init gRPC services
-    services::init(&config, &mut task_set, cancel_token.clone());
+    grpc::init(&config, &mut task_set, cancel_token.clone());
 
     // Connect to the BPA
     if !cancel_token.is_cancelled() {
