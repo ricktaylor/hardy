@@ -73,7 +73,7 @@ impl TryFrom<u8> for MessageType {
 |         Items (var.)        |
 +-----------------------------+ */
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SessionInitMessage {
     pub keepalive_interval: u16,
     pub segment_mru: u64,
@@ -224,7 +224,7 @@ impl From<SessionInitExtensionFlags> for u8 {
 |      Reason Code (U8)       |
 +-----------------------------+ */
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct SessionTermMessage {
     pub message_flags: SessionTermMessageFlags,
     pub reason_code: SessionTermReasonCode,
@@ -251,7 +251,7 @@ impl SessionTermMessage {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct SessionTermMessageFlags {
     pub reply: bool,
 }
@@ -280,7 +280,7 @@ impl From<SessionTermMessageFlags> for u8 {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub enum SessionTermReasonCode {
     #[default]
     Unknown,

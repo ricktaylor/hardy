@@ -77,6 +77,14 @@ impl Bpa {
             endpoint.disconnect().await;
         }
     }
+
+    pub async fn send(&self, bundle: Vec<u8>) -> Result<(), tonic::Status> {
+        self.endpoint
+            .as_ref()
+            .trace_expect("Called send on disconnected BPA endpoint")
+            .send(bundle)
+            .await
+    }
 }
 
 impl BpaEndpoint {
@@ -115,5 +123,18 @@ impl BpaEndpoint {
         {
             error!("Failed to unregister with BPA: {e}")
         }
+    }
+
+    pub async fn send(&self, bundle: Vec<u8>) -> Result<(), tonic::Status> {
+        self.channel
+            .lock()
+            .await
+            .receive_bundle(ReceiveBundleRequest {
+                handle: self.handle,
+                source: Vec::new(),
+                bundle,
+            })
+            .await
+            .map(|_| ())
     }
 }

@@ -1,14 +1,17 @@
 use super::*;
-use futures::sink::SinkExt;
-use futures::stream::StreamExt;
 use std::net::SocketAddr;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tower::{Service, ServiceExt};
 use utils::settings;
 
 #[derive(Clone)]
 struct Config {
     tcp_address: SocketAddr,
-    contact_timeout: u64,
+    contact_timeout: u16,
     use_tls: bool,
 }
 
@@ -21,24 +24,24 @@ impl Config {
                 "[::1]:4556".parse().unwrap(),
             )
             .trace_expect("Invalid 'tcp_address' value in configuration"),
-            contact_timeout: settings::get_with_default(config, "contact_timeout", 15u64)
+            contact_timeout: settings::get_with_default(config, "contact_timeout", 15u16)
                 .trace_expect("Invalid 'contact_timeout' value in configuration"),
             use_tls: false,
         }
     }
 }
 
-#[instrument(skip(config, cancel_token))]
 async fn new_contact(
     config: Config,
+    session_config: session::Config,
     mut stream: tokio::net::TcpStream,
     addr: SocketAddr,
     cancel_token: tokio_util::sync::CancellationToken,
-) {
+) -> Result<(), session::Error> {
     // Receive contact header
     let mut buffer = vec![0u8; 6];
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(config.contact_timeout),
+        tokio::time::Duration::from_secs(config.contact_timeout as u64),
         stream.read_exact(&mut buffer),
     )
     .await
@@ -46,13 +49,13 @@ async fn new_contact(
         Ok(Ok(_)) => {
             // Parse contact header
             if buffer[0..4] != *b"dtn!" {
-                return warn!("Invalid contact header from {addr}");
+                return Err(session::Error::InvalidContactHeader);
             }
 
-            info!("Contact header received from {addr}");
+            info!("Contact header received from {}", addr);
 
             // Always send our contact header in reply!
-            if let Err(e) = stream
+            stream
                 .write_all(&[
                     b'd',
                     b't',
@@ -61,17 +64,14 @@ async fn new_contact(
                     4,
                     if config.use_tls { 1 } else { 0 },
                 ])
-                .await
-            {
-                return error!("Failed to send contact header: {e}");
-            }
+                .await?;
 
             if buffer[4] != 4 {
                 warn!("Unsupported protocol version {}", buffer[4]);
 
                 // Terminate session
                 let mut transport = codec::MessageCodec::new_framed(stream);
-                if let Err(e) = session::send_session_term(
+                return session::send_session_term(
                     &mut transport,
                     codec::SessionTermMessage {
                         reason_code: codec::SessionTermReasonCode::VersionMismatch,
@@ -80,17 +80,13 @@ async fn new_contact(
                     config.contact_timeout,
                     &cancel_token,
                 )
-                .await
-                {
-                    warn!("Failed to send SESS_TERM message: {e}");
-                }
-                return;
+                .await;
             }
 
             if buffer[5] & 0xFE != 0 {
                 info!(
-                    "Reserved flags {:#x} set in contact header from {addr}",
-                    buffer[5]
+                    "Reserved flags {:#x} set in contact header from {}",
+                    buffer[5], addr,
                 );
             }
 
@@ -98,59 +94,109 @@ async fn new_contact(
                 // TLS!!
                 todo!();
             } else {
-                let _session = match session::Session::new_passive(
+                session::new_passive(
+                    session_config,
                     codec::MessageCodec::new_framed(stream),
                     cancel_token,
                 )
                 .await
-                {
-                    Err(e) => {
-                        warn!("Failed to create session: {e}");
-                        return;
-                    }
-                    Ok(s) => s,
-                };
             }
         }
-        Ok(Err(e)) => {
-            error!("Failed to read contact header: {e}");
-        }
-        Err(_) => {
-            warn!("Timeout reading contact header");
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => Err(session::Error::Timeout),
+    }
+}
+
+struct Listener {
+    listener: tokio::net::TcpListener,
+    ready: Option<(tokio::net::TcpStream, SocketAddr)>,
+}
+
+impl Listener {
+    fn new(listener: tokio::net::TcpListener) -> Self {
+        Self {
+            listener,
+            ready: None,
         }
     }
 }
 
+impl tower::Service<()> for Listener {
+    type Response = (tokio::net::TcpStream, SocketAddr);
+    type Error = std::io::Error;
+    type Future =
+        Pin<Box<dyn futures::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.listener.poll_accept(cx).map_ok(|(s, a)| {
+            self.ready = Some((s, a));
+        })
+    }
+
+    fn call(&mut self, _: ()) -> Self::Future {
+        let (s, a) = self.ready.take().trace_expect("poll_ready not called");
+        Box::pin(async move { Ok((s, a)) })
+    }
+}
+
 #[instrument(skip_all)]
-async fn accept(config: Config, cancel_token: tokio_util::sync::CancellationToken) {
-    let listener = tokio::net::TcpListener::bind(config.tcp_address)
-        .await
-        .trace_expect("Failed to bind TCP listener");
+async fn accept(
+    config: Config,
+    session_config: session::Config,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    let listener = Listener::new(
+        tokio::net::TcpListener::bind(config.tcp_address)
+            .await
+            .trace_expect("Failed to bind TCP listener"),
+    );
 
     info!("TCP server listening on {}", config.tcp_address);
+
+    // TODO: We can layer services here
+    let mut svc = tower::ServiceBuilder::new()
+        //.rate_limit(1024, std::time::Duration::from_secs(1))
+        .service(listener);
 
     let mut task_set = tokio::task::JoinSet::new();
 
     loop {
         tokio::select! {
-            r = listener.accept() => match r {
-                Ok((stream, addr)) => {
-                    let cancel_token_cloned = cancel_token.clone();
-                    let config_cloned = config.clone();
-                    task_set.spawn(new_contact(config_cloned,stream,addr, cancel_token_cloned));
+            // Wait for the service to be ready
+            r = svc.ready() => match r {
+                Ok(_) => {
+                    // Accept a new connection
+                    match svc.call(()).await {
+                        Ok((stream,addr)) => {
+                            // Spawn immediately to prevent head-of-line blocking
+                            let cancel_token_cloned = cancel_token.clone();
+                            let config_cloned = config.clone();
+                            let session_config_cloned = session_config.clone();
+                            task_set.spawn(async move {
+                                if let Err(e) = new_contact(config_cloned, session_config_cloned,stream, addr, cancel_token_cloned).await {
+                                    warn!("Failed to create session: {e}");
+                                }
+                            });
+                        }
+                        Err(e) => warn!("Failed to accept connection: {e}")
+                    }
                 }
                 Err(e) => {
-                    warn!("Failed to accept connection: {e}");
+                    warn!("Listener closed: {e}");
+                    break;
                 }
             },
-            Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
+            Some(r) = task_set.join_next() => {
+                r.trace_expect("Task terminated unexpectedly");
+                continue
+            }
             _ = cancel_token.cancelled() => break
         }
     }
 
     // Wait for all sub-tasks to complete
     while let Some(r) = task_set.join_next().await {
-        r.trace_expect("Task terminated unexpectedly")
+        r.trace_expect("Task terminated unexpectedly");
     }
 }
 
@@ -160,11 +206,13 @@ pub fn init(
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
+    let session_config = session::Config::new(config);
+
     let config = Config::new(config);
     if config.contact_timeout > 60 {
         warn!("RFC9174 specifies contact timeout SHOULD be a maximum of 60 seconds");
     }
 
     // Start listening
-    task_set.spawn(accept(config, cancel_token));
+    task_set.spawn(accept(config, session_config, cancel_token));
 }

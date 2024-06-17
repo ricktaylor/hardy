@@ -1,5 +1,6 @@
 mod bpa;
 mod codec;
+mod connection;
 mod grpc;
 mod listener;
 mod session;
