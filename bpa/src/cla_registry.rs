@@ -193,13 +193,19 @@ impl ClaRegistry {
     }
 }
 
+pub enum ForwardBundleResult {
+    Sent,
+    Pending(u32, Option<time::OffsetDateTime>),
+    Congested(time::OffsetDateTime),
+}
+
 impl Endpoint {
     #[instrument(skip(self))]
     pub async fn forward_bundle(
         &self,
         destination: &bpv7::Eid,
         bundle: Vec<u8>,
-    ) -> Result<(Option<u32>, Option<time::OffsetDateTime>), Error> {
+    ) -> Result<ForwardBundleResult, Error> {
         let r = self
             .inner
             .lock()
@@ -213,24 +219,27 @@ impl Endpoint {
             .into_inner();
 
         let delay = if let Some(t) = r.delay {
-            let delay = services::from_timestamp(t)?;
-            if delay <= time::OffsetDateTime::now_utc() {
-                None
-            } else {
-                Some(delay)
-            }
+            Some(services::from_timestamp(t)?)
         } else {
             None
         };
 
         // This is just horrible
         match r.result {
-            v if v == (forward_bundle_response::ForwardingResult::Sent as i32) => Ok((None, None)),
+            v if v == (forward_bundle_response::ForwardingResult::Sent as i32) => {
+                Ok(ForwardBundleResult::Sent)
+            }
             v if v == (forward_bundle_response::ForwardingResult::Pending as i32) => {
-                Ok((Some(self.handle), delay))
+                Ok(ForwardBundleResult::Pending(self.handle, delay))
             }
             v if v == (forward_bundle_response::ForwardingResult::Congested as i32) => {
-                Ok((None, delay))
+                if let Some(delay) = delay {
+                    Ok(ForwardBundleResult::Congested(delay))
+                } else {
+                    Ok(ForwardBundleResult::Congested(
+                        time::OffsetDateTime::now_utc(),
+                    ))
+                }
             }
             v => {
                 Err(tonic::Status::invalid_argument(format!("Invalid result {v} received")).into())

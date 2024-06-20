@@ -443,12 +443,12 @@ impl Dispatcher {
                     }
 
                     match e.forward_bundle(destination, data.clone().unwrap()).await {
-                        Ok((None, None)) => {
+                        Ok(cla_registry::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
                             self.report_bundle_forwarded(&bundle).await?;
                             return self.drop_bundle(bundle, None).await;
                         }
-                        Ok((Some(handle), until)) => {
+                        Ok(cla_registry::ForwardBundleResult::Pending(handle, until)) => {
                             // CLA will report successful forwarding
                             // Don't wait longer than expiry
                             let until = until.unwrap_or_else(|| {
@@ -464,11 +464,7 @@ impl Dispatcher {
                                 .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
                                 .await;
                         }
-                        Ok((None, until)) => {
-                            let until = until.unwrap_or_else(|| {
-                                warn!("CLA endpoint has not provided a suitable Congestion delay, defaulting to 10 seconds");
-                                time::OffsetDateTime::now_utc() + time::Duration::seconds(10)
-                            });
+                        Ok(cla_registry::ForwardBundleResult::Congested(until)) => {
                             trace!("CLA reported congestion, retry at: {until}");
 
                             // Remember the shortest wait for a retry, in case we have ECMP
