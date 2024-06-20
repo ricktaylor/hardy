@@ -31,6 +31,47 @@ impl Config {
     }
 }
 
+async fn send_session_term<T>(
+    transport: &mut T,
+    msg: codec::SessionTermMessage,
+    timeout: u16,
+    cancel_token: &tokio_util::sync::CancellationToken,
+) -> Result<(), session::Error>
+where
+    T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
+        + futures::SinkExt<codec::Message>
+        + std::marker::Unpin,
+    session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
+{
+    let mut expected_reply = msg.clone();
+    expected_reply.message_flags.reply = true;
+
+    // Send the SESS_TERM message
+    transport.send(codec::Message::SessionTerm(msg)).await?;
+
+    // Read the SESS_TERM reply message with timeout
+    loop {
+        match session::next_with_timeout(transport, timeout, cancel_token).await? {
+            codec::Message::SessionTerm(msg) if msg == expected_reply => {
+                return transport.close().await.map_err(Into::into);
+            }
+            msg => {
+                // TODO:  See https://www.rfc-editor.org/rfc/rfc9174.html#name-session-termination-message
+
+                warn!("Unexpected message while waiting for SESS_TERM reply: {msg:?}");
+
+                // Send a MSG_REJECT/Unexpected message
+                transport
+                    .send(codec::Message::Reject(codec::MessageRejectMessage {
+                        reason_code: codec::MessageRejectionReasonCode::Unexpected,
+                        rejected_message: codec::MessageType::from(msg) as u8,
+                    }))
+                    .await?;
+            }
+        }
+    }
+}
+
 async fn new_contact(
     config: Config,
     session_config: session::Config,
@@ -71,7 +112,7 @@ async fn new_contact(
 
                 // Terminate session
                 let mut transport = codec::MessageCodec::new_framed(stream);
-                return session::send_session_term(
+                return send_session_term(
                     &mut transport,
                     codec::SessionTermMessage {
                         reason_code: codec::SessionTermReasonCode::VersionMismatch,
@@ -96,6 +137,8 @@ async fn new_contact(
             } else {
                 session::new_passive(
                     session_config,
+                    addr,
+                    None,
                     codec::MessageCodec::new_framed(stream),
                     cancel_token,
                 )
@@ -174,7 +217,7 @@ async fn accept(
                             let session_config_cloned = session_config.clone();
                             task_set.spawn(async move {
                                 if let Err(e) = new_contact(config_cloned, session_config_cloned,stream, addr, cancel_token_cloned).await {
-                                    warn!("Failed to create session: {e}");
+                                    warn!("Contact failed: {e}");
                                 }
                             });
                         }
@@ -186,10 +229,7 @@ async fn accept(
                     break;
                 }
             },
-            Some(r) = task_set.join_next() => {
-                r.trace_expect("Task terminated unexpectedly");
-                continue
-            }
+            Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
             _ = cancel_token.cancelled() => break
         }
     }

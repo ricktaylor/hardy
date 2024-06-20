@@ -2,7 +2,7 @@ use super::*;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::{
-    bytes::{Buf, BufMut, BytesMut},
+    bytes::{Buf, BufMut, Bytes, BytesMut},
     codec::Decoder,
 };
 
@@ -100,7 +100,7 @@ impl SessionInitMessage {
             dst.put_u8(extension.flags.into());
             dst.put_u16(extension.item_type);
             dst.put_u32(extension.item_length);
-            dst.put(extension.item_value.as_slice());
+            dst.put(extension.item_value);
         }
         Ok(())
     }
@@ -152,7 +152,7 @@ impl SessionInitMessage {
                 flags,
                 item_type,
                 item_length,
-                item_value: src_cloned.split_to(item_length as usize).to_vec(),
+                item_value: src_cloned.split_to(item_length as usize).into(),
             });
             consumed += 5 + item_length as usize;
         }
@@ -181,12 +181,13 @@ pub struct SessionInitExtension {
     pub flags: SessionInitExtensionFlags,
     pub item_type: u16,
     pub item_length: u32,
-    pub item_value: Vec<u8>,
+    pub item_value: Bytes,
 }
 
 #[derive(Debug, Default)]
 pub struct SessionInitExtensionFlags {
     pub critical: bool,
+    pub reserved: u8,
 }
 
 impl From<u8> for SessionInitExtensionFlags {
@@ -196,9 +197,11 @@ impl From<u8> for SessionInitExtensionFlags {
             flags.critical = true;
         }
 
-        if value & 0xFE != 0 {
+        flags.reserved = value & 0xFE;
+        if flags.reserved != 0 {
             trace!(
-                "Parsing session initialization extension with reserved flag bits set: {value:#x}"
+                "Parsing session initialization extension with reserved flag bits set: {:#x}",
+                flags.reserved
             );
         }
         flags
@@ -254,6 +257,7 @@ impl SessionTermMessage {
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct SessionTermMessageFlags {
     pub reply: bool,
+    pub reserved: u8,
 }
 
 impl From<u8> for SessionTermMessageFlags {
@@ -263,8 +267,12 @@ impl From<u8> for SessionTermMessageFlags {
             flags.reply = true;
         }
 
-        if value & 0xFE != 0 {
-            trace!("Parsing session term message with reserved flag bits set: {value:#x}");
+        flags.reserved = value & 0xFE;
+        if flags.reserved != 0 {
+            trace!(
+                "Parsing session term message with reserved flag bits set: {:#x}",
+                flags.reserved
+            );
         }
         flags
     }
@@ -272,7 +280,7 @@ impl From<u8> for SessionTermMessageFlags {
 
 impl From<SessionTermMessageFlags> for u8 {
     fn from(value: SessionTermMessageFlags) -> u8 {
-        let mut flags = 0;
+        let mut flags = value.reserved;
         if value.reply {
             flags |= 1;
         }
@@ -340,14 +348,14 @@ impl From<SessionTermReasonCode> for u8 {
 #[derive(Debug)]
 pub struct MessageRejectMessage {
     pub reason_code: MessageRejectionReasonCode,
-    pub rejected_message: MessageType,
+    pub rejected_message: u8,
 }
 
 impl MessageRejectMessage {
     fn encode(self, dst: &mut BytesMut) -> Result<(), Error> {
         dst.put_u8(MessageType::MSG_REJECT as u8);
         dst.put_u8(self.reason_code.into());
-        dst.put_u8(self.rejected_message as u8);
+        dst.put_u8(self.rejected_message);
         Ok(())
     }
 
@@ -358,7 +366,8 @@ impl MessageRejectMessage {
         } else {
             Ok(Some(Message::Reject(MessageRejectMessage {
                 reason_code: src.get_u8().into(),
-                rejected_message: src.get_u8().try_into()?,
+                // Ensure we convert the rejected message type to something we could have sent!
+                rejected_message: codec::MessageType::try_from(src.get_u8())? as u8,
             })))
         }
     }
@@ -501,7 +510,7 @@ impl From<TransferRefuseReasonCode> for u8 {
 
 #[derive(Debug)]
 pub struct TransferAckMessage {
-    pub message_flags: TransferAckMessageFlags,
+    pub message_flags: TransferSegmentMessageFlags,
     pub transfer_id: u64,
     pub acknowledged_length: u64,
 }
@@ -526,42 +535,6 @@ impl TransferAckMessage {
                 acknowledged_length: src.get_u64(),
             })))
         }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct TransferAckMessageFlags {
-    pub start: bool,
-    pub end: bool,
-}
-
-impl From<u8> for TransferAckMessageFlags {
-    fn from(value: u8) -> Self {
-        let mut flags = Self::default();
-        if value & 1 != 0 {
-            flags.end = true;
-        }
-        if value & 2 != 0 {
-            flags.start = true;
-        }
-
-        if value & 0xFC != 0 {
-            trace!("Parsing transfer ack message with reserved flag bits set: {value:#x}");
-        }
-        flags
-    }
-}
-
-impl From<TransferAckMessageFlags> for u8 {
-    fn from(value: TransferAckMessageFlags) -> u8 {
-        let mut flags = 0;
-        if value.end {
-            flags |= 1;
-        }
-        if value.start {
-            flags |= 2;
-        }
-        flags
     }
 }
 
@@ -611,12 +584,12 @@ impl From<Message> for MessageType {
 | Data contents (octet string) |
 +------------------------------+ */
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TransferSegmentMessage {
     pub message_flags: TransferSegmentMessageFlags,
     pub transfer_id: u64,
     pub transfer_extensions: Vec<TransferSegmentExtension>,
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 impl TransferSegmentMessage {
@@ -630,11 +603,11 @@ impl TransferSegmentMessage {
                 dst.put_u8(extension.flags.into());
                 dst.put_u16(extension.item_type);
                 dst.put_u32(extension.item_length);
-                dst.put(extension.item_value.as_slice());
+                dst.put(extension.item_value);
             }
         }
         dst.put_u64(self.data.len() as u64);
-        dst.put(self.data.as_slice());
+        dst.put(self.data);
         Ok(())
     }
 
@@ -672,7 +645,7 @@ impl TransferSegmentMessage {
                     flags,
                     item_type,
                     item_length,
-                    item_value: src_cloned.split_to(item_length as usize).to_vec(),
+                    item_value: src_cloned.split_to(item_length as usize).into(),
                 });
                 consumed += 5 + item_length as usize;
             }
@@ -686,21 +659,20 @@ impl TransferSegmentMessage {
             // Not enough data to read data
             return Ok(None);
         }
-        let data = src_cloned.split_to(data_length as usize).to_vec();
-        src.advance(consumed + 8 + data_length as usize);
         Ok(Some(Message::TransferSegment(TransferSegmentMessage {
             message_flags,
             transfer_id,
             transfer_extensions,
-            data,
+            data: src.split_to(consumed + 8 + data_length as usize).into(),
         })))
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransferSegmentMessageFlags {
     pub start: bool,
     pub end: bool,
+    pub reserved: u8,
 }
 
 impl From<u8> for TransferSegmentMessageFlags {
@@ -713,8 +685,12 @@ impl From<u8> for TransferSegmentMessageFlags {
             flags.start = true;
         }
 
-        if value & 0xFC != 0 {
-            trace!("Parsing transfer segment message with reserved flag bits set: {value:#x}");
+        flags.reserved = value & 0xFC;
+        if flags.reserved != 0 {
+            trace!(
+                "Parsing transfer segment message with reserved flag bits set: {:#x}",
+                flags.reserved
+            );
         }
         flags
     }
@@ -722,7 +698,7 @@ impl From<u8> for TransferSegmentMessageFlags {
 
 impl From<TransferSegmentMessageFlags> for u8 {
     fn from(value: TransferSegmentMessageFlags) -> u8 {
-        let mut flags = 0;
+        let mut flags = value.reserved;
         if value.end {
             flags |= 1;
         }
@@ -747,12 +723,13 @@ pub struct TransferSegmentExtension {
     pub flags: TransferSegmentExtensionFlags,
     pub item_type: u16,
     pub item_length: u32,
-    pub item_value: Vec<u8>,
+    pub item_value: Bytes,
 }
 
 #[derive(Debug, Default)]
 pub struct TransferSegmentExtensionFlags {
     pub critical: bool,
+    pub reserved: u8,
 }
 
 impl From<u8> for TransferSegmentExtensionFlags {
@@ -762,8 +739,12 @@ impl From<u8> for TransferSegmentExtensionFlags {
             flags.critical = true;
         }
 
-        if value & 0xFE != 0 {
-            trace!("Parsing transfer segment extension with reserved flag bits set: {value:#x}");
+        flags.reserved = value & 0xFE;
+        if flags.reserved != 0 {
+            trace!(
+                "Parsing transfer segment extension with reserved flag bits set: {:#x}",
+                flags.reserved
+            );
         }
         flags
     }
@@ -771,7 +752,7 @@ impl From<u8> for TransferSegmentExtensionFlags {
 
 impl From<TransferSegmentExtensionFlags> for u8 {
     fn from(value: TransferSegmentExtensionFlags) -> u8 {
-        let mut flags = 0;
+        let mut flags = value.reserved;
         if value.critical {
             flags |= 1;
         }
