@@ -45,7 +45,7 @@ pub fn init(
 
 pub fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, Error> {
     Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)
-        .map_err(<time::error::ComponentRange as Into<Error>>::into)?
+        .map_err(time::error::ComponentRange::from)?
         + time::Duration::nanoseconds(t.nanos.into()))
 }
 

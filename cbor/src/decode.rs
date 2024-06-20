@@ -738,8 +738,8 @@ impl FromCbor for i64 {
 
     fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::UnsignedInteger(n) => Ok((<u64 as TryInto<i64>>::try_into(n)?, tags)),
-            Value::NegativeInteger(n) => Ok((-1i64 - <u64 as TryInto<i64>>::try_into(n)?, tags)),
+            Value::UnsignedInteger(n) => Ok((i64::try_from(n)?, tags)),
+            Value::NegativeInteger(n) => Ok((-1i64 - i64::try_from(n)?, tags)),
             value => Err(Error::IncorrectType(
                 "Integer".to_string(),
                 value.type_name(),
