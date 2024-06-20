@@ -119,6 +119,7 @@ where
     transport: T,
     keepalive_interval: u16,
     segment_mtu: usize,
+    transfer_mru: usize,
     rcv: Receiver<Vec<u8>>,
     snd: UnboundedSender<Result<ForwardBundleResponse, tonic::Status>>,
     transfer_id: u64,
@@ -137,6 +138,7 @@ where
         transport: T,
         keepalive_interval: u16,
         segment_mtu: usize,
+        transfer_mru: usize,
         rcv: Receiver<Vec<u8>>,
         snd: UnboundedSender<Result<ForwardBundleResponse, tonic::Status>>,
     ) -> Self {
@@ -144,6 +146,7 @@ where
             transport,
             keepalive_interval,
             segment_mtu,
+            transfer_mru,
             rcv,
             snd,
             transfer_id: 0,
@@ -157,8 +160,10 @@ where
         msg: Option<Result<codec::Message, codec::Error>>,
     ) -> Result<(), Error> {
         match msg {
-            Some(Ok(codec::Message::SessionInit(msg))) => todo!(),
-            Some(Ok(codec::Message::SessionTerm(msg))) => todo!(),
+            Some(Ok(codec::Message::SessionInit(_))) => {
+                self.unexpected(codec::MessageType::SESS_INIT).await
+            }
+            Some(Ok(codec::Message::SessionTerm(_))) => unreachable!(),
             Some(Ok(codec::Message::Keepalive)) => todo!(),
             Some(Ok(codec::Message::TransferSegment(msg))) => self.recv(msg).await,
             Some(Ok(codec::Message::TransferAck(ack))) => self.ack_segment(ack).await,
@@ -196,6 +201,16 @@ where
             .map_err(Into::into)
     }
 
+    async fn unexpected(&mut self, rejected_message: codec::MessageType) -> Result<(), Error> {
+        self.transport
+            .send(codec::Message::Reject(codec::MessageRejectMessage {
+                reason_code: codec::MessageRejectionReasonCode::Unexpected,
+                rejected_message: rejected_message as u8,
+            }))
+            .await
+            .map_err(Into::into)
+    }
+
     async fn recv(&mut self, msg: codec::TransferSegmentMessage) -> Result<(), Error> {
         if msg.message_flags.start {
             if self.ingress_bundle.is_some() {
@@ -207,17 +222,10 @@ where
         }
 
         let Some(bundle) = &mut self.ingress_bundle else {
-            return self
-                .reject(
-                    codec::MessageRejectionReasonCode::Unexpected,
-                    codec::MessageType::XFER_SEGMENT as u8,
-                )
-                .await;
+            return self.unexpected(codec::MessageType::XFER_SEGMENT).await;
         };
 
-        // TODO!!!
-        let OUR_TRANSFER_MRU = u32::MAX as usize;
-        if msg.data.len() + bundle.len() > OUR_TRANSFER_MRU {
+        if msg.data.len() + bundle.len() > self.transfer_mru {
             // Bundle beyond negotiated MRU
             self.ingress_bundle = None;
 
@@ -260,22 +268,12 @@ where
     async fn ack_segment(&mut self, msg: codec::TransferAckMessage) -> Result<(), Error> {
         let Some(ack) = self.acks.front() else {
             // No acknowledgement expected!
-            return self
-                .reject(
-                    codec::MessageRejectionReasonCode::Unexpected,
-                    codec::MessageType::XFER_ACK as u8,
-                )
-                .await;
+            return self.unexpected(codec::MessageType::XFER_ACK).await;
         };
 
         if ack.transfer_id != msg.transfer_id {
             // Out of order acknowledgement!
-            return self
-                .reject(
-                    codec::MessageRejectionReasonCode::Unexpected,
-                    codec::MessageType::XFER_ACK as u8,
-                )
-                .await;
+            return self.unexpected(codec::MessageType::XFER_ACK).await;
         }
 
         // Remove the ack from the queue
@@ -293,11 +291,7 @@ where
                 "Mismatched acknowledged_length in TransferAck message: expected {} got {}",
                 ack.acknowledged_length, msg.acknowledged_length
             );
-            self.reject(
-                codec::MessageRejectionReasonCode::Unexpected,
-                codec::MessageType::XFER_ACK as u8,
-            )
-            .await
+            self.unexpected(codec::MessageType::XFER_ACK).await
         } else if ack.flags.end {
             // Let the client know send is complete
             self.respond(Ok(ForwardBundleResponse {
@@ -316,22 +310,16 @@ where
         let Some(ack) = self.acks.front() else {
             // Unexpected refusal
             return self
-                .reject(
-                    codec::MessageRejectionReasonCode::Unexpected,
-                    codec::MessageType::XFER_REFUSE as u8,
-                )
+                .unexpected(codec::MessageType::XFER_REFUSE)
                 .await
                 .map(|_| None);
         };
 
         if ack.transfer_id != msg.transfer_id {
             // Out of order refusal!
-            self.reject(
-                codec::MessageRejectionReasonCode::Unexpected,
-                codec::MessageType::XFER_REFUSE as u8,
-            )
-            .await
-            .map(|_| None)
+            self.unexpected(codec::MessageType::XFER_REFUSE)
+                .await
+                .map(|_| None)
         } else {
             // Remove the ack from the queue
             self.acks.pop_front();
@@ -342,22 +330,12 @@ where
     async fn refuse(&mut self, msg: codec::TransferRefuseMessage) -> Result<(), Error> {
         let Some(ack) = self.acks.front() else {
             // Unexpected refusal
-            return self
-                .reject(
-                    codec::MessageRejectionReasonCode::Unexpected,
-                    codec::MessageType::XFER_REFUSE as u8,
-                )
-                .await;
+            return self.unexpected(codec::MessageType::XFER_REFUSE).await;
         };
 
         if ack.transfer_id != msg.transfer_id {
             // Out of order refusal!
-            return self
-                .reject(
-                    codec::MessageRejectionReasonCode::Unexpected,
-                    codec::MessageType::XFER_REFUSE as u8,
-                )
-                .await;
+            return self.unexpected(codec::MessageType::XFER_REFUSE).await;
         }
 
         // Remove the ack from the queue
@@ -372,14 +350,16 @@ where
                 Err(tonic::Status::aborted("Session is terminating"))
             }
             codec::TransferRefuseReasonCode::NoResources => {
-                /* Congestion! */
                 Ok(ForwardBundleResponse {
                     result: forward_bundle_response::ForwardingResult::Congested as i32,
-                    delay: None,
+                    delay: /* TODO - Configurable backoff! */ Some(grpc::to_timestamp(
+                        time::OffsetDateTime::now_utc() + time::Duration::seconds(5),
+                    )),
                 })
             }
             codec::TransferRefuseReasonCode::Retransmit => {
-                /* Send again, but we can't as we have dropped the bundle */
+                /* Send again, but we can't as we have dropped the bundle,
+                 * Report 'congestion' with an immediate retry */
                 Ok(ForwardBundleResponse {
                     result: forward_bundle_response::ForwardingResult::Congested as i32,
                     delay: None,
@@ -490,8 +470,7 @@ where
 
     async fn send(&mut self, bundle: Vec<u8>) -> Result<SendResult, Error> {
         /* TODO:  We currently report retry-able transfer failures as 'congestion',
-         * but we need a configurable fixed delay, but there has to be a better feedbackl mechanism
-         */
+         * but we need a configurable fixed delay, but there has to be a better feedback mechanism */
 
         // Check we can send the segments without rolling over the transfer id
         if self
@@ -503,7 +482,9 @@ where
             return self
                 .respond(Ok(ForwardBundleResponse {
                     result: forward_bundle_response::ForwardingResult::Congested as i32,
-                    delay: None,
+                    delay: /* TODO - Configurable backoff! */ Some(grpc::to_timestamp(
+                        time::OffsetDateTime::now_utc() + time::Duration::seconds(5),
+                    )),
                 }))
                 .map(|_| SendResult::Shutdown(codec::SessionTermReasonCode::ResourceExhaustion));
         }
@@ -523,10 +504,11 @@ where
                     break self.respond(Err(tonic::Status::aborted("Session is terminating")))
                 }
                 SendSegmentResult::Refused(codec::TransferRefuseReasonCode::NoResources) => {
-                    /* Congestion! */
                     break self.respond(Ok(ForwardBundleResponse {
                         result: forward_bundle_response::ForwardingResult::Congested as i32,
-                        delay: None,
+                        delay: /* TODO - Configurable backoff! */ Some(grpc::to_timestamp(
+                            time::OffsetDateTime::now_utc() + time::Duration::seconds(5),
+                        )),
                     }));
                 }
                 SendSegmentResult::Refused(codec::TransferRefuseReasonCode::Retransmit) => { /* Send again */ }
@@ -601,9 +583,13 @@ where
                     None => break,
                 },
                 msg = self.transport.next() => match msg {
+                    Some(Ok(codec::Message::SessionTerm(_))) => {
+                        /* Just ignore extra SESS_TERM */
+                        let _ = self.unexpected(codec::MessageType::SESS_TERM).await;
+                    },
                     Some(Ok(codec::Message::TransferSegment(msg))) if msg.message_flags.start => {
                         // Peer has started a new transfer in the 'Ending' state
-                        todo!();
+                        let _ =  self.unexpected(codec::MessageType::XFER_SEGMENT).await;
                     }
                     msg => self.process_msg(msg).await?,
                 },
@@ -613,9 +599,13 @@ where
         // Wait for transfers to complete
         while !self.acks.is_empty() {
             match self.transport.next().await {
+                Some(Ok(codec::Message::SessionTerm(_))) => {
+                    /* Just ignore extra SESS_TERM */
+                    let _ = self.unexpected(codec::MessageType::SESS_TERM).await;
+                }
                 Some(Ok(codec::Message::TransferSegment(msg))) if msg.message_flags.start => {
                     // Peer has started a new transfer in the 'Ending' state
-                    todo!();
+                    let _ = self.unexpected(codec::MessageType::XFER_SEGMENT).await;
                 }
                 msg => self.process_msg(msg).await?,
             }
@@ -717,6 +707,7 @@ where
         segment_mtu
             .map(|mtu| mtu.min(peer_init.segment_mru as usize))
             .unwrap_or(peer_init.segment_mru as usize),
+        config.transfer_mru as usize,
         recv_request,
         send_response,
     )
