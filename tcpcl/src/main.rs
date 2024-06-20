@@ -6,9 +6,6 @@ mod listener;
 mod session;
 mod utils;
 
-// This is the generic Error type used almost everywhere
-type Error = Box<dyn std::error::Error + Send + Sync>;
-
 // Buildtime info
 mod built_info {
     // The file has been placed there by the build script.
