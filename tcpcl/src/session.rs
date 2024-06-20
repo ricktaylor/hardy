@@ -564,6 +564,7 @@ where
         }
 
         // Graceful shutdown - Check this calls shutdown()
+        self.transport.flush().await?;
         self.transport.close().await.map_err(Into::into)
     }
 
@@ -574,27 +575,15 @@ where
         self.rcv.close();
 
         // Drain the rcv channel
-        loop {
-            tokio::select! {
-                bundle = self.rcv.recv() => match bundle {
-                    Some(bundle) => {
-                        self.send(bundle).await?;
-                    }
-                    None => break,
-                },
-                msg = self.transport.next() => match msg {
-                    Some(Ok(codec::Message::SessionTerm(_))) => {
-                        /* Just ignore extra SESS_TERM */
-                        let _ = self.unexpected(codec::MessageType::SESS_TERM).await;
-                    },
-                    Some(Ok(codec::Message::TransferSegment(msg))) if msg.message_flags.start => {
-                        // Peer has started a new transfer in the 'Ending' state
-                        let _ =  self.unexpected(codec::MessageType::XFER_SEGMENT).await;
-                    }
-                    msg => self.process_msg(msg).await?,
-                },
-            }
+        while let Some(bundle) = self.rcv.recv().await {
+            self.send(bundle).await?;
         }
+
+        // Send our SESSION_TERM reply
+        msg.message_flags.reply = true;
+        self.transport
+            .feed(codec::Message::SessionTerm(msg))
+            .await?;
 
         // Wait for transfers to complete
         while !self.acks.is_empty() {
@@ -605,19 +594,21 @@ where
                 }
                 Some(Ok(codec::Message::TransferSegment(msg))) if msg.message_flags.start => {
                     // Peer has started a new transfer in the 'Ending' state
-                    let _ = self.unexpected(codec::MessageType::XFER_SEGMENT).await;
+                    self.transport
+                        .send(codec::Message::TransferRefuse(
+                            codec::TransferRefuseMessage {
+                                transfer_id: msg.transfer_id,
+                                reason_code: codec::TransferRefuseReasonCode::SessionTerminating,
+                            },
+                        ))
+                        .await?;
                 }
                 msg => self.process_msg(msg).await?,
             }
         }
 
-        // Send our SESSION_TERM reply
-        msg.message_flags.reply = true;
-        self.transport
-            .send(codec::Message::SessionTerm(msg))
-            .await?;
-
         // Close the connection
+        self.transport.flush().await?;
         self.transport.close().await.map_err(Into::into)
     }
 
@@ -686,7 +677,24 @@ where
         }))
         .await?;
 
-    // TODO: Negotiate
+    let keepalive_interval = peer_init.keepalive_interval.min(config.keepalive_interval);
+
+    // Check peer init
+    for i in &peer_init.session_extensions {
+        if i.flags.critical {
+            // We just don't support extensions!
+            return terminate(
+                &mut transport,
+                codec::SessionTermMessage {
+                    reason_code: codec::SessionTermReasonCode::ContactFailure,
+                    ..Default::default()
+                },
+                keepalive_interval * 2,
+                &cancel_token,
+            )
+            .await;
+        }
+    }
 
     let (send_request, recv_request) = channel::<Vec<u8>>(1);
     let (send_response, recv_response) =
@@ -703,7 +711,7 @@ where
     // And finally process session messages
     let r = Session::new(
         transport,
-        peer_init.keepalive_interval.min(config.keepalive_interval),
+        keepalive_interval,
         segment_mtu
             .map(|mtu| mtu.min(peer_init.segment_mru as usize))
             .unwrap_or(peer_init.segment_mru as usize),
@@ -759,4 +767,56 @@ where
         },
         _ = cancel_token.cancelled() => Err(Error::Cancelled)
     }
+}
+
+pub async fn terminate<T>(
+    transport: &mut T,
+    msg: codec::SessionTermMessage,
+    timeout: u16,
+    cancel_token: &tokio_util::sync::CancellationToken,
+) -> Result<(), session::Error>
+where
+    T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
+        + futures::SinkExt<codec::Message>
+        + std::marker::Unpin,
+    session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
+{
+    let mut expected_reply = msg.clone();
+    expected_reply.message_flags.reply = true;
+
+    // Send the SESS_TERM message
+    transport.send(codec::Message::SessionTerm(msg)).await?;
+
+    // Read the SESS_TERM reply message with timeout
+    loop {
+        match session::next_with_timeout(transport, timeout, cancel_token).await? {
+            codec::Message::SessionTerm(mut msg) => {
+                if !msg.message_flags.reply {
+                    // Terminations pass in the night...
+                    msg.message_flags.reply = true;
+                    transport.send(codec::Message::SessionTerm(msg)).await?;
+                } else if msg != expected_reply {
+                    trace!(
+                        "Mismatched SESS_TERM message: {:?}, expected {:?}",
+                        msg,
+                        expected_reply
+                    );
+                }
+                break;
+            }
+            msg => {
+                warn!("Unexpected message while waiting for SESS_TERM reply: {msg:?}");
+
+                // Send a MSG_REJECT/Unexpected message
+                transport
+                    .send(codec::Message::Reject(codec::MessageRejectMessage {
+                        reason_code: codec::MessageRejectionReasonCode::Unexpected,
+                        rejected_message: codec::MessageType::from(msg) as u8,
+                    }))
+                    .await?;
+            }
+        }
+    }
+
+    transport.close().await.map_err(Into::into)
 }
