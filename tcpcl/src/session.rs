@@ -773,14 +773,14 @@ where
 }
 
 async fn register_client(
-    client: connection::Client,
-    addr: SocketAddr,
-    node_id: Option<bpv7::Eid>,
+    _client: connection::Client,
+    _addr: SocketAddr,
+    _node_id: Option<bpv7::Eid>,
 ) -> Result<(), Error> {
     todo!()
 }
 
-async fn unregister_client(addr: SocketAddr) -> Result<(), Error> {
+async fn unregister_client(_addr: SocketAddr) -> Result<(), Error> {
     todo!()
 }
 

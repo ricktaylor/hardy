@@ -34,12 +34,12 @@ pub fn init(
     info!("gRPC server listening on {grpc_address}")
 }
 
-pub fn from_timestamp(
+/*pub fn from_timestamp(
     t: prost_types::Timestamp,
 ) -> Result<time::OffsetDateTime, time::error::ComponentRange> {
     Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)?
         + time::Duration::nanoseconds(t.nanos.into()))
-}
+}*/
 
 pub fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
     let t = t - time::OffsetDateTime::UNIX_EPOCH;
