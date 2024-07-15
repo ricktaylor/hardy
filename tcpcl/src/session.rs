@@ -29,8 +29,11 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    #[error(transparent)]
+    Bpa(#[from] tonic::Status),
+
     #[error("BPA response channel closed")]
-    Send,
+    Closed,
 }
 
 const DEFAULT_KEEPALIVE_INTERVAL: u16 = 60;
@@ -117,6 +120,7 @@ where
     session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
 {
     transport: T,
+    bpa: Arc<bpa::Bpa>,
     keepalive_interval: u16,
     segment_mtu: usize,
     transfer_mru: usize,
@@ -136,6 +140,7 @@ where
 {
     fn new(
         transport: T,
+        bpa: Arc<bpa::Bpa>,
         keepalive_interval: u16,
         segment_mtu: usize,
         transfer_mru: usize,
@@ -144,6 +149,7 @@ where
     ) -> Self {
         Self {
             transport,
+            bpa,
             keepalive_interval,
             segment_mtu,
             transfer_mru,
@@ -242,6 +248,7 @@ where
 
         if msg.message_flags.end {
             // Send the bundle to the BPA
+            self.bpa.send(bundle.to_vec()).await?;
 
             // Clear the ingress bundle
             self.ingress_bundle = None;
@@ -262,7 +269,7 @@ where
         &mut self,
         response: Result<ForwardBundleResponse, tonic::Status>,
     ) -> Result<(), Error> {
-        self.snd.send(response).map_err(|_| Error::Send)
+        self.snd.send(response).map_err(|_| Error::Closed)
     }
 
     async fn ack_segment(&mut self, msg: codec::TransferAckMessage) -> Result<(), Error> {
@@ -635,6 +642,7 @@ where
 
 pub async fn new_passive<T>(
     config: Config,
+    bpa: Arc<bpa::Bpa>,
     addr: SocketAddr,
     segment_mtu: Option<usize>,
     mut transport: T,
@@ -711,6 +719,7 @@ where
     // And finally process session messages
     let r = Session::new(
         transport,
+        bpa,
         keepalive_interval,
         segment_mtu
             .map(|mtu| mtu.min(peer_init.segment_mru as usize))

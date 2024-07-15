@@ -33,6 +33,7 @@ impl Config {
 
 async fn new_contact(
     config: Config,
+    bpa: Arc<bpa::Bpa>,
     session_config: session::Config,
     mut stream: tokio::net::TcpStream,
     addr: SocketAddr,
@@ -96,6 +97,7 @@ async fn new_contact(
             } else {
                 session::new_passive(
                     session_config,
+                    bpa,
                     addr,
                     None,
                     codec::MessageCodec::new_framed(stream),
@@ -144,6 +146,7 @@ impl tower::Service<()> for Listener {
 #[instrument(skip_all)]
 async fn accept(
     config: Config,
+    bpa: Arc<bpa::Bpa>,
     session_config: session::Config,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -173,9 +176,11 @@ async fn accept(
                             // Spawn immediately to prevent head-of-line blocking
                             let cancel_token_cloned = cancel_token.clone();
                             let config_cloned = config.clone();
+                            let bpa_cloned = bpa.clone();
                             let session_config_cloned = session_config.clone();
+
                             task_set.spawn(async move {
-                                if let Err(e) = new_contact(config_cloned, session_config_cloned,stream, addr, cancel_token_cloned).await {
+                                if let Err(e) = new_contact(config_cloned, bpa_cloned, session_config_cloned, stream, addr, cancel_token_cloned).await {
                                     warn!("Contact failed: {e}");
                                 }
                             });
@@ -202,6 +207,7 @@ async fn accept(
 #[instrument(skip_all)]
 pub fn init(
     config: &config::Config,
+    bpa: Arc<bpa::Bpa>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -213,5 +219,5 @@ pub fn init(
     }
 
     // Start listening
-    task_set.spawn(accept(config, session_config, cancel_token));
+    task_set.spawn(accept(config, bpa, session_config, cancel_token));
 }

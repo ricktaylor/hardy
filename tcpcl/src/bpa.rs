@@ -1,7 +1,6 @@
 use super::*;
 use hardy_proto::cla::*;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 use utils::settings;
 

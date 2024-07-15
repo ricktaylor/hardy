@@ -14,6 +14,7 @@ mod built_info {
 
 // This is the effective prelude
 use hardy_bpv7::prelude as bpv7;
+use std::sync::Arc;
 use trace_err::*;
 use tracing::{error, info, instrument, trace, warn};
 
@@ -47,9 +48,11 @@ async fn main() {
         bpa.connect().await;
     }
 
+    let bpa = Arc::new(bpa);
+
     // Start the listener
     if !cancel_token.is_cancelled() {
-        listener::init(&config, &mut task_set, cancel_token.clone());
+        listener::init(&config, bpa.clone(), &mut task_set, cancel_token.clone());
     }
 
     // Wait for all tasks to finish
