@@ -532,6 +532,13 @@ where
         .map(|_| SendResult::Ok)
     }
 
+    async fn send_keepalive(&mut self) -> Result<(), Error> {
+        self.transport
+            .send(codec::Message::Keepalive)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn shutdown(mut self, reason_code: codec::SessionTermReasonCode) -> Result<(), Error> {
         // The local client has closed the channel
 
@@ -620,21 +627,47 @@ where
     }
 
     async fn run(mut self) -> Result<(), Error> {
-        // Normal processing
-        loop {
-            tokio::select! {
-                bundle = self.rcv.recv() => match bundle {
-                    Some(bundle) => match self.send(bundle).await? {
-                        SendResult::Ok => {},
-                        SendResult::Terminate(msg) => return self.terminate(msg).await,
-                        SendResult::Shutdown(code) => return self.shutdown(code).await,
-                    }
-                    None => return self.shutdown(codec::SessionTermReasonCode::Unknown).await,
-                },
-                msg = self.transport.next() => match msg {
-                    Some(Ok(codec::Message::SessionTerm(msg))) => return self.terminate(msg).await,
-                    msg => self.process_msg(msg).await?,
-                },
+        // Different loops depending on if we need keepalives
+        if self.keepalive_interval != 0 {
+            loop {
+                tokio::select! {
+                    bundle = self.rcv.recv() => match bundle {
+                        Some(bundle) => match self.send(bundle).await? {
+                            SendResult::Ok => {},
+                            SendResult::Terminate(msg) => return self.terminate(msg).await,
+                            SendResult::Shutdown(code) => return self.shutdown(code).await,
+                        }
+                        None => return self.shutdown(codec::SessionTermReasonCode::Unknown).await,
+                    },
+                    r = tokio::time::timeout(
+                        tokio::time::Duration::from_secs(self.keepalive_interval as u64),
+                        self.transport.next(),
+                    ) => match r {
+                        Ok(Some(Ok(codec::Message::SessionTerm(msg)))) => return self.terminate(msg).await,
+                        Ok(msg) => self.process_msg(msg).await?,
+                        Err(_) => {
+                            /* Nothing sent for a while, send a KEEP_ALIVE */
+                            self.send_keepalive().await?;
+                        }
+                    },
+                }
+            }
+        } else {
+            loop {
+                tokio::select! {
+                    bundle = self.rcv.recv() => match bundle {
+                        Some(bundle) => match self.send(bundle).await? {
+                            SendResult::Ok => {},
+                            SendResult::Terminate(msg) => return self.terminate(msg).await,
+                            SendResult::Shutdown(code) => return self.shutdown(code).await,
+                        }
+                        None => return self.shutdown(codec::SessionTermReasonCode::Unknown).await,
+                    },
+                    msg = self.transport.next() => match msg {
+                        Some(Ok(codec::Message::SessionTerm(msg))) => return self.terminate(msg).await,
+                        msg => self.process_msg(msg).await?,
+                    },
+                }
             }
         }
     }
