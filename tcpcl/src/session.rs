@@ -122,6 +122,7 @@ where
     transport: T,
     bpa: Arc<bpa::Bpa>,
     keepalive_interval: u16,
+    last_sent: tokio::time::Instant,
     segment_mtu: usize,
     transfer_mru: usize,
     rcv: Receiver<Vec<u8>>,
@@ -151,6 +152,7 @@ where
             transport,
             bpa,
             keepalive_interval,
+            last_sent: tokio::time::Instant::now(),
             segment_mtu,
             transfer_mru,
             rcv,
@@ -205,6 +207,7 @@ where
             }))
             .await
             .map_err(Into::into)
+            .map(|_| self.last_sent = tokio::time::Instant::now())
     }
 
     async fn unexpected(&mut self, rejected_message: codec::MessageType) -> Result<(), Error> {
@@ -215,6 +218,7 @@ where
             }))
             .await
             .map_err(Into::into)
+            .map(|_| self.last_sent = tokio::time::Instant::now())
     }
 
     async fn recv(&mut self, msg: codec::TransferSegmentMessage) -> Result<(), Error> {
@@ -263,6 +267,7 @@ where
             }))
             .await
             .map_err(Into::into)
+            .map(|_| self.last_sent = tokio::time::Instant::now())
     }
 
     fn respond(
@@ -410,6 +415,8 @@ where
             ))
             .await?;
 
+        self.last_sent = tokio::time::Instant::now();
+
         // Use a biased select! to check for incoming messages before the next segment is sent
         while !self.acks.is_empty() {
             tokio::select! {
@@ -534,9 +541,10 @@ where
 
     async fn send_keepalive(&mut self) -> Result<(), Error> {
         self.transport
-            .send(codec::Message::Keepalive)
+            .feed(codec::Message::Keepalive)
             .await
             .map_err(Into::into)
+            .map(|_| self.last_sent = tokio::time::Instant::now())
     }
 
     async fn shutdown(mut self, reason_code: codec::SessionTermReasonCode) -> Result<(), Error> {
@@ -554,9 +562,20 @@ where
             .send(codec::Message::SessionTerm(msg))
             .await?;
 
+        // Process any remaining messages
         loop {
-            // Process any remaining messages
-            match self.transport.next().await {
+            match if self.keepalive_interval != 0 {
+                // Read the next message with timeout
+                tokio::time::timeout(
+                    tokio::time::Duration::from_secs(self.keepalive_interval as u64)
+                        .saturating_mul(2),
+                    self.transport.next(),
+                )
+                .await
+                .map_err(|_| Error::Timeout)?
+            } else {
+                self.transport.next().await
+            } {
                 Some(Ok(codec::Message::SessionTerm(mut msg))) => {
                     if !msg.message_flags.reply {
                         // Terminations pass in the night...
@@ -564,6 +583,7 @@ where
                         self.transport
                             .feed(codec::Message::SessionTerm(msg))
                             .await?;
+                        continue;
                     } else if msg != expected_reply {
                         trace!(
                             "Mismatched SESS_TERM message: {:?}, expected {:?}",
@@ -573,7 +593,12 @@ where
                     }
                     break;
                 }
-                msg => self.process_msg(msg).await?,
+                Some(msg) => self.process_msg(Some(msg)).await?,
+                None => {
+                    /* The peer has just hung-up */
+                    trace!("Peer has hung-up without sending a SESS_TERM");
+                    break;
+                }
             }
         }
 
@@ -601,7 +626,18 @@ where
 
         // Wait for transfers to complete
         while !self.acks.is_empty() {
-            match self.transport.next().await {
+            match if self.keepalive_interval != 0 {
+                // Read the next message with timeout
+                tokio::time::timeout(
+                    tokio::time::Duration::from_secs(self.keepalive_interval as u64)
+                        .saturating_mul(2),
+                    self.transport.next(),
+                )
+                .await
+                .map_err(|_| Error::Timeout)?
+            } else {
+                self.transport.next().await
+            } {
                 Some(Ok(codec::Message::SessionTerm(_))) => {
                     /* Just ignore extra SESS_TERM */
                     let _ = self.unexpected(codec::MessageType::SESS_TERM).await;
@@ -629,26 +665,31 @@ where
     async fn run(mut self) -> Result<(), Error> {
         // Different loops depending on if we need keepalives
         if self.keepalive_interval != 0 {
+            let keepalive = tokio::time::Duration::from_secs(self.keepalive_interval as u64);
             loop {
                 tokio::select! {
-                    bundle = self.rcv.recv() => match bundle {
-                        Some(bundle) => match self.send(bundle).await? {
+                    r = tokio::time::timeout(
+                        keepalive.saturating_sub(self.last_sent.elapsed()),
+                        self.rcv.recv(),
+                    ) => match r {
+                        Ok(Some(bundle)) => match self.send(bundle).await? {
                             SendResult::Ok => {},
                             SendResult::Terminate(msg) => return self.terminate(msg).await,
                             SendResult::Shutdown(code) => return self.shutdown(code).await,
                         }
-                        None => return self.shutdown(codec::SessionTermReasonCode::Unknown).await,
-                    },
-                    r = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(self.keepalive_interval as u64),
-                        self.transport.next(),
-                    ) => match r {
-                        Ok(Some(Ok(codec::Message::SessionTerm(msg)))) => return self.terminate(msg).await,
-                        Ok(msg) => self.process_msg(msg).await?,
+                        Ok(None) => return self.shutdown(codec::SessionTermReasonCode::Unknown).await,
                         Err(_) => {
                             /* Nothing sent for a while, send a KEEP_ALIVE */
                             self.send_keepalive().await?;
                         }
+                    },
+                    msg = tokio::time::timeout(
+                        keepalive.saturating_mul(2),
+                        self.transport.next(),
+                    ) => match msg {
+                        Ok(Some(Ok(codec::Message::SessionTerm(msg)))) => return self.terminate(msg).await,
+                        Ok(msg) => self.process_msg(msg).await?,
+                        Err(_) => return Err(Error::Timeout),
                     },
                 }
             }
