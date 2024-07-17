@@ -1,5 +1,4 @@
 #![no_main]
-#![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
 
@@ -15,6 +14,7 @@ static mut ADDR: std::net::SocketAddr = std::net::SocketAddr::V6(std::net::Socke
     0,
 ));
 
+#[cfg(fuzzing)]
 async fn async_setup() {
     let mut filename = std::env::current_dir().unwrap();
     filename.push("fuzz/passive.config");
@@ -45,6 +45,7 @@ async fn async_setup() {
 }
 
 fn setup() {
+    #[cfg(fuzzing)]
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
