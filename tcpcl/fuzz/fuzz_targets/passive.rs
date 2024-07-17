@@ -103,6 +103,5 @@ mod fuzz {
 }
 
 fuzz_target!(|data: &[u8]| {
-    #[cfg(fuzzing)]
     fuzz::do_fuzz(data);
 });
