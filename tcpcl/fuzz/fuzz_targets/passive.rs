@@ -95,6 +95,13 @@ mod fuzz {
     }
 }
 
+#[cfg(not(fuzzing))]
+mod fuzz {
+    pub fn do_fuzz(_data: &[u8]) {
+        unimplemented!()
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     #[cfg(fuzzing)]
     fuzz::do_fuzz(data);
