@@ -120,7 +120,7 @@ where
     session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
 {
     transport: T,
-    bpa: Arc<bpa::Bpa>,
+    bpa: bpa::Bpa,
     keepalive_interval: u16,
     last_sent: tokio::time::Instant,
     segment_mtu: usize,
@@ -141,7 +141,7 @@ where
 {
     fn new(
         transport: T,
-        bpa: Arc<bpa::Bpa>,
+        bpa: bpa::Bpa,
         keepalive_interval: u16,
         segment_mtu: usize,
         transfer_mru: usize,
@@ -716,7 +716,7 @@ where
 
 pub async fn new_passive<T>(
     config: Config,
-    bpa: Arc<bpa::Bpa>,
+    bpa: bpa::Bpa,
     addr: SocketAddr,
     segment_mtu: Option<usize>,
     mut transport: T,

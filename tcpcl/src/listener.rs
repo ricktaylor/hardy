@@ -33,7 +33,7 @@ impl Config {
 
 async fn new_contact(
     config: Config,
-    bpa: Arc<bpa::Bpa>,
+    bpa: bpa::Bpa,
     session_config: session::Config,
     mut stream: tokio::net::TcpStream,
     addr: SocketAddr,
@@ -146,7 +146,7 @@ impl tower::Service<()> for Listener {
 #[instrument(skip_all)]
 async fn accept(
     config: Config,
-    bpa: Arc<bpa::Bpa>,
+    bpa: bpa::Bpa,
     session_config: session::Config,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -207,7 +207,7 @@ async fn accept(
 #[instrument(skip_all)]
 pub fn init(
     config: &config::Config,
-    bpa: Arc<bpa::Bpa>,
+    bpa: bpa::Bpa,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
