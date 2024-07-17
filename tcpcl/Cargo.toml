@@ -11,6 +11,9 @@ path = "src/main.rs"
 [features]
 packaged-installation = []
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 [dependencies]
 hardy-bpv7 = { path = "../bpv7" }
 hardy-proto = { path = "../proto" }

@@ -1,4 +1,6 @@
 #![no_main]
+// This file is only used for fuzzing
+#![cfg(fuzzing)]
 
 use std::io::{Read, Write};
 
