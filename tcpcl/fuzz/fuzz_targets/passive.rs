@@ -81,8 +81,8 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let mut stream_cloned = stream.try_clone().unwrap();
-    RT.get().unwrap().spawn_blocking(move || {
-        let mut buf = [0u8; 1024];
+    let h = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
         loop {
             match stream_cloned.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -93,4 +93,6 @@ fuzz_target!(|data: &[u8]| {
 
     stream.write_all(data).unwrap();
     let _ = stream.shutdown(std::net::Shutdown::Write);
+
+    h.join().unwrap();
 });
