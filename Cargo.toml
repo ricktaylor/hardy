@@ -11,6 +11,7 @@ members = [
     "proto",
     "sqlite-storage",
     "tcpcl",
+    "tcpcl/fuzz",
 ]
 
 [workspace.package]
