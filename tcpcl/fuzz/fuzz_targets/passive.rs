@@ -7,41 +7,32 @@ use tokio::time;
 
 static INIT: std::sync::Once = std::sync::Once::new();
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-static mut ADDR: std::net::SocketAddr = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
-    std::net::Ipv6Addr::LOCALHOST,
-    4556,
-    0,
-    0,
-));
+static CONFIG: std::sync::OnceLock<config::Config> = std::sync::OnceLock::new();
 
-#[cfg(fuzzing)]
-async fn async_setup() {
-    let mut filename = std::env::current_dir().unwrap();
-    filename.push("fuzz/passive.config");
+fn get_config() -> &'static config::Config {
+    CONFIG.get_or_init(|| {
+        let mut filename = std::env::current_dir().unwrap();
+        filename.push("fuzz/passive.config");
 
-    let config = config::Config::builder()
-        .add_source(
-            config::File::from(filename)
-                .format(config::FileFormat::Toml)
-                .required(false),
-        )
-        .build()
-        .unwrap();
+        config::Config::builder()
+            .add_source(
+                config::File::from(filename)
+                    .format(config::FileFormat::Toml)
+                    .required(false),
+            )
+            .build()
+            .unwrap()
+    })
+}
 
-    hardy_tcpcl::utils::logger::init(&config);
-
-    unsafe {
-        ADDR =
-            hardy_tcpcl::utils::settings::get_with_default(&config, "tcp_address", ADDR).unwrap();
+fn get_addr() -> std::net::SocketAddr {
+    match get_config().get("tcp_address") {
+        Ok(r) => r,
+        Err(config::ConfigError::NotFound(_)) => std::net::SocketAddr::V6(
+            std::net::SocketAddrV6::new(std::net::Ipv6Addr::LOCALHOST, 4556, 0, 0),
+        ),
+        Err(e) => panic!("Invalid 'tcp_address' value in configuration {}", e),
     }
-
-    let (mut task_set, cancel_token) = hardy_tcpcl::utils::cancel::new_cancellable_set();
-
-    let bpa = hardy_tcpcl::bpa::Bpa::new(&config);
-
-    hardy_tcpcl::listener::init(&config, bpa, &mut task_set, cancel_token.clone());
-
-    while let Some(_) = task_set.join_next().await {}
 }
 
 fn setup() {
@@ -52,18 +43,29 @@ fn setup() {
             .build()
             .unwrap()
     })
-    .spawn(async_setup());
+    .spawn(async {
+        let config = get_config();
+        hardy_tcpcl::utils::logger::init(config);
+
+        let (mut task_set, cancel_token) = hardy_tcpcl::utils::cancel::new_cancellable_set();
+
+        hardy_tcpcl::listener::init(
+            config,
+            hardy_tcpcl::bpa::Bpa::new(config),
+            &mut task_set,
+            cancel_token,
+        );
+
+        while let Some(_) = task_set.join_next().await {}
+    });
 }
 
 fuzz_target!(|data: &[u8]| {
     INIT.call_once(setup);
 
-    // fuzzed code goes here
-    let addr = unsafe { ADDR.clone() };
-
     let mut i = 0;
     let mut stream = loop {
-        match std::net::TcpStream::connect(addr) {
+        match std::net::TcpStream::connect(get_addr()) {
             Ok(stream) => break stream,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::ConnectionRefused {
