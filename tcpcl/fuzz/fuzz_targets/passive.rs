@@ -6,7 +6,6 @@ use std::io::{Read, Write};
 use tokio::time;
 
 static INIT: std::sync::Once = std::sync::Once::new();
-static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 static CONFIG: std::sync::OnceLock<config::Config> = std::sync::OnceLock::new();
 
 fn get_config() -> &'static config::Config {
@@ -34,6 +33,9 @@ fn get_addr() -> std::net::SocketAddr {
         Err(e) => panic!("Invalid 'tcp_address' value in configuration {}", e),
     }
 }
+
+#[cfg(fuzzing)]
+static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 
 fn setup() {
     #[cfg(fuzzing)]
