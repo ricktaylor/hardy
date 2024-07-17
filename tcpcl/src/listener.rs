@@ -40,7 +40,7 @@ async fn new_contact(
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), session::Error> {
     // Receive contact header
-    let mut buffer = vec![0u8; 6];
+    let mut buffer = [0u8; 6];
     match tokio::time::timeout(
         tokio::time::Duration::from_secs(config.contact_timeout as u64),
         stream.read_exact(&mut buffer),
