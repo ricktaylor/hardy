@@ -1,5 +1,4 @@
 // This file is only used for fuzzing
-#![cfg(fuzzing)]
 
 pub mod listener;
 pub mod utils;

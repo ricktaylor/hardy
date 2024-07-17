@@ -5,7 +5,7 @@ use libfuzzer_sys::fuzz_target;
 use std::io::{Read, Write};
 use tokio::time;
 
-static INIT: std::sync::Once = std::sync::Once::new();
+static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 static CONFIG: std::sync::OnceLock<config::Config> = std::sync::OnceLock::new();
 
 fn get_config() -> &'static config::Config {
@@ -34,18 +34,13 @@ fn get_addr() -> std::net::SocketAddr {
     }
 }
 
-#[cfg(fuzzing)]
-static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+fn setup() -> tokio::runtime::Runtime {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-fn setup() {
-    #[cfg(fuzzing)]
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-    })
-    .spawn(async {
+    rt.spawn(async {
         let config = get_config();
         hardy_tcpcl::utils::logger::init(config);
 
@@ -60,10 +55,12 @@ fn setup() {
 
         while let Some(_) = task_set.join_next().await {}
     });
+
+    rt
 }
 
 fuzz_target!(|data: &[u8]| {
-    INIT.call_once(setup);
+    RT.get_or_init(setup);
 
     let mut i = 0;
     let mut stream = loop {
