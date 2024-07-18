@@ -1,9 +1,8 @@
 #![no_main]
 
+use hardy_tcpcl::*;
 use libfuzzer_sys::fuzz_target;
-
-use std::io::{Read, Write};
-use tokio::time;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 static CONFIG: std::sync::OnceLock<config::Config> = std::sync::OnceLock::new();
@@ -35,23 +34,18 @@ fn get_addr() -> std::net::SocketAddr {
 }
 
 fn setup() -> tokio::runtime::Runtime {
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
 
     rt.spawn(async {
         let config = get_config();
-        hardy_tcpcl::utils::logger::init(config);
+        utils::logger::init(config);
 
-        let (mut task_set, cancel_token) = hardy_tcpcl::utils::cancel::new_cancellable_set();
+        let (mut task_set, cancel_token) = utils::cancel::new_cancellable_set();
 
-        hardy_tcpcl::listener::init(
-            config,
-            hardy_tcpcl::bpa::Bpa::new(config),
-            &mut task_set,
-            cancel_token,
-        );
+        listener::init(config, bpa::Bpa::new(config), &mut task_set, cancel_token);
 
         while let Some(_) = task_set.join_next().await {}
     });
@@ -60,38 +54,37 @@ fn setup() -> tokio::runtime::Runtime {
 }
 
 fuzz_target!(|data: &[u8]| {
-    RT.get_or_init(setup);
-
-    let mut i = 0;
-    let mut stream = loop {
-        match std::net::TcpStream::connect(get_addr()) {
-            Ok(stream) => break stream,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::ConnectionRefused {
-                    std::thread::sleep(time::Duration::from_secs(1));
-                    i += 1;
-                    if i < 10 {
-                        continue;
+    RT.get_or_init(setup).block_on(async {
+        let mut i = 0;
+        let (mut rx, mut tx) = loop {
+            match tokio::net::TcpStream::connect(get_addr()).await {
+                Ok(stream) => break stream.into_split(),
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::ConnectionRefused {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        i += 1;
+                        if i < 10 {
+                            continue;
+                        }
                     }
+                    panic!("Failed to connect: {}", e);
                 }
-                panic!("Failed to connect: {}", e);
             }
-        }
-    };
+        };
 
-    let mut stream_cloned = stream.try_clone().unwrap();
-    let h = std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match stream_cloned.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                _ => {}
+        let h = tokio::task::spawn(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                match rx.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
             }
-        }
-    });
+        });
 
-    stream.write_all(data).unwrap();
-    let _ = stream.shutdown(std::net::Shutdown::Write);
+        tx.write_all(data).await.unwrap();
+        let _ = tx.shutdown().await;
 
-    h.join().unwrap();
+        h.await.unwrap();
+    })
 });
