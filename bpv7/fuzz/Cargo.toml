@@ -32,3 +32,10 @@ path = "fuzz_targets/eid_pattern_str.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
+test = false
+doc = false
+bench = false
