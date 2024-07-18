@@ -695,6 +695,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-bpa-fuzz"
+version = "0.0.0"
+dependencies = [
+ "config",
+ "hardy-bpa",
+ "libfuzzer-sys",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "hardy-bpv7"
 version = "0.1.0"
 dependencies = [

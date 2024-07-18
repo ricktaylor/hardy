@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "bpa",
+    "bpa/fuzz",
     "bpa-api",
     "bpv7",
     "bpv7/fuzz",

@@ -8,6 +8,14 @@ edition.workspace = true
 name = "hardy-bpa"
 path = "src/main.rs"
 
+# For fuzzing only!
+[lib]
+path = "src/fuzzing.rs"
+test = false
+doc = false
+bench = false
+crate-type = ["rlib"]
+
 [features]
 default = ["sqlite-storage", "localdisk-storage"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
