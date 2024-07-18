@@ -1,6 +1,6 @@
 use hardy_bpv7::prelude as bpv7;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Metadata {
     pub status: BundleStatus,
     pub storage_name: String,
@@ -20,7 +20,7 @@ pub enum BundleStatus {
     Tombstone,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Bundle {
     pub bundle: bpv7::Bundle,
     pub metadata: Metadata,

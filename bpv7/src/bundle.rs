@@ -63,7 +63,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Bundle {
     // From Primary Block
     pub id: BundleId,
@@ -412,4 +412,12 @@ impl cbor::decode::FromCbor for ValidBundle {
             tags,
         )))
     }
+}
+
+#[test]
+fn test() {
+    let data = include_bytes!(
+        "../fuzz/artifacts/bundle/minimized-from-8491757fda39bcdd720fa9e0b150dc6c937b2446"
+    );
+    let _ = ValidBundle::from_cbor(data).unwrap();
 }

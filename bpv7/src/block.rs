@@ -1,7 +1,7 @@
 use super::*;
 use bundle::CaptureFieldErr;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub block_type: BlockType,
     pub flags: BlockFlags,
