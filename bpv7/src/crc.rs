@@ -102,32 +102,25 @@ pub fn parse_crc_value(
         ),
     })?;
 
-    // Confirm we are at the end of the block
-    let Some(block_end) = block.end()? else {
-        return Err(CrcError::AdditionalItems);
-    };
-
     // Now check CRC
-    if let Some(((crc_value, crc_start), crc_end)) = crc_value {
+    if let Some(((crc_value, crc_start), _)) = crc_value {
         match crc_type {
             CrcType::CRC16_X25 => {
                 let mut digest = X25.digest();
-                digest.update(&data[0..crc_start]);
-                digest.update(&vec![0; crc_end - crc_start]);
-                if block_end > crc_end {
-                    digest.update(&data[crc_end..block_end]);
-                }
+
+                // TODO: Need to confirm this logic is correct
+                digest.update(&data[0..crc_start + 1]);
+                digest.update(&[0u8; 2]);
+                digest.update(&data[crc_start + 3..]);
                 if crc_value != digest.finalize() as u32 {
                     return Err(CrcError::IncorrectCrc);
                 }
             }
             CrcType::CRC32_CASTAGNOLI => {
                 let mut digest = CASTAGNOLI.digest();
-                digest.update(&data[0..crc_start]);
-                digest.update(&vec![0; crc_end - crc_start]);
-                if block_end > crc_end {
-                    digest.update(&data[crc_end..block_end]);
-                }
+                digest.update(&data[0..crc_start + 1]);
+                digest.update(&[0u8; 4]);
+                digest.update(&data[crc_start + 5..]);
                 if crc_value != digest.finalize() {
                     return Err(CrcError::IncorrectCrc);
                 }
