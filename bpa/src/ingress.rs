@@ -115,7 +115,7 @@ impl Ingress {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, cancel_token))]
     async fn receive_bundle(
         &self,
         storage_name: String,
@@ -185,7 +185,7 @@ impl Ingress {
         self.process_bundle(bundle, cancel_token).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, cancel_token))]
     async fn process_bundle(
         &self,
         mut bundle: metadata::Bundle,

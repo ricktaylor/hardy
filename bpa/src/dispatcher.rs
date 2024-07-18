@@ -259,7 +259,7 @@ impl Dispatcher {
         self.forward_bundle(bundle, cancel_token).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, cancel_token))]
     pub async fn process_bundle(
         &self,
         mut bundle: metadata::Bundle,
