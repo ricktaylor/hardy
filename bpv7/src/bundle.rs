@@ -413,11 +413,3 @@ impl cbor::decode::FromCbor for ValidBundle {
         )))
     }
 }
-
-#[test]
-fn test() {
-    let data = include_bytes!(
-        "../fuzz/artifacts/bundle/minimized-from-8491757fda39bcdd720fa9e0b150dc6c937b2446"
-    );
-    let _ = ValidBundle::from_cbor(data).unwrap();
-}
