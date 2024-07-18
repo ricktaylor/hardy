@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 hardy-cbor = { path = "../cbor" }
 thiserror = "1.0.61"
 tracing = "0.1.40"
-time = "0.3.36"
+time = { version = "0.3.36", features = ["macros"] }
 base64 = "0.22.1"
 regex = "1.10.5"
 urlencoding = "2.1.3"
