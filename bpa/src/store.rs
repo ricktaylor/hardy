@@ -336,11 +336,9 @@ impl Store {
     }
 
     #[instrument(skip(self))]
-    pub async fn delete(&self, storage_name: &str) -> Result<(), Error> {
-        // Entirely delete the bundle from the metadata and bundle stores
-        self.bundle_storage.remove(storage_name).await?;
-        self.metadata_storage.remove(storage_name).await?;
-        Ok(())
+    pub async fn delete_data(&self, storage_name: &str) -> Result<(), Error> {
+        // Delete the bundle from the bundle store
+        self.bundle_storage.remove(storage_name).await
     }
 
     #[instrument(skip(self))]

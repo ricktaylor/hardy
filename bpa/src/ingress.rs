@@ -134,7 +134,9 @@ impl Ingress {
             Err(e) => {
                 // Parse failed badly, no idea who to report to
                 trace!("Bundle parsing failed: {e}");
-                return Ok(());
+
+                // Drop the bundle
+                return self.store.delete_data(&storage_name).await;
             }
         };
 
@@ -162,11 +164,6 @@ impl Ingress {
          *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
          */
 
-        // Store the bundle metadata in the store
-        self.store
-            .store_metadata(&bundle.metadata, &bundle.bundle)
-            .await?;
-
         if !valid {
             trace!("Bundle is unintelligible");
 
@@ -176,9 +173,13 @@ impl Ingress {
                 .await?;
 
             // Drop the bundle
-            trace!("Deleting bundle");
-            return self.store.delete(&bundle.metadata.storage_name).await;
+            return self.store.delete_data(&bundle.metadata.storage_name).await;
         }
+
+        // Store the bundle metadata in the store
+        self.store
+            .store_metadata(&bundle.metadata, &bundle.bundle)
+            .await?;
 
         // Process the bundle further
         self.process_bundle(bundle, cancel_token).await

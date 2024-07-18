@@ -25,10 +25,7 @@ pub mod store {
     use super::*;
     use hardy_bpa_api::storage;
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
-
-    static NEXT_NAME: AtomicUsize = AtomicUsize::new(0);
 
     #[derive(Clone, Default)]
     pub struct Store {
@@ -41,8 +38,19 @@ pub mod store {
             Self::default()
         }
 
+        fn adler32(data: &[u8]) -> u32 {
+            // Very dumb Adler-32
+            let mut a = 1u32;
+            let mut b = 0u32;
+            for d in data {
+                a = a.wrapping_add(*d as u32) % 65521;
+                b = b.wrapping_add(a) % 65521;
+            }
+            (b << 16) | a
+        }
+
         pub fn hash(&self, data: &[u8]) -> Vec<u8> {
-            vec![0u8; 16]
+            Self::adler32(data).to_be_bytes().to_vec()
         }
 
         pub async fn load_data(
@@ -56,40 +64,40 @@ pub mod store {
         }
 
         pub async fn store_data(&self, data: Vec<u8>) -> Result<String, Error> {
-            let storage_name = format!(
-                "bundle{}",
-                NEXT_NAME.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            );
+            let mut bundles = self.bundles.lock().unwrap();
+            let mut hash = Self::adler32(&data);
+            loop {
+                let storage_name = hash.to_string();
+                if !bundles.contains_key(&storage_name) {
+                    bundles.insert(storage_name.clone(), Arc::new(data));
+                    break Ok(storage_name);
+                }
 
-            self.bundles
-                .lock()
-                .unwrap()
-                .insert(storage_name.clone(), Arc::new(data));
-
-            Ok(storage_name)
+                hash += 1;
+            }
         }
 
         pub async fn store_metadata(
             &self,
-            metadata: &metadata::Metadata,
-            bundle: &bpv7::Bundle,
+            _metadata: &metadata::Metadata,
+            _bundle: &bpv7::Bundle,
         ) -> Result<bool, Error> {
             todo!()
         }
 
         pub async fn load(
             &self,
-            bundle_id: &bpv7::BundleId,
+            _bundle_id: &bpv7::BundleId,
         ) -> Result<Option<metadata::Bundle>, Error> {
             todo!()
         }
 
         pub async fn store(
             &self,
-            bundle: &bpv7::Bundle,
-            data: Vec<u8>,
-            status: metadata::BundleStatus,
-            received_at: Option<time::OffsetDateTime>,
+            _bundle: &bpv7::Bundle,
+            _data: Vec<u8>,
+            _status: metadata::BundleStatus,
+            _received_at: Option<time::OffsetDateTime>,
         ) -> Result<Option<metadata::Metadata>, Error> {
             todo!()
         }
@@ -126,34 +134,37 @@ pub mod store {
 
         pub async fn replace_data(
             &self,
-            metadata: &metadata::Metadata,
-            data: Vec<u8>,
+            _metadata: &metadata::Metadata,
+            _data: Vec<u8>,
         ) -> Result<metadata::Metadata, Error> {
             todo!()
         }
 
         pub async fn check_status(
             &self,
-            storage_name: &str,
+            _storage_name: &str,
         ) -> Result<Option<metadata::BundleStatus>, Error> {
             todo!()
         }
 
         pub async fn set_status(
             &self,
-            storage_name: &str,
-            status: &metadata::BundleStatus,
+            _storage_name: &str,
+            _status: &metadata::BundleStatus,
         ) -> Result<(), Error> {
             todo!()
         }
 
-        pub async fn delete(&self, storage_name: &str) -> Result<(), Error> {
-            todo!()
+        pub async fn delete_data(&self, storage_name: &str) -> Result<(), Error> {
+            self.bundles.lock().unwrap().remove(storage_name);
+            Ok(())
         }
 
         pub async fn remove(&self, storage_name: &str) -> Result<(), Error> {
             self.set_status(storage_name, &metadata::BundleStatus::Tombstone)
-                .await
+                .await?;
+
+            self.delete_data(storage_name).await
         }
     }
 }
