@@ -806,8 +806,8 @@ impl Dispatcher {
                 is_admin_record: true,
                 ..Default::default()
             })
-            .source(&self.config.admin_endpoints.get_admin_endpoint(report_to))
-            .destination(report_to)
+            .source(self.config.admin_endpoints.get_admin_endpoint(report_to))
+            .destination(report_to.clone())
             .add_payload_block(payload)
             .build()?;
 
@@ -860,19 +860,18 @@ impl Dispatcher {
         }
 
         // Build the bundle
-        let mut b = bpv7::Builder::new()
-            .source(&request.source)
-            .destination(&request.destination);
+        let mut b = bpv7::Builder::new().source(request.source);
 
         // Set flags
         if let Some(flags) = request.flags {
             b = b.flags(flags).report_to(
-                &self
-                    .config
+                self.config
                     .admin_endpoints
                     .get_admin_endpoint(&request.destination),
             );
         }
+
+        b = b.destination(request.destination);
 
         // Lifetime
         if let Some(lifetime) = request.lifetime {

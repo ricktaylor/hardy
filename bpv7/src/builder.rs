@@ -10,7 +10,7 @@ pub struct Builder {
     crc_type: CrcType,
     source: Eid,
     destination: Eid,
-    report_to: Eid,
+    report_to: Option<Eid>,
     lifetime: u64,
     payload: BlockTemplate,
     extensions: Vec<BlockTemplate>,
@@ -36,7 +36,7 @@ impl Default for Builder {
             crc_type: DEFAULT_CRC_TYPE,
             source: Eid::default(),
             destination: Eid::default(),
-            report_to: Eid::default(),
+            report_to: None,
             lifetime: DEFAULT_LIFETIME,
             payload: BlockTemplate::new(BlockType::Payload, DEFAULT_CRC_TYPE),
             extensions: Vec::new(),
@@ -59,18 +59,18 @@ impl Builder {
         self
     }*/
 
-    pub fn source(mut self, source: &Eid) -> Self {
-        self.source = source.clone();
+    pub fn source(mut self, source: Eid) -> Self {
+        self.source = source;
         self
     }
 
-    pub fn destination(mut self, destination: &Eid) -> Self {
-        self.destination = destination.clone();
+    pub fn destination(mut self, destination: Eid) -> Self {
+        self.destination = destination;
         self
     }
 
-    pub fn report_to(mut self, report_to: &Eid) -> Self {
-        self.report_to = report_to.clone();
+    pub fn report_to(mut self, report_to: Eid) -> Self {
+        self.report_to = Some(report_to);
         self
     }
 
@@ -89,7 +89,7 @@ impl Builder {
             .build()
     }
 
-    pub fn build(self) -> Result<(Bundle, Vec<u8>), BundleError> {
+    pub fn build(mut self) -> Result<(Bundle, Vec<u8>), BundleError> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
@@ -118,7 +118,7 @@ impl Builder {
         Ok((bundle, data))
     }
 
-    fn build_primary_block(&self) -> (Bundle, Vec<u8>) {
+    fn build_primary_block(&mut self) -> (Bundle, Vec<u8>) {
         let timestamp = CreationTimestamp::now();
 
         let block_data = crc::emit_crc_value(
@@ -139,7 +139,7 @@ impl Builder {
                     // EIDs
                     a.emit(&self.destination);
                     a.emit(&self.source);
-                    a.emit(&self.report_to);
+                    a.emit(self.report_to.as_ref().unwrap_or(&self.source));
                     // Timestamp
                     a.emit(&timestamp);
                     // Lifetime
@@ -156,15 +156,19 @@ impl Builder {
 
         (
             Bundle {
+                report_to: if let Some(report_to) = &mut self.report_to {
+                    std::mem::take(report_to)
+                } else {
+                    self.source.clone()
+                },
                 id: BundleId {
-                    source: self.source.clone(),
+                    source: std::mem::take(&mut self.source),
                     timestamp,
                     ..Default::default()
                 },
                 flags: self.bundle_flags,
                 crc_type: self.crc_type,
-                destination: self.destination.clone(),
-                report_to: self.report_to.clone(),
+                destination: std::mem::take(&mut self.destination),
                 lifetime: self.lifetime,
                 blocks: HashMap::from([(
                     0,
@@ -292,9 +296,9 @@ impl BlockTemplate {
 #[test]
 fn test() {
     Builder::new()
-        .source(&("ipn:1.0".parse().unwrap()))
-        .destination(&("ipn:2.0".parse().unwrap()))
-        .report_to(&("ipn:3.0".parse().unwrap()))
+        .source("ipn:1.0".parse().unwrap())
+        .destination("ipn:2.0".parse().unwrap())
+        .report_to("ipn:3.0".parse().unwrap())
         .build()
         .unwrap();
 }
