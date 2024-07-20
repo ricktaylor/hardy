@@ -84,7 +84,7 @@ pub fn parse_crc_value(
                     } else {
                         Ok((
                             u16::from_be_bytes(crc.try_into().unwrap()) as u32,
-                            crc_start,
+                            crc_start + 1,
                         ))
                     }
                 }
@@ -92,7 +92,7 @@ pub fn parse_crc_value(
                     if crc.len() != 4 {
                         Err(CrcError::InvalidLength(crc.len()))
                     } else {
-                        Ok((u32::from_be_bytes(crc.try_into().unwrap()), crc_start))
+                        Ok((u32::from_be_bytes(crc.try_into().unwrap()), crc_start + 1))
                     }
                 }
             }
@@ -109,18 +109,18 @@ pub fn parse_crc_value(
                 let mut digest = X25.digest();
 
                 // TODO: Need to confirm this logic is correct
-                digest.update(&data[0..crc_start + 1]);
+                digest.update(&data[0..crc_start]);
                 digest.update(&[0u8; 2]);
-                digest.update(&data[crc_start + 3..]);
+                digest.update(&data[crc_start + 2..]);
                 if crc_value != digest.finalize() as u32 {
                     return Err(CrcError::IncorrectCrc);
                 }
             }
             CrcType::CRC32_CASTAGNOLI => {
                 let mut digest = CASTAGNOLI.digest();
-                digest.update(&data[0..crc_start + 1]);
+                digest.update(&data[0..crc_start]);
                 digest.update(&[0u8; 4]);
-                digest.update(&data[crc_start + 5..]);
+                digest.update(&data[crc_start + 4..]);
                 if crc_value != digest.finalize() {
                     return Err(CrcError::IncorrectCrc);
                 }
