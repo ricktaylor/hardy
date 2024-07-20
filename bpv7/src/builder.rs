@@ -144,6 +144,12 @@ impl Builder {
                     a.emit(&timestamp);
                     // Lifetime
                     a.emit(self.lifetime);
+                    // CRC
+                    match self.crc_type {
+                        CrcType::None => {}
+                        CrcType::CRC16_X25 => a.emit(&[0u8; 2]),
+                        CrcType::CRC32_CASTAGNOLI => a.emit(&[0u8; 4]),
+                    }
                 },
             ),
         );
@@ -260,7 +266,7 @@ impl BlockTemplate {
                     a.emit::<u64>(self.crc_type.into());
                     // Payload
                     a.emit(&self.data);
-
+                    // CRC
                     match self.crc_type {
                         CrcType::None => {}
                         CrcType::CRC16_X25 => a.emit(&[0u8; 2]),
@@ -281,4 +287,14 @@ impl BlockTemplate {
             block_data,
         )
     }
+}
+
+#[test]
+fn test() {
+    Builder::new()
+        .source(&("ipn:1.0".parse().unwrap()))
+        .destination(&("ipn:2.0".parse().unwrap()))
+        .report_to(&("ipn:3.0".parse().unwrap()))
+        .build()
+        .unwrap();
 }
