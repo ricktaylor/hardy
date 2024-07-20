@@ -62,14 +62,14 @@ fn setup() -> tokio::runtime::Runtime {
             )
         });
 
-        while let Some(_) = task_set.join_next().await {}
+        while task_set.join_next().await.is_some() {}
     });
 
     rt
 }
 
 fuzz_target!(|data: &[u8]| {
-    let _ = RT.get_or_init(setup).block_on(async {
+    RT.get_or_init(setup).block_on(async {
         let mut i = 0;
         let ingress = loop {
             match INGRESS.get() {
@@ -82,5 +82,5 @@ fuzz_target!(|data: &[u8]| {
             }
         };
         let _ = ingress.receive(data.into()).await;
-    });
+    })
 });

@@ -47,7 +47,7 @@ fn setup() -> tokio::runtime::Runtime {
 
         listener::init(config, bpa::Bpa::new(config), &mut task_set, cancel_token);
 
-        while let Some(_) = task_set.join_next().await {}
+        while task_set.join_next().await.is_some() {}
     });
 
     rt
