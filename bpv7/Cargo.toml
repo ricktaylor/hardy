@@ -7,6 +7,10 @@ edition.workspace = true
 path = "src/lib.rs"
 crate-type = ["rlib"]
 
+[[bin]]
+name = "mkbundle"
+path = "tools/mkbundle.rs"
+
 [dependencies]
 hardy-cbor = { path = "../cbor" }
 thiserror = "1.0.61"
@@ -16,6 +20,7 @@ base64 = "0.22.1"
 regex = "1.10.5"
 urlencoding = "2.1.3"
 crc = "3.2.1"
+clap = { version = "4.5.9", features = ["derive","cargo"] }
 
 [dev-dependencies]
 hex-literal = "0.4.1"
