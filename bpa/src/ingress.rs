@@ -128,7 +128,7 @@ impl Ingress {
             return Ok(());
         };
 
-        let (bundle, valid) = match cbor::decode::parse::<bpv7::ValidBundle>((*data).as_ref()) {
+        let (bundle, mut valid) = match cbor::decode::parse::<bpv7::ValidBundle>((*data).as_ref()) {
             Ok(bpv7::ValidBundle::Valid(bundle)) => (bundle, true),
             Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
             Err(e) => {
@@ -164,10 +164,22 @@ impl Ingress {
          *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
          */
 
+        // Store the bundle metadata in the store
         if !valid {
             trace!("Bundle is unintelligible");
+        } else if !self
+            .store
+            .store_metadata(&bundle.metadata, &bundle.bundle)
+            .await?
+        {
+            // Bundle with matching id already exists in the metadata store
+            trace!("Bundle with matching id already exists in the metadata store");
+
+            valid = false;
+        }
 
             // Not valid, drop it
+        if !valid {
             self.dispatcher
                 .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::BlockUnintelligible)
                 .await?;
@@ -175,11 +187,6 @@ impl Ingress {
             // Drop the bundle
             return self.store.delete_data(&bundle.metadata.storage_name).await;
         }
-
-        // Store the bundle metadata in the store
-        self.store
-            .store_metadata(&bundle.metadata, &bundle.bundle)
-            .await?;
 
         // Process the bundle further
         self.process_bundle(bundle, cancel_token).await
