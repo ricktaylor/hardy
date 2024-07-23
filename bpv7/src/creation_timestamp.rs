@@ -1,7 +1,7 @@
 use super::*;
 use thiserror::Error;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub struct CreationTimestamp {
     pub creation_time: Option<DtnTime>,
     pub sequence_number: u64,

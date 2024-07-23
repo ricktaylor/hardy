@@ -2,14 +2,14 @@ use super::*;
 use base64::prelude::*;
 use thiserror::Error;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub struct BundleId {
     pub source: Eid,
     pub timestamp: CreationTimestamp,
     pub fragment_info: Option<FragmentInfo>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct FragmentInfo {
     pub offset: u64,
     pub total_len: u64,
