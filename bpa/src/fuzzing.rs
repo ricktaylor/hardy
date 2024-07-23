@@ -30,7 +30,7 @@ pub mod store {
     #[derive(Clone, Default)]
     pub struct Store {
         bundles: Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>,
-        metadata: Arc<Mutex<HashMap<bpv7::BundleId, metadata::Bundle>>>,
+        metadata: Arc<Mutex<HashMap<String, metadata::Bundle>>>,
     }
 
     impl Store {
@@ -65,24 +65,42 @@ pub mod store {
 
         pub async fn store_data(&self, data: Vec<u8>) -> Result<String, Error> {
             let mut bundles = self.bundles.lock().unwrap();
+            let metadata = self.metadata.lock().unwrap();
             let mut hash = Self::adler32(&data);
             loop {
                 let storage_name = hash.to_string();
-                if !bundles.contains_key(&storage_name) {
-                    bundles.insert(storage_name.clone(), Arc::new(data));
-                    break Ok(storage_name);
+                if metadata.contains_key(&storage_name) || bundles.contains_key(&storage_name) {
+                    hash += 1;
+                    continue;
                 }
 
-                hash += 1;
+                bundles.insert(storage_name.clone(), Arc::new(data));
+                break Ok(storage_name);
             }
         }
 
         pub async fn store_metadata(
             &self,
-            _metadata: &metadata::Metadata,
-            _bundle: &bpv7::Bundle,
+            metadata: &metadata::Metadata,
+            bundle: &bpv7::Bundle,
         ) -> Result<bool, Error> {
-            todo!()
+            let mut metadatas = self.metadata.lock().unwrap();
+            if metadatas
+                .iter()
+                .find(|(_, b)| b.bundle.id == bundle.id)
+                .is_some()
+            {
+                return Ok(false);
+            }
+
+            metadatas.insert(
+                metadata.storage_name.clone(),
+                metadata::Bundle {
+                    metadata: metadata.clone(),
+                    bundle: bundle.clone(),
+                },
+            );
+            Ok(true)
         }
 
         pub async fn load(
@@ -149,10 +167,12 @@ pub mod store {
 
         pub async fn set_status(
             &self,
-            _storage_name: &str,
-            _status: &metadata::BundleStatus,
+            storage_name: &str,
+            status: &metadata::BundleStatus,
         ) -> Result<(), Error> {
-            todo!()
+            let mut metadata = self.metadata.lock().unwrap();
+            metadata.get_mut(storage_name).unwrap().metadata.status = status.clone();
+            Ok(())
         }
 
         pub async fn delete_data(&self, storage_name: &str) -> Result<(), Error> {
