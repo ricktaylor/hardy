@@ -84,3 +84,5 @@ fuzz_target!(|data: &[u8]| {
         let _ = ingress.receive(data.into()).await;
     })
 });
+
+// llvm-cov show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
