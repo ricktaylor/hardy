@@ -15,10 +15,11 @@ mod built_info {
 }
 
 // This is the effective prelude
+use fuzz_macros::instrument;
 use hardy_bpa_api::metadata;
 use hardy_bpv7::prelude as bpv7;
 use trace_err::*;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{error, info, trace, warn};
 
 // Mock storage module
 pub mod store {
@@ -85,11 +86,7 @@ pub mod store {
             bundle: &bpv7::Bundle,
         ) -> Result<bool, Error> {
             let mut metadatas = self.metadata.lock().unwrap();
-            if metadatas
-                .iter()
-                .find(|(_, b)| b.bundle.id == bundle.id)
-                .is_some()
-            {
+            if metadatas.iter().any(|(_, b)| b.bundle.id == bundle.id) {
                 return Ok(false);
             }
 

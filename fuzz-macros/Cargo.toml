@@ -1,0 +1,9 @@
+[package]
+name = "fuzz-macros"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]

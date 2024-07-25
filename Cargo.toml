@@ -13,6 +13,7 @@ members = [
     "sqlite-storage",
     "tcpcl",
     "tcpcl/fuzz",
+    "fuzz-macros",
 ]
 
 [workspace.package]
