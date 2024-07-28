@@ -178,7 +178,7 @@ impl Ingress {
             valid = false;
         }
 
-            // Not valid, drop it
+        // Not valid, drop it
         if !valid {
             self.dispatcher
                 .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::BlockUnintelligible)
