@@ -22,6 +22,9 @@ struct Args {
 
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    #[arg(short, long)]
+    lifetime: Option<humantime::Duration>,
 }
 
 fn main() {
@@ -44,6 +47,13 @@ fn main() {
 
     if let Some(report_to) = args.report_to {
         b = b.report_to(report_to);
+    }
+
+    if let Some(lifetime) = args.lifetime {
+        if lifetime.as_millis() > u64::MAX as u128 {
+            panic!("Lifetime too long!")
+        }
+        b = b.lifetime(lifetime.as_millis() as u64);
     }
 
     b = b.add_payload_block(payload);
