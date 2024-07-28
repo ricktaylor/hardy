@@ -221,6 +221,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     pub fn emit_raw(&mut self, data: &[u8]) {
+        self.check_bounds();
         self.encoder.emit_raw(data)
     }
 
