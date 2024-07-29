@@ -109,12 +109,40 @@ pub mod store {
 
         pub async fn store(
             &self,
-            _bundle: &bpv7::Bundle,
-            _data: Vec<u8>,
-            _status: metadata::BundleStatus,
-            _received_at: Option<time::OffsetDateTime>,
+            bundle: &bpv7::Bundle,
+            data: Vec<u8>,
+            status: metadata::BundleStatus,
+            received_at: Option<time::OffsetDateTime>,
         ) -> Result<Option<metadata::Metadata>, Error> {
-            todo!()
+            // Calculate hash
+            let hash = self.hash(&data);
+
+            // Write to bundle storage
+            let storage_name = self.store_data(data).await?;
+
+            // Compose metadata
+            let metadata = metadata::Metadata {
+                status,
+                storage_name,
+                hash: hash.to_vec(),
+                received_at,
+            };
+
+            // Write to metadata store
+            match self.store_metadata(&metadata, bundle).await {
+                Ok(true) => Ok(Some(metadata)),
+                Ok(false) => {
+                    // We have a duplicate, remove the duplicate from the bundle store
+                    let _ = self.delete_data(&metadata.storage_name).await;
+                    Ok(None)
+                }
+                Err(e) => {
+                    // This is just bad, we can't really claim to have stored the bundle,
+                    // so just cleanup and get out
+                    let _ = self.delete_data(&metadata.storage_name).await;
+                    Err(e)
+                }
+            }
         }
 
         pub async fn get_waiting_bundles(
@@ -167,8 +195,13 @@ pub mod store {
             storage_name: &str,
             status: &metadata::BundleStatus,
         ) -> Result<(), Error> {
-            let mut metadata = self.metadata.lock().unwrap();
-            metadata.get_mut(storage_name).unwrap().metadata.status = status.clone();
+            self.metadata
+                .lock()
+                .unwrap()
+                .get_mut(storage_name)
+                .unwrap()
+                .metadata
+                .status = status.clone();
             Ok(())
         }
 
