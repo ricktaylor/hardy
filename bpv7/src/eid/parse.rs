@@ -162,7 +162,11 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidE
         }
 
         let eid = if scheme > 2 {
-            let (start, len) = a.parse_value(|_, start, _| Ok::<_, EidError>(start))?;
+            let Some((start, len)) =
+                a.try_parse_value_checked(16, |_, start, _| Ok::<_, EidError>(start))?
+            else {
+                return Err(EidError::UnsupportedScheme(format!("{}", scheme)));
+            };
             Eid::Unknown {
                 scheme,
                 data: data[start..start + len].to_vec(),
