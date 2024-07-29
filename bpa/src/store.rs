@@ -226,7 +226,7 @@ impl Store {
         let hash = self.hash(&data);
 
         // Write to bundle storage
-        let storage_name = self.bundle_storage.store(data).await?;
+        let storage_name = self.store_data(data).await?;
 
         // Compose metadata
         let metadata = metadata::Metadata {
@@ -237,7 +237,7 @@ impl Store {
         };
 
         // Write to metadata store
-        match self.metadata_storage.store(&metadata, bundle).await {
+        match self.store_metadata(&metadata, bundle).await {
             Ok(true) => Ok(Some(metadata)),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
