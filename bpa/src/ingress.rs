@@ -266,31 +266,23 @@ impl Ingress {
         let mut blocks_to_remove = Vec::new();
 
         for (block_number, block) in &bundle.bundle.blocks {
-            match &block.block_type {
-                bpv7::BlockType::PreviousNode | bpv7::BlockType::BundleAge => {
-                    // Always remove the Previous Node and Bundle Age blocks, as we have the data recorded
-                    // And we must replace them before forwarding anyway
+            if let bpv7::BlockType::Private(_) = &block.block_type {
+                if block.flags.report_on_failure {
+                    self.dispatcher
+                        .report_bundle_reception(
+                            &bundle,
+                            bpv7::StatusReportReasonCode::BlockUnsupported,
+                        )
+                        .await?;
+                }
+
+                if block.flags.delete_bundle_on_failure {
+                    return Ok((Some(bpv7::StatusReportReasonCode::BlockUnsupported), bundle));
+                }
+
+                if block.flags.delete_block_on_failure {
                     blocks_to_remove.push(*block_number);
                 }
-                bpv7::BlockType::Private(_) => {
-                    if block.flags.report_on_failure {
-                        self.dispatcher
-                            .report_bundle_reception(
-                                &bundle,
-                                bpv7::StatusReportReasonCode::BlockUnsupported,
-                            )
-                            .await?;
-                    }
-
-                    if block.flags.delete_bundle_on_failure {
-                        return Ok((Some(bpv7::StatusReportReasonCode::BlockUnsupported), bundle));
-                    }
-
-                    if block.flags.delete_block_on_failure {
-                        blocks_to_remove.push(*block_number);
-                    }
-                }
-                _ => (),
             }
         }
 
