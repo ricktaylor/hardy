@@ -25,9 +25,6 @@ pub enum Error {
     #[error("Map has key but no value")]
     PartialMap,
 
-    #[error("Too many levels of recursion")]
-    Recursion,
-
     #[error(transparent)]
     InvalidUtf8(#[from] Utf8Error),
 
@@ -105,27 +102,17 @@ pub struct Sequence<'a, const D: usize> {
     count: Option<usize>,
     offset: &'a mut usize,
     idx: usize,
-    max_recursion: Option<usize>,
 }
 
 impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut offset = 0;
         {
-            let max_recursion = if let Some(max_recursion) = self.max_recursion {
-                if max_recursion == 1 {
-                    return f.write_str("Too many levels of recursion");
-                }
-                Some(max_recursion - 1)
-            } else {
-                None
-            };
             let mut self_cloned = Sequence::<D> {
                 data: &self.data[*self.offset..],
                 count: self.count,
                 offset: &mut offset,
                 idx: self.idx,
-                max_recursion,
             };
             if D == 1 {
                 let mut l = f.debug_list();
@@ -175,26 +162,13 @@ pub type Array<'a> = Sequence<'a, 1>;
 pub type Map<'a> = Sequence<'a, 2>;
 
 impl<'a, const D: usize> Sequence<'a, D> {
-    fn new(
-        data: &'a [u8],
-        count: Option<usize>,
-        offset: &'a mut usize,
-        max_recursion: Option<usize>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
+    fn new(data: &'a [u8], count: Option<usize>, offset: &'a mut usize) -> Self {
+        Self {
             data,
             count,
             offset,
             idx: 0,
-            max_recursion: if let Some(max_recursion) = max_recursion {
-                if max_recursion == 1 {
-                    return Err(Error::Recursion.into());
-                }
-                Some(max_recursion - 1)
-            } else {
-                None
-            },
-        })
+        }
     }
 
     pub fn count(&self) -> Option<usize> {
@@ -236,16 +210,13 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     fn complete(mut self) -> Result<(), Error> {
-        // Parse and discard any remaining items
-        while let Some((_, _)) = self.try_parse_value(|_, _, _| Ok::<_, Error>(()))? {}
+        if !self.check_for_end()? {
+            return Err(Error::NotEnoughData);
+        }
         Ok(())
     }
 
-    fn try_parse_value_inner<T, F, E>(
-        &mut self,
-        max_recursion: Option<usize>,
-        f: F,
-    ) -> Result<Option<(T, usize)>, E>
+    pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
     where
         F: FnOnce(Value, usize, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
@@ -255,14 +226,8 @@ impl<'a, const D: usize> Sequence<'a, D> {
             Ok(None)
         } else {
             // Parse sub-item
-            let max_recursion = match (max_recursion, self.max_recursion) {
-                (Some(c), Some(d)) => Some(c.min(d)),
-                (Some(c), None) => Some(c),
-                (None, Some(d)) => Some(d),
-                (None, None) => None,
-            };
             let item_start = *self.offset;
-            try_parse_value_inner(&self.data[item_start..], max_recursion, |value, tags| {
+            try_parse_value(&self.data[item_start..], |value, tags| {
                 f(value, item_start, tags)
             })
             .map(|o| {
@@ -273,28 +238,6 @@ impl<'a, const D: usize> Sequence<'a, D> {
                 })
             })
         }
-    }
-
-    #[inline]
-    pub fn try_parse_value_checked<T, F, E>(
-        &mut self,
-        max_recursion: usize,
-        f: F,
-    ) -> Result<Option<(T, usize)>, E>
-    where
-        F: FnOnce(Value, usize, Vec<u64>) -> Result<T, E>,
-        E: From<Error>,
-    {
-        self.try_parse_value_inner(Some(max_recursion), f)
-    }
-
-    #[inline]
-    pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
-    where
-        F: FnOnce(Value, usize, Vec<u64>) -> Result<T, E>,
-        E: From<Error>,
-    {
-        self.try_parse_value_inner(None, f)
     }
 
     #[inline]
@@ -452,11 +395,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, usize), Err
     }
 }
 
-fn try_parse_value_inner<T, F, E>(
-    data: &[u8],
-    max_recursion: Option<usize>,
-    f: F,
-) -> Result<Option<(T, usize)>, E>
+pub fn try_parse_value<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
 where
     F: FnOnce(Value, Vec<u64>) -> Result<T, E>,
     E: From<Error>,
@@ -519,7 +458,7 @@ where
         (4, 31) => {
             /* Indefinite length array */
             offset += 1;
-            let mut a = Array::new(data, None, &mut offset, max_recursion)?;
+            let mut a = Array::new(data, None, &mut offset);
             let r = f(Value::Array(&mut a), tags)?;
             a.complete().map(|_| r).map_err(Into::into)
         }
@@ -530,14 +469,14 @@ where
             if count > usize::MAX as u64 {
                 return Err(Error::NotEnoughData.into());
             }
-            let mut a = Array::new(data, Some(count as usize), &mut offset, max_recursion)?;
+            let mut a = Array::new(data, Some(count as usize), &mut offset);
             let r = f(Value::Array(&mut a), tags)?;
             a.complete().map(|_| r).map_err(Into::into)
         }
         (5, 31) => {
             /* Indefinite length map */
             offset += 1;
-            let mut m = Map::new(data, None, &mut offset, max_recursion)?;
+            let mut m = Map::new(data, None, &mut offset);
             let r = f(Value::Map(&mut m), tags)?;
             m.complete().map(|_| r).map_err(Into::into)
         }
@@ -548,7 +487,7 @@ where
             if count > (usize::MAX as u64) / 2 {
                 return Err(Error::NotEnoughData.into());
             }
-            let mut m = Map::new(data, Some((count * 2) as usize), &mut offset, max_recursion)?;
+            let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
             let r = f(Value::Map(&mut m), tags)?;
             m.complete().map(|_| r).map_err(Into::into)
         }
@@ -614,28 +553,6 @@ where
         (8.., _) => unreachable!(),
     }
     .map(|r| Some((r, offset)))
-}
-
-#[inline]
-pub fn try_parse_value_checked<T, F, E>(
-    data: &[u8],
-    max_recursion: usize,
-    f: F,
-) -> Result<Option<(T, usize)>, E>
-where
-    F: FnOnce(Value, Vec<u64>) -> Result<T, E>,
-    E: From<Error>,
-{
-    try_parse_value_inner(data, Some(max_recursion), f)
-}
-
-#[inline]
-pub fn try_parse_value<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
-where
-    F: FnOnce(Value, Vec<u64>) -> Result<T, E>,
-    E: From<Error>,
-{
-    try_parse_value_inner(data, None, f)
 }
 
 #[inline]

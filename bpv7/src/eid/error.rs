@@ -45,8 +45,8 @@ pub enum EidError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("Expecting CBOR array")]
-    ArrayExpected(#[from] cbor::decode::Error),
+    #[error(transparent)]
+    InvalidCbor(#[from] cbor::decode::Error),
 
     #[error(transparent)]
     InvalidUtf8(#[from] std::string::FromUtf8Error),

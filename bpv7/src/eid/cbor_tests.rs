@@ -18,7 +18,7 @@ fn tests() {
     // Negative tests
     assert!(matches!(
         expect_error(&[]),
-        EidError::ArrayExpected(cbor::decode::Error::NotEnoughData)
+        EidError::InvalidCbor(cbor::decode::Error::NotEnoughData)
     ));
     assert!(matches!(
         expect_error(&hex!(

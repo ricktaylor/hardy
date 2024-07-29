@@ -150,6 +150,45 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
     }
 }
 
+fn unknown_from_cbor(
+    scheme: u64,
+    value: cbor::decode::Value,
+    count: usize,
+) -> Result<(), EidError> {
+    match value {
+        _ if count == 0 => {
+            // Recursion safety check
+            return Err(EidError::UnsupportedScheme(scheme.to_string()));
+        }
+        cbor::decode::Value::Array(a) => {
+            while a
+                .try_parse_value(|value, start, _| {
+                    unknown_from_cbor(scheme, value, count - 1)?;
+                    Ok::<_, EidError>(start)
+                })?
+                .is_some()
+            {}
+        }
+        cbor::decode::Value::Map(m) => {
+            while m
+                .try_parse_value(|value, start, _| {
+                    unknown_from_cbor(scheme, value, count - 1)?;
+                    Ok::<_, EidError>(start)
+                })?
+                .is_some()
+            {
+                m.try_parse_value(|value, start, _| {
+                    unknown_from_cbor(scheme, value, count - 1)?;
+                    Ok::<_, EidError>(start)
+                })?
+                .ok_or::<EidError>(cbor::decode::Error::PartialMap.into())?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidError> {
     cbor::decode::try_parse_array(data, |a, tags| {
         if a.count().is_none() {
@@ -162,11 +201,10 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidE
         }
 
         let eid = if scheme > 2 {
-            let Some((start, len)) =
-                a.try_parse_value_checked(16, |_, start, _| Ok::<_, EidError>(start))?
-            else {
-                return Err(EidError::UnsupportedScheme(format!("{}", scheme)));
-            };
+            let (start, len) = a.parse_value(|value, start, _| {
+                unknown_from_cbor(scheme, value, 16)?;
+                Ok::<_, EidError>(start)
+            })?;
             Eid::Unknown {
                 scheme,
                 data: data[start..start + len].to_vec(),
