@@ -19,6 +19,7 @@ impl Ingress {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         // Create a channel for new bundles
+        // TODO: Configurable channel length
         let (receive_channel, receive_channel_rx) = channel(16);
         let (ingress_channel, ingress_channel_rx) = channel(16);
         let ingress = Self {
@@ -49,10 +50,7 @@ impl Ingress {
         let storage_name = self.store.store_data(data).await?;
 
         // Put bundle into receive channel
-        self.receive_channel
-            .send((storage_name, Some(received_at)))
-            .await
-            .map_err(Into::into)
+        self.enqueue_receive_bundle(&storage_name, Some(received_at)).await
     }
 
     pub async fn enqueue_receive_bundle(
@@ -198,7 +196,7 @@ impl Ingress {
         mut bundle: metadata::Bundle,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        /* Always check bundles,  no matter the state, as after restarting
+        /* Always check bundles, no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
         // Check some basic semantic validity, lifetime first
