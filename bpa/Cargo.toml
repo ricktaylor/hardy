@@ -42,7 +42,7 @@ config = { version = "0.14.0", features = ["toml"] }
 serde = { version = "1.0.203", features = ["derive"] }
 getopts = "0.2.21"
 directories = "5.0.1"
-thiserror = "1.0.61"
+thiserror = "1.0.63"
 time = { version = "0.3.36", features = ["macros", "parsing"] }
 rand = "0.8.5"
 cfg-if = "1.0.0"
