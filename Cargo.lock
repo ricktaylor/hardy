@@ -800,6 +800,8 @@ version = "0.0.0"
 dependencies = [
  "config",
  "hardy-bpa",
+ "hardy-bpv7",
+ "hardy-cbor",
  "libfuzzer-sys",
  "tokio",
  "tokio-util",
