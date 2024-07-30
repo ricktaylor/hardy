@@ -32,6 +32,7 @@ pub mod store {
     pub struct Store {
         bundles: Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>,
         metadata: Arc<Mutex<HashMap<String, metadata::Bundle>>>,
+        index: Arc<Mutex<HashMap<bpv7::BundleId, String>>>,
     }
 
     impl Store {
@@ -85,12 +86,13 @@ pub mod store {
             metadata: &metadata::Metadata,
             bundle: &bpv7::Bundle,
         ) -> Result<bool, Error> {
-            let mut metadatas = self.metadata.lock().unwrap();
-            if metadatas.iter().any(|(_, b)| b.bundle.id == bundle.id) {
+            let mut index = self.index.lock().unwrap();
+            if index.get(&bundle.id).is_some() {
                 return Ok(false);
             }
+            index.insert(bundle.id.clone(), metadata.storage_name.clone());
 
-            metadatas.insert(
+            self.metadata.lock().unwrap().insert(
                 metadata.storage_name.clone(),
                 metadata::Bundle {
                     metadata: metadata.clone(),
@@ -149,23 +151,27 @@ pub mod store {
             &self,
             limit: time::OffsetDateTime,
         ) -> Result<Vec<(metadata::Bundle, time::OffsetDateTime)>, Error> {
-            Ok(self
-                .metadata
-                .lock()
-                .unwrap()
-                .iter()
-                .filter_map(|(_, bundle)| {
-                    if let metadata::BundleStatus::Waiting(until) = bundle.metadata.status {
-                        if until <= limit {
-                            Some((bundle.clone(), until))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+            let mut metadata = self.metadata.lock().unwrap();
+
+            // Drop all tombstones and collect waiting
+            let mut waiting = Vec::new();
+            metadata.retain(|_, bundle| {
+                match bundle.metadata.status {
+                    metadata::BundleStatus::Tombstone
+                        if bundle.expiry() + time::Duration::seconds(10)
+                            < time::OffsetDateTime::now_utc() =>
+                    {
+                        self.index.lock().unwrap().remove(&bundle.bundle.id);
+                        return false;
                     }
-                })
-                .collect())
+                    metadata::BundleStatus::Waiting(until) if until <= limit => {
+                        waiting.push((bundle.clone(), until));
+                    }
+                    _ => {}
+                }
+                true
+            });
+            Ok(waiting)
         }
 
         pub async fn poll_for_collection(
