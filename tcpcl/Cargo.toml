@@ -22,6 +22,7 @@ packaged-installation = []
 [dependencies]
 hardy-bpv7 = { path = "../bpv7" }
 hardy-proto = { path = "../proto" }
+fuzz-macros = { path = "../fuzz-macros" }
 tokio = { version = "1.38.0", features = [
     "macros",
     "rt-multi-thread",

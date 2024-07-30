@@ -7,9 +7,10 @@ mod codec;
 mod connection;
 mod session;
 
+use fuzz_macros::instrument;
 use hardy_bpv7::prelude as bpv7;
 use trace_err::*;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{error, info, trace, warn};
 
 // Buildtime info
 mod built_info {

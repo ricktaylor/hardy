@@ -914,6 +914,7 @@ dependencies = [
  "config",
  "directories",
  "futures",
+ "fuzz-macros",
  "getopts",
  "hardy-bpv7",
  "hardy-proto",
