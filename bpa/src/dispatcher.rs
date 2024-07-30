@@ -424,7 +424,7 @@ impl Dispatcher {
             let mut congestion_wait = None;
 
             // For each CLA
-            for endpoint in action.clas {
+            for endpoint in &action.clas {
                 // Find the named CLA
                 if let Some(e) = self.cla_registry.find(endpoint.handle).await {
                     // Get bundle data from store, now we know we need it!
@@ -512,10 +512,10 @@ impl Dispatcher {
 
                 // Reset retry counter, as we found a route, it's just busy
                 retries = 0;
-            } else if retries > self.config.max_forwarding_delay {
+            } else if retries >= self.config.max_forwarding_delay {
                 if previous {
                     // We have delayed long enough trying to find a route to previous_node
-                    trace!("Timed out trying to return bundle to previous node");
+                    trace!("Failed to return bundle to previous node, no route");
                     return self
                         .drop_bundle(
                             bundle,
@@ -524,7 +524,7 @@ impl Dispatcher {
                         .await;
                 }
 
-                trace!("Timed out trying to forward bundle");
+                trace!("Failed to forward bundle, no route");
 
                 // Return the bundle to the source via the 'previous_node' or 'bundle.source'
                 destination = bundle
