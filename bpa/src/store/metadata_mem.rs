@@ -1,4 +1,3 @@
-#![cfg(feature = "mem-storage")]
 use super::*;
 use hardy_bpa_api::{async_trait, metadata};
 use std::{
@@ -54,7 +53,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn load(&self, bundle_id: &bpv7::BundleId) -> storage::Result<Option<metadata::Bundle>> {
+    async fn load(&self, _bundle_id: &bpv7::BundleId) -> storage::Result<Option<metadata::Bundle>> {
         todo!()
     }
 
@@ -117,11 +116,11 @@ impl storage::MetadataStorage for Storage {
             .ok_or(Error::NotFound.into())
     }
 
-    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
+    async fn remove(&self, _storage_name: &str) -> storage::Result<()> {
         todo!()
     }
 
-    async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> storage::Result<bool> {
+    async fn confirm_exists(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<bool> {
         todo!()
     }
 
@@ -129,11 +128,11 @@ impl storage::MetadataStorage for Storage {
         // We don't really have anything transactional to do here, just confirm the bundle exists
         self.confirm_exists(storage_name, hash)
             .await
-            .map(|exists| exists.then(|| ()))?
+            .map(|exists| exists.then_some(()))?
             .ok_or(Error::NotFound.into())
     }
 
-    async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> storage::Result<()> {
+    async fn commit_replace(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<()> {
         todo!()
     }
 
@@ -174,7 +173,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn poll_for_collection(
         &self,
-        destination: bpv7::Eid,
+        _destination: bpv7::Eid,
     ) -> storage::Result<Vec<metadata::Bundle>> {
         todo!()
     }

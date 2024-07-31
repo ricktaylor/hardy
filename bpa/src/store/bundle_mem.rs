@@ -1,4 +1,3 @@
-#![cfg(feature = "mem-storage")]
 use super::*;
 use hardy_bpa_api::async_trait;
 use rand::distributions::{Alphanumeric, DistString};
@@ -78,7 +77,7 @@ impl storage::BundleStorage for Storage {
             .ok_or(Error::NotFound.into())
     }
 
-    async fn replace(&self, storage_name: &str, data: Vec<u8>) -> storage::Result<()> {
+    async fn replace(&self, _storage_name: &str, _data: Vec<u8>) -> storage::Result<()> {
         todo!()
     }
 }

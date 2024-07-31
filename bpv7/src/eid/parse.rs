@@ -150,6 +150,16 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
     }
 }
 
+fn cbor_skip(
+    scheme: u64,
+    value: cbor::decode::Value,
+    start: usize,
+    count: usize,
+) -> Result<usize, EidError> {
+    unknown_from_cbor(scheme, value, count - 1)?;
+    Ok(start)
+}
+
 fn unknown_from_cbor(
     scheme: u64,
     value: cbor::decode::Value,
@@ -162,26 +172,17 @@ fn unknown_from_cbor(
         }
         cbor::decode::Value::Array(a) => {
             while a
-                .try_parse_value(|value, start, _| {
-                    unknown_from_cbor(scheme, value, count - 1)?;
-                    Ok::<_, EidError>(start)
-                })?
+                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, count))?
                 .is_some()
             {}
         }
         cbor::decode::Value::Map(m) => {
             while m
-                .try_parse_value(|value, start, _| {
-                    unknown_from_cbor(scheme, value, count - 1)?;
-                    Ok::<_, EidError>(start)
-                })?
+                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, count))?
                 .is_some()
             {
-                m.try_parse_value(|value, start, _| {
-                    unknown_from_cbor(scheme, value, count - 1)?;
-                    Ok::<_, EidError>(start)
-                })?
-                .ok_or::<EidError>(cbor::decode::Error::PartialMap.into())?;
+                m.try_parse_value(|value, start, _| cbor_skip(scheme, value, start, count))?
+                    .ok_or::<EidError>(cbor::decode::Error::PartialMap.into())?;
             }
         }
         _ => {}
