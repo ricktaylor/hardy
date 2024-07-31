@@ -23,20 +23,65 @@ pub enum Error {
     NotFound,
 }
 
+#[derive(Debug)]
+#[repr(i64)]
+enum StatusCodes {
+    IngressPending = 0,
+    DispatchPending = 1,
+    ReassemblyPending = 2,
+    CollectionPending = 3,
+    ForwardPending = 4,
+    ForwardAckPending = 5,
+    Waiting = 6,
+    Tombstone = 7,
+}
+
+impl From<i64> for StatusCodes {
+    fn from(value: i64) -> Self {
+        match value {
+            0 => Self::IngressPending,
+            1 => Self::DispatchPending,
+            2 => Self::ReassemblyPending,
+            3 => Self::CollectionPending,
+            4 => Self::ForwardPending,
+            5 => Self::ForwardAckPending,
+            6 => Self::Waiting,
+            7 => Self::Tombstone,
+            _ => panic!("Invalid BundleStatus value {value}"),
+        }
+    }
+}
+
+impl From<StatusCodes> for i64 {
+    fn from(value: StatusCodes) -> Self {
+        value as i64
+    }
+}
+
 fn bundle_status_to_parts(
     value: &metadata::BundleStatus,
 ) -> (i64, Option<i64>, Option<time::OffsetDateTime>) {
     match value {
-        metadata::BundleStatus::IngressPending => (0, None, None),
-        metadata::BundleStatus::DispatchPending => (1, None, None),
-        metadata::BundleStatus::ReassemblyPending => (2, None, None),
-        metadata::BundleStatus::CollectionPending => (3, None, None),
-        metadata::BundleStatus::ForwardPending => (4, None, None),
-        metadata::BundleStatus::ForwardAckPending(handle, until) => {
-            (5, Some(*handle as i64), Some(*until))
+        metadata::BundleStatus::IngressPending => (StatusCodes::IngressPending.into(), None, None),
+        metadata::BundleStatus::DispatchPending => {
+            (StatusCodes::DispatchPending.into(), None, None)
         }
-        metadata::BundleStatus::Waiting(until) => (6, None, Some(*until)),
-        metadata::BundleStatus::Tombstone => (7, None, None),
+        metadata::BundleStatus::ReassemblyPending => {
+            (StatusCodes::ReassemblyPending.into(), None, None)
+        }
+        metadata::BundleStatus::CollectionPending => {
+            (StatusCodes::CollectionPending.into(), None, None)
+        }
+        metadata::BundleStatus::ForwardPending => (StatusCodes::ForwardPending.into(), None, None),
+        metadata::BundleStatus::ForwardAckPending(handle, until) => (
+            StatusCodes::ForwardAckPending.into(),
+            Some(*handle as i64),
+            Some(*until),
+        ),
+        metadata::BundleStatus::Waiting(until) => (StatusCodes::Waiting.into(), None, Some(*until)),
+        metadata::BundleStatus::Tombstone(from) => {
+            (StatusCodes::Tombstone.into(), None, Some(*from))
+        }
     }
 }
 
@@ -47,22 +92,25 @@ fn columns_to_bundle_status(
     idx3: usize,
 ) -> rusqlite::Result<metadata::BundleStatus> {
     match (
-        row.get::<usize, i64>(idx1)?,
+        row.get::<usize, i64>(idx1)?.into(),
         row.get::<usize, Option<i64>>(idx2)?,
         row.get::<usize, Option<time::OffsetDateTime>>(idx3)?,
     ) {
-        (0, None, None) => Ok(metadata::BundleStatus::IngressPending),
-        (1, None, None) => Ok(metadata::BundleStatus::DispatchPending),
-        (2, None, None) => Ok(metadata::BundleStatus::ReassemblyPending),
-        (3, None, None) => Ok(metadata::BundleStatus::CollectionPending),
-        (4, None, None) => Ok(metadata::BundleStatus::ForwardPending),
-        (5, Some(handle), Some(until)) => Ok(metadata::BundleStatus::ForwardAckPending(
-            handle as u32,
-            until,
-        )),
-        (6, None, Some(until)) => Ok(metadata::BundleStatus::Waiting(until)),
-        (7, None, None) => Ok(metadata::BundleStatus::Tombstone),
-        (v, t, d) => panic!("Invalid BundleStatus value combination {v}/{t:?}/{d:?}"),
+        (StatusCodes::IngressPending, None, None) => Ok(metadata::BundleStatus::IngressPending),
+        (StatusCodes::DispatchPending, None, None) => Ok(metadata::BundleStatus::DispatchPending),
+        (StatusCodes::ReassemblyPending, None, None) => {
+            Ok(metadata::BundleStatus::ReassemblyPending)
+        }
+        (StatusCodes::CollectionPending, None, None) => {
+            Ok(metadata::BundleStatus::CollectionPending)
+        }
+        (StatusCodes::ForwardPending, None, None) => Ok(metadata::BundleStatus::ForwardPending),
+        (StatusCodes::ForwardAckPending, Some(handle), Some(until)) => Ok(
+            metadata::BundleStatus::ForwardAckPending(handle as u32, until),
+        ),
+        (StatusCodes::Waiting, None, Some(until)) => Ok(metadata::BundleStatus::Waiting(until)),
+        (StatusCodes::Tombstone, None, Some(from)) => Ok(metadata::BundleStatus::Tombstone(from)),
+        (v, t, d) => panic!("Invalid BundleStatus value combination {v:?}/{t:?}/{d:?}"),
     }
 }
 
@@ -150,7 +198,7 @@ impl Storage {
                 r#"
             INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
             SELECT id FROM bundles WHERE status != ?1;"#,
-                [bundle_status_to_parts(&metadata::BundleStatus::Tombstone).0],
+                [StatusCodes::Tombstone as i64],
             )
             .and_then(|_| {
                 // Create temporary tables for restarting
@@ -947,7 +995,7 @@ impl storage::MetadataStorage for Storage {
                     WHERE status = ?1 AND destination = ?2;"#,
                 )?
                 .query((
-                    bundle_status_to_parts(&metadata::BundleStatus::CollectionPending).0,
+                    StatusCodes::CollectionPending as i64,
                     encode_eid(&destination),
                 ))?,
         )
