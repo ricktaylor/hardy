@@ -317,7 +317,11 @@ impl Dispatcher {
             }
             metadata::BundleStatus::CollectionPending => {
                 // Check if we have a local service registered
-                if let Some(endpoint) = self.app_registry.find_by_eid(&bundle.bundle.destination) {
+                if let Some(endpoint) = self
+                    .app_registry
+                    .find_by_eid(&bundle.bundle.destination)
+                    .await
+                {
                     // Notify that the bundle is ready for collection
                     trace!("Notifying application that bundle is ready for collection");
                     endpoint.collection_notify(&bundle.bundle.id).await;
@@ -951,7 +955,10 @@ impl Dispatcher {
                     Some(bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable)
                 } else {
                     // Find a live service to notify
-                    if let Some(endpoint) = self.app_registry.find_by_eid(&report.bundle_id.source)
+                    if let Some(endpoint) = self
+                        .app_registry
+                        .find_by_eid(&report.bundle_id.source)
+                        .await
                     {
                         // Notify the service
                         if let Some(assertion) = report.received {

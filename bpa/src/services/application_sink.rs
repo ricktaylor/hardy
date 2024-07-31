@@ -42,6 +42,7 @@ impl ApplicationSink for Service {
     ) -> Result<Response<UnregisterApplicationResponse>, Status> {
         self.app_registry
             .unregister(request.into_inner())
+            .await
             .map(Response::new)
     }
 
@@ -49,7 +50,7 @@ impl ApplicationSink for Service {
     async fn send(&self, request: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
         let request = request.into_inner();
         let mut send_request = dispatcher::SendRequest {
-            source: self.app_registry.find_by_token(&request.token)?,
+            source: self.app_registry.find_by_token(&request.token).await?,
             destination: match request
                 .destination
                 .parse::<bpv7::Eid>()
@@ -107,7 +108,7 @@ impl ApplicationSink for Service {
         let Some(response) = self
             .dispatcher
             .collect(
-                self.app_registry.find_by_token(&request.token)?,
+                self.app_registry.find_by_token(&request.token).await?,
                 request.bundle_id,
             )
             .await
@@ -137,7 +138,7 @@ impl ApplicationSink for Service {
 
         // Get the items
         let items = dispatcher
-            .poll_for_collection(self.app_registry.find_by_token(&request.token)?)
+            .poll_for_collection(self.app_registry.find_by_token(&request.token).await?)
             .await
             .map_err(Status::from_error)?;
 

@@ -1,11 +1,9 @@
 use super::*;
 use hardy_bpa_api::async_trait;
 use rand::distributions::{Alphanumeric, DistString};
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 pub const CONFIG_KEY: &str = "mem-storage";
 
@@ -40,12 +38,7 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn load(&self, storage_name: &str) -> storage::Result<storage::DataRef> {
-        match self
-            .bundles
-            .read()
-            .expect("Failed to acquire read lock")
-            .get(storage_name)
-        {
+        match self.bundles.read().await.get(storage_name) {
             None => Err(Error::NotFound.into()),
             Some(v) => Ok(v.clone()),
         }
@@ -53,11 +46,10 @@ impl storage::BundleStorage for Storage {
 
     async fn store(&self, data: Vec<u8>) -> storage::Result<String> {
         let mut data = Arc::new(data);
-        let mut rng = rand::thread_rng();
-        let mut bundles = self.bundles.write().expect("Failed to acquire write lock");
+        let mut bundles = self.bundles.write().await;
 
         loop {
-            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
+            let storage_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 64);
 
             let Some(prev) = bundles.insert(storage_name.clone(), data) else {
                 return Ok(storage_name);
@@ -71,7 +63,7 @@ impl storage::BundleStorage for Storage {
     async fn remove(&self, storage_name: &str) -> storage::Result<()> {
         self.bundles
             .write()
-            .expect("Failed to acquire write lock")
+            .await
             .remove(storage_name)
             .map(|_| ())
             .ok_or(Error::NotFound.into())

@@ -3,7 +3,8 @@ use hardy_proto::application::*;
 use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 type Channel =
     Arc<tokio::sync::Mutex<application_client::ApplicationClient<tonic::transport::Channel>>>;
@@ -70,17 +71,12 @@ impl AppRegistry {
         };
 
         // Compose a token
-        let mut rng = rand::thread_rng();
-        let mut token = Alphanumeric.sample_string(&mut rng, 16);
-
-        let mut applications = self
-            .applications
-            .write()
-            .trace_expect("Failed to write-lock applications mutex");
+        let mut token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let mut applications = self.applications.write().await;
 
         // Check token is unique
         while applications.applications_by_token.contains_key(&token) {
-            token = Alphanumeric.sample_string(&mut rng, 16);
+            token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
         }
 
         // Compose EID
@@ -118,11 +114,12 @@ impl AppRegistry {
                     (None, Some(node_id)) => node_id
                         .to_eid(&format!(
                             "auto/{}",
-                            Alphanumeric.sample_string(&mut rng, 16)
+                            Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
                         ))
                         .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?,
                     (Some(node_id), _) => node_id.to_eid(
-                        (Into::<u16>::into(rng.gen::<std::num::NonZeroU16>()) & 0x7F7Fu16) as u32,
+                        (Into::<u16>::into(rand::thread_rng().gen::<std::num::NonZeroU16>())
+                            & 0x7F7Fu16) as u32,
                     ),
                     _ => unreachable!(),
                 };
@@ -163,14 +160,11 @@ impl AppRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn unregister(
+    pub async fn unregister(
         &self,
         request: UnregisterApplicationRequest,
     ) -> Result<UnregisterApplicationResponse, tonic::Status> {
-        let mut applications = self
-            .applications
-            .write()
-            .trace_expect("Failed to write-lock applications mutex");
+        let mut applications = self.applications.write().await;
 
         applications
             .applications_by_token
@@ -181,10 +175,10 @@ impl AppRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn find_by_token(&self, token: &str) -> Result<bpv7::Eid, tonic::Status> {
+    pub async fn find_by_token(&self, token: &str) -> Result<bpv7::Eid, tonic::Status> {
         self.applications
             .read()
-            .trace_expect("Failed to read-lock applications mutex")
+            .await
             .applications_by_token
             .get(token)
             .ok_or(tonic::Status::not_found("No such application"))
@@ -192,10 +186,10 @@ impl AppRegistry {
     }
 
     #[instrument(skip(self))]
-    pub fn find_by_eid(&self, eid: &bpv7::Eid) -> Option<Endpoint> {
+    pub async fn find_by_eid(&self, eid: &bpv7::Eid) -> Option<Endpoint> {
         self.applications
             .read()
-            .trace_expect("Failed to read-lock applications mutex")
+            .await
             .applications_by_eid
             .get(eid)
             .map(|app| Endpoint {

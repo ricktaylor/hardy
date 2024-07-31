@@ -1,10 +1,8 @@
 use super::*;
 use hardy_bpa_api::{async_trait, metadata};
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 pub const CONFIG_KEY: &str = "mem-storage";
 
@@ -62,7 +60,7 @@ impl storage::MetadataStorage for Storage {
         metadata: &metadata::Metadata,
         bundle: &bpv7::Bundle,
     ) -> storage::Result<bool> {
-        let mut inner = self.inner.write().expect("Failed to acquire write lock");
+        let mut inner = self.inner.write().await;
         match inner
             .index
             .insert(bundle.id.clone(), metadata.storage_name.clone())
@@ -96,7 +94,7 @@ impl storage::MetadataStorage for Storage {
         Ok(self
             .inner
             .read()
-            .expect("Failed to acquire read lock")
+            .await
             .metadata
             .get(storage_name)
             .map(|m| m.metadata.status.clone()))
@@ -109,7 +107,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<()> {
         self.inner
             .write()
-            .expect("Failed to acquire write lock")
+            .await
             .metadata
             .get_mut(storage_name)
             .map(|m| m.metadata.status = status.clone())
@@ -144,7 +142,7 @@ impl storage::MetadataStorage for Storage {
         let mut tombstones = Vec::new();
         let mut waiting = Vec::new();
 
-        let mut inner = self.inner.write().expect("Failed to acquire write lock");
+        let mut inner = self.inner.write().await;
 
         inner.metadata.retain(|_, bundle| {
             match bundle.metadata.status {
