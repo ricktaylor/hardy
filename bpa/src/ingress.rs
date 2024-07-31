@@ -50,7 +50,8 @@ impl Ingress {
         let storage_name = self.store.store_data(data).await?;
 
         // Put bundle into receive channel
-        self.enqueue_receive_bundle(&storage_name, Some(received_at)).await
+        self.enqueue_receive_bundle(&storage_name, Some(received_at))
+            .await
     }
 
     pub async fn enqueue_receive_bundle(
@@ -235,13 +236,7 @@ impl Ingress {
 
         if let Some(reason) = reason {
             // Not valid, drop it
-            self.dispatcher
-                .report_bundle_deletion(&bundle, reason)
-                .await?;
-
-            // Drop the bundle
-            trace!("Discarding bundle, leaving tombstone");
-            return self.store.remove(&bundle.metadata.storage_name).await;
+            return self.dispatcher.drop_bundle(bundle, Some(reason)).await;
         }
 
         if let metadata::BundleStatus::IngressPending = &bundle.metadata.status {
@@ -318,33 +313,6 @@ impl Ingress {
         handle: u32,
         bundle_id: &str,
     ) -> Result<(), tonic::Status> {
-        let Some(bundle) = self
-            .store
-            .load(
-                &bpv7::BundleId::from_key(bundle_id)
-                    .map_err(|e| tonic::Status::from_error(e.into()))?,
-            )
-            .await
-            .map_err(tonic::Status::from_error)?
-        else {
-            return Err(tonic::Status::not_found("No such bundle"));
-        };
-
-        match &bundle.metadata.status {
-            metadata::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
-                // Report bundle forwarded
-                self.dispatcher
-                    .report_bundle_forwarded(&bundle)
-                    .await
-                    .map_err(tonic::Status::from_error)?;
-
-                // And tombstone the bundle
-                self.store
-                    .remove(&bundle.metadata.storage_name)
-                    .await
-                    .map_err(tonic::Status::from_error)
-            }
-            _ => Err(tonic::Status::not_found("No such bundle")),
-        }
+        self.dispatcher.confirm_forwarding(handle, bundle_id).await
     }
 }

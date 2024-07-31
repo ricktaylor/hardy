@@ -17,7 +17,7 @@ pub enum BundleStatus {
     ForwardPending,
     ForwardAckPending(u32, time::OffsetDateTime),
     Waiting(time::OffsetDateTime),
-    Tombstone,
+    Tombstone(time::OffsetDateTime),
 }
 
 #[derive(Debug, Clone)]

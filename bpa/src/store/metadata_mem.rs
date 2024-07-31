@@ -146,9 +146,8 @@ impl storage::MetadataStorage for Storage {
 
         inner.metadata.retain(|_, bundle| {
             match bundle.metadata.status {
-                metadata::BundleStatus::Tombstone
-                    if bundle.expiry() + time::Duration::seconds(10)
-                        < time::OffsetDateTime::now_utc() =>
+                metadata::BundleStatus::Tombstone(from)
+                    if from + time::Duration::seconds(5) < time::OffsetDateTime::now_utc() =>
                 {
                     tombstones.push(bundle.bundle.id.clone());
                     return false;

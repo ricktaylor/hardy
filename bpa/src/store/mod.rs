@@ -130,15 +130,17 @@ impl Store {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         self.metadata_storage.restart(&mut |bundle| {
-            if let metadata::BundleStatus::Tombstone = &bundle.metadata.status {
-                // Ignore Tombstones
-            } else {
-                // Just shove bundles into the Ingress
-                tokio::runtime::Handle::current().block_on(async {
+            tokio::runtime::Handle::current().block_on(async {
+                if let metadata::BundleStatus::Tombstone(_) = &bundle.metadata.status {
+                    // Ensure we aren't holding bundle data for Tombstones
+                    self.bundle_storage
+                        .remove(&bundle.metadata.storage_name)
+                        .await
+                } else {
                     // Just shove bundles into the Ingress
                     ingress.recheck_bundle(bundle).await
-                })?
-            }
+                }
+            })?;
 
             // Just dumb poll the cancel token now - try to avoid mismatched state again
             Ok(!cancel_token.is_cancelled())
@@ -153,10 +155,10 @@ impl Store {
     ) -> Result<(), Error> {
         self.metadata_storage
             .get_unconfirmed_bundles(&mut |bundle| {
-                if let metadata::BundleStatus::Tombstone = &bundle.metadata.status {
-                    // Ignore Tombstones
-                } else {
-                    tokio::runtime::Handle::current().block_on(async {
+                tokio::runtime::Handle::current().block_on(async {
+                    if let metadata::BundleStatus::Tombstone(_) = &bundle.metadata.status {
+                        // Ignore Tombstones
+                    } else {
                         // The data associated with `bundle` has gone!
                         dispatcher
                             .report_bundle_deletion(
@@ -164,14 +166,14 @@ impl Store {
                                 bpv7::StatusReportReasonCode::DepletedStorage,
                             )
                             .await?;
+                    }
 
-                        // Delete it
-                        self.metadata_storage
-                            .remove(&bundle.metadata.storage_name)
-                            .await
-                            .map(|_| ())
-                    })?
-                }
+                    // Delete it
+                    self.metadata_storage
+                        .remove(&bundle.metadata.storage_name)
+                        .await
+                        .map(|_| ())
+                })?;
 
                 // Just dumb poll the cancel token now - try to avoid mismatched state again
                 Ok(!cancel_token.is_cancelled())
@@ -282,6 +284,7 @@ impl Store {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
@@ -289,6 +292,7 @@ impl Store {
         self.metadata_storage.get_waiting_bundles(limit).await
     }
 
+    #[instrument(skip(self))]
     pub async fn poll_for_collection(
         &self,
         destination: bpv7::Eid,
@@ -352,6 +356,7 @@ impl Store {
         self.metadata_storage.get_bundle_status(storage_name).await
     }
 
+    #[instrument(skip(self))]
     pub async fn set_status(
         &self,
         storage_name: &str,
@@ -366,17 +371,5 @@ impl Store {
     pub async fn delete_data(&self, storage_name: &str) -> Result<(), Error> {
         // Delete the bundle from the bundle store
         self.bundle_storage.remove(storage_name).await
-    }
-
-    #[instrument(skip(self))]
-    pub async fn remove(&self, storage_name: &str) -> Result<(), Error> {
-        // Delete the bundle from the bundle store
-        self.bundle_storage.remove(storage_name).await?;
-
-        // But leave a tombstone in the metadata, so we can ignore duplicates
-        self.metadata_storage
-            .set_bundle_status(storage_name, &metadata::BundleStatus::Tombstone)
-            .await?;
-        Ok(())
     }
 }

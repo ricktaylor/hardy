@@ -313,7 +313,7 @@ impl Dispatcher {
             metadata::BundleStatus::IngressPending
             | metadata::BundleStatus::DispatchPending
             | metadata::BundleStatus::ReassemblyPending
-            | metadata::BundleStatus::Tombstone => {
+            | metadata::BundleStatus::Tombstone(_) => {
                 unreachable!()
             }
             metadata::BundleStatus::CollectionPending => {
@@ -656,7 +656,7 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    async fn drop_bundle(
+    pub async fn drop_bundle(
         &self,
         bundle: metadata::Bundle,
         reason: Option<bpv7::StatusReportReasonCode>,
@@ -664,8 +664,55 @@ impl Dispatcher {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&bundle, reason).await?;
         }
+
+        // TODO - Check source_id
+
         trace!("Discarding bundle, leaving tombstone");
-        self.store.remove(&bundle.metadata.storage_name).await
+
+        // Leave a tombstone in the metadata, so we can ignore duplicates
+        self.store
+            .set_status(
+                &bundle.metadata.storage_name,
+                &metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
+            )
+            .await?;
+
+        // Delete the bundle from the bundle store
+        self.store.delete_data(&bundle.metadata.storage_name).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn confirm_forwarding(
+        &self,
+        handle: u32,
+        bundle_id: &str,
+    ) -> Result<(), tonic::Status> {
+        let Some(bundle) = self
+            .store
+            .load(
+                &bpv7::BundleId::from_key(bundle_id)
+                    .map_err(|e| tonic::Status::from_error(e.into()))?,
+            )
+            .await
+            .map_err(tonic::Status::from_error)?
+        else {
+            return Err(tonic::Status::not_found("No such bundle"));
+        };
+
+        match &bundle.metadata.status {
+            metadata::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
+                // Report bundle forwarded
+                self.report_bundle_forwarded(&bundle)
+                    .await
+                    .map_err(tonic::Status::from_error)?;
+
+                // And drop the bundle
+                self.drop_bundle(bundle, None)
+                    .await
+                    .map_err(tonic::Status::from_error)
+            }
+            _ => Err(tonic::Status::not_found("No such bundle")),
+        }
     }
 
     #[instrument(skip(self))]
@@ -1052,11 +1099,10 @@ impl Dispatcher {
             app_ack_requested: bundle.bundle.flags.app_ack_requested,
         };
 
-        // And we can now tombstone the bundle
-        self.store
-            .remove(&bundle.metadata.storage_name)
-            .await
-            .map(|_| Some(response))
+        // And we are done with the bundle
+        self.drop_bundle(bundle, None).await?;
+
+        Ok(Some(response))
     }
 
     #[instrument(skip(self))]
