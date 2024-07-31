@@ -35,7 +35,7 @@ impl Storage {
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
-    fn check_orphans(
+    fn get_unconfirmed_bundles(
         &self,
         _f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
     ) -> storage::Result<()> {

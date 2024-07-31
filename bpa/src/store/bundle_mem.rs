@@ -29,7 +29,7 @@ impl Storage {
 #[async_trait]
 impl storage::BundleStorage for Storage {
     #[allow(clippy::type_complexity)]
-    fn check_orphans(
+    fn list(
         &self,
         _f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
     ) -> storage::Result<()> {

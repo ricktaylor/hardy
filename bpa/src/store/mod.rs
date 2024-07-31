@@ -146,23 +146,27 @@ impl Store {
         dispatcher: dispatcher::Dispatcher,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        self.metadata_storage.check_orphans(&mut |bundle| {
-            tokio::runtime::Handle::current().block_on(async {
-                // The data associated with `bundle` has gone!
-                dispatcher
-                    .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::DepletedStorage)
-                    .await?;
+        self.metadata_storage
+            .get_unconfirmed_bundles(&mut |bundle| {
+                tokio::runtime::Handle::current().block_on(async {
+                    // The data associated with `bundle` has gone!
+                    dispatcher
+                        .report_bundle_deletion(
+                            &bundle,
+                            bpv7::StatusReportReasonCode::DepletedStorage,
+                        )
+                        .await?;
 
-                // Delete it
-                self.metadata_storage
-                    .remove(&bundle.metadata.storage_name)
-                    .await
-                    .map(|_| ())
-            })?;
+                    // Delete it
+                    self.metadata_storage
+                        .remove(&bundle.metadata.storage_name)
+                        .await
+                        .map(|_| ())
+                })?;
 
-            // Just dumb poll the cancel token now - try to avoid mismatched state again
-            Ok(!cancel_token.is_cancelled())
-        })
+                // Just dumb poll the cancel token now - try to avoid mismatched state again
+                Ok(!cancel_token.is_cancelled())
+            })
     }
 
     #[instrument(skip_all)]
@@ -172,7 +176,7 @@ impl Store {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         self.bundle_storage
-            .check_orphans(&mut |storage_name, hash, file_time| {
+            .list(&mut |storage_name, hash, file_time| {
                 tokio::runtime::Handle::current().block_on(async {
                     // Check if the metadata_storage knows about this bundle
                     if !self

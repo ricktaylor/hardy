@@ -7,7 +7,10 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
-    fn check_orphans(&self, f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>) -> Result<()>;
+    fn get_unconfirmed_bundles(
+        &self,
+        f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>,
+    ) -> Result<()>;
 
     fn restart(&self, f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>) -> Result<()>;
 
@@ -15,10 +18,8 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn store(&self, metadata: &metadata::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
 
-    async fn get_bundle_status(
-        &self,
-        storage_name: &str,
-    ) -> Result<Option<metadata::BundleStatus>>;
+    async fn get_bundle_status(&self, storage_name: &str)
+        -> Result<Option<metadata::BundleStatus>>;
 
     async fn set_bundle_status(
         &self,
@@ -51,7 +52,7 @@ pub trait BundleStorage: Send + Sync {
     }
 
     #[allow(clippy::type_complexity)]
-    fn check_orphans(
+    fn list(
         &self,
         f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool>,
     ) -> Result<()>;

@@ -174,7 +174,7 @@ impl Storage {
 #[async_trait]
 impl BundleStorage for Storage {
     #[instrument(skip(self, f))]
-    fn check_orphans(
+    fn list(
         &self,
         f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
     ) -> storage::Result<()> {

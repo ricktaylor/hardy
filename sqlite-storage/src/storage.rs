@@ -376,7 +376,7 @@ fn complete_replace(
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[instrument(skip_all)]
-    fn check_orphans(
+    fn get_unconfirmed_bundles(
         &self,
         f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
     ) -> storage::Result<()> {
