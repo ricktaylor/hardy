@@ -4,10 +4,9 @@ use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
-type Channel =
-    Arc<tokio::sync::Mutex<application_client::ApplicationClient<tonic::transport::Channel>>>;
+type Channel = Arc<Mutex<application_client::ApplicationClient<tonic::transport::Channel>>>;
 
 pub struct Endpoint {
     inner: Option<Channel>,
@@ -61,7 +60,7 @@ impl AppRegistry {
         let endpoint = if let Some(grpc_address) = request.grpc_address {
             application_client::ApplicationClient::connect(grpc_address.clone())
                 .await
-                .map(|endpoint| Some(Arc::new(tokio::sync::Mutex::new(endpoint))))
+                .map(|endpoint| Some(Arc::new(Mutex::new(endpoint))))
                 .map_err(|e| {
                     warn!("Failed to connect to application client at {grpc_address}: {e}");
                     tonic::Status::invalid_argument(e.to_string())
