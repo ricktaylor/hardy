@@ -312,7 +312,8 @@ impl Dispatcher {
         match &bundle.metadata.status {
             metadata::BundleStatus::IngressPending
             | metadata::BundleStatus::DispatchPending
-            | metadata::BundleStatus::ReassemblyPending => {
+            | metadata::BundleStatus::ReassemblyPending
+            | metadata::BundleStatus::Tombstone => {
                 unreachable!()
             }
             metadata::BundleStatus::CollectionPending => {
@@ -345,7 +346,6 @@ impl Dispatcher {
                 let until = *until;
                 self.delay_bundle(bundle, until, cancel_token).await
             }
-            metadata::BundleStatus::Tombstone => Ok(()),
         }
     }
 

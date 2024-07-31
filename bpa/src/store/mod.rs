@@ -130,10 +130,15 @@ impl Store {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         self.metadata_storage.restart(&mut |bundle| {
-            tokio::runtime::Handle::current().block_on(async {
+            if let metadata::BundleStatus::Tombstone = &bundle.metadata.status {
+                // Ignore Tombstones
+            } else {
                 // Just shove bundles into the Ingress
-                ingress.recheck_bundle(bundle).await
-            })?;
+                tokio::runtime::Handle::current().block_on(async {
+                    // Just shove bundles into the Ingress
+                    ingress.recheck_bundle(bundle).await
+                })?
+            }
 
             // Just dumb poll the cancel token now - try to avoid mismatched state again
             Ok(!cancel_token.is_cancelled())
@@ -148,21 +153,25 @@ impl Store {
     ) -> Result<(), Error> {
         self.metadata_storage
             .get_unconfirmed_bundles(&mut |bundle| {
-                tokio::runtime::Handle::current().block_on(async {
-                    // The data associated with `bundle` has gone!
-                    dispatcher
-                        .report_bundle_deletion(
-                            &bundle,
-                            bpv7::StatusReportReasonCode::DepletedStorage,
-                        )
-                        .await?;
+                if let metadata::BundleStatus::Tombstone = &bundle.metadata.status {
+                    // Ignore Tombstones
+                } else {
+                    tokio::runtime::Handle::current().block_on(async {
+                        // The data associated with `bundle` has gone!
+                        dispatcher
+                            .report_bundle_deletion(
+                                &bundle,
+                                bpv7::StatusReportReasonCode::DepletedStorage,
+                            )
+                            .await?;
 
-                    // Delete it
-                    self.metadata_storage
-                        .remove(&bundle.metadata.storage_name)
-                        .await
-                        .map(|_| ())
-                })?;
+                        // Delete it
+                        self.metadata_storage
+                            .remove(&bundle.metadata.storage_name)
+                            .await
+                            .map(|_| ())
+                    })?
+                }
 
                 // Just dumb poll the cancel token now - try to avoid mismatched state again
                 Ok(!cancel_token.is_cancelled())
