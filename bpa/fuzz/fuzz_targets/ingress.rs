@@ -27,7 +27,7 @@ fn setup() -> tokio::runtime::Runtime {
         let administrative_endpoints = utils::admin_endpoints::AdminEndpoints::init(&config);
 
         // New store
-        let store = store::Store::new();
+        let store = store::Store::new(&config, false);
 
         // New FIB
         let fib = fib::Fib::new(&config);

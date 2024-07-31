@@ -3,6 +3,12 @@ use hardy_bpa_api::storage;
 use std::sync::Arc;
 use utils::settings;
 
+#[cfg(feature = "mem-storage")]
+mod metadata_mem;
+
+#[cfg(feature = "mem-storage")]
+mod bundle_mem;
+
 #[derive(Clone)]
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
@@ -16,6 +22,8 @@ fn init_metadata_storage(
     cfg_if::cfg_if! {
         if #[cfg(feature = "sqlite-storage")] {
             const DEFAULT: &str = hardy_sqlite_storage::CONFIG_KEY;
+        } else if #[cfg(feature = "mem-storage")] {
+            const DEFAULT: &str = metadata_mem::CONFIG_KEY;
         } else {
             const DEFAULT: &str = "";
             compile_error!("No default metadata storage engine, rebuild the package with at least one metadata storage engine feature enabled");
@@ -31,6 +39,9 @@ fn init_metadata_storage(
         #[cfg(feature = "sqlite-storage")]
         hardy_sqlite_storage::CONFIG_KEY => hardy_sqlite_storage::Storage::init(&config, upgrade),
 
+        #[cfg(feature = "mem-storage")]
+        metadata_mem::CONFIG_KEY => metadata_mem::Storage::init(&config),
+
         _ => {
             error!("Unknown metadata storage engine: {engine}");
             panic!("Unknown metadata storage engine: {engine}")
@@ -42,6 +53,8 @@ fn init_bundle_storage(config: &config::Config, _upgrade: bool) -> Arc<dyn stora
     cfg_if::cfg_if! {
         if #[cfg(feature = "localdisk-storage")] {
             const DEFAULT: &str = hardy_localdisk_storage::CONFIG_KEY;
+        } else if #[cfg(feature = "mem-storage")] {
+            const DEFAULT: &str = bundle_mem::CONFIG_KEY;
         } else {
             const DEFAULT: &str = "";
             compile_error!("No default bundle storage engine, rebuild the package with at least one bundle storage engine feature enabled");
@@ -56,6 +69,9 @@ fn init_bundle_storage(config: &config::Config, _upgrade: bool) -> Arc<dyn stora
     match engine.as_str() {
         #[cfg(feature = "localdisk-storage")]
         hardy_localdisk_storage::CONFIG_KEY => hardy_localdisk_storage::Storage::init(&config),
+
+        #[cfg(feature = "mem-storage")]
+        bundle_mem::CONFIG_KEY => bundle_mem::Storage::init(&config),
 
         _ => {
             error!("Unknown bundle storage engine: {engine}");
@@ -320,9 +336,7 @@ impl Store {
         &self,
         storage_name: &str,
     ) -> Result<Option<metadata::BundleStatus>, Error> {
-        self.metadata_storage
-            .check_bundle_status(storage_name)
-            .await
+        self.metadata_storage.get_bundle_status(storage_name).await
     }
 
     pub async fn set_status(

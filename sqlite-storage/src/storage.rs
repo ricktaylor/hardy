@@ -771,7 +771,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn check_bundle_status(
+    async fn get_bundle_status(
         &self,
         storage_name: &str,
     ) -> storage::Result<Option<metadata::BundleStatus>> {

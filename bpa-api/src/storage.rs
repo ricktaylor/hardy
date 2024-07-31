@@ -15,7 +15,7 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn store(&self, metadata: &metadata::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
 
-    async fn check_bundle_status(
+    async fn get_bundle_status(
         &self,
         storage_name: &str,
     ) -> Result<Option<metadata::BundleStatus>>;

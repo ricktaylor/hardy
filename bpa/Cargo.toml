@@ -20,6 +20,7 @@ crate-type = ["rlib"]
 default = ["sqlite-storage", "localdisk-storage"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
+mem-storage = []
 packaged-installation = []
 
 [dependencies]
