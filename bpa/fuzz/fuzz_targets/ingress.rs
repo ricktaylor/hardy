@@ -40,14 +40,19 @@ fn setup() -> tokio::runtime::Runtime {
         // Prepare for graceful shutdown
         let (mut task_set, cancel_token) = utils::cancel::new_cancellable_set();
 
+        // Load static routes
+        if let Some(fib) = &fib {
+            static_routes::init(&config, fib.clone(), &mut task_set, cancel_token.clone()).await;
+        }
+
         // Create a new dispatcher
         let dispatcher = dispatcher::Dispatcher::new(
             &config,
             administrative_endpoints,
             store.clone(),
-            cla_registry.clone(),
-            app_registry.clone(),
-            fib.clone(),
+            cla_registry,
+            app_registry,
+            fib,
             &mut task_set,
             cancel_token.clone(),
         );

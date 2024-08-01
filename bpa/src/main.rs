@@ -11,12 +11,6 @@ mod utils;
 // This is the generic Error type used almost everywhere
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-// Buildtime info
-mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
 // This is the effective prelude
 use hardy_bpa_api::metadata;
 use hardy_bpv7::prelude as bpv7;
@@ -34,8 +28,8 @@ async fn main() {
     utils::logger::init(&config);
     info!(
         "{} version {} starting...",
-        built_info::PKG_NAME,
-        built_info::PKG_VERSION
+        utils::built_info::PKG_NAME,
+        utils::built_info::PKG_VERSION
     );
     info!("{config_source}");
 
@@ -55,6 +49,11 @@ async fn main() {
     // Prepare for graceful shutdown
     let (mut task_set, cancel_token) = utils::cancel::new_cancellable_set();
 
+    // Load static routes
+    if let Some(fib) = &fib {
+        static_routes::init(&config, fib.clone(), &mut task_set, cancel_token.clone()).await;
+    }
+
     // Create a new dispatcher
     let dispatcher = dispatcher::Dispatcher::new(
         &config,
@@ -62,7 +61,7 @@ async fn main() {
         store.clone(),
         cla_registry.clone(),
         app_registry.clone(),
-        fib.clone(),
+        fib,
         &mut task_set,
         cancel_token.clone(),
     );
@@ -75,11 +74,6 @@ async fn main() {
         &mut task_set,
         cancel_token.clone(),
     );
-
-    // Load static routes
-    if let Some(fib) = fib {
-        static_routes::init(&config, fib, &mut task_set, cancel_token.clone()).await;
-    }
 
     // Init gRPC services
     services::init(
@@ -101,6 +95,7 @@ async fn main() {
     if !cancel_token.is_cancelled() {
         info!("Started successfully");
     }
+
     while let Some(r) = task_set.join_next().await {
         r.trace_expect("Task terminated unexpectedly")
     }
