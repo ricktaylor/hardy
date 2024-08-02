@@ -193,7 +193,7 @@ async fn accept(
                     break;
                 }
             },
-            Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
+            Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
             _ = cancel_token.cancelled() => break
         }
     }
