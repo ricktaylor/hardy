@@ -802,19 +802,17 @@ impl Dispatcher {
         payload: Vec<u8>,
         report_to: &bpv7::Eid,
     ) -> Result<(), Error> {
-        // Create a bundle report
-        let (bundle, data) = bpv7::Builder::new()
-            .flags(bpv7::BundleFlags {
-                is_admin_record: true,
-                ..Default::default()
-            })
-            .source(self.config.admin_endpoints.get_admin_endpoint(report_to))
-            .destination(report_to.clone())
-            .add_payload_block(payload)
-            .build()?;
-
-        // And queue it up
-        self.dispatch_new_bundle(bundle, Arc::from(data)).await
+        self.dispatch_new_bundle(
+            bpv7::Builder::new()
+                .flags(bpv7::BundleFlags {
+                    is_admin_record: true,
+                    ..Default::default()
+                })
+                .source(self.config.admin_endpoints.get_admin_endpoint(report_to))
+                .destination(report_to.clone())
+                .add_payload_block(payload),
+        )
+        .await
     }
 
     #[instrument(skip(self))]
@@ -854,7 +852,7 @@ impl Dispatcher {
         }
 
         // Build the bundle
-        let mut b = bpv7::Builder::new().source(request.source);
+        let mut b = bpv7::Builder::new();
 
         // Set flags
         if let Some(flags) = request.flags {
@@ -865,46 +863,48 @@ impl Dispatcher {
             );
         }
 
-        b = b.destination(request.destination);
-
         // Lifetime
         if let Some(lifetime) = request.lifetime {
             b = b.lifetime(lifetime);
         }
 
-        // Add payload and build
-        let (bundle, data) = b.add_payload_block(request.data).build()?;
-
         // And queue it up
-        self.dispatch_new_bundle(bundle, Arc::from(data)).await
+        self.dispatch_new_bundle(
+            b.source(request.source)
+                .destination(request.destination)
+                .add_payload_block(request.data),
+        )
+        .await
     }
 
     #[instrument(skip_all)]
-    async fn dispatch_new_bundle(
-        &self,
-        bundle: bpv7::Bundle,
-        data: Arc<[u8]>,
-    ) -> Result<(), Error> {
-        // Store to store
-        let Some(metadata) = self
-            .store
-            .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
-            .await?
-        else {
-            let other = self.store.load(&bundle.id).await?.expect("WTF?");
+    async fn dispatch_new_bundle(&self, builder: bpv7::Builder) -> Result<(), Error> {
+        // Avoid duplicates, rare but possible
+        let metadata = loop {
+            // Build the bundle
+            let (bundle, data) = builder.build()?;
+            let data = Arc::from(data);
 
-            println!(
-                "Duplicate bundle created by builder: {:?} == {:?}",
-                bundle, other.bundle
-            );
-            panic!("Duplicate bundle created by builder");
+            // Store to store
+            let Some(metadata) = self
+                .store
+                .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
+                .await?
+            else {
+                let other = self.store.load(&bundle.id).await?.expect("WTF?");
+
+                println!(
+                    "Duplicate bundle created by builder: {:?} == {:?}",
+                    bundle, other.bundle
+                );
+                panic!("Duplicate bundle created by builder");
+            };
+
+            break metadata::Bundle { metadata, bundle };
         };
 
         // Put bundle into channel
-        self.tx
-            .send(metadata::Bundle { metadata, bundle })
-            .await
-            .map_err(Into::into)
+        self.tx.send(metadata).await.map_err(Into::into)
     }
 
     #[instrument(skip(self))]
