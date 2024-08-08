@@ -6,14 +6,14 @@ use tonic::{Request, Response, Status};
 
 pub struct Service {
     app_registry: app_registry::AppRegistry,
-    dispatcher: dispatcher::Dispatcher,
+    dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
 impl Service {
     fn new(
         _config: &config::Config,
         app_registry: app_registry::AppRegistry,
-        dispatcher: dispatcher::Dispatcher,
+        dispatcher: Arc<dispatcher::Dispatcher>,
     ) -> Self {
         Service {
             app_registry,
@@ -171,7 +171,7 @@ impl ApplicationSink for Service {
 pub fn new_service(
     config: &config::Config,
     app_registry: app_registry::AppRegistry,
-    dispatcher: dispatcher::Dispatcher,
+    dispatcher: Arc<dispatcher::Dispatcher>,
 ) -> ApplicationSinkServer<Service> {
     ApplicationSinkServer::new(Service::new(config, app_registry, dispatcher))
 }

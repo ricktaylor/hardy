@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 use utils::settings;
 
 mod application_sink;
@@ -9,8 +10,8 @@ pub fn init(
     config: &config::Config,
     cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
-    ingress: ingress::Ingress,
-    dispatcher: dispatcher::Dispatcher,
+    ingress: Arc<ingress::Ingress>,
+    dispatcher: Arc<dispatcher::Dispatcher>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -23,7 +24,12 @@ pub fn init(
 
     // Add gRPC services to HTTP router
     let router = tonic::transport::Server::builder()
-        .add_service(cla_sink::new_service(config, cla_registry, ingress))
+        .add_service(cla_sink::new_service(
+            config,
+            cla_registry,
+            ingress,
+            dispatcher.clone(),
+        ))
         .add_service(application_sink::new_service(
             config,
             app_registry,

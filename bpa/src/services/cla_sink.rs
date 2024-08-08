@@ -5,18 +5,21 @@ use tonic::{Request, Response, Status};
 
 pub struct Service {
     cla_registry: cla_registry::ClaRegistry,
-    ingress: ingress::Ingress,
+    ingress: Arc<ingress::Ingress>,
+    dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
 impl Service {
     fn new(
         _config: &config::Config,
         cla_registry: cla_registry::ClaRegistry,
-        ingress: ingress::Ingress,
+        ingress: Arc<ingress::Ingress>,
+        dispatcher: Arc<dispatcher::Dispatcher>,
     ) -> Self {
         Service {
             cla_registry,
             ingress,
+            dispatcher,
         }
     }
 }
@@ -66,7 +69,7 @@ impl ClaSink for Service {
     ) -> Result<Response<ConfirmForwardingResponse>, Status> {
         let request = request.into_inner();
         self.cla_registry.exists(request.handle).await?;
-        self.ingress
+        self.dispatcher
             .confirm_forwarding(request.handle, &request.bundle_id)
             .await
             .map(|_| Response::new(ConfirmForwardingResponse {}))
@@ -98,7 +101,8 @@ impl ClaSink for Service {
 pub fn new_service(
     config: &config::Config,
     cla_registry: cla_registry::ClaRegistry,
-    ingress: ingress::Ingress,
+    ingress: Arc<ingress::Ingress>,
+    dispatcher: Arc<dispatcher::Dispatcher>,
 ) -> ClaSinkServer<Service> {
-    ClaSinkServer::new(Service::new(config, cla_registry, ingress))
+    ClaSinkServer::new(Service::new(config, cla_registry, ingress, dispatcher))
 }

@@ -5,7 +5,7 @@ use hardy_bpv7::prelude as bpv7;
 use libfuzzer_sys::fuzz_target;
 
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-static INGRESS: std::sync::OnceLock<ingress::Ingress> = std::sync::OnceLock::new();
+static INGRESS: std::sync::OnceLock<std::sync::Arc<ingress::Ingress>> = std::sync::OnceLock::new();
 
 fn setup() -> tokio::runtime::Runtime {
     let rt = tokio::runtime::Builder::new_multi_thread()

@@ -4,32 +4,31 @@ use hardy_cbor as cbor;
 use std::sync::Arc;
 use tokio::sync::mpsc::*;
 
-#[derive(Clone)]
 pub struct Ingress {
-    store: store::Store,
+    store: Arc<store::Store>,
     receive_channel: Sender<storage::ListResponse>,
     restart_channel: Sender<metadata::Bundle>,
-    dispatcher: dispatcher::Dispatcher,
+    dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
 impl Ingress {
     pub fn new(
         _config: &config::Config,
-        store: store::Store,
-        dispatcher: dispatcher::Dispatcher,
+        store: Arc<store::Store>,
+        dispatcher: Arc<dispatcher::Dispatcher>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Self {
+    ) -> Arc<Self> {
         // Create a channel for new bundles
         // TODO: Configurable channel length
         let (receive_channel, receive_channel_rx) = channel(16);
         let (ingress_channel, ingress_channel_rx) = channel(16);
-        let ingress = Self {
+        let ingress = Arc::new(Self {
             store,
             receive_channel,
             restart_channel: ingress_channel,
             dispatcher,
-        };
+        });
 
         // Spawn a bundle receiver
         let ingress_cloned = ingress.clone();
@@ -85,7 +84,7 @@ impl Ingress {
 
     #[instrument(skip_all)]
     async fn pipeline_pump(
-        self,
+        ingress: Arc<Self>,
         mut receive_channel: Receiver<storage::ListResponse>,
         mut restart_channel: Receiver<metadata::Bundle>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -98,7 +97,7 @@ impl Ingress {
                 msg = receive_channel.recv() => match msg {
                     None => break,
                     Some((storage_name,hash,data,received_at)) => {
-                        let ingress = self.clone();
+                        let ingress = ingress.clone();
                         task_set.spawn(async move {
                             ingress.receive_bundle(storage_name,hash,data,received_at).await.trace_expect("Failed to process received bundle")
                         });
@@ -107,7 +106,7 @@ impl Ingress {
                 msg = restart_channel.recv() => match msg {
                     None => break,
                     Some(bundle) => {
-                        let ingress = self.clone();
+                        let ingress = ingress.clone();
                         task_set.spawn(async move {
                             ingress.process_bundle(bundle).await.trace_expect("Failed to process restart bundle")
                         });
@@ -307,14 +306,5 @@ impl Ingress {
             };
         }
         Ok((None, bundle))
-    }
-
-    #[instrument(skip(self))]
-    pub async fn confirm_forwarding(
-        &self,
-        handle: u32,
-        bundle_id: &str,
-    ) -> Result<(), tonic::Status> {
-        self.dispatcher.confirm_forwarding(handle, bundle_id).await
     }
 }

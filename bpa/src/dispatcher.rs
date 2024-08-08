@@ -82,11 +82,10 @@ pub struct CollectResponse {
     pub data: Vec<u8>,
 }
 
-#[derive(Clone)]
 pub struct Dispatcher {
     config: Config,
     cancel_token: tokio_util::sync::CancellationToken,
-    store: store::Store,
+    store: Arc<store::Store>,
     tx: Sender<metadata::Bundle>,
     cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
@@ -98,16 +97,16 @@ impl Dispatcher {
     pub fn new(
         config: &config::Config,
         admin_endpoints: utils::admin_endpoints::AdminEndpoints,
-        store: store::Store,
+        store: Arc<store::Store>,
         cla_registry: cla_registry::ClaRegistry,
         app_registry: app_registry::AppRegistry,
         fib: Option<fib::Fib>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Self {
+    ) -> Arc<Self> {
         // Create a channel for bundles
         let (tx, rx) = channel(16);
-        let dispatcher = Self {
+        let dispatcher = Arc::new(Self {
             config: Config::new(config, admin_endpoints),
             cancel_token,
             store,
@@ -115,17 +114,17 @@ impl Dispatcher {
             cla_registry,
             app_registry,
             fib,
-        };
+        });
 
         // Spawn a bundle receiver
         let dispatcher_cloned = dispatcher.clone();
-        task_set.spawn(dispatcher_cloned.pipeline_pump(rx));
+        task_set.spawn(Self::pipeline_pump(dispatcher_cloned, rx));
 
         dispatcher
     }
 
     #[instrument(skip_all)]
-    async fn pipeline_pump(self, mut rx: Receiver<metadata::Bundle>) {
+    async fn pipeline_pump(dispatcher: Arc<Self>, mut rx: Receiver<metadata::Bundle>) {
         // We're going to spawn a bunch of tasks
         let mut task_set = tokio::task::JoinSet::new();
 
@@ -134,14 +133,14 @@ impl Dispatcher {
                 bundle = rx.recv() => match bundle {
                     None => break,
                     Some(bundle) => {
-                        let dispatcher = self.clone();
+                        let dispatcher = dispatcher.clone();
                         task_set.spawn(async move {
                             dispatcher.process_bundle(bundle).await.trace_expect("Failed to process bundle");
                         });
                     }
                 },
                 Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
-                _ = self.cancel_token.cancelled() => break
+                _ = dispatcher.cancel_token.cancelled() => break
             }
         }
 
