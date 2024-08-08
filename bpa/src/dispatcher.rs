@@ -85,6 +85,7 @@ pub struct CollectResponse {
 #[derive(Clone)]
 pub struct Dispatcher {
     config: Config,
+    cancel_token: tokio_util::sync::CancellationToken,
     store: store::Store,
     tx: Sender<metadata::Bundle>,
     cla_registry: cla_registry::ClaRegistry,
@@ -108,6 +109,7 @@ impl Dispatcher {
         let (tx, rx) = channel(16);
         let dispatcher = Self {
             config: Config::new(config, admin_endpoints),
+            cancel_token,
             store,
             tx,
             cla_registry,
@@ -117,22 +119,13 @@ impl Dispatcher {
 
         // Spawn a bundle receiver
         let dispatcher_cloned = dispatcher.clone();
-        let cancel_token_cloned = cancel_token.clone();
-        task_set.spawn(Self::pipeline_pump(
-            dispatcher_cloned,
-            rx,
-            cancel_token_cloned,
-        ));
+        task_set.spawn(dispatcher_cloned.pipeline_pump(rx));
 
         dispatcher
     }
 
     #[instrument(skip_all)]
-    async fn pipeline_pump(
-        self,
-        mut rx: Receiver<metadata::Bundle>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) {
+    async fn pipeline_pump(self, mut rx: Receiver<metadata::Bundle>) {
         // We're going to spawn a bunch of tasks
         let mut task_set = tokio::task::JoinSet::new();
 
@@ -142,14 +135,13 @@ impl Dispatcher {
                     None => break,
                     Some(bundle) => {
                         let dispatcher = self.clone();
-                        let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            dispatcher.process_bundle(bundle,cancel_token_cloned).await.trace_expect("Failed to process bundle");
+                            dispatcher.process_bundle(bundle).await.trace_expect("Failed to process bundle");
                         });
                     }
                 },
                 Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
-                _ = cancel_token.cancelled() => break
+                _ = self.cancel_token.cancelled() => break
             }
         }
 
@@ -163,7 +155,6 @@ impl Dispatcher {
         &self,
         mut bundle: metadata::Bundle,
         until: time::OffsetDateTime,
-        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         // Check if it's worth us waiting (safety check for metadata storage clock drift)
         let wait = until - time::OffsetDateTime::now_utc();
@@ -180,7 +171,7 @@ impl Dispatcher {
         }
 
         // Wait a bit
-        if !cancellable_sleep(wait, &cancel_token).await {
+        if !cancellable_sleep(wait, &self.cancel_token).await {
             // Cancelled
             return Ok(());
         }
@@ -206,15 +197,11 @@ impl Dispatcher {
             .await?;
 
         // And forward it!
-        self.forward_bundle(bundle, cancel_token).await
+        self.forward_bundle(bundle).await
     }
 
-    #[instrument(skip(self, cancel_token))]
-    pub async fn process_bundle(
-        &self,
-        mut bundle: metadata::Bundle,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), Error> {
+    #[instrument(skip(self))]
+    pub async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
         if let metadata::BundleStatus::DispatchPending = &bundle.metadata.status {
             // Check if we are the final destination
             bundle.metadata.status = if self
@@ -287,23 +274,17 @@ impl Dispatcher {
                     .await?;
 
                 // And just forward
-                self.forward_bundle(bundle, cancel_token).await
+                self.forward_bundle(bundle).await
             }
-            metadata::BundleStatus::ForwardPending => {
-                self.forward_bundle(bundle, cancel_token).await
-            }
+            metadata::BundleStatus::ForwardPending => self.forward_bundle(bundle).await,
             metadata::BundleStatus::Waiting(until) => {
                 let until = *until;
-                self.delay_bundle(bundle, until, cancel_token).await
+                self.delay_bundle(bundle, until).await
             }
         }
     }
 
-    async fn forward_bundle(
-        &self,
-        mut bundle: metadata::Bundle,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), Error> {
+    async fn forward_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
         let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
@@ -359,10 +340,7 @@ impl Dispatcher {
                     }
 
                     // Wait a bit
-                    if !self
-                        .wait_to_forward(&bundle.metadata, wait, &cancel_token)
-                        .await?
-                    {
+                    if !self.wait_to_forward(&bundle.metadata, wait).await? {
                         // Cancelled, or too long a wait for here
                         return Ok(());
                     }
@@ -456,10 +434,7 @@ impl Dispatcher {
                 }
 
                 // We must wait for a bit for the CLAs to calm down
-                if !self
-                    .wait_to_forward(&bundle.metadata, until, &cancel_token)
-                    .await?
-                {
+                if !self.wait_to_forward(&bundle.metadata, until).await? {
                     // Cancelled, or too long a wait for here
                     return Ok(());
                 }
@@ -497,7 +472,7 @@ impl Dispatcher {
                 trace!("Retrying ({retries}) FIB lookup to allow FIB and CLAs to resync");
 
                 // Async sleep for 1 second
-                if !cancellable_sleep(time::Duration::seconds(1), &cancel_token).await {
+                if !cancellable_sleep(time::Duration::seconds(1), &self.cancel_token).await {
                     // Cancelled
                     return Ok(());
                 }
@@ -514,7 +489,6 @@ impl Dispatcher {
         &self,
         metadata: &metadata::Metadata,
         until: time::OffsetDateTime,
-        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<bool, Error> {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
@@ -531,7 +505,7 @@ impl Dispatcher {
 
         // We must wait here, as we have missed the scheduled wait interval
         trace!("Waiting to forward bundle inline until: {until}");
-        Ok(cancellable_sleep(wait, cancel_token).await)
+        Ok(cancellable_sleep(wait, &self.cancel_token).await)
     }
 
     fn update_extension_blocks(

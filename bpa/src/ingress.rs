@@ -99,9 +99,8 @@ impl Ingress {
                     None => break,
                     Some((storage_name,hash,data,received_at)) => {
                         let ingress = self.clone();
-                        let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.receive_bundle(storage_name,hash,data,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
+                            ingress.receive_bundle(storage_name,hash,data,received_at).await.trace_expect("Failed to process received bundle")
                         });
                     }
                 },
@@ -109,9 +108,8 @@ impl Ingress {
                     None => break,
                     Some(bundle) => {
                         let ingress = self.clone();
-                        let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.process_bundle(bundle,cancel_token_cloned).await.trace_expect("Failed to process restart bundle")
+                            ingress.process_bundle(bundle).await.trace_expect("Failed to process restart bundle")
                         });
                     }
                 },
@@ -126,14 +124,13 @@ impl Ingress {
         }
     }
 
-    #[instrument(skip(self, hash, data, cancel_token))]
+    #[instrument(skip(self, hash, data))]
     async fn receive_bundle(
         &self,
         storage_name: Arc<str>,
         hash: Arc<[u8]>,
         data: storage::DataRef,
         received_at: Option<time::OffsetDateTime>,
-        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
         let (bundle, mut valid) =
             match cbor::decode::parse::<bpv7::ValidBundle>(data.as_ref().as_ref()) {
@@ -197,15 +194,11 @@ impl Ingress {
         }
 
         // Process the bundle further
-        self.process_bundle(bundle, cancel_token).await
+        self.process_bundle(bundle).await
     }
 
-    #[instrument(skip(self, cancel_token))]
-    async fn process_bundle(
-        &self,
-        mut bundle: metadata::Bundle,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), Error> {
+    #[instrument(skip(self))]
+    async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
         /* Always check bundles, no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
@@ -257,7 +250,7 @@ impl Ingress {
         }
 
         // Just pass it on to the dispatcher to deal with
-        self.dispatcher.process_bundle(bundle, cancel_token).await
+        self.dispatcher.process_bundle(bundle).await
     }
 
     async fn check_extension_blocks(

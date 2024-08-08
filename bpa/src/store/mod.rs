@@ -345,9 +345,8 @@ impl Store {
                                     {
                                         // Spawn a task for each ready bundle
                                         let dispatcher_cloned = dispatcher_cloned.clone();
-                                        let cancel_token_cloned = cancel_token_cloned.clone();
                                         task_set.spawn(async move {
-                                            dispatcher_cloned.delay_bundle(bundle, until,cancel_token_cloned).await.trace_expect("Failed to delay bundle");
+                                            dispatcher_cloned.delay_bundle(bundle, until).await.trace_expect("Failed to delay bundle");
                                         });
                                     }
                                     _ => {}
