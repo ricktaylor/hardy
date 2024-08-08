@@ -1,6 +1,8 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
+pub const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
+
 fn options() -> getopts::Options {
     let mut opts = getopts::Options::new();
     opts.optflag("h", "help", "print this help menu")

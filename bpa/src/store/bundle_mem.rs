@@ -14,7 +14,7 @@ pub enum Error {
 }
 
 pub struct Storage {
-    bundles: RwLock<HashMap<String, Arc<Vec<u8>>>>,
+    bundles: RwLock<HashMap<String, Arc<[u8]>>>,
 }
 
 impl Storage {
@@ -28,31 +28,35 @@ impl Storage {
 
 #[async_trait]
 impl storage::BundleStorage for Storage {
-    #[allow(clippy::type_complexity)]
-    fn list(
+    async fn list(
         &self,
-        _f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
+        _tx: tokio::sync::mpsc::Sender<(
+            Arc<str>,
+            Arc<[u8]>,
+            storage::DataRef,
+            Option<time::OffsetDateTime>,
+        )>,
     ) -> storage::Result<()> {
-        // We have no persistence, so therefore no orphans
+        // We have no persistence, so therefore no bundles
         Ok(())
     }
 
     async fn load(&self, storage_name: &str) -> storage::Result<storage::DataRef> {
         match self.bundles.read().await.get(storage_name) {
             None => Err(Error::NotFound.into()),
-            Some(v) => Ok(v.clone()),
+            Some(v) => Ok(into_dataref(v.clone())),
         }
     }
 
-    async fn store(&self, data: Vec<u8>) -> storage::Result<String> {
-        let mut data = Arc::new(data);
+    async fn store(&self, mut data: Arc<[u8]>) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
         let mut bundles = self.bundles.write().await;
+        let hash = self.hash(&data);
 
         loop {
             let storage_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 64);
 
             let Some(prev) = bundles.insert(storage_name.clone(), data) else {
-                return Ok(storage_name);
+                return Ok((Arc::from(storage_name), hash));
             };
 
             // Swap back
@@ -69,7 +73,7 @@ impl storage::BundleStorage for Storage {
             .ok_or(Error::NotFound.into())
     }
 
-    async fn replace(&self, _storage_name: &str, _data: Vec<u8>) -> storage::Result<()> {
+    async fn replace(&self, _storage_name: &str, _data: Box<[u8]>) -> storage::Result<()> {
         todo!()
     }
 }

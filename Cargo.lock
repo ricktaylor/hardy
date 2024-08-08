@@ -792,6 +792,7 @@ dependencies = [
  "hardy-bpv7",
  "sha2",
  "time",
+ "tokio",
 ]
 
 [[package]]
@@ -864,6 +865,7 @@ dependencies = [
  "memmap2",
  "rand",
  "serde",
+ "sha2",
  "time",
  "tokio",
  "trace-err",

@@ -204,7 +204,7 @@ impl Endpoint {
     pub async fn forward_bundle(
         &self,
         destination: &bpv7::Eid,
-        bundle: Vec<u8>,
+        bundle: Box<[u8]>,
     ) -> Result<ForwardBundleResult, Error> {
         let r = self
             .inner
@@ -213,7 +213,7 @@ impl Endpoint {
             .forward_bundle(tonic::Request::new(ForwardBundleRequest {
                 handle: self.handle,
                 destination: destination.to_string(),
-                bundle,
+                bundle: Vec::from(bundle),
             }))
             .await?
             .into_inner();

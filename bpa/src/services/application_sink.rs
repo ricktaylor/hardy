@@ -133,30 +133,38 @@ impl ApplicationSink for Service {
         request: Request<PollRequest>,
     ) -> Result<Response<Self::PollStream>, Status> {
         let request = request.into_inner();
-        let (tx, rx) = channel(4);
-        let dispatcher = self.dispatcher.clone();
-
-        // Get the items
-        let items = dispatcher
-            .poll_for_collection(self.app_registry.find_by_token(&request.token).await?)
-            .await
-            .map_err(Status::from_error)?;
+        let (tx_inner, mut rx_inner) = channel::<metadata::Bundle>(16);
+        let (tx_outer, rx_outer) = channel(16);
 
         // Stream the response
         tokio::spawn(async move {
-            for (bundle_id, expiry) in items {
-                tx.send(Ok(PollResponse {
-                    bundle_id,
-                    expiry: Some(to_timestamp(expiry)),
-                }))
-                .await
-                .trace_expect("Failed to send collect_all response to stream channel");
+            while let Some(bundle) = rx_inner.recv().await {
+                // Double check that we are returning something valid
+                if let metadata::BundleStatus::CollectionPending = &bundle.metadata.status {
+                    let expiry = bundle.expiry();
+                    if expiry > time::OffsetDateTime::now_utc()
+                        && tx_outer
+                            .send(Ok(PollResponse {
+                                bundle_id: bundle.bundle.id.to_key(),
+                                expiry: Some(to_timestamp(expiry)),
+                            }))
+                            .await
+                            .is_err()
+                    {
+                        break;
+                    }
+                }
             }
         });
 
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
-            rx,
-        )))
+        self.dispatcher
+            .poll_for_collection(
+                self.app_registry.find_by_token(&request.token).await?,
+                tx_inner,
+            )
+            .await
+            .map_err(Status::from_error)
+            .map(|_| Response::new(tokio_stream::wrappers::ReceiverStream::new(rx_outer)))
     }
 }
 

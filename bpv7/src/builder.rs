@@ -89,7 +89,7 @@ impl Builder {
             .build()
     }
 
-    pub fn build(mut self) -> Result<(Bundle, Vec<u8>), BundleError> {
+    pub fn build(mut self) -> Result<(Bundle, Box<[u8]>), BundleError> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
@@ -115,7 +115,7 @@ impl Builder {
         // Update values from supported extension blocks
         bundle.parse_extension_blocks(&data)?;
 
-        Ok((bundle, data))
+        Ok((bundle, Box::from(data)))
     }
 
     fn build_primary_block(&mut self) -> (Bundle, Vec<u8>) {

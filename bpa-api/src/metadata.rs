@@ -1,10 +1,11 @@
 use hardy_bpv7::prelude as bpv7;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub status: BundleStatus,
-    pub storage_name: String,
-    pub hash: Vec<u8>,
+    pub storage_name: Arc<str>,
+    pub hash: Arc<[u8]>,
     pub received_at: Option<time::OffsetDateTime>,
 }
 

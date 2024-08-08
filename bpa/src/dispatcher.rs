@@ -1,10 +1,9 @@
 use super::*;
 use hardy_cbor as cbor;
+use std::sync::Arc;
 use tokio::sync::mpsc::*;
 use utils::{cancel::cancellable_sleep, settings};
 
-// Defaults
-const WAIT_SAMPLE_INTERVAL_SECS: u64 = 60;
 const MAX_FORWARDING_DELAY_SECS: u32 = 5;
 
 #[derive(Clone)]
@@ -28,7 +27,7 @@ impl Config {
             wait_sample_interval: settings::get_with_default(
                 config,
                 "wait_sample_interval",
-                WAIT_SAMPLE_INTERVAL_SECS,
+                settings::WAIT_SAMPLE_INTERVAL_SECS,
             )
             .trace_expect("Invalid 'wait_sample_interval' value in configuration"),
             max_forwarding_delay: settings::get_with_default::<u32, _>(
@@ -125,16 +124,7 @@ impl Dispatcher {
             cancel_token_cloned,
         ));
 
-        // Spawn a waiter
-        let dispatcher_cloned = dispatcher.clone();
-        task_set.spawn(Self::check_waiting(dispatcher_cloned, cancel_token));
-
         dispatcher
-    }
-
-    async fn enqueue_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
-        // Put bundle into channel
-        self.tx.send(bundle).await.map_err(Into::into)
     }
 
     #[instrument(skip_all)]
@@ -169,47 +159,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip_all)]
-    async fn check_waiting(self, cancel_token: tokio_util::sync::CancellationToken) {
-        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(
-            self.config.wait_sample_interval,
-        ));
-        tokio::pin!(timer);
-
-        // We're going to spawn a bunch of tasks
-        let mut task_set = tokio::task::JoinSet::new();
-
-        loop {
-            tokio::select! {
-                () = &mut timer => {
-                    // Determine next interval before we do any other waiting
-                    let interval = tokio::time::Instant::now() + tokio::time::Duration::from_secs(self.config.wait_sample_interval);
-
-                    // Get all bundles that are ready before now() + self.config.wait_sample_interval
-                    let waiting = self.store.get_waiting_bundles(time::OffsetDateTime::now_utc() + time::Duration::new(self.config.wait_sample_interval as i64, 0)).await.trace_expect("get_waiting_bundles failed");
-                    for (bundle,until) in waiting {
-                        // Spawn a task for each ready bundle
-                        let dispatcher = self.clone();
-                        let cancel_token_cloned = cancel_token.clone();
-                        task_set.spawn(async move {
-                            dispatcher.delay_bundle(bundle, until,cancel_token_cloned).await.trace_expect("Failed to process bundle");
-                        });
-                    }
-
-                    timer.as_mut().reset(interval);
-                },
-                Some(r) = task_set.join_next() => r.trace_expect("Task terminated unexpectedly"),
-                _ = cancel_token.cancelled() => break
-            }
-        }
-
-        // Wait for all sub-tasks to complete
-        while let Some(r) = task_set.join_next().await {
-            r.trace_expect("Task terminated unexpectedly")
-        }
-    }
-
-    async fn delay_bundle(
+    pub async fn delay_bundle(
         &self,
         mut bundle: metadata::Bundle,
         until: time::OffsetDateTime,
@@ -588,7 +538,7 @@ impl Dispatcher {
         &self,
         bundle: &metadata::Bundle,
         data: &[u8],
-    ) -> Result<(Vec<u8>, bool), Error> {
+    ) -> Result<(Box<[u8]>, bool), Error> {
         let mut editor = bpv7::Editor::new(&bundle.bundle)
             // Previous Node Block
             .replace_extension_block(bpv7::BlockType::PreviousNode)
@@ -846,6 +796,7 @@ impl Dispatcher {
         .await
     }
 
+    #[instrument(skip_all)]
     async fn dispatch_status_report(
         &self,
         payload: Vec<u8>,
@@ -862,16 +813,8 @@ impl Dispatcher {
             .add_payload_block(payload)
             .build()?;
 
-        // Store to store
-        let metadata = self
-            .store
-            .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
-            .await?
-            .trace_expect("Duplicate bundle created by builder!");
-
         // And queue it up
-        self.enqueue_bundle(metadata::Bundle { metadata, bundle })
-            .await
+        self.dispatch_new_bundle(bundle, Arc::from(data)).await
     }
 
     #[instrument(skip(self))]
@@ -932,16 +875,36 @@ impl Dispatcher {
         // Add payload and build
         let (bundle, data) = b.add_payload_block(request.data).build()?;
 
+        // And queue it up
+        self.dispatch_new_bundle(bundle, Arc::from(data)).await
+    }
+
+    #[instrument(skip_all)]
+    async fn dispatch_new_bundle(
+        &self,
+        bundle: bpv7::Bundle,
+        data: Arc<[u8]>,
+    ) -> Result<(), Error> {
         // Store to store
-        let metadata = self
+        let Some(metadata) = self
             .store
             .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
             .await?
-            .trace_expect("Duplicate bundle created by builder!");
+        else {
+            let other = self.store.load(&bundle.id).await?.expect("WTF?");
 
-        // And queue it up
-        self.enqueue_bundle(metadata::Bundle { metadata, bundle })
+            println!(
+                "Duplicate bundle created by builder: {:?} == {:?}",
+                bundle, other.bundle
+            );
+            panic!("Duplicate bundle created by builder");
+        };
+
+        // Put bundle into channel
+        self.tx
+            .send(metadata::Bundle { metadata, bundle })
             .await
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -986,7 +949,8 @@ impl Dispatcher {
             return Ok(());
         };
 
-        let reason = match cbor::decode::parse::<bpv7::AdministrativeRecord>((*data).as_ref()) {
+        let reason = match cbor::decode::parse::<bpv7::AdministrativeRecord>(data.as_ref().as_ref())
+        {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
                 Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
@@ -1094,7 +1058,7 @@ impl Dispatcher {
         // Prepare the response
         let response = CollectResponse {
             bundle_id: bundle.bundle.id.to_key(),
-            data: (*data).as_ref().to_vec(),
+            data: data.as_ref().as_ref().to_vec(),
             expiry: bundle.expiry(),
             app_ack_requested: bundle.bundle.flags.app_ack_requested,
         };
@@ -1109,7 +1073,8 @@ impl Dispatcher {
     pub async fn poll_for_collection(
         &self,
         destination: bpv7::Eid,
-    ) -> Result<Vec<(String, time::OffsetDateTime)>, Error> {
-        self.store.poll_for_collection(destination).await
+        tx: tokio::sync::mpsc::Sender<metadata::Bundle>,
+    ) -> Result<(), Error> {
+        self.store.poll_for_collection(destination, tx).await
     }
 }

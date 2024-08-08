@@ -1,16 +1,14 @@
 use super::*;
 use hardy_bpa_api::{async_trait, storage, storage::BundleStorage, storage::DataRef};
 use rand::prelude::*;
+use sha2::Digest;
 use std::{
-    collections::{HashMap, HashSet},
-    fs::OpenOptions,
+    collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use trace_err::*;
-use tracing::*;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -18,9 +16,11 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
+use trace_err::*;
+use tracing::*;
+
 pub struct Storage {
     store_root: PathBuf,
-    reserved_paths: Mutex<HashSet<PathBuf>>,
 }
 
 impl Storage {
@@ -61,206 +61,216 @@ impl Storage {
             store_root.display()
         ));
 
-        Arc::new(Storage {
-            store_root,
-            reserved_paths: Mutex::new(HashSet::new()),
-        })
+        Arc::new(Storage { store_root })
     }
+}
 
-    fn random_file_path(&self) -> Result<PathBuf, std::io::Error> {
-        // Compose a subdirectory that doesn't break filesystems
-        let mut rng = rand::thread_rng();
-        let sub_dir = [
-            format!("{:x}", rng.gen::<u16>() % 4096),
-            format!("{:x}", rng.gen::<u16>() % 4096),
-            format!("{:x}", rng.gen::<u16>() % 4096),
+fn hash(data: &[u8]) -> Arc<[u8]> {
+    Arc::from(sha2::Sha256::digest(data).as_slice())
+}
+
+fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
+    let mut rng = rand::thread_rng();
+    loop {
+        // Random subdirectory
+        let mut file_path = [
+            root,
+            &PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)),
+            &PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)),
+            &PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)),
         ]
         .iter()
         .collect::<PathBuf>();
 
-        // Random filename
-        loop {
-            let file_path = [
-                &self.store_root,
-                &sub_dir,
-                &PathBuf::from(format!("{:x}", rng.gen::<u64>() % 4096)),
-            ]
-            .iter()
-            .collect::<PathBuf>();
+        // Ensure directory exists
+        std::fs::create_dir_all(&file_path)?;
 
-            // Stop races between threads
-            if self
-                .reserved_paths
-                .lock()
-                .trace_expect("Failed to lock reserved_paths mutex")
-                .insert(file_path.clone())
-            {
-                // Check if a file with that name doesn't exist
-                match std::fs::metadata(&file_path) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(file_path),
-                    r => {
-                        // Remove the reserved_paths entry
-                        self.reserved_paths
-                            .lock()
-                            .trace_expect("Failed to lock reserved_paths mutex")
-                            .remove(&file_path);
-                        r?;
-                    }
-                }
+        // Add a random filename
+        file_path.push(PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)));
+
+        // Stop races between threads by creating a 0-length file
+        if let Err(e) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+        {
+            if let std::io::ErrorKind::AlreadyExists = e.kind() {
+                continue;
             }
+            return Err(e);
+        } else {
+            return Ok(file_path);
         }
     }
+}
 
-    #[allow(clippy::type_complexity)]
-    #[instrument(level = "debug", skip(self, f))]
-    fn walk_dirs(
-        &self,
-        dir: &PathBuf,
-        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
-    ) -> storage::Result<bool> {
-        for entry in std::fs::read_dir(dir)?.flatten() {
+fn walk_dirs(
+    root: &PathBuf,
+    dir: PathBuf,
+    tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
+) -> usize {
+    let mut count: usize = 0;
+    if let Ok(dir) = std::fs::read_dir(dir.clone()) {
+        for entry in dir.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
-                    if !self.walk_dirs(&entry.path(), f)? {
-                        return Ok(false);
-                    }
+                    count += walk_dirs(root, entry.path(), tx.clone());
                 } else if file_type.is_file() {
+                    // Drop anything .tmp
                     if let Some(extension) = entry.path().extension() {
-                        // Drop anything .tmp
                         if extension == "tmp" {
-                            std::fs::remove_file(entry.path())?;
+                            std::fs::remove_file(entry.path())
+                                .trace_expect("Failed to remove tmp file");
                             continue;
                         }
                     }
 
-                    // Report orphan
+                    // Report a bundle
                     let storage_path = entry.path();
-                    let storage_name = storage_path
-                        .strip_prefix(&self.store_root)?
-                        .to_string_lossy();
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature = "mmap")] {
+                            let file = std::fs::File::open(&storage_path).trace_expect("Failed to open file");
+                            let data = unsafe { memmap2::Mmap::map(&file) }.map(Arc::new).trace_expect("Failed to memory map file");
+                        } else {
+                            let data = std::fs::read(&storage_path).map(Arc::new).trace_expect("Failed to read file content");
+                        }
+                    }
+
+                    // Drop 0-length files
+                    if data.is_empty() {
+                        std::fs::remove_file(entry.path())
+                            .trace_expect("Failed to remove placeholder file");
+                        continue;
+                    }
+
+                    // We haver something useful
+                    count += 1;
+
+                    let hash = hash(data.as_ref().as_ref());
                     let received_at = entry
                         .metadata()
                         .and_then(|m| m.created())
                         .map(time::OffsetDateTime::from)
                         .ok();
 
-                    let hash = self.hash(self.sync_load(&storage_name)?.as_ref().as_ref());
-                    if !f(&storage_name, &hash, received_at)? {
-                        return Ok(false);
+                    if tx
+                        .blocking_send((
+                            Arc::from(storage_path.strip_prefix(root).unwrap().to_string_lossy()),
+                            hash,
+                            data,
+                            received_at,
+                        ))
+                        .is_err()
+                    {
+                        break;
                     }
                 }
             }
         }
-        Ok(true)
     }
 
-    fn sync_load(&self, storage_name: &str) -> storage::Result<DataRef> {
-        let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
-
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "mmap")] {
-                let file = std::fs::File::open(file_path)?;
-                let data = unsafe { memmap2::Mmap::map(&file)? };
-                Ok(Arc::new(data))
-            } else {
-                let mut v = Vec::new();
-                std::fs::File::open(file_path)?.read_to_end(&mut v)?;
-                Ok(Arc::new(v))
-            }
-        }
+    if count == 0 && std::fs::remove_dir(&dir).is_err() {
+        count = 1;
     }
+    count
 }
 
 #[async_trait]
 impl BundleStorage for Storage {
-    #[instrument(skip(self, f))]
-    fn list(
+    fn hash(&self, data: &[u8]) -> Arc<[u8]> {
+        hash(data)
+    }
+
+    #[instrument(skip_all)]
+    async fn list(
         &self,
-        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> storage::Result<bool>,
+        tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
     ) -> storage::Result<()> {
-        self.walk_dirs(&self.store_root, f).map(|_| ())
+        let root = self.store_root.clone();
+
+        // Spawn a thread to walk the directory
+        tokio::task::spawn_blocking(move || walk_dirs(&root.clone(), root, tx))
+            .await
+            .trace_expect("Failed to spawn walk_dirs thread");
+        Ok(())
     }
 
     #[instrument(skip(self))]
     async fn load(&self, storage_name: &str) -> storage::Result<DataRef> {
-        self.sync_load(storage_name)
+        let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "mmap")] {
+                let file = tokio::fs::File::open(storage_name).await?;
+                let data = unsafe { memmap2::Mmap::map(&file) };
+                Ok(Arc::new(data?))
+            } else {
+                Ok(Arc::new(tokio::fs::read(storage_name).await?))
+            }
+        }
     }
 
-    #[instrument(skip_all)]
-    async fn store(&self, data: Vec<u8>) -> storage::Result<String> {
-        /*
-        create a new temp file (on the same file system!)
-        write data to the temp file
-        fsync() the temp file
-        rename the temp file to the appropriate name
-        fsync() the containing directory
-        */
+    async fn store(&self, data: Arc<[u8]>) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
+        let hash = hash(&data);
+        let root = self.store_root.clone();
 
-        // Create random filename
-        let file_path = self.random_file_path()?;
-        let file_path_cloned = file_path.clone();
+        // Spawn a thread to try to maintain linearity
+        let storage_name = tokio::task::spawn_blocking(move || {
+            // Create random filename
+            let storage_name = random_file_path(&root)?;
 
-        // Perform blocking I/O on dedicated worker task
-        let result = tokio::task::spawn_blocking(move || write(file_path_cloned, data)).await;
+            // Write to disk
+            write_atomic(storage_name.clone(), &data).map(|_| storage_name)
+        })
+        .await
+        .trace_expect("Failed to spawn write_atomic thread")?;
 
-        // Always remove tmps entry
-        self.reserved_paths
-            .lock()
-            .trace_expect("Failed to lock reserved_paths mutex")
-            .remove(&file_path);
-
-        // Check result errors
-        result??;
-
-        Ok(file_path
-            .strip_prefix(&self.store_root)?
-            .to_string_lossy()
-            .to_string())
+        Ok((
+            Arc::from(
+                storage_name
+                    .strip_prefix(&self.store_root)?
+                    .to_string_lossy(),
+            ),
+            hash,
+        ))
     }
 
     #[instrument(skip(self))]
     async fn remove(&self, storage_name: &str) -> storage::Result<()> {
-        let file_path = self.store_root.join(PathBuf::from_str(storage_name)?);
-        tokio::fs::remove_file(&file_path).await.map_err(Into::into)
+        tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?))
+            .await
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self, data))]
-    async fn replace(&self, storage_name: &str, data: Vec<u8>) -> storage::Result<()> {
-        /*
-        create a new temp file (alongside the original)
-        write data to the temp file
-        fsync() the temp file
-        rename the temp file to the original name
-        fsync() the containing directory
-        */
+    async fn replace(&self, storage_name: &str, data: Box<[u8]>) -> storage::Result<()> {
+        let storage_name = PathBuf::from_str(storage_name)?;
 
-        // Create random filename
-        let file_path = PathBuf::from_str(storage_name)?;
-        let file_path_cloned = file_path.clone();
-
-        // Perform blocking I/O on dedicated worker task
-        tokio::task::spawn_blocking(move || write(file_path_cloned, data))
-            .await?
-            .map_err(Into::into)
+        // Spawn a thread to try to maintain linearity
+        tokio::task::spawn_blocking(move || write_atomic(storage_name, &data))
+            .await
+            .trace_expect("Failed to spawn write_atomic thread")
     }
 }
 
 #[instrument(skip(data))]
-fn write(mut file_path: PathBuf, data: Vec<u8>) -> std::io::Result<()> {
-    // Ensure directory exists
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+fn write_atomic(mut file_path: PathBuf, data: &[u8]) -> storage::Result<()> {
+    /*
+    create a new temp file (alongside the original)
+    write data to the temp file
+    fsync() the temp file
+    rename the temp file to the original name
+    fsync() the containing directory
+    */
 
     // Use a temporary extension
     file_path.set_extension("tmp");
 
     // Open the file as direct as possible
-    let mut options = OpenOptions::new();
-    options.write(true).create(true);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
-            options.custom_flags(libc::O_SYNC | libc::O_DIRECT);
+            options.custom_flags(libc::O_SYNC);
         } else if #[cfg(windows)] {
             options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
         }
@@ -268,15 +278,15 @@ fn write(mut file_path: PathBuf, data: Vec<u8>) -> std::io::Result<()> {
     let mut file = options.open(&file_path)?;
 
     // Write all data to file
-    if let Err(e) = file.write_all(&data) {
+    if let Err(e) = file.write_all(data) {
         _ = std::fs::remove_file(&file_path);
-        return Err(e);
+        return Err(e.into());
     }
 
     // Sync everything
     if let Err(e) = file.sync_all() {
         _ = std::fs::remove_file(&file_path);
-        return Err(e);
+        return Err(e.into());
     }
 
     // Rename the file
@@ -284,7 +294,7 @@ fn write(mut file_path: PathBuf, data: Vec<u8>) -> std::io::Result<()> {
     file_path.set_extension("");
     if let Err(e) = std::fs::rename(&old_path, &file_path) {
         _ = std::fs::remove_file(&old_path);
-        return Err(e);
+        return Err(e.into());
     }
 
     // No idea how to fsync the directory in portable Rust!

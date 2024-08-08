@@ -86,9 +86,9 @@ async fn main() {
         cancel_token.clone(),
     );
 
-    // Restart the store - this can take a while as the store is walked
+    // Start the store - this can take a while as the store is walked
     store
-        .restart(ingress, dispatcher, cancel_token.clone())
+        .start(ingress, dispatcher, &mut task_set, cancel_token.clone())
         .await;
 
     // Wait for all tasks to finish

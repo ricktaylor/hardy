@@ -4,15 +4,11 @@ use sha2::Digest;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
+pub type Sender = tokio::sync::mpsc::Sender<metadata::Bundle>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
-    fn get_unconfirmed_bundles(
-        &self,
-        f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>,
-    ) -> Result<()>;
-
-    fn restart(&self, f: &mut dyn FnMut(metadata::Bundle) -> Result<bool>) -> Result<()>;
+    async fn restart(&self, tx: Sender) -> Result<()>;
 
     async fn load(&self, bundle_id: &bpv7::BundleId) -> Result<Option<metadata::Bundle>>;
 
@@ -35,33 +31,37 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<()>;
 
-    async fn get_waiting_bundles(
-        &self,
-        limit: time::OffsetDateTime,
-    ) -> Result<Vec<(metadata::Bundle, time::OffsetDateTime)>>;
+    async fn get_waiting_bundles(&self, limit: time::OffsetDateTime, tx: Sender) -> Result<()>;
 
-    async fn poll_for_collection(&self, destination: bpv7::Eid) -> Result<Vec<metadata::Bundle>>;
+    async fn get_unconfirmed_bundles(&self, tx: Sender) -> Result<()>;
+
+    async fn poll_for_collection(&self, destination: bpv7::Eid, tx: Sender) -> Result<()>;
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;
+pub type ListResponse = (
+    std::sync::Arc<str>,
+    std::sync::Arc<[u8]>,
+    DataRef,
+    Option<time::OffsetDateTime>,
+);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
-    fn hash(&self, data: &[u8]) -> Vec<u8> {
-        sha2::Sha256::digest(data).to_vec()
+    fn hash(&self, data: &[u8]) -> std::sync::Arc<[u8]> {
+        std::sync::Arc::from(sha2::Sha256::digest(data).as_slice())
     }
 
-    #[allow(clippy::type_complexity)]
-    fn list(
-        &self,
-        f: &mut dyn FnMut(&str, &[u8], Option<time::OffsetDateTime>) -> Result<bool>,
-    ) -> Result<()>;
+    async fn list(&self, tx: tokio::sync::mpsc::Sender<ListResponse>) -> Result<()>;
 
     async fn load(&self, storage_name: &str) -> Result<DataRef>;
 
-    async fn store(&self, data: Vec<u8>) -> Result<String>;
+    async fn store(
+        &self,
+        data: std::sync::Arc<[u8]>,
+    ) -> Result<(std::sync::Arc<str>, std::sync::Arc<[u8]>)>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
 
-    async fn replace(&self, storage_name: &str, data: Vec<u8>) -> Result<()>;
+    async fn replace(&self, storage_name: &str, data: Box<[u8]>) -> Result<()>;
 }

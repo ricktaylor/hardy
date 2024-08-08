@@ -4,12 +4,9 @@ use hardy_bpa_api::{async_trait, metadata, storage};
 use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 use thiserror::Error;
+use tokio::sync::Mutex;
 use trace_err::*;
 use tracing::*;
 
@@ -215,24 +212,30 @@ impl Storage {
             connection: Arc::new(Mutex::new(connection)),
         })
     }
+
+    async fn sync_conn<F>(&self, f: F) -> storage::Result<()>
+    where
+        F: Fn(&mut rusqlite::Connection) -> storage::Result<()> + Send + 'static,
+    {
+        let conn = self.connection.clone();
+        tokio::task::spawn_blocking(move || f(&mut conn.blocking_lock()))
+            .await
+            .map_err(Into::<storage::Error>::into)?
+    }
 }
 
 fn encode_eid(eid: &bpv7::Eid) -> rusqlite::types::Value {
-    match eid {
-        bpv7::Eid::Null => rusqlite::types::Value::Null,
-        _ => rusqlite::types::Value::Blob(cbor::encode::emit(eid)),
-    }
+    rusqlite::types::Value::Blob(cbor::encode::emit(eid))
 }
 
 fn decode_eid(
     row: &rusqlite::Row,
     idx: impl rusqlite::RowIndex,
 ) -> Result<bpv7::Eid, Box<dyn std::error::Error + Send + Sync>> {
-    match row.get_ref(idx)? {
-        rusqlite::types::ValueRef::Blob(b) => Ok(cbor::decode::parse(b)?),
-        rusqlite::types::ValueRef::Null => Ok(bpv7::Eid::Null),
-        _ => panic!("EID encoded as unusual sqlite type"),
-    }
+    let rusqlite::types::ValueRef::Blob(b) = row.get_ref(idx)? else {
+        panic!("EID encoded as unusual sqlite type")
+    };
+    cbor::decode::parse(b).map_err(Into::into)
 }
 
 fn encode_creation_time(timestamp: Option<bpv7::DtnTime>) -> i64 {
@@ -267,7 +270,7 @@ fn as_i64<T: Into<u64>>(v: T) -> i64 {
     v as i64
 }
 
-fn unpack_bundles(mut rows: rusqlite::Rows) -> storage::Result<Vec<(i64, metadata::Bundle)>> {
+fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage::Result<()> {
     /* Expected query MUST look like:
            0:  bundles.id,
            1:  bundles.status,
@@ -298,14 +301,15 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> storage::Result<Vec<(i64, metadat
            26: bundle_blocks.data_len
     */
 
-    let mut bundles = Vec::new();
     let mut row_result = rows.next()?;
     while let Some(mut row) = row_result {
         let bundle_id: i64 = row.get(0)?;
         let metadata = metadata::Metadata {
             status: columns_to_bundle_status(row, 1, 20, 19)?,
             storage_name: row.get(2)?,
-            hash: BASE64_STANDARD_NO_PAD.decode(row.get::<usize, String>(3)?)?,
+            hash: BASE64_STANDARD_NO_PAD
+                .decode(row.get::<usize, String>(3)?)?
+                .into(),
             received_at: row.get(4)?,
         };
 
@@ -378,9 +382,14 @@ fn unpack_bundles(mut rows: rusqlite::Rows) -> storage::Result<Vec<(i64, metadat
             }
         }
 
-        bundles.push((bundle_id, metadata::Bundle { bundle, metadata }));
+        if tx
+            .blocking_send(metadata::Bundle { bundle, metadata })
+            .is_err()
+        {
+            break;
+        }
     }
-    Ok(bundles)
+    Ok(())
 }
 
 fn complete_replace(
@@ -424,20 +433,16 @@ fn complete_replace(
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[instrument(skip_all)]
-    fn get_unconfirmed_bundles(
-        &self,
-        f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
-    ) -> storage::Result<()> {
-        // Loop through subsets of 16 bundles, so we don't fill all memory
-        loop {
-            let bundles = unpack_bundles(
-                self.connection
-                    .lock()
-                    .trace_expect("Failed to lock connection mutex")
+    async fn restart(&self, tx: storage::Sender) -> storage::Result<()> {
+        self.sync_conn(move |conn| {
+            let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+            // Enum the bundles from the restart table
+            unpack_bundles(
+                trans
                     .prepare_cached(
-                        r#"WITH subset AS (
-                            SELECT 
-                                id,
+                        r#"SELECT 
+                                bundles.id,
                                 status,
                                 storage_name,
                                 hash,
@@ -457,157 +462,37 @@ impl storage::MetadataStorage for Storage {
                                 hop_count,
                                 hop_limit,
                                 wait_until,
-                                ack_handle
-                            FROM unconfirmed_bundles
-                            JOIN bundles ON id = unconfirmed_bundles.bundle_id
-                            LIMIT 16
-                        )
-                        SELECT 
-                            subset.*,
-                            block_num,
-                            block_type,
-                            block_flags,
-                            block_crc_type,
-                            data_offset,
-                            data_len
-                        FROM subset
-                        JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
-                    )?
-                    .query(())?,
-            )?;
-            if bundles.is_empty() {
-                break;
-            }
-
-            // Now enumerate the vector outside the query implicit transaction
-            for (_bundle_id, bundle) in bundles {
-                if !f(bundle)? {
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    fn restart(
-        &self,
-        f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
-    ) -> storage::Result<()> {
-        // Create a temporary table (because DELETE RETURNING cannot be used as a CTE)
-        self.connection
-            .lock()
-            .trace_expect("Failed to lock connection mutex")
-            .prepare(
-                r#"CREATE TEMPORARY TABLE restart_subset (
-                    bundle_id INTEGER UNIQUE NOT NULL
-                ) STRICT;"#,
-            )?
-            .execute(())?;
-
-        loop {
-            // Loop through subsets of 16 bundles, so we don't fill all memory
-            let mut conn = self
-                .connection
-                .lock()
-                .trace_expect("Failed to lock connection mutex");
-            let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-            // Grab a subset, ordered by status descending
-            trans
-                .prepare_cached(
-                    r#"INSERT INTO restart_subset (bundle_id)
-                            SELECT id
+                                ack_handle,
+                                block_num,
+                                block_type,
+                                block_flags,
+                                block_crc_type,
+                                data_offset,
+                                data_len
                             FROM restart_bundles
                             JOIN bundles ON bundles.id = restart_bundles.bundle_id
-                            ORDER BY bundles.status DESC
-                            LIMIT 16;"#,
-                )?
-                .execute(())?;
-
-            // Remove from restart the subset we are about to process
-            if trans
-                .prepare_cached(
-                    r#"DELETE FROM restart_bundles WHERE bundle_id IN (
-                            SELECT bundle_id FROM restart_subset
-                        );"#,
-                )?
-                .execute(())?
-                == 0
-            {
-                break;
-            }
-
-            // Now enum the bundles from the subset
-            let bundles = unpack_bundles(
-                trans
-                    .prepare_cached(
-                        r#"SELECT 
-                            bundle_id,
-                            status,
-                            storage_name,
-                            hash,
-                            received_at,
-                            flags,
-                            crc_type,
-                            source,
-                            destination,
-                            report_to,
-                            creation_time,
-                            creation_seq_num,
-                            lifetime,                    
-                            fragment_offset,
-                            fragment_total_len,
-                            previous_node,
-                            age,
-                            hop_count,
-                            hop_limit,
-                            wait_until,
-                            ack_handle,
-                            block_num,
-                            block_type,
-                            block_flags,
-                            block_crc_type,
-                            data_offset,
-                            data_len
-                        FROM restart_subset
-                        JOIN bundles ON bundles.id = restart_subset.bundle_id
-                        JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id;"#,
+                            JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id;"#,
                     )?
                     .query(())?,
+                &tx,
             )?;
 
+            // Drop the restart table
+            trans.execute_batch(r#"DROP TABLE temp.restart_bundles;"#)?;
+
             // Commit transaction and drop it
-            trans.commit()?;
-            drop(conn);
-
-            // Now enumerate the vector outside the transaction
-            for (_bundle_id, bundle) in bundles {
-                if !f(bundle)? {
-                    break;
-                }
-            }
-        }
-
-        // And finally drop the restart tables - they're no longer required
-        self.connection
-            .lock()
-            .trace_expect("Failed to lock connection mutex")
-            .execute_batch(
-                r#"
-                DROP TABLE temp.restart_subset;
-                DROP TABLE temp.restart_bundles;"#,
-            )
-            .map_err(Into::into)
+            trans.commit().map_err(Into::into)
+        })
+        .await
     }
 
     #[instrument(skip(self))]
     async fn load(&self, bundle_id: &bpv7::BundleId) -> storage::Result<Option<metadata::Bundle>> {
-        Ok(unpack_bundles(
-            self.connection
-                .lock()
-                .trace_expect("Failed to lock connection mutex")
-                .prepare_cached(
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let bundle_id = bundle_id.clone();
+        let h = self.sync_conn(move |conn| {
+            unpack_bundles(
+                conn.prepare_cached(
                     r#"SELECT 
                     bundles.id,
                     status,
@@ -653,9 +538,17 @@ impl storage::MetadataStorage for Storage {
                     bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
                     bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
                 ))?,
-        )?
-        .pop()
-        .map(|(_, bundle)| bundle))
+                &tx,
+            )
+        });
+
+        // Get bundle
+        let b = rx.recv().await;
+
+        // Wait for the bridge to finish
+        h.await?;
+
+        Ok(b)
     }
 
     #[instrument(skip(self))]
@@ -664,10 +557,7 @@ impl storage::MetadataStorage for Storage {
         metadata: &metadata::Metadata,
         bundle: &bpv7::Bundle,
     ) -> storage::Result<bool> {
-        let mut conn = self
-            .connection
-            .lock()
-            .trace_expect("Failed to lock connection mutex");
+        let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let (status, ack_handle, until) = bundle_status_to_parts(&metadata.status);
 
@@ -675,7 +565,7 @@ impl storage::MetadataStorage for Storage {
         let bundle_id = trans
             .prepare_cached(
                 r#"
-            INSERT OR IGNORE INTO bundles (
+            INSERT INTO bundles (
                 status,
                 storage_name,
                 hash,
@@ -722,22 +612,28 @@ impl storage::MetadataStorage for Storage {
                     ack_handle
                 ),
                 |row| Ok(as_u64(row.get(0)?)),
-            )
-            .optional()?;
+            );
 
-        // Insert extension blocks
-        if let Some(bundle_id) = bundle_id {
+        let bundle_id = match bundle_id {
+            Err(rusqlite::Error::SqliteFailure(e, _)) if e.extended_code == 2067 => {
+                return Ok(false)
+            }
+            bundle_id => bundle_id.trace_expect("Failed to load bundle metadata"),
+        };
+
+        {
+            // Insert extension blocks
             let mut block_stmt = trans.prepare_cached(
                 r#"
-                INSERT INTO bundle_blocks (
-                    bundle_id,
-                    block_type,
-                    block_num,
-                    block_flags,
-                    block_crc_type,
-                    data_offset,
-                    data_len)
-                VALUES (?1,?2,?3,?4,?5,?6);"#,
+                    INSERT INTO bundle_blocks (
+                        bundle_id,
+                        block_type,
+                        block_num,
+                        block_flags,
+                        block_crc_type,
+                        data_offset,
+                        data_len)
+                    VALUES (?1,?2,?3,?4,?5,?6,?7);"#,
             )?;
             for (block_num, block) in &bundle.blocks {
                 block_stmt.execute((
@@ -753,10 +649,7 @@ impl storage::MetadataStorage for Storage {
         }
 
         // Commit transaction
-        trans
-            .commit()
-            .map(|_| bundle_id.is_some())
-            .map_err(Into::into)
+        trans.commit().map(|_| true).map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -765,7 +658,7 @@ impl storage::MetadataStorage for Storage {
         if !self
             .connection
             .lock()
-            .trace_expect("Failed to lock connection mutex")
+            .await
             .prepare_cached(r#"DELETE FROM bundles WHERE storage_name = ?1;"#)?
             .execute([storage_name])
             .map(|count| count != 0)?
@@ -778,10 +671,7 @@ impl storage::MetadataStorage for Storage {
 
     #[instrument(skip(self))]
     async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> storage::Result<bool> {
-        let mut conn = self
-            .connection
-            .lock()
-            .trace_expect("Failed to lock connection mutex");
+        let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Check if bundle exists
@@ -826,7 +716,7 @@ impl storage::MetadataStorage for Storage {
         self
             .connection
             .lock()
-            .trace_expect("Failed to lock connection mutex")
+            .await
             .prepare_cached(
                 r#"SELECT status,ack_handle,wait_until FROM bundles WHERE storage_name = ?1 LIMIT 1;"#,
             )?
@@ -846,10 +736,9 @@ impl storage::MetadataStorage for Storage {
         let (status, ack_handle, until) = bundle_status_to_parts(status);
         if !self
             .connection
-            .lock()
-            .trace_expect("Failed to lock connection mutex")
+            .lock().await
             .prepare_cached(
-                r#"UPDATE bundles SET status = ?1, ack_handle = ?2, wait_until = ?3 WHERE storage_name = ?3;"#,
+                r#"UPDATE bundles SET status = ?1, ack_handle = ?2, wait_until = ?3 WHERE storage_name = ?4;"#,
             )?
             .execute((status, ack_handle, until, storage_name))
             .map(|count| count != 0)?
@@ -865,7 +754,7 @@ impl storage::MetadataStorage for Storage {
         if !self
             .connection
             .lock()
-            .trace_expect("Failed to lock connection mutex")
+            .await
             .prepare_cached(
                 r#"INSERT INTO replacement_bundles (bundle_id, hash)
                 SELECT id,?1 FROM bundles WHERE storage_name = ?2;"#,
@@ -881,10 +770,7 @@ impl storage::MetadataStorage for Storage {
 
     #[instrument(skip(self))]
     async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> storage::Result<()> {
-        let mut conn = self
-            .connection
-            .lock()
-            .trace_expect("Failed to lock connection mutex");
+        let mut conn = self.connection.lock().await;
         let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         if complete_replace(&trans, storage_name, hash)?.is_none() {
@@ -895,16 +781,15 @@ impl storage::MetadataStorage for Storage {
         trans.commit().map_err(Into::into)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, tx))]
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> storage::Result<Vec<(metadata::Bundle, time::OffsetDateTime)>> {
-        unpack_bundles(
-            self.connection
-                .lock()
-                .trace_expect("Failed to lock connection mutex")
-                .prepare_cached(
+        tx: storage::Sender,
+    ) -> storage::Result<()> {
+        self.sync_conn(move |conn| {
+            unpack_bundles(
+                conn.prepare_cached(
                     r#"SELECT 
                         bundles.id,
                         status,
@@ -935,33 +820,78 @@ impl storage::MetadataStorage for Storage {
                         data_len
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
-                    WHERE wait_until IS NOT NULL AND unixepoch(wait_until) < unixepoch(?1);"#,
+                    WHERE status IN (?1,?2) AND unixepoch(wait_until) <= unixepoch(?3);"#,
                 )?
-                .query([limit])?,
-        )
-        .map(|v| {
-            v.into_iter()
-                .filter_map(|(_, bundle)| match &bundle.metadata.status {
-                    metadata::BundleStatus::ForwardAckPending(_, until)
-                    | metadata::BundleStatus::Waiting(until) => {
-                        let until = *until;
-                        Some((bundle, until))
-                    }
-                    _ => None,
-                })
-                .collect()
+                .query((
+                    StatusCodes::ForwardAckPending as i64,
+                    StatusCodes::Waiting as i64,
+                    limit,
+                ))?,
+                &tx,
+            )
         })
+        .await
     }
 
+    #[instrument(skip_all)]
+    async fn get_unconfirmed_bundles(&self, tx: storage::Sender) -> storage::Result<()> {
+        self.sync_conn(move |conn| {
+            unpack_bundles(
+                conn.prepare_cached(
+                    r#"WITH subset AS (
+                            SELECT 
+                                id,
+                                status,
+                                storage_name,
+                                hash,
+                                received_at,
+                                flags,
+                                crc_type,
+                                source,
+                                destination,
+                                report_to,
+                                creation_time,
+                                creation_seq_num,
+                                lifetime,                    
+                                fragment_offset,
+                                fragment_total_len,
+                                previous_node,
+                                age,
+                                hop_count,
+                                hop_limit,
+                                wait_until,
+                                ack_handle
+                            FROM unconfirmed_bundles
+                            JOIN bundles ON id = unconfirmed_bundles.bundle_id
+                            LIMIT 16
+                        )
+                        SELECT 
+                            subset.*,
+                            block_num,
+                            block_type,
+                            block_flags,
+                            block_crc_type,
+                            data_offset,
+                            data_len
+                        FROM subset
+                        JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
+                )?
+                .query(())?,
+                &tx,
+            )
+        })
+        .await
+    }
+
+    #[instrument(skip(self, tx))]
     async fn poll_for_collection(
         &self,
         destination: bpv7::Eid,
-    ) -> storage::Result<Vec<metadata::Bundle>> {
-        unpack_bundles(
-            self.connection
-                .lock()
-                .trace_expect("Failed to lock connection mutex")
-                .prepare_cached(
+        tx: storage::Sender,
+    ) -> storage::Result<()> {
+        self.sync_conn(move |conn| {
+            unpack_bundles(
+                conn.prepare_cached(
                     r#"SELECT 
                         bundles.id,
                         status,
@@ -998,7 +928,9 @@ impl storage::MetadataStorage for Storage {
                     StatusCodes::CollectionPending as i64,
                     encode_eid(&destination),
                 ))?,
-        )
-        .map(|v| v.into_iter().map(|(_, bundle)| bundle).collect())
+                &tx,
+            )
+        })
+        .await
     }
 }

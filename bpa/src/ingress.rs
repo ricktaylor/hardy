@@ -1,11 +1,13 @@
 use super::*;
+use hardy_bpa_api::storage;
 use hardy_cbor as cbor;
+use std::sync::Arc;
 use tokio::sync::mpsc::*;
 
 #[derive(Clone)]
 pub struct Ingress {
     store: store::Store,
-    receive_channel: Sender<(String, Option<time::OffsetDateTime>)>,
+    receive_channel: Sender<storage::ListResponse>,
     restart_channel: Sender<metadata::Bundle>,
     dispatcher: dispatcher::Dispatcher,
 }
@@ -42,26 +44,36 @@ impl Ingress {
     }
 
     #[instrument(skip(self))]
-    pub async fn receive(&self, data: Vec<u8>) -> Result<(), Error> {
+    pub async fn receive(&self, data: Box<[u8]>) -> Result<(), Error> {
+        // We need an Arc<[T]>
+        let data: Arc<[u8]> = Arc::from(data);
+
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
         // Write the bundle data to the store
-        let storage_name = self.store.store_data(data).await?;
+        let (storage_name, hash) = self.store.store_data(data.clone()).await?;
 
         // Put bundle into receive channel
-        self.enqueue_receive_bundle(&storage_name, Some(received_at))
-            .await
+        self.enqueue_receive_bundle(
+            storage_name,
+            hash,
+            store::into_dataref(data),
+            Some(received_at),
+        )
+        .await
     }
 
     pub async fn enqueue_receive_bundle(
         &self,
-        storage_name: &str,
+        storage_name: Arc<str>,
+        hash: Arc<[u8]>,
+        data: storage::DataRef,
         received_at: Option<time::OffsetDateTime>,
     ) -> Result<(), Error> {
         // Put bundle into receive channel
         self.receive_channel
-            .send((storage_name.to_string(), received_at))
+            .send((storage_name, hash, data, received_at))
             .await
             .map_err(Into::into)
     }
@@ -74,7 +86,7 @@ impl Ingress {
     #[instrument(skip_all)]
     async fn pipeline_pump(
         self,
-        mut receive_channel: Receiver<(String, Option<time::OffsetDateTime>)>,
+        mut receive_channel: Receiver<storage::ListResponse>,
         mut restart_channel: Receiver<metadata::Bundle>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
@@ -85,11 +97,11 @@ impl Ingress {
             tokio::select! {
                 msg = receive_channel.recv() => match msg {
                     None => break,
-                    Some((storage_name,received_at)) => {
+                    Some((storage_name,hash,data,received_at)) => {
                         let ingress = self.clone();
                         let cancel_token_cloned = cancel_token.clone();
                         task_set.spawn(async move {
-                            ingress.receive_bundle(storage_name,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
+                            ingress.receive_bundle(storage_name,hash,data,received_at,cancel_token_cloned).await.trace_expect("Failed to process received bundle")
                         });
                     }
                 },
@@ -114,36 +126,33 @@ impl Ingress {
         }
     }
 
-    #[instrument(skip(self, cancel_token))]
+    #[instrument(skip(self, hash, data, cancel_token))]
     async fn receive_bundle(
         &self,
-        storage_name: String,
+        storage_name: Arc<str>,
+        hash: Arc<[u8]>,
+        data: storage::DataRef,
         received_at: Option<time::OffsetDateTime>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), Error> {
-        // Parse the bundle
-        let Some(data) = self.store.load_data(&storage_name).await? else {
-            // Bundle data was deleted sometime during processing
-            return Ok(());
-        };
+        let (bundle, mut valid) =
+            match cbor::decode::parse::<bpv7::ValidBundle>(data.as_ref().as_ref()) {
+                Ok(bpv7::ValidBundle::Valid(bundle)) => (bundle, true),
+                Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
+                Err(e) => {
+                    // Parse failed badly, no idea who to report to
+                    trace!("Bundle parsing failed: {e}");
 
-        let (bundle, mut valid) = match cbor::decode::parse::<bpv7::ValidBundle>((*data).as_ref()) {
-            Ok(bpv7::ValidBundle::Valid(bundle)) => (bundle, true),
-            Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
-            Err(e) => {
-                // Parse failed badly, no idea who to report to
-                trace!("Bundle parsing failed: {e}");
-
-                // Drop the bundle
-                return self.store.delete_data(&storage_name).await;
-            }
-        };
+                    // Drop the bundle
+                    return self.store.delete_data(&storage_name).await;
+                }
+            };
 
         let bundle = metadata::Bundle {
             metadata: metadata::Metadata {
                 status: metadata::BundleStatus::IngressPending,
                 storage_name,
-                hash: self.store.hash((*data).as_ref()),
+                hash,
                 received_at,
             },
             bundle,

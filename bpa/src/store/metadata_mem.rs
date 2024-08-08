@@ -13,8 +13,8 @@ pub enum Error {
 }
 
 struct StorageInner {
-    metadata: HashMap<String, metadata::Bundle>,
-    index: HashMap<bpv7::BundleId, String>,
+    metadata: HashMap<Arc<str>, metadata::Bundle>,
+    index: HashMap<bpv7::BundleId, Arc<str>>,
 }
 
 pub struct Storage {
@@ -35,18 +35,7 @@ impl Storage {
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
-    fn get_unconfirmed_bundles(
-        &self,
-        _f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
-    ) -> storage::Result<()> {
-        // We have no persistence, so therefore no orphans
-        Ok(())
-    }
-
-    fn restart(
-        &self,
-        _f: &mut dyn FnMut(metadata::Bundle) -> storage::Result<bool>,
-    ) -> storage::Result<()> {
+    async fn restart(&self, _tx: storage::Sender) -> storage::Result<()> {
         // We have no persistence, so therefore nothing to restart
         Ok(())
     }
@@ -137,41 +126,53 @@ impl storage::MetadataStorage for Storage {
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
-    ) -> storage::Result<Vec<(metadata::Bundle, time::OffsetDateTime)>> {
+        tx: storage::Sender,
+    ) -> storage::Result<()> {
         // Drop all tombstones and collect waiting
         let mut tombstones = Vec::new();
-        let mut waiting = Vec::new();
 
         let mut inner = self.inner.write().await;
 
-        inner.metadata.retain(|_, bundle| {
+        for bundle in inner.metadata.values() {
             match bundle.metadata.status {
                 metadata::BundleStatus::Tombstone(from)
                     if from + time::Duration::seconds(5) < time::OffsetDateTime::now_utc() =>
                 {
-                    tombstones.push(bundle.bundle.id.clone());
-                    return false;
+                    tombstones.push((
+                        bundle.metadata.storage_name.clone(),
+                        bundle.bundle.id.clone(),
+                    ));
                 }
-                metadata::BundleStatus::Waiting(until) if until <= limit => {
-                    waiting.push((bundle.clone(), until));
+                metadata::BundleStatus::ForwardAckPending(_, until)
+                | metadata::BundleStatus::Waiting(until)
+                    if until <= limit =>
+                {
+                    if tx.send(bundle.clone()).await.is_err() {
+                        break;
+                    }
                 }
                 _ => {}
             }
-            true
-        });
-
-        // Remove tombstones from index
-        for b in tombstones {
-            inner.index.remove(&b);
         }
 
-        Ok(waiting)
+        // Remove tombstones from index
+        for (storage_name, id) in tombstones {
+            inner.metadata.remove(&storage_name);
+            inner.index.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn get_unconfirmed_bundles(&self, _tx: storage::Sender) -> storage::Result<()> {
+        // We have no persistence, so therefore no orphans
+        Ok(())
     }
 
     async fn poll_for_collection(
         &self,
         _destination: bpv7::Eid,
-    ) -> storage::Result<Vec<metadata::Bundle>> {
+        _tx: storage::Sender,
+    ) -> storage::Result<()> {
         todo!()
     }
 }

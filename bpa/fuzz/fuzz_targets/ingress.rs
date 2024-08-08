@@ -58,7 +58,7 @@ fn setup() -> tokio::runtime::Runtime {
         );
 
         // Create a new ingress
-        INGRESS.get_or_init(|| {
+        let ingress = INGRESS.get_or_init(|| {
             ingress::Ingress::new(
                 &config,
                 store.clone(),
@@ -67,6 +67,16 @@ fn setup() -> tokio::runtime::Runtime {
                 cancel_token.clone(),
             )
         });
+
+        // Start the store - this can take a while as the store is walked
+        store
+            .start(
+                ingress.clone(),
+                dispatcher,
+                &mut task_set,
+                cancel_token.clone(),
+            )
+            .await;
 
         while task_set.join_next().await.is_some() {}
     });
