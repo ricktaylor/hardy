@@ -141,13 +141,6 @@ impl std::fmt::Debug for Eid {
                 node_number,
                 service_number,
             } => write!(f, "ipn(2):{allocator_id}.{node_number}.{service_number}"),
-            Eid::Unknown { scheme, data } => {
-                let (value, _) = cbor::decode::parse_value(data, |value, _| {
-                    Ok::<String, EidError>(format!("{value:?}"))
-                })
-                .unwrap_or(("<Invalid CBOR>".to_string(), 0));
-                write!(f, "unknown({scheme}):{:?}", value)
-            }
             _ => <Self as std::fmt::Display>::fmt(self, f),
         }
     }
@@ -191,7 +184,13 @@ impl std::fmt::Display for Eid {
                     .join("/")
             ),
             Eid::Unknown { scheme, data } => {
-                write!(f, "unknown({scheme}):<{} octets>", data.len())
+                let s = cbor::decode::parse_value(data, |mut value, _| {
+                    let s = format!("{value:?}");
+                    value.skip().map(|_| s)
+                })
+                .map(|(s, _)| s)
+                .map_err(|_| std::fmt::Error)?;
+                write!(f, "unknown({scheme}):{s}")
             }
         }
     }

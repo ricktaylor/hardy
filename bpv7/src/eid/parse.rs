@@ -10,7 +10,7 @@ fn parse_dtn_parts(s: &str) -> Result<Eid, EidError> {
             let node_name = urlencoding::decode(s1)?.into_owned();
             let demux = s2.split('/').try_fold(Vec::new(), |mut v, s| {
                 v.push(urlencoding::decode(s)?.into_owned());
-                Ok::<Vec<String>, EidError>(v)
+                Ok::<_, EidError>(v)
             })?;
 
             for (idx, s) in demux.iter().enumerate() {
@@ -163,26 +163,28 @@ fn cbor_skip(
 fn unknown_from_cbor(
     scheme: u64,
     value: cbor::decode::Value,
-    count: usize,
+    max_recursion: usize,
 ) -> Result<(), EidError> {
     match value {
-        _ if count == 0 => {
+        _ if max_recursion == 0 => {
             // Recursion safety check
             return Err(EidError::UnsupportedScheme(scheme.to_string()));
         }
         cbor::decode::Value::Array(a) => {
             while a
-                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, count))?
+                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, max_recursion))?
                 .is_some()
             {}
         }
         cbor::decode::Value::Map(m) => {
             while m
-                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, count))?
+                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, max_recursion))?
                 .is_some()
             {
-                m.try_parse_value(|value, start, _| cbor_skip(scheme, value, start, count))?
-                    .ok_or::<EidError>(cbor::decode::Error::PartialMap.into())?;
+                m.try_parse_value(|value, start, _| {
+                    cbor_skip(scheme, value, start, max_recursion)
+                })?
+                .ok_or::<EidError>(cbor::decode::Error::PartialMap.into())?;
             }
         }
         _ => {}
@@ -203,8 +205,9 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidE
 
         let eid = if scheme > 2 {
             let (start, len) = a.parse_value(|value, start, _| {
-                unknown_from_cbor(scheme, value, 16)?;
-                Ok::<_, EidError>(start)
+                unknown_from_cbor(scheme, value, 16)
+                    .map(|_| start)
+                    .map_err(Into::<EidError>::into)
             })?;
             Eid::Unknown {
                 scheme,

@@ -7,6 +7,9 @@ pub enum Error {
     #[error("Not enough data for encoded value")]
     NotEnoughData,
 
+    #[error("More items to be read")]
+    MoreItems,
+
     #[error("Invalid minor-type value {0}")]
     InvalidMinorValue(u8),
 
@@ -95,6 +98,23 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
             Value::Float(_) => "Float".to_string(),
         }
     }
+
+    pub fn skip(&mut self) -> Result<(), Error> {
+        match self {
+            Value::Array(a) => {
+                while a.try_parse_value(|mut value, _, _| value.skip())?.is_some() {}
+            }
+            Value::Map(m) => {
+                while m.try_parse_value(|mut value, _, _| value.skip())?.is_some() {
+                    if m.try_parse_value(|mut value, _, _| value.skip())?.is_none() {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 pub struct Sequence<'a, const D: usize> {
@@ -116,41 +136,36 @@ impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
             };
             if D == 1 {
                 let mut l = f.debug_list();
-                loop {
-                    let v = self_cloned
-                        .try_parse_value(|value, _, _| {
-                            l.entry(&value);
-                            Ok::<(), Error>(())
-                        })
-                        .unwrap_or(None);
-                    if v.is_none() {
-                        break;
-                    }
-                }
+                while self_cloned
+                    .try_parse_value(|mut value, _, _| {
+                        l.entry(&value);
+                        value.skip()
+                    })
+                    .map_err(|_| std::fmt::Error)?
+                    .is_some()
+                {}
                 l.finish()
             } else {
                 let mut s = f.debug_map();
-                loop {
-                    let v = self_cloned
-                        .try_parse_value(|value, _, _| {
-                            s.key(&value);
-                            Ok::<(), Error>(())
-                        })
-                        .unwrap_or(None);
-                    if v.is_none() {
-                        break;
-                    }
-
-                    let v = self_cloned
-                        .try_parse_value(|value, _, _| {
+                while self_cloned
+                    .try_parse_value(|mut value, _, _| {
+                        s.key(&value);
+                        value.skip()
+                    })
+                    .map_err(|_| std::fmt::Error)?
+                    .is_some()
+                {
+                    if self_cloned
+                        .try_parse_value(|mut value, _, _| {
                             s.value(&value);
-                            Ok::<(), Error>(())
+                            value.skip()
                         })
-                        .unwrap_or(None);
-                    if v.is_none() {
+                        .map_err(|_| std::fmt::Error)?
+                        .is_none()
+                    {
                         s.value(&"<Missing>");
                         break;
-                    }
+                    };
                 }
                 s.finish()
             }
@@ -211,7 +226,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     fn complete(mut self) -> Result<(), Error> {
         if !self.check_for_end()? {
-            return Err(Error::NotEnoughData);
+            return Err(Error::MoreItems);
         }
         Ok(())
     }
