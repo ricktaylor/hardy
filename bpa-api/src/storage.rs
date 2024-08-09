@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpv7::prelude as bpv7;
-use sha2::Digest;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
@@ -39,27 +38,15 @@ pub trait MetadataStorage: Send + Sync {
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;
-pub type ListResponse = (
-    std::sync::Arc<str>,
-    std::sync::Arc<[u8]>,
-    DataRef,
-    Option<time::OffsetDateTime>,
-);
+pub type ListResponse = (std::sync::Arc<str>, DataRef, Option<time::OffsetDateTime>);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
-    fn hash(&self, data: &[u8]) -> std::sync::Arc<[u8]> {
-        std::sync::Arc::from(sha2::Sha256::digest(data).as_slice())
-    }
-
     async fn list(&self, tx: tokio::sync::mpsc::Sender<ListResponse>) -> Result<()>;
 
     async fn load(&self, storage_name: &str) -> Result<DataRef>;
 
-    async fn store(
-        &self,
-        data: std::sync::Arc<[u8]>,
-    ) -> Result<(std::sync::Arc<str>, std::sync::Arc<[u8]>)>;
+    async fn store(&self, data: std::sync::Arc<[u8]>) -> Result<std::sync::Arc<str>>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
 

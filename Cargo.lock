@@ -772,6 +772,7 @@ dependencies = [
  "prost-types",
  "rand",
  "serde",
+ "sha2",
  "thiserror",
  "time",
  "tokio",
@@ -790,7 +791,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hardy-bpv7",
- "sha2",
  "time",
  "tokio",
 ]
@@ -865,7 +865,6 @@ dependencies = [
  "memmap2",
  "rand",
  "serde",
- "sha2",
  "time",
  "tokio",
  "trace-err",

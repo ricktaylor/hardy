@@ -130,14 +130,12 @@ impl Dispatcher {
 
         loop {
             tokio::select! {
-                bundle = rx.recv() => match bundle {
-                    None => break,
-                    Some(bundle) => {
-                        let dispatcher = dispatcher.clone();
-                        task_set.spawn(async move {
-                            dispatcher.process_bundle(bundle).await.trace_expect("Failed to process bundle");
-                        });
-                    }
+                bundle = rx.recv() => {
+                    let dispatcher = dispatcher.clone();
+                    let bundle = bundle.trace_expect("Dispatcher channel unexpectedly closed");
+                    task_set.spawn(async move {
+                        dispatcher.process_bundle(bundle).await.trace_expect("Failed to process bundle");
+                    });
                 },
                 Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
                 _ = dispatcher.cancel_token.cancelled() => break
@@ -150,57 +148,14 @@ impl Dispatcher {
         }
     }
 
-    pub async fn delay_bundle(
-        &self,
-        mut bundle: metadata::Bundle,
-        until: time::OffsetDateTime,
-    ) -> Result<(), Error> {
-        // Check if it's worth us waiting (safety check for metadata storage clock drift)
-        let wait = until - time::OffsetDateTime::now_utc();
-        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
-            // Nothing to do now, it will be picked up later
-            trace!("Bundle will wait offline until: {until}");
-            return Ok(());
-        }
-
-        if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
-            trace!("Waiting for bundle forwarding acknowledgement inline until: {until}");
-        } else {
-            trace!("Waiting to forward bundle inline until: {until}");
-        }
-
-        // Wait a bit
-        if !cancellable_sleep(wait, &self.cancel_token).await {
-            // Cancelled
-            return Ok(());
-        }
-
-        if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
-            // Check if the bundle has been acknowledged while we slept
-            let Some(metadata::BundleStatus::ForwardAckPending(_, _)) = self
-                .store
-                .check_status(&bundle.metadata.storage_name)
-                .await?
-            else {
-                // It's not longer waiting, our work here is done
-                return Ok(());
-            };
-        }
-
-        trace!("Forwarding bundle");
-
-        // Set status to ForwardPending
-        bundle.metadata.status = metadata::BundleStatus::ForwardPending;
-        self.store
-            .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
-            .await?;
-
-        // And forward it!
-        self.forward_bundle(bundle).await
+    #[inline]
+    pub async fn dispatch_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
+        // Put bundle into channel
+        self.tx.send(bundle).await.map_err(Into::into)
     }
 
     #[instrument(skip(self))]
-    pub async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
+    async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
         if let metadata::BundleStatus::DispatchPending = &bundle.metadata.status {
             // Check if we are the final destination
             bundle.metadata.status = if self
@@ -281,6 +236,107 @@ impl Dispatcher {
                 self.delay_bundle(bundle, until).await
             }
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn reassemble(
+        &self,
+        _bundle: metadata::Bundle,
+    ) -> Result<Option<metadata::Bundle>, Error> {
+        // TODO: We need to handle the case when the reassembled fragment is larger than our total RAM!
+
+        todo!()
+    }
+
+    #[instrument(skip(self))]
+    async fn administrative_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
+        // This is a bundle for an Admin Endpoint
+        if !bundle.bundle.flags.is_admin_record {
+            trace!("Received a bundle for an administrative endpoint that isn't marked as an administrative record");
+            return self
+                .drop_bundle(
+                    bundle,
+                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
+                )
+                .await;
+        }
+
+        let Some(data) = self.load_data(&bundle).await? else {
+            // Bundle data was deleted sometime during processing
+            return Ok(());
+        };
+
+        let reason = match cbor::decode::parse::<bpv7::AdministrativeRecord>(data.as_ref().as_ref())
+        {
+            Err(e) => {
+                trace!("Failed to parse administrative record: {e}");
+                Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
+            }
+            Ok(bpv7::AdministrativeRecord::BundleStatusReport(report)) => {
+                // Check if the report is for a bundle sourced from a local service
+                if !self
+                    .config
+                    .admin_endpoints
+                    .is_local_service(&report.bundle_id.source)
+                {
+                    trace!("Received spurious bundle status report {:?}", report);
+                    Some(bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable)
+                } else {
+                    // Find a live service to notify
+                    if let Some(endpoint) = self
+                        .app_registry
+                        .find_by_eid(&report.bundle_id.source)
+                        .await
+                    {
+                        // Notify the service
+                        if let Some(assertion) = report.received {
+                            endpoint
+                                .status_notify(
+                                    &report.bundle_id,
+                                    app_registry::StatusKind::Received,
+                                    report.reason,
+                                    assertion.0.map(|t| t.into()),
+                                )
+                                .await
+                        }
+                        if let Some(assertion) = report.forwarded {
+                            endpoint
+                                .status_notify(
+                                    &report.bundle_id,
+                                    app_registry::StatusKind::Forwarded,
+                                    report.reason,
+                                    assertion.0.map(|t| t.into()),
+                                )
+                                .await
+                        }
+                        if let Some(assertion) = report.delivered {
+                            endpoint
+                                .status_notify(
+                                    &report.bundle_id,
+                                    app_registry::StatusKind::Delivered,
+                                    report.reason,
+                                    assertion.0.map(|t| t.into()),
+                                )
+                                .await
+                        }
+                        if let Some(assertion) = report.deleted {
+                            endpoint
+                                .status_notify(
+                                    &report.bundle_id,
+                                    app_registry::StatusKind::Deleted,
+                                    report.reason,
+                                    assertion.0.map(|t| t.into()),
+                                )
+                                .await
+                        }
+                    }
+                    Some(bpv7::StatusReportReasonCode::NoAdditionalInformation)
+                }
+            }
+        };
+
+        // Done with the bundle
+        self.drop_bundle(bundle, reason).await
     }
 
     async fn forward_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
@@ -484,6 +540,20 @@ impl Dispatcher {
         }
     }
 
+    async fn load_data(
+        &self,
+        bundle: &metadata::Bundle,
+    ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
+        // Try to load the data, but treat errors as 'Storage Depleted'
+        let data = self.store.load_data(&bundle.metadata.storage_name).await?;
+        if data.is_none() {
+            // Report the bundle has gone
+            self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+                .await?;
+        }
+        Ok(data)
+    }
+
     async fn wait_to_forward(
         &self,
         metadata: &metadata::Metadata,
@@ -578,6 +648,55 @@ impl Dispatcher {
             .map_err(Into::into)
     }
 
+    pub async fn delay_bundle(
+        &self,
+        mut bundle: metadata::Bundle,
+        until: time::OffsetDateTime,
+    ) -> Result<(), Error> {
+        // Check if it's worth us waiting (safety check for metadata storage clock drift)
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
+            // Nothing to do now, it will be picked up later
+            trace!("Bundle will wait offline until: {until}");
+            return Ok(());
+        }
+
+        if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
+            trace!("Waiting for bundle forwarding acknowledgement inline until: {until}");
+        } else {
+            trace!("Waiting to forward bundle inline until: {until}");
+        }
+
+        // Wait a bit
+        if !cancellable_sleep(wait, &self.cancel_token).await {
+            // Cancelled
+            return Ok(());
+        }
+
+        if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
+            // Check if the bundle has been acknowledged while we slept
+            let Some(metadata::BundleStatus::ForwardAckPending(_, _)) = self
+                .store
+                .check_status(&bundle.metadata.storage_name)
+                .await?
+            else {
+                // It's not longer waiting, our work here is done
+                return Ok(());
+            };
+        }
+
+        trace!("Forwarding bundle");
+
+        // Set status to ForwardPending
+        bundle.metadata.status = metadata::BundleStatus::ForwardPending;
+        self.store
+            .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
+            .await?;
+
+        // And dispatch it
+        self.dispatch_bundle(bundle).await
+    }
+
     #[instrument(skip(self))]
     pub async fn drop_bundle(
         &self,
@@ -590,7 +709,7 @@ impl Dispatcher {
 
         // TODO - Check source_id
 
-        trace!("Discarding bundle, leaving tombstone");
+        debug!("Discarding bundle, leaving tombstone");
 
         // Leave a tombstone in the metadata, so we can ignore duplicates
         self.store
@@ -775,17 +894,32 @@ impl Dispatcher {
         payload: Vec<u8>,
         report_to: &bpv7::Eid,
     ) -> Result<(), Error> {
-        self.dispatch_new_bundle(
-            bpv7::Builder::new()
-                .flags(bpv7::BundleFlags {
-                    is_admin_record: true,
-                    ..Default::default()
-                })
-                .source(self.config.admin_endpoints.get_admin_endpoint(report_to))
-                .destination(report_to.clone())
-                .add_payload_block(payload),
-        )
-        .await
+        // Build the bundle
+        let (bundle, data) = bpv7::Builder::new()
+            .flags(bpv7::BundleFlags {
+                is_admin_record: true,
+                ..Default::default()
+            })
+            .source(self.config.admin_endpoints.get_admin_endpoint(report_to))
+            .destination(report_to.clone())
+            .add_payload_block(payload)
+            .build()?;
+
+        // Store to store
+        let metadata = self
+            .store
+            .store(
+                &bundle,
+                Arc::from(data),
+                metadata::BundleStatus::DispatchPending,
+                None,
+            )
+            .await?
+            .trace_expect("Duplicate bundle generated by builder!");
+
+        // Put bundle into channel
+        self.dispatch_bundle(metadata::Bundle { metadata, bundle })
+            .await
     }
 
     #[instrument(skip(self))]
@@ -841,148 +975,28 @@ impl Dispatcher {
             b = b.lifetime(lifetime);
         }
 
-        // And queue it up
-        self.dispatch_new_bundle(
-            b.source(request.source)
-                .destination(request.destination)
-                .add_payload_block(request.data),
-        )
-        .await
-    }
-
-    #[instrument(skip_all)]
-    async fn dispatch_new_bundle(&self, builder: bpv7::Builder) -> Result<(), Error> {
         // Build the bundle
-        let (bundle, data) = builder.build()?;
-        let data = Arc::from(data);
+        let (bundle, data) = b
+            .source(request.source)
+            .destination(request.destination)
+            .add_payload_block(request.data)
+            .build()?;
 
         // Store to store
         let metadata = self
             .store
-            .store(&bundle, data, metadata::BundleStatus::DispatchPending, None)
+            .store(
+                &bundle,
+                Arc::from(data),
+                metadata::BundleStatus::DispatchPending,
+                None,
+            )
             .await?
             .trace_expect("Duplicate bundle generated by builder!");
 
         // Put bundle into channel
-        self.tx
-            .send(metadata::Bundle { metadata, bundle })
+        self.dispatch_bundle(metadata::Bundle { metadata, bundle })
             .await
-            .map_err(Into::into)
-    }
-
-    #[instrument(skip(self))]
-    async fn reassemble(
-        &self,
-        _bundle: metadata::Bundle,
-    ) -> Result<Option<metadata::Bundle>, Error> {
-        // TODO: We need to handle the case when the reassembled fragment is larger than our total RAM!
-
-        todo!()
-    }
-
-    async fn load_data(
-        &self,
-        bundle: &metadata::Bundle,
-    ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
-        // Try to load the data, but treat errors as 'Storage Depleted'
-        let data = self.store.load_data(&bundle.metadata.storage_name).await?;
-        if data.is_none() {
-            // Report the bundle has gone
-            self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
-                .await?;
-        }
-        Ok(data)
-    }
-
-    #[instrument(skip(self))]
-    async fn administrative_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
-        // This is a bundle for an Admin Endpoint
-        if !bundle.bundle.flags.is_admin_record {
-            trace!("Received a bundle for an administrative endpoint that isn't marked as an administrative record");
-            return self
-                .drop_bundle(
-                    bundle,
-                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                )
-                .await;
-        }
-
-        let Some(data) = self.load_data(&bundle).await? else {
-            // Bundle data was deleted sometime during processing
-            return Ok(());
-        };
-
-        let reason = match cbor::decode::parse::<bpv7::AdministrativeRecord>(data.as_ref().as_ref())
-        {
-            Err(e) => {
-                trace!("Failed to parse administrative record: {e}");
-                Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
-            }
-            Ok(bpv7::AdministrativeRecord::BundleStatusReport(report)) => {
-                // Check if the report is for a bundle sourced from a local service
-                if !self
-                    .config
-                    .admin_endpoints
-                    .is_local_service(&report.bundle_id.source)
-                {
-                    trace!("Received spurious bundle status report {:?}", report);
-                    Some(bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable)
-                } else {
-                    // Find a live service to notify
-                    if let Some(endpoint) = self
-                        .app_registry
-                        .find_by_eid(&report.bundle_id.source)
-                        .await
-                    {
-                        // Notify the service
-                        if let Some(assertion) = report.received {
-                            endpoint
-                                .status_notify(
-                                    &report.bundle_id,
-                                    app_registry::StatusKind::Received,
-                                    report.reason,
-                                    assertion.0.map(|t| t.into()),
-                                )
-                                .await
-                        }
-                        if let Some(assertion) = report.forwarded {
-                            endpoint
-                                .status_notify(
-                                    &report.bundle_id,
-                                    app_registry::StatusKind::Forwarded,
-                                    report.reason,
-                                    assertion.0.map(|t| t.into()),
-                                )
-                                .await
-                        }
-                        if let Some(assertion) = report.delivered {
-                            endpoint
-                                .status_notify(
-                                    &report.bundle_id,
-                                    app_registry::StatusKind::Delivered,
-                                    report.reason,
-                                    assertion.0.map(|t| t.into()),
-                                )
-                                .await
-                        }
-                        if let Some(assertion) = report.deleted {
-                            endpoint
-                                .status_notify(
-                                    &report.bundle_id,
-                                    app_registry::StatusKind::Deleted,
-                                    report.reason,
-                                    assertion.0.map(|t| t.into()),
-                                )
-                                .await
-                        }
-                    }
-                    Some(bpv7::StatusReportReasonCode::NoAdditionalInformation)
-                }
-            }
-        };
-
-        // Done with the bundle
-        self.drop_bundle(bundle, reason).await
     }
 
     #[instrument(skip(self))]

@@ -30,12 +30,7 @@ impl Storage {
 impl storage::BundleStorage for Storage {
     async fn list(
         &self,
-        _tx: tokio::sync::mpsc::Sender<(
-            Arc<str>,
-            Arc<[u8]>,
-            storage::DataRef,
-            Option<time::OffsetDateTime>,
-        )>,
+        _tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
     ) -> storage::Result<()> {
         // We have no persistence, so therefore no bundles
         Ok(())
@@ -48,15 +43,13 @@ impl storage::BundleStorage for Storage {
         }
     }
 
-    async fn store(&self, mut data: Arc<[u8]>) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
+    async fn store(&self, mut data: Arc<[u8]>) -> storage::Result<Arc<str>> {
         let mut bundles = self.bundles.write().await;
-        let hash = self.hash(&data);
-
         loop {
             let storage_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 64);
 
             let Some(prev) = bundles.insert(storage_name.clone(), data) else {
-                return Ok((Arc::from(storage_name), hash));
+                return Ok(Arc::from(storage_name));
             };
 
             // Swap back

@@ -2,12 +2,9 @@ use super::*;
 use hardy_bpa_api::storage;
 use hardy_cbor as cbor;
 use std::sync::Arc;
-use tokio::sync::mpsc::*;
 
 pub struct Ingress {
     store: Arc<store::Store>,
-    receive_channel: Sender<storage::ListResponse>,
-    restart_channel: Sender<metadata::Bundle>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -16,30 +13,8 @@ impl Ingress {
         _config: &config::Config,
         store: Arc<store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        task_set: &mut tokio::task::JoinSet<()>,
-        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Arc<Self> {
-        // Create a channel for new bundles
-        // TODO: Configurable channel length
-        let (receive_channel, receive_channel_rx) = channel(16);
-        let (ingress_channel, ingress_channel_rx) = channel(16);
-        let ingress = Arc::new(Self {
-            store,
-            receive_channel,
-            restart_channel: ingress_channel,
-            dispatcher,
-        });
-
-        // Spawn a bundle receiver
-        let ingress_cloned = ingress.clone();
-        task_set.spawn(Self::pipeline_pump(
-            ingress_cloned,
-            receive_channel_rx,
-            ingress_channel_rx,
-            cancel_token,
-        ));
-
-        ingress
+        Arc::new(Self { store, dispatcher })
     }
 
     #[instrument(skip(self))]
@@ -54,7 +29,7 @@ impl Ingress {
         let (storage_name, hash) = self.store.store_data(data.clone()).await?;
 
         // Put bundle into receive channel
-        self.enqueue_receive_bundle(
+        self.receive_bundle(
             storage_name,
             hash,
             store::into_dataref(data),
@@ -63,68 +38,8 @@ impl Ingress {
         .await
     }
 
-    pub async fn enqueue_receive_bundle(
-        &self,
-        storage_name: Arc<str>,
-        hash: Arc<[u8]>,
-        data: storage::DataRef,
-        received_at: Option<time::OffsetDateTime>,
-    ) -> Result<(), Error> {
-        // Put bundle into receive channel
-        self.receive_channel
-            .send((storage_name, hash, data, received_at))
-            .await
-            .map_err(Into::into)
-    }
-
-    pub async fn recheck_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
-        // Put bundle into ingress channel
-        self.restart_channel.send(bundle).await.map_err(Into::into)
-    }
-
-    #[instrument(skip_all)]
-    async fn pipeline_pump(
-        ingress: Arc<Self>,
-        mut receive_channel: Receiver<storage::ListResponse>,
-        mut restart_channel: Receiver<metadata::Bundle>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) {
-        // We're going to spawn a bunch of tasks
-        let mut task_set = tokio::task::JoinSet::new();
-
-        loop {
-            tokio::select! {
-                msg = receive_channel.recv() => match msg {
-                    None => break,
-                    Some((storage_name,hash,data,received_at)) => {
-                        let ingress = ingress.clone();
-                        task_set.spawn(async move {
-                            ingress.receive_bundle(storage_name,hash,data,received_at).await.trace_expect("Failed to process received bundle")
-                        });
-                    }
-                },
-                msg = restart_channel.recv() => match msg {
-                    None => break,
-                    Some(bundle) => {
-                        let ingress = ingress.clone();
-                        task_set.spawn(async move {
-                            ingress.process_bundle(bundle).await.trace_expect("Failed to process restart bundle")
-                        });
-                    }
-                },
-                Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
-                _ = cancel_token.cancelled() => break
-            }
-        }
-
-        // Wait for all sub-tasks to complete
-        while let Some(r) = task_set.join_next().await {
-            r.trace_expect("Task terminated unexpectedly")
-        }
-    }
-
-    #[instrument(skip(self, hash, data))]
-    async fn receive_bundle(
+    #[instrument(skip(self, data))]
+    pub async fn receive_bundle(
         &self,
         storage_name: Arc<str>,
         hash: Arc<[u8]>,
@@ -143,6 +58,9 @@ impl Ingress {
                     return self.store.delete_data(&storage_name).await;
                 }
             };
+
+        // We are done with data, save heap space
+        drop(data);
 
         let bundle = metadata::Bundle {
             metadata: metadata::Metadata {
@@ -197,7 +115,7 @@ impl Ingress {
     }
 
     #[instrument(skip(self))]
-    async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
+    pub async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
         /* Always check bundles, no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
@@ -249,7 +167,7 @@ impl Ingress {
         }
 
         // Just pass it on to the dispatcher to deal with
-        self.dispatcher.process_bundle(bundle).await
+        self.dispatcher.dispatch_bundle(bundle).await
     }
 
     async fn check_extension_blocks(

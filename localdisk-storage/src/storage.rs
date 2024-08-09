@@ -1,7 +1,6 @@
 use super::*;
 use hardy_bpa_api::{async_trait, storage, storage::BundleStorage, storage::DataRef};
 use rand::prelude::*;
-use sha2::Digest;
 use std::{
     collections::HashMap,
     io::Write,
@@ -63,10 +62,6 @@ impl Storage {
 
         Arc::new(Storage { store_root })
     }
-}
-
-fn hash(data: &[u8]) -> Arc<[u8]> {
-    Arc::from(sha2::Sha256::digest(data).as_slice())
 }
 
 fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
@@ -143,10 +138,9 @@ fn walk_dirs(
                         continue;
                     }
 
-                    // We haver something useful
+                    // We have something useful
                     count += 1;
 
-                    let hash = hash(data.as_ref().as_ref());
                     let received_at = entry
                         .metadata()
                         .and_then(|m| m.created())
@@ -156,7 +150,6 @@ fn walk_dirs(
                     if tx
                         .blocking_send((
                             Arc::from(storage_path.strip_prefix(root).unwrap().to_string_lossy()),
-                            hash,
                             data,
                             received_at,
                         ))
@@ -177,10 +170,6 @@ fn walk_dirs(
 
 #[async_trait]
 impl BundleStorage for Storage {
-    fn hash(&self, data: &[u8]) -> Arc<[u8]> {
-        hash(data)
-    }
-
     #[instrument(skip_all)]
     async fn list(
         &self,
@@ -209,8 +198,7 @@ impl BundleStorage for Storage {
         }
     }
 
-    async fn store(&self, data: Arc<[u8]>) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
-        let hash = hash(&data);
+    async fn store(&self, data: Arc<[u8]>) -> storage::Result<Arc<str>> {
         let root = self.store_root.clone();
 
         // Spawn a thread to try to maintain linearity
@@ -224,13 +212,10 @@ impl BundleStorage for Storage {
         .await
         .trace_expect("Failed to spawn write_atomic thread")?;
 
-        Ok((
-            Arc::from(
-                storage_name
-                    .strip_prefix(&self.store_root)?
-                    .to_string_lossy(),
-            ),
-            hash,
+        Ok(Arc::from(
+            storage_name
+                .strip_prefix(&self.store_root)?
+                .to_string_lossy(),
         ))
     }
 

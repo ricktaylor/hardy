@@ -15,7 +15,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 use hardy_bpa_api::metadata;
 use hardy_bpv7::prelude as bpv7;
 use trace_err::*;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[tokio::main]
 async fn main() {
@@ -67,29 +67,30 @@ async fn main() {
     );
 
     // Create a new ingress
-    let ingress = ingress::Ingress::new(
-        &config,
-        store.clone(),
-        dispatcher.clone(),
-        &mut task_set,
-        cancel_token.clone(),
-    );
-
-    // Init gRPC services
-    services::init(
-        &config,
-        cla_registry,
-        app_registry,
-        ingress.clone(),
-        dispatcher.clone(),
-        &mut task_set,
-        cancel_token.clone(),
-    );
+    let ingress = ingress::Ingress::new(&config, store.clone(), dispatcher.clone());
 
     // Start the store - this can take a while as the store is walked
     store
-        .start(ingress, dispatcher, &mut task_set, cancel_token.clone())
+        .start(
+            ingress.clone(),
+            dispatcher.clone(),
+            &mut task_set,
+            cancel_token.clone(),
+        )
         .await;
+
+    if !cancel_token.is_cancelled() {
+        // Init gRPC services
+        services::init(
+            &config,
+            cla_registry,
+            app_registry,
+            ingress,
+            dispatcher,
+            &mut task_set,
+            cancel_token.clone(),
+        );
+    }
 
     // Wait for all tasks to finish
     if !cancel_token.is_cancelled() {

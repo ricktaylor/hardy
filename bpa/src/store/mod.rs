@@ -1,5 +1,6 @@
 use super::*;
 use hardy_bpa_api::storage;
+use sha2::Digest;
 use std::sync::Arc;
 use utils::settings;
 
@@ -20,6 +21,10 @@ impl AsRef<[u8]> for DataRefWrapper {
 
 pub fn into_dataref(data: Arc<[u8]>) -> Arc<dyn AsRef<[u8]> + Send + Sync> {
     Arc::new(DataRefWrapper(data))
+}
+
+fn hash(data: &[u8]) -> Arc<[u8]> {
+    Arc::from(sha2::Sha256::digest(data).as_slice())
 }
 
 struct Config {
@@ -127,10 +132,6 @@ impl Store {
         })
     }
 
-    pub fn hash(&self, data: &[u8]) -> Arc<[u8]> {
-        self.bundle_storage.hash(data)
-    }
-
     #[instrument(skip_all)]
     pub async fn start(
         &self,
@@ -191,7 +192,7 @@ impl Store {
                                 // Ignore Tombstones
                             } else {
                                 // Just shove bundles into the Ingress
-                                ingress.recheck_bundle(bundle).await.trace_expect("Failed to feed restart bundle into ingress")
+                                ingress.process_bundle(bundle).await.trace_expect("Failed to feed restart bundle into ingress")
                             }
                         }
                     },
@@ -217,11 +218,16 @@ impl Store {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<metadata::Bundle>(16);
         let metadata_storage = self.metadata_storage.clone();
         let h = tokio::spawn(async move {
-            // We're going to spawn a bunch of tasks
-            let mut task_set = tokio::task::JoinSet::new();
+            // Give some feedback
+            let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+            tokio::pin!(timer);
 
             loop {
                 tokio::select! {
+                    () = &mut timer => {
+                        info!("Metadata storage check in progress...");
+                        timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
+                    },
                     bundle = rx.recv() => match bundle {
                         None => break,
                         Some(bundle) => {
@@ -229,31 +235,21 @@ impl Store {
                                 // Ignore Tombstones
                             } else {
                                 // The data associated with `bundle` has gone!
-                                let dispatcher = dispatcher.clone();
-                                let metadata_storage = metadata_storage.clone();
-                                task_set.spawn(async move {
-                                    dispatcher.report_bundle_deletion(
-                                        &bundle,
-                                        bpv7::StatusReportReasonCode::DepletedStorage,
-                                    )
-                                    .await.trace_expect("Failed to report bundle deletion");
+                                dispatcher.report_bundle_deletion(
+                                    &bundle,
+                                    bpv7::StatusReportReasonCode::DepletedStorage,
+                                )
+                                .await.trace_expect("Failed to report bundle deletion");
 
-                                    // Delete it
-                                    metadata_storage
+                                // Delete it
+                                metadata_storage
                                     .remove(&bundle.metadata.storage_name)
                                     .await.trace_expect("Failed to remove orphan bundle")
-                                });
                             }
                         }
                     },
-                    Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
                     _ = cancel_token.cancelled() => break,
                 }
-            }
-
-            // Wait for all sub-tasks to complete
-            while let Some(r) = task_set.join_next().await {
-                r.trace_expect("Task terminated unexpectedly")
             }
         });
 
@@ -271,34 +267,70 @@ impl Store {
         ingress: Arc<ingress::Ingress>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(
-            Arc<str>,
-            Arc<[u8]>,
-            storage::DataRef,
-            Option<time::OffsetDateTime>,
-        )>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(16);
         let metadata_storage = self.metadata_storage.clone();
 
         let h = tokio::spawn(async move {
+            // We're going to spawn a bunch of tasks
+            let mut task_set = tokio::task::JoinSet::new();
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(rx.capacity()));
+
+            // Give some feedback
+            let mut bundles = 0u64;
+            let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+            tokio::pin!(timer);
+
             loop {
                 tokio::select! {
+                    () = &mut timer => {
+                        info!("Bundle storage check in progress, {bundles} bundles processed");
+                        timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
+                    },
                     r = rx.recv() => match r {
                         None => break,
-                        Some((storage_name,hash,data,file_time)) => {
-                            // Check if the metadata_storage knows about this bundle
-                            if !metadata_storage
-                                .confirm_exists(&storage_name, &hash)
-                                .await.trace_expect("Failed to confirm bundle existence")
-                            {
-                                // Queue the new bundle for receive processing
-                                ingress
-                                    .enqueue_receive_bundle(storage_name,hash,data,file_time)
-                                    .await.trace_expect("Failed to enqueue orphan bundle");
+                        Some((storage_name,data,file_time)) => {
+                            bundles = bundles.saturating_add(1);
+                            loop {
+                                tokio::select! {
+                                    permit = semaphore.clone().acquire_owned() => {
+                                        // We have a permit to process a bundle
+                                        let metadata_storage = metadata_storage.clone();
+                                        let ingress = ingress.clone();
+
+                                        task_set.spawn(async move {
+                                            // Calculate hash
+                                            let hash = hash(data.as_ref().as_ref());
+
+                                            // Check if the metadata_storage knows about this bundle
+                                            if !metadata_storage
+                                                .confirm_exists(&storage_name, &hash)
+                                                .await.trace_expect("Failed to confirm bundle existence")
+                                            {
+                                                info!("Orphan bundle found: {storage_name}");
+
+                                                // Push into ingress
+                                                ingress
+                                                    .receive_bundle(storage_name,hash,data,file_time)
+                                                    .await.trace_expect("Failed to process orphan bundle");
+                                            }
+                                            drop(permit);
+                                        });
+                                        break;
+                                    }
+                                    Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
+                                    _ = cancel_token.cancelled() => break
+                                }
                             }
-                        }
+                        },
                     },
-                    _ = cancel_token.cancelled() => break,
+                    Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
+                    _ = cancel_token.cancelled() => break
                 }
+            }
+
+            // Wait for all sub-tasks to complete
+            while let Some(r) = task_set.join_next().await {
+                r.trace_expect("Task terminated unexpectedly")
             }
         });
 
@@ -385,8 +417,14 @@ impl Store {
     }
 
     pub async fn store_data(&self, data: Arc<[u8]>) -> Result<(Arc<str>, Arc<[u8]>), Error> {
+        // Calculate hash
+        let hash = hash(&data);
+
         // Write to bundle storage
-        self.bundle_storage.store(data).await
+        self.bundle_storage
+            .store(data)
+            .await
+            .map(|storage_name| (storage_name, hash))
     }
 
     pub async fn store_metadata(
@@ -459,7 +497,7 @@ impl Store {
         data: Box<[u8]>,
     ) -> Result<metadata::Metadata, Error> {
         // Calculate hash
-        let hash = self.hash(&data);
+        let hash = hash(&data);
 
         // Let the metadata storage know we are about to replace a bundle
         self.metadata_storage
