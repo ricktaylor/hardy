@@ -136,33 +136,37 @@ impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
             };
             if D == 1 {
                 let mut l = f.debug_list();
-                while self_cloned
-                    .try_parse_value(|mut value, _, _| {
-                        l.entry(&value);
-                        value.skip()
-                    })
-                    .map_err(|_| std::fmt::Error)?
-                    .is_some()
-                {}
+                loop {
+                    let r = self_cloned
+                        .try_parse_value(|mut value, _, _| {
+                            l.entry(&value);
+                            value.skip()
+                        })
+                        .map_err(|_| std::fmt::Error)?;
+                    if r.is_none() {
+                        break;
+                    }
+                }
                 l.finish()
             } else {
                 let mut s = f.debug_map();
-                while self_cloned
-                    .try_parse_value(|mut value, _, _| {
-                        s.key(&value);
-                        value.skip()
-                    })
-                    .map_err(|_| std::fmt::Error)?
-                    .is_some()
-                {
-                    if self_cloned
+                loop {
+                    let r = self_cloned
+                        .try_parse_value(|mut value, _, _| {
+                            s.key(&value);
+                            value.skip()
+                        })
+                        .map_err(|_| std::fmt::Error)?;
+                    if r.is_none() {
+                        break;
+                    }
+                    let r = self_cloned
                         .try_parse_value(|mut value, _, _| {
                             s.value(&value);
                             value.skip()
                         })
-                        .map_err(|_| std::fmt::Error)?
-                        .is_none()
-                    {
+                        .map_err(|_| std::fmt::Error)?;
+                    if r.is_none() {
                         s.value(&"<Missing>");
                         break;
                     };
