@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 hardy-bpa-api = { path = "../bpa-api" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
-rusqlite = { version = "0.31.0", features = ["bundled", "time"] }
+rusqlite = { version = "0.32.1", features = ["bundled", "time"] }
 tokio = { version = "1.38.0", features = ["rt-multi-thread"] }
 thiserror = "1.0.63"
 serde = { version = "1.0.203", features = ["derive"] }
