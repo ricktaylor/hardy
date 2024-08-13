@@ -262,7 +262,7 @@ impl Dispatcher {
         }
 
         let Some(data) = self.load_data(&bundle).await? else {
-            // Bundle data was deleted sometime during processing
+            // Bundle data was deleted sometime during processing - this is benign
             return Ok(());
         };
 

@@ -89,9 +89,9 @@ fn columns_to_bundle_status(
     idx3: usize,
 ) -> rusqlite::Result<metadata::BundleStatus> {
     match (
-        row.get::<usize, i64>(idx1)?.into(),
-        row.get::<usize, Option<i64>>(idx2)?,
-        row.get::<usize, Option<time::OffsetDateTime>>(idx3)?,
+        row.get::<_, i64>(idx1)?.into(),
+        row.get::<_, Option<i64>>(idx2)?,
+        row.get::<_, Option<time::OffsetDateTime>>(idx3)?,
     ) {
         (StatusCodes::IngressPending, None, None) => Ok(metadata::BundleStatus::IngressPending),
         (StatusCodes::DispatchPending, None, None) => Ok(metadata::BundleStatus::DispatchPending),
@@ -250,7 +250,7 @@ fn decode_creation_time(
     row: &rusqlite::Row,
     idx: usize,
 ) -> rusqlite::Result<Option<bpv7::DtnTime>> {
-    let timestamp = row.get::<usize, i64>(idx)?;
+    let timestamp = row.get::<_, i64>(idx)?;
     if timestamp == 0 {
         Ok(None)
     } else {
@@ -346,7 +346,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
                 rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
                 v => panic!("EID encoded as unusual sqlite type: {:?}", v),
             },
-            age: row.get::<usize, Option<i64>>(16)?.map(as_u64),
+            age: row.get::<_, Option<i64>>(16)?.map(as_u64),
             hop_count: match row.get_ref(17)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Integer(i) => Some(bpv7::HopInfo {
@@ -377,7 +377,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
                 Some(row) => row,
             };
 
-            if row.get::<usize, i64>(0)? != bundle_id {
+            if row.get::<_, i64>(0)? != bundle_id {
                 break;
             }
         }
@@ -414,7 +414,7 @@ fn complete_replace(
         RETURNING id;"#,
         )?
         .query_row((storage_name, BASE64_STANDARD_NO_PAD.encode(hash)), |row| {
-            row.get::<usize, i64>(0)
+            row.get::<_, i64>(0)
         })
         .optional()?;
 
