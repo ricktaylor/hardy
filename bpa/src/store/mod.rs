@@ -259,58 +259,63 @@ impl Store {
         let results = self.list_bundles(cancel_token.clone()).await;
 
         // We're going to spawn a bunch of tasks
-        /*let mut task_set = tokio::task::JoinSet::new();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
+        let parallelism = std::thread::available_parallelism()
+            .map(Into::into)
+            .unwrap_or(1)
+            + 1;
+        let mut task_set = tokio::task::JoinSet::new();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
         // Give some feedback
-        let mut bundles = 0u64;
         let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
-        tokio::pin!(timer);*/
-
+        tokio::pin!(timer);
         let mut bundles = 0u64;
+        let mut orphans = 0u64;
+        let mut bad = 0u64;
 
         for (storage_name, file_time) in results {
             bundles = bundles.saturating_add(1);
 
-            /*loop {
-            tokio::select! {
-                () = &mut timer => {
-                    info!("Bundle restart in progress, {bundles} bundles processed");
-                    timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
-                },
-                // Throttle the number of tasks
-                permit = semaphore.clone().acquire_owned() => {
-                    // We have a permit to process a bundle
-                    let metadata_storage = self.metadata_storage.clone();
-                    let bundle_storage = self.bundle_storage.clone();
-                    let ingress = ingress.clone();
+            loop {
+                tokio::select! {
+                    () = &mut timer => {
+                        info!("Bundle restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
+                        timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
+                    },
+                    // Throttle the number of tasks
+                    permit = semaphore.clone().acquire_owned() => {
+                        // We have a permit to process a bundle
+                        let permit = permit.trace_expect("Failed to acquire permit");
+                        let metadata_storage = self.metadata_storage.clone();
+                        let bundle_storage = self.bundle_storage.clone();
+                        let ingress = ingress.clone();
 
-                    task_set.spawn(async move {*/
-
-            if bundles % 100 == 0 {
-                info!("Bundle restart in progress, {bundles} bundles processed");
-            }
-
-            self.restart_bundle(&ingress, storage_name, file_time).await;
-
-            /* });
+                        task_set.spawn(async move {
+                            let (o,b) = Self::restart_bundle(metadata_storage, bundle_storage, ingress, storage_name, file_time).await;
+                            drop(permit);
+                            (o,b)
+                        });
                         break;
                     }
-                    Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
+                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                        let (o,b) = r.trace_expect("Task terminated unexpectedly");
+                        orphans = orphans.saturating_add(o);
+                        bad = bad.saturating_add(b);
+                    },
                     _ = cancel_token.cancelled() => break
                 }
-            }*/
+            }
         }
     }
 
     async fn restart_bundle(
-        &self,
-        ingress: &ingress::Ingress,
+        metadata_storage: Arc<dyn storage::MetadataStorage>,
+        bundle_storage: Arc<dyn storage::BundleStorage>,
+        ingress: Arc<ingress::Ingress>,
         storage_name: Arc<str>,
         file_time: Option<time::OffsetDateTime>,
-    ) {
-        let data = self
-            .bundle_storage
+    ) -> (u64, u64) {
+        let data = bundle_storage
             .load(&storage_name)
             .await
             .trace_expect(&format!("Failed to load bundle data: {storage_name}"));
@@ -319,66 +324,62 @@ impl Store {
         let hash = hash(data.as_ref().as_ref());
 
         // Parse the bundle
-        let (bundle, valid) = match cbor::decode::parse::<bpv7::ValidBundle>(data.as_ref().as_ref())
-        {
+        let parse_result = cbor::decode::parse::<bpv7::ValidBundle>(data.as_ref().as_ref());
+
+        drop(data);
+
+        let (bundle, valid) = match parse_result {
             Ok(bpv7::ValidBundle::Valid(bundle)) => (bundle, true),
             Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
             Err(e) => {
                 // Parse failed badly, no idea who to report to
-                trace!("Bundle parsing failed: {e}");
+                warn!("Malformed bundle data found: {storage_name}, {e}");
 
                 // Drop the bundle
-                return self
-                    .bundle_storage
+                bundle_storage
                     .remove(&storage_name)
                     .await
                     .trace_expect(&format!("Failed to remove invalid bundle: {storage_name}"));
+                return (0, 1);
             }
         };
 
-        drop(data);
-
         // Check if the metadata_storage knows about this bundle
-        let metadata = if let Some(metadata) = self
-            .metadata_storage
+        if let Some(metadata) = metadata_storage
             .confirm_exists(&bundle.id)
             .await
             .trace_expect("Failed to confirm bundle existence")
         {
             let drop = if let metadata::BundleStatus::Tombstone(_) = metadata.status {
                 // Tombstone, ignore
-                info!("Tombstone bundle data found: {storage_name}");
+                warn!("Tombstone bundle data found: {storage_name}");
                 true
             } else if valid && metadata.storage_name == storage_name && metadata.hash == hash {
                 false
             } else {
-                info!("Duplicate bundle data found: {storage_name}");
+                warn!("Duplicate bundle data found: {storage_name}");
                 true
             };
 
             if drop {
                 // Remove spurious duplicate
-                return self
-                    .bundle_storage
+                bundle_storage
                     .remove(&storage_name)
                     .await
                     .trace_expect(&format!(
                         "Failed to remove duplicate bundle: {storage_name}"
                     ));
+                (0, 1)
+            } else {
+                // Valid bundle that just needs to be fed into the dispatcher
+                ingress
+                    .process_bundle(metadata::Bundle { metadata, bundle })
+                    .await
+                    .trace_expect("Failed to feed restart bundle into ingress");
+                (0, 0)
             }
-            Some(metadata)
         } else {
-            None
-        };
-
-        if let Some(metadata) = metadata {
-            ingress
-                .process_bundle(metadata::Bundle { metadata, bundle })
-                .await
-                .trace_expect("Failed to feed restart bundle into ingress")
-        } else {
-            info!("Orphan bundle found: {storage_name}");
-
+            // Orphan bundle, just push it in the top of the ingress
             ingress
                 .receive_bundle(
                     metadata::Bundle {
@@ -393,7 +394,8 @@ impl Store {
                     valid,
                 )
                 .await
-                .trace_expect("Failed to process orphan bundle")
+                .trace_expect("Failed to process orphan bundle");
+            (1, 0)
         }
     }
 
