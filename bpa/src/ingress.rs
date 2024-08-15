@@ -1,5 +1,4 @@
 use super::*;
-use hardy_bpa_api::storage;
 use hardy_cbor as cbor;
 use std::sync::Arc;
 
@@ -19,59 +18,44 @@ impl Ingress {
 
     #[instrument(skip(self))]
     pub async fn receive(&self, data: Box<[u8]>) -> Result<(), Error> {
-        // We need an Arc<[T]>
-        let data: Arc<[u8]> = Arc::from(data);
-
         // Capture received_at as soon as possible
-        let received_at = time::OffsetDateTime::now_utc();
+        let received_at = Some(time::OffsetDateTime::now_utc());
 
-        // Write the bundle data to the store
-        let (storage_name, hash) = self.store.store_data(data.clone()).await?;
-
-        // Put bundle into receive channel
-        self.receive_bundle(
-            storage_name,
-            hash,
-            store::into_dataref(data),
-            Some(received_at),
-        )
-        .await
-    }
-
-    #[instrument(skip(self, data))]
-    pub async fn receive_bundle(
-        &self,
-        storage_name: Arc<str>,
-        hash: Arc<[u8]>,
-        data: storage::DataRef,
-        received_at: Option<time::OffsetDateTime>,
-    ) -> Result<(), Error> {
-        let (bundle, mut valid) =
-            match cbor::decode::parse::<bpv7::ValidBundle>(data.as_ref().as_ref()) {
-                Ok(bpv7::ValidBundle::Valid(bundle)) => (bundle, true),
-                Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
-                Err(e) => {
-                    // Parse failed badly, no idea who to report to
-                    trace!("Bundle parsing failed: {e}");
-
-                    // Drop the bundle
-                    return self.store.delete_data(&storage_name).await;
-                }
-            };
-
-        // We are done with data, save heap space
-        drop(data);
-
-        let bundle = metadata::Bundle {
-            metadata: metadata::Metadata {
-                status: metadata::BundleStatus::IngressPending,
-                storage_name,
-                hash,
-                received_at,
-            },
-            bundle,
+        // Parse the bundle
+        let (bundle, valid) = match cbor::decode::parse::<bpv7::ValidBundle>(&data)? {
+            bpv7::ValidBundle::Valid(bundle) => (bundle, true),
+            bpv7::ValidBundle::Invalid(bundle) => (bundle, false),
         };
 
+        // Write the bundle data to the store
+        let (storage_name, hash) = self.store.store_data(Arc::from(data)).await?;
+
+        // And now process the bundle
+        if let Err(e) = self
+            .receive_bundle(
+                metadata::Bundle {
+                    metadata: metadata::Metadata {
+                        status: metadata::BundleStatus::IngressPending,
+                        storage_name: storage_name.clone(),
+                        hash,
+                        received_at,
+                    },
+                    bundle,
+                },
+                valid,
+            )
+            .await
+        {
+            // If we failed to process the bundle, remove the data
+            self.store.delete_data(&storage_name).await?;
+            Err(e)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[instrument(skip(self))]
+    pub async fn receive_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
         // Report we have received the bundle
         self.dispatcher
             .report_bundle_reception(
@@ -86,9 +70,14 @@ impl Ingress {
          *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
          */
 
-        // Store the bundle metadata in the store
         if !valid {
-            trace!("Bundle is unintelligible");
+            // Not valid, drop it
+            self.dispatcher
+                .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::BlockUnintelligible)
+                .await?;
+
+            // Drop the bundle
+            self.store.delete_data(&bundle.metadata.storage_name).await
         } else if !self
             .store
             .store_metadata(&bundle.metadata, &bundle.bundle)
@@ -97,25 +86,21 @@ impl Ingress {
             // Bundle with matching id already exists in the metadata store
             trace!("Bundle with matching id already exists in the metadata store");
 
-            valid = false;
+            // Do not process further
+            Ok(())
+        } else {
+            // Process the bundle further
+            self.process_bundle(bundle).await
         }
-
-        // Not valid, drop it
-        if !valid {
-            self.dispatcher
-                .report_bundle_deletion(&bundle, bpv7::StatusReportReasonCode::BlockUnintelligible)
-                .await?;
-
-            // Drop the bundle
-            return self.store.delete_data(&bundle.metadata.storage_name).await;
-        }
-
-        // Process the bundle further
-        self.process_bundle(bundle).await
     }
 
     #[instrument(skip(self))]
     pub async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
+        if let metadata::BundleStatus::Tombstone(_) = &bundle.metadata.status {
+            // Ignore Tombstones
+            return Ok(());
+        }
+
         /* Always check bundles, no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 

@@ -122,7 +122,7 @@ fn parse_primary_block(
     // Parse EIDs
     let dest_eid = block.parse::<Eid>().map_field_err("Destination EID");
     let source_eid = block.parse::<Eid>().map_field_err("Source EID");
-    let report_to_eid = block.parse::<Eid>().map_field_err("Report-to EID")?;
+    let report_to = block.parse::<Eid>().map_field_err("Report-to EID")?;
 
     // Parse timestamp
     let timestamp = block
@@ -178,7 +178,7 @@ fn parse_primary_block(
                 flags,
                 crc_type,
                 destination,
-                report_to: report_to_eid,
+                report_to,
                 lifetime,
                 ..Default::default()
             },
@@ -196,7 +196,7 @@ fn parse_primary_block(
                     flags,
                     crc_type: crc_result.map_or(CrcType::None, |(_, t)| t),
                     destination: dest_eid.unwrap_or(Eid::Null),
-                    report_to: report_to_eid,
+                    report_to,
                     lifetime: lifetime.unwrap_or(0),
                     ..Default::default()
                 },

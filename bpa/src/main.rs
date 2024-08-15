@@ -15,7 +15,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 use hardy_bpa_api::metadata;
 use hardy_bpv7::prelude as bpv7;
 use trace_err::*;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{error, info, instrument, trace, warn};
 
 #[tokio::main]
 async fn main() {
