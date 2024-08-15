@@ -35,11 +35,6 @@ impl Storage {
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
-    async fn restart(&self, _tx: storage::Sender) -> storage::Result<()> {
-        // We have no persistence, so therefore nothing to restart
-        Ok(())
-    }
-
     async fn load(&self, _bundle_id: &bpv7::BundleId) -> storage::Result<Option<metadata::Bundle>> {
         todo!()
     }
@@ -107,16 +102,15 @@ impl storage::MetadataStorage for Storage {
         todo!()
     }
 
-    async fn confirm_exists(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<bool> {
+    async fn confirm_exists(
+        &self,
+        _bundle_id: &bpv7::BundleId,
+    ) -> storage::Result<Option<metadata::Metadata>> {
         todo!()
     }
 
-    async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> storage::Result<()> {
-        // We don't really have anything transactional to do here, just confirm the bundle exists
-        self.confirm_exists(storage_name, hash)
-            .await
-            .map(|exists| exists.then_some(()))?
-            .ok_or(Error::NotFound.into())
+    async fn begin_replace(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<()> {
+        todo!()
     }
 
     async fn commit_replace(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<()> {
