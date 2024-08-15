@@ -13,6 +13,15 @@ pub enum Error {
     NotFound,
 }
 
+struct DataRefWrapper(Arc<[u8]>);
+
+impl AsRef<[u8]> for DataRefWrapper {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 pub struct Storage {
     bundles: RwLock<HashMap<String, Arc<[u8]>>>,
 }
@@ -39,7 +48,7 @@ impl storage::BundleStorage for Storage {
     async fn load(&self, storage_name: &str) -> storage::Result<storage::DataRef> {
         match self.bundles.read().await.get(storage_name) {
             None => Err(Error::NotFound.into()),
-            Some(v) => Ok(into_dataref(v.clone())),
+            Some(v) => Ok(Arc::new(DataRefWrapper(v.clone()))),
         }
     }
 

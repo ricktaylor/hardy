@@ -707,10 +707,6 @@ impl Dispatcher {
             self.report_bundle_deletion(&bundle, reason).await?;
         }
 
-        // TODO - Check source_id
-
-        debug!("Discarding bundle, leaving tombstone");
-
         // Leave a tombstone in the metadata, so we can ignore duplicates
         self.store
             .set_status(
@@ -720,7 +716,21 @@ impl Dispatcher {
             .await?;
 
         // Delete the bundle from the bundle store
-        self.store.delete_data(&bundle.metadata.storage_name).await
+        self.store
+            .delete_data(&bundle.metadata.storage_name)
+            .await?;
+
+        // Do not keep Tombstones for our own bundles
+        if self
+            .config
+            .admin_endpoints
+            .is_admin_endpoint(&bundle.bundle.id.source)
+        {
+            self.store
+                .delete_metadata(&bundle.metadata.storage_name)
+                .await?;
+        }
+        Ok(())
     }
 
     #[instrument(skip(self))]

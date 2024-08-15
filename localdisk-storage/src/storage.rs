@@ -102,14 +102,16 @@ fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
 fn walk_dirs(
     root: &PathBuf,
     dir: PathBuf,
-    tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
-) -> usize {
+    tx: &tokio::sync::mpsc::Sender<storage::ListResponse>,
+) -> (usize, Vec<PathBuf>) {
     let mut count: usize = 0;
+    let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
         for entry in dir.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
-                    count += walk_dirs(root, entry.path(), tx.clone());
+                    subdirs.push(entry.path());
+                    count += 1;
                 } else if file_type.is_file() {
                     // Drop anything .tmp
                     if let Some(extension) = entry.path().extension() {
@@ -120,27 +122,21 @@ fn walk_dirs(
                         }
                     }
 
-                    // Report a bundle
-                    let storage_path = entry.path();
-                    cfg_if::cfg_if! {
-                        if #[cfg(feature = "mmap")] {
-                            let file = std::fs::File::open(&storage_path).trace_expect("Failed to open file");
-                            let data = unsafe { memmap2::Mmap::map(&file) }.map(Arc::new).trace_expect("Failed to memory map file");
-                        } else {
-                            let data = std::fs::read(&storage_path).map(Arc::new).trace_expect("Failed to read file content");
-                        }
-                    }
-
                     // Drop 0-length files
-                    if data.is_empty() {
+                    if entry
+                        .metadata()
+                        .trace_expect("Failed to get file metadata")
+                        .len()
+                        == 0
+                    {
                         std::fs::remove_file(entry.path())
                             .trace_expect("Failed to remove placeholder file");
                         continue;
                     }
 
-                    // We have something useful
                     count += 1;
 
+                    // We have something useful
                     let received_at = entry
                         .metadata()
                         .and_then(|m| m.created())
@@ -149,8 +145,7 @@ fn walk_dirs(
 
                     if tx
                         .blocking_send((
-                            Arc::from(storage_path.strip_prefix(root).unwrap().to_string_lossy()),
-                            data,
+                            Arc::from(entry.path().strip_prefix(&root).unwrap().to_string_lossy()),
                             received_at,
                         ))
                         .is_err()
@@ -165,7 +160,7 @@ fn walk_dirs(
     if count == 0 && std::fs::remove_dir(&dir).is_err() {
         count = 1;
     }
-    count
+    (count, subdirs)
 }
 
 #[async_trait]
@@ -175,12 +170,50 @@ impl BundleStorage for Storage {
         &self,
         tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
     ) -> storage::Result<()> {
-        let root = self.store_root.clone();
+        let mut dirs = vec![self.store_root.clone()];
+
+        let parallelism = std::thread::available_parallelism()
+            .map(Into::into)
+            .unwrap_or(1)
+            + 1;
+        let mut task_set = tokio::task::JoinSet::new();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
         // Spawn a thread to walk the directory
-        tokio::task::spawn_blocking(move || walk_dirs(&root.clone(), root, tx))
-            .await
-            .trace_expect("Failed to spawn walk_dirs thread");
+        while !dirs.is_empty() {
+            let subdirs = dirs.split_off(dirs.len() - dirs.len().min(32));
+
+            loop {
+                tokio::select! {
+                    permit = semaphore.clone().acquire_owned() => {
+                        let permit = permit.trace_expect("Failed to acquire permit");
+                        let root = self.store_root.clone();
+                        let tx = tx.clone();
+                        task_set.spawn_blocking(move || {
+                            let mut dirs = Vec::new();
+                            for dir in subdirs {
+                                let (_, d) = walk_dirs(&root, dir, &tx);
+                                dirs.extend(d);
+                            }
+                            drop(permit);
+                            dirs
+                        });
+                        break;
+                    },
+                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                        dirs.extend(r.trace_expect("Task terminated unexpectedly"));
+                    }
+                }
+            }
+
+            if dirs.is_empty() {
+                // Accumulate results
+                let Some(r) = task_set.join_next().await else {
+                    break;
+                };
+                dirs.extend(r.trace_expect("Task terminated unexpectedly"));
+            }
+        }
         Ok(())
     }
 
@@ -221,9 +254,17 @@ impl BundleStorage for Storage {
 
     #[instrument(skip(self))]
     async fn remove(&self, storage_name: &str) -> storage::Result<()> {
-        tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?))
-            .await
-            .map_err(Into::into)
+        match tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?)).await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let std::io::ErrorKind::NotFound = e.kind() {
+                    Ok(())
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
     }
 
     #[instrument(skip(self, data))]
