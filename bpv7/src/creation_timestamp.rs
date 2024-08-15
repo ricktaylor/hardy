@@ -9,17 +9,14 @@ pub struct CreationTimestamp {
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Additional items found in Creation timestamp array")]
-    AdditionalItems,
-
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("Expecting CBOR array")]
-    ArrayExpected(#[from] cbor::decode::Error),
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
 }
 
 trait CaptureFieldErr<T> {
@@ -60,7 +57,15 @@ impl cbor::decode::FromCbor for CreationTimestamp {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, _tags| {
+        cbor::decode::try_parse_array(data, |a, tags| {
+            if !tags.is_empty() {
+                return Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Array".to_string(),
+                    "Tagged Array".to_string(),
+                )
+                .into());
+            }
+
             let timestamp = a.parse().map_field_err("bundle creation time")?;
             let creation_time = CreationTimestamp {
                 creation_time: if timestamp == 0 {
@@ -70,9 +75,6 @@ impl cbor::decode::FromCbor for CreationTimestamp {
                 },
                 sequence_number: a.parse().map_field_err("sequence number")?,
             };
-            if a.end()?.is_none() {
-                return Err(Error::AdditionalItems);
-            }
             Ok(creation_time)
         })
     }

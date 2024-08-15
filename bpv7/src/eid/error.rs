@@ -33,17 +33,14 @@ pub enum EidError {
     #[error("Unsupported EID scheme {0}")]
     UnsupportedScheme(String),
 
-    #[error("Additional items in EID array")]
-    AdditionalItems,
-
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("Invalid CBOR encoding: {0}")]
-    InvalidCbor(#[from] cbor::decode::Error),
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
 
     #[error(transparent)]
     InvalidUtf8(#[from] std::string::FromUtf8Error),

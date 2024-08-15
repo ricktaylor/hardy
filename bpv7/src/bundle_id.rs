@@ -29,8 +29,8 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("Expecting CBOR array")]
-    ArrayExpected(#[from] cbor::decode::Error),
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
 }
 
 trait CaptureFieldErr<T> {

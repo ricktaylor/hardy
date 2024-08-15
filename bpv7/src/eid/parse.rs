@@ -99,52 +99,6 @@ pub fn eid_from_str(s: &str) -> Result<Eid, EidError> {
     }
 }
 
-fn dtn_from_cbor(value: cbor::decode::Value, tagged: bool) -> Result<Eid, EidError> {
-    match value {
-        cbor::decode::Value::UnsignedInteger(0) => {
-            if tagged {
-                Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Array".to_string(),
-                    value.type_name(tagged),
-                )
-                .into())
-            } else {
-                Ok(Eid::Null)
-            }
-        }
-        cbor::decode::Value::Text("none", _) => {
-            if tagged {
-                Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Text Array".to_string(),
-                    value.type_name(tagged),
-                )
-                .into())
-            } else {
-                trace!("Parsing dtn EID 'none'");
-                Ok(Eid::Null)
-            }
-        }
-        cbor::decode::Value::Text(s, _) => {
-            if tagged {
-                Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Text Array".to_string(),
-                    value.type_name(tagged),
-                )
-                .into())
-            } else if let Some(s) = s.strip_prefix("//") {
-                parse_dtn_parts(s)
-            } else {
-                Err(EidError::DtnMissingPrefix)
-            }
-        }
-        _ => Err(cbor::decode::Error::IncorrectType(
-            "Untagged Text Array or O".to_string(),
-            value.type_name(tagged),
-        )
-        .into()),
-    }
-}
-
 fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
     if value.count().is_none() {
         trace!("Parsing ipn EID as indefinite array");
@@ -221,58 +175,62 @@ fn unknown_from_cbor(
 }
 
 pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
-    cbor::decode::try_parse_array(data, |a, _tags| {
+    cbor::decode::try_parse_array(data, |a, tags| {
+        if !tags.is_empty() {
+            return Err(cbor::decode::Error::IncorrectType(
+                "Untagged Array".to_string(),
+                "Tagged Array".to_string(),
+            )
+            .into());
+        }
+
         if a.count().is_none() {
             trace!("Parsing EID array of indefinite length")
         }
 
-        let scheme = a.parse::<u64>().map_field_err("Scheme")?;
-        if scheme == 0 {
-            return Err(EidError::UnsupportedScheme(scheme.to_string()));
-        }
-
-        let eid = if scheme > 2 {
-            let (start, len) = a.parse_value(|value, start, _| {
-                unknown_from_cbor(scheme, value, 16)
-                    .map(|_| start)
-                    .map_err(Into::<EidError>::into)
-            })?;
-            Eid::Unknown {
-                scheme,
-                data: data[start..start + len].to_vec(),
-            }
-        } else {
-            a.parse_value(|value, _, tags| {
-                if scheme == 2 {
-                    let type_name = value.type_name(!tags.is_empty());
-                    if let cbor::decode::Value::Array(a) = value {
-                        if !tags.is_empty() {
-                            Err(cbor::decode::Error::IncorrectType(
-                                "Untagged Array".to_string(),
-                                type_name,
-                            )
-                            .into())
+        match a.parse::<u64>().map_field_err("Scheme")? {
+            0 => Err(EidError::UnsupportedScheme("0".to_string())),
+            1 => a
+                .parse_value(|value, _, tags| match (value, !tags.is_empty()) {
+                    (cbor::decode::Value::UnsignedInteger(0), false)
+                    | (cbor::decode::Value::Text("none", _), false) => Ok(Eid::Null),
+                    (cbor::decode::Value::Text(s, _), false) => {
+                        if let Some(s) = s.strip_prefix("//") {
+                            parse_dtn_parts(s)
                         } else {
-                            ipn_from_cbor(a)
+                            Err(EidError::DtnMissingPrefix)
                         }
-                    } else {
-                        Err(cbor::decode::Error::IncorrectType(
-                            "Untagged Array".to_string(),
-                            type_name,
-                        )
-                        .into())
                     }
-                } else {
-                    dtn_from_cbor(value, !tags.is_empty())
-                }
-            })
-            .map_field_err("Scheme-specific part")?
-            .0
-        };
-        if a.end()?.is_none() {
-            Err(EidError::AdditionalItems)
-        } else {
-            Ok(eid)
+                    (value, tagged) => Err(cbor::decode::Error::IncorrectType(
+                        "Untagged Text String or O".to_string(),
+                        value.type_name(tagged),
+                    )
+                    .into()),
+                })
+                .map(|(eid, _)| eid)
+                .map_field_err("'dtn' scheme-specific part"),
+            2 => a
+                .parse_value(|value, _, tags| match (value, !tags.is_empty()) {
+                    (cbor::decode::Value::Array(a), false) => ipn_from_cbor(a),
+                    (value, tagged) => Err(cbor::decode::Error::IncorrectType(
+                        "Untagged Array".to_string(),
+                        value.type_name(tagged),
+                    )
+                    .into()),
+                })
+                .map(|(eid, _)| eid)
+                .map_field_err("'ipn' scheme-specific part"),
+            scheme => {
+                let (start, len) = a.parse_value(|value, start, _| {
+                    unknown_from_cbor(scheme, value, 16)
+                        .map(|_| start)
+                        .map_err(Into::<EidError>::into)
+                })?;
+                Ok(Eid::Unknown {
+                    scheme,
+                    data: data[start..start + len].to_vec(),
+                })
+            }
         }
     })
 }

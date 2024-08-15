@@ -44,8 +44,8 @@ pub enum BundleError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("Expecting CBOR array")]
-    ArrayExpected(#[from] cbor::decode::Error),
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
 }
 
 pub trait CaptureFieldErr<T> {
@@ -233,8 +233,13 @@ fn parse_bundle_age(block: &Block, data: &[u8]) -> Result<u64, BundleError> {
 fn parse_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, BundleError> {
     cbor::decode::parse_array(data, |a, tags| {
         if !tags.is_empty() {
-            trace!("Parsing Hop Count with tags");
+            return Err(cbor::decode::Error::IncorrectType(
+                "Untagged Array".to_string(),
+                "Tagged Array".to_string(),
+            )
+            .into());
         }
+
         if a.count().is_none() {
             trace!("Parsing Hop Count as indefinite length array");
         }
@@ -353,12 +358,24 @@ impl cbor::decode::FromCbor for ValidBundle {
     type Error = BundleError;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        let r = cbor::decode::try_parse_array(data, |blocks, _tags| {
+        let r = cbor::decode::try_parse_array(data, |blocks, tags| {
+            if !tags.is_empty() {
+                return Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Array".to_string(),
+                    "Tagged Array".to_string(),
+                )
+                .into());
+            }
+
             // Parse Primary block
             let (((mut bundle, mut valid), block_start), block_len) = blocks
                 .parse_array(|block, block_start, tags| {
                     if !tags.is_empty() {
-                        trace!("Parsing primary block with tags");
+                        return Err(cbor::decode::Error::IncorrectType(
+                            "Untagged Array".to_string(),
+                            "Tagged Array".to_string(),
+                        )
+                        .into());
                     }
                     parse_primary_block(data, block, block_start).map(|r| (r, block_start))
                 })

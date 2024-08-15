@@ -15,9 +15,6 @@ pub enum CrcError {
     #[error("Block has a CRC value with no CRC type specified")]
     UnexpectedCrcValue,
 
-    #[error("Block has additional items after CRC value")]
-    AdditionalItems,
-
     #[error("Incorrect CRC value")]
     IncorrectCrc,
 
@@ -72,33 +69,28 @@ pub fn parse_crc_value(
 ) -> Result<(), CrcError> {
     // Parse CRC
     let crc_value = block.try_parse_value(|value, crc_start, tags| match value {
-        cbor::decode::Value::Bytes(crc, _) => {
-            if !tags.is_empty() {
-                trace!("Parsing bundle block CRC value with tags");
-            }
-            match crc_type {
-                CrcType::None => Err(CrcError::UnexpectedCrcValue),
-                CrcType::CRC16_X25 => {
-                    if crc.len() != 2 {
-                        Err(CrcError::InvalidLength(crc.len()))
-                    } else {
-                        Ok((
-                            u16::from_be_bytes(crc.try_into().unwrap()) as u32,
-                            crc_start + 1,
-                        ))
-                    }
-                }
-                CrcType::CRC32_CASTAGNOLI => {
-                    if crc.len() != 4 {
-                        Err(CrcError::InvalidLength(crc.len()))
-                    } else {
-                        Ok((u32::from_be_bytes(crc.try_into().unwrap()), crc_start + 1))
-                    }
+        cbor::decode::Value::Bytes(crc, _) if tags.is_empty() => match crc_type {
+            CrcType::None => Err(CrcError::UnexpectedCrcValue),
+            CrcType::CRC16_X25 => {
+                if crc.len() != 2 {
+                    Err(CrcError::InvalidLength(crc.len()))
+                } else {
+                    Ok((
+                        u16::from_be_bytes(crc.try_into().unwrap()) as u32,
+                        crc_start + 1,
+                    ))
                 }
             }
-        }
+            CrcType::CRC32_CASTAGNOLI => {
+                if crc.len() != 4 {
+                    Err(CrcError::InvalidLength(crc.len()))
+                } else {
+                    Ok((u32::from_be_bytes(crc.try_into().unwrap()), crc_start + 1))
+                }
+            }
+        },
         _ => Err(cbor::decode::Error::IncorrectType(
-            "Byte String".to_string(),
+            "Untagged Byte String".to_string(),
             value.type_name(!tags.is_empty()),
         )
         .into()),

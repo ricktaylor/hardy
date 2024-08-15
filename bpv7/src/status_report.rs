@@ -9,17 +9,14 @@ pub enum StatusReportError {
     #[error("Reserved Status Report Reason Code (255)")]
     ReservedStatusReportReason,
 
-    #[error("Additional items found in array")]
-    AdditionalItems,
-
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("Expecting CBOR array")]
-    ArrayExpected(#[from] cbor::decode::Error),
+    #[error(transparent)]
+    InvalidCBOR(#[from] cbor::decode::Error),
 }
 
 trait CaptureFieldErr<T> {
@@ -194,14 +191,23 @@ impl cbor::decode::FromCbor for BundleStatusReport {
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, tags| {
             if !tags.is_empty() {
-                trace!("Parsing administrative record with tags");
+                return Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Array".to_string(),
+                    "Tagged Array".to_string(),
+                )
+                .into());
             }
 
             let mut report = Self::default();
             a.parse_array(|a, _, tags| {
                 if !tags.is_empty() {
-                    trace!("Parsing administrative record with tags");
+                    return Err(cbor::decode::Error::IncorrectType(
+                        "Untagged Array".to_string(),
+                        "Tagged Array".to_string(),
+                    )
+                    .into());
                 }
+
                 // This is a horrible format!
                 if a.parse::<bool>().map_field_err("Received Status")? {
                     report.received = Some(StatusAssertion(
@@ -272,15 +278,20 @@ impl cbor::decode::FromCbor for AdministrativeRecord {
     type Error = self::StatusReportError;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, _tags| {
+        cbor::decode::try_parse_array(data, |a, tags| {
+            if !tags.is_empty() {
+                return Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Array".to_string(),
+                    "Tagged Array".to_string(),
+                )
+                .into());
+            }
+
             match a.parse().map_field_err("Record Type Code")? {
-                1u64 => {
-                    let report = a.parse().map_field_err("Bundle Status Report")?;
-                    if a.end()?.is_none() {
-                        return Err(StatusReportError::AdditionalItems);
-                    }
-                    Ok(Self::BundleStatusReport(report))
-                }
+                1u64 => a
+                    .parse()
+                    .map(Self::BundleStatusReport)
+                    .map_field_err("Bundle Status Report"),
                 v => Err(StatusReportError::UnknownAdminRecordType(v)),
             }
         })

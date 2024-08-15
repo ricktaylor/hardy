@@ -927,9 +927,11 @@ where
                 Err(Error::IncorrectType(
                     "Untagged Undefined".to_string(),
                     "Tagged Undefined".to_string(),
-                ))?;
+                )
+                .into())
+            } else {
+                Ok(Some((None, offset + 1)))
             }
-            Ok(Some((None, offset + 1)))
         } else {
             let (v, len) = T::from_cbor(data)?;
             Ok(Some((Some(v), len)))

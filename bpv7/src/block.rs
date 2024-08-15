@@ -20,11 +20,16 @@ impl cbor::decode::FromCbor for BlockWithNumber {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |block, tags| {
+            if !tags.is_empty() {
+                return Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Array".to_string(),
+                    "Tagged Array".to_string(),
+                )
+                .into());
+            }
+
             if block.count().is_none() {
                 trace!("Parsing extension block of indefinite length")
-            }
-            if !tags.is_empty() {
-                trace!("Parsing extension block with tags");
             }
 
             let block_type = block
@@ -46,17 +51,14 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             // Stash start of data
             let ((data_offset, _), data_len) =
                 block.parse_value(|value, data_start, tags| match value {
-                    cbor::decode::Value::Bytes(v, chunked) => {
+                    cbor::decode::Value::Bytes(v, chunked) if tags.is_empty() => {
                         if chunked {
                             trace!("Parsing chunked extension block data");
-                        }
-                        if !tags.is_empty() {
-                            trace!("Parsing extension block data with tags");
                         }
                         Ok((data_start, v.len()))
                     }
                     value => Err(cbor::decode::Error::IncorrectType(
-                        "Byte String".to_string(),
+                        "Untagged Byte String".to_string(),
                         value.type_name(!tags.is_empty()),
                     )),
                 })?;
