@@ -128,16 +128,32 @@ impl Dispatcher {
         // We're going to spawn a bunch of tasks
         let mut task_set = tokio::task::JoinSet::new();
 
+        // Give some feedback
+        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+        tokio::pin!(timer);
+        let mut bundles = 0u64;
+
         loop {
             tokio::select! {
+                () = &mut timer => {
+                    info!("{bundles} bundles in flight");
+                    timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
+                },
                 bundle = rx.recv() => {
                     let dispatcher = dispatcher.clone();
                     let bundle = bundle.trace_expect("Dispatcher channel unexpectedly closed");
+
+                    bundles = bundles.saturating_add(1);
+
                     task_set.spawn(async move {
                         dispatcher.process_bundle(bundle).await.trace_expect("Failed to process bundle");
                     });
                 },
-                Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
+                Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                    r.trace_expect("Task terminated unexpectedly");
+
+                    bundles -= 1;
+                },
                 _ = dispatcher.cancel_token.cancelled() => break
             }
         }
