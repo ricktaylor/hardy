@@ -103,15 +103,15 @@ fn walk_dirs(
     root: &PathBuf,
     dir: PathBuf,
     tx: &tokio::sync::mpsc::Sender<storage::ListResponse>,
-) -> (usize, Vec<PathBuf>) {
-    let mut count: usize = 0;
+) -> Vec<PathBuf> {
+    let mut remove = true;
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
         for entry in dir.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
                     subdirs.push(entry.path());
-                    count += 1;
+                    remove = false;
                 } else if file_type.is_file() {
                     // Drop anything .tmp
                     if let Some(extension) = entry.path().extension() {
@@ -134,7 +134,7 @@ fn walk_dirs(
                         continue;
                     }
 
-                    count += 1;
+                    remove = false;
 
                     // We have something useful
                     let received_at = entry
@@ -150,17 +150,18 @@ fn walk_dirs(
                         ))
                         .is_err()
                     {
-                        break;
+                        // Exit fast
+                        return Vec::new();
                     }
                 }
             }
         }
     }
 
-    if count == 0 && std::fs::remove_dir(&dir).is_err() {
-        count = 1;
+    if remove {
+        let _ = std::fs::remove_dir(&dir);
     }
-    (count, subdirs)
+    subdirs
 }
 
 #[async_trait]
@@ -179,12 +180,14 @@ impl BundleStorage for Storage {
         let mut task_set = tokio::task::JoinSet::new();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
-        // Spawn a thread to walk the directory
-        while !dirs.is_empty() {
+        // Loop through the directories
+        while !dirs.is_empty() && !tx.is_closed() {
+            // Take a chunk off the back, to ensure depth first walk
             let subdirs = dirs.split_off(dirs.len() - dirs.len().min(32));
 
             loop {
                 tokio::select! {
+                    // Throttle the number of threads
                     permit = semaphore.clone().acquire_owned() => {
                         let permit = permit.trace_expect("Failed to acquire permit");
                         let root = self.store_root.clone();
@@ -192,21 +195,21 @@ impl BundleStorage for Storage {
                         task_set.spawn_blocking(move || {
                             let mut dirs = Vec::new();
                             for dir in subdirs {
-                                let (_, d) = walk_dirs(&root, dir, &tx);
-                                dirs.extend(d);
+                                dirs.extend(walk_dirs(&root, dir, &tx));
                             }
                             drop(permit);
                             dirs
                         });
                         break;
                     },
+                    // Collect results
                     Some(r) = task_set.join_next(), if !task_set.is_empty() => {
                         dirs.extend(r.trace_expect("Task terminated unexpectedly"));
                     }
                 }
             }
 
-            if dirs.is_empty() {
+            while dirs.is_empty() || tx.is_closed() {
                 // Accumulate results
                 let Some(r) = task_set.join_next().await else {
                     break;
