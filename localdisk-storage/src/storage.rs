@@ -145,7 +145,7 @@ fn walk_dirs(
 
                     if tx
                         .blocking_send((
-                            Arc::from(entry.path().strip_prefix(&root).unwrap().to_string_lossy()),
+                            Arc::from(entry.path().strip_prefix(root).unwrap().to_string_lossy()),
                             received_at,
                         ))
                         .is_err()
