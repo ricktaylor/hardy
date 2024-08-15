@@ -86,8 +86,8 @@ impl Ingress {
             // Bundle with matching id already exists in the metadata store
             trace!("Bundle with matching id already exists in the metadata store");
 
-            // Do not process further
-            Ok(())
+            // Drop the stored data, and do not process further
+            self.store.delete_data(&bundle.metadata.storage_name).await
         } else {
             // Process the bundle further
             self.process_bundle(bundle).await
@@ -96,11 +96,6 @@ impl Ingress {
 
     #[instrument(skip(self))]
     pub async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
-        if let metadata::BundleStatus::Tombstone(_) = &bundle.metadata.status {
-            // Ignore Tombstones
-            return Ok(());
-        }
-
         /* Always check bundles, no matter the state, as after restarting
         the configured filters may have changed, and reprocessing is desired. */
 
