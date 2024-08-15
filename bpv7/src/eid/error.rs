@@ -15,9 +15,6 @@ pub enum EidError {
     #[error("dtn URI demux part is empty")]
     DtnEmptyDemuxPart,
 
-    #[error("dtn URI is not a CBOR text string or 0")]
-    DtnInvalidEncoding,
-
     #[error("Invalid ipn allocator id {0}")]
     IpnInvalidAllocatorId(u64),
 
@@ -45,7 +42,7 @@ pub enum EidError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error(transparent)]
+    #[error("Invalid CBOR encoding: {0}")]
     InvalidCbor(#[from] cbor::decode::Error),
 
     #[error(transparent)]

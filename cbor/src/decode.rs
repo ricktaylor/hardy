@@ -41,25 +41,13 @@ pub enum Error {
 pub trait FromCbor: Sized {
     type Error;
 
-    #[allow(clippy::type_complexity)]
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error>;
-
-    fn from_cbor_tagged(data: &[u8]) -> Result<(Self, usize, Vec<u64>), Self::Error>
-    where
-        Self::Error: From<self::Error>,
-    {
-        Self::try_from_cbor_tagged(data)?.ok_or(Error::NotEnoughData.into())
-    }
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        Self::try_from_cbor_tagged(data).map(|r| r.map(|(v, len, _)| (v, len)))
-    }
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error>;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, usize), Self::Error>
     where
         Self::Error: From<self::Error>,
     {
-        Self::from_cbor_tagged(data).map(|(v, len, _)| (v, len))
+        Self::try_from_cbor(data)?.ok_or(Error::NotEnoughData.into())
     }
 }
 
@@ -80,22 +68,23 @@ pub enum Value<'a, 'b: 'a> {
 }
 
 impl<'a, 'b: 'a> Value<'a, 'b> {
-    pub fn type_name(&self) -> String {
+    pub fn type_name(&self, tagged: bool) -> String {
+        let prefix = if tagged { "Tagged " } else { "Untagged " }.to_string();
         match &self {
-            Value::UnsignedInteger(_) => "UnsignedInteger".to_string(),
-            Value::NegativeInteger(_) => "NegativeInteger".to_string(),
-            Value::Bytes(_, true) => "Definite-length Byte String".to_string(),
-            Value::Bytes(_, false) => "Indefinite-length Byte String".to_string(),
-            Value::Text(_, true) => "Definite-length Text String".to_string(),
-            Value::Text(_, false) => "Indefinite-length Text String".to_string(),
-            Value::Array(_) => "Array".to_string(),
-            Value::Map(_) => "Map".to_string(),
-            Value::False => "False".to_string(),
-            Value::True => "True".to_string(),
-            Value::Null => "Null".to_string(),
-            Value::Undefined => "Undefined".to_string(),
-            Value::Simple(v) => format!("Simple Value {v}"),
-            Value::Float(_) => "Float".to_string(),
+            Value::UnsignedInteger(_) => prefix + "Unsigned Integer",
+            Value::NegativeInteger(_) => prefix + "Negative Integer",
+            Value::Bytes(_, true) => prefix + "Definite-length Byte String",
+            Value::Bytes(_, false) => prefix + "Indefinite-length Byte String",
+            Value::Text(_, true) => prefix + "Definite-length Text String",
+            Value::Text(_, false) => prefix + "Indefinite-length Text String",
+            Value::Array(_) => prefix + "Array",
+            Value::Map(_) => prefix + "Map",
+            Value::False => prefix + "False",
+            Value::True => prefix + "True",
+            Value::Null => prefix + "Null",
+            Value::Undefined => prefix + "Undefined",
+            Value::Simple(v) => format!("{prefix}Simple Value {v}"),
+            Value::Float(_) => prefix + "Float",
         }
     }
 
@@ -302,7 +291,9 @@ impl<'a, const D: usize> Sequence<'a, D> {
     {
         self.try_parse_value(|value, start, tags| match value {
             Value::Array(a) => f(a, start, tags),
-            _ => Err(Error::IncorrectType("Array".to_string(), value.type_name()).into()),
+            _ => Err(
+                Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into(),
+            ),
         })
     }
 
@@ -321,7 +312,9 @@ impl<'a, const D: usize> Sequence<'a, D> {
     {
         self.try_parse_value(|value, start, tags| match value {
             Value::Map(m) => f(m, start, tags),
-            _ => Err(Error::IncorrectType("Map".to_string(), value.type_name()).into()),
+            _ => Err(
+                Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into(),
+            ),
         })
     }
 
@@ -590,7 +583,9 @@ where
 {
     try_parse_value(data, |value, tags| match value {
         Value::Array(a) => f(a, tags),
-        _ => Err(Error::IncorrectType("Array".to_string(), value.type_name()).into()),
+        _ => {
+            Err(Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into())
+        }
     })
 }
 
@@ -601,7 +596,9 @@ where
 {
     parse_value(data, |value, tags| match value {
         Value::Array(a) => f(a, tags),
-        _ => Err(Error::IncorrectType("Array".to_string(), value.type_name()).into()),
+        _ => {
+            Err(Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into())
+        }
     })
 }
 
@@ -612,7 +609,7 @@ where
 {
     try_parse_value(data, |value, tags| match value {
         Value::Map(m) => f(m, tags),
-        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name()).into()),
+        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into()),
     })
 }
 
@@ -623,7 +620,7 @@ where
 {
     parse_value(data, |value, tags| match value {
         Value::Map(m) => f(m, tags),
-        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name()).into()),
+        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into()),
     })
 }
 
@@ -646,9 +643,9 @@ where
 impl FromCbor for u8 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = u64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = u64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -658,9 +655,9 @@ impl FromCbor for u8 {
 impl FromCbor for u16 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = u64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = u64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -670,9 +667,9 @@ impl FromCbor for u16 {
 impl FromCbor for u32 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = u64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = u64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -682,9 +679,9 @@ impl FromCbor for u32 {
 impl FromCbor for usize {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = u64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = u64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -694,24 +691,32 @@ impl FromCbor for usize {
 impl FromCbor for u64 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::UnsignedInteger(n) => Ok((n, tags)),
+            Value::UnsignedInteger(n) => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Unsigned Integer".to_string(),
+                        "Tagged Unsigned Integer".to_string(),
+                    ))
+                } else {
+                    Ok(n)
+                }
+            }
             value => Err(Error::IncorrectType(
-                "UnsignedInteger".to_string(),
-                value.type_name(),
+                "Untagged Unsigned Integer".to_string(),
+                value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|r| r.map(|((v, tags), len)| (v, len, tags)))
     }
 }
 
 impl FromCbor for i8 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = i64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = i64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -721,9 +726,9 @@ impl FromCbor for i8 {
 impl FromCbor for i16 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = i64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = i64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -733,9 +738,9 @@ impl FromCbor for i16 {
 impl FromCbor for i32 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = i64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = i64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -745,9 +750,9 @@ impl FromCbor for i32 {
 impl FromCbor for isize {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = i64::try_from_cbor_tagged(data)? {
-            Ok(Some((v.try_into()?, len, tags)))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = i64::try_from_cbor(data)? {
+            Ok(Some((v.try_into()?, len)))
         } else {
             Ok(None)
         }
@@ -757,29 +762,42 @@ impl FromCbor for isize {
 impl FromCbor for i64 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::UnsignedInteger(n) => Ok((i64::try_from(n)?, tags)),
-            Value::NegativeInteger(n) => Ok((-1i64 - i64::try_from(n)?, tags)),
+            Value::UnsignedInteger(n) => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Integer".to_string(),
+                        "Tagged Integer".to_string(),
+                    ))
+                } else {
+                    i64::try_from(n).map_err(Into::into)
+                }
+            }
+            Value::NegativeInteger(n) => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Integer".to_string(),
+                        "Tagged Integer".to_string(),
+                    ))
+                } else {
+                    Ok(-1i64 - i64::try_from(n)?)
+                }
+            }
             value => Err(Error::IncorrectType(
-                "Integer".to_string(),
-                value.type_name(),
+                "Untagged Integer".to_string(),
+                value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|r| r.map(|((v, tags), len)| (v, len, tags)))
     }
 }
 
 impl FromCbor for f32 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        if let Some((v, len, tags)) = f64::try_from_cbor_tagged(data)? {
-            Ok(Some((
-                f32::from_f64(v).ok_or(Error::PrecisionLoss)?,
-                len,
-                tags,
-            )))
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        if let Some((v, len)) = f64::try_from_cbor(data)? {
+            Ok(Some((f32::from_f64(v).ok_or(Error::PrecisionLoss)?, len)))
         } else {
             Ok(None)
         }
@@ -789,58 +807,102 @@ impl FromCbor for f32 {
 impl FromCbor for f64 {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::Float(f) => Ok((f, tags)),
-            value => Err(Error::IncorrectType("Float".to_string(), value.type_name())),
+            Value::Float(f) => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Float".to_string(),
+                        "Tagged Float".to_string(),
+                    ))
+                } else {
+                    Ok(f)
+                }
+            }
+            value => Err(Error::IncorrectType(
+                "Untagged Float".to_string(),
+                value.type_name(!tags.is_empty()),
+            )),
         })
-        .map(|r| r.map(|((v, tags), len)| (v, len, tags)))
     }
 }
 
 impl FromCbor for bool {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::False => Ok((false, tags)),
-            Value::True => Ok((true, tags)),
+            Value::False => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Boolean".to_string(),
+                        "Tagged Boolean".to_string(),
+                    ))
+                } else {
+                    Ok(false)
+                }
+            }
+            Value::True => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Boolean".to_string(),
+                        "Tagged Boolean".to_string(),
+                    ))
+                } else {
+                    Ok(true)
+                }
+            }
             value => Err(Error::IncorrectType(
-                "Boolean".to_string(),
-                value.type_name(),
+                "Untagged Boolean".to_string(),
+                value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|r| r.map(|((v, tags), len)| (v, len, tags)))
     }
 }
 
 impl FromCbor for Vec<u8> {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::Bytes(v, _) => Ok((v.to_vec(), tags)),
+            Value::Bytes(v, _) => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Byte String".to_string(),
+                        "Tagged Byte String".to_string(),
+                    ))
+                } else {
+                    Ok(v.to_vec())
+                }
+            }
             value => Err(Error::IncorrectType(
-                "Byte String".to_string(),
-                value.type_name(),
+                "Untagged Byte String".to_string(),
+                value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|r| r.map(|((v, tags), len)| (v, len, tags)))
     }
 }
 
 impl FromCbor for String {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         try_parse_value(data, |value, tags| match value {
-            Value::Text(v, _) => Ok((v.to_string(), tags)),
+            Value::Text(v, _) => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Text String".to_string(),
+                        "Tagged Text String".to_string(),
+                    ))
+                } else {
+                    Ok(v.to_string())
+                }
+            }
             value => Err(Error::IncorrectType(
-                "Text String".to_string(),
-                value.type_name(),
+                "Untagged Text String".to_string(),
+                value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|r| r.map(|((v, tags), len)| (v, len, tags)))
     }
 }
 
@@ -851,7 +913,7 @@ where
 {
     type Error = T::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         let (tags, offset) = parse_tags(data)?;
         if offset >= data.len() {
             if !tags.is_empty() {
@@ -861,10 +923,16 @@ where
             }
         }
         if data[offset] == (7 << 5) | 23 {
-            Ok(Some((None, offset + 1, tags)))
+            if !tags.is_empty() {
+                Err(Error::IncorrectType(
+                    "Untagged Undefined".to_string(),
+                    "Tagged Undefined".to_string(),
+                ))?;
+            }
+            Ok(Some((None, offset + 1)))
         } else {
-            let (v, len) = T::from_cbor(&data[offset + 1..])?;
-            Ok(Some((Some(v), len + offset + 1, tags)))
+            let (v, len) = T::from_cbor(data)?;
+            Ok(Some((Some(v), len)))
         }
     }
 }

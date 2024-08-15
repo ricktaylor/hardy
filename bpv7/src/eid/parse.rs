@@ -99,21 +99,49 @@ pub fn eid_from_str(s: &str) -> Result<Eid, EidError> {
     }
 }
 
-fn dtn_from_cbor(value: cbor::decode::Value) -> Result<Eid, EidError> {
+fn dtn_from_cbor(value: cbor::decode::Value, tagged: bool) -> Result<Eid, EidError> {
     match value {
-        cbor::decode::Value::UnsignedInteger(0) => Ok(Eid::Null),
+        cbor::decode::Value::UnsignedInteger(0) => {
+            if tagged {
+                Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Array".to_string(),
+                    value.type_name(tagged),
+                )
+                .into())
+            } else {
+                Ok(Eid::Null)
+            }
+        }
         cbor::decode::Value::Text("none", _) => {
-            trace!("Parsing dtn EID 'none'");
-            Ok(Eid::Null)
+            if tagged {
+                Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Text Array".to_string(),
+                    value.type_name(tagged),
+                )
+                .into())
+            } else {
+                trace!("Parsing dtn EID 'none'");
+                Ok(Eid::Null)
+            }
         }
         cbor::decode::Value::Text(s, _) => {
-            if let Some(s) = s.strip_prefix("//") {
+            if tagged {
+                Err(cbor::decode::Error::IncorrectType(
+                    "Untagged Text Array".to_string(),
+                    value.type_name(tagged),
+                )
+                .into())
+            } else if let Some(s) = s.strip_prefix("//") {
                 parse_dtn_parts(s)
             } else {
                 Err(EidError::DtnMissingPrefix)
             }
         }
-        _ => Err(EidError::DtnInvalidEncoding),
+        _ => Err(cbor::decode::Error::IncorrectType(
+            "Untagged Text Array or O".to_string(),
+            value.type_name(tagged),
+        )
+        .into()),
     }
 }
 
@@ -192,8 +220,8 @@ fn unknown_from_cbor(
     Ok(())
 }
 
-pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidError> {
-    cbor::decode::try_parse_array(data, |a, tags| {
+pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
+    cbor::decode::try_parse_array(data, |a, _tags| {
         if a.count().is_none() {
             trace!("Parsing EID array of indefinite length")
         }
@@ -215,31 +243,36 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize, Vec<u64>)>, EidE
             }
         } else {
             a.parse_value(|value, _, tags| {
-                if !tags.is_empty() {
-                    trace!("Parsing EID value with tags");
-                }
-
                 if scheme == 2 {
+                    let type_name = value.type_name(!tags.is_empty());
                     if let cbor::decode::Value::Array(a) = value {
-                        ipn_from_cbor(a)
+                        if !tags.is_empty() {
+                            Err(cbor::decode::Error::IncorrectType(
+                                "Untagged Array".to_string(),
+                                type_name,
+                            )
+                            .into())
+                        } else {
+                            ipn_from_cbor(a)
+                        }
                     } else {
                         Err(cbor::decode::Error::IncorrectType(
-                            "Array".to_string(),
-                            value.type_name(),
+                            "Untagged Array".to_string(),
+                            type_name,
                         )
                         .into())
                     }
                 } else {
-                    dtn_from_cbor(value)
+                    dtn_from_cbor(value, !tags.is_empty())
                 }
-            })?
+            })
+            .map_field_err("Scheme-specific part")?
             .0
         };
         if a.end()?.is_none() {
             Err(EidError::AdditionalItems)
         } else {
-            Ok((eid, tags))
+            Ok(eid)
         }
     })
-    .map(|r| r.map(|((eid, tags), len)| (eid, len, tags)))
 }

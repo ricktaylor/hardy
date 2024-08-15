@@ -207,12 +207,9 @@ fn parse_primary_block(
 }
 
 fn parse_previous_node(block: &Block, data: &[u8]) -> Result<Eid, BundleError> {
-    Eid::from_cbor_tagged(data)
+    Eid::from_cbor(data)
         .map_field_err("Previous Node ID")
-        .map(|(v, end, tags)| {
-            if !tags.is_empty() {
-                trace!("Parsing Previous Node extension block with tags");
-            }
+        .map(|(v, end)| {
             if end != block.data_len {
                 Err(BundleError::BlockAdditionalData(BlockType::PreviousNode))
             } else {
@@ -222,12 +219,9 @@ fn parse_previous_node(block: &Block, data: &[u8]) -> Result<Eid, BundleError> {
 }
 
 fn parse_bundle_age(block: &Block, data: &[u8]) -> Result<u64, BundleError> {
-    u64::from_cbor_tagged(data)
+    u64::from_cbor(data)
         .map_field_err("Bundle Age")
-        .map(|(v, end, tags)| {
-            if !tags.is_empty() {
-                trace!("Parsing Bundle Age extension block with tags");
-            }
+        .map(|(v, end)| {
             if end != block.data_len {
                 Err(BundleError::BlockAdditionalData(BlockType::BundleAge))
             } else {
@@ -358,8 +352,8 @@ impl Bundle {
 impl cbor::decode::FromCbor for ValidBundle {
     type Error = BundleError;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        let r = cbor::decode::try_parse_array(data, |blocks, tags| {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        let r = cbor::decode::try_parse_array(data, |blocks, _tags| {
             // Parse Primary block
             let (((mut bundle, mut valid), block_start), block_len) = blocks
                 .parse_array(|block, block_start, tags| {
@@ -391,10 +385,10 @@ impl cbor::decode::FromCbor for ValidBundle {
                 valid = bundle.parse_blocks(blocks, data).is_ok()
             }
 
-            Ok::<_, BundleError>((bundle, valid, tags))
+            Ok::<_, BundleError>((bundle, valid))
         })?;
 
-        let Some(((bundle, mut valid, tags), len)) = r else {
+        let Some(((bundle, mut valid), len)) = r else {
             return Ok(None);
         };
 
@@ -409,7 +403,6 @@ impl cbor::decode::FromCbor for ValidBundle {
                 ValidBundle::Invalid(bundle)
             },
             len,
-            tags,
         )))
     }
 }

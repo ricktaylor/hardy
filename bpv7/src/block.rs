@@ -18,7 +18,7 @@ pub struct BlockWithNumber {
 impl cbor::decode::FromCbor for BlockWithNumber {
     type Error = BundleError;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |block, tags| {
             if block.count().is_none() {
                 trace!("Parsing extension block of indefinite length")
@@ -57,27 +57,23 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                     }
                     value => Err(cbor::decode::Error::IncorrectType(
                         "Byte String".to_string(),
-                        value.type_name(),
+                        value.type_name(!tags.is_empty()),
                     )),
                 })?;
 
             // Check CRC
             crc::parse_crc_value(data, block, crc_type)?;
 
-            Ok((
-                BlockWithNumber {
-                    number: block_number,
-                    block: Block {
-                        block_type,
-                        flags,
-                        crc_type,
-                        data_offset,
-                        data_len,
-                    },
+            Ok(BlockWithNumber {
+                number: block_number,
+                block: Block {
+                    block_type,
+                    flags,
+                    crc_type,
+                    data_offset,
+                    data_len,
                 },
-                tags,
-            ))
+            })
         })
-        .map(|r| r.map(|((block, tags), len)| (block, len, tags)))
     }
 }

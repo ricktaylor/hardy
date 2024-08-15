@@ -59,8 +59,8 @@ impl cbor::encode::ToCbor for &CreationTimestamp {
 impl cbor::decode::FromCbor for CreationTimestamp {
     type Error = self::Error;
 
-    fn try_from_cbor_tagged(data: &[u8]) -> Result<Option<(Self, usize, Vec<u64>)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, tags| {
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, _tags| {
             let timestamp = a.parse().map_field_err("bundle creation time")?;
             let creation_time = CreationTimestamp {
                 creation_time: if timestamp == 0 {
@@ -73,8 +73,7 @@ impl cbor::decode::FromCbor for CreationTimestamp {
             if a.end()?.is_none() {
                 return Err(Error::AdditionalItems);
             }
-            Ok((creation_time, tags))
+            Ok(creation_time)
         })
-        .map(|r| r.map(|((t, tags), len)| (t, len, tags)))
     }
 }
