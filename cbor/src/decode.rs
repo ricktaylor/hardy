@@ -224,6 +224,22 @@ impl<'a, const D: usize> Sequence<'a, D> {
         Ok(())
     }
 
+    pub fn skip_to_end(&mut self) -> Result<(), Error> {
+        while self
+            .try_parse_value(|mut value, _, _| value.skip())?
+            .is_some()
+        {
+            if D == 2
+                && self
+                    .try_parse_value(|mut value, _, _| value.skip())?
+                    .is_none()
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
     where
         F: FnOnce(Value, usize, Vec<u64>) -> Result<T, E>,

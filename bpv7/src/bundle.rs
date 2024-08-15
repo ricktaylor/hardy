@@ -117,31 +117,30 @@ fn parse_primary_block(
         .into();
 
     // Parse CRC Type
-    let crc_type = block.parse::<CrcType>().map_field_err("CRC Type");
+    let crc_type = block.parse::<CrcType>();
 
     // Parse EIDs
-    let dest_eid = block.parse::<Eid>().map_field_err("Destination EID");
-    let source_eid = block.parse::<Eid>().map_field_err("Source EID");
+    let dest_eid = block.parse::<Eid>();
+    let source_eid = block.parse::<Eid>();
     let report_to = block.parse::<Eid>().map_field_err("Report-to EID")?;
 
     // Parse timestamp
-    let timestamp = block
-        .parse::<CreationTimestamp>()
-        .map_field_err("Creation Timestamp");
+    let timestamp = block.parse::<CreationTimestamp>();
 
     // Parse lifetime
-    let lifetime = block.parse::<u64>().map_field_err("Lifetime");
+    let lifetime = block.parse::<u64>();
 
     // Parse fragment parts
-    let fragment_info: Result<Option<FragmentInfo>, BundleError> = if !flags.is_fragment {
+    let fragment_info = if !flags.is_fragment {
         Ok(None)
     } else {
-        Ok(Some(FragmentInfo {
-            offset: block.parse().map_field_err("Fragment offset")?,
-            total_len: block
-                .parse()
-                .map_field_err("Total Application Data Unit Length")?,
-        }))
+        let offset = block.parse::<u64>();
+        let total_len = block.parse::<u64>();
+        match (offset, total_len) {
+            (Ok(offset), Ok(total_len)) => Ok(Some(FragmentInfo { offset, total_len })),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
     };
 
     // Try to parse and check CRC
@@ -167,7 +166,7 @@ fn parse_primary_block(
             Ok(timestamp),
             Ok(lifetime),
             Ok(fragment_info),
-            Ok((Ok(_), crc_type)),
+            Ok((Ok(()), crc_type)),
         ) => Ok((
             Bundle {
                 id: BundleId {
@@ -184,14 +183,14 @@ fn parse_primary_block(
             },
             true,
         )),
-        (dest_eid, source_eid, timestamp, lifetime, _, crc_result) => {
+        (dest_eid, source_eid, timestamp, lifetime, fragment_info, crc_result) => {
             Ok((
                 // Compose something out of what we have!
                 Bundle {
                     id: BundleId {
                         source: source_eid.unwrap_or(Eid::Null),
-                        timestamp: timestamp.unwrap_or(CreationTimestamp::default()),
-                        ..Default::default()
+                        timestamp: timestamp.unwrap_or_default(),
+                        fragment_info: fragment_info.unwrap_or(None),
                     },
                     flags,
                     crc_type: crc_result.map_or(CrcType::None, |(_, t)| t),
@@ -400,6 +399,9 @@ impl cbor::decode::FromCbor for ValidBundle {
 
                 // Don't return an Err, just capture validity
                 valid = bundle.parse_blocks(blocks, data).is_ok()
+            } else {
+                // Just skip over the blocks, avoiding any further parsing
+                blocks.skip_to_end()?;
             }
 
             Ok::<_, BundleError>((bundle, valid))
