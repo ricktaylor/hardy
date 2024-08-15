@@ -16,4 +16,4 @@ use fuzz_macros::instrument;
 use hardy_bpa_api::metadata;
 use hardy_bpv7::prelude as bpv7;
 use trace_err::*;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};

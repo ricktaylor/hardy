@@ -7,8 +7,6 @@ pub type Sender = tokio::sync::mpsc::Sender<metadata::Bundle>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
-    async fn restart(&self, tx: Sender) -> Result<()>;
-
     async fn load(&self, bundle_id: &bpv7::BundleId) -> Result<Option<metadata::Bundle>>;
 
     async fn store(&self, metadata: &metadata::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
@@ -24,7 +22,10 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
 
-    async fn confirm_exists(&self, storage_name: &str, hash: &[u8]) -> Result<bool>;
+    async fn confirm_exists(
+        &self,
+        bundle_id: &bpv7::BundleId,
+    ) -> Result<Option<metadata::Metadata>>;
 
     async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<()>;
 
@@ -38,7 +39,7 @@ pub trait MetadataStorage: Send + Sync {
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;
-pub type ListResponse = (std::sync::Arc<str>, DataRef, Option<time::OffsetDateTime>);
+pub type ListResponse = (std::sync::Arc<str>, Option<time::OffsetDateTime>);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
