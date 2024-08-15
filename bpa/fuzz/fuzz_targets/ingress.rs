@@ -1,7 +1,6 @@
 #![no_main]
 
 use hardy_bpa::*;
-use hardy_bpv7::prelude as bpv7;
 use libfuzzer_sys::fuzz_target;
 
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -58,15 +57,7 @@ fn setup() -> tokio::runtime::Runtime {
         );
 
         // Create a new ingress
-        let ingress = INGRESS.get_or_init(|| {
-            ingress::Ingress::new(
-                &config,
-                store.clone(),
-                dispatcher.clone(),
-                &mut task_set,
-                cancel_token.clone(),
-            )
-        });
+        let ingress = ingress::Ingress::new(&config, store.clone(), dispatcher.clone());
 
         // Start the store - this can take a while as the store is walked
         store
@@ -78,6 +69,8 @@ fn setup() -> tokio::runtime::Runtime {
             )
             .await;
 
+        INGRESS.get_or_init(|| ingress.clone());
+
         while task_set.join_next().await.is_some() {}
     });
 
@@ -85,26 +78,18 @@ fn setup() -> tokio::runtime::Runtime {
 }
 
 fn test_ingress(data: &[u8]) {
-    let rt = RT.get_or_init(setup);
-
-    // Prefilter garbage - we're not testing bundle parsing here
-    if hardy_cbor::decode::parse::<bpv7::ValidBundle>(data).is_ok() {
-        rt.block_on(async {
-            let mut i = 0;
-            let ingress = loop {
-                match INGRESS.get() {
-                    Some(ingress) => break ingress,
-                    None if i < 10 => {
-                        i += 1;
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    }
-                    None => panic!("Failed to connect to ingress"),
+    RT.get_or_init(setup).block_on(async {
+        let ingress = loop {
+            match INGRESS.get() {
+                Some(ingress) => break ingress,
+                None => {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
-            };
+            }
+        };
 
-            let _ = ingress.receive(data.into()).await;
-        })
-    }
+        let _ = ingress.receive(data.into()).await;
+    })
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -112,3 +97,4 @@ fuzz_target!(|data: &[u8]| {
 });
 
 // llvm-cov show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
+// llvm-cov export --format=lcov  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/ingress/lcov.info

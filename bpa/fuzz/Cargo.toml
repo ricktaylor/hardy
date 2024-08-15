@@ -10,16 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 hardy-bpa = { path = "..", features = ["mem-storage"] }
-hardy-bpv7 = { path = "../../bpv7" }
-hardy-cbor = { path = "../../cbor" }
 config = { version = "0.14.0", features = ["toml"] }
-tokio-util = "0.7.11"
-tokio = { version = "1.38.0", features = [
-    "macros",
-    "rt-multi-thread",
-    "signal",
-    "time",
-] }
+tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "time"] }
 
 [[bin]]
 name = "ingress"
