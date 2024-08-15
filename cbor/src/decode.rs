@@ -28,6 +28,9 @@ pub enum Error {
     #[error("Map has key but no value")]
     PartialMap,
 
+    #[error("Maximum recursion depth reached")]
+    MaxRecursion,
+
     #[error(transparent)]
     InvalidUtf8(#[from] Utf8Error),
 
@@ -88,21 +91,114 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
         }
     }
 
-    pub fn skip(&mut self) -> Result<(), Error> {
+    fn skip(&mut self, mut max_recursion: usize) -> Result<(), Error> {
         match self {
             Value::Array(a) => {
-                while a.try_parse_value(|mut value, _, _| value.skip())?.is_some() {}
+                if max_recursion == 0 {
+                    return Err(Error::MaxRecursion);
+                }
+                max_recursion -= 1;
+                a.skip_to_end(max_recursion).map(|_| ())
             }
             Value::Map(m) => {
-                while m.try_parse_value(|mut value, _, _| value.skip())?.is_some() {
-                    if m.try_parse_value(|mut value, _, _| value.skip())?.is_none() {
-                        break;
-                    }
+                if max_recursion == 0 {
+                    return Err(Error::MaxRecursion);
+                }
+                max_recursion -= 1;
+                m.skip_to_end(max_recursion).map(|_| ())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+struct SequenceDebug<'a, 'b: 'a, const D: usize> {
+    sequence: std::cell::RefCell<&'a mut Sequence<'b, D>>,
+    max_recursion: usize,
+}
+
+impl<'a, 'b: 'a, const D: usize> SequenceDebug<'a, 'b, D> {
+    fn new(sequence: &'a mut Sequence<'b, D>, max_recursion: usize) -> Self {
+        Self {
+            sequence: std::cell::RefCell::new(sequence),
+            max_recursion,
+        }
+    }
+}
+
+impl<'a, 'b: 'a, const D: usize> std::fmt::Debug for SequenceDebug<'a, 'b, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.max_recursion == 0 {
+            return write!(f, "... (max recursion reached)");
+        }
+
+        if D == 1 {
+            let mut l = f.debug_list();
+            loop {
+                let r = self
+                    .sequence
+                    .borrow_mut()
+                    .try_parse_value(|mut value, _, _| {
+                        match &mut value {
+                            Value::Array(a) => {
+                                l.entry(&SequenceDebug::new(a, self.max_recursion - 1))
+                            }
+                            Value::Map(m) => {
+                                l.entry(&SequenceDebug::new(m, self.max_recursion - 1))
+                            }
+                            _ => l.entry(&value),
+                        };
+                        Ok::<_, Error>(())
+                    })
+                    .map_err(|_| std::fmt::Error)?;
+                if r.is_none() {
+                    break;
                 }
             }
-            _ => {}
+            l.finish()
+        } else {
+            let mut s = f.debug_map();
+            loop {
+                let r = self
+                    .sequence
+                    .borrow_mut()
+                    .try_parse_value(|mut value, _, _| {
+                        match &mut value {
+                            Value::Array(a) => {
+                                s.key(&SequenceDebug::new(a, self.max_recursion - 1))
+                            }
+                            Value::Map(m) => s.key(&SequenceDebug::new(m, self.max_recursion - 1)),
+                            _ => s.key(&value),
+                        };
+                        Ok::<_, Error>(())
+                    })
+                    .map_err(|_| std::fmt::Error)?;
+                if r.is_none() {
+                    break;
+                }
+                let r = self
+                    .sequence
+                    .borrow_mut()
+                    .try_parse_value(|mut value, _, _| {
+                        match &mut value {
+                            Value::Array(a) => {
+                                s.value(&SequenceDebug::new(a, self.max_recursion - 1))
+                            }
+                            Value::Map(m) => {
+                                s.value(&SequenceDebug::new(m, self.max_recursion - 1))
+                            }
+                            _ => s.value(&value),
+                        };
+                        Ok::<_, Error>(())
+                    })
+                    .map_err(|_| std::fmt::Error)?;
+                if r.is_none() {
+                    s.value(&"<Missing>");
+                    break;
+                };
+            }
+            s.finish()
         }
-        Ok(())
     }
 }
 
@@ -123,45 +219,7 @@ impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
                 offset: &mut offset,
                 idx: self.idx,
             };
-            if D == 1 {
-                let mut l = f.debug_list();
-                loop {
-                    let r = self_cloned
-                        .try_parse_value(|mut value, _, _| {
-                            l.entry(&value);
-                            value.skip()
-                        })
-                        .map_err(|_| std::fmt::Error)?;
-                    if r.is_none() {
-                        break;
-                    }
-                }
-                l.finish()
-            } else {
-                let mut s = f.debug_map();
-                loop {
-                    let r = self_cloned
-                        .try_parse_value(|mut value, _, _| {
-                            s.key(&value);
-                            value.skip()
-                        })
-                        .map_err(|_| std::fmt::Error)?;
-                    if r.is_none() {
-                        break;
-                    }
-                    let r = self_cloned
-                        .try_parse_value(|mut value, _, _| {
-                            s.value(&value);
-                            value.skip()
-                        })
-                        .map_err(|_| std::fmt::Error)?;
-                    if r.is_none() {
-                        s.value(&"<Missing>");
-                        break;
-                    };
-                }
-                s.finish()
-            }
+            SequenceDebug::new(&mut self_cloned, 16).fmt(f)
         }
     }
 }
@@ -224,20 +282,35 @@ impl<'a, const D: usize> Sequence<'a, D> {
         Ok(())
     }
 
-    pub fn skip_to_end(&mut self) -> Result<(), Error> {
-        while self
-            .try_parse_value(|mut value, _, _| value.skip())?
-            .is_some()
-        {
-            if D == 2
-                && self
-                    .try_parse_value(|mut value, _, _| value.skip())?
-                    .is_none()
-            {
+    pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<Option<(usize, usize)>, Error> {
+        let mut outer_start = None;
+        let mut outer_len = 0;
+        loop {
+            let Some((start, len)) = self
+                .try_parse_value(|mut value, start, _| value.skip(max_recursion).map(|_| start))?
+            else {
                 break;
+            };
+
+            if outer_start.is_none() {
+                outer_start = Some(start);
+            }
+            outer_len += len;
+
+            if D == 2 {
+                let Some((_, len)) =
+                    self.try_parse_value(|mut value, _, _| value.skip(max_recursion))?
+                else {
+                    break;
+                };
+                outer_len += len;
             }
         }
-        Ok(())
+        if let Some(outer_start) = outer_start {
+            Ok(Some((outer_start, outer_len)))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>

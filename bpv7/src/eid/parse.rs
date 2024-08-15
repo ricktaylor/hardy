@@ -132,48 +132,6 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
     }
 }
 
-fn cbor_skip(
-    scheme: u64,
-    value: cbor::decode::Value,
-    start: usize,
-    count: usize,
-) -> Result<usize, EidError> {
-    unknown_from_cbor(scheme, value, count - 1)?;
-    Ok(start)
-}
-
-fn unknown_from_cbor(
-    scheme: u64,
-    value: cbor::decode::Value,
-    max_recursion: usize,
-) -> Result<(), EidError> {
-    match value {
-        _ if max_recursion == 0 => {
-            // Recursion safety check
-            return Err(EidError::UnsupportedScheme(scheme.to_string()));
-        }
-        cbor::decode::Value::Array(a) => {
-            while a
-                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, max_recursion))?
-                .is_some()
-            {}
-        }
-        cbor::decode::Value::Map(m) => {
-            while m
-                .try_parse_value(|value, start, _| cbor_skip(scheme, value, start, max_recursion))?
-                .is_some()
-            {
-                m.try_parse_value(|value, start, _| {
-                    cbor_skip(scheme, value, start, max_recursion)
-                })?
-                .ok_or::<EidError>(cbor::decode::Error::PartialMap.into())?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
     cbor::decode::try_parse_array(data, |a, tags| {
         if !tags.is_empty() {
@@ -221,15 +179,14 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
                 .map(|(eid, _)| eid)
                 .map_field_err("'ipn' scheme-specific part"),
             scheme => {
-                let (start, len) = a.parse_value(|value, start, _| {
-                    unknown_from_cbor(scheme, value, 16)
-                        .map(|_| start)
-                        .map_err(Into::<EidError>::into)
-                })?;
-                Ok(Eid::Unknown {
-                    scheme,
-                    data: data[start..start + len].to_vec(),
-                })
+                if let Some((start, len)) = a.skip_to_end(16).map_err(Into::<EidError>::into)? {
+                    Ok(Eid::Unknown {
+                        scheme,
+                        data: data[start..start + len].to_vec(),
+                    })
+                } else {
+                    Err(EidError::UnsupportedScheme(scheme.to_string()))
+                }
             }
         }
     })

@@ -401,7 +401,7 @@ impl cbor::decode::FromCbor for ValidBundle {
                 valid = bundle.parse_blocks(blocks, data).is_ok()
             } else {
                 // Just skip over the blocks, avoiding any further parsing
-                blocks.skip_to_end()?;
+                blocks.skip_to_end(16)?;
             }
 
             Ok::<_, BundleError>((bundle, valid))
