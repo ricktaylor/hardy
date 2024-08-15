@@ -28,7 +28,7 @@ impl Ingress {
         };
 
         // Write the bundle data to the store
-        let (storage_name, hash) = self.store.store_data(Arc::from(data)).await?;
+        let (storage_name, hash) = self.store.store_data(data).await?;
 
         // And now process the bundle
         if let Err(e) = self

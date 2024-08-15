@@ -52,7 +52,8 @@ impl storage::BundleStorage for Storage {
         }
     }
 
-    async fn store(&self, mut data: Arc<[u8]>) -> storage::Result<Arc<str>> {
+    async fn store(&self, data: Box<[u8]>) -> storage::Result<Arc<str>> {
+        let mut data = Arc::from(data);
         let mut bundles = self.bundles.write().await;
         loop {
             let storage_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 64);

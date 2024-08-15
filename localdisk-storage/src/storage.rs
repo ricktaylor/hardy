@@ -234,7 +234,7 @@ impl BundleStorage for Storage {
         }
     }
 
-    async fn store(&self, data: Arc<[u8]>) -> storage::Result<Arc<str>> {
+    async fn store(&self, data: Box<[u8]>) -> storage::Result<Arc<str>> {
         let root = self.store_root.clone();
 
         // Spawn a thread to try to maintain linearity

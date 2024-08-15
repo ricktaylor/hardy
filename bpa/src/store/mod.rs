@@ -472,7 +472,7 @@ impl Store {
         }
     }
 
-    pub async fn store_data(&self, data: Arc<[u8]>) -> Result<(Arc<str>, Arc<[u8]>), Error> {
+    pub async fn store_data(&self, data: Box<[u8]>) -> Result<(Arc<str>, Arc<[u8]>), Error> {
         // Calculate hash
         let hash = hash(&data);
 
@@ -503,7 +503,7 @@ impl Store {
     pub async fn store(
         &self,
         bundle: &bpv7::Bundle,
-        data: Arc<[u8]>,
+        data: Box<[u8]>,
         status: metadata::BundleStatus,
         received_at: Option<time::OffsetDateTime>,
     ) -> Result<Option<metadata::Metadata>, Error> {
