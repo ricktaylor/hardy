@@ -98,15 +98,24 @@ impl storage::MetadataStorage for Storage {
             .ok_or(Error::NotFound.into())
     }
 
-    async fn remove(&self, _storage_name: &str) -> storage::Result<()> {
-        todo!()
+    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
+        let mut inner = self.inner.write().await;
+        let Some(bundle) = inner.metadata.remove(storage_name) else {
+            return Err(Error::NotFound.into());
+        };
+
+        inner
+            .index
+            .remove(&bundle.bundle.id)
+            .map(|_| ())
+            .ok_or(Error::NotFound.into())
     }
 
     async fn confirm_exists(
         &self,
         _bundle_id: &bpv7::BundleId,
     ) -> storage::Result<Option<metadata::Metadata>> {
-        todo!()
+        Ok(None)
     }
 
     async fn begin_replace(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<()> {
