@@ -136,7 +136,9 @@ impl Dispatcher {
         loop {
             tokio::select! {
                 () = &mut timer => {
-                    info!("{bundles} bundles in flight");
+                    if bundles > 0 {
+                        info!("{bundles} bundles in flight");
+                    }
                     timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
                 },
                 bundle = rx.recv() => {
@@ -153,6 +155,9 @@ impl Dispatcher {
                     r.trace_expect("Task terminated unexpectedly");
 
                     bundles -= 1;
+                    if bundles == 0 {
+                        info!("No bundles in flight");
+                    }
                 },
                 _ = dispatcher.cancel_token.cancelled() => break
             }
@@ -174,7 +179,7 @@ impl Dispatcher {
     async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
         if let metadata::BundleStatus::DispatchPending = &bundle.metadata.status {
             // Check if we are the final destination
-            bundle.metadata.status = if self
+            let status = if self
                 .config
                 .admin_endpoints
                 .is_local_service(&bundle.bundle.destination)
@@ -202,9 +207,7 @@ impl Dispatcher {
                 metadata::BundleStatus::ForwardPending
             };
 
-            self.store
-                .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
-                .await?;
+            self.store.set_status(&mut bundle.metadata, status).await?;
         }
 
         if let metadata::BundleStatus::ReassemblyPending = &bundle.metadata.status {
@@ -238,9 +241,8 @@ impl Dispatcher {
             }
             metadata::BundleStatus::ForwardAckPending(_, _) => {
                 // Clear the pending ACK, we are reprocessing
-                bundle.metadata.status = metadata::BundleStatus::ForwardPending;
                 self.store
-                    .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
+                    .set_status(&mut bundle.metadata, metadata::BundleStatus::ForwardPending)
                     .await?;
 
                 // And just forward
@@ -411,7 +413,7 @@ impl Dispatcher {
                     }
 
                     // Wait a bit
-                    if !self.wait_to_forward(&bundle.metadata, wait).await? {
+                    if !self.wait_to_forward(&mut bundle.metadata, wait).await? {
                         // Cancelled, or too long a wait for here
                         return Ok(());
                     }
@@ -460,11 +462,12 @@ impl Dispatcher {
                             }).min(bundle.expiry());
 
                             // Set the bundle status to 'Forward Acknowledgement Pending'
-                            bundle.metadata.status =
-                                metadata::BundleStatus::ForwardAckPending(handle, until);
                             return self
                                 .store
-                                .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
+                                .set_status(
+                                    &mut bundle.metadata,
+                                    metadata::BundleStatus::ForwardAckPending(handle, until),
+                                )
                                 .await;
                         }
                         Ok(cla_registry::ForwardBundleResult::Congested(until)) => {
@@ -505,7 +508,7 @@ impl Dispatcher {
                 }
 
                 // We must wait for a bit for the CLAs to calm down
-                if !self.wait_to_forward(&bundle.metadata, until).await? {
+                if !self.wait_to_forward(&mut bundle.metadata, until).await? {
                     // Cancelled, or too long a wait for here
                     return Ok(());
                 }
@@ -572,7 +575,7 @@ impl Dispatcher {
 
     async fn wait_to_forward(
         &self,
-        metadata: &metadata::Metadata,
+        metadata: &mut metadata::Metadata,
         until: time::OffsetDateTime,
     ) -> Result<bool, Error> {
         let wait = until - time::OffsetDateTime::now_utc();
@@ -580,10 +583,7 @@ impl Dispatcher {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
             trace!("Bundle will wait offline until: {until}");
             self.store
-                .set_status(
-                    &metadata.storage_name,
-                    &metadata::BundleStatus::Waiting(until),
-                )
+                .set_status(metadata, metadata::BundleStatus::Waiting(until))
                 .await?;
             return Ok(false);
         }
@@ -704,9 +704,8 @@ impl Dispatcher {
         trace!("Forwarding bundle");
 
         // Set status to ForwardPending
-        bundle.metadata.status = metadata::BundleStatus::ForwardPending;
         self.store
-            .set_status(&bundle.metadata.storage_name, &bundle.metadata.status)
+            .set_status(&mut bundle.metadata, metadata::BundleStatus::ForwardPending)
             .await?;
 
         // And dispatch it
@@ -716,7 +715,7 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn drop_bundle(
         &self,
-        bundle: metadata::Bundle,
+        mut bundle: metadata::Bundle,
         reason: Option<bpv7::StatusReportReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
@@ -726,8 +725,8 @@ impl Dispatcher {
         // Leave a tombstone in the metadata, so we can ignore duplicates
         self.store
             .set_status(
-                &bundle.metadata.storage_name,
-                &metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
+                &mut bundle.metadata,
+                metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
             )
             .await?;
 

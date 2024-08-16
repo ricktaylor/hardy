@@ -9,7 +9,7 @@ pub struct Metadata {
     pub received_at: Option<time::OffsetDateTime>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BundleStatus {
     IngressPending,
     DispatchPending,

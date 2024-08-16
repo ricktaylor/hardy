@@ -214,6 +214,12 @@ impl Store {
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Vec<storage::ListResponse> {
+        /* This is done as a big Vec buffer, as we cannot start processing stored bundles
+         * until we have enumerated them all, as the processing can create more bundles
+         * which causes all kinds of double-processing issues */
+
+        // TODO: We might want to use a tempfile here as the Vec<> could get really big!
+
         let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(16);
         let h = tokio::spawn(async move {
             let mut results = Vec::new();
@@ -256,8 +262,6 @@ impl Store {
         ingress: Arc<ingress::Ingress>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
-        let results = self.list_bundles(cancel_token.clone()).await;
-
         // We're going to spawn a bunch of tasks
         let parallelism = std::thread::available_parallelism()
             .map(Into::into)
@@ -273,7 +277,8 @@ impl Store {
         let mut orphans = 0u64;
         let mut bad = 0u64;
 
-        for (storage_name, file_time) in results {
+        // For each bundle in the store
+        for (storage_name, file_time) in self.list_bundles(cancel_token.clone()).await {
             bundles = bundles.saturating_add(1);
 
             loop {
@@ -333,28 +338,30 @@ impl Store {
             Ok(bpv7::ValidBundle::Invalid(bundle)) => (bundle, false),
             Err(e) => {
                 // Parse failed badly, no idea who to report to
-                warn!("Malformed bundle data found: {storage_name}, {e}");
+                warn!("Junk data found: {storage_name}, {e}");
 
                 // Drop the bundle
                 bundle_storage
                     .remove(&storage_name)
                     .await
-                    .trace_expect(&format!("Failed to remove invalid bundle: {storage_name}"));
+                    .trace_expect(&format!(
+                        "Failed to remove malformed bundle: {storage_name}"
+                    ));
                 return (0, 1);
             }
         };
 
         // Check if the metadata_storage knows about this bundle
-        if let Some(metadata) = metadata_storage
+        let metadata = metadata_storage
             .confirm_exists(&bundle.id)
             .await
-            .trace_expect("Failed to confirm bundle existence")
-        {
+            .trace_expect("Failed to confirm bundle existence");
+        if let Some(metadata) = &metadata {
             let drop = if let metadata::BundleStatus::Tombstone(_) = metadata.status {
                 // Tombstone, ignore
                 warn!("Tombstone bundle data found: {storage_name}");
                 true
-            } else if valid && metadata.storage_name == storage_name && metadata.hash == hash {
+            } else if metadata.storage_name == storage_name && metadata.hash == hash {
                 false
             } else {
                 warn!("Duplicate bundle data found: {storage_name}");
@@ -369,34 +376,34 @@ impl Store {
                     .trace_expect(&format!(
                         "Failed to remove duplicate bundle: {storage_name}"
                     ));
-                (0, 1)
-            } else {
-                // Valid bundle that just needs to be fed into the dispatcher
-                ingress
-                    .process_bundle(metadata::Bundle { metadata, bundle })
-                    .await
-                    .trace_expect("Failed to feed restart bundle into ingress");
-                (0, 0)
+                return (0, 1);
             }
-        } else {
-            // Orphan bundle, just push it in the top of the ingress
-            ingress
-                .receive_bundle(
-                    metadata::Bundle {
-                        metadata: metadata::Metadata {
-                            status: metadata::BundleStatus::IngressPending,
-                            storage_name,
-                            hash,
-                            received_at: file_time,
-                        },
-                        bundle,
-                    },
-                    valid,
-                )
-                .await
-                .trace_expect("Failed to process orphan bundle");
-            (1, 0)
         }
+        let orphan = metadata.is_none();
+
+        // Send to the ingress to sort out
+        ingress
+            .restart_bundle(
+                metadata::Bundle {
+                    metadata: metadata.unwrap_or(metadata::Metadata {
+                        status: if valid {
+                            metadata::BundleStatus::IngressPending
+                        } else {
+                            metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
+                        },
+                        storage_name,
+                        hash,
+                        received_at: file_time,
+                    }),
+                    bundle,
+                },
+                valid,
+                orphan,
+            )
+            .await
+            .trace_expect("Failed to restart bundle");
+
+        (if orphan { 1 } else { 0 }, 0)
     }
 
     #[instrument(skip_all)]
@@ -589,12 +596,17 @@ impl Store {
     #[instrument(skip(self))]
     pub async fn set_status(
         &self,
-        storage_name: &str,
-        status: &metadata::BundleStatus,
+        metadata: &mut metadata::Metadata,
+        status: metadata::BundleStatus,
     ) -> Result<(), Error> {
-        self.metadata_storage
-            .set_bundle_status(storage_name, status)
-            .await
+        if metadata.status == status {
+            Ok(())
+        } else {
+            metadata.status = status;
+            self.metadata_storage
+                .set_bundle_status(&metadata.storage_name, &metadata.status)
+                .await
+        }
     }
 
     #[instrument(skip(self))]
