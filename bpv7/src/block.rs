@@ -28,7 +28,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                 .into());
             }
 
-            if block.count().is_none() {
+            if !block.is_definite() {
                 trace!("Parsing extension block of indefinite length")
             }
 

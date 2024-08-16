@@ -38,6 +38,9 @@ pub enum BundleError {
     #[error(transparent)]
     InvalidCrc(#[from] crc::CrcError),
 
+    #[error(transparent)]
+    InvalidEid(#[from] eid::EidError),
+
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
@@ -100,7 +103,7 @@ fn parse_primary_block(
     block_start: usize,
 ) -> Result<(Bundle, bool), BundleError> {
     // Check number of items in the array
-    if block.count().is_none() {
+    if !block.is_definite() {
         trace!("Parsing primary block of indefinite length")
     }
 
@@ -206,27 +209,33 @@ fn parse_primary_block(
 }
 
 fn parse_previous_node(block: &Block, data: &[u8]) -> Result<Eid, BundleError> {
-    Eid::from_cbor(data)
-        .map_field_err("Previous Node ID")
-        .map(|(v, end)| {
-            if end != block.data_len {
+    match Eid::try_from_cbor(data) {
+        Ok(Some((v, len))) => {
+            if len != block.data_len {
                 Err(BundleError::BlockAdditionalData(BlockType::PreviousNode))
             } else {
                 Ok(v)
             }
-        })?
+        }
+        Ok(None) => Err(cbor::decode::Error::NotEnoughData.into()),
+        Err(e) => Err(e.into()),
+    }
+    .map_field_err("Previous Node ID")
 }
 
 fn parse_bundle_age(block: &Block, data: &[u8]) -> Result<u64, BundleError> {
-    u64::from_cbor(data)
-        .map_field_err("Bundle Age")
-        .map(|(v, end)| {
-            if end != block.data_len {
+    match u64::try_from_cbor(data) {
+        Ok(Some((v, len))) => {
+            if len != block.data_len {
                 Err(BundleError::BlockAdditionalData(BlockType::BundleAge))
             } else {
                 Ok(v)
             }
-        })?
+        }
+        Ok(None) => Err(cbor::decode::Error::NotEnoughData.into()),
+        Err(e) => Err(e.into()),
+    }
+    .map_field_err("Bundle Age")
 }
 
 fn parse_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, BundleError> {
@@ -239,7 +248,7 @@ fn parse_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, BundleError> {
             .into());
         }
 
-        if a.count().is_none() {
+        if !a.is_definite() {
             trace!("Parsing Hop Count as indefinite length array");
         }
 

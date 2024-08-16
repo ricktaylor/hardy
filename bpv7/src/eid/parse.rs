@@ -100,7 +100,7 @@ pub fn eid_from_str(s: &str) -> Result<Eid, EidError> {
 }
 
 fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
-    if value.count().is_none() {
+    if !value.is_definite() {
         trace!("Parsing ipn EID as indefinite array");
     }
 
@@ -142,7 +142,7 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
             .into());
         }
 
-        if a.count().is_none() {
+        if !a.is_definite() {
             trace!("Parsing EID array of indefinite length")
         }
 

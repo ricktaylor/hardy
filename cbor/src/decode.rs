@@ -45,13 +45,6 @@ pub trait FromCbor: Sized {
     type Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error>;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, usize), Self::Error>
-    where
-        Self::Error: From<self::Error>,
-    {
-        Self::try_from_cbor(data)?.ok_or(Error::NotEnoughData.into())
-    }
 }
 
 #[derive(Debug)]
@@ -241,6 +234,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.count.map(|c| c / D)
     }
 
+    pub fn is_definite(&self) -> bool {
+        self.count.is_some()
+    }
+
     fn check_for_end(&mut self) -> Result<bool, Error> {
         if let Some(count) = self.count {
             match self.idx.cmp(&count) {
@@ -324,16 +321,14 @@ impl<'a, const D: usize> Sequence<'a, D> {
         } else {
             // Parse sub-item
             let item_start = *self.offset;
-            try_parse_value(&self.data[item_start..], |value, tags| {
+            let r = try_parse_value(&self.data[item_start..], |value, tags| {
                 f(value, item_start, tags)
-            })
-            .map(|o| {
-                o.map(|(r, len)| {
-                    self.idx += 1;
-                    *self.offset += len;
-                    (r, len)
-                })
-            })
+            });
+            if let Ok(Some((_, len))) = r {
+                self.idx += 1;
+                *self.offset += len;
+            }
+            r
         }
     }
 
@@ -356,11 +351,14 @@ impl<'a, const D: usize> Sequence<'a, D> {
             Ok(None)
         } else {
             // Parse sub-item
-            T::from_cbor(&self.data[*self.offset..]).map(|(value, len)| {
-                self.idx += 1;
-                *self.offset += len;
-                Some(value)
-            })
+            match T::try_from_cbor(&self.data[*self.offset..])? {
+                Some((value, len)) => {
+                    self.idx += 1;
+                    *self.offset += len;
+                    Ok(Some(value))
+                }
+                None => Ok(None),
+            }
         }
     }
 
@@ -369,8 +367,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         T: FromCbor,
         T::Error: From<self::Error>,
     {
-        let r: Result<Option<T>, <T as FromCbor>::Error> = self.try_parse();
-        r?.ok_or(Error::NotEnoughData.into())
+        self.try_parse::<T>()?.ok_or(Error::NotEnoughData.into())
     }
 
     pub fn try_parse_array<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
@@ -726,7 +723,7 @@ where
     T: FromCbor,
     T::Error: From<self::Error>,
 {
-    T::from_cbor(data).map(|(v, _)| v)
+    try_parse::<T>(data)?.ok_or(Error::NotEnoughData.into())
 }
 
 impl FromCbor for u8 {
@@ -1003,27 +1000,25 @@ where
     type Error = T::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        let (tags, offset) = parse_tags(data)?;
-        if offset >= data.len() {
-            if !tags.is_empty() {
-                return Err(Error::JustTags.into());
-            } else {
-                return Ok(None);
+        match try_parse_value(data, |value, tags| match value {
+            Value::Undefined => {
+                if !tags.is_empty() {
+                    Err(Error::IncorrectType(
+                        "Untagged Undefined".to_string(),
+                        "Tagged Undefined".to_string(),
+                    ))
+                } else {
+                    Ok(true)
+                }
             }
-        }
-        if data[offset] == (7 << 5) | 23 {
-            if !tags.is_empty() {
-                Err(Error::IncorrectType(
-                    "Untagged Undefined".to_string(),
-                    "Tagged Undefined".to_string(),
-                )
-                .into())
-            } else {
-                Ok(Some((None, offset + 1)))
+            _ => Ok(false),
+        })? {
+            Some((true, len)) => Ok(Some((None, len))),
+            Some((false, _)) => {
+                let (v, len) = T::try_from_cbor(data)?.unwrap();
+                Ok(Some((Some(v), len)))
             }
-        } else {
-            let (v, len) = T::from_cbor(data)?;
-            Ok(Some((Some(v), len)))
+            None => Ok(None),
         }
     }
 }
