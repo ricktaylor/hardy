@@ -329,7 +329,8 @@ impl<'a, const D: usize> Sequence<'a, D> {
 }
 
 enum SequenceDebugInfo {
-    Terminal(String),
+    Unknown,
+    Value(String),
     Array(Vec<SequenceDebugInfo>),
     Map(Vec<(SequenceDebugInfo, SequenceDebugInfo)>),
 }
@@ -337,7 +338,8 @@ enum SequenceDebugInfo {
 impl std::fmt::Debug for SequenceDebugInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Terminal(s) => f.write_str(s),
+            Self::Unknown => f.write_str("..."),
+            Self::Value(s) => f.write_str(s),
             Self::Array(items) => f.debug_list().entries(items).finish(),
             Self::Map(items) => {
                 let mut m = f.debug_map();
@@ -355,8 +357,8 @@ enum DebugError {
     #[error(transparent)]
     Decode(#[from] Error),
 
-    #[error("Too many levels of recursion")]
-    MaxRecursion,
+    #[error("{0:?}")]
+    Rollup(SequenceDebugInfo),
 }
 
 fn debug_fmt(
@@ -367,7 +369,7 @@ fn debug_fmt(
     match value {
         Value::Array(a) => sequence_debug_fmt(a, max_recursion),
         Value::Map(m) => sequence_debug_fmt(m, max_recursion),
-        value => Ok(SequenceDebugInfo::Terminal(format!("{value:?}"))),
+        value => Ok(SequenceDebugInfo::Value(format!("{value:?}"))),
     }
 }
 
@@ -376,26 +378,60 @@ fn sequence_debug_fmt<const D: usize>(
     max_recursion: usize,
 ) -> Result<SequenceDebugInfo, DebugError> {
     if max_recursion == 0 {
-        return Err(DebugError::MaxRecursion);
+        return Err(Error::MaxRecursion.into());
     }
     if D == 1 {
         let mut items = Vec::new();
-        while let Some((item, _)) =
-            sequence.try_parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))?
-        {
-            items.push(item);
+        loop {
+            match sequence
+                .try_parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))
+            {
+                Ok(None) => break Ok(SequenceDebugInfo::Array(items)),
+                Err(e) => {
+                    let item = match e {
+                        DebugError::Decode(e) => SequenceDebugInfo::Value(format!("<Error: {e}>")),
+                        DebugError::Rollup(item) => item,
+                    };
+                    items.push(item);
+                    break Err(DebugError::Rollup(SequenceDebugInfo::Array(items)));
+                }
+                Ok(Some((item, _))) => items.push(item),
+            }
         }
-        Ok(SequenceDebugInfo::Array(items))
     } else {
         let mut items = Vec::new();
-        while let Some((key, _)) =
-            sequence.try_parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))?
-        {
-            let (value, _) =
-                sequence.parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))?;
-            items.push((key, value));
+        loop {
+            match sequence
+                .try_parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))
+            {
+                Ok(None) => break Ok(SequenceDebugInfo::Map(items)),
+                Err(e) => {
+                    let item = match e {
+                        DebugError::Decode(e) => SequenceDebugInfo::Value(format!("<Error: {e}>")),
+                        DebugError::Rollup(item) => item,
+                    };
+                    items.push((item, SequenceDebugInfo::Unknown));
+                    break Err(DebugError::Rollup(SequenceDebugInfo::Map(items)));
+                }
+                Ok(Some((key, _))) => {
+                    match sequence
+                        .parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))
+                    {
+                        Ok((value, _)) => items.push((key, value)),
+                        Err(e) => {
+                            let item = match e {
+                                DebugError::Decode(e) => {
+                                    SequenceDebugInfo::Value(format!("<Error: {e}>"))
+                                }
+                                DebugError::Rollup(item) => item,
+                            };
+                            items.push((key, item));
+                            break Err(DebugError::Rollup(SequenceDebugInfo::Map(items)));
+                        }
+                    }
+                }
+            }
         }
-        Ok(SequenceDebugInfo::Map(items))
     }
 }
 
@@ -412,7 +448,8 @@ impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
 
             match sequence_debug_fmt(&mut self_cloned, 16) {
                 Ok(s) => write!(f, "{s:?}"),
-                Err(e) => write!(f, "<Error: {e}>"),
+                Err(DebugError::Rollup(s)) => write!(f, "{s:?}"),
+                Err(DebugError::Decode(e)) => write!(f, "<Error: {e}>"),
             }
         }
     }
