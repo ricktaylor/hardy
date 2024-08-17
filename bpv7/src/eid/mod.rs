@@ -193,12 +193,16 @@ impl std::fmt::Display for Eid {
                     .collect::<Vec<std::borrow::Cow<str>>>()
                     .join("/")
             ),
-            Eid::Unknown { scheme, data } => match cbor::decode::parse_value(data, |value, _| {
-                write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)
-            }) {
-                Ok(_) => Ok(()),
-                Err(e) => write!(f, "{e}"),
-            },
+            Eid::Unknown { scheme, data } => {
+                match cbor::decode::parse_value(data, |mut value, _| {
+                    write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)?;
+                    value.skip(16).map_err(Into::<DebugError>::into)
+                }) {
+                    Ok(_) => Ok(()),
+                    Err(DebugError::Fmt(e)) => Err(e),
+                    Err(DebugError::Decode(e)) => panic!("Error: {e}"),
+                }
+            }
         }
     }
 }

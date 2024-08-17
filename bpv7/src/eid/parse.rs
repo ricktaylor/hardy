@@ -148,7 +148,7 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
 
         match a.parse::<u64>().map_field_err("Scheme")? {
             0 => Err(EidError::UnsupportedScheme("0".to_string())),
-            1 => a
+            1 => match a
                 .parse_value(|value, _, tags| match (value, !tags.is_empty()) {
                     (cbor::decode::Value::UnsignedInteger(0), false)
                     | (cbor::decode::Value::Text("none", _), false) => Ok(Eid::Null),
@@ -166,8 +166,12 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
                     .into()),
                 })
                 .map(|(eid, _)| eid)
-                .map_field_err("'dtn' scheme-specific part"),
-            2 => a
+            {
+                Err(EidError::InvalidCBOR(e)) => Err(e).map_field_err("'dtn' scheme-specific part"),
+                Err(EidError::InvalidUtf8(e)) => Err(e).map_field_err("'dtn' scheme-specific part"),
+                r => r,
+            },
+            2 => match a
                 .parse_value(|value, _, tags| match (value, !tags.is_empty()) {
                     (cbor::decode::Value::Array(a), false) => ipn_from_cbor(a),
                     (value, tagged) => Err(cbor::decode::Error::IncorrectType(
@@ -177,9 +181,13 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
                     .into()),
                 })
                 .map(|(eid, _)| eid)
-                .map_field_err("'ipn' scheme-specific part"),
+            {
+                Err(EidError::InvalidCBOR(e)) => Err(e).map_field_err("'ipn' scheme-specific part"),
+                Err(EidError::InvalidUtf8(e)) => Err(e).map_field_err("'ipn' scheme-specific part"),
+                r => r,
+            },
             scheme => {
-                if let Some((start, len)) = a.skip_to_end(16).map_err(Into::<EidError>::into)? {
+                if let Some((start, len)) = a.skip_value(16).map_err(Into::<EidError>::into)? {
                     Ok(Eid::Unknown {
                         scheme,
                         data: data[start..start + len].to_vec(),

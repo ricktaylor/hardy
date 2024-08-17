@@ -83,21 +83,21 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
         }
     }
 
-    fn skip(&mut self, mut max_recursion: usize) -> Result<(), Error> {
+    pub fn skip(&mut self, mut max_recursion: usize) -> Result<(), Error> {
         match self {
             Value::Array(a) => {
                 if max_recursion == 0 {
                     return Err(Error::MaxRecursion);
                 }
                 max_recursion -= 1;
-                a.skip_to_end(max_recursion).map(|_| ())
+                a.skip_to_end(max_recursion)
             }
             Value::Map(m) => {
                 if max_recursion == 0 {
                     return Err(Error::MaxRecursion);
                 }
                 max_recursion -= 1;
-                m.skip_to_end(max_recursion).map(|_| ())
+                m.skip_to_end(max_recursion)
             }
             _ => Ok(()),
         }
@@ -194,35 +194,23 @@ impl<'a, const D: usize> Sequence<'a, D> {
         Ok(())
     }
 
-    pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<Option<(usize, usize)>, Error> {
-        let mut outer_start = None;
-        let mut outer_len = 0;
-        loop {
-            let Some((start, len)) = self
-                .try_parse_value(|mut value, start, _| value.skip(max_recursion).map(|_| start))?
-            else {
-                break;
-            };
+    pub fn skip_value(&mut self, max_recursion: usize) -> Result<Option<(usize, usize)>, Error> {
+        self.try_parse_value(|mut value, start, _| {
+            value.skip(max_recursion)?;
+            Ok(start)
+        })
+    }
 
-            if outer_start.is_none() {
-                outer_start = Some(start);
-            }
-            outer_len += len;
-
+    pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<(), Error> {
+        while self
+            .try_parse_value(|mut value, _, _| value.skip(max_recursion))?
+            .is_some()
+        {
             if D == 2 {
-                let Some((_, len)) =
-                    self.try_parse_value(|mut value, _, _| value.skip(max_recursion))?
-                else {
-                    break;
-                };
-                outer_len += len;
+                self.parse_value(|mut value, _, _| value.skip(max_recursion))?;
             }
         }
-        if let Some(outer_start) = outer_start {
-            Ok(Some((outer_start, outer_len)))
-        } else {
-            Ok(None)
-        }
+        Ok(())
     }
 
     pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
