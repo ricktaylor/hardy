@@ -1,4 +1,5 @@
 use super::*;
+use thiserror::Error;
 
 mod error;
 mod parse;
@@ -146,6 +147,15 @@ impl std::fmt::Debug for Eid {
     }
 }
 
+#[derive(Error, Debug)]
+enum DebugError {
+    #[error(transparent)]
+    Decode(#[from] cbor::decode::Error),
+
+    #[error(transparent)]
+    Fmt(#[from] std::fmt::Error),
+}
+
 impl std::fmt::Display for Eid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -183,12 +193,12 @@ impl std::fmt::Display for Eid {
                     .collect::<Vec<std::borrow::Cow<str>>>()
                     .join("/")
             ),
-            Eid::Unknown { scheme, data } => cbor::decode::parse_value(data, |value, _| {
-                write!(f, "unknown({scheme}):{value:?}")
-                    .map_err(|_| cbor::decode::Error::NotEnoughData)
-            })
-            .map(|_| ())
-            .map_err(|_| std::fmt::Error),
+            Eid::Unknown { scheme, data } => match cbor::decode::parse_value(data, |value, _| {
+                write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)
+            }) {
+                Ok(_) => Ok(()),
+                Err(e) => write!(f, "{e}"),
+            },
         }
     }
 }
