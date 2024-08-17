@@ -47,7 +47,6 @@ pub trait FromCbor: Sized {
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error>;
 }
 
-#[derive(Debug)]
 pub enum Value<'a, 'b: 'a> {
     UnsignedInteger(u64),
     NegativeInteger(u64),
@@ -66,7 +65,7 @@ pub enum Value<'a, 'b: 'a> {
 impl<'a, 'b: 'a> Value<'a, 'b> {
     pub fn type_name(&self, tagged: bool) -> String {
         let prefix = if tagged { "Tagged " } else { "Untagged " }.to_string();
-        match &self {
+        match self {
             Value::UnsignedInteger(_) => prefix + "Unsigned Integer",
             Value::NegativeInteger(_) => prefix + "Negative Integer",
             Value::Bytes(_, true) => prefix + "Definite-length Byte String",
@@ -105,92 +104,23 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
     }
 }
 
-struct SequenceDebug<'a, 'b: 'a, const D: usize> {
-    sequence: std::cell::RefCell<&'a mut Sequence<'b, D>>,
-    max_recursion: usize,
-}
-
-impl<'a, 'b: 'a, const D: usize> SequenceDebug<'a, 'b, D> {
-    fn new(sequence: &'a mut Sequence<'b, D>, max_recursion: usize) -> Self {
-        Self {
-            sequence: std::cell::RefCell::new(sequence),
-            max_recursion,
-        }
-    }
-}
-
-impl<'a, 'b: 'a, const D: usize> std::fmt::Debug for SequenceDebug<'a, 'b, D> {
+impl<'a, 'b: 'a> std::fmt::Debug for Value<'a, 'b> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.max_recursion == 0 {
-            return write!(f, "... (max recursion reached)");
-        }
-
-        if D == 1 {
-            let mut l = f.debug_list();
-            loop {
-                let r = self
-                    .sequence
-                    .borrow_mut()
-                    .try_parse_value(|mut value, _, _| {
-                        match &mut value {
-                            Value::Array(a) => {
-                                l.entry(&SequenceDebug::new(a, self.max_recursion - 1))
-                            }
-                            Value::Map(m) => {
-                                l.entry(&SequenceDebug::new(m, self.max_recursion - 1))
-                            }
-                            _ => l.entry(&value),
-                        };
-                        Ok::<_, Error>(())
-                    })
-                    .map_err(|_| std::fmt::Error)?;
-                if r.is_none() {
-                    break;
-                }
-            }
-            l.finish()
-        } else {
-            let mut s = f.debug_map();
-            loop {
-                let r = self
-                    .sequence
-                    .borrow_mut()
-                    .try_parse_value(|mut value, _, _| {
-                        match &mut value {
-                            Value::Array(a) => {
-                                s.key(&SequenceDebug::new(a, self.max_recursion - 1))
-                            }
-                            Value::Map(m) => s.key(&SequenceDebug::new(m, self.max_recursion - 1)),
-                            _ => s.key(&value),
-                        };
-                        Ok::<_, Error>(())
-                    })
-                    .map_err(|_| std::fmt::Error)?;
-                if r.is_none() {
-                    break;
-                }
-                let r = self
-                    .sequence
-                    .borrow_mut()
-                    .try_parse_value(|mut value, _, _| {
-                        match &mut value {
-                            Value::Array(a) => {
-                                s.value(&SequenceDebug::new(a, self.max_recursion - 1))
-                            }
-                            Value::Map(m) => {
-                                s.value(&SequenceDebug::new(m, self.max_recursion - 1))
-                            }
-                            _ => s.value(&value),
-                        };
-                        Ok::<_, Error>(())
-                    })
-                    .map_err(|_| std::fmt::Error)?;
-                if r.is_none() {
-                    s.value(&"<Missing>");
-                    break;
-                };
-            }
-            s.finish()
+        match self {
+            Value::UnsignedInteger(n) => write!(f, "{n:?}"),
+            Value::NegativeInteger(n) => write!(f, "-{n:?}"),
+            Value::Bytes(b, true) => write!(f, "{b:?}"),
+            Value::Bytes(b, false) => write!(f, "{b:?} (chunked)"),
+            Value::Text(s, true) => write!(f, "{s:?}"),
+            Value::Text(s, false) => write!(f, "{s:?} (chunked)"),
+            Value::Array(a) => write!(f, "{a:?}"),
+            Value::Map(m) => write!(f, "{m:?}"),
+            Value::False => write!(f, "{:?}", false),
+            Value::True => write!(f, "{:?}", true),
+            Value::Null => f.write_str("null"),
+            Value::Undefined => f.write_str("undefined"),
+            Value::Simple(v) => write!(f, "simple value {v}"),
+            Value::Float(v) => write!(f, "{v:?}"),
         }
     }
 }
@@ -200,21 +130,6 @@ pub struct Sequence<'a, const D: usize> {
     count: Option<usize>,
     offset: &'a mut usize,
     idx: usize,
-}
-
-impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut offset = 0;
-        {
-            let mut self_cloned = Sequence::<D> {
-                data: &self.data[*self.offset..],
-                count: self.count,
-                offset: &mut offset,
-                idx: self.idx,
-            };
-            SequenceDebug::new(&mut self_cloned, 16).fmt(f)
-        }
-    }
 }
 
 pub type Array<'a> = Sequence<'a, 1>;
@@ -410,6 +325,96 @@ impl<'a, const D: usize> Sequence<'a, D> {
         E: From<Error>,
     {
         self.try_parse_map(f)?.ok_or(Error::NotEnoughData.into())
+    }
+}
+
+enum SequenceDebugInfo {
+    Terminal(String),
+    Array(Vec<SequenceDebugInfo>),
+    Map(Vec<(SequenceDebugInfo, SequenceDebugInfo)>),
+}
+
+impl std::fmt::Debug for SequenceDebugInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Terminal(s) => f.write_str(s),
+            Self::Array(items) => f.debug_list().entries(items).finish(),
+            Self::Map(items) => {
+                let mut m = f.debug_map();
+                for (k, v) in items {
+                    m.entry(k, v);
+                }
+                m.finish()
+            }
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+enum DebugError {
+    #[error(transparent)]
+    Decode(#[from] Error),
+
+    #[error("Too many levels of recursion")]
+    MaxRecursion,
+}
+
+fn debug_fmt(
+    value: Value,
+    _tags: Vec<u64>,
+    max_recursion: usize,
+) -> Result<SequenceDebugInfo, DebugError> {
+    match value {
+        Value::Array(a) => sequence_debug_fmt(a, max_recursion),
+        Value::Map(m) => sequence_debug_fmt(m, max_recursion),
+        value => Ok(SequenceDebugInfo::Terminal(format!("{value:?}"))),
+    }
+}
+
+fn sequence_debug_fmt<const D: usize>(
+    sequence: &mut Sequence<'_, D>,
+    max_recursion: usize,
+) -> Result<SequenceDebugInfo, DebugError> {
+    if max_recursion == 0 {
+        return Err(DebugError::MaxRecursion);
+    }
+    if D == 1 {
+        let mut items = Vec::new();
+        while let Some((item, _)) =
+            sequence.try_parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))?
+        {
+            items.push(item);
+        }
+        Ok(SequenceDebugInfo::Array(items))
+    } else {
+        let mut items = Vec::new();
+        while let Some((key, _)) =
+            sequence.try_parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))?
+        {
+            let (value, _) =
+                sequence.parse_value(|value, _, tags| debug_fmt(value, tags, max_recursion - 1))?;
+            items.push((key, value));
+        }
+        Ok(SequenceDebugInfo::Map(items))
+    }
+}
+
+impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut offset = 0;
+        {
+            let mut self_cloned = Sequence::<D> {
+                data: &self.data[*self.offset..],
+                count: self.count,
+                offset: &mut offset,
+                idx: self.idx,
+            };
+
+            match sequence_debug_fmt(&mut self_cloned, 16) {
+                Ok(s) => write!(f, "{s:?}"),
+                Err(e) => write!(f, "<Error: {e}>"),
+            }
+        }
     }
 }
 
