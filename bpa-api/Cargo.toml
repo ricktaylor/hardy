@@ -11,4 +11,4 @@ crate-type = ["rlib"]
 hardy-bpv7 = { path = "../bpv7" }
 time = "0.3.36"
 async-trait = "0.1.80"
-tokio = "1.38.0"
+tokio = "1.39.3"

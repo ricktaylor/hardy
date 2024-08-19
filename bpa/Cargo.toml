@@ -31,7 +31,7 @@ hardy-proto = { path = "../proto" }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", optional = true }
 fuzz-macros = { path = "../fuzz-macros" }
-tokio = { version = "1.38.0", features = [
+tokio = { version = "1.39.3", features = [
     "macros",
     "rt-multi-thread",
     "signal",
