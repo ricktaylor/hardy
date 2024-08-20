@@ -530,13 +530,13 @@ impl Store {
             Ok(true) => Ok(Some(metadata)),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
-                let _ = self.bundle_storage.remove(&metadata.storage_name).await;
+                _ = self.bundle_storage.remove(&storage_name).await;
                 Ok(None)
             }
             Err(e) => {
                 // This is just bad, we can't really claim to have stored the bundle,
                 // so just cleanup and get out
-                let _ = self.bundle_storage.remove(&metadata.storage_name).await;
+                _ = self.bundle_storage.remove(&storage_name).await;
                 Err(e)
             }
         }

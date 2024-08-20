@@ -88,7 +88,7 @@ fn test_ingress(data: &[u8]) {
             }
         };
 
-        let _ = ingress.receive(data.into()).await;
+        _ = ingress.receive(data.into()).await;
     })
 }
 

@@ -159,7 +159,7 @@ fn walk_dirs(
     }
 
     if remove {
-        let _ = std::fs::remove_dir(&dir);
+        _ = std::fs::remove_dir(&dir);
     }
     subdirs
 }

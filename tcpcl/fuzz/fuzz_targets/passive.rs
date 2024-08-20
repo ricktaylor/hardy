@@ -83,7 +83,7 @@ fuzz_target!(|data: &[u8]| {
         });
 
         tx.write_all(data).await.unwrap();
-        let _ = tx.shutdown().await;
+        _ = tx.shutdown().await;
 
         h.await.unwrap();
     })

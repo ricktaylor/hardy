@@ -194,10 +194,11 @@ impl std::fmt::Display for Eid {
                     .join("/")
             ),
             Eid::Unknown { scheme, data } => {
-                match cbor::decode::parse_value(data, |mut value, _| {
+                let r = cbor::decode::parse_value(data, |mut value, _| {
                     write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)?;
                     value.skip(16).map_err(Into::<DebugError>::into)
-                }) {
+                });
+                match r {
                     Ok(_) => Ok(()),
                     Err(DebugError::Fmt(e)) => Err(e),
                     Err(DebugError::Decode(e)) => panic!("Error: {e}"),

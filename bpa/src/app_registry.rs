@@ -202,7 +202,7 @@ impl Endpoint {
     #[instrument(skip(self))]
     pub async fn collection_notify(&self, bundle_id: &bpv7::BundleId) {
         if let Some(endpoint) = &self.inner {
-            let _ = endpoint
+            _ = endpoint
                 .lock()
                 .await
                 .collection_notify(tonic::Request::new(CollectionNotifyRequest {
@@ -223,7 +223,7 @@ impl Endpoint {
         timestamp: Option<time::OffsetDateTime>,
     ) {
         if let Some(endpoint) = &self.inner {
-            let _ = endpoint
+            _ = endpoint
                 .lock()
                 .await
                 .status_notify(tonic::Request::new(StatusNotifyRequest {

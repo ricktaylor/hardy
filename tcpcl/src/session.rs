@@ -179,7 +179,7 @@ where
             Some(Ok(codec::Message::Reject(msg))) => Err(Error::Rejected(msg)),
             Some(Err(codec::Error::InvalidMessageType(rejected_message))) => {
                 // Send a rejection (best effort)
-                let _ = self
+                _ = self
                     .reject(
                         codec::MessageRejectionReasonCode::UnknownType,
                         rejected_message,
@@ -640,7 +640,7 @@ where
             } {
                 Some(Ok(codec::Message::SessionTerm(_))) => {
                     /* Just ignore extra SESS_TERM */
-                    let _ = self.unexpected(codec::MessageType::SESS_TERM).await;
+                    _ = self.unexpected(codec::MessageType::SESS_TERM).await;
                 }
                 Some(Ok(codec::Message::TransferSegment(msg))) if msg.message_flags.start => {
                     // Peer has started a new transfer in the 'Ending' state
