@@ -15,7 +15,7 @@ use trace_err::*;
 use tracing::*;
 
 thread_local! {
-    static CONNECTION: RefCell<Option<rusqlite::Connection>> = RefCell::new(None);
+    static CONNECTION: RefCell<Option<rusqlite::Connection>> = const { RefCell::new(None) };
 }
 
 pub struct Storage {
