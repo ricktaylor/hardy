@@ -143,7 +143,9 @@ impl Ingress {
                 .store_metadata(&bundle.metadata, &bundle.bundle)
                 .await?
             {
-                // Bundle with matching id already exists in the metadata store
+                /* Bundle with matching id already exists in the metadata store
+                 * This can happen if we are receiving new bundles as we spool through restarted bundles
+                 */
                 trace!("Bundle with matching id already exists in the metadata store");
 
                 // Drop the stored data, and do not process further
