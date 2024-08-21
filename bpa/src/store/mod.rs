@@ -191,7 +191,7 @@ impl Store {
 
                                 // Delete it
                                 metadata_storage
-                                    .remove(&bundle.metadata.storage_name)
+                                    .remove(&bundle.bundle.id)
                                     .await.trace_expect("Failed to remove orphan bundle")
                             }
                         }
@@ -320,13 +320,17 @@ impl Store {
         storage_name: Arc<str>,
         file_time: Option<time::OffsetDateTime>,
     ) -> (u64, u64) {
-        let data = bundle_storage
+        let Some(data) = bundle_storage
             .load(&storage_name)
             .await
-            .trace_expect(&format!("Failed to load bundle data: {storage_name}"));
+            .trace_expect(&format!("Failed to load bundle data: {storage_name}"))
+        else {
+            // Data has gone while we were restarting
+            return (0, 0);
+        };
 
         // Calculate hash
-        let hash = hash(data.as_ref().as_ref());
+        let hash = Some(hash(data.as_ref().as_ref()));
 
         // Parse the bundle
         let parse_result = cbor::decode::parse::<bpv7::ValidBundle>(data.as_ref().as_ref());
@@ -361,7 +365,7 @@ impl Store {
                 // Tombstone, ignore
                 warn!("Tombstone bundle data found: {storage_name}");
                 true
-            } else if metadata.storage_name == storage_name && metadata.hash == hash {
+            } else if metadata.storage_name == Some(storage_name.clone()) && metadata.hash == hash {
                 false
             } else {
                 warn!("Duplicate bundle data found: {storage_name}");
@@ -391,7 +395,7 @@ impl Store {
                         } else {
                             metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
                         },
-                        storage_name,
+                        storage_name: Some(storage_name),
                         hash,
                         received_at: file_time,
                     }),
@@ -465,18 +469,7 @@ impl Store {
     }
 
     pub async fn load_data(&self, storage_name: &str) -> Result<Option<storage::DataRef>, Error> {
-        // Try to load the data, but treat errors as 'Storage Depleted'
-        match self.bundle_storage.load(storage_name).await {
-            Ok(data) => Ok(Some(data)),
-            Err(e) => {
-                warn!("Failed to find bundle data in bundle_store");
-
-                // Hard delete the record from the metadata store, we lost it somehow
-                self.metadata_storage.remove(storage_name).await?;
-
-                Err(e)
-            }
-        }
+        self.bundle_storage.load(storage_name).await
     }
 
     pub async fn store_data(&self, data: Box<[u8]>) -> Result<(Arc<str>, Arc<[u8]>), Error> {
@@ -520,8 +513,8 @@ impl Store {
         // Compose metadata
         let metadata = metadata::Metadata {
             status,
-            storage_name,
-            hash,
+            storage_name: Some(storage_name.clone()),
+            hash: Some(hash),
             received_at,
         };
 
@@ -553,58 +546,26 @@ impl Store {
             .await
     }
 
-    #[instrument(skip(self, data))]
-    pub async fn replace_data(
-        &self,
-        metadata: &metadata::Metadata,
-        data: Box<[u8]>,
-    ) -> Result<metadata::Metadata, Error> {
-        // Calculate hash
-        let hash = hash(&data);
-
-        // Let the metadata storage know we are about to replace a bundle
-        self.metadata_storage
-            .begin_replace(&metadata.storage_name, &hash)
-            .await?;
-
-        // Store the new data
-        self.bundle_storage
-            .replace(&metadata.storage_name, data)
-            .await?;
-
-        // Update any replacement tracking in the metadata store
-        self.metadata_storage
-            .commit_replace(&metadata.storage_name, &hash)
-            .await?;
-
-        Ok(metadata::Metadata {
-            status: metadata.status.clone(),
-            storage_name: metadata.storage_name.clone(),
-            hash,
-            received_at: metadata.received_at,
-        })
-    }
-
     #[instrument(skip(self))]
     pub async fn check_status(
         &self,
-        storage_name: &str,
+        bundle_id: &bpv7::BundleId,
     ) -> Result<Option<metadata::BundleStatus>, Error> {
-        self.metadata_storage.get_bundle_status(storage_name).await
+        self.metadata_storage.get_bundle_status(bundle_id).await
     }
 
     #[instrument(skip(self))]
     pub async fn set_status(
         &self,
-        metadata: &mut metadata::Metadata,
+        bundle: &mut metadata::Bundle,
         status: metadata::BundleStatus,
     ) -> Result<(), Error> {
-        if metadata.status == status {
+        if bundle.metadata.status == status {
             Ok(())
         } else {
-            metadata.status = status;
+            bundle.metadata.status = status;
             self.metadata_storage
-                .set_bundle_status(&metadata.storage_name, &metadata.status)
+                .set_bundle_status(&bundle.bundle.id, &bundle.metadata.status)
                 .await
         }
     }
@@ -616,8 +577,8 @@ impl Store {
     }
 
     #[instrument(skip(self))]
-    pub async fn delete_metadata(&self, storage_name: &str) -> Result<(), Error> {
+    pub async fn delete_metadata(&self, bundle_id: &bpv7::BundleId) -> Result<(), Error> {
         // Delete the bundle from the bundle store
-        self.metadata_storage.remove(storage_name).await
+        self.metadata_storage.remove(bundle_id).await
     }
 }

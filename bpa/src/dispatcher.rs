@@ -105,7 +105,7 @@ impl Dispatcher {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Arc<Self> {
         // Create a channel for bundles
-        let (tx, rx) = channel(16);
+        let (tx, rx) = channel(32);
         let dispatcher = Arc::new(Self {
             config: Config::new(config, admin_endpoints),
             cancel_token,
@@ -207,7 +207,7 @@ impl Dispatcher {
                 metadata::BundleStatus::ForwardPending
             };
 
-            self.store.set_status(&mut bundle.metadata, status).await?;
+            self.store.set_status(&mut bundle, status).await?;
         }
 
         if let metadata::BundleStatus::ReassemblyPending = &bundle.metadata.status {
@@ -242,7 +242,7 @@ impl Dispatcher {
             metadata::BundleStatus::ForwardAckPending(_, _) => {
                 // Clear the pending ACK, we are reprocessing
                 self.store
-                    .set_status(&mut bundle.metadata, metadata::BundleStatus::ForwardPending)
+                    .set_status(&mut bundle, metadata::BundleStatus::ForwardPending)
                     .await?;
 
                 // And just forward
@@ -378,7 +378,7 @@ impl Dispatcher {
         let mut data = None;
         let mut previous = false;
         let mut retries = 0;
-        let mut destination = &bundle.bundle.destination;
+        let mut destination = bundle.bundle.destination.clone();
 
         loop {
             // Check bundle expiry
@@ -390,7 +390,7 @@ impl Dispatcher {
             }
 
             // Lookup/Perform actions
-            let action = match fib.find(destination).await {
+            let action = match fib.find(&destination).await {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
                     return self.drop_bundle(bundle, reason).await;
@@ -413,7 +413,7 @@ impl Dispatcher {
                     }
 
                     // Wait a bit
-                    if !self.wait_to_forward(&mut bundle.metadata, wait).await? {
+                    if !self.wait_to_forward(&mut bundle, wait).await? {
                         // Cancelled, or too long a wait for here
                         return Ok(());
                     }
@@ -447,7 +447,7 @@ impl Dispatcher {
                             })?;
                     }
 
-                    match e.forward_bundle(destination, data.clone().unwrap()).await {
+                    match e.forward_bundle(&destination, data.clone().unwrap()).await {
                         Ok(cla_registry::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
                             self.report_bundle_forwarded(&bundle).await?;
@@ -465,7 +465,7 @@ impl Dispatcher {
                             return self
                                 .store
                                 .set_status(
-                                    &mut bundle.metadata,
+                                    &mut bundle,
                                     metadata::BundleStatus::ForwardAckPending(handle, until),
                                 )
                                 .await;
@@ -508,7 +508,7 @@ impl Dispatcher {
                 }
 
                 // We must wait for a bit for the CLAs to calm down
-                if !self.wait_to_forward(&mut bundle.metadata, until).await? {
+                if !self.wait_to_forward(&mut bundle, until).await? {
                     // Cancelled, or too long a wait for here
                     return Ok(());
                 }
@@ -534,7 +534,8 @@ impl Dispatcher {
                     .bundle
                     .previous_node
                     .as_ref()
-                    .unwrap_or(&bundle.bundle.id.source);
+                    .unwrap_or(&bundle.bundle.id.source)
+                    .clone();
                 trace!("Returning bundle to previous node: {destination}");
 
                 // Reset retry counter as we are attempting to return the bundle
@@ -564,18 +565,23 @@ impl Dispatcher {
         bundle: &metadata::Bundle,
     ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
         // Try to load the data, but treat errors as 'Storage Depleted'
-        let data = self.store.load_data(&bundle.metadata.storage_name).await?;
-        if data.is_none() {
-            // Report the bundle has gone
-            self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
-                .await?;
+        let storage_name = bundle.metadata.storage_name.as_ref().unwrap();
+        match self.store.load_data(storage_name).await? {
+            None => {
+                warn!("Bundle data {storage_name} has gone from storage");
+
+                // Report the bundle has gone
+                self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+                    .await
+                    .map(|_| None)
+            }
+            Some(data) => Ok(Some(data)),
         }
-        Ok(data)
     }
 
     async fn wait_to_forward(
         &self,
-        metadata: &mut metadata::Metadata,
+        bundle: &mut metadata::Bundle,
         until: time::OffsetDateTime,
     ) -> Result<bool, Error> {
         let wait = until - time::OffsetDateTime::now_utc();
@@ -583,7 +589,7 @@ impl Dispatcher {
             // Nothing to do now, set bundle status to Waiting, and it will be picked up later
             trace!("Bundle will wait offline until: {until}");
             self.store
-                .set_status(metadata, metadata::BundleStatus::Waiting(until))
+                .set_status(bundle, metadata::BundleStatus::Waiting(until))
                 .await?;
             return Ok(false);
         }
@@ -598,8 +604,19 @@ impl Dispatcher {
         bundle: &metadata::Bundle,
         data: &[u8],
     ) -> Result<(Box<[u8]>, bool), Error> {
-        let mut editor = bpv7::Editor::new(&bundle.bundle)
-            // Previous Node Block
+        let mut editor = bpv7::Editor::new(&bundle.bundle);
+
+        // Remove unrecognized blocks we are supposed to
+        for (block_number, block) in &bundle.bundle.blocks {
+            if let bpv7::BlockType::Private(_) = &block.block_type {
+                if block.flags.delete_block_on_failure {
+                    editor = editor.remove_extension_block(*block_number);
+                }
+            }
+        }
+
+        // Previous Node Block
+        editor = editor
             .replace_extension_block(bpv7::BlockType::PreviousNode)
             .flags(bpv7::BlockFlags {
                 must_replicate: true,
@@ -691,10 +708,8 @@ impl Dispatcher {
 
         if let metadata::BundleStatus::ForwardAckPending(_, _) = &bundle.metadata.status {
             // Check if the bundle has been acknowledged while we slept
-            let Some(metadata::BundleStatus::ForwardAckPending(_, _)) = self
-                .store
-                .check_status(&bundle.metadata.storage_name)
-                .await?
+            let Some(metadata::BundleStatus::ForwardAckPending(_, _)) =
+                self.store.check_status(&bundle.bundle.id).await?
             else {
                 // It's not longer waiting, our work here is done
                 return Ok(());
@@ -705,7 +720,7 @@ impl Dispatcher {
 
         // Set status to ForwardPending
         self.store
-            .set_status(&mut bundle.metadata, metadata::BundleStatus::ForwardPending)
+            .set_status(&mut bundle, metadata::BundleStatus::ForwardPending)
             .await?;
 
         // And dispatch it
@@ -725,15 +740,15 @@ impl Dispatcher {
         // Leave a tombstone in the metadata, so we can ignore duplicates
         self.store
             .set_status(
-                &mut bundle.metadata,
+                &mut bundle,
                 metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
             )
             .await?;
 
         // Delete the bundle from the bundle store
-        self.store
-            .delete_data(&bundle.metadata.storage_name)
-            .await?;
+        if let Some(storage_name) = bundle.metadata.storage_name {
+            self.store.delete_data(&storage_name).await?;
+        }
 
         // Do not keep Tombstones for our own bundles
         if self
@@ -741,9 +756,7 @@ impl Dispatcher {
             .admin_endpoints
             .is_admin_endpoint(&bundle.bundle.id.source)
         {
-            self.store
-                .delete_metadata(&bundle.metadata.storage_name)
-                .await?;
+            self.store.delete_metadata(&bundle.bundle.id).await?;
         }
         Ok(())
     }

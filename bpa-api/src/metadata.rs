@@ -4,8 +4,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub status: BundleStatus,
-    pub storage_name: Arc<str>,
-    pub hash: Arc<[u8]>,
+    pub storage_name: Option<Arc<str>>,
+    pub hash: Option<Arc<[u8]>>,
     pub received_at: Option<time::OffsetDateTime>,
 }
 

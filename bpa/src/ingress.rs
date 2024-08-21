@@ -16,102 +16,103 @@ impl Ingress {
         Arc::new(Self { store, dispatcher })
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, data))]
     pub async fn receive(&self, data: Box<[u8]>) -> Result<(), Error> {
         // Capture received_at as soon as possible
         let received_at = Some(time::OffsetDateTime::now_utc());
 
         // Parse the bundle
-        let (bundle, valid) = match cbor::decode::parse::<bpv7::ValidBundle>(&data)? {
+        match cbor::decode::parse::<bpv7::ValidBundle>(&data)? {
             bpv7::ValidBundle::Valid(bundle) => {
                 // Write the bundle data to the store
-                self.store
-                    .store_data(data)
-                    .await
-                    .map(|(storage_name, hash)| {
-                        (
-                            metadata::Bundle {
-                                metadata: metadata::Metadata {
-                                    status: metadata::BundleStatus::IngressPending,
-                                    storage_name,
-                                    hash,
-                                    received_at,
-                                },
-                                bundle,
+                let (storage_name, hash) = self.store.store_data(data).await?;
+
+                if let Err(e) = self
+                    .receive_bundle(
+                        metadata::Bundle {
+                            metadata: metadata::Metadata {
+                                status: metadata::BundleStatus::IngressPending,
+                                storage_name: Some(storage_name.clone()),
+                                hash: Some(hash),
+                                received_at,
                             },
-                            true,
-                        )
-                    })?
+                            bundle,
+                        },
+                        true,
+                    )
+                    .await
+                {
+                    // If we failed to process the bundle, remove the data
+                    self.store.delete_data(&storage_name).await?;
+                    Err(e)
+                } else {
+                    Ok(())
+                }
             }
             bpv7::ValidBundle::Invalid(bundle) => {
                 // Keep heap consumption low
                 drop(data);
 
-                // Create a fake bundle
-                (
+                // Receive a fake bundle
+                self.receive_bundle(
                     metadata::Bundle {
                         metadata: metadata::Metadata {
                             status: metadata::BundleStatus::Tombstone(
                                 time::OffsetDateTime::now_utc(),
                             ),
-                            storage_name: Arc::from(""),
-                            hash: Arc::from([]),
+                            storage_name: None,
+                            hash: None,
                             received_at,
                         },
                         bundle,
                     },
                     false,
                 )
+                .await
             }
-        };
+        }
+    }
 
-        let storage_name = bundle.metadata.storage_name.clone();
-        if let Err(e) = {
-            // Report we have received the bundle
+    #[instrument(skip(self))]
+    async fn receive_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
+        // Report we have received the bundle
+        self.dispatcher
+            .report_bundle_reception(
+                &bundle,
+                bpv7::StatusReportReasonCode::NoAdditionalInformation,
+            )
+            .await?;
+
+        /* RACE: If there is a crash between the report creation(above) and the metadata store (below)
+         *  then we may send more than one "Received" Status Report when restarting,
+         *  but that is currently considered benign (as a duplicate report causes little harm)
+         *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
+         */
+
+        if !self
+            .store
+            .store_metadata(&bundle.metadata, &bundle.bundle)
+            .await?
+        {
+            // Bundle with matching id already exists in the metadata store
+            trace!("Bundle with matching id already exists in the metadata store");
+
+            // Drop the stored data if it was valid, and do not process further
+            if let Some(storage_name) = bundle.metadata.storage_name {
+                self.store.delete_data(&storage_name).await?;
+            }
+            Ok(())
+        } else if !valid {
+            // Not valid, drop it
             self.dispatcher
-                .report_bundle_reception(
-                    &bundle,
-                    bpv7::StatusReportReasonCode::NoAdditionalInformation,
+                .drop_bundle(
+                    bundle,
+                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
                 )
-                .await?;
-
-            /* RACE: If there is a crash between the report creation(above) and the metadata store (below)
-             *  then we may send more than one "Received" Status Report when restarting,
-             *  but that is currently considered benign (as a duplicate report causes little harm)
-             *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
-             */
-
-            if !self
-                .store
-                .store_metadata(&bundle.metadata, &bundle.bundle)
-                .await?
-            {
-                // Bundle with matching id already exists in the metadata store
-                trace!("Bundle with matching id already exists in the metadata store");
-
-                // Drop the stored data, and do not process further
-                return self.store.delete_data(&bundle.metadata.storage_name).await;
-            }
-
-            if !valid {
-                // Not valid, drop it
-                return self
-                    .dispatcher
-                    .drop_bundle(
-                        bundle,
-                        Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                    )
-                    .await;
-            }
-
+                .await
+        } else {
             // Process the bundle further
             self.process_bundle(bundle).await
-        } {
-            // If we failed to process the bundle, remove the data
-            self.store.delete_data(&storage_name).await?;
-            Err(e)
-        } else {
-            Ok(())
         }
     }
 
@@ -146,7 +147,10 @@ impl Ingress {
                 trace!("Bundle with matching id already exists in the metadata store");
 
                 // Drop the stored data, and do not process further
-                return self.store.delete_data(&bundle.metadata.storage_name).await;
+                return self
+                    .store
+                    .delete_data(&bundle.metadata.storage_name.unwrap())
+                    .await;
             }
         }
 
@@ -200,7 +204,7 @@ impl Ingress {
 
         // Check extension blocks - do this last as it can rewrite the bundle
         if reason.is_none() {
-            (reason, bundle) = self.check_extension_blocks(bundle).await?;
+            reason = self.check_extension_blocks(&bundle).await?;
         }
 
         if let Some(reason) = reason {
@@ -211,10 +215,7 @@ impl Ingress {
         if let metadata::BundleStatus::IngressPending = &bundle.metadata.status {
             // Update the status
             self.store
-                .set_status(
-                    &mut bundle.metadata,
-                    metadata::BundleStatus::DispatchPending,
-                )
+                .set_status(&mut bundle, metadata::BundleStatus::DispatchPending)
                 .await?;
         }
 
@@ -224,57 +225,24 @@ impl Ingress {
 
     async fn check_extension_blocks(
         &self,
-        mut bundle: metadata::Bundle,
-    ) -> Result<(Option<bpv7::StatusReportReasonCode>, metadata::Bundle), Error> {
-        // Check for unsupported block types
-        let mut blocks_to_remove = Vec::new();
-
-        for (block_number, block) in &bundle.bundle.blocks {
+        bundle: &metadata::Bundle,
+    ) -> Result<Option<bpv7::StatusReportReasonCode>, Error> {
+        for block in bundle.bundle.blocks.values() {
             if let bpv7::BlockType::Private(_) = &block.block_type {
                 if block.flags.report_on_failure {
                     self.dispatcher
                         .report_bundle_reception(
-                            &bundle,
+                            bundle,
                             bpv7::StatusReportReasonCode::BlockUnsupported,
                         )
                         .await?;
                 }
 
                 if block.flags.delete_bundle_on_failure {
-                    return Ok((Some(bpv7::StatusReportReasonCode::BlockUnsupported), bundle));
-                }
-
-                if block.flags.delete_block_on_failure {
-                    blocks_to_remove.push(*block_number);
+                    return Ok(Some(bpv7::StatusReportReasonCode::BlockUnsupported));
                 }
             }
         }
-
-        // Rewrite bundle if needed
-        if !blocks_to_remove.is_empty() {
-            let mut editor = bpv7::Editor::new(&bundle.bundle);
-            for block_number in blocks_to_remove {
-                editor = editor.remove_extension_block(block_number);
-            }
-
-            // Load up the source bundle data
-            let Some(source_data) = self.store.load_data(&bundle.metadata.storage_name).await?
-            else {
-                // Bundle data was deleted sometime during processing
-                return Ok((Some(bpv7::StatusReportReasonCode::DepletedStorage), bundle));
-            };
-
-            // Edit the bundle
-            let (new_bundle, data) = editor.build((*source_data).as_ref())?;
-
-            // Replace in store
-            let metadata = self.store.replace_data(&bundle.metadata, data).await?;
-
-            bundle = metadata::Bundle {
-                metadata,
-                bundle: new_bundle,
-            };
-        }
-        Ok((None, bundle))
+        Ok(None)
     }
 }

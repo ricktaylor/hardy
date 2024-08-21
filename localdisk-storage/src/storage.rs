@@ -221,15 +221,35 @@ impl BundleStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn load(&self, storage_name: &str) -> storage::Result<DataRef> {
+    async fn load(&self, storage_name: &str) -> storage::Result<Option<DataRef>> {
         let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
+
         cfg_if::cfg_if! {
             if #[cfg(feature = "mmap")] {
-                let file = tokio::fs::File::open(storage_name).await?;
+                let file = match tokio::fs::File::open(storage_name).await {
+                    Err(e) => {
+                        if let std::io::ErrorKind::NotFound = e.kind() {
+                            return Ok(None)
+                        } else {
+                            return Err(e.into())
+                        }
+                    }
+                    Ok(file) => file,
+                };
                 let data = unsafe { memmap2::Mmap::map(&file) };
-                Ok(Arc::new(data?))
+                Ok(Some(Arc::new(data?)))
             } else {
-                Ok(Arc::new(tokio::fs::read(storage_name).await?))
+                let data = match tokio::fs::read(storage_name).await {
+                    Err(e) => {
+                        if let std::io::ErrorKind::NotFound = e.kind() {
+                            return Ok(None)
+                        } else {
+                            return Err(e.into())
+                        }
+                    }
+                    Ok(data) => data,
+                };
+                Ok(Arc::new(data))
             }
         }
     }
@@ -240,10 +260,53 @@ impl BundleStorage for Storage {
         // Spawn a thread to try to maintain linearity
         let storage_name = tokio::task::spawn_blocking(move || {
             // Create random filename
-            let storage_name = random_file_path(&root)?;
+            let mut storage_name = random_file_path(&root)?;
 
-            // Write to disk
-            write_atomic(storage_name.clone(), &data).map(|_| storage_name)
+            /*
+            create a new temp file (alongside the original)
+            write data to the temp file
+            fsync() the temp file
+            rename the temp file to the original name
+            fsync() the containing directory
+            */
+
+            // Use a temporary extension
+            storage_name.set_extension("tmp");
+
+            // Open the file as direct as possible
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            cfg_if::cfg_if! {
+                if #[cfg(unix)] {
+                    options.custom_flags(libc::O_SYNC);
+                } else if #[cfg(windows)] {
+                    options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
+                }
+            }
+            let mut file = options.open(&storage_name)?;
+
+            if let Err(e) = {
+                // Write all data to file
+                file.write_all(&data)?;
+
+                // Sync everything
+                file.sync_all()
+            } {
+                _ = std::fs::remove_file(&storage_name);
+                return Err(e);
+            }
+
+            // Rename the file
+            let old_path = storage_name.clone();
+            storage_name.set_extension("");
+            if let Err(e) = std::fs::rename(&old_path, &storage_name) {
+                _ = std::fs::remove_file(&old_path);
+                return Err(e);
+            }
+
+            // No idea how to fsync the directory in portable Rust!
+
+            Ok(storage_name)
         })
         .await
         .trace_expect("Failed to spawn write_atomic thread")?;
@@ -269,64 +332,4 @@ impl BundleStorage for Storage {
             }
         }
     }
-
-    #[instrument(skip(self, data))]
-    async fn replace(&self, storage_name: &str, data: Box<[u8]>) -> storage::Result<()> {
-        let storage_name = PathBuf::from_str(storage_name)?;
-
-        // Spawn a thread to try to maintain linearity
-        tokio::task::spawn_blocking(move || write_atomic(storage_name, &data))
-            .await
-            .trace_expect("Failed to spawn write_atomic thread")
-    }
-}
-
-#[instrument(skip(data))]
-fn write_atomic(mut file_path: PathBuf, data: &[u8]) -> storage::Result<()> {
-    /*
-    create a new temp file (alongside the original)
-    write data to the temp file
-    fsync() the temp file
-    rename the temp file to the original name
-    fsync() the containing directory
-    */
-
-    // Use a temporary extension
-    file_path.set_extension("tmp");
-
-    // Open the file as direct as possible
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    cfg_if::cfg_if! {
-        if #[cfg(unix)] {
-            options.custom_flags(libc::O_SYNC);
-        } else if #[cfg(windows)] {
-            options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
-        }
-    }
-    let mut file = options.open(&file_path)?;
-
-    // Write all data to file
-    if let Err(e) = file.write_all(data) {
-        _ = std::fs::remove_file(&file_path);
-        return Err(e.into());
-    }
-
-    // Sync everything
-    if let Err(e) = file.sync_all() {
-        _ = std::fs::remove_file(&file_path);
-        return Err(e.into());
-    }
-
-    // Rename the file
-    let old_path = file_path.clone();
-    file_path.set_extension("");
-    if let Err(e) = std::fs::rename(&old_path, &file_path) {
-        _ = std::fs::remove_file(&old_path);
-        return Err(e.into());
-    }
-
-    // No idea how to fsync the directory in portable Rust!
-
-    Ok(())
 }

@@ -11,25 +11,23 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn store(&self, metadata: &metadata::Metadata, bundle: &bpv7::Bundle) -> Result<bool>;
 
-    async fn get_bundle_status(&self, storage_name: &str)
-        -> Result<Option<metadata::BundleStatus>>;
+    async fn get_bundle_status(
+        &self,
+        bundle_id: &bpv7::BundleId,
+    ) -> Result<Option<metadata::BundleStatus>>;
 
     async fn set_bundle_status(
         &self,
-        storage_name: &str,
+        bundle_id: &bpv7::BundleId,
         status: &metadata::BundleStatus,
     ) -> Result<()>;
 
-    async fn remove(&self, storage_name: &str) -> Result<()>;
+    async fn remove(&self, bundle_id: &bpv7::BundleId) -> Result<()>;
 
     async fn confirm_exists(
         &self,
         bundle_id: &bpv7::BundleId,
     ) -> Result<Option<metadata::Metadata>>;
-
-    async fn begin_replace(&self, storage_name: &str, hash: &[u8]) -> Result<()>;
-
-    async fn commit_replace(&self, storage_name: &str, hash: &[u8]) -> Result<()>;
 
     async fn get_waiting_bundles(&self, limit: time::OffsetDateTime, tx: Sender) -> Result<()>;
 
@@ -45,11 +43,9 @@ pub type ListResponse = (std::sync::Arc<str>, Option<time::OffsetDateTime>);
 pub trait BundleStorage: Send + Sync {
     async fn list(&self, tx: tokio::sync::mpsc::Sender<ListResponse>) -> Result<()>;
 
-    async fn load(&self, storage_name: &str) -> Result<DataRef>;
+    async fn load(&self, storage_name: &str) -> Result<Option<DataRef>>;
 
     async fn store(&self, data: Box<[u8]>) -> Result<std::sync::Arc<str>>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
-
-    async fn replace(&self, storage_name: &str, data: Box<[u8]>) -> Result<()>;
 }

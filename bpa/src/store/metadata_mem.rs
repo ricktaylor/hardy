@@ -12,23 +12,15 @@ pub enum Error {
     NotFound,
 }
 
-struct StorageInner {
-    metadata: HashMap<Arc<str>, metadata::Bundle>,
-    index: HashMap<bpv7::BundleId, Arc<str>>,
-}
-
 pub struct Storage {
-    inner: RwLock<StorageInner>,
+    entries: RwLock<HashMap<bpv7::BundleId, metadata::Bundle>>,
 }
 
 impl Storage {
     #[instrument(skip_all)]
     pub fn init(_config: &HashMap<String, config::Value>) -> Arc<dyn storage::MetadataStorage> {
         Arc::new(Self {
-            inner: RwLock::new(StorageInner {
-                metadata: HashMap::new(),
-                index: HashMap::new(),
-            }),
+            entries: RwLock::new(HashMap::new()),
         })
     }
 }
@@ -44,69 +36,53 @@ impl storage::MetadataStorage for Storage {
         metadata: &metadata::Metadata,
         bundle: &bpv7::Bundle,
     ) -> storage::Result<bool> {
-        let mut inner = self.inner.write().await;
-        match inner
-            .index
-            .insert(bundle.id.clone(), metadata.storage_name.clone())
-        {
-            None => {}
-            Some(prev) => {
-                inner.index.insert(bundle.id.clone(), prev);
-                return Ok(false);
-            }
-        }
+        let mut entries = self.entries.write().await;
 
-        let Some(prev) = inner.metadata.insert(
-            metadata.storage_name.clone(),
+        if let Some(prev) = entries.insert(
+            bundle.id.clone(),
             metadata::Bundle {
                 metadata: metadata.clone(),
                 bundle: bundle.clone(),
             },
-        ) else {
-            return Ok(true);
-        };
-
-        // Swap back
-        inner.metadata.insert(metadata.storage_name.clone(), prev);
-        Ok(false)
+        ) {
+            // Put the old value back
+            entries.insert(bundle.id.clone(), prev);
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 
     async fn get_bundle_status(
         &self,
-        storage_name: &str,
+        bundle_id: &bpv7::BundleId,
     ) -> storage::Result<Option<metadata::BundleStatus>> {
         Ok(self
-            .inner
+            .entries
             .read()
             .await
-            .metadata
-            .get(storage_name)
-            .map(|m| m.metadata.status.clone()))
+            .get(bundle_id)
+            .map(|bundle| bundle.metadata.status.clone()))
     }
 
     async fn set_bundle_status(
         &self,
-        storage_name: &str,
+        bundle_id: &bpv7::BundleId,
         status: &metadata::BundleStatus,
     ) -> storage::Result<()> {
-        self.inner
+        self.entries
             .write()
             .await
-            .metadata
-            .get_mut(storage_name)
-            .map(|m| m.metadata.status = status.clone())
+            .get_mut(bundle_id)
+            .map(|bundle| bundle.metadata.status = status.clone())
             .ok_or(Error::NotFound.into())
     }
 
-    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
-        let mut inner = self.inner.write().await;
-        let Some(bundle) = inner.metadata.remove(storage_name) else {
-            return Err(Error::NotFound.into());
-        };
-
-        inner
-            .index
-            .remove(&bundle.bundle.id)
+    async fn remove(&self, bundle_id: &bpv7::BundleId) -> storage::Result<()> {
+        self.entries
+            .write()
+            .await
+            .remove(bundle_id)
             .map(|_| ())
             .ok_or(Error::NotFound.into())
     }
@@ -118,14 +94,6 @@ impl storage::MetadataStorage for Storage {
         Ok(None)
     }
 
-    async fn begin_replace(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<()> {
-        todo!()
-    }
-
-    async fn commit_replace(&self, _storage_name: &str, _hash: &[u8]) -> storage::Result<()> {
-        todo!()
-    }
-
     async fn get_waiting_bundles(
         &self,
         limit: time::OffsetDateTime,
@@ -134,17 +102,14 @@ impl storage::MetadataStorage for Storage {
         // Drop all tombstones and collect waiting
         let mut tombstones = Vec::new();
 
-        let mut inner = self.inner.write().await;
+        let mut entries = self.entries.write().await;
 
-        for bundle in inner.metadata.values() {
+        for (bundle_id, bundle) in entries.iter() {
             match bundle.metadata.status {
                 metadata::BundleStatus::Tombstone(from)
                     if from + time::Duration::seconds(5) < time::OffsetDateTime::now_utc() =>
                 {
-                    tombstones.push((
-                        bundle.metadata.storage_name.clone(),
-                        bundle.bundle.id.clone(),
-                    ));
+                    tombstones.push(bundle_id.clone());
                 }
                 metadata::BundleStatus::ForwardAckPending(_, until)
                 | metadata::BundleStatus::Waiting(until)
@@ -159,9 +124,8 @@ impl storage::MetadataStorage for Storage {
         }
 
         // Remove tombstones from index
-        for (storage_name, id) in tombstones {
-            inner.metadata.remove(&storage_name);
-            inner.index.remove(&id);
+        for bundle_id in tombstones {
+            entries.remove(&bundle_id);
         }
         Ok(())
     }

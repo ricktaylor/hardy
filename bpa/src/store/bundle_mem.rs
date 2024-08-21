@@ -2,16 +2,9 @@ use super::*;
 use hardy_bpa_api::async_trait;
 use rand::distributions::{Alphanumeric, DistString};
 use std::{collections::HashMap, sync::Arc};
-use thiserror::Error;
 use tokio::sync::RwLock;
 
 pub const CONFIG_KEY: &str = "mem-storage";
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("No such bundle")]
-    NotFound,
-}
 
 struct DataRefWrapper(Arc<[u8]>);
 
@@ -45,10 +38,10 @@ impl storage::BundleStorage for Storage {
         Ok(())
     }
 
-    async fn load(&self, storage_name: &str) -> storage::Result<storage::DataRef> {
+    async fn load(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
         match self.bundles.read().await.get(storage_name) {
-            None => Err(Error::NotFound.into()),
-            Some(v) => Ok(Arc::new(DataRefWrapper(v.clone()))),
+            None => Ok(None),
+            Some(v) => Ok(Some(Arc::new(DataRefWrapper(v.clone())))),
         }
     }
 
@@ -68,15 +61,7 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn remove(&self, storage_name: &str) -> storage::Result<()> {
-        self.bundles
-            .write()
-            .await
-            .remove(storage_name)
-            .map(|_| ())
-            .ok_or(Error::NotFound.into())
-    }
-
-    async fn replace(&self, _storage_name: &str, _data: Box<[u8]>) -> storage::Result<()> {
-        todo!()
+        self.bundles.write().await.remove(storage_name);
+        Ok(())
     }
 }
