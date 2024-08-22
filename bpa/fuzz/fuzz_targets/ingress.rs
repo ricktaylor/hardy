@@ -4,7 +4,31 @@ use hardy_bpa::*;
 use libfuzzer_sys::fuzz_target;
 
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-static INGRESS: std::sync::OnceLock<std::sync::Arc<ingress::Ingress>> = std::sync::OnceLock::new();
+static DISPATCHER: std::sync::OnceLock<std::sync::Arc<dispatcher::Dispatcher>> =
+    std::sync::OnceLock::new();
+static FIREHOSE: std::sync::OnceLock<Firehose> = std::sync::OnceLock::new();
+
+struct Firehose {
+    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl Firehose {
+    fn new() -> Self {
+        // We're going to spawn a bunch of tasks
+        let parallelism = std::thread::available_parallelism()
+            .map(Into::into)
+            .unwrap_or(1)
+            * 4;
+
+        Self {
+            semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(parallelism)),
+        }
+    }
+
+    async fn get_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.semaphore.clone().acquire_owned().await.unwrap()
+    }
+}
 
 fn setup() -> tokio::runtime::Runtime {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -56,20 +80,12 @@ fn setup() -> tokio::runtime::Runtime {
             cancel_token.clone(),
         );
 
-        // Create a new ingress
-        let ingress = ingress::Ingress::new(&config, store.clone(), dispatcher.clone());
-
         // Start the store - this can take a while as the store is walked
         store
-            .start(
-                ingress.clone(),
-                dispatcher,
-                &mut task_set,
-                cancel_token.clone(),
-            )
+            .start(dispatcher.clone(), &mut task_set, cancel_token.clone())
             .await;
 
-        INGRESS.get_or_init(|| ingress.clone());
+        DISPATCHER.get_or_init(|| dispatcher);
 
         while task_set.join_next().await.is_some() {}
     });
@@ -79,16 +95,21 @@ fn setup() -> tokio::runtime::Runtime {
 
 fn test_ingress(data: &[u8]) {
     RT.get_or_init(setup).block_on(async {
-        let ingress = loop {
-            match INGRESS.get() {
-                Some(ingress) => break ingress,
+        let dispatcher = loop {
+            match DISPATCHER.get() {
+                Some(dispatcher) => break dispatcher,
                 None => {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
         };
 
-        _ = ingress.receive(data.into()).await;
+        let permit = FIREHOSE.get_or_init(Firehose::new).get_permit().await;
+        let data = data.into();
+        tokio::task::spawn(async move {
+            _ = dispatcher.receive(data).await;
+            drop(permit);
+        });
     })
 }
 
@@ -105,5 +126,5 @@ fn test() {
 }
 */
 
-// llvm-cov show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
-// llvm-cov export --format=lcov  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/ingress/lcov.info
+// cargo cov -- show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
+// cargo cov -- export --format=lcov  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/ingress/lcov.info

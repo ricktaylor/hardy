@@ -2,7 +2,6 @@ pub mod app_registry;
 pub mod cla_registry;
 pub mod dispatcher;
 pub mod fib;
-pub mod ingress;
 pub mod services;
 pub mod static_routes;
 pub mod store;

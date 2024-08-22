@@ -10,7 +10,6 @@ pub fn init(
     config: &config::Config,
     cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
-    ingress: Arc<ingress::Ingress>,
     dispatcher: Arc<dispatcher::Dispatcher>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
@@ -27,7 +26,6 @@ pub fn init(
         .add_service(cla_sink::new_service(
             config,
             cla_registry,
-            ingress,
             dispatcher.clone(),
         ))
         .add_service(application_sink::new_service(

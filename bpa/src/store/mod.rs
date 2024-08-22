@@ -123,13 +123,12 @@ impl Store {
     #[instrument(skip_all)]
     pub async fn start(
         &self,
-        ingress: Arc<ingress::Ingress>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         info!("Starting store consistency check...");
-        self.bundle_storage_check(ingress.clone(), cancel_token.clone())
+        self.bundle_storage_check(dispatcher.clone(), cancel_token.clone())
             .await;
 
         if !cancel_token.is_cancelled() {
@@ -259,7 +258,7 @@ impl Store {
     #[instrument(skip_all)]
     async fn bundle_storage_check(
         &self,
-        ingress: Arc<ingress::Ingress>,
+        dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
@@ -293,10 +292,10 @@ impl Store {
                         let permit = permit.trace_expect("Failed to acquire permit");
                         let metadata_storage = self.metadata_storage.clone();
                         let bundle_storage = self.bundle_storage.clone();
-                        let ingress = ingress.clone();
+                        let dispatcher = dispatcher.clone();
 
                         task_set.spawn(async move {
-                            let (o,b) = Self::restart_bundle(metadata_storage, bundle_storage, ingress, storage_name, file_time).await;
+                            let (o,b) = Self::restart_bundle(metadata_storage, bundle_storage, dispatcher, storage_name, file_time).await;
                             drop(permit);
                             (o,b)
                         });
@@ -311,12 +310,20 @@ impl Store {
                 }
             }
         }
+
+        // Wait for all sub-tasks to complete
+        while let Some(r) = task_set.join_next().await {
+            let (o, b) = r.trace_expect("Task terminated unexpectedly");
+            orphans = orphans.saturating_add(o);
+            bad = bad.saturating_add(b);
+        }
+        info!("Bundle restart complete, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
     }
 
     async fn restart_bundle(
         metadata_storage: Arc<dyn storage::MetadataStorage>,
         bundle_storage: Arc<dyn storage::BundleStorage>,
-        ingress: Arc<ingress::Ingress>,
+        dispatcher: Arc<dispatcher::Dispatcher>,
         storage_name: Arc<str>,
         file_time: Option<time::OffsetDateTime>,
     ) -> (u64, u64) {
@@ -385,8 +392,8 @@ impl Store {
         }
         let orphan = metadata.is_none();
 
-        // Send to the ingress to sort out
-        ingress
+        // Send to the dispatcher to sort out
+        dispatcher
             .restart_bundle(
                 metadata::Bundle {
                     metadata: metadata.unwrap_or(metadata::Metadata {

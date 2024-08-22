@@ -2,7 +2,6 @@ mod app_registry;
 mod cla_registry;
 mod dispatcher;
 mod fib;
-mod ingress;
 mod services;
 mod static_routes;
 mod store;
@@ -66,17 +65,9 @@ async fn main() {
         cancel_token.clone(),
     );
 
-    // Create a new ingress
-    let ingress = ingress::Ingress::new(&config, store.clone(), dispatcher.clone());
-
     // Start the store - this can take a while as the store is walked
     store
-        .start(
-            ingress.clone(),
-            dispatcher.clone(),
-            &mut task_set,
-            cancel_token.clone(),
-        )
+        .start(dispatcher.clone(), &mut task_set, cancel_token.clone())
         .await;
 
     if !cancel_token.is_cancelled() {
@@ -85,7 +76,6 @@ async fn main() {
             &config,
             cla_registry,
             app_registry,
-            ingress,
             dispatcher,
             &mut task_set,
             cancel_token.clone(),
