@@ -434,3 +434,14 @@ impl cbor::decode::FromCbor for ValidBundle {
         )))
     }
 }
+
+/*
+#[test]
+fn fuzz_tests() {
+    let data = include_bytes!(
+        "../../bpa/fuzz/artifacts/ingress/crash-a039d061e661cb3a1c5a1509e4819d413ab88124"
+    );
+
+    cbor::decode::parse::<ValidBundle>(data).expect("Failed to decode");
+}
+*/

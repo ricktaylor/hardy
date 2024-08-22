@@ -96,5 +96,14 @@ fuzz_target!(|data: &[u8]| {
     test_ingress(data);
 });
 
+/*
+#[test]
+fn test() {
+    test_ingress(include_bytes!(
+        "../artifacts/ingress/crash-da39a3ee5e6b4b0d3255bfef95601890afd80709"
+    ));
+}
+*/
+
 // llvm-cov show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
 // llvm-cov export --format=lcov  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/ingress/lcov.info
