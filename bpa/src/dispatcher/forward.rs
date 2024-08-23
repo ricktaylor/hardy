@@ -79,14 +79,14 @@ impl Dispatcher {
                 if let Some(e) = self.cla_registry.find(endpoint.handle).await {
                     // Get bundle data from store, now we know we need it!
                     if data.is_none() {
-                        let Some(source_data) = self.load_data(&bundle).await? else {
+                        let Some(source_data) = self.load_data(bundle).await? else {
                             // Bundle data was deleted sometime during processing
                             return Ok(None);
                         };
 
                         // Increment Hop Count, etc...
                         (data, data_is_time_sensitive) = self
-                            .update_extension_blocks(&bundle, (*source_data).as_ref())
+                            .update_extension_blocks(bundle, (*source_data).as_ref())
                             .map(|(data, data_is_time_sensitive)| {
                                 (Some(data), data_is_time_sensitive)
                             })?;
@@ -96,7 +96,7 @@ impl Dispatcher {
                         Ok(cla_registry::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
                             return self
-                                .report_bundle_forwarded(&bundle)
+                                .report_bundle_forwarded(bundle)
                                 .await
                                 .map(|_| Some(None));
                         }
