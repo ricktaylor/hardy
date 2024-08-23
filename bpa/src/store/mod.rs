@@ -415,7 +415,7 @@ impl Store {
 
     #[instrument(skip_all)]
     async fn check_waiting(
-        wait_sample_interval: time::Duration, //time::Duration::seconds(self.config.wait_sample_interval as i64)
+        wait_sample_interval: time::Duration,
         metadata_storage: Arc<dyn storage::MetadataStorage>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -423,13 +423,12 @@ impl Store {
         while utils::cancel::cancellable_sleep(wait_sample_interval, &cancel_token).await {
             // Get all bundles that are ready before now() + self.config.wait_sample_interval
             let limit = time::OffsetDateTime::now_utc() + wait_sample_interval;
+
             let (tx, mut rx) = tokio::sync::mpsc::channel::<metadata::Bundle>(16);
             let dispatcher = dispatcher.clone();
             let cancel_token = cancel_token.clone();
-            let h = tokio::spawn(async move {
-                // We're going to spawn a bunch of tasks
-                let mut task_set = tokio::task::JoinSet::new();
 
+            let h = tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         bundle = rx.recv() => match bundle {
@@ -441,24 +440,14 @@ impl Store {
                                     | metadata::BundleStatus::Waiting(until)
                                         if until <= limit =>
                                     {
-                                        // Spawn a task for each ready bundle
-                                        let dispatcher = dispatcher.clone();
-                                        task_set.spawn(async move {
-                                            dispatcher.delay_bundle(bundle, until).await.trace_expect("Failed to delay bundle");
-                                        });
+                                        dispatcher.dispatch_bundle(bundle).await.trace_expect("Failed to dispatch bundle");
                                     }
                                     _ => {}
                                 }
                             },
                         },
-                        Some(r) = task_set.join_next(), if !task_set.is_empty() => r.trace_expect("Task terminated unexpectedly"),
                         _ = cancel_token.cancelled() => break,
                     }
-                }
-
-                // Wait for all sub-tasks to complete
-                while let Some(r) = task_set.join_next().await {
-                    r.trace_expect("Task terminated unexpectedly")
                 }
             });
 

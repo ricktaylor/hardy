@@ -37,8 +37,8 @@ impl std::fmt::Display for Action {
 }
 
 pub struct ForwardAction {
-    pub clas: Vec<Endpoint>,                // Available endpoints for forwarding
-    pub wait: Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
+    pub clas: Vec<Endpoint>,                 // Available endpoints for forwarding
+    pub until: Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
 }
 
 type ForwardResult = Result<ForwardAction, Option<bpv7::StatusReportReasonCode>>;
@@ -121,7 +121,7 @@ fn find_recurse(table: &Table, to: &bpv7::Eid, trail: &mut HashSet<bpv7::Eid>) -
 
     let mut new_action = ForwardAction {
         clas: Vec::new(),
-        wait: None,
+        until: None,
     };
 
     // Recursion check
@@ -144,10 +144,12 @@ fn find_recurse(table: &Table, to: &bpv7::Eid, trail: &mut HashSet<bpv7::Eid>) -
             match action {
                 Action::Via(via) => {
                     let action = find_recurse(table, &via, trail)?;
-                    new_action.wait = match (new_action.wait, action.wait) {
-                        (None, Some(_)) => action.wait,
-                        (_, None) => new_action.wait,
-                        (Some(wait), Some(until)) => Some(wait.min(until)),
+                    new_action.until = match (new_action.until, action.until) {
+                        (None, Some(_)) => action.until,
+                        (_, None) => new_action.until,
+                        (Some(new_until), Some(current_until)) => {
+                            Some(new_until.min(current_until))
+                        }
                     };
                     new_action.clas.extend(action.clas)
                 }
@@ -161,9 +163,9 @@ fn find_recurse(table: &Table, to: &bpv7::Eid, trail: &mut HashSet<bpv7::Eid>) -
                 Action::Wait(until) => {
                     // Check we don't have a deadline in the past
                     if until >= time::OffsetDateTime::now_utc() {
-                        new_action.wait = match new_action.wait {
+                        new_action.until = match new_action.until {
                             None => Some(until),
-                            Some(wait) if wait > until => Some(until),
+                            Some(new_until) if new_until > until => Some(until),
                             w => w,
                         };
                     }

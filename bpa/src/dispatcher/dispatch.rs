@@ -1,0 +1,160 @@
+use super::*;
+
+#[instrument(skip_all)]
+pub(super) async fn dispatch_task(
+    dispatcher: Arc<Dispatcher>,
+    mut rx: tokio::sync::mpsc::Receiver<metadata::Bundle>,
+) {
+    // We're going to spawn a bunch of tasks
+    let mut task_set = tokio::task::JoinSet::new();
+
+    // Give some feedback
+    const SECS: u64 = 5;
+    let timer = tokio::time::sleep(tokio::time::Duration::from_secs(SECS));
+    tokio::pin!(timer);
+    let mut bundles_processed = 0u64;
+
+    loop {
+        tokio::select! {
+            () = &mut timer => {
+                if bundles_processed != 0 {
+                    info!("{bundles_processed} bundles processed, {} bundles/s",bundles_processed / SECS);
+                    bundles_processed = 0;
+                }
+                timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(SECS));
+            },
+            bundle = rx.recv() => {
+                let dispatcher = dispatcher.clone();
+                let bundle = bundle.trace_expect("Dispatcher channel unexpectedly closed");
+
+                task_set.spawn(async move {
+                    dispatcher.process_bundle(bundle).await.trace_expect("Failed to dispatch bundle");
+                });
+            },
+            Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                r.trace_expect("Task terminated unexpectedly");
+
+                bundles_processed = bundles_processed.saturating_add(1);
+            },
+            _ = dispatcher.cancel_token.cancelled() => break
+        }
+    }
+
+    // Wait for all sub-tasks to complete
+    while let Some(r) = task_set.join_next().await {
+        r.trace_expect("Task terminated unexpectedly")
+    }
+}
+
+impl Dispatcher {
+    #[inline]
+    pub async fn dispatch_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
+        // Put bundle into channel, ignoring errors as the only ones are intentional
+        _ = self.tx.send(bundle).await;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
+        loop {
+            match bundle.metadata.status {
+                metadata::BundleStatus::IngressPending
+                | metadata::BundleStatus::ForwardPending
+                | metadata::BundleStatus::Tombstone(_) => {
+                    unreachable!()
+                }
+                metadata::BundleStatus::DispatchPending => {
+                    // Check if we are the final destination
+                    if self
+                        .config
+                        .admin_endpoints
+                        .is_local_service(&bundle.bundle.destination)
+                    {
+                        if bundle.bundle.id.fragment_info.is_some() {
+                            return self.reassemble(bundle).await;
+                        } else if self
+                            .config
+                            .admin_endpoints
+                            .is_admin_endpoint(&bundle.bundle.destination)
+                        {
+                            // The bundle is for the Administrative Endpoint
+                            return self.administrative_bundle(bundle).await;
+                        } else {
+                            // The bundle is ready for collection
+                            trace!("Bundle is ready for local delivery");
+                            self.store
+                                .set_status(&mut bundle, metadata::BundleStatus::CollectionPending)
+                                .await?;
+                        }
+                    } else {
+                        // Forward to another BPA
+                        return self.forward_bundle(bundle).await;
+                    }
+                }
+                metadata::BundleStatus::ReassemblyPending => {
+                    // Wait for other fragments to arrive
+                    return Ok(());
+                }
+                metadata::BundleStatus::CollectionPending => {
+                    // Check if we have a local service registered
+                    if let Some(endpoint) = self
+                        .app_registry
+                        .find_by_eid(&bundle.bundle.destination)
+                        .await
+                    {
+                        // Notify that the bundle is ready for collection
+                        trace!("Notifying application that bundle is ready for collection");
+                        endpoint.collection_notify(&bundle.bundle.id).await;
+                    }
+                    return Ok(());
+                }
+                metadata::BundleStatus::ForwardAckPending(_, until)
+                | metadata::BundleStatus::Waiting(until) => {
+                    bundle = match self.bundle_wait(until, bundle).await? {
+                        None => return Ok(()),
+                        Some(bundle) => bundle,
+                    };
+                }
+            }
+        }
+    }
+
+    async fn bundle_wait(
+        &self,
+        until: time::OffsetDateTime,
+        bundle: metadata::Bundle,
+    ) -> Result<Option<metadata::Bundle>, Error> {
+        // Check if it's worth us waiting inline
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
+            // Nothing to do now, it will be picked up later
+            trace!("Bundle will wait offline until: {until}");
+            return Ok(None);
+        }
+
+        trace!("Bundle will wait inline until: {until}");
+
+        // Wait a bit
+        if !cancellable_sleep(wait, &self.cancel_token).await {
+            // Cancelled
+            return Ok(None);
+        }
+
+        // Reload bundle after we slept
+        match self.store.load(&bundle.bundle.id).await? {
+            None => {
+                // It's gone while we slept
+                Ok(None)
+            }
+            Some(mut b) => {
+                if b.metadata.status == bundle.metadata.status {
+                    // Clear the wait state
+                    self.store
+                        .set_status(&mut b, metadata::BundleStatus::DispatchPending)
+                        .await?;
+                }
+                Ok(Some(b))
+            }
+        }
+    }
+}

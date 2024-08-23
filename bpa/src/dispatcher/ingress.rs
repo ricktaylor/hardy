@@ -195,7 +195,7 @@ impl Dispatcher {
         }
 
         // Now process in parallel
-        self.enqueue_bundle(bundle).await
+        self.dispatch_bundle(bundle).await
     }
 
     async fn check_extension_blocks(

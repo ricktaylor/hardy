@@ -1,24 +1,27 @@
 use super::*;
 
+enum ForwardResult {
+    Done,
+    Drop(Option<bpv7::StatusReportReasonCode>),
+    Dispatch,
+}
+
 impl Dispatcher {
     pub(super) async fn forward_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
-        if let Some(reason) = self.forward_inner(&mut bundle).await? {
-            self.drop_bundle(bundle, reason).await
-        } else {
-            Ok(())
+        match self.forward_inner(&mut bundle).await? {
+            ForwardResult::Done => Ok(()),
+            ForwardResult::Drop(reason) => self.drop_bundle(bundle, reason).await,
+            ForwardResult::Dispatch => self.dispatch_bundle(bundle).await,
         }
     }
 
-    async fn forward_inner(
-        &self,
-        bundle: &mut metadata::Bundle,
-    ) -> Result<Option<Option<bpv7::StatusReportReasonCode>>, Error> {
+    async fn forward_inner(&self, bundle: &mut metadata::Bundle) -> Result<ForwardResult, Error> {
         let Some(fib) = &self.fib else {
             /* If forwarding is disabled in the configuration, then we can only deliver bundles.
              * As we have decided that the bundle is not for a local service, we cannot deliver.
              * Therefore, we respond with a Destination endpoint ID unavailable report */
             trace!("Bundle should be forwarded, but forwarding is disabled");
-            return Ok(Some(Some(
+            return Ok(ForwardResult::Drop(Some(
                 bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
             )));
         };
@@ -36,36 +39,35 @@ impl Dispatcher {
             // Check bundle expiry
             if bundle.has_expired() {
                 trace!("Bundle lifetime has expired");
-                return Ok(Some(Some(bpv7::StatusReportReasonCode::LifetimeExpired)));
+                return Ok(ForwardResult::Drop(Some(
+                    bpv7::StatusReportReasonCode::LifetimeExpired,
+                )));
             }
 
             // Lookup/Perform actions
             let action = match fib.find(&destination).await {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
-                    return Ok(Some(reason));
+                    return Ok(ForwardResult::Drop(reason));
                 }
                 Ok(fib::ForwardAction {
                     clas,
-                    wait: Some(wait),
+                    until: Some(until),
                 }) if clas.is_empty() => {
                     // Check to see if waiting is even worth it
-                    if wait > bundle.expiry() {
+                    if until > bundle.expiry() {
                         trace!("Bundle lifetime is shorter than wait period");
-                        return Ok(Some(Some(
+                        return Ok(ForwardResult::Drop(Some(
                             bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
                         )));
                     }
 
-                    // Wait a bit
-                    if !self.wait_to_forward(bundle, wait).await? {
-                        // Cancelled, or too long a wait for here
-                        return Ok(None);
-                    }
-
-                    // Reset retry counter, we were just correctly told to wait
-                    retries = 0;
-                    continue;
+                    // Set bundle status to Waiting
+                    return self
+                        .store
+                        .set_status(bundle, metadata::BundleStatus::Waiting(until))
+                        .await
+                        .map(|_| ForwardResult::Dispatch);
                 }
                 Ok(action) => action,
             };
@@ -81,7 +83,7 @@ impl Dispatcher {
                     if data.is_none() {
                         let Some(source_data) = self.load_data(bundle).await? else {
                             // Bundle data was deleted sometime during processing
-                            return Ok(None);
+                            return Ok(ForwardResult::Done);
                         };
 
                         // Increment Hop Count, etc...
@@ -98,7 +100,7 @@ impl Dispatcher {
                             return self
                                 .report_bundle_forwarded(bundle)
                                 .await
-                                .map(|_| Some(None));
+                                .map(|_| ForwardResult::Drop(None));
                         }
                         Ok(cla_registry::ForwardBundleResult::Pending(handle, until)) => {
                             // CLA will report successful forwarding
@@ -108,7 +110,7 @@ impl Dispatcher {
                                 time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
                             }).min(bundle.expiry());
 
-                            // Set the bundle status to 'Forward Acknowledgement Pending'
+                            // Set the bundle status to 'Forward Acknowledgement Pending' and re-dispatch
                             return self
                                 .store
                                 .set_status(
@@ -116,7 +118,7 @@ impl Dispatcher {
                                     metadata::BundleStatus::ForwardAckPending(handle, until),
                                 )
                                 .await
-                                .map(|_| None);
+                                .map(|_| ForwardResult::Dispatch);
                         }
                         Ok(cla_registry::ForwardBundleResult::Congested(until)) => {
                             trace!("CLA reported congestion, retry at: {until}");
@@ -137,34 +139,35 @@ impl Dispatcher {
 
             // Check for congestion
             if let Some(mut until) = congestion_wait {
+                // We must wait for a bit for the CLAs to calm down
                 trace!("All available CLAs report congestion until {until}");
 
                 // Limit congestion wait to the forwarding wait
-                if let Some(wait) = action.wait {
+                if let Some(wait) = action.until {
                     until = wait.min(until);
                 }
 
                 // Check to see if waiting is even worth it
                 if until > bundle.expiry() {
                     trace!("Bundle lifetime is shorter than wait period");
-                    return Ok(Some(Some(
+                    return Ok(ForwardResult::Drop(Some(
                         bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
                     )));
                 }
 
-                // We must wait for a bit for the CLAs to calm down
-                if !self.wait_to_forward(bundle, until).await? {
-                    // Cancelled, or too long a wait for here
-                    return Ok(None);
-                }
+                // Nothing to do now, set bundle status to Waiting, and it will be picked up later
+                trace!("Bundle will wait offline until: {until}");
 
-                // Reset retry counter, as we found a route, it's just busy
-                retries = 0;
+                return self
+                    .store
+                    .set_status(bundle, metadata::BundleStatus::Waiting(until))
+                    .await
+                    .map(|_| ForwardResult::Dispatch);
             } else if retries >= self.config.max_forwarding_delay {
                 if previous {
                     // We have delayed long enough trying to find a route to previous_node
                     trace!("Failed to return bundle to previous node, no route");
-                    return Ok(Some(Some(
+                    return Ok(ForwardResult::Drop(Some(
                         bpv7::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
                     )));
                 }
@@ -191,7 +194,7 @@ impl Dispatcher {
                 // Async sleep for 1 second
                 if !cancellable_sleep(time::Duration::seconds(1), &self.cancel_token).await {
                     // Cancelled
-                    return Ok(None);
+                    return Ok(ForwardResult::Done);
                 }
             }
 
@@ -199,26 +202,6 @@ impl Dispatcher {
                 // Force a reload of current data, because Bundle Age may have changed
                 data = None;
             }
-        }
-    }
-
-    async fn wait_to_forward(
-        &self,
-        bundle: &mut metadata::Bundle,
-        until: time::OffsetDateTime,
-    ) -> Result<bool, Error> {
-        let wait = until - time::OffsetDateTime::now_utc();
-        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
-            // Nothing to do now, set bundle status to Waiting, and it will be picked up later
-            trace!("Bundle will wait offline until: {until}");
-            self.store
-                .set_status(bundle, metadata::BundleStatus::Waiting(until))
-                .await
-                .map(|_| false)
-        } else {
-            // We must wait here, as we have missed the scheduled wait interval
-            trace!("Waiting to forward bundle inline until: {until}");
-            Ok(cancellable_sleep(wait, &self.cancel_token).await)
         }
     }
 
