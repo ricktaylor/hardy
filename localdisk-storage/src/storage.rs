@@ -257,8 +257,8 @@ impl BundleStorage for Storage {
     async fn store(&self, data: Box<[u8]>) -> storage::Result<Arc<str>> {
         let root = self.store_root.clone();
 
-        // Spawn a thread to try to maintain linearity
-        let storage_name = tokio::task::spawn_blocking(move || {
+        // Force the runtime to do the following as atomically as possible
+        let storage_name = tokio::task::block_in_place(move || {
             // Create random filename
             let mut storage_name = random_file_path(&root)?;
 
@@ -307,9 +307,7 @@ impl BundleStorage for Storage {
             // No idea how to fsync the directory in portable Rust!
 
             Ok(storage_name)
-        })
-        .await
-        .trace_expect("Failed to spawn write_atomic thread")?;
+        })?;
 
         Ok(Arc::from(
             storage_name
