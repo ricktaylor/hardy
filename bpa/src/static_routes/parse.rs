@@ -40,7 +40,7 @@ struct RouteLine(Option<(bpv7::EidPattern, StaticRoute)>);
 enum ArgOption {
     //None,
     Optional,
-    One,
+    Some(usize),
 }
 struct Arg {
     name: &'static str,
@@ -91,11 +91,18 @@ fn parse_args(
                         parts.next().map(|s| s.to_string())
                     }
                 }
-                ArgOption::One => {
-                    let Some(s) = parts.next() else {
-                        return Err(ParseError::MissingParameter(arg.name));
-                    };
-                    Some(s.to_string())
+                ArgOption::Some(items) => {
+                    let mut r = String::new();
+                    for i in 0..items {
+                        let Some(s) = parts.next() else {
+                            return Err(ParseError::MissingParameter(arg.name));
+                        };
+                        if i != 0 {
+                            r.push(' ')
+                        }
+                        r += s;
+                    }
+                    Some(r)
                 }
             },
         );
@@ -125,17 +132,17 @@ impl std::str::FromStr for RouteLine {
                 },
                 Arg {
                     name: "via",
-                    arg: ArgOption::One,
+                    arg: ArgOption::Some(1),
                     group: Some(0),
                 },
                 Arg {
                     name: "wait",
-                    arg: ArgOption::One,
+                    arg: ArgOption::Some(3),
                     group: Some(0),
                 },
                 Arg {
                     name: "priority",
-                    arg: ArgOption::One,
+                    arg: ArgOption::Some(1),
                     group: None,
                 },
             ],
