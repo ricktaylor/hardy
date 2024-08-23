@@ -5,20 +5,18 @@ mod local;
 mod receive;
 mod report;
 
-use self::config::Config;
 use super::*;
 use hardy_cbor as cbor;
 use std::sync::Arc;
-use tokio::sync::mpsc::*;
 use utils::cancel::cancellable_sleep;
 
 pub use local::SendRequest;
 
 pub struct Dispatcher {
-    config: Config,
+    config: self::config::Config,
     cancel_token: tokio_util::sync::CancellationToken,
     store: Arc<store::Store>,
-    tx: Sender<metadata::Bundle>,
+    tx: tokio::sync::mpsc::Sender<metadata::Bundle>,
     cla_registry: cla_registry::ClaRegistry,
     app_registry: app_registry::AppRegistry,
     fib: Option<fib::Fib>,
@@ -37,9 +35,9 @@ impl Dispatcher {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Arc<Self> {
         // Create a channel for bundles
-        let (tx, rx) = channel(16);
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
         let dispatcher = Arc::new(Self {
-            config: Config::new(config, admin_endpoints),
+            config: self::config::Config::new(config, admin_endpoints),
             cancel_token,
             store,
             tx,
@@ -56,7 +54,10 @@ impl Dispatcher {
     }
 
     #[instrument(skip_all)]
-    async fn pipeline_pump(dispatcher: Arc<Self>, mut rx: Receiver<metadata::Bundle>) {
+    async fn pipeline_pump(
+        dispatcher: Arc<Self>,
+        mut rx: tokio::sync::mpsc::Receiver<metadata::Bundle>,
+    ) {
         // We're going to spawn a bunch of tasks
         let mut task_set = tokio::task::JoinSet::new();
 
