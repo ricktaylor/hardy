@@ -397,14 +397,10 @@ impl Store {
             .restart_bundle(
                 metadata::Bundle {
                     metadata: metadata.unwrap_or(metadata::Metadata {
-                        status: if valid {
-                            metadata::BundleStatus::IngressPending
-                        } else {
-                            metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
-                        },
                         storage_name: Some(storage_name),
                         hash,
                         received_at: file_time,
+                        ..Default::default()
                     }),
                     bundle,
                 },
@@ -496,7 +492,11 @@ impl Store {
         bundle: &bpv7::Bundle,
     ) -> Result<bool, Error> {
         // Write to metadata store
-        self.metadata_storage.store(metadata, bundle).await
+        Ok(self
+            .metadata_storage
+            .store(metadata, bundle)
+            .await
+            .trace_expect("Failed to store metadata"))
     }
 
     pub async fn load(

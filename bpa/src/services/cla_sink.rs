@@ -53,7 +53,7 @@ impl ClaSink for Service {
         let request = request.into_inner();
         self.cla_registry.exists(request.handle).await?;
         self.dispatcher
-            .receive(Box::from(request.bundle))
+            .receive_bundle(Box::from(request.bundle))
             .await
             .map(|_| Response::new(ReceiveBundleResponse {}))
             .map_err(Status::from_error)

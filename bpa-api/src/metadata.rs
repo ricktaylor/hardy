@@ -1,7 +1,7 @@
 use hardy_bpv7::prelude as bpv7;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct Metadata {
     pub status: BundleStatus,
     pub storage_name: Option<Arc<str>>,
@@ -9,9 +9,11 @@ pub struct Metadata {
     pub received_at: Option<time::OffsetDateTime>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub enum BundleStatus {
     IngressPending,
+
+    #[default]
     DispatchPending,
     ReassemblyPending,
     CollectionPending,

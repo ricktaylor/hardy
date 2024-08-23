@@ -6,29 +6,6 @@ use libfuzzer_sys::fuzz_target;
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 static DISPATCHER: std::sync::OnceLock<std::sync::Arc<dispatcher::Dispatcher>> =
     std::sync::OnceLock::new();
-static FIREHOSE: std::sync::OnceLock<Firehose> = std::sync::OnceLock::new();
-
-struct Firehose {
-    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
-}
-
-impl Firehose {
-    fn new() -> Self {
-        // We're going to spawn a bunch of tasks
-        let parallelism = std::thread::available_parallelism()
-            .map(Into::into)
-            .unwrap_or(1)
-            * 4;
-
-        Self {
-            semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(parallelism)),
-        }
-    }
-
-    async fn get_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
-        self.semaphore.clone().acquire_owned().await.unwrap()
-    }
-}
 
 fn setup() -> tokio::runtime::Runtime {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -104,12 +81,7 @@ fn test_ingress(data: &[u8]) {
             }
         };
 
-        let permit = FIREHOSE.get_or_init(Firehose::new).get_permit().await;
-        let data = data.into();
-        tokio::task::spawn(async move {
-            _ = dispatcher.receive(data).await;
-            drop(permit);
-        });
+        _ = dispatcher.receive_bundle(data.into()).await;
     })
 }
 
