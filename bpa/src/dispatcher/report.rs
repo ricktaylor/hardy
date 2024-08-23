@@ -8,7 +8,7 @@ impl Dispatcher {
         reason: bpv7::StatusReportReasonCode,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.bundle.flags.receipt_report_requested {
+        if !bundle.bundle.flags.receipt_report_requested {
             return Ok(());
         }
 
@@ -44,7 +44,7 @@ impl Dispatcher {
         bundle: &metadata::Bundle,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.bundle.flags.forward_report_requested {
+        if !bundle.bundle.flags.forward_report_requested {
             return Ok(());
         }
 
@@ -78,7 +78,7 @@ impl Dispatcher {
         bundle: &metadata::Bundle,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.bundle.flags.delivery_report_requested {
+        if !bundle.bundle.flags.delivery_report_requested {
             return Ok(());
         }
 
@@ -111,7 +111,7 @@ impl Dispatcher {
         reason: bpv7::StatusReportReasonCode,
     ) -> Result<(), Error> {
         // Check if a report is requested
-        if !self.config.status_reports || !bundle.bundle.flags.delete_report_requested {
+        if !bundle.bundle.flags.delete_report_requested {
             return Ok(());
         }
 
@@ -144,6 +144,16 @@ impl Dispatcher {
         payload: Vec<u8>,
         report_to: &bpv7::Eid,
     ) -> Result<(), Error> {
+        // Check reports are enabled
+        if !self.config.status_reports {
+            return Ok(());
+        }
+
+        // Don't report to ourselves
+        if self.config.admin_endpoints.is_admin_endpoint(report_to) {
+            return Ok(());
+        }
+
         // Build the bundle
         let (bundle, data) = bpv7::Builder::new()
             .flags(bpv7::BundleFlags {
