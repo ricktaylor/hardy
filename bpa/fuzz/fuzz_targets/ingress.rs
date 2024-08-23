@@ -8,7 +8,7 @@ static DISPATCHER: std::sync::OnceLock<std::sync::Arc<dispatcher::Dispatcher>> =
     std::sync::OnceLock::new();
 
 fn setup() -> tokio::runtime::Runtime {
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
@@ -76,12 +76,20 @@ fn test_ingress(data: &[u8]) {
             match DISPATCHER.get() {
                 Some(dispatcher) => break dispatcher,
                 None => {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    tokio::task::yield_now().await;
                 }
             }
         };
 
+        let metrics = RT.get().unwrap().metrics();
+        let cur_tasks = metrics.num_alive_tasks();
+
         _ = dispatcher.receive_bundle(data.into()).await;
+
+        // This is horrible, but ensures we actually reach the async parts...
+        while metrics.num_alive_tasks() > cur_tasks {
+            tokio::task::yield_now().await;
+        }
     })
 }
 
