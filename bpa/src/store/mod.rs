@@ -72,10 +72,7 @@ fn init_metadata_storage(
         #[cfg(feature = "mem-storage")]
         metadata_mem::CONFIG_KEY => metadata_mem::Storage::init(&config),
 
-        _ => {
-            error!("Unknown metadata storage engine: {engine}");
-            panic!("Unknown metadata storage engine: {engine}")
-        }
+        _ => panic!("Unknown metadata storage engine: {engine}"),
     }
 }
 
@@ -103,10 +100,7 @@ fn init_bundle_storage(config: &config::Config, _upgrade: bool) -> Arc<dyn stora
         #[cfg(feature = "mem-storage")]
         bundle_mem::CONFIG_KEY => bundle_mem::Storage::init(&config),
 
-        _ => {
-            error!("Unknown bundle storage engine: {engine}");
-            panic!("Unknown bundle storage engine: {engine}")
-        }
+        _ => panic!("Unknown bundle storage engine: {engine}"),
     }
 }
 
