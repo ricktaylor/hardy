@@ -13,6 +13,7 @@ use hardy_cbor as cbor;
 use std::sync::Arc;
 use utils::cancel::cancellable_sleep;
 
+use dispatch::DispatchResult;
 pub use local::SendRequest;
 
 pub struct Dispatcher {

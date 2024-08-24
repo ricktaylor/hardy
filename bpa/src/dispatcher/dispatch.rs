@@ -1,5 +1,130 @@
 use super::*;
 
+pub(super) enum DispatchResult {
+    Done,
+    Drop(Option<bpv7::StatusReportReasonCode>),
+    Continue,
+}
+
+impl Dispatcher {
+    #[inline]
+    pub async fn dispatch_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
+        // Put bundle into channel, ignoring errors as the only ones are intentional
+        _ = self.tx.send(bundle).await;
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
+        loop {
+            let result = match &bundle.metadata.status {
+                metadata::BundleStatus::IngressPending
+                | metadata::BundleStatus::ForwardPending
+                | metadata::BundleStatus::Tombstone(_) => {
+                    unreachable!()
+                }
+                metadata::BundleStatus::DispatchPending => {
+                    // Check if we are the final destination
+                    if self
+                        .config
+                        .admin_endpoints
+                        .is_local_service(&bundle.bundle.destination)
+                    {
+                        if bundle.bundle.id.fragment_info.is_some() {
+                            self.reassemble(&mut bundle).await?
+                        } else if self
+                            .config
+                            .admin_endpoints
+                            .is_admin_endpoint(&bundle.bundle.destination)
+                        {
+                            // The bundle is for the Administrative Endpoint
+                            self.administrative_bundle(&mut bundle).await?
+                        } else {
+                            // The bundle is ready for collection
+                            trace!("Bundle is ready for local delivery");
+                            self.store
+                                .set_status(&mut bundle, metadata::BundleStatus::CollectionPending)
+                                .await
+                                .map(|_| DispatchResult::Continue)?
+                        }
+                    } else {
+                        // Forward to another BPA
+                        self.forward_bundle(&mut bundle).await?
+                    }
+                }
+                metadata::BundleStatus::ReassemblyPending => {
+                    // Wait for other fragments to arrive
+                    DispatchResult::Done
+                }
+                metadata::BundleStatus::CollectionPending => {
+                    // Check if we have a local service registered
+                    if let Some(endpoint) = self
+                        .app_registry
+                        .find_by_eid(&bundle.bundle.destination)
+                        .await
+                    {
+                        // Notify that the bundle is ready for collection
+                        trace!("Notifying application that bundle is ready for collection");
+                        endpoint.collection_notify(&bundle.bundle.id).await;
+                    }
+                    DispatchResult::Done
+                }
+                metadata::BundleStatus::ForwardAckPending(_, until)
+                | metadata::BundleStatus::Waiting(until) => {
+                    self.bundle_wait(*until, &mut bundle).await?
+                }
+            };
+
+            match result {
+                DispatchResult::Done => return Ok(()),
+                DispatchResult::Drop(reason) => return self.drop_bundle(bundle, reason).await,
+                DispatchResult::Continue => {}
+            }
+        }
+    }
+
+    async fn bundle_wait(
+        &self,
+        until: time::OffsetDateTime,
+        bundle: &mut metadata::Bundle,
+    ) -> Result<DispatchResult, Error> {
+        // Check if it's worth us waiting inline
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
+            // Nothing to do now, it will be picked up later
+            trace!("Bundle will wait offline until: {until}");
+            return Ok(DispatchResult::Done);
+        }
+
+        trace!("Bundle will wait inline until: {until}");
+
+        // Wait a bit
+        if !cancellable_sleep(wait, &self.cancel_token).await {
+            // Cancelled
+            return Ok(DispatchResult::Done);
+        }
+
+        // Reload bundle after we slept
+        match self.store.check_status(&bundle.bundle.id).await? {
+            None => {
+                // It's gone while we slept
+                Ok(DispatchResult::Done)
+            }
+            Some(status) => {
+                if status == bundle.metadata.status {
+                    // Clear the wait state
+                    self.store
+                        .set_status(bundle, metadata::BundleStatus::DispatchPending)
+                        .await?;
+                } else {
+                    bundle.metadata.status = status;
+                }
+                Ok(DispatchResult::Continue)
+            }
+        }
+    }
+}
+
 #[instrument(skip_all)]
 pub(super) async fn dispatch_task(
     dispatcher: Arc<Dispatcher>,
@@ -43,118 +168,5 @@ pub(super) async fn dispatch_task(
     // Wait for all sub-tasks to complete
     while let Some(r) = task_set.join_next().await {
         r.trace_expect("Task terminated unexpectedly")
-    }
-}
-
-impl Dispatcher {
-    #[inline]
-    pub async fn dispatch_bundle(&self, bundle: metadata::Bundle) -> Result<(), Error> {
-        // Put bundle into channel, ignoring errors as the only ones are intentional
-        _ = self.tx.send(bundle).await;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
-        loop {
-            match bundle.metadata.status {
-                metadata::BundleStatus::IngressPending
-                | metadata::BundleStatus::ForwardPending
-                | metadata::BundleStatus::Tombstone(_) => {
-                    unreachable!()
-                }
-                metadata::BundleStatus::DispatchPending => {
-                    // Check if we are the final destination
-                    if self
-                        .config
-                        .admin_endpoints
-                        .is_local_service(&bundle.bundle.destination)
-                    {
-                        if bundle.bundle.id.fragment_info.is_some() {
-                            return self.reassemble(bundle).await;
-                        } else if self
-                            .config
-                            .admin_endpoints
-                            .is_admin_endpoint(&bundle.bundle.destination)
-                        {
-                            // The bundle is for the Administrative Endpoint
-                            return self.administrative_bundle(bundle).await;
-                        } else {
-                            // The bundle is ready for collection
-                            trace!("Bundle is ready for local delivery");
-                            self.store
-                                .set_status(&mut bundle, metadata::BundleStatus::CollectionPending)
-                                .await?;
-                        }
-                    } else {
-                        // Forward to another BPA
-                        return self.forward_bundle(bundle).await;
-                    }
-                }
-                metadata::BundleStatus::ReassemblyPending => {
-                    // Wait for other fragments to arrive
-                    return Ok(());
-                }
-                metadata::BundleStatus::CollectionPending => {
-                    // Check if we have a local service registered
-                    if let Some(endpoint) = self
-                        .app_registry
-                        .find_by_eid(&bundle.bundle.destination)
-                        .await
-                    {
-                        // Notify that the bundle is ready for collection
-                        trace!("Notifying application that bundle is ready for collection");
-                        endpoint.collection_notify(&bundle.bundle.id).await;
-                    }
-                    return Ok(());
-                }
-                metadata::BundleStatus::ForwardAckPending(_, until)
-                | metadata::BundleStatus::Waiting(until) => {
-                    bundle = match self.bundle_wait(until, bundle).await? {
-                        None => return Ok(()),
-                        Some(bundle) => bundle,
-                    };
-                }
-            }
-        }
-    }
-
-    async fn bundle_wait(
-        &self,
-        until: time::OffsetDateTime,
-        bundle: metadata::Bundle,
-    ) -> Result<Option<metadata::Bundle>, Error> {
-        // Check if it's worth us waiting inline
-        let wait = until - time::OffsetDateTime::now_utc();
-        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
-            // Nothing to do now, it will be picked up later
-            trace!("Bundle will wait offline until: {until}");
-            return Ok(None);
-        }
-
-        trace!("Bundle will wait inline until: {until}");
-
-        // Wait a bit
-        if !cancellable_sleep(wait, &self.cancel_token).await {
-            // Cancelled
-            return Ok(None);
-        }
-
-        // Reload bundle after we slept
-        match self.store.load(&bundle.bundle.id).await? {
-            None => {
-                // It's gone while we slept
-                Ok(None)
-            }
-            Some(mut b) => {
-                if b.metadata.status == bundle.metadata.status {
-                    // Clear the wait state
-                    self.store
-                        .set_status(&mut b, metadata::BundleStatus::DispatchPending)
-                        .await?;
-                }
-                Ok(Some(b))
-            }
-        }
     }
 }

@@ -2,7 +2,10 @@ use super::*;
 
 impl Dispatcher {
     #[instrument(skip(self))]
-    pub(super) async fn reassemble(&self, _bundle: metadata::Bundle) -> Result<(), Error> {
+    pub(super) async fn reassemble(
+        &self,
+        _bundle: &mut metadata::Bundle,
+    ) -> Result<DispatchResult, Error> {
         /* Either wait for more fragments to arrive
         self.store.set_status(&mut bundle, metadata::BundleStatus::ReassemblyPending).await?;
 

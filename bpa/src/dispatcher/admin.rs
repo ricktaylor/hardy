@@ -4,29 +4,27 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub(super) async fn administrative_bundle(
         &self,
-        bundle: metadata::Bundle,
-    ) -> Result<(), Error> {
+        bundle: &mut metadata::Bundle,
+    ) -> Result<DispatchResult, Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             trace!("Received a bundle for an administrative endpoint that isn't marked as an administrative record");
-            return self
-                .drop_bundle(
-                    bundle,
-                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                )
-                .await;
+            return Ok(DispatchResult::Drop(Some(
+                bpv7::StatusReportReasonCode::BlockUnintelligible,
+            )));
         }
 
-        let Some(data) = self.load_data(&bundle).await? else {
+        let Some(data) = self.load_data(bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
-            return Ok(());
+            return Ok(DispatchResult::Done);
         };
 
-        let reason = match cbor::decode::parse::<bpv7::AdministrativeRecord>(data.as_ref().as_ref())
-        {
+        match cbor::decode::parse::<bpv7::AdministrativeRecord>(data.as_ref().as_ref()) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
-                Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
+                Ok(DispatchResult::Drop(Some(
+                    bpv7::StatusReportReasonCode::BlockUnintelligible,
+                )))
             }
             Ok(bpv7::AdministrativeRecord::BundleStatusReport(report)) => {
                 // Check if the report is for a bundle sourced from a local service
@@ -36,7 +34,9 @@ impl Dispatcher {
                     .is_local_service(&report.bundle_id.source)
                 {
                     trace!("Received spurious bundle status report {:?}", report);
-                    Some(bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable)
+                    Ok(DispatchResult::Drop(Some(
+                        bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
+                    )))
                 } else {
                     // Find a live service to notify
                     if let Some(endpoint) = self
@@ -86,12 +86,9 @@ impl Dispatcher {
                                 .await
                         }
                     }
-                    Some(bpv7::StatusReportReasonCode::NoAdditionalInformation)
+                    Ok(DispatchResult::Drop(None))
                 }
             }
-        };
-
-        // Done with the bundle
-        self.drop_bundle(bundle, reason).await
+        }
     }
 }
