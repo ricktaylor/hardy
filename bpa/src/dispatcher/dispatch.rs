@@ -69,9 +69,14 @@ impl Dispatcher {
                     }
                     DispatchResult::Done
                 }
-                metadata::BundleStatus::ForwardAckPending(_, until)
-                | metadata::BundleStatus::Waiting(until) => {
-                    self.bundle_wait(*until, &mut bundle).await?
+                metadata::BundleStatus::ForwardAckPending(_, until) => {
+                    let until = *until;
+                    self.on_bundle_forward_ack(&mut bundle, until).await?
+                }
+                metadata::BundleStatus::Waiting(until) => {
+                    // Check to see if waiting is even worth it
+                    let until = *until;
+                    self.on_bundle_wait(&mut bundle, until).await?
                 }
             };
 
@@ -83,11 +88,87 @@ impl Dispatcher {
         }
     }
 
-    async fn bundle_wait(
+    pub(super) async fn bundle_wait(
         &self,
-        until: time::OffsetDateTime,
         bundle: &mut metadata::Bundle,
+        until: time::OffsetDateTime,
     ) -> Result<DispatchResult, Error> {
+        // Check to see if waiting is even worth it
+        if until > bundle.expiry() {
+            trace!("Bundle lifetime is shorter than wait period");
+            return Ok(DispatchResult::Drop(Some(
+                bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+            )));
+        }
+
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
+            // Nothing to do now, it will be picked up later
+            trace!("Bundle will wait offline until: {until}");
+            return self
+                .store
+                .set_status(bundle, metadata::BundleStatus::Waiting(until))
+                .await
+                .map(|_| DispatchResult::Done);
+        }
+
+        trace!("Bundle will wait inline until: {until}");
+
+        // Wait a bit
+        if !cancellable_sleep(wait, &self.cancel_token).await {
+            // Cancelled
+            Ok(DispatchResult::Done)
+        } else {
+            // Keep dispatching
+            Ok(DispatchResult::Continue)
+        }
+    }
+
+    async fn on_bundle_wait(
+        &self,
+        bundle: &mut metadata::Bundle,
+        until: time::OffsetDateTime,
+    ) -> Result<DispatchResult, Error> {
+        if until > bundle.expiry() {
+            trace!("Bundle lifetime is shorter than wait period");
+            return Ok(DispatchResult::Drop(Some(
+                bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+            )));
+        }
+        let wait = until - time::OffsetDateTime::now_utc();
+        if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
+            // Nothing to do now, it will be picked up later
+            return Ok(DispatchResult::Done);
+        }
+
+        trace!("Bundle will wait inline until: {until}");
+
+        // Wait a bit
+        if !cancellable_sleep(wait, &self.cancel_token).await {
+            // Cancelled
+            Ok(DispatchResult::Done)
+        } else {
+            // Clear the wait state, and keep dispatching
+            self.store
+                .set_status(bundle, metadata::BundleStatus::DispatchPending)
+                .await
+                .map(|_| DispatchResult::Continue)
+        }
+    }
+
+    async fn on_bundle_forward_ack(
+        &self,
+        bundle: &mut metadata::Bundle,
+        until: time::OffsetDateTime,
+    ) -> Result<DispatchResult, Error> {
+        // Check to see if waiting is even worth it
+        if until > bundle.expiry() {
+            trace!("Bundle lifetime is shorter than wait period");
+            return Ok(DispatchResult::Drop(Some(
+                bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
+            )));
+        }
+
         // Check if it's worth us waiting inline
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {

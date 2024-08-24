@@ -43,31 +43,7 @@ impl Dispatcher {
                     clas,
                     until: Some(until),
                 }) if clas.is_empty() => {
-                    // Check to see if waiting is even worth it
-                    if until > bundle.expiry() {
-                        trace!("Bundle lifetime is shorter than wait period");
-                        return Ok(DispatchResult::Drop(Some(
-                            bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                        )));
-                    }
-
-                    let wait = until - time::OffsetDateTime::now_utc();
-                    if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
-                        // Nothing to do now, it will be picked up later
-                        trace!("Bundle will wait offline until: {until}");
-                        return Ok(DispatchResult::Done);
-                    }
-
-                    trace!("Bundle will wait inline until: {until}");
-
-                    // Wait a bit
-                    if !cancellable_sleep(wait, &self.cancel_token).await {
-                        // Cancelled
-                        return Ok(DispatchResult::Done);
-                    } else {
-                        // Start again from the beginning
-                        return Ok(DispatchResult::Continue);
-                    }
+                    return self.bundle_wait(bundle, until).await;
                 }
                 Ok(action) => action,
             };
@@ -147,22 +123,7 @@ impl Dispatcher {
                     until = wait.min(until);
                 }
 
-                // Check to see if waiting is even worth it
-                if until > bundle.expiry() {
-                    trace!("Bundle lifetime is shorter than wait period");
-                    return Ok(DispatchResult::Drop(Some(
-                        bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-                    )));
-                }
-
-                // Nothing to do now, set bundle status to Waiting, and it will be picked up later
-                trace!("Bundle will wait offline until: {until}");
-
-                return self
-                    .store
-                    .set_status(bundle, metadata::BundleStatus::Waiting(until))
-                    .await
-                    .map(|_| DispatchResult::Continue);
+                return self.bundle_wait(bundle, until).await;
             } else if retries >= self.config.max_forwarding_delay {
                 if previous {
                     // We have delayed long enough trying to find a route to previous_node
