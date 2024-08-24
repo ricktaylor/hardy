@@ -234,6 +234,10 @@ impl IpnPattern {
 impl std::fmt::Display for IpnPattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            IpnPattern::Range(r) if r.len() == 1 => match r[0] {
+                IpnInterval::Number(n) => write!(f, "{n}"),
+                IpnInterval::Range(_) => write!(f, "[{}]", r[0]),
+            },
             IpnPattern::Range(r) => {
                 write!(f, "[")?;
                 for (i, r) in r.iter().enumerate() {
