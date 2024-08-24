@@ -23,14 +23,14 @@ impl Dispatcher {
             return Ok(None);
         };
 
-        if bundle.bundle.destination != destination || bundle.has_expired() {
-            return Ok(None);
-        }
-
         // Double check that we are returning something valid
         let metadata::BundleStatus::CollectionPending = &bundle.metadata.status else {
             return Ok(None);
         };
+
+        if bundle.bundle.destination != destination || bundle.has_expired() {
+            return Ok(None);
+        }
 
         // Get the data!
         let Some(data) = self.load_data(&bundle).await? else {

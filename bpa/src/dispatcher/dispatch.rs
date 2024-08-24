@@ -161,14 +161,6 @@ impl Dispatcher {
         bundle: &mut metadata::Bundle,
         until: time::OffsetDateTime,
     ) -> Result<DispatchResult, Error> {
-        // Check to see if waiting is even worth it
-        if until > bundle.expiry() {
-            trace!("Bundle lifetime is shorter than wait period");
-            return Ok(DispatchResult::Drop(Some(
-                bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-            )));
-        }
-
         // Check if it's worth us waiting inline
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > time::Duration::new(self.config.wait_sample_interval as i64, 0) {
@@ -187,7 +179,7 @@ impl Dispatcher {
 
         // Reload bundle after we slept
         match self.store.check_status(&bundle.bundle.id).await? {
-            None => {
+            None | Some(metadata::BundleStatus::Tombstone(_)) => {
                 // It's gone while we slept
                 Ok(DispatchResult::Done)
             }
