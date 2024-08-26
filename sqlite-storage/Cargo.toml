@@ -25,6 +25,6 @@ trace-err = "0.1.0"
 
 [build-dependencies]
 built = "0.7.3"
-regex = "1.10.5"
+regex = "1.10.6"
 sha1 = "0.10.6"
 base64 = "0.22.1"
