@@ -16,6 +16,7 @@ impl Dispatcher {
 
     #[instrument(skip(self))]
     async fn process_bundle(&self, mut bundle: metadata::Bundle) -> Result<(), Error> {
+        /* This is a classic looped state machine */
         loop {
             let result = match &bundle.metadata.status {
                 metadata::BundleStatus::IngressPending
@@ -70,13 +71,11 @@ impl Dispatcher {
                     DispatchResult::Done
                 }
                 metadata::BundleStatus::ForwardAckPending(_, until) => {
-                    let until = *until;
-                    self.on_bundle_forward_ack(&mut bundle, until).await?
+                    self.on_bundle_forward_ack(*until, &mut bundle).await?
                 }
                 metadata::BundleStatus::Waiting(until) => {
                     // Check to see if waiting is even worth it
-                    let until = *until;
-                    self.on_bundle_wait(&mut bundle, until).await?
+                    self.on_bundle_wait(*until, &mut bundle).await?
                 }
             };
 
@@ -126,8 +125,8 @@ impl Dispatcher {
 
     async fn on_bundle_wait(
         &self,
-        bundle: &mut metadata::Bundle,
         until: time::OffsetDateTime,
+        bundle: &mut metadata::Bundle,
     ) -> Result<DispatchResult, Error> {
         if until > bundle.expiry() {
             trace!("Bundle lifetime is shorter than wait period");
@@ -158,8 +157,8 @@ impl Dispatcher {
 
     async fn on_bundle_forward_ack(
         &self,
-        bundle: &mut metadata::Bundle,
         until: time::OffsetDateTime,
+        bundle: &mut metadata::Bundle,
     ) -> Result<DispatchResult, Error> {
         // Check if it's worth us waiting inline
         let wait = until - time::OffsetDateTime::now_utc();
