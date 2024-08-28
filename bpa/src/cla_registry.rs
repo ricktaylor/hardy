@@ -219,7 +219,7 @@ impl Endpoint {
             .into_inner();
 
         let delay = if let Some(t) = r.delay {
-            Some(services::from_timestamp(t)?)
+            Some(grpc::from_timestamp(t)?)
         } else {
             None
         };

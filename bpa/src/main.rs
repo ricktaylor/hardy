@@ -2,7 +2,7 @@ mod app_registry;
 mod cla_registry;
 mod dispatcher;
 mod fib;
-mod services;
+mod grpc;
 mod static_routes;
 mod store;
 mod utils;
@@ -72,7 +72,7 @@ async fn main() {
 
     if !cancel_token.is_cancelled() {
         // Init gRPC services
-        services::init(
+        grpc::init(
             &config,
             cla_registry,
             app_registry,

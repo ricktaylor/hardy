@@ -231,7 +231,7 @@ impl Endpoint {
                     bundle_id: bundle_id.to_key(),
                     kind: kind as i32,
                     reason: reason.into(),
-                    timestamp: timestamp.map(services::to_timestamp),
+                    timestamp: timestamp.map(grpc::to_timestamp),
                 }))
                 .await
                 .inspect_err(|s| info!("status_notify failed: {s}"));

@@ -2,7 +2,7 @@ pub mod app_registry;
 pub mod cla_registry;
 pub mod dispatcher;
 pub mod fib;
-pub mod services;
+pub mod grpc;
 pub mod static_routes;
 pub mod store;
 pub mod utils;
