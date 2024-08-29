@@ -203,7 +203,7 @@ impl Store {
     }
 
     #[instrument(skip_all)]
-    async fn list_bundles(
+    async fn list_stored_bundles(
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Vec<storage::ListResponse> {
@@ -271,7 +271,7 @@ impl Store {
         let mut bad = 0u64;
 
         // For each bundle in the store
-        for (storage_name, file_time) in self.list_bundles(cancel_token.clone()).await {
+        for (storage_name, file_time) in self.list_stored_bundles(cancel_token.clone()).await {
             bundles = bundles.saturating_add(1);
 
             loop {
@@ -314,6 +314,7 @@ impl Store {
         info!("Bundle restart complete, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
     }
 
+    #[instrument(skip(metadata_storage, bundle_storage, dispatcher))]
     async fn restart_bundle(
         metadata_storage: Arc<dyn storage::MetadataStorage>,
         bundle_storage: Arc<dyn storage::BundleStorage>,
@@ -454,10 +455,12 @@ impl Store {
         }
     }
 
+    #[inline]
     pub async fn load_data(&self, storage_name: &str) -> Result<Option<storage::DataRef>, Error> {
         self.bundle_storage.load(storage_name).await
     }
 
+    #[inline]
     pub async fn store_data(&self, data: Box<[u8]>) -> Result<(Arc<str>, Arc<[u8]>), Error> {
         // Calculate hash
         let hash = hash(&data);
@@ -469,6 +472,7 @@ impl Store {
             .map(|storage_name| (storage_name, hash))
     }
 
+    #[inline]
     pub async fn store_metadata(
         &self,
         metadata: &metadata::Metadata,
@@ -482,6 +486,7 @@ impl Store {
             .trace_expect("Failed to store metadata"))
     }
 
+    #[inline]
     pub async fn load(
         &self,
         bundle_id: &bpv7::BundleId,
@@ -525,7 +530,7 @@ impl Store {
         }
     }
 
-    #[instrument(skip(self))]
+    #[inline]
     pub async fn poll_for_collection(
         &self,
         destination: bpv7::Eid,
@@ -536,7 +541,7 @@ impl Store {
             .await
     }
 
-    #[instrument(skip(self))]
+    #[inline]
     pub async fn check_status(
         &self,
         bundle_id: &bpv7::BundleId,
@@ -560,13 +565,13 @@ impl Store {
         }
     }
 
-    #[instrument(skip(self))]
+    #[inline]
     pub async fn delete_data(&self, storage_name: &str) -> Result<(), Error> {
         // Delete the bundle from the bundle store
         self.bundle_storage.remove(storage_name).await
     }
 
-    #[instrument(skip(self))]
+    #[inline]
     pub async fn delete_metadata(&self, bundle_id: &bpv7::BundleId) -> Result<(), Error> {
         // Delete the bundle from the bundle store
         self.metadata_storage.remove(bundle_id).await
