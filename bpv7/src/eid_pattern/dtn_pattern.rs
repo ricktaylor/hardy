@@ -10,7 +10,7 @@ impl DtnPatternItem {
     pub fn new_any() -> Self {
         DtnPatternItem::DtnSsp(DtnSsp {
             authority: DtnAuthPattern::MultiWildcard,
-            singles: Vec::new(),
+            singles: [].into(),
             last: DtnLastPattern::MultiWildcard,
         })
     }
@@ -60,7 +60,7 @@ impl std::fmt::Display for DtnPatternItem {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DtnSsp {
     pub authority: DtnAuthPattern,
-    pub singles: Vec<DtnSinglePattern>,
+    pub singles: Box<[DtnSinglePattern]>,
     pub last: DtnLastPattern,
 }
 
@@ -70,7 +70,7 @@ impl DtnSsp {
             return false;
         };
 
-        match self.authority.is_match(node_name.as_str()) {
+        match self.authority.is_match(node_name) {
             (false, _) => return false,
             (true, false) => return true,
             _ => {}
@@ -82,7 +82,7 @@ impl DtnSsp {
                 return false;
             };
 
-            if !s.is_match(next.as_str()) {
+            if !s.is_match(next) {
                 return false;
             }
         }
@@ -90,7 +90,7 @@ impl DtnSsp {
         let Some(last) = demux.next() else {
             return false;
         };
-        match self.last.is_match(last.as_str()) {
+        match self.last.is_match(last) {
             (true, true) => demux.next().is_none(),
             (true, false) => true,
             (false, _) => false,
@@ -106,7 +106,10 @@ impl DtnSsp {
         })?;
         demux.push(self.last.is_exact()?);
 
-        Some(Eid::Dtn { node_name, demux })
+        Some(Eid::Dtn {
+            node_name,
+            demux: demux.into(),
+        })
     }
 
     /*
@@ -152,7 +155,7 @@ impl DtnSsp {
 
         Ok(DtnSsp {
             authority,
-            singles,
+            singles: singles.into(),
             last: DtnLastPattern::parse(last, span)?,
         })
     }
@@ -182,7 +185,7 @@ impl DtnAuthPattern {
         }
     }
 
-    fn is_exact(&self) -> Option<String> {
+    fn is_exact(&self) -> Option<Box<str>> {
         match self {
             DtnAuthPattern::PatternMatch(p) => p.is_exact(),
             DtnAuthPattern::MultiWildcard => None,
@@ -225,7 +228,7 @@ impl DtnSinglePattern {
         }
     }
 
-    fn is_exact(&self) -> Option<String> {
+    fn is_exact(&self) -> Option<Box<str>> {
         match self {
             DtnSinglePattern::PatternMatch(p) => p.is_exact(),
             DtnSinglePattern::Wildcard => None,
@@ -256,30 +259,30 @@ impl std::fmt::Display for DtnSinglePattern {
     }
 }
 
-fn url_decode(s: &str, span: &mut Span) -> Result<String, EidPatternError> {
+fn url_decode(s: &str, span: &mut Span) -> Result<Box<str>, EidPatternError> {
     urlencoding::decode(s)
         .map_err(|e| EidPatternError::InvalidUtf8(e, span.subset(s.chars().count())))
         .map(|s2| {
             span.inc(s.chars().count());
-            s2.into_owned()
+            s2.into()
         })
 }
 
 #[derive(Debug, Clone)]
 pub enum PatternMatch {
-    Exact(String),
+    Exact(Box<str>),
     Regex(regex::Regex),
 }
 
 impl PatternMatch {
     fn is_match(&self, s: &str) -> bool {
         match self {
-            PatternMatch::Exact(e) => e == s,
+            PatternMatch::Exact(e) => **e == *s,
             PatternMatch::Regex(r) => r.is_match(s),
         }
     }
 
-    fn is_exact(&self) -> Option<String> {
+    fn is_exact(&self) -> Option<Box<str>> {
         match self {
             PatternMatch::Exact(s) => Some(s.clone()),
             PatternMatch::Regex(_) => None,
@@ -298,7 +301,7 @@ impl PatternMatch {
             } else {
                 span.inc(1);
 
-                regex::Regex::new(url_decode(&s[1..s.len() - 1], &mut span.clone())?.as_str())
+                regex::Regex::new(&url_decode(&s[1..s.len() - 1], &mut span.clone())?)
                     .map_err(|e| {
                         EidPatternError::InvalidRegEx(e, span.subset(s.chars().count() - 1))
                     })
@@ -359,7 +362,7 @@ impl DtnLastPattern {
         }
     }
 
-    fn is_exact(&self) -> Option<String> {
+    fn is_exact(&self) -> Option<Box<str>> {
         match self {
             DtnLastPattern::Single(p) => p.is_exact(),
             DtnLastPattern::MultiWildcard => None,
@@ -372,7 +375,7 @@ impl DtnLastPattern {
     fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s.is_empty() {
             Ok(DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
-                PatternMatch::Exact("".to_string()),
+                PatternMatch::Exact("".into()),
             )))
         } else if s == "**" {
             span.inc(2);

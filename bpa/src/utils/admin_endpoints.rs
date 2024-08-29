@@ -30,7 +30,7 @@ impl std::fmt::Display for IpnNodeId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DtnNodeId {
-    node_name: String,
+    node_name: Box<str>,
 }
 
 impl DtnNodeId {
@@ -46,7 +46,7 @@ impl std::fmt::Display for DtnNodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Eid::Dtn {
             node_name: self.node_name.clone(),
-            demux: Vec::new(),
+            demux: [].into(),
         }
         .fmt(f)
     }
@@ -85,7 +85,7 @@ impl AdminEndpoints {
         match (&self.ipn, &self.dtn) {
             (None, Some(node_id)) => Eid::Dtn {
                 node_name: node_id.node_name.clone(),
-                demux: Vec::new(),
+                demux: [].into(),
             },
             (Some(node_id), None) => match destination {
                 Eid::LocalNode { .. } => Eid::LocalNode { service_number: 0 },
@@ -105,7 +105,7 @@ impl AdminEndpoints {
                 },
                 Eid::Dtn { .. } => Eid::Dtn {
                     node_name: dtn_node_id.node_name.clone(),
-                    demux: Vec::new(),
+                    demux: [].into(),
                 },
                 _ => ipn_node_id.to_eid(0),
             },
@@ -311,7 +311,9 @@ mod tests {
     fn dtn_test(config: &str, expected: &str) {
         let a = init_from_value(fake_config(config)).unwrap();
         assert!(a.ipn.is_none());
-        assert!(a.dtn.map_or(false, |node_id| node_id.node_name == expected));
+        assert!(a
+            .dtn
+            .map_or(false, |node_id| *node_id.node_name == *expected));
     }
 
     #[test]

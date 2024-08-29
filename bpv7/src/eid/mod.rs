@@ -30,12 +30,12 @@ pub enum Eid {
         service_number: u32,
     },
     Dtn {
-        node_name: String,
-        demux: Vec<String>,
+        node_name: Box<str>,
+        demux: Box<[Box<str>]>,
     },
     Unknown {
         scheme: u64,
-        data: Vec<u8>,
+        data: Box<[u8]>,
     },
 }
 

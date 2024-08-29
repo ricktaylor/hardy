@@ -32,7 +32,7 @@ where
     I: Eq + std::hash::Hash + Clone + Default,
     T: Clone + Default,
 {
-    exact: HashMap<String, Box<Node<I, T>>>,
+    exact: HashMap<Box<str>, Box<Node<I, T>>>,
     regex: HashMap<HashableRegEx, Box<Node<I, T>>>,
     any: Option<Box<Node<I, T>>>,
     all: Entries<I, T>,
@@ -164,7 +164,7 @@ where
         .remove(id)
     }
 
-    pub fn find(&self, node_name: &str, demux: &[String]) -> Vec<&T> {
+    pub fn find(&self, node_name: &str, demux: &[Box<str>]) -> Vec<&T> {
         let m = self.auths.find(node_name);
         let mut nodes = m.sub_nodes;
         let mut values = m.values;

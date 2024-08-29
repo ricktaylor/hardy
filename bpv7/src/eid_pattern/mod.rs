@@ -15,7 +15,7 @@ pub use ipn_pattern::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EidPattern {
-    Set(Vec<EidPatternItem>),
+    Set(Box<[EidPatternItem]>),
     Any,
 }
 
@@ -58,7 +58,7 @@ impl std::str::FromStr for EidPattern {
             for s in s.split('|') {
                 v.push(EidPatternItem::parse(s, &mut span)?);
             }
-            Ok(EidPattern::Set(v))
+            Ok(EidPattern::Set(v.into()))
         }
     }
 }
@@ -66,21 +66,25 @@ impl std::str::FromStr for EidPattern {
 impl From<Eid> for EidPattern {
     fn from(value: Eid) -> Self {
         match value {
-            Eid::Null => EidPattern::Set(vec![
-                EidPatternItem::DtnPatternItem(DtnPatternItem::None),
-                EidPatternItem::IpnPatternItem(IpnPatternItem {
-                    allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
-                    node_number: IpnPattern::Range(vec![IpnInterval::Number(0)]),
-                    service_number: IpnPattern::Range(vec![IpnInterval::Number(0)]),
-                }),
-            ]),
-            Eid::LocalNode { service_number } => {
-                EidPattern::Set(vec![EidPatternItem::IpnPatternItem(IpnPatternItem {
+            Eid::Null => EidPattern::Set(
+                [
+                    EidPatternItem::DtnPatternItem(DtnPatternItem::None),
+                    EidPatternItem::IpnPatternItem(IpnPatternItem {
+                        allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                        node_number: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                        service_number: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                    }),
+                ]
+                .into(),
+            ),
+            Eid::LocalNode { service_number } => EidPattern::Set(
+                [EidPatternItem::IpnPatternItem(IpnPatternItem {
                     allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
                     node_number: IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)]),
                     service_number: IpnPattern::Range(vec![IpnInterval::Number(service_number)]),
-                })])
-            }
+                })]
+                .into(),
+            ),
             Eid::Ipn2 {
                 allocator_id,
                 node_number,
@@ -90,35 +94,61 @@ impl From<Eid> for EidPattern {
                 allocator_id,
                 node_number,
                 service_number,
-            } => EidPattern::Set(vec![EidPatternItem::IpnPatternItem(IpnPatternItem {
-                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(allocator_id)]),
-                node_number: IpnPattern::Range(vec![IpnInterval::Number(node_number)]),
-                service_number: IpnPattern::Range(vec![IpnInterval::Number(service_number)]),
-            })]),
+            } => EidPattern::Set(
+                [EidPatternItem::IpnPatternItem(IpnPatternItem {
+                    allocator_id: IpnPattern::Range(vec![IpnInterval::Number(allocator_id)]),
+                    node_number: IpnPattern::Range(vec![IpnInterval::Number(node_number)]),
+                    service_number: IpnPattern::Range(vec![IpnInterval::Number(service_number)]),
+                })]
+                .into(),
+            ),
             Eid::Dtn {
                 node_name,
                 mut demux,
-            } => EidPattern::Set(vec![EidPatternItem::DtnPatternItem(
-                DtnPatternItem::DtnSsp(DtnSsp {
-                    authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact(node_name)),
-                    last: demux
-                        .pop()
-                        .map(|s| {
+            } => {
+                let (singles, last) = match demux.len() {
+                    0 => (
+                        [].into(),
+                        DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
+                            PatternMatch::Exact("".into()),
+                        )),
+                    ),
+                    1 => (
+                        [].into(),
+                        DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
+                            PatternMatch::Exact(std::mem::take(&mut demux[0])),
+                        )),
+                    ),
+                    n => {
+                        let (singles, last) = demux.split_at_mut(n - 1);
+                        (
+                            singles
+                                .iter_mut()
+                                .map(|s| {
+                                    DtnSinglePattern::PatternMatch(PatternMatch::Exact(
+                                        std::mem::take(s),
+                                    ))
+                                })
+                                .collect(),
                             DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
-                                PatternMatch::Exact(s),
-                            ))
-                        })
-                        .unwrap_or(DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
-                            PatternMatch::Exact("".to_string()),
-                        ))),
-                    singles: demux
-                        .into_iter()
-                        .map(|s| DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)))
-                        .collect(),
-                }),
-            )]),
+                                PatternMatch::Exact(std::mem::take(&mut last[0])),
+                            )),
+                        )
+                    }
+                };
+                EidPattern::Set(
+                    [EidPatternItem::DtnPatternItem(DtnPatternItem::DtnSsp(
+                        DtnSsp {
+                            authority: DtnAuthPattern::PatternMatch(PatternMatch::Exact(node_name)),
+                            singles,
+                            last,
+                        },
+                    ))]
+                    .into(),
+                )
+            }
             Eid::Unknown { scheme, .. } => {
-                EidPattern::Set(vec![EidPatternItem::AnyNumericScheme(scheme)])
+                EidPattern::Set([EidPatternItem::AnyNumericScheme(scheme)].into())
             }
         }
     }

@@ -7,11 +7,13 @@ fn parse_dtn_parts(s: &str) -> Result<Eid, EidError> {
         if s1.is_empty() {
             Err(EidError::DtnNodeNameEmpty)
         } else {
-            let node_name = urlencoding::decode(s1)?.into_owned();
-            let demux = s2.split('/').try_fold(Vec::new(), |mut v, s| {
-                v.push(urlencoding::decode(s)?.into_owned());
-                Ok::<_, EidError>(v)
-            })?;
+            let node_name = urlencoding::decode(s1)?.into();
+            let demux = s2
+                .split('/')
+                .try_fold(Vec::new(), |mut v: Vec<Box<str>>, s| {
+                    v.push(urlencoding::decode(s)?.into());
+                    Ok::<_, EidError>(v)
+                })?;
 
             for (idx, s) in demux.iter().enumerate() {
                 if s.is_empty() && idx != demux.len() - 1 {
@@ -19,7 +21,10 @@ fn parse_dtn_parts(s: &str) -> Result<Eid, EidError> {
                 }
             }
 
-            Ok(Eid::Dtn { node_name, demux })
+            Ok(Eid::Dtn {
+                node_name,
+                demux: demux.into(),
+            })
         }
     } else {
         Err(EidError::DtnMissingSlash)
@@ -190,7 +195,7 @@ pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
                 if let Some((start, len)) = a.skip_value(16).map_err(Into::<EidError>::into)? {
                     Ok(Eid::Unknown {
                         scheme,
-                        data: data[start..start + len].to_vec(),
+                        data: data[start..start + len].into(),
                     })
                 } else {
                     Err(EidError::UnsupportedScheme(scheme.to_string()))
