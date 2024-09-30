@@ -270,6 +270,97 @@ fn parse_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, BundleError> {
 }
 
 impl Bundle {
+    pub fn could_be_bundle(data: &[u8]) -> Result<(), cbor::decode::Error> {
+        if data.len() < 3 {
+            return Err(cbor::decode::Error::NotEnoughData);
+        }
+
+        match (data[0], data[1], data[2]) {
+            (0x06, _, _) => {
+                trace!("Data looks like a BPv6 bundle");
+                Err(cbor::decode::Error::IncorrectType(
+                    "BPv7 bundle".to_string(),
+                    "Possible BPv6 bundle".to_string(),
+                ))
+            }
+            (0x81..=0x97, d1, d2) => {
+                /* Bpv7 bundle, with definite-length block array */
+                match (d1, d2) {
+                    (0x82..=0x8B, 7) => {
+                        /* Definite-length primary block */
+                        Ok(())
+                    }
+                    (0x98, 2..=11) => {
+                        /* 1 byte definite-length primary block */
+                        Ok(())
+                    }
+                    (0x99..=0x9B, 0) => {
+                        /* 2+ byte definite-length primary block */
+                        Ok(())
+                    }
+                    (0x9F, 7) => {
+                        /* Indefinite-length primary block, version 7 */
+                        Ok(())
+                    }
+                    _ => {
+                        /* Who knows! */
+                        Err(cbor::decode::Error::IncorrectType(
+                            "BPv7 bundle".to_string(),
+                            "Unexpected bytes".to_string(),
+                        ))
+                    }
+                }
+            }
+            (0x98, 1.., d2) => {
+                /* Bpv7 bundle, with 1 byte definite-length block array */
+                match d2 {
+                    0x82..=0x8B => {
+                        /* Definite-length primary block */
+                        Ok(())
+                    }
+                    0x98..=0x9B => {
+                        /* 1+ byte definite-length primary block */
+                        Ok(())
+                    }
+                    0x9F => {
+                        /* Indefinite-length primary block */
+                        Ok(())
+                    }
+                    _ => {
+                        /* Who knows! */
+                        Err(cbor::decode::Error::IncorrectType(
+                            "BPv7 bundle".to_string(),
+                            "Unexpected bytes".to_string(),
+                        ))
+                    }
+                }
+            }
+            (0x99..=0x9B, _, _) => {
+                /* Bpv7 bundle, with 2+ byte definite-length block array */
+                Ok(())
+            }
+            (0x9F, 0x82..=0x8B, 0x07) => {
+                /* Bpv7 bundle */
+                Ok(())
+            }
+            (0x9F, 0x9F, 0x07) => {
+                /* Bpv7 bundle with definite-length primary block */
+                Ok(())
+            }
+            (0xD9, 0x23, 0xD3) => {
+                /* Tagged Bpv7 bundle */
+                Ok(())
+            }
+            _ => {
+                /* Who knows! */
+                Err(cbor::decode::Error::IncorrectType(
+                    "BPv7 bundle".to_string(),
+                    "Unexpected bytes".to_string(),
+                ))
+            }
+        }
+    }
+
     fn parse_blocks(
         &mut self,
         blocks: &mut cbor::decode::Array,
@@ -367,12 +458,23 @@ impl cbor::decode::FromCbor for ValidBundle {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
         let r = cbor::decode::try_parse_array(data, |blocks, tags| {
-            if !tags.is_empty() {
+            if tags.len() > 1 {
                 return Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Array".to_string(),
-                    "Tagged Array".to_string(),
+                    "Too many tags".to_string(),
+                    "Tag 9171".to_string(),
                 )
                 .into());
+            }
+
+            match tags.get(0) {
+                None | Some(9171) => {}
+                Some(tag) => {
+                    return Err(cbor::decode::Error::IncorrectType(
+                        format!("Tag {}", tag).to_string(),
+                        "Tag 9171".to_string(),
+                    )
+                    .into());
+                }
             }
 
             // Parse Primary block
@@ -438,10 +540,12 @@ impl cbor::decode::FromCbor for ValidBundle {
 /*
 #[test]
 fn fuzz_tests() {
-    let data = include_bytes!(
-        "../../bpa/fuzz/artifacts/ingress/crash-a039d061e661cb3a1c5a1509e4819d413ab88124"
-    );
+    let data =
+        include_bytes!("../fuzz/artifacts/bundle/crash-937d6a21d82a17021b3b3bf4ca24897e2b5e32c6");
 
-    cbor::decode::parse::<ValidBundle>(data).expect("Failed to decode");
+    match cbor::decode::parse::<ValidBundle>(data) {
+        Ok(_) => assert!(Bundle::could_be_bundle(data).is_ok()),
+        Err(_) => {}
+    }
 }
 */

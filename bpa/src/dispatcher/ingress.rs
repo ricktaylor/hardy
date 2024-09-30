@@ -6,6 +6,9 @@ impl Dispatcher {
         // Capture received_at as soon as possible
         let received_at = Some(time::OffsetDateTime::now_utc());
 
+        // Do a fast pre-check
+        bpv7::Bundle::could_be_bundle(&data)?;
+
         // Parse the bundle
         match cbor::decode::parse::<bpv7::ValidBundle>(&data)? {
             bpv7::ValidBundle::Valid(bundle) => {
