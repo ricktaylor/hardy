@@ -2241,9 +2241,9 @@ checksum = "b6bc1c9ce2b5135ac7f93c72918fc37feb872bdc6a5533a8b85eb4b86bfdae52"
 
 [[package]]
 name = "trace-err"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c80bfd11ded256466985d78487b8787314d398215bc3dbd4a92e001770a8c404"
+checksum = "3951c79aa48293277d75dda255f911ae5025194f0c49cd6bd64af82cb0ca1bc6"
 dependencies = [
  "tracing",
 ]
