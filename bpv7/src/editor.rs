@@ -151,8 +151,8 @@ impl<'a> Editor<'a> {
                     .clone();
 
                 let block_data =
-                    source_data[block.data_offset..block.data_offset + block.data_len].to_vec();
-                block.data_offset = offset;
+                    source_data[block.data_start..block.data_start + block.data_len].to_vec();
+                block.data_start = offset;
                 (block, block_data)
             }
             BlockTemplate::Add(template) => template.build(block_number, offset),

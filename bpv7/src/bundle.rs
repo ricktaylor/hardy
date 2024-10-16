@@ -244,7 +244,7 @@ impl Bundle {
             blocks.try_parse::<(BlockWithNumber, bool, usize)>()?
         {
             shortest = shortest && s;
-            block.block.data_offset += offset;
+            block.block.data_start += offset;
             offset += block_len;
             extension_blocks.push(block);
         }
@@ -367,8 +367,10 @@ impl Bundle {
                     ..Default::default()
                 },
                 crc_type: self.crc_type,
-                data_offset: offset,
+                data_start: offset,
+                payload_offset: 0,
                 data_len: block_data.len(),
+                is_bpsec_target: false,
             },
         );
 
@@ -384,7 +386,7 @@ impl Bundle {
         data.extend(block_data);
 
         // Stash payload block for last
-        let payload_block = self.blocks.remove(&1).expect("No payload block!");
+        let mut payload_block = self.blocks.remove(&1).expect("No payload block!");
 
         // Emit extension blocks
         let mut to_remove = Vec::new();
@@ -397,13 +399,17 @@ impl Bundle {
                 BlockType::PreviousNode => block.emit(
                     *block_number,
                     &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
+                    data.len(),
                 ),
-                BlockType::BundleAge => {
-                    block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()))
-                }
+                BlockType::BundleAge => block.emit(
+                    *block_number,
+                    &cbor::encode::emit(self.age.unwrap()),
+                    data.len(),
+                ),
                 BlockType::HopCount => block.emit(
                     *block_number,
                     &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
+                    data.len(),
                 ),
                 BlockType::Private(_) if block.flags.delete_block_on_failure => {
                     to_remove.push(*block_number);
@@ -412,13 +418,17 @@ impl Bundle {
                 BlockType::Private(_) => block.emit(
                     *block_number,
                     &cbor::encode::emit(block.block_data(source_data)),
+                    data.len(),
                 ),
                 BlockType::BlockIntegrity | BlockType::BlockSecurity => {
-                    todo!()
+                    //todo!()
+                    block.emit(
+                        *block_number,
+                        &cbor::encode::emit(block.block_data(source_data)),
+                        data.len(),
+                    )
                 }
             };
-            block.data_offset = data.len();
-            block.data_len = block_data.len();
             data.extend(block_data);
         }
 
@@ -431,18 +441,10 @@ impl Bundle {
         let block_data = payload_block.emit(
             1,
             &cbor::encode::emit(payload_block.block_data(source_data)),
-        );
-        self.blocks.insert(
-            1,
-            Block {
-                block_type: BlockType::Payload,
-                flags: payload_block.flags,
-                crc_type: payload_block.crc_type,
-                data_offset: data.len(),
-                data_len: block_data.len(),
-            },
+            data.len(),
         );
         data.extend(block_data);
+        self.blocks.insert(1, payload_block);
 
         // End indefinite array
         data.push(0xFF);
@@ -498,8 +500,10 @@ impl cbor::decode::FromCbor for ValidBundle {
                                 ..Default::default()
                             },
                             crc_type: bundle.crc_type,
-                            data_offset: block_start,
+                            data_start: block_start,
+                            payload_offset: 0,
                             data_len: block_len,
+                            is_bpsec_target: false,
                         },
                     );
 

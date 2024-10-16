@@ -200,17 +200,18 @@ impl BlockTemplate {
         }
     }
 
-    pub fn build(self, block_number: u64, offset: usize) -> (Block, Vec<u8>) {
+    pub fn build(self, block_number: u64, data_start: usize) -> (Block, Vec<u8>) {
         let mut block = Block {
             block_type: self.block_type,
             flags: self.flags,
             crc_type: self.crc_type,
-            data_offset: offset,
+            data_start: 0,
+            payload_offset: 0,
             data_len: 0,
+            is_bpsec_target: false,
         };
 
-        let block_data = block.emit(block_number, &self.data);
-        block.data_len = block_data.len();
+        let block_data = block.emit(block_number, &self.data, data_start);
         (block, block_data)
     }
 }

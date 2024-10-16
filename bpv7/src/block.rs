@@ -6,38 +6,23 @@ pub struct Block {
     pub block_type: BlockType,
     pub flags: BlockFlags,
     pub crc_type: CrcType,
-    pub data_offset: usize,
+    pub data_start: usize,
+    pub payload_offset: usize,
     pub data_len: usize,
+    pub is_bpsec_target: bool,
 }
 
 impl Block {
     pub fn block_data(&self, data: &[u8]) -> Vec<u8> {
-        cbor::decode::parse_array(
-            &data[self.data_offset..self.data_offset + self.data_len],
-            |a, _, _| {
-                // Block Type
-                _ = a.parse::<u64>()?;
-                // Block Number
-                _ = a.parse::<u64>()?;
-                // Flags
-                _ = a.parse::<u64>()?;
-                // CRC Type
-                _ = a.parse::<u64>()?;
-                // Payload
-                let payload = a.parse();
-
-                // Skip the crc
-                a.skip_to_end(0)?;
-
-                payload
-            },
+        cbor::decode::parse(
+            &data[(self.data_start + self.payload_offset)..(self.data_start + self.data_len)],
         )
-        .map(|(v, _)| v)
         .expect("Failed to parse block data")
     }
 
-    pub fn emit(&self, block_number: u64, data: &[u8]) -> Vec<u8> {
-        crc::append_crc_value(
+    pub fn emit(&mut self, block_number: u64, data: &[u8], data_start: usize) -> Vec<u8> {
+        let mut payload_offset = 0;
+        let block_data = crc::append_crc_value(
             self.crc_type,
             cbor::encode::emit_array(
                 Some(if let CrcType::None = self.crc_type {
@@ -45,15 +30,17 @@ impl Block {
                 } else {
                     6
                 }),
-                |a, _| {
+                |a, offset| {
+                    payload_offset = offset;
+
                     // Block Type
-                    a.emit::<u64>(self.block_type.into());
+                    payload_offset += a.emit::<u64>(self.block_type.into());
                     // Block Number
-                    a.emit(block_number);
+                    payload_offset += a.emit(block_number);
                     // Flags
-                    a.emit::<u64>(self.flags.into());
+                    payload_offset += a.emit::<u64>(self.flags.into());
                     // CRC Type
-                    a.emit::<u64>(self.crc_type.into());
+                    payload_offset += a.emit::<u64>(self.crc_type.into());
                     // Payload
                     a.emit_raw(data);
                     // CRC
@@ -63,7 +50,12 @@ impl Block {
                     }
                 },
             ),
-        )
+        );
+
+        self.data_start = data_start;
+        self.payload_offset = payload_offset;
+        self.data_len = block_data.len();
+        block_data
     }
 }
 
@@ -106,6 +98,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             shortest = shortest && s;
 
             // Stash start of data
+            let payload_offset = block.offset();
             block.parse_value(|value, _, s, tags| {
                 shortest = shortest && s;
                 if shortest {
@@ -144,8 +137,10 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                         block_type,
                         flags,
                         crc_type,
-                        data_offset: 0,
+                        data_start: 0,
+                        payload_offset,
                         data_len: 0,
+                        is_bpsec_target: false,
                     },
                 },
                 shortest,

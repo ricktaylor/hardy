@@ -181,6 +181,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         }
     }
 
+    pub fn offset(&self) -> usize {
+        *self.offset
+    }
+
     pub fn end(&mut self) -> Result<Option<usize>, Error> {
         if self.check_for_end()? {
             Ok(Some(*self.offset))
