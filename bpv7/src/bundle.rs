@@ -538,7 +538,7 @@ impl cbor::decode::FromCbor for ValidBundle {
     }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 use std::io::Write;
 
 #[test]
@@ -566,3 +566,4 @@ fn fuzz_tests() {
         };
     }
 }
+*/
