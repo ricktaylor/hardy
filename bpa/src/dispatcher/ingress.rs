@@ -7,57 +7,69 @@ impl Dispatcher {
         let received_at = Some(time::OffsetDateTime::now_utc());
 
         // Do a fast pre-check
-        bpv7::Bundle::could_be_bundle(&data)?;
+        if data.is_empty() {
+            return Err(cbor::decode::Error::NotEnoughData.into());
+        } else if data[0] == 0x06 {
+            trace!("Data looks like a BPv6 bundle");
+            return Err(cbor::decode::Error::IncorrectType(
+                "BPv7 bundle".to_string(),
+                "Possible BPv6 bundle".to_string(),
+            )
+            .into());
+        }
 
         // Parse the bundle
-        match cbor::decode::parse::<bpv7::ValidBundle>(&data)? {
-            bpv7::ValidBundle::Valid(bundle) => {
-                // Write the bundle data to the store
-                let (storage_name, hash) = self.store.store_data(data).await?;
-
-                if let Err(e) = self
+        let (bundle, data) = match cbor::decode::parse::<(bpv7::ValidBundle, bool, usize)>(&data)? {
+            (bpv7::ValidBundle::Valid(bundle), true, _) => (bundle, data),
+            (bpv7::ValidBundle::Valid(mut bundle), false, _) => {
+                // Rewrite the bundle
+                let data = bundle.canonicalise(&data)?;
+                (bundle, data)
+            }
+            (bpv7::ValidBundle::Invalid(bundle), _, _) => {
+                // Receive a fake bundle
+                return self
                     .receive_inner(
                         metadata::Bundle {
                             metadata: metadata::Metadata {
-                                storage_name: Some(storage_name.clone()),
-                                hash: Some(hash),
+                                status: metadata::BundleStatus::Tombstone(
+                                    time::OffsetDateTime::now_utc(),
+                                ),
+                                storage_name: None,
+                                hash: None,
                                 received_at,
-                                ..Default::default()
                             },
                             bundle,
                         },
-                        true,
+                        false,
                     )
-                    .await
-                {
-                    // If we failed to process the bundle, remove the data
-                    self.store.delete_data(&storage_name).await?;
-                    Err(e)
-                } else {
-                    Ok(())
-                }
+                    .await;
             }
-            bpv7::ValidBundle::Invalid(bundle) => {
-                // Keep heap consumption low
-                drop(data);
+        };
 
-                // Receive a fake bundle
-                self.receive_inner(
-                    metadata::Bundle {
-                        metadata: metadata::Metadata {
-                            status: metadata::BundleStatus::Tombstone(
-                                time::OffsetDateTime::now_utc(),
-                            ),
-                            storage_name: None,
-                            hash: None,
-                            received_at,
-                        },
-                        bundle,
+        // Write the bundle data to the store
+        let (storage_name, hash) = self.store.store_data(data).await?;
+
+        if let Err(e) = self
+            .receive_inner(
+                metadata::Bundle {
+                    metadata: metadata::Metadata {
+                        storage_name: Some(storage_name.clone()),
+                        hash: Some(hash),
+                        received_at,
+                        ..Default::default()
                     },
-                    false,
-                )
-                .await
-            }
+                    bundle,
+                },
+                true,
+            )
+            .await
+        {
+            // If we failed to process the bundle, remove the data
+            self.store.delete_data(&storage_name).await?;
+            Err(e)
+        } else {
+            Ok(())
         }
     }
 

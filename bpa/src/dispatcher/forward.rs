@@ -185,36 +185,20 @@ impl Dispatcher {
         // Previous Node Block
         editor = editor
             .replace_extension_block(bpv7::BlockType::PreviousNode)
-            .flags(bpv7::BlockFlags {
-                must_replicate: true,
-                report_on_failure: true,
-                delete_bundle_on_failure: true,
-                ..Default::default()
-            })
-            .data(cbor::encode::emit_array(Some(1), |a| {
-                a.emit(
-                    self.config
-                        .admin_endpoints
-                        .get_admin_endpoint(&bundle.bundle.destination),
-                )
-            }))
+            .data(cbor::encode::emit(
+                &self
+                    .config
+                    .admin_endpoints
+                    .get_admin_endpoint(&bundle.bundle.destination),
+            ))
             .build();
 
         // Increment Hop Count
         if let Some(mut hop_count) = bundle.bundle.hop_count {
+            hop_count.count += 1;
             editor = editor
                 .replace_extension_block(bpv7::BlockType::HopCount)
-                .flags(bpv7::BlockFlags {
-                    must_replicate: true,
-                    report_on_failure: true,
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .data(cbor::encode::emit_array(Some(2), |a| {
-                    hop_count.count += 1;
-                    a.emit(hop_count.limit);
-                    a.emit(hop_count.count);
-                }))
+                .data(cbor::encode::emit(&hop_count))
                 .build();
         }
 
@@ -229,13 +213,7 @@ impl Dispatcher {
 
             editor = editor
                 .replace_extension_block(bpv7::BlockType::BundleAge)
-                .flags(bpv7::BlockFlags {
-                    must_replicate: true,
-                    report_on_failure: true,
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .data(cbor::encode::emit_array(Some(1), |a| a.emit(bundle_age)))
+                .data(cbor::encode::emit(bundle_age))
                 .build();
 
             // If we have a bundle age, then we are time sensitive

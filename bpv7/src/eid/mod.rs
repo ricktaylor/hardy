@@ -40,11 +40,11 @@ pub enum Eid {
 }
 
 impl cbor::encode::ToCbor for &Eid {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit_array(Some(2), |a| match self {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
+        encoder.emit_array(Some(2), |a, _| match self {
             Eid::Null => {
                 a.emit(1);
-                a.emit(0)
+                a.emit(0);
             }
             Eid::Dtn { node_name, demux } => {
                 a.emit(1);
@@ -56,7 +56,7 @@ impl cbor::encode::ToCbor for &Eid {
                         .map(|s| urlencoding::encode(s))
                         .collect::<Vec<std::borrow::Cow<str>>>()
                         .join("/")
-                ))
+                ));
             }
             Eid::Ipn2 {
                 allocator_id,
@@ -64,10 +64,10 @@ impl cbor::encode::ToCbor for &Eid {
                 service_number,
             } => {
                 a.emit(2);
-                a.emit_array(Some(2), |a| {
+                a.emit_array(Some(2), |a, _| {
                     a.emit((*allocator_id as u64) << 32 | *node_number as u64);
                     a.emit(*service_number);
-                })
+                });
             }
             Eid::Ipn3 {
                 allocator_id: 0,
@@ -75,10 +75,10 @@ impl cbor::encode::ToCbor for &Eid {
                 service_number,
             } => {
                 a.emit(2);
-                a.emit_array(Some(2), |a| {
+                a.emit_array(Some(2), |a, _| {
                     a.emit(*node_number);
-                    a.emit(*service_number)
-                })
+                    a.emit(*service_number);
+                });
             }
             Eid::Ipn3 {
                 allocator_id,
@@ -86,48 +86,32 @@ impl cbor::encode::ToCbor for &Eid {
                 service_number,
             } => {
                 a.emit(2);
-                a.emit_array(Some(3), |a| {
+                a.emit_array(Some(3), |a, _| {
                     a.emit(*allocator_id);
                     a.emit(*node_number);
-                    a.emit(*service_number)
-                })
+                    a.emit(*service_number);
+                });
             }
             Eid::LocalNode { service_number } => {
                 a.emit(2);
-                a.emit_array(Some(2), |a| {
+                a.emit_array(Some(2), |a, _| {
                     a.emit(u32::MAX);
-                    a.emit(*service_number)
-                })
+                    a.emit(*service_number);
+                });
             }
             Eid::Unknown { scheme, data } => {
                 a.emit(*scheme);
-                a.emit_raw(data)
+                a.emit_raw(data);
             }
         })
     }
 }
 
-impl cbor::encode::ToCbor for Eid {
+/*impl cbor::encode::ToCbor for Eid {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         encoder.emit(&self)
     }
-}
-
-impl cbor::decode::FromCbor for Eid {
-    type Error = error::EidError;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        parse::eid_from_cbor(data)
-    }
-}
-
-impl std::str::FromStr for Eid {
-    type Err = EidError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse::eid_from_str(s)
-    }
-}
+}*/
 
 impl std::fmt::Debug for Eid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -194,7 +178,7 @@ impl std::fmt::Display for Eid {
                     .join("/")
             ),
             Eid::Unknown { scheme, data } => {
-                let r = cbor::decode::parse_value(data, |mut value, _| {
+                let r = cbor::decode::parse_value(data, |mut value, _, _| {
                     write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)?;
                     value.skip(16).map_err(Into::<DebugError>::into)
                 });

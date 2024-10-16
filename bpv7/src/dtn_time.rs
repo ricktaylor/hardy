@@ -24,7 +24,7 @@ impl DtnTime {
 }
 
 impl cbor::encode::ToCbor for DtnTime {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
         encoder.emit(self.millisecs)
     }
 }
@@ -32,12 +32,9 @@ impl cbor::encode::ToCbor for DtnTime {
 impl cbor::decode::FromCbor for DtnTime {
     type Error = cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        if let Some((millisecs, len)) = u64::try_from_cbor(data)? {
-            Ok(Some((Self { millisecs }, len)))
-        } else {
-            Ok(None)
-        }
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+            .map(|o| o.map(|(millisecs, shortest, len)| (Self { millisecs }, shortest, len)))
     }
 }
 

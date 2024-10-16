@@ -86,37 +86,34 @@ fn ipn_from_str(s: &str) -> Result<Eid, EidError> {
     }
 }
 
-pub fn eid_from_str(s: &str) -> Result<Eid, EidError> {
-    if let Some(s) = s.strip_prefix("dtn:") {
-        if let Some(s) = s.strip_prefix("//") {
-            parse_dtn_parts(s)
-        } else if s == "none" {
-            Ok(Eid::Null)
+impl std::str::FromStr for Eid {
+    type Err = EidError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(s) = s.strip_prefix("dtn:") {
+            if let Some(s) = s.strip_prefix("//") {
+                parse_dtn_parts(s)
+            } else if s == "none" {
+                Ok(Eid::Null)
+            } else {
+                Err(EidError::DtnMissingPrefix)
+            }
+        } else if let Some(s) = s.strip_prefix("ipn:") {
+            ipn_from_str(s)
+        } else if let Some((schema, _)) = s.split_once(':') {
+            Err(EidError::UnsupportedScheme(schema.to_string()))
         } else {
-            Err(EidError::DtnMissingPrefix)
+            Err(EidError::MissingScheme)
         }
-    } else if let Some(s) = s.strip_prefix("ipn:") {
-        ipn_from_str(s)
-    } else if let Some((schema, _)) = s.split_once(':') {
-        Err(EidError::UnsupportedScheme(schema.to_string()))
-    } else {
-        Err(EidError::MissingScheme)
     }
 }
 
-fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
-    if !value.is_definite() {
-        trace!("Parsing ipn EID as indefinite array");
-    }
+fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid, bool), EidError> {
+    let (v1, s1, _) = value.parse::<(u64, bool, usize)>()?;
+    let (v2, s2, _) = value.parse::<(u64, bool, usize)>()?;
+    let v3 = value.try_parse::<(u64, bool, usize)>()?;
 
-    let Some(v1) = value.try_parse::<u64>().map_field_err("First component")? else {
-        return Err(EidError::IpnInvalidComponents);
-    };
-    let Some(v2) = value.try_parse::<u64>().map_field_err("Second component")? else {
-        return Err(EidError::IpnInvalidComponents);
-    };
-
-    if let Some(v3) = value.try_parse::<u64>().map_field_err("Service Number")? {
+    if let Some((v3, s3, _)) = v3 {
         if v1 > u32::MAX as u64 {
             return Err(EidError::IpnInvalidAllocatorId(v1));
         } else if v2 > u32::MAX as u64 {
@@ -125,82 +122,97 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array) -> Result<Eid, EidError> {
             return Err(EidError::IpnInvalidServiceNumber(v3));
         }
 
-        if value.end()?.is_none() {
-            return Err(EidError::IpnInvalidComponents);
-        }
-        ipn_from_parts(3, v1 as u32, v2 as u32, v3 as u32)
+        ipn_from_parts(3, v1 as u32, v2 as u32, v3 as u32).map(|e| (e, shortest && s1 && s2 && s3))
     } else {
         if v2 > u32::MAX as u64 {
             return Err(EidError::IpnInvalidServiceNumber(v2));
         }
+
         ipn_from_parts(2, (v1 >> 32) as u32, v1 as u32, v2 as u32)
+            .map(|e| (e, shortest && s1 && s2))
     }
 }
 
-pub fn eid_from_cbor(data: &[u8]) -> Result<Option<(Eid, usize)>, EidError> {
-    cbor::decode::try_parse_array(data, |a, tags| {
-        if !tags.is_empty() {
-            return Err(cbor::decode::Error::IncorrectType(
-                "Untagged Array".to_string(),
-                "Tagged Array".to_string(),
-            )
-            .into());
-        }
+impl cbor::decode::FromCbor for Eid {
+    type Error = error::EidError;
 
-        if !a.is_definite() {
-            trace!("Parsing EID array of indefinite length")
-        }
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+            let (scheme, s, _) = a.parse::<(u64, bool, usize)>().map_field_err("Scheme")?;
+            shortest = shortest && tags.is_empty() && a.is_definite() && s;
 
-        match a.parse::<u64>().map_field_err("Scheme")? {
-            0 => Err(EidError::UnsupportedScheme("0".to_string())),
-            1 => match a
-                .parse_value(|value, _, tags| match (value, !tags.is_empty()) {
-                    (cbor::decode::Value::UnsignedInteger(0), false)
-                    | (cbor::decode::Value::Text("none", _), false) => Ok(Eid::Null),
-                    (cbor::decode::Value::Text(s, _), false) => {
-                        if let Some(s) = s.strip_prefix("//") {
-                            parse_dtn_parts(s)
-                        } else {
-                            Err(EidError::DtnMissingPrefix)
+            match scheme {
+                0 => Err(EidError::UnsupportedScheme("0".to_string())),
+                1 => match a
+                    .parse_value(|value, _, s, tags| {
+                        shortest = shortest && s && tags.is_empty();
+                        match value {
+                            cbor::decode::Value::UnsignedInteger(0) => Ok((Eid::Null, shortest)),
+                            cbor::decode::Value::Text("none", chunked) => {
+                                Ok((Eid::Null, shortest && !chunked))
+                            }
+                            cbor::decode::Value::Text(s, chunked) => {
+                                if let Some(s) = s.strip_prefix("//") {
+                                    parse_dtn_parts(s).map(|e| (e, shortest && !chunked))
+                                } else {
+                                    Err(EidError::DtnMissingPrefix)
+                                }
+                            }
+                            value => Err(cbor::decode::Error::IncorrectType(
+                                "Untagged Text String or O".to_string(),
+                                value.type_name(!tags.is_empty()),
+                            )
+                            .into()),
                         }
-                    }
-                    (value, tagged) => Err(cbor::decode::Error::IncorrectType(
-                        "Untagged Text String or O".to_string(),
-                        value.type_name(tagged),
-                    )
-                    .into()),
-                })
-                .map(|(eid, _)| eid)
-            {
-                Err(EidError::InvalidCBOR(e)) => Err(e).map_field_err("'dtn' scheme-specific part"),
-                Err(EidError::InvalidUtf8(e)) => Err(e).map_field_err("'dtn' scheme-specific part"),
-                r => r,
-            },
-            2 => match a
-                .parse_value(|value, _, tags| match (value, !tags.is_empty()) {
-                    (cbor::decode::Value::Array(a), false) => ipn_from_cbor(a),
-                    (value, tagged) => Err(cbor::decode::Error::IncorrectType(
-                        "Untagged Array".to_string(),
-                        value.type_name(tagged),
-                    )
-                    .into()),
-                })
-                .map(|(eid, _)| eid)
-            {
-                Err(EidError::InvalidCBOR(e)) => Err(e).map_field_err("'ipn' scheme-specific part"),
-                Err(EidError::InvalidUtf8(e)) => Err(e).map_field_err("'ipn' scheme-specific part"),
-                r => r,
-            },
-            scheme => {
-                if let Some((start, len)) = a.skip_value(16).map_err(Into::<EidError>::into)? {
-                    Ok(Eid::Unknown {
-                        scheme,
-                        data: data[start..start + len].into(),
                     })
-                } else {
-                    Err(EidError::UnsupportedScheme(scheme.to_string()))
+                    .map(|((eid, shortest), _)| (eid, shortest))
+                {
+                    Err(EidError::InvalidCBOR(e)) => {
+                        Err(e).map_field_err("'dtn' scheme-specific part")
+                    }
+                    Err(EidError::InvalidUtf8(e)) => {
+                        Err(e).map_field_err("'dtn' scheme-specific part")
+                    }
+                    r => r,
+                },
+                2 => match a
+                    .parse_value(|value, _, s, tags| match value {
+                        cbor::decode::Value::Array(a) => {
+                            ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
+                        }
+                        value => Err(cbor::decode::Error::IncorrectType(
+                            "Untagged Array".to_string(),
+                            value.type_name(!tags.is_empty()),
+                        )
+                        .into()),
+                    })
+                    .map(|((eid, shortest), _)| (eid, shortest))
+                {
+                    Err(EidError::InvalidCBOR(e)) => {
+                        Err(e).map_field_err("'ipn' scheme-specific part")
+                    }
+                    Err(EidError::InvalidUtf8(e)) => {
+                        Err(e).map_field_err("'ipn' scheme-specific part")
+                    }
+                    r => r,
+                },
+                scheme => {
+                    if let Some((start, _, len)) =
+                        a.skip_value(16).map_err(Into::<EidError>::into)?
+                    {
+                        Ok((
+                            Eid::Unknown {
+                                scheme,
+                                data: data[start..start + len].into(),
+                            },
+                            shortest,
+                        ))
+                    } else {
+                        Err(EidError::UnsupportedScheme(scheme.to_string()))
+                    }
                 }
             }
-        }
-    })
+        })
+        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+    }
 }

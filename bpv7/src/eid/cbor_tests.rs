@@ -36,11 +36,17 @@ fn tests() {
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 81 00")),
-        EidError::IpnInvalidComponents
+        EidError::InvalidField {
+            field: "'ipn' scheme-specific part",
+            ..
+        }
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 84 00 00 00 00")),
-        EidError::IpnInvalidComponents
+        EidError::InvalidField {
+            field: "'ipn' scheme-specific part",
+            ..
+        }
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 82 1B 000EE868 00000001 1B 0000000800000001")),

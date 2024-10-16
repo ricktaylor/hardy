@@ -50,7 +50,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
 
 impl BundleId {
     pub fn from_key(k: &str) -> Result<Self, Error> {
-        cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _| {
+        cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _, _| {
             let s = Self {
                 source: array.parse().map_field_err("Source EID")?,
                 timestamp: array.parse().map_field_err("Creation timestamp")?,
@@ -75,14 +75,14 @@ impl BundleId {
     }
     pub fn to_key(&self) -> String {
         BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = self.fragment_info {
-            cbor::encode::emit_array(Some(4), |array| {
+            cbor::encode::emit_array(Some(4), |array, _| {
                 array.emit(&self.source);
                 array.emit(&self.timestamp);
                 array.emit(fragment_info.offset);
                 array.emit(fragment_info.total_len);
             })
         } else {
-            cbor::encode::emit_array(Some(2), |array| {
+            cbor::encode::emit_array(Some(2), |array, _| {
                 array.emit(&self.source);
                 array.emit(&self.timestamp);
             })

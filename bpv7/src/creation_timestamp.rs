@@ -45,9 +45,13 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
 }
 
 impl cbor::encode::ToCbor for &CreationTimestamp {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit_array(Some(2), |a| {
-            a.emit(self.creation_time);
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
+        encoder.emit_array(Some(2), |a, _| {
+            if let Some(timestamp) = self.creation_time {
+                a.emit(timestamp);
+            } else {
+                a.emit(0);
+            }
             a.emit(self.sequence_number);
         })
     }
@@ -56,26 +60,28 @@ impl cbor::encode::ToCbor for &CreationTimestamp {
 impl cbor::decode::FromCbor for CreationTimestamp {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, tags| {
-            if !tags.is_empty() {
-                return Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Array".to_string(),
-                    "Tagged Array".to_string(),
-                )
-                .into());
-            }
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, shortest, tags| {
+            let (timestamp, s1, _) = a
+                .parse::<(u64, bool, usize)>()
+                .map_field_err("bundle creation time")?;
 
-            let timestamp = a.parse().map_field_err("bundle creation time")?;
-            let creation_time = CreationTimestamp {
-                creation_time: if timestamp == 0 {
-                    None
-                } else {
-                    Some(DtnTime::new(timestamp))
+            let (sequence_number, s2, _) = a
+                .parse::<(u64, bool, usize)>()
+                .map_field_err("sequence number")?;
+
+            Ok((
+                CreationTimestamp {
+                    creation_time: if timestamp == 0 {
+                        None
+                    } else {
+                        Some(DtnTime::new(timestamp))
+                    },
+                    sequence_number,
                 },
-                sequence_number: a.parse().map_field_err("sequence number")?,
-            };
-            Ok(creation_time)
+                shortest && tags.is_empty() && a.is_definite() && s1 && s2,
+            ))
         })
+        .map(|o| o.map(|((v, s), len)| (v, s, len)))
     }
 }

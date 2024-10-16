@@ -1,6 +1,5 @@
 use super::*;
 use block::*;
-use cbor::decode::FromCbor;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -85,13 +84,8 @@ pub struct Bundle {
     pub blocks: std::collections::HashMap<u64, Block>,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct HopInfo {
-    pub count: u64,
-    pub limit: u64,
-}
-
 // For parsing a bundle plus 'minimal viability'
+#[derive(Debug)]
 pub enum ValidBundle {
     Valid(Bundle),
     Invalid(Bundle),
@@ -101,57 +95,62 @@ fn parse_primary_block(
     data: &[u8],
     block: &mut cbor::decode::Array,
     block_start: usize,
-) -> Result<(Bundle, bool), BundleError> {
-    // Check number of items in the array
-    if !block.is_definite() {
-        trace!("Parsing primary block of indefinite length")
-    }
-
+) -> Result<(Bundle, bool, bool), BundleError> {
     // Check version
-    let version = block.parse::<u64>().map_field_err("Version")?;
+    let (version, mut shortest, _) = block
+        .parse::<(u64, bool, usize)>()
+        .map_field_err("Version")?;
     if version != 7 {
         return Err(BundleError::UnsupportedVersion(version));
     }
 
     // Parse flags
-    let flags: BundleFlags = block
-        .parse::<u64>()
-        .map_field_err("Bundle Processing Control Flags")?
-        .into();
+    let (flags, s, _) = block
+        .parse::<(u64, bool, usize)>()
+        .map(|(v, s, l)| (BundleFlags::from(v), s, l))
+        .map_field_err("Bundle Processing Control Flags")?;
+    shortest = shortest && s;
 
     // Parse CRC Type
-    let crc_type = block.parse::<CrcType>();
+    let crc_type = block.parse::<(CrcType, bool, usize)>();
 
     // Parse EIDs
-    let dest_eid = block.parse::<Eid>();
-    let source_eid = block.parse::<Eid>();
-    let report_to = block.parse::<Eid>().map_field_err("Report-to EID")?;
+    let dest_eid = block.parse::<(Eid, bool, usize)>();
+    let source_eid = block.parse::<(Eid, bool, usize)>();
+    let (report_to, s, _) = block
+        .parse::<(Eid, bool, usize)>()
+        .map_field_err("Report-to EID")?;
+    shortest = shortest && s;
 
     // Parse timestamp
-    let timestamp = block.parse::<CreationTimestamp>();
+    let timestamp = block.parse::<(CreationTimestamp, bool, usize)>();
 
     // Parse lifetime
-    let lifetime = block.parse::<u64>();
+    let lifetime = block.parse::<(u64, bool, usize)>();
 
     // Parse fragment parts
     let fragment_info = if !flags.is_fragment {
         Ok(None)
     } else {
-        let offset = block.parse::<u64>();
-        let total_len = block.parse::<u64>();
-        match (offset, total_len) {
-            (Ok(offset), Ok(total_len)) => Ok(Some(FragmentInfo { offset, total_len })),
+        match (
+            block.parse::<(u64, bool, usize)>(),
+            block.parse::<(u64, bool, usize)>(),
+        ) {
+            (Ok((offset, s1, _)), Ok((total_len, s2, _))) => {
+                shortest = shortest && s1 && s2;
+                Ok(Some(FragmentInfo { offset, total_len }))
+            }
             (Err(e), _) => Err(e),
             (_, Err(e)) => Err(e),
         }
     };
 
     // Try to parse and check CRC
-    let crc_result = crc_type.map(|crc_type| {
-        (
-            crc::parse_crc_value(&data[block_start..], block, crc_type),
-            crc_type,
-        )
+    let crc_result = crc_type.map(|(crc_type, s1, _)| {
+        match crc::parse_crc_value(&data[block_start..], block, crc_type) {
+            Ok(s2) => (true, crc_type, s1 && s2),
+            _ => (false, crc_type, s1),
+        }
     });
 
     // By the time we get here we have just enough information to react to an invalid primary block
@@ -164,12 +163,12 @@ fn parse_primary_block(
         crc_result,
     ) {
         (
-            Ok(destination),
-            Ok(source),
-            Ok(timestamp),
-            Ok(lifetime),
+            Ok((destination, s1, _)),
+            Ok((source, s2, _)),
+            Ok((timestamp, s3, _)),
+            Ok((lifetime, s4, _)),
             Ok(fragment_info),
-            Ok((Ok(()), crc_type)),
+            Ok((true, crc_type, s5)),
         ) => Ok((
             Bundle {
                 id: BundleId {
@@ -185,190 +184,68 @@ fn parse_primary_block(
                 ..Default::default()
             },
             true,
+            shortest && s1 && s2 && s3 && s4 && s5,
         )),
         (dest_eid, source_eid, timestamp, lifetime, fragment_info, crc_result) => {
             Ok((
                 // Compose something out of what we have!
                 Bundle {
                     id: BundleId {
-                        source: source_eid.unwrap_or(Eid::Null),
-                        timestamp: timestamp.unwrap_or_default(),
+                        source: source_eid.map_or(Eid::Null, |(v, _, _)| v),
+                        timestamp: timestamp.map_or(Default::default(), |(v, _, _)| v),
                         fragment_info: fragment_info.unwrap_or(None),
                     },
                     flags,
-                    crc_type: crc_result.map_or(CrcType::None, |(_, t)| t),
-                    destination: dest_eid.unwrap_or(Eid::Null),
+                    crc_type: crc_result.map_or(CrcType::None, |(_, t, _)| t),
+                    destination: dest_eid.map_or(Eid::Null, |(v, _, _)| v),
                     report_to,
-                    lifetime: lifetime.unwrap_or(0),
+                    lifetime: lifetime.map_or(0, |(v, _, _)| v),
                     ..Default::default()
                 },
+                false,
                 false,
             ))
         }
     }
 }
 
-fn parse_previous_node(block: &Block, data: &[u8]) -> Result<Eid, BundleError> {
-    match Eid::try_from_cbor(data) {
-        Ok(Some((v, len))) => {
-            if len != block.data_len {
-                Err(BundleError::BlockAdditionalData(BlockType::PreviousNode))
-            } else {
-                Ok(v)
-            }
-        }
-        Ok(None) => Err(cbor::decode::Error::NotEnoughData.into()),
-        Err(e) => Err(e.into()),
+fn parse_known_block<T>(
+    block: &Block,
+    data: &[u8],
+    shortest: &mut bool,
+) -> Result<Option<T>, BundleError>
+where
+    T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
+    BundleError: From<<T as cbor::decode::FromCbor>::Error>,
+{
+    let data = block.block_data(data);
+    let (v, s, len) = cbor::decode::parse::<(T, bool, usize)>(&data)?;
+
+    if len != block.data_len {
+        Err(BundleError::BlockAdditionalData(block.block_type))
+    } else {
+        *shortest = *shortest && s;
+        Ok(Some(v))
     }
-    .map_field_err("Previous Node ID")
-}
-
-fn parse_bundle_age(block: &Block, data: &[u8]) -> Result<u64, BundleError> {
-    match u64::try_from_cbor(data) {
-        Ok(Some((v, len))) => {
-            if len != block.data_len {
-                Err(BundleError::BlockAdditionalData(BlockType::BundleAge))
-            } else {
-                Ok(v)
-            }
-        }
-        Ok(None) => Err(cbor::decode::Error::NotEnoughData.into()),
-        Err(e) => Err(e.into()),
-    }
-    .map_field_err("Bundle Age")
-}
-
-fn parse_hop_count(block: &Block, data: &[u8]) -> Result<HopInfo, BundleError> {
-    cbor::decode::parse_array(data, |a, tags| {
-        if !tags.is_empty() {
-            return Err(cbor::decode::Error::IncorrectType(
-                "Untagged Array".to_string(),
-                "Tagged Array".to_string(),
-            )
-            .into());
-        }
-
-        if !a.is_definite() {
-            trace!("Parsing Hop Count as indefinite length array");
-        }
-
-        let hop_info = HopInfo {
-            limit: a.parse().map_field_err("hop limit")?,
-            count: a.parse().map_field_err("hop count")?,
-        };
-
-        let Some(end) = a.end()? else {
-            return Err(BundleError::BlockAdditionalData(BlockType::HopCount));
-        };
-        if end != block.data_len {
-            return Err(BundleError::BlockAdditionalData(BlockType::HopCount));
-        }
-        Ok(hop_info)
-    })
-    .map(|(v, _)| v)
-    .map_field_err("Hop Count Block")
 }
 
 impl Bundle {
-    pub fn could_be_bundle(data: &[u8]) -> Result<(), cbor::decode::Error> {
-        if data.len() < 3 {
-            return Err(cbor::decode::Error::NotEnoughData);
-        }
-
-        match (data[0], data[1], data[2]) {
-            (0x06, _, _) => {
-                trace!("Data looks like a BPv6 bundle");
-                Err(cbor::decode::Error::IncorrectType(
-                    "BPv7 bundle".to_string(),
-                    "Possible BPv6 bundle".to_string(),
-                ))
-            }
-            (0x81..=0x97, d1, d2) => {
-                /* Bpv7 bundle, with definite-length block array */
-                match (d1, d2) {
-                    (0x82..=0x8B, 7) => {
-                        /* Definite-length primary block */
-                        Ok(())
-                    }
-                    (0x98, 2..=11) => {
-                        /* 1 byte definite-length primary block */
-                        Ok(())
-                    }
-                    (0x99..=0x9B, 0) => {
-                        /* 2+ byte definite-length primary block */
-                        Ok(())
-                    }
-                    (0x9F, 7) => {
-                        /* Indefinite-length primary block, version 7 */
-                        Ok(())
-                    }
-                    _ => {
-                        /* Who knows! */
-                        Err(cbor::decode::Error::IncorrectType(
-                            "BPv7 bundle".to_string(),
-                            "Unexpected bytes".to_string(),
-                        ))
-                    }
-                }
-            }
-            (0x98, 1.., d2) => {
-                /* Bpv7 bundle, with 1 byte definite-length block array */
-                match d2 {
-                    0x82..=0x8B => {
-                        /* Definite-length primary block */
-                        Ok(())
-                    }
-                    0x98..=0x9B => {
-                        /* 1+ byte definite-length primary block */
-                        Ok(())
-                    }
-                    0x9F => {
-                        /* Indefinite-length primary block */
-                        Ok(())
-                    }
-                    _ => {
-                        /* Who knows! */
-                        Err(cbor::decode::Error::IncorrectType(
-                            "BPv7 bundle".to_string(),
-                            "Unexpected bytes".to_string(),
-                        ))
-                    }
-                }
-            }
-            (0x99..=0x9B, _, _) => {
-                /* Bpv7 bundle, with 2+ byte definite-length block array */
-                Ok(())
-            }
-            (0x9F, 0x82..=0x8B, 0x07) => {
-                /* Bpv7 bundle */
-                Ok(())
-            }
-            (0x9F, 0x9F, 0x07) => {
-                /* Bpv7 bundle with definite-length primary block */
-                Ok(())
-            }
-            (0xD9, 0x23, 0xD3) => {
-                /* Tagged Bpv7 bundle */
-                Ok(())
-            }
-            _ => {
-                /* Who knows! */
-                Err(cbor::decode::Error::IncorrectType(
-                    "BPv7 bundle".to_string(),
-                    "Unexpected bytes".to_string(),
-                ))
-            }
-        }
-    }
-
     fn parse_blocks(
         &mut self,
         blocks: &mut cbor::decode::Array,
+        mut offset: usize,
         data: &[u8],
-    ) -> Result<(), BundleError> {
+    ) -> Result<bool, BundleError> {
+        let mut shortest = true;
+
         // Use an intermediate vector so we can check the payload was the last item
         let mut extension_blocks = Vec::new();
-        while let Some(block) = blocks.try_parse::<BlockWithNumber>()? {
+        while let Some((mut block, s, block_len)) =
+            blocks.try_parse::<(BlockWithNumber, bool, usize)>()?
+        {
+            shortest = shortest && s;
+            block.block.data_offset += offset;
+            offset += block_len;
             extension_blocks.push(block);
         }
 
@@ -390,22 +267,18 @@ impl Bundle {
         }
 
         // Check the blocks
-        self.parse_extension_blocks(data)
+        self.parse_extension_blocks(data).map(|s| shortest && s)
     }
 
-    pub fn parse_extension_blocks(&mut self, data: &[u8]) -> Result<(), BundleError> {
+    pub fn parse_extension_blocks(&mut self, data: &[u8]) -> Result<bool, BundleError> {
         // Check for RFC9171-specified extension blocks
         let mut seen_payload = false;
         let mut seen_previous_node = false;
         let mut seen_bundle_age = false;
         let mut seen_hop_count = false;
-
-        let mut previous_node = None;
-        let mut bundle_age = None;
-        let mut hop_count = None;
+        let mut shortest = true;
 
         for (block_number, block) in &self.blocks {
-            let block_data = &data[block.data_offset..block.data_offset + block.data_len];
             match &block.block_type {
                 BlockType::Payload => {
                     if seen_payload {
@@ -420,21 +293,24 @@ impl Bundle {
                     if seen_previous_node {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    previous_node = Some(parse_previous_node(block, block_data)?);
+                    self.previous_node = parse_known_block(block, data, &mut shortest)
+                        .map_field_err("Previous Node ID")?;
                     seen_previous_node = true;
                 }
                 BlockType::BundleAge => {
                     if seen_bundle_age {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    bundle_age = Some(parse_bundle_age(block, block_data)?);
+                    self.age = parse_known_block(block, data, &mut shortest)
+                        .map_field_err("Bundle Age")?;
                     seen_bundle_age = true;
                 }
                 BlockType::HopCount => {
                     if seen_hop_count {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    hop_count = Some(parse_hop_count(block, block_data)?);
+                    self.hop_count = parse_known_block(block, data, &mut shortest)
+                        .map_field_err("Hop Count Block")?;
                     seen_hop_count = true;
                 }
                 _ => {}
@@ -444,81 +320,205 @@ impl Bundle {
         if !seen_bundle_age && self.id.timestamp.creation_time.is_none() {
             return Err(BundleError::MissingBundleAge);
         }
+        Ok(shortest)
+    }
 
-        // Update bundle
-        self.previous_node = previous_node;
-        self.age = bundle_age;
-        self.hop_count = hop_count;
-        Ok(())
+    pub fn emit_primary_block(&mut self, offset: usize) -> Vec<u8> {
+        let block_data = crc::append_crc_value(
+            self.crc_type,
+            cbor::encode::emit_array(
+                Some(if let CrcType::None = self.crc_type {
+                    8
+                } else {
+                    9
+                }),
+                |a, _| {
+                    // Version
+                    a.emit(7);
+                    // Flags
+                    a.emit::<u64>(self.flags.into());
+                    // CRC
+                    a.emit::<u64>(self.crc_type.into());
+                    // EIDs
+                    a.emit(&self.destination);
+                    a.emit(&self.id.source);
+                    a.emit(&self.report_to);
+                    // Timestamp
+                    a.emit(&self.id.timestamp);
+                    // Lifetime
+                    a.emit(self.lifetime);
+                    // CRC
+                    if let CrcType::None = self.crc_type {
+                    } else {
+                        a.skip_value();
+                    }
+                },
+            ),
+        );
+
+        self.blocks.insert(
+            0,
+            Block {
+                block_type: BlockType::Primary,
+                flags: BlockFlags {
+                    must_replicate: true,
+                    report_on_failure: true,
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                },
+                crc_type: self.crc_type,
+                data_offset: offset,
+                data_len: block_data.len(),
+            },
+        );
+
+        block_data
+    }
+
+    pub fn canonicalise(&mut self, source_data: &[u8]) -> Result<Box<[u8]>, BundleError> {
+        // Begin indefinite array
+        let mut data = vec![(4 << 5) | 31u8];
+
+        // Emit primary block
+        let block_data = self.emit_primary_block(data.len());
+        data.extend(block_data);
+
+        // Stash payload block for last
+        let payload_block = self.blocks.remove(&1).expect("No payload block!");
+
+        // Emit extension blocks
+        let mut to_remove = Vec::new();
+        for (block_number, block) in &mut self.blocks {
+            let block_data = match &block.block_type {
+                BlockType::Primary | BlockType::Payload => {
+                    // Skip
+                    continue;
+                }
+                BlockType::PreviousNode => block.emit(
+                    *block_number,
+                    &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
+                ),
+                BlockType::BundleAge => {
+                    block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()))
+                }
+                BlockType::HopCount => block.emit(
+                    *block_number,
+                    &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
+                ),
+                BlockType::Private(_) if block.flags.delete_block_on_failure => {
+                    to_remove.push(*block_number);
+                    continue;
+                }
+                BlockType::Private(_) => block.emit(
+                    *block_number,
+                    &cbor::encode::emit(block.block_data(source_data)),
+                ),
+                BlockType::BlockIntegrity | BlockType::BlockSecurity => {
+                    todo!()
+                }
+            };
+            block.data_offset = data.len();
+            block.data_len = block_data.len();
+            data.extend(block_data);
+        }
+
+        // Remove invalid blocks
+        for block_number in to_remove {
+            self.blocks.remove(&block_number);
+        }
+
+        // Emit payload block
+        let block_data = payload_block.emit(
+            1,
+            &cbor::encode::emit(payload_block.block_data(source_data)),
+        );
+        self.blocks.insert(
+            1,
+            Block {
+                block_type: BlockType::Payload,
+                flags: payload_block.flags,
+                crc_type: payload_block.crc_type,
+                data_offset: data.len(),
+                data_len: block_data.len(),
+            },
+        );
+        data.extend(block_data);
+
+        // End indefinite array
+        data.push(0xFF);
+
+        Ok(Box::from(data))
     }
 }
 
 impl cbor::decode::FromCbor for ValidBundle {
     type Error = BundleError;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        let r = cbor::decode::try_parse_array(data, |blocks, tags| {
-            if tags.len() > 1 {
-                return Err(cbor::decode::Error::IncorrectType(
-                    "Too many tags".to_string(),
-                    "Tag 9171".to_string(),
-                )
-                .into());
-            }
-
-            match tags.get(0) {
-                None | Some(9171) => {}
-                Some(tag) => {
-                    return Err(cbor::decode::Error::IncorrectType(
-                        format!("Tag {}", tag).to_string(),
-                        "Tag 9171".to_string(),
-                    )
-                    .into());
-                }
-            }
-
-            // Parse Primary block
-            let (((mut bundle, mut valid), block_start), block_len) = blocks
-                .parse_array(|block, block_start, tags| {
-                    if !tags.is_empty() {
-                        return Err(cbor::decode::Error::IncorrectType(
-                            "Untagged Array".to_string(),
-                            "Tagged Array".to_string(),
-                        )
-                        .into());
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        let Some(((bundle, mut valid, shortest), len)) =
+            cbor::decode::try_parse_array(data, |blocks, mut shortest, tags| {
+                // Check for shortest/correct form
+                shortest = shortest && !blocks.is_definite();
+                if shortest {
+                    // Appendix B of RFC9171
+                    let mut seen_55799 = false;
+                    for tag in &tags {
+                        match *tag {
+                            255799 if !seen_55799 => seen_55799 = true,
+                            _ => {
+                                shortest = false;
+                                break;
+                            }
+                        }
                     }
-                    parse_primary_block(data, block, block_start).map(|r| (r, block_start))
-                })
-                .map_field_err("Primary Block")?;
+                }
 
-            if valid {
-                // Add a block 0
-                bundle.blocks.insert(
-                    0,
-                    Block {
-                        block_type: BlockType::Primary,
-                        flags: BlockFlags {
-                            report_on_failure: true,
-                            delete_bundle_on_failure: true,
-                            ..Default::default()
+                // Parse Primary block
+                let ((mut bundle, mut valid, block_start), block_len) = blocks
+                    .parse_array(|block, block_start, s, tags| {
+                        shortest = shortest && s && tags.is_empty() && block.is_definite();
+
+                        parse_primary_block(data, block, block_start).map(|(bundle, valid, s)| {
+                            shortest = shortest && s;
+                            (bundle, valid, block_start)
+                        })
+                    })
+                    .map_field_err("Primary Block")?;
+
+                if valid {
+                    // Add a block 0
+                    bundle.blocks.insert(
+                        0,
+                        Block {
+                            block_type: BlockType::Primary,
+                            flags: BlockFlags {
+                                must_replicate: true,
+                                report_on_failure: true,
+                                delete_bundle_on_failure: true,
+                                ..Default::default()
+                            },
+                            crc_type: bundle.crc_type,
+                            data_offset: block_start,
+                            data_len: block_len,
                         },
-                        crc_type: bundle.crc_type,
-                        data_offset: block_start,
-                        data_len: block_len,
-                    },
-                );
+                    );
 
-                // Don't return an Err, just capture validity
-                valid = bundle.parse_blocks(blocks, data).is_ok()
-            } else {
-                // Just skip over the blocks, avoiding any further parsing
-                blocks.skip_to_end(16)?;
-            }
+                    if let Ok(s) = bundle.parse_blocks(blocks, block_start + block_len, data) {
+                        shortest = shortest && s;
+                    } else {
+                        // Don't return an Err, just capture validity
+                        valid = false;
+                    }
+                }
 
-            Ok::<_, BundleError>((bundle, valid))
-        })?;
+                if !valid {
+                    // Just skip over the blocks, avoiding any further parsing
+                    blocks.skip_to_end(16)?;
+                }
 
-        let Some(((bundle, mut valid), len)) = r else {
+                Ok::<_, BundleError>((bundle, valid, shortest))
+            })?
+        else {
             return Ok(None);
         };
 
@@ -532,20 +532,37 @@ impl cbor::decode::FromCbor for ValidBundle {
             } else {
                 ValidBundle::Invalid(bundle)
             },
+            if valid { shortest } else { false },
             len,
         )))
     }
 }
 
-/*
+#[cfg(test)]
+use std::io::Write;
+
 #[test]
 fn fuzz_tests() {
     let data =
-        include_bytes!("../fuzz/artifacts/bundle/crash-937d6a21d82a17021b3b3bf4ca24897e2b5e32c6");
+        include_bytes!("../fuzz/artifacts/bundle/crash-33aa43a02c45419caaafa0fffdb0f8bb84ee6540");
+    //include_bytes!("../rewritten_bundle");
 
-    match cbor::decode::parse::<ValidBundle>(data) {
-        Ok(_) => assert!(Bundle::could_be_bundle(data).is_ok()),
-        Err(_) => {}
+    let r = cbor::decode::parse::<(ValidBundle, bool, usize)>(data);
+
+    dbg!(&r);
+
+    if let Ok((ValidBundle::Valid(mut bundle), false, _)) = r {
+        let data = bundle.canonicalise(data).unwrap();
+
+        let mut file = std::fs::File::create("rewritten_bundle").unwrap();
+        file.write_all(data.as_ref()).unwrap();
+
+        let r = cbor::decode::parse::<(ValidBundle, bool, usize)>(&data);
+
+        dbg!(&r);
+
+        let Ok((ValidBundle::Valid(_), true, _)) = r else {
+            panic!("Rewrite borked");
+        };
     }
 }
-*/

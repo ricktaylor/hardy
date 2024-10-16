@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 
 // Default values
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
@@ -94,7 +93,7 @@ impl Builder {
         let mut data = vec![(4 << 5) | 31u8];
 
         // Emit primary block
-        let (mut bundle, block_data) = self.build_primary_block();
+        let (mut bundle, block_data) = self.build_primary_block(data.len());
         data.extend(block_data);
 
         // Emit extension blocks
@@ -118,76 +117,27 @@ impl Builder {
         Ok((bundle, Box::from(data)))
     }
 
-    fn build_primary_block(&mut self) -> (Bundle, Vec<u8>) {
-        let timestamp = CreationTimestamp::now();
-
-        let block_data = crc::emit_crc_value(
-            self.crc_type,
-            cbor::encode::emit_array(
-                Some(if let CrcType::None = self.crc_type {
-                    8
-                } else {
-                    9
-                }),
-                |a| {
-                    // Version
-                    a.emit(7);
-                    // Flags
-                    a.emit::<u64>(self.bundle_flags.into());
-                    // CRC
-                    a.emit::<u64>(self.crc_type.into());
-                    // EIDs
-                    a.emit(&self.destination);
-                    a.emit(&self.source);
-                    a.emit(self.report_to.as_ref().unwrap_or(&self.source));
-                    // Timestamp
-                    a.emit(&timestamp);
-                    // Lifetime
-                    a.emit(self.lifetime);
-                    // CRC
-                    match self.crc_type {
-                        CrcType::None => {}
-                        CrcType::CRC16_X25 => a.emit(&[0u8; 2]),
-                        CrcType::CRC32_CASTAGNOLI => a.emit(&[0u8; 4]),
-                    }
-                },
-            ),
-        );
-
-        (
-            Bundle {
-                report_to: if let Some(report_to) = &mut self.report_to {
-                    std::mem::take(report_to)
-                } else {
-                    self.source.clone()
-                },
-                id: BundleId {
-                    source: std::mem::take(&mut self.source),
-                    timestamp,
-                    ..Default::default()
-                },
-                flags: self.bundle_flags,
-                crc_type: self.crc_type,
-                destination: std::mem::take(&mut self.destination),
-                lifetime: self.lifetime,
-                blocks: HashMap::from([(
-                    0,
-                    Block {
-                        block_type: BlockType::Primary,
-                        flags: BlockFlags {
-                            report_on_failure: true,
-                            delete_bundle_on_failure: true,
-                            ..Default::default()
-                        },
-                        crc_type: self.crc_type,
-                        data_offset: 1,
-                        data_len: block_data.len(),
-                    },
-                )]),
+    fn build_primary_block(&mut self, offset: usize) -> (Bundle, Vec<u8>) {
+        let mut bundle = Bundle {
+            report_to: if let Some(report_to) = &mut self.report_to {
+                std::mem::take(report_to)
+            } else {
+                self.source.clone()
+            },
+            id: BundleId {
+                source: std::mem::take(&mut self.source),
+                timestamp: CreationTimestamp::now(),
                 ..Default::default()
             },
-            block_data,
-        )
+            flags: self.bundle_flags,
+            crc_type: self.crc_type,
+            destination: std::mem::take(&mut self.destination),
+            lifetime: self.lifetime,
+            ..Default::default()
+        };
+
+        let block_data = bundle.emit_primary_block(offset);
+        (bundle, block_data)
     }
 }
 
@@ -251,45 +201,17 @@ impl BlockTemplate {
     }
 
     pub fn build(self, block_number: u64, offset: usize) -> (Block, Vec<u8>) {
-        let block_data = crc::emit_crc_value(
-            self.crc_type,
-            cbor::encode::emit_array(
-                Some(if let CrcType::None = self.crc_type {
-                    5
-                } else {
-                    6
-                }),
-                |a| {
-                    // Block Type
-                    a.emit::<u64>(self.block_type.into());
-                    // Block Number
-                    a.emit(block_number);
-                    // Flags
-                    a.emit::<u64>(self.flags.into());
-                    // CRC Type
-                    a.emit::<u64>(self.crc_type.into());
-                    // Payload
-                    a.emit(&self.data);
-                    // CRC
-                    match self.crc_type {
-                        CrcType::None => {}
-                        CrcType::CRC16_X25 => a.emit(&[0u8; 2]),
-                        CrcType::CRC32_CASTAGNOLI => a.emit(&[0u8; 4]),
-                    }
-                },
-            ),
-        );
+        let mut block = Block {
+            block_type: self.block_type,
+            flags: self.flags,
+            crc_type: self.crc_type,
+            data_offset: offset,
+            data_len: 0,
+        };
 
-        (
-            Block {
-                block_type: self.block_type,
-                flags: self.flags,
-                crc_type: self.crc_type,
-                data_offset: offset,
-                data_len: self.data.len(),
-            },
-            block_data,
-        )
+        let block_data = block.emit(block_number, &self.data);
+        block.data_len = block_data.len();
+        (block, block_data)
     }
 }
 

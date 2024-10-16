@@ -15,7 +15,7 @@ impl Dispatcher {
         trace!("Reporting bundle reception to {}", &bundle.bundle.report_to);
 
         self.dispatch_status_report(
-            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+            cbor::encode::emit(&bpv7::AdministrativeRecord::BundleStatusReport(
                 bpv7::BundleStatusReport {
                     bundle_id: bundle.bundle.id.clone(),
                     received: Some(bpv7::StatusAssertion(
@@ -54,7 +54,7 @@ impl Dispatcher {
         );
 
         self.dispatch_status_report(
-            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+            cbor::encode::emit(&bpv7::AdministrativeRecord::BundleStatusReport(
                 bpv7::BundleStatusReport {
                     bundle_id: bundle.bundle.id.clone(),
                     forwarded: Some(bpv7::StatusAssertion(
@@ -86,7 +86,7 @@ impl Dispatcher {
 
         // Create a bundle report
         self.dispatch_status_report(
-            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+            cbor::encode::emit(&bpv7::AdministrativeRecord::BundleStatusReport(
                 bpv7::BundleStatusReport {
                     bundle_id: bundle.bundle.id.clone(),
                     delivered: Some(bpv7::StatusAssertion(
@@ -119,7 +119,7 @@ impl Dispatcher {
 
         // Create a bundle report
         self.dispatch_status_report(
-            cbor::encode::emit(bpv7::AdministrativeRecord::BundleStatusReport(
+            cbor::encode::emit(&bpv7::AdministrativeRecord::BundleStatusReport(
                 bpv7::BundleStatusReport {
                     bundle_id: bundle.bundle.id.clone(),
                     deleted: Some(bpv7::StatusAssertion(

@@ -71,7 +71,8 @@ fn rfc_tests() {
     assert_eq!(false, parse(&hex!("f4")).unwrap());
     assert_eq!(true, parse(&hex!("f5")).unwrap());
     assert!(
-        parse_value(&hex!("f6"), |value, tags| {
+        parse_value(&hex!("f6"), |value, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             match value {
                 Value::Null => Ok::<_, Error>(true),
@@ -82,7 +83,8 @@ fn rfc_tests() {
         .0
     );
     assert!(
-        parse_value(&hex!("f7"), |value, tags| {
+        parse_value(&hex!("f7"), |value, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             match value {
                 Value::Undefined => Ok::<_, Error>(true),
@@ -93,7 +95,8 @@ fn rfc_tests() {
         .0
     );
     assert!(
-        parse_value(&hex!("f0"), |value, tags| {
+        parse_value(&hex!("f0"), |value, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             match value {
                 Value::Simple(16) => Ok::<_, Error>(true),
@@ -105,7 +108,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (true, 2),
-        parse_value(&hex!("f8ff"), |value, tags| {
+        parse_value(&hex!("f8ff"), |value, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             match value {
                 Value::Simple(255) => Ok::<_, Error>(true),
@@ -118,51 +122,62 @@ fn rfc_tests() {
         (true, 22),
         parse_value(
             &hex!("c074323031332d30332d32315432303a30343a30305a"),
-            |value, tags| match value {
-                Value::Text("2013-03-21T20:04:00Z", false) if tags == vec![0] =>
-                    Ok::<_, Error>(true),
-                _ => Ok(false),
+            |value, shortest, tags| {
+                assert!(shortest);
+                assert_eq!(tags, vec![0]);
+                match value {
+                    Value::Text("2013-03-21T20:04:00Z", false) => Ok::<_, Error>(true),
+                    _ => Ok(false),
+                }
             }
         )
         .unwrap()
     );
     assert_eq!(
-        (1363896240, 6, vec![1]),
-        parse_value(&hex!("c11a514b67b0"), |value, tags| match value {
-            Value::UnsignedInteger(n) => {
-                Ok::<_, Error>((n, tags))
+        (1363896240, 6),
+        parse_value(&hex!("c11a514b67b0"), |value, shortest, tags| {
+            assert!(shortest);
+            assert_eq!(tags, vec![1]);
+            match value {
+                Value::UnsignedInteger(n) => Ok::<_, Error>(n),
+                _ => Ok(0),
             }
-            _ => Ok((0, tags)),
         })
-        .map(|((n, tags), offset)| (n, offset, tags))
         .unwrap()
     );
     assert_eq!(
-        (1363896240.5, 10, vec![1]),
-        parse_value(&hex!("c1fb41d452d9ec200000"), |value, tags| match value {
-            Value::Float(f) => {
-                Ok::<_, Error>((f, tags))
+        (1363896240.5, 10),
+        parse_value(&hex!("c1fb41d452d9ec200000"), |value, shortest, tags| {
+            assert!(shortest);
+            assert_eq!(tags, vec![1]);
+            match value {
+                Value::Float(f) => Ok::<_, Error>(f),
+                _ => Ok(0.0),
             }
-            _ => Ok((0.0, tags)),
         })
-        .map(|((n, tags), offset)| (n, offset, tags))
         .unwrap()
     );
     assert_eq!(
         (true, 6),
-        parse_value(&hex!("d74401020304"), |value, tags| match value {
-            Value::Bytes(v, false) if v == hex!("01020304") && tags == vec![23] =>
-                Ok::<_, Error>(true),
-            _ => Ok(false),
+        parse_value(&hex!("d74401020304"), |value, shortest, tags| {
+            assert!(shortest);
+            assert_eq!(tags, vec![23]);
+            match value {
+                Value::Bytes(v, false) if v == hex!("01020304") => Ok::<_, Error>(true),
+                _ => Ok(false),
+            }
         })
         .unwrap()
     );
     assert_eq!(
         (true, 8),
-        parse_value(&hex!("d818456449455446"), |value, tags| match value {
-            Value::Bytes(v, false) if v == hex!("6449455446") && tags == vec![24] =>
-                Ok::<_, Error>(true),
-            _ => Ok(false),
+        parse_value(&hex!("d818456449455446"), |value, shortest, tags| {
+            assert!(shortest);
+            assert_eq!(tags, vec![24]);
+            match value {
+                Value::Bytes(v, false) if v == hex!("6449455446") => Ok::<_, Error>(true),
+                _ => Ok(false),
+            }
         })
         .unwrap()
     );
@@ -170,10 +185,13 @@ fn rfc_tests() {
         (true, 25),
         parse_value(
             &hex!("d82076687474703a2f2f7777772e6578616d706c652e636f6d"),
-            |value, tags| match value {
-                Value::Text(v, false) if v == "http://www.example.com" && tags == vec![32] =>
-                    Ok::<_, Error>(true),
-                _ => Ok(false),
+            |value, shortest, tags| {
+                assert!(shortest);
+                assert_eq!(tags, vec![32]);
+                match value {
+                    Value::Text(v, false) if v == "http://www.example.com" => Ok::<_, Error>(true),
+                    _ => Ok(false),
+                }
             }
         )
         .unwrap()
@@ -195,7 +213,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (0, 1),
-        parse_array(&hex!("80"), |a, tags| {
+        parse_array(&hex!("80"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(0, a.count().unwrap());
             assert!(a.end().unwrap().is_some());
@@ -205,7 +224,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (vec![1, 2, 3], 4),
-        parse_array(&hex!("83010203"), |a, tags| {
+        parse_array(&hex!("83010203"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap());
             let v = vec![a.parse().unwrap(), a.parse().unwrap(), a.parse().unwrap()];
@@ -216,13 +236,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (3, 8),
-        parse_array(&hex!("8301820203820405"), |a, tags| {
+        parse_array(&hex!("8301820203820405"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap());
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
@@ -234,7 +256,8 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert_eq!(2, a.count().unwrap());
@@ -259,7 +282,8 @@ fn rfc_tests() {
         ),
         parse_array(
             &hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819"),
-            |a, tags| {
+            |a, shortest, tags| {
+                assert!(shortest);
                 assert!(tags.is_empty());
                 let mut v = Vec::new();
                 while let Some(value) = a.try_parse().unwrap() {
@@ -273,7 +297,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (0, 1),
-        parse_map(&hex!("a0"), |m, tags| {
+        parse_map(&hex!("a0"), |m, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert!(m.end().unwrap().is_some());
             Ok::<_, Error>(m.count().unwrap())
@@ -282,7 +307,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (vec![1, 2, 3, 4], 5),
-        parse_map(&hex!("a201020304"), |m, tags| {
+        parse_map(&hex!("a201020304"), |m, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(2, m.count().unwrap());
             let v = vec![
@@ -298,7 +324,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (2, 9),
-        parse_map(&hex!("a26161016162820203"), |m, tags| {
+        parse_map(&hex!("a26161016162820203"), |m, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(2, m.count().unwrap());
             assert_eq!("a".to_string(), m.parse::<String>().unwrap());
@@ -306,7 +333,8 @@ fn rfc_tests() {
             assert_eq!("b".to_string(), m.parse::<String>().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                m.parse_array(|a, s, tags| {
+                m.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(6, s);
                     assert_eq!(2, a.count().unwrap());
@@ -323,13 +351,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (2, 8),
-        parse_array(&hex!("826161a161626163"), |a, tags| {
+        parse_array(&hex!("826161a161626163"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(2, a.count().unwrap());
             assert_eq!("a".to_string(), a.parse::<String>().unwrap());
             assert_eq!(
                 (Some(5), 5),
-                a.parse_map(|m, s, tags| {
+                a.parse_map(|m, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(3, s);
                     assert_eq!(1, m.count().unwrap());
@@ -354,7 +384,8 @@ fn rfc_tests() {
         ),
         parse_map(
             &hex!("a56161614161626142616361436164614461656145"),
-            |m, tags| {
+            |m, shortest, tags| {
+                assert!(shortest);
                 assert!(tags.is_empty());
                 let mut v = Vec::new();
                 while let Some(value) = m.try_parse().unwrap() {
@@ -369,7 +400,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (true, 9),
-        parse_value(&hex!("5f42010243030405ff"), |value, tags| {
+        parse_value(&hex!("5f42010243030405ff"), |value, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             match value {
                 Value::Bytes(v, true) if v == hex!("0102030405") => Ok::<_, Error>(true),
@@ -380,18 +412,23 @@ fn rfc_tests() {
     );
     assert_eq!(
         (true, 13),
-        parse_value(&hex!("7f657374726561646d696e67ff"), |value, tags| {
-            assert!(tags.is_empty());
-            match value {
-                Value::Text(v, true) if v == "streaming" => Ok::<_, Error>(true),
-                _ => Ok(false),
+        parse_value(
+            &hex!("7f657374726561646d696e67ff"),
+            |value, shortest, tags| {
+                assert!(shortest);
+                assert!(tags.is_empty());
+                match value {
+                    Value::Text(v, true) if v == "streaming" => Ok::<_, Error>(true),
+                    _ => Ok(false),
+                }
             }
-        })
+        )
         .unwrap()
     );
     assert_eq!(
         (0, 2),
-        parse_array(&hex!("9fff"), |a, tags| {
+        parse_array(&hex!("9fff"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert!(!a.is_definite());
             assert!(a.end().unwrap().is_some());
@@ -401,13 +438,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (3, 10),
-        parse_array(&hex!("9f018202039f0405ffff"), |a, tags| {
+        parse_array(&hex!("9f018202039f0405ffff"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert!(!a.is_definite());
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
@@ -419,7 +458,8 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(4), 4),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert!(!a.is_definite());
@@ -436,13 +476,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (3, 9),
-        parse_array(&hex!("9f01820203820405ff"), |a, tags| {
+        parse_array(&hex!("9f01820203820405ff"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert!(!a.is_definite());
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
@@ -454,7 +496,8 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert_eq!(2, a.count().unwrap());
@@ -471,13 +514,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (3, 9),
-        parse_array(&hex!("83018202039f0405ff"), |a, tags| {
+        parse_array(&hex!("83018202039f0405ff"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap());
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
@@ -489,7 +534,8 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(4), 4),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(5, s);
                     assert!(!a.is_definite());
@@ -506,13 +552,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (3, 9),
-        parse_array(&hex!("83019f0203ff820405"), |a, tags| {
+        parse_array(&hex!("83019f0203ff820405"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(3, a.count().unwrap());
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(4), 4),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(2, s);
                     assert!(!a.is_definite());
@@ -524,7 +572,8 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, tags| {
+                a.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(6, s);
                     assert_eq!(2, a.count().unwrap());
@@ -549,7 +598,8 @@ fn rfc_tests() {
         ),
         parse_array(
             &hex!("9f0102030405060708090a0b0c0d0e0f101112131415161718181819ff"),
-            |a, tags| {
+            |a, shortest, tags| {
+                assert!(shortest);
                 assert!(tags.is_empty());
                 assert!(!a.is_definite());
                 let mut v = Vec::new();
@@ -564,7 +614,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (2, 11),
-        parse_map(&hex!("bf61610161629f0203ffff"), |m, tags| {
+        parse_map(&hex!("bf61610161629f0203ffff"), |m, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert!(!m.is_definite());
             assert_eq!("a".to_string(), m.parse::<String>().unwrap());
@@ -572,7 +623,8 @@ fn rfc_tests() {
             assert_eq!("b".to_string(), m.parse::<String>().unwrap());
             assert_eq!(
                 (Some(4), 4),
-                m.parse_array(|a, s, tags| {
+                m.parse_array(|a, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(6, s);
                     assert!(!a.is_definite());
@@ -589,13 +641,15 @@ fn rfc_tests() {
     );
     assert_eq!(
         (2, 9),
-        parse_array(&hex!("826161bf61626163ff"), |a, tags| {
+        parse_array(&hex!("826161bf61626163ff"), |a, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert_eq!(2, a.count().unwrap());
             assert_eq!("a".to_string(), a.parse::<String>().unwrap());
             assert_eq!(
                 (Some(6), 6),
-                a.parse_map(|m, s, tags| {
+                a.parse_map(|m, s, shortest, tags| {
+                    assert!(shortest);
                     assert!(tags.is_empty());
                     assert_eq!(3, s);
                     assert!(!m.is_definite());
@@ -612,7 +666,8 @@ fn rfc_tests() {
     );
     assert_eq!(
         (2, 12),
-        parse_map(&hex!("bf6346756ef563416d7421ff"), |m, tags| {
+        parse_map(&hex!("bf6346756ef563416d7421ff"), |m, shortest, tags| {
+            assert!(shortest);
             assert!(tags.is_empty());
             assert!(!m.is_definite());
             assert_eq!("Fun".to_string(), m.parse::<String>().unwrap());

@@ -15,6 +15,7 @@ mod editor;
 mod eid;
 mod eid_pattern;
 mod eid_pattern_map;
+mod hop_info;
 mod status_report;
 
 pub mod prelude {
@@ -22,7 +23,7 @@ pub mod prelude {
     pub use super::block_flags::BlockFlags;
     pub use super::block_type::BlockType;
     pub use super::builder::Builder;
-    pub use super::bundle::{Bundle, BundleError, HopInfo, ValidBundle};
+    pub use super::bundle::{Bundle, BundleError, ValidBundle};
     pub use super::bundle_flags::BundleFlags;
     pub use super::bundle_id::{BundleId, FragmentInfo};
     pub use super::crc::*;
@@ -32,6 +33,7 @@ pub mod prelude {
     pub use super::eid::{Eid, EidError};
     pub use super::eid_pattern::{EidPattern, EidPatternError};
     pub use super::eid_pattern_map::EidPatternMap;
+    pub use super::hop_info::HopInfo;
     pub use super::status_report::*;
 }
 

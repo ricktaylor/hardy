@@ -34,8 +34,9 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StatusReportReasonCode {
+    #[default]
     NoAdditionalInformation,
     LifetimeExpired,
     ForwardedOverUnidirectionalLink,
@@ -54,12 +55,6 @@ pub enum StatusReportReasonCode {
     FailedSecurityOperation,
     ConflictingSecurityOperation,
     Unassigned(u64),
-}
-
-impl Default for StatusReportReasonCode {
-    fn default() -> Self {
-        Self::NoAdditionalInformation
-    }
 }
 
 impl From<StatusReportReasonCode> for u64 {
@@ -115,23 +110,58 @@ impl TryFrom<u64> for StatusReportReasonCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StatusAssertion(pub Option<DtnTime>);
 
-impl cbor::encode::ToCbor for &StatusAssertion {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        if let Some(timestamp) = self.0 {
-            encoder.emit_array(Some(2), |a| {
-                a.emit(true);
-                a.emit(timestamp);
-            })
-        } else {
-            encoder.emit_array(Some(1), |a| a.emit(true))
-        }
+fn emit_status_assertion(a: &mut cbor::encode::Array, sa: &Option<StatusAssertion>) -> usize {
+    // This is a horrible format!
+    match sa {
+        None => a.emit_array(Some(1), |a, _| {
+            a.emit(false);
+        }),
+        Some(StatusAssertion(None)) => a.emit_array(Some(1), |a, _| {
+            a.emit(true);
+        }),
+        Some(StatusAssertion(Some(timestamp))) => a.emit_array(Some(2), |a, _| {
+            a.emit(true);
+            a.emit(*timestamp);
+        }),
     }
 }
 
-#[derive(Default, Debug)]
+fn parse_status_assertion(
+    a: &mut cbor::decode::Array,
+    shortest: &mut bool,
+) -> Result<Option<StatusAssertion>, StatusReportError> {
+    a.parse_array(|a, _, s, tags| {
+        *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+
+        let (status, s, _) = a.parse::<(bool, bool, usize)>().map_field_err("Status")?;
+        *shortest = *shortest && s;
+
+        if status {
+            if let Some((timestamp, s, _)) = a
+                .try_parse::<(DtnTime, bool, _)>()
+                .map_field_err("Timestamp")?
+            {
+                *shortest = *shortest && s;
+
+                if timestamp.millisecs() == 0 {
+                    Ok::<_, StatusReportError>(Some(StatusAssertion(None)))
+                } else {
+                    Ok(Some(StatusAssertion(Some(timestamp))))
+                }
+            } else {
+                Ok(Some(StatusAssertion(None)))
+            }
+        } else {
+            Ok(None)
+        }
+    })
+    .map(|(o, _)| o)
+}
+
+#[derive(Default, Debug, Clone)]
 pub struct BundleStatusReport {
     pub bundle_id: BundleId,
     pub received: Option<StatusAssertion>,
@@ -142,102 +172,75 @@ pub struct BundleStatusReport {
 }
 
 impl cbor::encode::ToCbor for &BundleStatusReport {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit_array(Some(self.bundle_id.fragment_info.map_or(4, |_| 6)), |a| {
-            // Statuses
-            a.emit_array(Some(4), |a| {
-                // This is a horrible format!
-                if let Some(received) = &self.received {
-                    a.emit(received)
-                } else {
-                    a.emit(false)
-                }
-                if let Some(forwarded) = &self.forwarded {
-                    a.emit(forwarded)
-                } else {
-                    a.emit(false)
-                }
-                if let Some(delivered) = &self.delivered {
-                    a.emit(delivered)
-                } else {
-                    a.emit(false)
-                }
-                if let Some(deleted) = &self.deleted {
-                    a.emit(deleted)
-                } else {
-                    a.emit(false)
-                }
-            });
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
+        encoder.emit_array(
+            Some(self.bundle_id.fragment_info.map_or(4, |_| 6)),
+            |a, _| {
+                // Statuses
+                a.emit_array(Some(4), |a, _| {
+                    emit_status_assertion(a, &self.received);
+                    emit_status_assertion(a, &self.forwarded);
+                    emit_status_assertion(a, &self.delivered);
+                    emit_status_assertion(a, &self.deleted);
+                });
 
-            // Reason code
-            a.emit::<u64>(self.reason.into());
-            // Source EID
-            a.emit(&self.bundle_id.source);
-            // Creation Timestamp
-            a.emit(&self.bundle_id.timestamp);
+                // Reason code
+                a.emit::<u64>(self.reason.into());
+                // Source EID
+                a.emit(&self.bundle_id.source);
+                // Creation Timestamp
+                a.emit(&self.bundle_id.timestamp);
 
-            if let Some(fragment_info) = &self.bundle_id.fragment_info {
-                // Add fragment info
-                a.emit(fragment_info.offset);
-                a.emit(fragment_info.total_len);
-            }
-        })
+                if let Some(fragment_info) = &self.bundle_id.fragment_info {
+                    // Add fragment info
+                    a.emit(fragment_info.offset);
+                    a.emit(fragment_info.total_len);
+                }
+            },
+        )
     }
 }
 
 impl cbor::decode::FromCbor for BundleStatusReport {
-    type Error = self::StatusReportError;
+    type Error = StatusReportError;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, tags| {
-            if !tags.is_empty() {
-                return Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Array".to_string(),
-                    "Tagged Array".to_string(),
-                )
-                .into());
-            }
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+            shortest = shortest && tags.is_empty() && a.is_definite();
 
             let mut report = Self::default();
-            a.parse_array(|a, _, tags| {
-                if !tags.is_empty() {
-                    return Err(cbor::decode::Error::IncorrectType(
-                        "Untagged Array".to_string(),
-                        "Tagged Array".to_string(),
-                    )
-                    .into());
-                }
+            a.parse_array(|a, _, s, tags| {
+                shortest = shortest && s && tags.is_empty() && a.is_definite();
 
-                // This is a horrible format!
-                if a.parse::<bool>().map_field_err("Received Status")? {
-                    report.received = Some(StatusAssertion(
-                        a.parse().map_field_err("Received Timestamp")?,
-                    ))
-                }
-                if a.parse::<bool>().map_field_err("Forwarded Status")? {
-                    report.forwarded = Some(StatusAssertion(
-                        a.parse().map_field_err("Forwarded Timestamp")?,
-                    ))
-                }
-                if a.parse::<bool>().map_field_err("Delivered Status")? {
-                    report.delivered = Some(StatusAssertion(
-                        a.parse().map_field_err("Delivered Timestamp")?,
-                    ))
-                }
-                if a.parse::<bool>().map_field_err("Deleted Status")? {
-                    report.deleted = Some(StatusAssertion(
-                        a.parse().map_field_err("Deleted Timestamp")?,
-                    ))
-                }
-                Ok::<(), Self::Error>(())
+                report.received =
+                    parse_status_assertion(a, &mut shortest).map_field_err("Received Status")?;
+                report.forwarded =
+                    parse_status_assertion(a, &mut shortest).map_field_err("Forwarded Status")?;
+                report.delivered =
+                    parse_status_assertion(a, &mut shortest).map_field_err("Delivered Status")?;
+                report.deleted =
+                    parse_status_assertion(a, &mut shortest).map_field_err("Deleted Status")?;
+
+                Ok::<_, Self::Error>(())
             })
             .map_field_err("Bundle Status Information")?;
 
-            report.reason = a.parse::<u64>().map_field_err("Reason")?.try_into()?;
+            let (reason, s, _) = a.parse::<(u64, bool, usize)>().map_field_err("Reason")?;
+            shortest = shortest && s;
+
+            report.reason = reason.try_into()?;
+
+            let (source, s, _) = a.parse::<(Eid, bool, usize)>().map_field_err("Source")?;
+            shortest = shortest && s;
+
+            let (timestamp, s, _) = a
+                .parse::<(CreationTimestamp, bool, usize)>()
+                .map_field_err("Timestamp")?;
+            shortest = shortest && s;
 
             report.bundle_id = BundleId {
-                source: a.parse().map_field_err("Source")?,
-                timestamp: a.parse().map_field_err("Timestamp")?,
+                source,
+                timestamp,
                 fragment_info: None,
             };
 
@@ -247,8 +250,9 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                     total_len: a.parse().map_field_err("Fragment length")?,
                 });
             }
-            Ok(report)
+            Ok((report, shortest))
         })
+        .map(|o| o.map(|((v, s), len)| (v, s, len)))
     }
 }
 
@@ -258,8 +262,8 @@ pub enum AdministrativeRecord {
 }
 
 impl cbor::encode::ToCbor for &AdministrativeRecord {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit_array(Some(2), |a| match self {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
+        encoder.emit_array(Some(2), |a, _| match self {
             AdministrativeRecord::BundleStatusReport(report) => {
                 a.emit(1);
                 a.emit(report);
@@ -268,32 +272,27 @@ impl cbor::encode::ToCbor for &AdministrativeRecord {
     }
 }
 
-impl cbor::encode::ToCbor for AdministrativeRecord {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit(&self)
-    }
-}
-
 impl cbor::decode::FromCbor for AdministrativeRecord {
     type Error = self::StatusReportError;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, tags| {
-            if !tags.is_empty() {
-                return Err(cbor::decode::Error::IncorrectType(
-                    "Untagged Array".to_string(),
-                    "Tagged Array".to_string(),
-                )
-                .into());
-            }
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+            let (record_type, s, _) = a
+                .parse::<(u64, bool, usize)>()
+                .map_field_err("Record Type Code")?;
 
-            match a.parse().map_field_err("Record Type Code")? {
-                1u64 => a
-                    .parse()
-                    .map(Self::BundleStatusReport)
-                    .map_field_err("Bundle Status Report"),
+            shortest = shortest && !tags.is_empty() && a.is_definite() && s;
+
+            match record_type {
+                1u64 => {
+                    let (r, s, _) = a
+                        .parse::<(BundleStatusReport, bool, usize)>()
+                        .map_field_err("Bundle Status Report")?;
+                    Ok((Self::BundleStatusReport(r), shortest && s))
+                }
                 v => Err(StatusReportError::UnknownAdminRecordType(v)),
             }
         })
+        .map(|o| o.map(|((v, s), len)| (v, s, len)))
     }
 }
