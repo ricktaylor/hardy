@@ -818,7 +818,6 @@ dependencies = [
  "regex",
  "thiserror",
  "time",
- "tracing",
  "urlencoding",
 ]
 

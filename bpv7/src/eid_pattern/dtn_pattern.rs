@@ -301,7 +301,7 @@ impl PatternMatch {
             } else {
                 span.inc(1);
 
-                regex::Regex::new(&url_decode(&s[1..s.len() - 1], &mut span.clone())?)
+                regex::Regex::new(&url_decode(&s[1..], &mut span.clone())?)
                     .map_err(|e| {
                         EidPatternError::InvalidRegEx(e, span.subset(s.chars().count() - 1))
                     })

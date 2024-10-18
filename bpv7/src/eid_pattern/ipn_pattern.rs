@@ -140,7 +140,7 @@ impl IpnPattern {
             }
             _ => match s.chars().nth(0) {
                 Some('1'..='9') => {
-                    let Ok(v) = s.parse::<u32>() else {
+                    let Ok(v) = s.parse() else {
                         return Err(EidPatternError::InvalidIpnNumber(
                             span.subset(s.chars().count()),
                         ));
@@ -155,14 +155,11 @@ impl IpnPattern {
                     }
 
                     // Parse intervals
-                    let mut intervals =
-                        s[1..s.len() - 1]
-                            .split(',')
-                            .try_fold(Vec::new(), |mut v, s| {
-                                v.push(IpnInterval::parse(s, span)?);
-                                span.inc(1);
-                                Ok::<Vec<IpnInterval>, EidPatternError>(v)
-                            })?;
+                    let mut intervals = s[1..].split(',').try_fold(Vec::new(), |mut v, s| {
+                        v.push(IpnInterval::parse(s, span)?);
+                        span.inc(1);
+                        Ok::<Vec<IpnInterval>, EidPatternError>(v)
+                    })?;
 
                     if intervals.is_empty() {
                         Err(EidPatternError::InvalidIpnNumber(
@@ -342,7 +339,7 @@ impl IpnInterval {
                 Ok(0)
             }
             Some('1'..='9') => {
-                let Ok(v) = s.parse::<u32>() else {
+                let Ok(v) = s.parse() else {
                     return Err(EidPatternError::InvalidIpnNumber(
                         span.subset(s.chars().count()),
                     ));

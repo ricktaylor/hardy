@@ -19,7 +19,7 @@ impl Dispatcher {
             return Ok(DispatchResult::Done);
         };
 
-        match cbor::decode::parse::<bpv7::AdministrativeRecord>(data.as_ref().as_ref()) {
+        match cbor::decode::parse(data.as_ref().as_ref()) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
                 Ok(DispatchResult::Drop(Some(

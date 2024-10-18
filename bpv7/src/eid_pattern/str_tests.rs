@@ -199,7 +199,7 @@ fn tests() {
 }
 
 fn ipn_match(s: &str, expected: IpnPatternItem) {
-    match s.parse::<EidPattern>().expect("Failed to parse") {
+    match s.parse().expect("Failed to parse") {
         EidPattern::Set(v) => {
             if v.len() != 1 {
                 panic!("More than 1 pattern item!");
@@ -216,7 +216,7 @@ fn ipn_match(s: &str, expected: IpnPatternItem) {
 }
 
 fn dtn_match(s: &str, expected: DtnSsp) {
-    match s.parse::<EidPattern>().expect("Failed to parse") {
+    match s.parse().expect("Failed to parse") {
         EidPattern::Set(v) => {
             if v.len() != 1 {
                 panic!("More than 1 pattern item!");

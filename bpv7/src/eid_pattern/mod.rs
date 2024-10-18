@@ -230,7 +230,7 @@ impl EidPatternItem {
             }
             _ => match s1.chars().nth(0) {
                 Some('1'..='9') => {
-                    let Ok(v) = s1.parse::<u64>() else {
+                    let Ok(v) = s1.parse() else {
                         return Err(EidPatternError::InvalidScheme(
                             span.subset(s1.chars().count()),
                         ));

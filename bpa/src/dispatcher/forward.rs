@@ -175,7 +175,7 @@ impl Dispatcher {
 
         // Remove unrecognized blocks we are supposed to
         for (block_number, block) in &bundle.bundle.blocks {
-            if let bpv7::BlockType::Private(_) = &block.block_type {
+            if let bpv7::BlockType::Unrecognised(_) = &block.block_type {
                 if block.flags.delete_block_on_failure {
                     editor = editor.remove_extension_block(*block_number);
                 }

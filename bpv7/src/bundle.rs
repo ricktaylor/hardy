@@ -22,7 +22,7 @@ pub enum BundleError {
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),
 
-    #[error("Bundle block must not be block number 0")]
+    #[error("Bundle extension block must not be block number 0 or 1")]
     InvalidBlockNumber,
 
     #[error("Bundle has multiple {0:?} blocks")]
@@ -35,7 +35,10 @@ pub enum BundleError {
     MissingBundleAge,
 
     #[error(transparent)]
-    InvalidCrc(#[from] crc::CrcError),
+    InvalidBPSec(#[from] bpsec::Error),
+
+    #[error(transparent)]
+    InvalidCrc(#[from] crc::Error),
 
     #[error(transparent)]
     InvalidEid(#[from] eid::EidError),
@@ -97,46 +100,39 @@ fn parse_primary_block(
     block_start: usize,
 ) -> Result<(Bundle, bool, bool), BundleError> {
     // Check version
-    let (version, mut shortest, _) = block
-        .parse::<(u64, bool, usize)>()
-        .map_field_err("Version")?;
+    let (version, mut shortest) = block.parse().map_field_err("Version")?;
     if version != 7 {
         return Err(BundleError::UnsupportedVersion(version));
     }
 
     // Parse flags
-    let (flags, s, _) = block
-        .parse::<(u64, bool, usize)>()
-        .map(|(v, s, l)| (BundleFlags::from(v), s, l))
+    let (flags, s) = block
+        .parse::<(u64, bool)>()
+        .map(|(v, s)| (BundleFlags::from(v), s))
         .map_field_err("Bundle Processing Control Flags")?;
     shortest = shortest && s;
 
     // Parse CRC Type
-    let crc_type = block.parse::<(CrcType, bool, usize)>();
+    let crc_type = block.parse();
 
     // Parse EIDs
-    let dest_eid = block.parse::<(Eid, bool, usize)>();
-    let source_eid = block.parse::<(Eid, bool, usize)>();
-    let (report_to, s, _) = block
-        .parse::<(Eid, bool, usize)>()
-        .map_field_err("Report-to EID")?;
+    let dest_eid = block.parse();
+    let source_eid = block.parse();
+    let (report_to, s) = block.parse().map_field_err("Report-to EID")?;
     shortest = shortest && s;
 
     // Parse timestamp
-    let timestamp = block.parse::<(CreationTimestamp, bool, usize)>();
+    let timestamp = block.parse();
 
     // Parse lifetime
-    let lifetime = block.parse::<(u64, bool, usize)>();
+    let lifetime = block.parse();
 
     // Parse fragment parts
     let fragment_info = if !flags.is_fragment {
         Ok(None)
     } else {
-        match (
-            block.parse::<(u64, bool, usize)>(),
-            block.parse::<(u64, bool, usize)>(),
-        ) {
-            (Ok((offset, s1, _)), Ok((total_len, s2, _))) => {
+        match (block.parse(), block.parse()) {
+            (Ok((offset, s1)), Ok((total_len, s2))) => {
                 shortest = shortest && s1 && s2;
                 Ok(Some(FragmentInfo { offset, total_len }))
             }
@@ -146,7 +142,7 @@ fn parse_primary_block(
     };
 
     // Try to parse and check CRC
-    let crc_result = crc_type.map(|(crc_type, s1, _)| {
+    let crc_result = crc_type.map(|(crc_type, s1)| {
         match crc::parse_crc_value(&data[block_start..], block, crc_type) {
             Ok(s2) => (true, crc_type, s1 && s2),
             _ => (false, crc_type, s1),
@@ -163,43 +159,70 @@ fn parse_primary_block(
         crc_result,
     ) {
         (
-            Ok((destination, s1, _)),
-            Ok((source, s2, _)),
-            Ok((timestamp, s3, _)),
-            Ok((lifetime, s4, _)),
+            Ok((destination, s1)),
+            Ok((source, s2)),
+            Ok((timestamp, s3)),
+            Ok((lifetime, s4)),
             Ok(fragment_info),
             Ok((true, crc_type, s5)),
-        ) => Ok((
-            Bundle {
-                id: BundleId {
-                    source,
-                    timestamp,
-                    fragment_info,
+        ) => {
+            let mut valid = true;
+
+            // Check flags
+            if let Eid::Null = source {
+                if flags.is_fragment
+                    || !flags.do_not_fragment
+                    || flags.receipt_report_requested
+                    || flags.forward_report_requested
+                    || flags.delivery_report_requested
+                    || flags.delete_report_requested
+                {
+                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
+                    valid = false;
+                }
+            } else if flags.is_admin_record {
+                if flags.receipt_report_requested
+                    || flags.forward_report_requested
+                    || flags.delivery_report_requested
+                    || flags.delete_report_requested
+                {
+                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
+                    valid = false;
+                }
+            }
+
+            Ok((
+                Bundle {
+                    id: BundleId {
+                        source,
+                        timestamp,
+                        fragment_info,
+                    },
+                    flags,
+                    crc_type,
+                    destination,
+                    report_to,
+                    lifetime,
+                    ..Default::default()
                 },
-                flags,
-                crc_type,
-                destination,
-                report_to,
-                lifetime,
-                ..Default::default()
-            },
-            true,
-            shortest && s1 && s2 && s3 && s4 && s5,
-        )),
+                valid,
+                shortest && s1 && s2 && s3 && s4 && s5,
+            ))
+        }
         (dest_eid, source_eid, timestamp, lifetime, fragment_info, crc_result) => {
             Ok((
                 // Compose something out of what we have!
                 Bundle {
                     id: BundleId {
-                        source: source_eid.map_or(Eid::Null, |(v, _, _)| v),
-                        timestamp: timestamp.map_or(Default::default(), |(v, _, _)| v),
+                        source: source_eid.map_or(Eid::Null, |(v, _)| v),
+                        timestamp: timestamp.map_or(Default::default(), |(v, _)| v),
                         fragment_info: fragment_info.unwrap_or(None),
                     },
                     flags,
                     crc_type: crc_result.map_or(CrcType::None, |(_, t, _)| t),
-                    destination: dest_eid.map_or(Eid::Null, |(v, _, _)| v),
+                    destination: dest_eid.map_or(Eid::Null, |(v, _)| v),
                     report_to,
-                    lifetime: lifetime.map_or(0, |(v, _, _)| v),
+                    lifetime: lifetime.map_or(0, |(v, _)| v),
                     ..Default::default()
                 },
                 false,
@@ -209,23 +232,17 @@ fn parse_primary_block(
     }
 }
 
-fn parse_known_block<T>(
-    block: &Block,
-    data: &[u8],
-    shortest: &mut bool,
-) -> Result<Option<T>, BundleError>
+fn parse_known_block<T>(block: &Block, data: &[u8], shortest: &mut bool) -> Result<T, BundleError>
 where
     T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
     BundleError: From<<T as cbor::decode::FromCbor>::Error>,
 {
-    let data = block.block_data(data);
-    let (v, s, len) = cbor::decode::parse::<(T, bool, usize)>(&data)?;
-
+    let (v, s, len) = cbor::decode::parse(&block.block_data(data))?;
     if len != block.data_len {
         Err(BundleError::BlockAdditionalData(block.block_type))
     } else {
         *shortest = *shortest && s;
-        Ok(Some(v))
+        Ok(v)
     }
 }
 
@@ -251,12 +268,12 @@ impl Bundle {
 
         // Check the last block is the payload
         match extension_blocks.last() {
-            Some(block) if block.block.block_type != BlockType::Payload => {
-                return Err(BundleError::PayloadNotFinal)
-            }
-            Some(block) if block.number != 1 => return Err(BundleError::InvalidPayloadBlockNumber),
-            Some(_) => {}
             None => return Err(BundleError::MissingPayload),
+            Some(block) => {
+                if block.block.block_type != BlockType::Payload {
+                    return Err(BundleError::PayloadNotFinal);
+                }
+            }
         }
 
         // Add blocks
@@ -276,16 +293,14 @@ impl Bundle {
         let mut seen_previous_node = false;
         let mut seen_bundle_age = false;
         let mut seen_hop_count = false;
+        let mut seen_bpsec = false;
         let mut shortest = true;
 
-        for (block_number, block) in &self.blocks {
+        for block in self.blocks.values() {
             match &block.block_type {
                 BlockType::Payload => {
                     if seen_payload {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
-                    }
-                    if *block_number != 1 {
-                        return Err(BundleError::InvalidPayloadBlockNumber);
                     }
                     seen_payload = true;
                 }
@@ -293,25 +308,34 @@ impl Bundle {
                     if seen_previous_node {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    self.previous_node = parse_known_block(block, data, &mut shortest)
-                        .map_field_err("Previous Node ID")?;
+                    self.previous_node = Some(
+                        parse_known_block(block, data, &mut shortest)
+                            .map_field_err("Previous Node ID")?,
+                    );
                     seen_previous_node = true;
                 }
                 BlockType::BundleAge => {
                     if seen_bundle_age {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    self.age = parse_known_block(block, data, &mut shortest)
-                        .map_field_err("Bundle Age")?;
+                    self.age = Some(
+                        parse_known_block(block, data, &mut shortest)
+                            .map_field_err("Bundle Age")?,
+                    );
                     seen_bundle_age = true;
                 }
                 BlockType::HopCount => {
                     if seen_hop_count {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    self.hop_count = parse_known_block(block, data, &mut shortest)
-                        .map_field_err("Hop Count Block")?;
+                    self.hop_count = Some(
+                        parse_known_block(block, data, &mut shortest)
+                            .map_field_err("Hop Count Block")?,
+                    );
                     seen_hop_count = true;
+                }
+                BlockType::BlockIntegrity | BlockType::BlockSecurity => {
+                    seen_bpsec = true;
                 }
                 _ => {}
             }
@@ -320,6 +344,21 @@ impl Bundle {
         if !seen_bundle_age && self.id.timestamp.creation_time.is_none() {
             return Err(BundleError::MissingBundleAge);
         }
+
+        // Now check BPSec BIB
+        if seen_bpsec {
+            for block in self.blocks.values() {
+                match &block.block_type {
+                    BlockType::BlockIntegrity | BlockType::BlockSecurity => {
+                        let asb: bpsec::SecurityBlock =
+                            parse_known_block(block, data, &mut shortest)
+                                .map_field_err("BPSec extension block")?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         Ok(shortest)
     }
 
@@ -411,11 +450,11 @@ impl Bundle {
                     &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
                     data.len(),
                 ),
-                BlockType::Private(_) if block.flags.delete_block_on_failure => {
+                BlockType::Unrecognised(_) if block.flags.delete_block_on_failure => {
                     to_remove.push(*block_number);
                     continue;
                 }
-                BlockType::Private(_) => block.emit(
+                BlockType::Unrecognised(_) => block.emit(
                     *block_number,
                     &cbor::encode::emit(block.block_data(source_data)),
                     data.len(),
@@ -476,13 +515,14 @@ impl cbor::decode::FromCbor for ValidBundle {
                 }
 
                 // Parse Primary block
-                let ((mut bundle, mut valid, block_start), block_len) = blocks
-                    .parse_array(|block, block_start, s, tags| {
+                let block_start = blocks.offset();
+                let ((mut bundle, mut valid), block_len) = blocks
+                    .parse_array(|block, s, tags| {
                         shortest = shortest && s && tags.is_empty() && block.is_definite();
 
                         parse_primary_block(data, block, block_start).map(|(bundle, valid, s)| {
                             shortest = shortest && s;
-                            (bundle, valid, block_start)
+                            (bundle, valid)
                         })
                     })
                     .map_field_err("Primary Block")?;
@@ -551,21 +591,21 @@ fn fuzz_tests() {
         include_bytes!("../fuzz/artifacts/bundle/crash-33aa43a02c45419caaafa0fffdb0f8bb84ee6540");
     //include_bytes!("../rewritten_bundle");
 
-    let r = cbor::decode::parse::<(ValidBundle, bool, usize)>(data);
+    let r = cbor::decode::parse(data);
 
     dbg!(&r);
 
-    if let Ok((ValidBundle::Valid(mut bundle), false, _)) = r {
+    if let Ok((ValidBundle::Valid(mut bundle), false)) = r {
         let data = bundle.canonicalise(data).unwrap();
 
         let mut file = std::fs::File::create("rewritten_bundle").unwrap();
         file.write_all(data.as_ref()).unwrap();
 
-        let r = cbor::decode::parse::<(ValidBundle, bool, usize)>(&data);
+        let r = cbor::decode::parse(&data);
 
         dbg!(&r);
 
-        let Ok((ValidBundle::Valid(_), true, _)) = r else {
+        let Ok((ValidBundle::Valid(_), true)) = r else {
             panic!("Rewrite borked");
         };
     }

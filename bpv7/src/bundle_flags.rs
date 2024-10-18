@@ -1,5 +1,3 @@
-use super::*;
-
 #[derive(Default, Debug, Copy, Clone)]
 pub struct BundleFlags {
     pub is_fragment: bool,
@@ -11,11 +9,16 @@ pub struct BundleFlags {
     pub forward_report_requested: bool,
     pub delivery_report_requested: bool,
     pub delete_report_requested: bool,
+    pub unrecognised: u64,
 }
 
 impl From<u64> for BundleFlags {
     fn from(value: u64) -> Self {
-        let mut flags = Self::default();
+        let mut flags = Self {
+            unrecognised: value & !((2 ^ 20) - 1),
+            ..Default::default()
+        };
+
         for b in 0..=20 {
             if value & (1 << b) != 0 {
                 match b {
@@ -24,40 +27,15 @@ impl From<u64> for BundleFlags {
                     2 => flags.do_not_fragment = true,
                     5 => flags.app_ack_requested = true,
                     6 => flags.report_status_time = true,
-                    14 => {
-                        if flags.is_admin_record {
-                            trace!("Parsing bundle primary block with Administrative Record and Receipt Report Requested flag set!");
-                        } else {
-                            flags.receipt_report_requested = true;
-                        }
+                    14 => flags.receipt_report_requested = true,
+                    16 => flags.forward_report_requested = true,
+                    17 => flags.delivery_report_requested = true,
+                    18 => flags.delete_report_requested = true,
+                    b => {
+                        flags.unrecognised |= 1 << b;
                     }
-                    16 => {
-                        if flags.is_admin_record {
-                            trace!("Parsing bundle primary block with Administrative Record and Forward Report Requested flag set!");
-                        } else {
-                            flags.forward_report_requested = true;
-                        }
-                    }
-                    17 => {
-                        if flags.is_admin_record {
-                            trace!("Parsing bundle primary block with Administrative Record and Delivery Report Requested flag set!");
-                        } else {
-                            flags.delivery_report_requested = true;
-                        }
-                    }
-                    18 => {
-                        if flags.is_admin_record {
-                            trace!("Parsing bundle primary block with Administrative Record and Delete Report Requested flag set!");
-                        } else {
-                            flags.delete_report_requested = true;
-                        }
-                    }
-                    b => trace!("Parsing bundle primary block with reserved flag bit {b} set"),
                 }
             }
-        }
-        if value & !((2 ^ 20) - 1) != 0 {
-            trace!("Parsing bundle primary block with unassigned flag bits set: {value:#x}");
         }
         flags
     }
@@ -65,7 +43,7 @@ impl From<u64> for BundleFlags {
 
 impl From<BundleFlags> for u64 {
     fn from(value: BundleFlags) -> Self {
-        let mut flags: u64 = 0;
+        let mut flags = value.unrecognised;
         if value.is_fragment {
             flags |= 1 << 0;
         }

@@ -5,7 +5,7 @@ const X25: ::crc::Crc<u16> = ::crc::Crc::<u16>::new(&::crc::CRC_16_IBM_SDLC);
 const CASTAGNOLI: ::crc::Crc<u32> = ::crc::Crc::<u32>::new(&::crc::CRC_32_ISCSI);
 
 #[derive(Error, Debug)]
-pub enum CrcError {
+pub enum Error {
     #[error("Invalid CRC Type {0}")]
     InvalidType(u64),
 
@@ -35,14 +35,14 @@ pub enum CrcType {
 }
 
 impl TryFrom<u64> for CrcType {
-    type Error = CrcError;
+    type Error = self::Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::None),
             1 => Ok(Self::CRC16_X25),
             2 => Ok(Self::CRC32_CASTAGNOLI),
-            _ => Err(CrcError::InvalidType(value)),
+            _ => Err(Error::InvalidType(value)),
         }
     }
 }
@@ -54,7 +54,7 @@ impl From<CrcType> for u64 {
 }
 
 impl cbor::decode::FromCbor for CrcType {
-    type Error = CrcError;
+    type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         if let Some((v, shortest, len)) = cbor::decode::try_parse::<(u64, bool, usize)>(data)? {
@@ -69,71 +69,68 @@ pub fn parse_crc_value(
     data: &[u8],
     block: &mut cbor::decode::Array,
     crc_type: CrcType,
-) -> Result<bool, CrcError> {
+) -> Result<bool, Error> {
     // Parse CRC
-    let crc_value = block.try_parse_value(|value, crc_start, mut shortest, tags| {
-        shortest = shortest && tags.is_empty();
-
-        match value {
-            cbor::decode::Value::Bytes(crc, true) => match crc_type {
-                CrcType::None => Err(CrcError::UnexpectedCrcValue),
-                CrcType::CRC16_X25 => {
-                    if crc.len() != 2 {
-                        Err(CrcError::InvalidLength(crc.len()))
-                    } else {
-                        Ok((
-                            u16::from_be_bytes(crc.try_into().unwrap()) as u32,
-                            shortest,
-                            crc_start + 1,
-                        ))
-                    }
+    let mut crc_start = block.offset();
+    let crc_value = block.try_parse_value(|value, shortest, tags| match value {
+        cbor::decode::Value::Bytes(crc, false) => match crc_type {
+            CrcType::None => Err(Error::UnexpectedCrcValue),
+            CrcType::CRC16_X25 => {
+                if crc.len() != 2 {
+                    Err(Error::InvalidLength(crc.len()))
+                } else {
+                    Ok((
+                        u16::from_be_bytes(crc.try_into().unwrap()) as u32,
+                        shortest && tags.is_empty(),
+                    ))
                 }
-                CrcType::CRC32_CASTAGNOLI => {
-                    if crc.len() != 4 {
-                        Err(CrcError::InvalidLength(crc.len()))
-                    } else {
-                        Ok((
-                            u32::from_be_bytes(crc.try_into().unwrap()),
-                            shortest,
-                            crc_start + 1,
-                        ))
-                    }
+            }
+            CrcType::CRC32_CASTAGNOLI => {
+                if crc.len() != 4 {
+                    Err(Error::InvalidLength(crc.len()))
+                } else {
+                    Ok((
+                        u32::from_be_bytes(crc.try_into().unwrap()),
+                        shortest && tags.is_empty(),
+                    ))
                 }
-            },
-            _ => Err(cbor::decode::Error::IncorrectType(
-                "Definite-length Byte String".to_string(),
-                value.type_name(!tags.is_empty()),
-            )
-            .into()),
-        }
+            }
+        },
+        _ => Err(cbor::decode::Error::IncorrectType(
+            "Definite-length Byte String".to_string(),
+            value.type_name(!tags.is_empty()),
+        )
+        .into()),
     })?;
 
     // Now check CRC
     match (crc_type, crc_value) {
         (CrcType::None, None) => Ok(true),
-        (CrcType::CRC16_X25, Some(((crc_value, shortest, crc_start), _))) => {
+        (CrcType::CRC16_X25, Some(((crc_value, shortest), len))) => {
+            crc_start += len - 2;
             let mut digest = X25.digest();
             digest.update(&data[0..crc_start]);
             digest.update(&[0u8; 2]);
             digest.update(&data[crc_start + 2..]);
             if crc_value != digest.finalize() as u32 {
-                Err(CrcError::IncorrectCrc)
+                Err(Error::IncorrectCrc)
             } else {
                 Ok(shortest)
             }
         }
-        (CrcType::CRC32_CASTAGNOLI, Some(((crc_value, shortest, crc_start), _))) => {
+        (CrcType::CRC32_CASTAGNOLI, Some(((crc_value, shortest), len))) => {
+            crc_start += len - 4;
             let mut digest = CASTAGNOLI.digest();
             digest.update(&data[0..crc_start]);
             digest.update(&[0u8; 4]);
             digest.update(&data[crc_start + 4..]);
             if crc_value != digest.finalize() {
-                Err(CrcError::IncorrectCrc)
+                Err(Error::IncorrectCrc)
             } else {
                 Ok(shortest)
             }
         }
-        _ => Err(CrcError::MissingCrc),
+        _ => Err(Error::MissingCrc),
     }
 }
 

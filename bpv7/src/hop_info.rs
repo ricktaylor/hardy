@@ -21,8 +21,8 @@ impl cbor::decode::FromCbor for HopInfo {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, shortest, tags| {
-            let (limit, s1, _) = a.parse::<(u64, bool, usize)>().map_field_err("hop limit")?;
-            let (count, s2, _) = a.parse::<(u64, bool, usize)>().map_field_err("hop count")?;
+            let (limit, s1) = a.parse().map_field_err("hop limit")?;
+            let (count, s2) = a.parse().map_field_err("hop count")?;
 
             Ok::<_, BundleError>((
                 HopInfo { limit, count },

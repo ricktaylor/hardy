@@ -243,10 +243,9 @@ fn rfc_tests() {
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -256,10 +255,9 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(5, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(4, a.parse().unwrap());
                     assert_eq!(5, a.parse().unwrap());
@@ -333,10 +331,9 @@ fn rfc_tests() {
             assert_eq!("b".to_string(), m.parse::<String>().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                m.parse_array(|a, s, shortest, tags| {
+                m.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(6, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -358,10 +355,9 @@ fn rfc_tests() {
             assert_eq!("a".to_string(), a.parse::<String>().unwrap());
             assert_eq!(
                 (Some(5), 5),
-                a.parse_map(|m, s, shortest, tags| {
+                a.parse_map(|m, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(3, s);
                     assert_eq!(1, m.count().unwrap());
                     assert_eq!("b".to_string(), m.parse::<String>().unwrap());
                     assert_eq!("c".to_string(), m.parse::<String>().unwrap());
@@ -445,10 +441,9 @@ fn rfc_tests() {
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -458,10 +453,9 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(4), 4),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(5, s);
                     assert!(!a.is_definite());
                     assert_eq!(4, a.parse().unwrap());
                     assert_eq!(5, a.parse().unwrap());
@@ -483,10 +477,9 @@ fn rfc_tests() {
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -496,10 +489,9 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(5, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(4, a.parse().unwrap());
                     assert_eq!(5, a.parse().unwrap());
@@ -521,10 +513,9 @@ fn rfc_tests() {
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(2, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -534,10 +525,9 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(4), 4),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(5, s);
                     assert!(!a.is_definite());
                     assert_eq!(4, a.parse().unwrap());
                     assert_eq!(5, a.parse().unwrap());
@@ -559,10 +549,9 @@ fn rfc_tests() {
             assert_eq!(1, a.parse().unwrap());
             assert_eq!(
                 (Some(4), 4),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(2, s);
                     assert!(!a.is_definite());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -572,10 +561,9 @@ fn rfc_tests() {
             );
             assert_eq!(
                 (Some(3), 3),
-                a.parse_array(|a, s, shortest, tags| {
+                a.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(6, s);
                     assert_eq!(2, a.count().unwrap());
                     assert_eq!(4, a.parse().unwrap());
                     assert_eq!(5, a.parse().unwrap());
@@ -623,10 +611,9 @@ fn rfc_tests() {
             assert_eq!("b".to_string(), m.parse::<String>().unwrap());
             assert_eq!(
                 (Some(4), 4),
-                m.parse_array(|a, s, shortest, tags| {
+                m.parse_array(|a, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(6, s);
                     assert!(!a.is_definite());
                     assert_eq!(2, a.parse().unwrap());
                     assert_eq!(3, a.parse().unwrap());
@@ -648,10 +635,9 @@ fn rfc_tests() {
             assert_eq!("a".to_string(), a.parse::<String>().unwrap());
             assert_eq!(
                 (Some(6), 6),
-                a.parse_map(|m, s, shortest, tags| {
+                a.parse_map(|m, shortest, tags| {
                     assert!(shortest);
                     assert!(tags.is_empty());
-                    assert_eq!(3, s);
                     assert!(!m.is_definite());
                     assert_eq!("b".to_string(), m.parse::<String>().unwrap());
                     assert_eq!("c".to_string(), m.parse::<String>().unwrap());

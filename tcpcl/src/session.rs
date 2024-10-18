@@ -67,7 +67,7 @@ impl Config {
                         None
                     } else {
                         Some(
-                            s.parse::<bpv7::Eid>()
+                            s.parse()
                                 .trace_expect("Invalid 'node_id' value in configuration"),
                         )
                     }

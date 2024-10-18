@@ -71,7 +71,7 @@ fn ipn_check2(
     expected_node_number: u32,
     expected_service_number: u32,
 ) {
-    match cbor::decode::parse::<Eid>(data).expect("Failed to parse") {
+    match cbor::decode::parse(data).expect("Failed to parse") {
         Eid::Ipn2 {
             allocator_id,
             node_number,
@@ -91,7 +91,7 @@ fn ipn_check3(
     expected_node_number: u32,
     expected_service_number: u32,
 ) {
-    match cbor::decode::parse::<Eid>(data).expect("Failed to parse") {
+    match cbor::decode::parse(data).expect("Failed to parse") {
         Eid::Ipn3 {
             allocator_id,
             node_number,

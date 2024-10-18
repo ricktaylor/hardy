@@ -332,58 +332,57 @@ impl Store {
         };
 
         // Parse the bundle
-        let (bundle, valid, hash) =
-            match cbor::decode::parse::<(bpv7::ValidBundle, bool, usize)>(data.as_ref().as_ref()) {
-                Ok((bpv7::ValidBundle::Valid(bundle), true, _)) => {
-                    let hash = Some(hash(data.as_ref().as_ref()));
-                    drop(data);
-                    (bundle, true, hash)
-                }
-                Ok((bpv7::ValidBundle::Valid(mut bundle), false, _)) => {
-                    warn!("Bundle in non-canonical format found: {storage_name}");
+        let (bundle, valid, hash) = match cbor::decode::parse(data.as_ref().as_ref()) {
+            Ok((bpv7::ValidBundle::Valid(bundle), true)) => {
+                let hash = Some(hash(data.as_ref().as_ref()));
+                drop(data);
+                (bundle, true, hash)
+            }
+            Ok((bpv7::ValidBundle::Valid(mut bundle), false)) => {
+                warn!("Bundle in non-canonical format found: {storage_name}");
 
-                    // Rewrite the bundle
-                    let data = bundle
-                        .canonicalise(data.as_ref().as_ref())
-                        .trace_expect(&format!(
-                            "Failed to rewrite non-canonical bundle: {storage_name}"
-                        ));
+                // Rewrite the bundle
+                let data = bundle
+                    .canonicalise(data.as_ref().as_ref())
+                    .trace_expect(&format!(
+                        "Failed to rewrite non-canonical bundle: {storage_name}"
+                    ));
 
-                    let hash = Some(hash(&data));
-                    let new_storage_name = bundle_storage
-                        .store(data)
-                        .await
-                        .trace_expect("Failed to store rewritten canonical bundle");
+                let hash = Some(hash(&data));
+                let new_storage_name = bundle_storage
+                    .store(data)
+                    .await
+                    .trace_expect("Failed to store rewritten canonical bundle");
 
-                    bundle_storage
-                        .remove(&storage_name)
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove duplicate bundle: {storage_name}"
-                        ));
+                bundle_storage
+                    .remove(&storage_name)
+                    .await
+                    .trace_expect(&format!(
+                        "Failed to remove duplicate bundle: {storage_name}"
+                    ));
 
-                    storage_name = new_storage_name;
-                    (bundle, true, hash)
-                }
-                Ok((bpv7::ValidBundle::Invalid(bundle), _, _)) => {
-                    let hash = Some(hash(data.as_ref().as_ref()));
-                    drop(data);
-                    (bundle, false, hash)
-                }
-                Err(e) => {
-                    // Parse failed badly, no idea who to report to
-                    warn!("Junk data found: {storage_name}, {e}");
+                storage_name = new_storage_name;
+                (bundle, true, hash)
+            }
+            Ok((bpv7::ValidBundle::Invalid(bundle), _)) => {
+                let hash = Some(hash(data.as_ref().as_ref()));
+                drop(data);
+                (bundle, false, hash)
+            }
+            Err(e) => {
+                // Parse failed badly, no idea who to report to
+                warn!("Junk data found: {storage_name}, {e}");
 
-                    // Drop the bundle
-                    bundle_storage
-                        .remove(&storage_name)
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove malformed bundle: {storage_name}"
-                        ));
-                    return (0, 1);
-                }
-            };
+                // Drop the bundle
+                bundle_storage
+                    .remove(&storage_name)
+                    .await
+                    .trace_expect(&format!(
+                        "Failed to remove malformed bundle: {storage_name}"
+                    ));
+                return (0, 1);
+            }
+        };
 
         // Check if the metadata_storage knows about this bundle
         let metadata = metadata_storage

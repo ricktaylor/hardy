@@ -33,7 +33,7 @@ impl cbor::decode::FromCbor for DtnTime {
     type Error = cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+        cbor::decode::try_parse(data)
             .map(|o| o.map(|(millisecs, shortest, len)| (Self { millisecs }, shortest, len)))
     }
 }

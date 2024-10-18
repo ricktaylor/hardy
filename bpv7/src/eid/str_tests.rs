@@ -114,7 +114,7 @@ fn null_check(s: &str) {
 }
 
 fn local_node_check(s: &str, expected_service_number: u32) {
-    let Eid::LocalNode { service_number } = s.parse::<Eid>().expect("Failed to parse") else {
+    let Eid::LocalNode { service_number } = s.parse().expect("Failed to parse") else {
         panic!("Not a LocalNode EID!")
     };
     assert_eq!(expected_service_number, service_number);
@@ -126,7 +126,7 @@ fn ipn_check(
     expected_node_number: u32,
     expected_service_number: u32,
 ) {
-    match s.parse::<Eid>().expect("Failed to parse") {
+    match s.parse().expect("Failed to parse") {
         Eid::Ipn2 {
             allocator_id,
             node_number,
@@ -146,7 +146,7 @@ fn ipn_check(
 }
 
 fn dtn_check(s: &str, expected_node_name: &str, expected_demux: &str) {
-    let Eid::Dtn { node_name, demux } = s.parse::<Eid>().expect("Failed to parse") else {
+    let Eid::Dtn { node_name, demux } = s.parse().expect("Failed to parse") else {
         panic!("Not a dtn EID!")
     };
     assert_eq!(urlencoding::encode(&node_name), expected_node_name);

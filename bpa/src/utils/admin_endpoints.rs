@@ -38,7 +38,7 @@ impl DtnNodeId {
         // Roundtrip via String for PctEncoding safety
         let mut s = self.to_string();
         s.push_str(demux);
-        s.parse::<Eid>().map_err(Into::into)
+        s.parse().map_err(Into::into)
     }
 }
 
@@ -210,7 +210,7 @@ fn init_from_value(v: config::Value) -> Result<AdminEndpoints, Error> {
 }
 
 fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
-    match s.parse::<bpv7::Eid>()? {
+    match s.parse()? {
         Eid::Null => Err(Error::NotNone),
         Eid::LocalNode { .. } => Err(Error::NotLocalNode),
         Eid::Ipn2 {

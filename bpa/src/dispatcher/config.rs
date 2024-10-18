@@ -54,9 +54,7 @@ impl Config {
             .get::<Vec<String>>("ipn_2_element")
             .unwrap_or_default()
         {
-            let p = s
-                .parse::<bpv7::EidPattern>()
-                .trace_expect(&format!("Invalid EID pattern '{s}"));
+            let p = s.parse().trace_expect(&format!("Invalid EID pattern '{s}"));
             m.insert(&p, (), ());
         }
         m

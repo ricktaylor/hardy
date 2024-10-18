@@ -19,14 +19,14 @@ impl Dispatcher {
         }
 
         // Parse the bundle
-        let (bundle, data) = match cbor::decode::parse::<(bpv7::ValidBundle, bool, usize)>(&data)? {
-            (bpv7::ValidBundle::Valid(bundle), true, _) => (bundle, data),
-            (bpv7::ValidBundle::Valid(mut bundle), false, _) => {
+        let (bundle, data) = match cbor::decode::parse(&data)? {
+            (bpv7::ValidBundle::Valid(bundle), true) => (bundle, data),
+            (bpv7::ValidBundle::Valid(mut bundle), false) => {
                 // Rewrite the bundle
                 let data = bundle.canonicalise(&data)?;
                 (bundle, data)
             }
-            (bpv7::ValidBundle::Invalid(bundle), _, _) => {
+            (bpv7::ValidBundle::Invalid(bundle), _) => {
                 // Receive a fake bundle
                 return self
                     .receive_inner(
@@ -168,7 +168,15 @@ impl Dispatcher {
         }
 
         /* Always check bundles, no matter the state, as after restarting
-        the configured filters may have changed, and reprocessing is desired. */
+         * the configured filters or code may have changed, and reprocessing is desired.
+         */
+
+        if bundle.bundle.flags.unrecognised != 0 {
+            trace!(
+                "Bundle primary block has unrecognised flag bits set: {#x}",
+                bundle.bundle.flags.unrecognised
+            );
+        }
 
         // Check some basic semantic validity, lifetime first
         let mut reason = bundle
@@ -218,8 +226,19 @@ impl Dispatcher {
         bundle: &metadata::Bundle,
     ) -> Result<Option<bpv7::StatusReportReasonCode>, Error> {
         let mut unsupported = false;
-        for block in bundle.bundle.blocks.values() {
-            if let bpv7::BlockType::Private(_) = &block.block_type {
+        for (block_number, block) in &bundle.bundle.blocks {
+            if block.flags.unrecognised != 0 {
+                trace!(
+                    "Block {block_number} has unrecognised flag bits set: {#x}",
+                    block.flags.unrecognised
+                );
+            }
+
+            if let bpv7::BlockType::Unrecognised(value) = &block.block_type {
+                if value <= 191 {
+                    trace!("Extension block {block_number} uses unrecognised type code {value}");
+                }
+
                 if block.flags.report_on_failure {
                     // Only report once!
                     if !unsupported {

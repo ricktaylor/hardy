@@ -1,5 +1,3 @@
-use super::*;
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BlockType {
     Primary,
@@ -9,7 +7,7 @@ pub enum BlockType {
     HopCount,
     BlockIntegrity,
     BlockSecurity,
-    Private(u64),
+    Unrecognised(u64),
 }
 
 impl From<BlockType> for u64 {
@@ -22,7 +20,7 @@ impl From<BlockType> for u64 {
             BlockType::HopCount => 10,
             BlockType::BlockIntegrity => 11,
             BlockType::BlockSecurity => 12,
-            BlockType::Private(v) => v,
+            BlockType::Unrecognised(v) => v,
         }
     }
 }
@@ -37,12 +35,7 @@ impl From<u64> for BlockType {
             10 => BlockType::HopCount,
             11 => BlockType::BlockIntegrity,
             12 => BlockType::BlockSecurity,
-            _ => {
-                if value <= 191 {
-                    trace!("Extension block uses unassigned type code {value}");
-                }
-                BlockType::Private(value)
-            }
+            value => BlockType::Unrecognised(value),
         }
     }
 }

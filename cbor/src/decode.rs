@@ -131,9 +131,10 @@ pub struct Sequence<'a, const D: usize> {
     data: &'a [u8],
     count: Option<usize>,
     offset: &'a mut usize,
-    idx: usize,
+    parsed: usize,
 }
 
+pub type Structure<'a> = Sequence<'a, 0>;
 pub type Array<'a> = Sequence<'a, 1>;
 pub type Map<'a> = Sequence<'a, 2>;
 
@@ -143,7 +144,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
             data,
             count,
             offset,
-            idx: 0,
+            parsed: 0,
         }
     }
 
@@ -157,23 +158,24 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     fn check_for_end(&mut self) -> Result<bool, Error> {
         if let Some(count) = self.count {
-            match self.idx.cmp(&count) {
-                std::cmp::Ordering::Greater => Ok(true),
-                std::cmp::Ordering::Equal => {
-                    self.idx += 1;
-                    Ok(true)
-                }
-                _ => Ok(false),
+            if self.parsed >= count {
+                Ok(true)
+            } else {
+                Ok(false)
             }
         } else if *self.offset >= self.data.len() {
-            Err(Error::NotEnoughData)
-        } else if self.data[*self.offset] == 0xFF {
-            if self.idx % D == 1 {
+            if D == 0 && *self.offset == self.data.len() {
+                self.count = Some(self.parsed);
+                Ok(true)
+            } else {
+                Err(Error::NotEnoughData)
+            }
+        } else if D > 0 && self.data[*self.offset] == 0xFF {
+            if self.parsed % D == 1 {
                 Err(Error::PartialMap)
             } else {
-                self.count = Some(self.idx);
-                self.idx += 1;
                 *self.offset += 1;
+                self.count = Some(self.parsed);
                 Ok(true)
             }
         } else {
@@ -200,28 +202,25 @@ impl<'a, const D: usize> Sequence<'a, D> {
         Ok(())
     }
 
-    pub fn skip_value(
-        &mut self,
-        max_recursion: usize,
-    ) -> Result<Option<(usize, bool, usize)>, Error> {
-        self.try_parse_value(|mut value, start, mut shortest, tags| {
-            shortest = value.skip(max_recursion)? && shortest && tags.is_empty();
-            Ok((start, shortest))
+    pub fn skip_value(&mut self, max_recursion: usize) -> Result<Option<(bool, usize)>, Error> {
+        self.try_parse_value(|mut value, shortest, tags| {
+            value
+                .skip(max_recursion)
+                .map(|s| s && shortest && tags.is_empty())
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
     }
 
     pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<bool, Error> {
         let mut shortest = true;
         while self
-            .try_parse_value(|mut value, _, s, tags| {
+            .try_parse_value(|mut value, s, tags| {
                 shortest = value.skip(max_recursion)? && shortest && s && tags.is_empty();
                 Ok::<_, Error>(())
             })?
             .is_some()
         {
             if D == 2 {
-                self.parse_value(|mut value, _, s, tags| {
+                self.parse_value(|mut value, s, tags| {
                     shortest = value.skip(max_recursion)? && shortest && s && tags.is_empty();
                     Ok::<_, Error>(())
                 })?;
@@ -232,7 +231,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
     where
-        F: FnOnce(Value, usize, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
         // Check for end of array
@@ -242,10 +241,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
             // Parse sub-item
             let item_start = *self.offset;
             let r = try_parse_value(&self.data[item_start..], |value, shortest, tags| {
-                f(value, item_start, shortest, tags)
+                f(value, shortest, tags)
             });
             if let Ok(Some((_, len))) = r {
-                self.idx += 1;
+                self.parsed += 1;
                 *self.offset += len;
             }
             r
@@ -255,7 +254,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     #[inline]
     pub fn parse_value<T, F, E>(&mut self, f: F) -> Result<(T, usize), E>
     where
-        F: FnOnce(Value, usize, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_value(f)?.ok_or(Error::NotEnoughData.into())
@@ -273,7 +272,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
             // Parse sub-item
             match T::try_from_cbor(&self.data[*self.offset..])? {
                 Some((value, _, len)) => {
-                    self.idx += 1;
+                    self.parsed += 1;
                     *self.offset += len;
                     Ok(Some(value))
                 }
@@ -292,11 +291,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn try_parse_array<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
     where
-        F: FnOnce(&mut Array, usize, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
-        self.try_parse_value(|value, start, shortest, tags| match value {
-            Value::Array(a) => f(a, start, shortest, tags),
+        self.try_parse_value(|value, shortest, tags| match value {
+            Value::Array(a) => f(a, shortest, tags),
             _ => Err(
                 Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into(),
             ),
@@ -305,7 +304,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn parse_array<T, F, E>(&mut self, f: F) -> Result<(T, usize), E>
     where
-        F: FnOnce(&mut Array, usize, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_array(f)?.ok_or(Error::NotEnoughData.into())
@@ -313,11 +312,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn try_parse_map<T, F, E>(&mut self, f: F) -> Result<Option<(T, usize)>, E>
     where
-        F: FnOnce(&mut Map, usize, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
-        self.try_parse_value(|value, start, shortest, tags| match value {
-            Value::Map(m) => f(m, start, shortest, tags),
+        self.try_parse_value(|value, shortest, tags| match value {
+            Value::Map(m) => f(m, shortest, tags),
             _ => Err(
                 Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into(),
             ),
@@ -326,7 +325,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
 
     pub fn parse_map<T, F, E>(&mut self, f: F) -> Result<(T, usize), E>
     where
-        F: FnOnce(&mut Map, usize, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_map(f)?.ok_or(Error::NotEnoughData.into())
@@ -386,28 +385,10 @@ fn sequence_debug_fmt<const D: usize>(
     if max_recursion == 0 {
         return Err(Error::MaxRecursion.into());
     }
-    if D == 1 {
+    if D == 2 {
         let mut items = Vec::new();
         loop {
-            match sequence.try_parse_value(|value, _, shortest, tags| {
-                debug_fmt(value, shortest, tags, max_recursion - 1)
-            }) {
-                Ok(None) => break Ok(SequenceDebugInfo::Array(items)),
-                Err(e) => {
-                    let item = match e {
-                        DebugError::Decode(e) => SequenceDebugInfo::Value(format!("<Error: {e}>")),
-                        DebugError::Rollup(item) => item,
-                    };
-                    items.push(item);
-                    break Err(DebugError::Rollup(SequenceDebugInfo::Array(items)));
-                }
-                Ok(Some((item, _))) => items.push(item),
-            }
-        }
-    } else {
-        let mut items = Vec::new();
-        loop {
-            match sequence.try_parse_value(|value, _, shortest, tags| {
+            match sequence.try_parse_value(|value, shortest, tags| {
                 debug_fmt(value, shortest, tags, max_recursion - 1)
             }) {
                 Ok(None) => break Ok(SequenceDebugInfo::Map(items)),
@@ -420,7 +401,7 @@ fn sequence_debug_fmt<const D: usize>(
                     break Err(DebugError::Rollup(SequenceDebugInfo::Map(items)));
                 }
                 Ok(Some((key, _))) => {
-                    match sequence.parse_value(|value, _, shortest, tags| {
+                    match sequence.parse_value(|value, shortest, tags| {
                         debug_fmt(value, shortest, tags, max_recursion - 1)
                     }) {
                         Ok((value, _)) => items.push((key, value)),
@@ -438,6 +419,24 @@ fn sequence_debug_fmt<const D: usize>(
                 }
             }
         }
+    } else {
+        let mut items = Vec::new();
+        loop {
+            match sequence.try_parse_value(|value, shortest, tags| {
+                debug_fmt(value, shortest, tags, max_recursion - 1)
+            }) {
+                Ok(None) => break Ok(SequenceDebugInfo::Array(items)),
+                Err(e) => {
+                    let item = match e {
+                        DebugError::Decode(e) => SequenceDebugInfo::Value(format!("<Error: {e}>")),
+                        DebugError::Rollup(item) => item,
+                    };
+                    items.push(item);
+                    break Err(DebugError::Rollup(SequenceDebugInfo::Array(items)));
+                }
+                Ok(Some((item, _))) => items.push(item),
+            }
+        }
     }
 }
 
@@ -449,7 +448,7 @@ impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
                 data: &self.data[*self.offset..],
                 count: self.count,
                 offset: &mut offset,
-                idx: self.idx,
+                parsed: self.parsed,
             };
 
             match sequence_debug_fmt(&mut self_cloned, 16) {
@@ -731,6 +730,30 @@ where
     E: From<Error>,
 {
     try_parse_value(data, f)?.ok_or(Error::NotEnoughData.into())
+}
+
+pub fn try_parse_structure<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
+where
+    F: FnOnce(&mut Structure) -> Result<T, E>,
+    E: From<Error>,
+{
+    if data.is_empty() {
+        return Ok(None);
+    }
+
+    let mut offset = 0;
+    let mut s = Structure::new(data, None, &mut offset);
+    let r = f(&mut s)?;
+    s.complete().map(|_| Some((r, offset))).map_err(Into::into)
+}
+
+#[inline]
+pub fn parse_structure<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
+where
+    F: FnOnce(&mut Structure) -> Result<T, E>,
+    E: From<Error>,
+{
+    try_parse_structure(data, f)?.ok_or(Error::NotEnoughData.into())
 }
 
 pub fn try_parse_array<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
@@ -1035,5 +1058,31 @@ where
         T::try_from_cbor(data).map(|o| {
             o.map(|(value, shortest, length)| ((value, shortest, length), shortest, length))
         })
+    }
+}
+
+impl<T> FromCbor for (T, bool)
+where
+    T: FromCbor,
+    T::Error: From<self::Error>,
+{
+    type Error = T::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        T::try_from_cbor(data)
+            .map(|o| o.map(|(value, shortest, length)| ((value, shortest), shortest, length)))
+    }
+}
+
+impl<T> FromCbor for (T, usize)
+where
+    T: FromCbor,
+    T::Error: From<self::Error>,
+{
+    type Error = T::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        T::try_from_cbor(data)
+            .map(|o| o.map(|(value, shortest, length)| ((value, length), shortest, length)))
     }
 }

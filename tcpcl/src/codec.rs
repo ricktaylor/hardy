@@ -121,10 +121,7 @@ impl SessionInitMessage {
                 // Not enough data to read node id
                 return Ok(None);
             }
-            Some(
-                String::from_utf8(src_cloned.split_to(node_id_length as usize).into())?
-                    .parse::<bpv7::Eid>()?,
-            )
+            Some(String::from_utf8(src_cloned.split_to(node_id_length as usize).into())?.parse()?)
         } else {
             None
         };

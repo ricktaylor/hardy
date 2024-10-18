@@ -1,4 +1,3 @@
-use super::*;
 use std::ops::Range;
 use thiserror::Error;
 
@@ -7,14 +6,11 @@ pub struct Span(Range<usize>);
 
 impl Span {
     pub fn new(start: usize, end: usize) -> Self {
-        Self(Range { start, end })
+        Self(start..end)
     }
 
     pub fn subset(&self, l: usize) -> Self {
-        Self(Range {
-            start: self.0.start,
-            end: self.0.start + l,
-        })
+        Self(self.0.start..self.0.start + l)
     }
 
     pub fn inc(&mut self, i: usize) {

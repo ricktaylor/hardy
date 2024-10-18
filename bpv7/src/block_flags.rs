@@ -1,16 +1,15 @@
-use super::*;
-
 #[derive(Default, Debug, Copy, Clone)]
 pub struct BlockFlags {
     pub must_replicate: bool,
     pub report_on_failure: bool,
     pub delete_bundle_on_failure: bool,
     pub delete_block_on_failure: bool,
+    pub unrecognised: u64,
 }
 
 impl From<BlockFlags> for u64 {
     fn from(value: BlockFlags) -> Self {
-        let mut flags: u64 = 0;
+        let mut flags = value.unrecognised;
         if value.must_replicate {
             flags |= 1 << 0;
         }
@@ -29,7 +28,11 @@ impl From<BlockFlags> for u64 {
 
 impl From<u64> for BlockFlags {
     fn from(value: u64) -> Self {
-        let mut flags = Self::default();
+        let mut flags = Self {
+            unrecognised: value & !((2 ^ 6) - 1),
+            ..Default::default()
+        };
+
         for b in 0..=6 {
             if value & (1 << b) != 0 {
                 match b {
@@ -37,12 +40,11 @@ impl From<u64> for BlockFlags {
                     1 => flags.report_on_failure = true,
                     2 => flags.delete_bundle_on_failure = true,
                     4 => flags.delete_block_on_failure = true,
-                    b => trace!("Parsing bundle block with reserved flag bit {b} set"),
+                    b => {
+                        flags.unrecognised |= 1 << b;
+                    }
                 }
             }
-        }
-        if value & !((2 ^ 6) - 1) != 0 {
-            trace!("Parsing bundle block with unassigned flag bits set: {value:#x}");
         }
         flags
     }

@@ -119,7 +119,7 @@ impl std::str::FromStr for RouteLine {
         let pattern = match parts.next() {
             None => return Ok(Self(None)),
             Some(s) if s.starts_with('#') => return Ok(Self(None)),
-            Some(s) => s.parse::<bpv7::EidPattern>()?,
+            Some(s) => s.parse()?,
         };
 
         let parts = parse_args(
@@ -152,7 +152,7 @@ impl std::str::FromStr for RouteLine {
             pattern,
             StaticRoute {
                 priority: if let Some(priority) = parts.get("priority").unwrap_or(&None) {
-                    Some(priority.parse::<u32>()?)
+                    Some(priority.parse()?)
                 } else {
                     None
                 },
@@ -203,7 +203,7 @@ pub async fn load_routes(
     let mut lines = BufReader::new(file).lines();
     let mut idx: usize = 1;
     while let Some(line) = lines.next_line().await? {
-        match line.parse::<RouteLine>() {
+        match line.parse() {
             Err(e) if ignore_errors => error!(
                 "Failed to parse '{line}' at line {idx} in static routes file '{}': {}",
                 routes_file.to_string_lossy(),

@@ -133,15 +133,15 @@ fn parse_status_assertion(
     a: &mut cbor::decode::Array,
     shortest: &mut bool,
 ) -> Result<Option<StatusAssertion>, StatusReportError> {
-    a.parse_array(|a, _, s, tags| {
+    a.parse_array(|a, s, tags| {
         *shortest = *shortest && s && tags.is_empty() && a.is_definite();
 
-        let (status, s, _) = a.parse::<(bool, bool, usize)>().map_field_err("Status")?;
+        let (status, s) = a.parse().map_field_err("Status")?;
         *shortest = *shortest && s;
 
         if status {
-            if let Some((timestamp, s, _)) = a
-                .try_parse::<(DtnTime, bool, _)>()
+            if let Some((timestamp, s)) = a
+                .try_parse::<(DtnTime, bool)>()
                 .map_field_err("Timestamp")?
             {
                 *shortest = *shortest && s;
@@ -209,7 +209,7 @@ impl cbor::decode::FromCbor for BundleStatusReport {
             shortest = shortest && tags.is_empty() && a.is_definite();
 
             let mut report = Self::default();
-            a.parse_array(|a, _, s, tags| {
+            a.parse_array(|a, s, tags| {
                 shortest = shortest && s && tags.is_empty() && a.is_definite();
 
                 report.received =
@@ -225,17 +225,14 @@ impl cbor::decode::FromCbor for BundleStatusReport {
             })
             .map_field_err("Bundle Status Information")?;
 
-            let (reason, s, _) = a.parse::<(u64, bool, usize)>().map_field_err("Reason")?;
-            shortest = shortest && s;
-
+            let (reason, s) = a.parse::<(u64, bool)>().map_field_err("Reason")?;
             report.reason = reason.try_into()?;
-
-            let (source, s, _) = a.parse::<(Eid, bool, usize)>().map_field_err("Source")?;
             shortest = shortest && s;
 
-            let (timestamp, s, _) = a
-                .parse::<(CreationTimestamp, bool, usize)>()
-                .map_field_err("Timestamp")?;
+            let (source, s) = a.parse().map_field_err("Source")?;
+            shortest = shortest && s;
+
+            let (timestamp, s) = a.parse().map_field_err("Timestamp")?;
             shortest = shortest && s;
 
             report.bundle_id = BundleId {
@@ -277,17 +274,13 @@ impl cbor::decode::FromCbor for AdministrativeRecord {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
-            let (record_type, s, _) = a
-                .parse::<(u64, bool, usize)>()
-                .map_field_err("Record Type Code")?;
+            let (record_type, s) = a.parse().map_field_err("Record Type Code")?;
 
             shortest = shortest && !tags.is_empty() && a.is_definite() && s;
 
             match record_type {
                 1u64 => {
-                    let (r, s, _) = a
-                        .parse::<(BundleStatusReport, bool, usize)>()
-                        .map_field_err("Bundle Status Report")?;
+                    let (r, s) = a.parse().map_field_err("Bundle Status Report")?;
                     Ok((Self::BundleStatusReport(r), shortest && s))
                 }
                 v => Err(StatusReportError::UnknownAdminRecordType(v)),

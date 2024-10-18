@@ -72,34 +72,40 @@ impl cbor::decode::FromCbor for BlockWithNumber {
         cbor::decode::try_parse_array(data, |block, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && block.is_definite();
 
-            let (block_type, s, _) = block
-                .parse::<(u64, bool, usize)>()
-                .map(|(v, s, l)| (v.into(), s, l))
+            let (block_type, s) = block
+                .parse::<(u64, bool)>()
+                .map(|(v, s)| (v.into(), s))
                 .map_field_err("Block type code")?;
             shortest = shortest && s;
 
-            let (block_number, s, _) = block
-                .parse::<(u64, bool, usize)>()
-                .map_field_err("Block number")?;
-            shortest = shortest && s;
-            if block_number == 0 {
-                return Err(BundleError::InvalidBlockNumber);
+            let (block_number, s) = block.parse().map_field_err("Block number")?;
+            match block_number {
+                0 => return Err(BundleError::InvalidBlockNumber),
+                1 => {
+                    if block_type != BlockType::Payload {
+                        return Err(BundleError::InvalidBlockNumber);
+                    }
+                }
+                _ => {
+                    if block_type == BlockType::Payload {
+                        return Err(BundleError::InvalidPayloadBlockNumber);
+                    }
+                }
             }
+            shortest = shortest && s;
 
-            let (flags, s, _) = block
-                .parse::<(u64, bool, usize)>()
-                .map(|(v, s, l)| (v.into(), s, l))
+            let (flags, s) = block
+                .parse::<(u64, bool)>()
+                .map(|(v, s)| (v.into(), s))
                 .map_field_err("Block processing control flags")?;
             shortest = shortest && s;
 
-            let (crc_type, s, _) = block
-                .parse::<(CrcType, bool, usize)>()
-                .map_field_err("CRC type")?;
+            let (crc_type, s) = block.parse().map_field_err("CRC type")?;
             shortest = shortest && s;
 
             // Stash start of data
             let payload_offset = block.offset();
-            block.parse_value(|value, _, s, tags| {
+            block.parse_value(|value, s, tags| {
                 shortest = shortest && s;
                 if shortest {
                     // Appendix B of RFC9171

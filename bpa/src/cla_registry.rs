@@ -144,7 +144,7 @@ impl ClaRegistry {
 
         let neighbour = request
             .neighbour
-            .parse::<bpv7::EidPattern>()
+            .parse()
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         fib.add(
@@ -178,7 +178,7 @@ impl ClaRegistry {
 
         let neighbour = request
             .neighbour
-            .parse::<bpv7::EidPattern>()
+            .parse()
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         if fib
