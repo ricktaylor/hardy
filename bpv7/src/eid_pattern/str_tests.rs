@@ -1,5 +1,4 @@
 use super::*;
-use std::ops::RangeInclusive;
 
 #[test]
 fn tests() {
@@ -32,7 +31,7 @@ fn tests() {
         IpnPatternItem {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
-            service_number: IpnPattern::Range(vec![IpnInterval::Range(RangeInclusive::new(0, 19))]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
         },
     );
     ipn_match(
@@ -40,9 +39,7 @@ fn tests() {
         IpnPatternItem {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
-            service_number: IpnPattern::Range(vec![IpnInterval::Range(RangeInclusive::new(
-                10, 19,
-            ))]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(10..=19)]),
         },
     );
     ipn_match(
@@ -51,8 +48,8 @@ fn tests() {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
             service_number: IpnPattern::Range(vec![
-                IpnInterval::Range(RangeInclusive::new(0, 4)),
-                IpnInterval::Range(RangeInclusive::new(10, 19)),
+                IpnInterval::Range(0..=4),
+                IpnInterval::Range(10..=19),
             ]),
         },
     );
@@ -62,8 +59,8 @@ fn tests() {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
             service_number: IpnPattern::Range(vec![
-                IpnInterval::Range(RangeInclusive::new(0, 4)),
-                IpnInterval::Range(RangeInclusive::new(10, 19)),
+                IpnInterval::Range(0..=4),
+                IpnInterval::Range(10..=19),
             ]),
         },
     );
@@ -72,7 +69,7 @@ fn tests() {
         IpnPatternItem {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
-            service_number: IpnPattern::Range(vec![IpnInterval::Range(RangeInclusive::new(0, 19))]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
         },
     );
     ipn_match(
@@ -80,7 +77,7 @@ fn tests() {
         IpnPatternItem {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
-            service_number: IpnPattern::Range(vec![IpnInterval::Range(RangeInclusive::new(0, 19))]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
         },
     );
     ipn_match(
@@ -88,7 +85,7 @@ fn tests() {
         IpnPatternItem {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
             node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
-            service_number: IpnPattern::Range(vec![IpnInterval::Range(RangeInclusive::new(0, 19))]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
         },
     );
     assert_eq!(

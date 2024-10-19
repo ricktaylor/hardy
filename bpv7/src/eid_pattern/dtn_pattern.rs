@@ -290,25 +290,24 @@ impl PatternMatch {
     }
 
     fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if s.starts_with('[') {
-            if !s.ends_with(']') {
-                span.offset(s.chars().count() - 1);
-                Err(EidPatternError::Expecting("]".to_string(), span.subset(1)))
-            } else if s.len() == 2 {
-                Err(EidPatternError::ExpectingRegEx(
-                    span.subset(s.chars().count()),
-                ))
-            } else {
-                span.inc(1);
+        if let Some(s) = s.strip_prefix('[') {
+            if let Some(s) = s.strip_suffix(']') {
+                if s.is_empty() {
+                    Err(EidPatternError::ExpectingRegEx(span.subset(2)))
+                } else {
+                    span.inc(1);
+                    span.subset(s.chars().count());
 
-                regex::Regex::new(&url_decode(&s[1..], &mut span.clone())?)
-                    .map_err(|e| {
-                        EidPatternError::InvalidRegEx(e, span.subset(s.chars().count() - 1))
-                    })
-                    .map(|r| {
-                        span.inc(s.chars().count() - 1);
-                        PatternMatch::Regex(r)
-                    })
+                    regex::Regex::new(&url_decode(s, span)?)
+                        .map_err(|e| EidPatternError::InvalidRegEx(e, span.clone()))
+                        .map(|r| {
+                            span.inc(1);
+                            PatternMatch::Regex(r)
+                        })
+                }
+            } else {
+                span.offset(s.chars().count());
+                Err(EidPatternError::Expecting("]".to_string(), span.subset(1)))
             }
         } else {
             Ok(PatternMatch::Exact(url_decode(s, span)?))

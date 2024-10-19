@@ -149,15 +149,15 @@ impl IpnPattern {
                     Ok(IpnPattern::Range(vec![IpnInterval::Number(v)]))
                 }
                 Some('[') => {
-                    if !s.ends_with(']') {
+                    let Some(s) = s[1..].strip_suffix(']') else {
                         span.offset(s.chars().count() - 1);
                         return Err(EidPatternError::Expecting("]".to_string(), span.subset(1)));
-                    }
+                    };
+                    span.inc(1);
 
                     // Parse intervals
-                    let mut intervals = s[1..].split(',').try_fold(Vec::new(), |mut v, s| {
+                    let mut intervals = s.split(',').try_fold(Vec::new(), |mut v, s| {
                         v.push(IpnInterval::parse(s, span)?);
-                        span.inc(1);
                         Ok::<Vec<IpnInterval>, EidPatternError>(v)
                     })?;
 
@@ -181,7 +181,7 @@ impl IpnPattern {
                                 (IpnInterval::Number(n1), IpnInterval::Number(n2))
                                     if *n2 == n1 + 1 =>
                                 {
-                                    curr = IpnInterval::Range(RangeInclusive::new(*n1, *n2));
+                                    curr = IpnInterval::Range(*n1..=*n2);
                                 }
                                 (IpnInterval::Number(n), IpnInterval::Range(r))
                                     if n == r.start() =>
@@ -191,22 +191,19 @@ impl IpnPattern {
                                 (IpnInterval::Number(n), IpnInterval::Range(r))
                                     if n + 1 == *r.start() =>
                                 {
-                                    curr = IpnInterval::Range(RangeInclusive::new(*n, *r.end()));
+                                    curr = IpnInterval::Range(*n..=*r.end());
                                 }
                                 (IpnInterval::Range(r), IpnInterval::Number(n))
                                     if r.contains(n) => {}
                                 (IpnInterval::Range(r), IpnInterval::Number(n))
                                     if r.end() + 1 == *n =>
                                 {
-                                    curr = IpnInterval::Range(RangeInclusive::new(*r.start(), *n));
+                                    curr = IpnInterval::Range(*r.start()..=*n);
                                 }
                                 (IpnInterval::Range(r1), IpnInterval::Range(r2))
                                     if *r2.start() <= r1.end() + 1 =>
                                 {
-                                    curr = IpnInterval::Range(RangeInclusive::new(
-                                        *r1.start(),
-                                        *r2.end(),
-                                    ));
+                                    curr = IpnInterval::Range(*r1.start()..=*r2.end());
                                 }
                                 _ => {
                                     intervals.push(curr);
@@ -317,7 +314,7 @@ impl IpnInterval {
                 Ok(IpnInterval::Number(start))
             } else {
                 // Inclusive range!
-                Ok(IpnInterval::Range(RangeInclusive::new(start, end)))
+                Ok(IpnInterval::Range(start..=end))
             }
         } else {
             Ok(IpnInterval::Number(Self::parse_number(s, span)?))
