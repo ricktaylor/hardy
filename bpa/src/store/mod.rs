@@ -12,7 +12,7 @@ mod metadata_mem;
 mod bundle_mem;
 
 fn hash(data: &[u8]) -> Arc<[u8]> {
-    Arc::from(sha2::Sha256::digest(data).as_slice())
+    sha2::Sha256::digest(data).to_vec().into()
 }
 
 struct Config {
@@ -350,7 +350,7 @@ impl Store {
 
                 let hash = Some(hash(&data));
                 let new_storage_name = bundle_storage
-                    .store(data)
+                    .store(data.into())
                     .await
                     .trace_expect("Failed to store rewritten canonical bundle");
 

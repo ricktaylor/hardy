@@ -19,7 +19,6 @@ impl Dispatcher {
 
         /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
-        let mut data = None;
         let mut previous = false;
         let mut retries = 0;
         let mut destination = bundle.bundle.destination.clone();
@@ -48,7 +47,6 @@ impl Dispatcher {
                 Ok(action) => action,
             };
 
-            let mut data_is_time_sensitive = false;
             let mut congestion_wait = None;
 
             // For each CLA
@@ -56,21 +54,16 @@ impl Dispatcher {
                 // Find the named CLA
                 if let Some(e) = self.cla_registry.find(endpoint.handle).await {
                     // Get bundle data from store, now we know we need it!
-                    if data.is_none() {
-                        let Some(source_data) = self.load_data(bundle).await? else {
-                            // Bundle data was deleted sometime during processing
-                            return Ok(DispatchResult::Done);
-                        };
 
-                        // Increment Hop Count, etc...
-                        (data, data_is_time_sensitive) = self
-                            .update_extension_blocks(bundle, (*source_data).as_ref())
-                            .map(|(data, data_is_time_sensitive)| {
-                                (Some(data), data_is_time_sensitive)
-                            })?;
-                    }
+                    let Some(source_data) = self.load_data(bundle).await? else {
+                        // Bundle data was deleted sometime during processing
+                        return Ok(DispatchResult::Done);
+                    };
 
-                    match e.forward_bundle(&destination, data.clone().unwrap()).await {
+                    // Increment Hop Count, etc...
+                    let data = self.update_extension_blocks(bundle, (*source_data).as_ref())?;
+
+                    match e.forward_bundle(&destination, data.into()).await {
                         Ok(cla_registry::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
                             return self
@@ -158,11 +151,6 @@ impl Dispatcher {
                     return Ok(DispatchResult::Done);
                 }
             }
-
-            if data_is_time_sensitive {
-                // Force a reload of current data, because Bundle Age may have changed
-                data = None;
-            }
         }
     }
 
@@ -170,7 +158,7 @@ impl Dispatcher {
         &self,
         bundle: &metadata::Bundle,
         data: &[u8],
-    ) -> Result<(Box<[u8]>, bool), Error> {
+    ) -> Result<Vec<u8>, Error> {
         let mut editor = bpv7::Editor::new(&bundle.bundle);
 
         // Remove unrecognized blocks we are supposed to
@@ -203,7 +191,6 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        let mut is_time_sensitive = false;
         if bundle.bundle.age.is_some() || bundle.bundle.id.timestamp.creation_time.is_none() {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
@@ -215,15 +202,9 @@ impl Dispatcher {
                 .replace_extension_block(bpv7::BlockType::BundleAge)
                 .data(cbor::encode::emit(bundle_age))
                 .build();
-
-            // If we have a bundle age, then we are time sensitive
-            is_time_sensitive = true;
         }
 
-        editor
-            .build(data)
-            .map(|(_, data)| (data, is_time_sensitive))
-            .map_err(Into::into)
+        editor.build(data).map(|(_, data)| data).map_err(Into::into)
     }
 
     #[instrument(skip(self))]

@@ -28,7 +28,7 @@ pub mod bpa {
             Self {}
         }
 
-        pub async fn send(&self, _bundle: Vec<u8>) -> Result<(), tonic::Status> {
+        pub async fn send(&self, _bundle: tokio_util::bytes::Bytes) -> Result<(), tonic::Status> {
             Ok(())
         }
     }

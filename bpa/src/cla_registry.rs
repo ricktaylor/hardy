@@ -4,6 +4,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::bytes::Bytes;
 
 type Channel = Arc<Mutex<cla_client::ClaClient<tonic::transport::Channel>>>;
 
@@ -144,7 +145,7 @@ impl ClaRegistry {
 
         let neighbour = request
             .neighbour
-            .parse()
+            .parse::<bpv7::EidPattern>()
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         fib.add(
@@ -178,7 +179,7 @@ impl ClaRegistry {
 
         let neighbour = request
             .neighbour
-            .parse()
+            .parse::<bpv7::EidPattern>()
             .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?;
 
         if fib
@@ -204,7 +205,7 @@ impl Endpoint {
     pub async fn forward_bundle(
         &self,
         destination: &bpv7::Eid,
-        bundle: Box<[u8]>,
+        bundle: Bytes,
     ) -> Result<ForwardBundleResult, Error> {
         let r = self
             .inner
@@ -213,7 +214,7 @@ impl Endpoint {
             .forward_bundle(tonic::Request::new(ForwardBundleRequest {
                 handle: self.handle,
                 destination: destination.to_string(),
-                bundle: Vec::from(bundle),
+                bundle,
             }))
             .await?
             .into_inner();

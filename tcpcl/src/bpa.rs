@@ -3,6 +3,7 @@ use hardy_proto::cla::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_util::bytes::Bytes;
 use utils::settings;
 
 type Channel = Arc<Mutex<cla_sink_client::ClaSinkClient<tonic::transport::Channel>>>;
@@ -78,7 +79,7 @@ impl Bpa {
         }
     }
 
-    pub async fn send(&self, bundle: Vec<u8>) -> Result<(), tonic::Status> {
+    pub async fn send(&self, bundle: Bytes) -> Result<(), tonic::Status> {
         self.endpoint
             .as_ref()
             .trace_expect("Called send on disconnected BPA endpoint")
@@ -125,13 +126,13 @@ impl BpaEndpoint {
         }
     }
 
-    pub async fn send(&self, bundle: Vec<u8>) -> Result<(), tonic::Status> {
+    pub async fn send(&self, bundle: Bytes) -> Result<(), tonic::Status> {
         self.channel
             .lock()
             .await
             .receive_bundle(ReceiveBundleRequest {
                 handle: self.handle,
-                source: Vec::new(),
+                source: Bytes::new(),
                 bundle,
             })
             .await

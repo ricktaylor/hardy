@@ -196,10 +196,10 @@ fn rfc_tests() {
         )
         .unwrap()
     );
-    assert!(parse::<Vec<u8>>(&hex!("40")).unwrap().is_empty());
+    assert!(parse::<Box<[u8]>>(&hex!("40")).unwrap().is_empty());
     assert_eq!(
-        hex!("01020304").to_vec(),
-        parse::<Vec<u8>>(&hex!("4401020304")).unwrap()
+        hex!("01020304"),
+        parse::<Box<[u8]>>(&hex!("4401020304")).unwrap().as_ref()
     );
     assert!(parse::<String>(&hex!("60")).unwrap().is_empty());
     assert_eq!("a", &parse::<String>(&hex!("6161")).unwrap());

@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
         Ok((ValidBundle::Valid(mut bundle), true)) => {
             let new_data = bundle.canonicalise(data).unwrap();
 
-            assert_eq!(data, new_data.as_ref());
+            assert_eq!(data, &new_data);
         }
         Ok((ValidBundle::Valid(mut bundle), false)) => {
             let data = bundle.canonicalise(data).unwrap();

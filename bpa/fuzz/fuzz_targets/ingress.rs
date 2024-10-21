@@ -84,7 +84,7 @@ fn test_ingress(data: &[u8]) {
         let metrics = RT.get().unwrap().metrics();
         let cur_tasks = metrics.num_alive_tasks();
 
-        _ = dispatcher.receive_bundle(data.into()).await;
+        _ = dispatcher.receive_bundle(data.to_vec().into()).await;
 
         // This is horrible, but ensures we actually reach the async parts...
         while metrics.num_alive_tasks() > cur_tasks {

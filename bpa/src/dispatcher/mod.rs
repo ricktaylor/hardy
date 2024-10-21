@@ -9,12 +9,12 @@ mod local;
 mod report;
 
 use super::*;
-use hardy_cbor as cbor;
-use std::sync::Arc;
-use utils::cancel::cancellable_sleep;
-
 use dispatch::DispatchResult;
+use hardy_cbor as cbor;
 pub use local::SendRequest;
+use std::sync::Arc;
+use tokio_util::bytes::Bytes;
+use utils::cancel::cancellable_sleep;
 
 pub struct Dispatcher {
     config: self::config::Config,

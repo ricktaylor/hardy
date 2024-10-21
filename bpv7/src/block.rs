@@ -9,11 +9,10 @@ pub struct Block {
     pub data_start: usize,
     pub payload_offset: usize,
     pub data_len: usize,
-    pub is_bpsec_target: bool,
 }
 
 impl Block {
-    pub fn block_data(&self, data: &[u8]) -> Vec<u8> {
+    pub fn block_data(&self, data: &[u8]) -> Box<[u8]> {
         cbor::decode::parse(
             &data[(self.data_start + self.payload_offset)..(self.data_start + self.data_len)],
         )
@@ -146,7 +145,6 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                         data_start: 0,
                         payload_offset,
                         data_len: 0,
-                        is_bpsec_target: false,
                     },
                 },
                 shortest,

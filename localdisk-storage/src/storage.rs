@@ -145,7 +145,12 @@ fn walk_dirs(
 
                     if tx
                         .blocking_send((
-                            Arc::from(entry.path().strip_prefix(root).unwrap().to_string_lossy()),
+                            entry
+                                .path()
+                                .strip_prefix(root)
+                                .unwrap()
+                                .to_string_lossy()
+                                .into(),
                             received_at,
                         ))
                         .is_err()
@@ -311,11 +316,10 @@ impl BundleStorage for Storage {
         .await
         .trace_expect("Failed to spawn write_atomic thread")?;
 
-        Ok(Arc::from(
-            storage_name
-                .strip_prefix(&self.store_root)?
-                .to_string_lossy(),
-        ))
+        Ok(storage_name
+            .strip_prefix(&self.store_root)?
+            .to_string_lossy()
+            .into())
     }
 
     #[instrument(skip(self))]

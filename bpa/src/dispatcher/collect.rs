@@ -4,7 +4,7 @@ pub struct CollectResponse {
     pub bundle_id: String,
     pub expiry: time::OffsetDateTime,
     pub app_ack_requested: bool,
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 impl Dispatcher {
@@ -44,7 +44,7 @@ impl Dispatcher {
         // Prepare the response
         let response = CollectResponse {
             bundle_id: bundle.bundle.id.to_key(),
-            data: data.as_ref().as_ref().to_vec(),
+            data: data.as_ref().as_ref().to_vec().into(),
             expiry: bundle.expiry(),
             app_ack_requested: bundle.bundle.flags.app_ack_requested,
         };

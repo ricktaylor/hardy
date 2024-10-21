@@ -180,15 +180,14 @@ fn parse_primary_block(
                     // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
                     valid = false;
                 }
-            } else if flags.is_admin_record {
-                if flags.receipt_report_requested
+            } else if flags.is_admin_record
+                && (flags.receipt_report_requested
                     || flags.forward_report_requested
                     || flags.delivery_report_requested
-                    || flags.delete_report_requested
-                {
-                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                    valid = false;
-                }
+                    || flags.delete_report_requested)
+            {
+                // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
+                valid = false;
             }
 
             Ok((
@@ -293,8 +292,8 @@ impl Bundle {
         let mut seen_previous_node = false;
         let mut seen_bundle_age = false;
         let mut seen_hop_count = false;
-        let mut seen_bpsec = false;
         let mut shortest = true;
+        let mut bpsec_targets = HashSet::new();
 
         for block in self.blocks.values() {
             match &block.block_type {
@@ -335,7 +334,19 @@ impl Bundle {
                     seen_hop_count = true;
                 }
                 BlockType::BlockIntegrity | BlockType::BlockSecurity => {
-                    seen_bpsec = true;
+                    parse_known_block::<bpsec::SecurityBlock>(block, data, &mut shortest)
+                        .and_then(|sb| {
+                            for target in sb.results.keys() {
+                                sb.validate(block, self.blocks.get(target), data)?;
+
+                                // Check uniqueness
+                                if !bpsec_targets.insert((block.block_type, *target)) {
+                                    return Err(bpsec::Error::DuplicateOpTarget.into());
+                                }
+                            }
+                            Ok(())
+                        })
+                        .map_field_err("BPSec extension block")?;
                 }
                 _ => {}
             }
@@ -343,20 +354,6 @@ impl Bundle {
 
         if !seen_bundle_age && self.id.timestamp.creation_time.is_none() {
             return Err(BundleError::MissingBundleAge);
-        }
-
-        // Now check BPSec BIB
-        if seen_bpsec {
-            for block in self.blocks.values() {
-                match &block.block_type {
-                    BlockType::BlockIntegrity | BlockType::BlockSecurity => {
-                        let asb: bpsec::SecurityBlock =
-                            parse_known_block(block, data, &mut shortest)
-                                .map_field_err("BPSec extension block")?;
-                    }
-                    _ => {}
-                }
-            }
         }
 
         Ok(shortest)
@@ -409,14 +406,13 @@ impl Bundle {
                 data_start: offset,
                 payload_offset: 0,
                 data_len: block_data.len(),
-                is_bpsec_target: false,
             },
         );
 
         block_data
     }
 
-    pub fn canonicalise(&mut self, source_data: &[u8]) -> Result<Box<[u8]>, BundleError> {
+    pub fn canonicalise(&mut self, source_data: &[u8]) -> Result<Vec<u8>, BundleError> {
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
@@ -456,14 +452,14 @@ impl Bundle {
                 }
                 BlockType::Unrecognised(_) => block.emit(
                     *block_number,
-                    &cbor::encode::emit(block.block_data(source_data)),
+                    &cbor::encode::emit(block.block_data(source_data).into_vec()),
                     data.len(),
                 ),
                 BlockType::BlockIntegrity | BlockType::BlockSecurity => {
                     //todo!()
                     block.emit(
                         *block_number,
-                        &cbor::encode::emit(block.block_data(source_data)),
+                        &cbor::encode::emit(block.block_data(source_data).into_vec()),
                         data.len(),
                     )
                 }
@@ -479,7 +475,7 @@ impl Bundle {
         // Emit payload block
         let block_data = payload_block.emit(
             1,
-            &cbor::encode::emit(payload_block.block_data(source_data)),
+            &cbor::encode::emit(payload_block.block_data(source_data).into_vec()),
             data.len(),
         );
         data.extend(block_data);
@@ -488,7 +484,7 @@ impl Bundle {
         // End indefinite array
         data.push(0xFF);
 
-        Ok(Box::from(data))
+        Ok(data)
     }
 }
 
@@ -543,7 +539,6 @@ impl cbor::decode::FromCbor for ValidBundle {
                             data_start: block_start,
                             payload_offset: 0,
                             data_len: block_len,
-                            is_bpsec_target: false,
                         },
                     );
 

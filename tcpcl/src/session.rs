@@ -251,11 +251,11 @@ where
         let acknowledged_length = bundle.len() as u64;
 
         if msg.message_flags.end {
-            // Send the bundle to the BPA
-            self.bpa.send(bundle.to_vec()).await?;
-
             // Clear the ingress bundle
-            self.ingress_bundle = None;
+            let bundle = std::mem::take(&mut self.ingress_bundle).unwrap();
+
+            // Send the bundle to the BPA
+            self.bpa.send(bundle.freeze()).await?;
         }
 
         // Acknowledge the transfer
@@ -482,7 +482,7 @@ where
         .await
     }
 
-    async fn send(&mut self, bundle: Vec<u8>) -> Result<SendResult, Error> {
+    async fn send(&mut self, bundle: Bytes) -> Result<SendResult, Error> {
         /* TODO:  We currently report retry-able transfer failures as 'congestion',
          * but we need a configurable fixed delay, but there has to be a better feedback mechanism */
 
@@ -503,7 +503,6 @@ where
                 .map(|_| SendResult::Shutdown(codec::SessionTermReasonCode::ResourceExhaustion));
         }
 
-        let bundle = Bytes::from(bundle.into_boxed_slice());
         loop {
             match self.send_once(bundle.clone()).await? {
                 SendSegmentResult::Ok => return Ok(SendResult::Ok),
@@ -615,7 +614,7 @@ where
 
         // Drain the rcv channel
         while let Some(bundle) = self.rcv.recv().await {
-            self.send(bundle).await?;
+            self.send(bundle.into()).await?;
         }
 
         // Send our SESSION_TERM reply
@@ -672,7 +671,7 @@ where
                         keepalive.saturating_sub(self.last_sent.elapsed()),
                         self.rcv.recv(),
                     ) => match r {
-                        Ok(Some(bundle)) => match self.send(bundle).await? {
+                        Ok(Some(bundle)) => match self.send(bundle.into()).await? {
                             SendResult::Ok => {},
                             SendResult::Terminate(msg) => return self.terminate(msg).await,
                             SendResult::Shutdown(code) => return self.shutdown(code).await,
@@ -697,7 +696,7 @@ where
             loop {
                 tokio::select! {
                     bundle = self.rcv.recv() => match bundle {
-                        Some(bundle) => match self.send(bundle).await? {
+                        Some(bundle) => match self.send(bundle.into()).await? {
                             SendResult::Ok => {},
                             SendResult::Terminate(msg) => return self.terminate(msg).await,
                             SendResult::Shutdown(code) => return self.shutdown(code).await,

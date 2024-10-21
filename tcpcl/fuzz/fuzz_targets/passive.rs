@@ -34,7 +34,7 @@ fn get_addr() -> std::net::SocketAddr {
 }
 
 fn setup() -> tokio::runtime::Runtime {
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();

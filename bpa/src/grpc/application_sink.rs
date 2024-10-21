@@ -53,7 +53,7 @@ impl ApplicationSink for Service {
             source: self.app_registry.find_by_token(&request.token).await?,
             destination: match request
                 .destination
-                .parse()
+                .parse::<bpv7::Eid>()
                 .map_err(|e| Status::from_error(e.into()))?
             {
                 bpv7::Eid::Null => {

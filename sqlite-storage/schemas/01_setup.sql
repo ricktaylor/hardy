@@ -33,7 +33,8 @@ CREATE TABLE bundle_blocks (
     block_num INTEGER NOT NULL,
     block_flags INTEGER NOT NULL,
     block_crc_type INTEGER NOT NULL,
-    data_offset INTEGER NOT NULL,
+    data_start INTEGER NOT NULL,
+    payload_offset INTEGER NOT NULL,
     data_len INTEGER NOT NULL
 ) STRICT;
 

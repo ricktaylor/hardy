@@ -2,7 +2,7 @@ use super::*;
 
 impl Dispatcher {
     #[instrument(skip(self, data))]
-    pub async fn receive_bundle(&self, data: Box<[u8]>) -> Result<(), Error> {
+    pub async fn receive_bundle(&self, data: Bytes) -> Result<(), Error> {
         // Capture received_at as soon as possible
         let received_at = Some(time::OffsetDateTime::now_utc());
 
@@ -20,7 +20,7 @@ impl Dispatcher {
 
         // Parse the bundle
         let (bundle, data) = match cbor::decode::parse(&data)? {
-            (bpv7::ValidBundle::Valid(bundle), true) => (bundle, data),
+            (bpv7::ValidBundle::Valid(bundle), true) => (bundle, data.to_vec()),
             (bpv7::ValidBundle::Valid(mut bundle), false) => {
                 // Rewrite the bundle
                 let data = bundle.canonicalise(&data)?;
@@ -48,7 +48,7 @@ impl Dispatcher {
         };
 
         // Write the bundle data to the store
-        let (storage_name, hash) = self.store.store_data(data).await?;
+        let (storage_name, hash) = self.store.store_data(data.into()).await?;
 
         if let Err(e) = self
             .receive_inner(
@@ -173,7 +173,7 @@ impl Dispatcher {
 
         if bundle.bundle.flags.unrecognised != 0 {
             trace!(
-                "Bundle primary block has unrecognised flag bits set: {#x}",
+                "Bundle primary block has unrecognised flag bits set: {:#x}",
                 bundle.bundle.flags.unrecognised
             );
         }
@@ -229,13 +229,13 @@ impl Dispatcher {
         for (block_number, block) in &bundle.bundle.blocks {
             if block.flags.unrecognised != 0 {
                 trace!(
-                    "Block {block_number} has unrecognised flag bits set: {#x}",
+                    "Block {block_number} has unrecognised flag bits set: {:#x}",
                     block.flags.unrecognised
                 );
             }
 
             if let bpv7::BlockType::Unrecognised(value) = &block.block_type {
-                if value <= 191 {
+                if value <= &191 {
                     trace!("Extension block {block_number} uses unrecognised type code {value}");
                 }
 

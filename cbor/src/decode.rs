@@ -996,12 +996,12 @@ impl FromCbor for bool {
     }
 }
 
-impl FromCbor for Vec<u8> {
+impl FromCbor for Box<[u8]> {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         try_parse_value(data, |value, shortest, tags| match value {
-            Value::Bytes(v, chunked) => Ok((v.to_vec(), shortest && !chunked && tags.is_empty())),
+            Value::Bytes(v, chunked) => Ok((v.into(), shortest && !chunked && tags.is_empty())),
             value => Err(Error::IncorrectType(
                 "Untagged Byte String".to_string(),
                 value.type_name(!tags.is_empty()),

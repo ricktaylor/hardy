@@ -284,7 +284,7 @@ fn decode_hash(
     idx: impl rusqlite::RowIndex,
 ) -> rusqlite::Result<Option<Arc<[u8]>>> {
     match row.get_ref(idx)? {
-        rusqlite::types::ValueRef::Blob(hash) => Ok(Some(Arc::from(hash))),
+        rusqlite::types::ValueRef::Blob(hash) => Ok(Some(hash.into())),
         rusqlite::types::ValueRef::Null => Ok(None),
         _ => panic!("hash encoded as unusual sqlite type"),
     }
@@ -349,8 +349,9 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
            22: bundle_blocks.block_type,
            23: bundle_blocks.block_flags,
            24: bundle_blocks.block_crc_type,
-           25: bundle_blocks.data_offset,
-           26: bundle_blocks.data_len
+           25: bundle_blocks.data_start,
+           26: bundle_blocks.payload_offset,
+           27: bundle_blocks.data_len
     */
 
     while let Some(mut row) = rows.next()? {
@@ -412,8 +413,9 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
                 block_type: as_u64(row.get(22)?).into(),
                 flags: as_u64(row.get(23)?).into(),
                 crc_type: as_u64(row.get(24)?).try_into()?,
-                data_offset: as_u64(row.get(25)?) as usize,
-                data_len: as_u64(row.get(26)?) as usize,
+                data_start: as_u64(row.get(25)?) as usize,
+                payload_offset: as_u64(row.get(26)?) as usize,
+                data_len: as_u64(row.get(27)?) as usize,
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -473,7 +475,8 @@ impl storage::MetadataStorage for Storage {
                     block_type,
                     block_flags,
                     block_crc_type,
-                    data_offset,
+                    data_start,
+                    payload_offset,
                     data_len
                 FROM bundles
                 JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
@@ -556,8 +559,9 @@ impl storage::MetadataStorage for Storage {
                     block_type: as_u64(row.get(22)?).into(),
                     flags: as_u64(row.get(23)?).into(),
                     crc_type: as_u64(row.get(24)?).try_into()?,
-                    data_offset: as_u64(row.get(25)?) as usize,
-                    data_len: as_u64(row.get(26)?) as usize,
+                    data_start: as_u64(row.get(25)?) as usize,
+                    payload_offset: as_u64(row.get(26)?) as usize,
+                    data_len: as_u64(row.get(27)?) as usize,
                 };
 
                 if bundle.blocks.insert(block_number, block).is_some() {
@@ -660,9 +664,10 @@ impl storage::MetadataStorage for Storage {
                             block_num,
                             block_flags,
                             block_crc_type,
-                            data_offset,
+                            data_start,
+                            payload_offset,
                             data_len)
-                        VALUES (?1,?2,?3,?4,?5,?6,?7);"#,
+                        VALUES (?1,?2,?3,?4,?5,?6,?7,?8);"#,
                 )?;
                 for (block_num, block) in &bundle.blocks {
                     block_stmt.execute((
@@ -671,7 +676,8 @@ impl storage::MetadataStorage for Storage {
                         as_i64(*block_num),
                         as_i64(block.flags),
                         as_i64(block.crc_type),
-                        as_i64(block.data_offset as u64),
+                        as_i64(block.data_start as u64),
+                        as_i64(block.payload_offset as u64),
                         as_i64(block.data_len as u64),
                     ))?;
                 }
@@ -916,7 +922,8 @@ impl storage::MetadataStorage for Storage {
                         block_type,
                         block_flags,
                         block_crc_type,
-                        data_offset,
+                        data_start,
+                        payload_offset,
                         data_len
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
@@ -971,7 +978,8 @@ impl storage::MetadataStorage for Storage {
                             block_type,
                             block_flags,
                             block_crc_type,
-                            data_offset,
+                            data_start,
+                            payload_offset,
                             data_len
                         FROM subset
                         JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
@@ -1018,7 +1026,8 @@ impl storage::MetadataStorage for Storage {
                         block_type,
                         block_flags,
                         block_crc_type,
-                        data_offset,
+                        data_start,
+                        payload_offset,
                         data_len
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id

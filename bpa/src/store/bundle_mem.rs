@@ -52,7 +52,7 @@ impl storage::BundleStorage for Storage {
             let storage_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 64);
 
             let Some(prev) = bundles.insert(storage_name.clone(), data) else {
-                return Ok(Arc::from(storage_name));
+                return Ok(storage_name.into());
             };
 
             // Swap back
