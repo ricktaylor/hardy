@@ -138,3 +138,25 @@ impl Results {
         Ok((r, shortest))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn rfc9173_appendix_a_1() {
+        // Note: I've tweaked the creation timestamp to be valid
+        let data = &hex_literal::hex!(
+            "9f88070000820282010282028202018202820201820118281a000f4240850b0200
+            005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
+            8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
+            f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
+            746f2067656e657261746520612033322d62797465207061796c6f6164ff"
+        );
+
+        if let (ValidBundle::Valid(_), true) = cbor::decode::parse(data).unwrap() {
+        } else {
+            panic!("No!");
+        }
+    }
+}
