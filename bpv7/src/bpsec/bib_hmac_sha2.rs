@@ -154,9 +154,8 @@ mod test {
             746f2067656e657261746520612033322d62797465207061796c6f6164ff"
         );
 
-        if let (ValidBundle::Valid(_), true) = cbor::decode::parse(data).unwrap() {
-        } else {
+        let (ValidBundle::Valid(_), true) = cbor::decode::parse(data).unwrap() else {
             panic!("No!");
-        }
+        };
     }
 }

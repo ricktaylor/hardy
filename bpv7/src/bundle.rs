@@ -595,7 +595,7 @@ fn fuzz_tests() {
         let data = bundle.canonicalise(data).unwrap();
 
         let mut file = std::fs::File::create("rewritten_bundle").unwrap();
-        file.write_all(data.as_ref()).unwrap();
+        file.write_all(&data).unwrap();
 
         let r = cbor::decode::parse(&data);
 
