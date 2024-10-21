@@ -2,7 +2,7 @@ use super::*;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum ShaVariant {
     HMAC_256_256,
     #[default]
@@ -33,6 +33,7 @@ impl From<u64> for ShaVariant {
     }
 }
 
+#[derive(Debug)]
 pub struct ScopeFlags {
     pub include_primary_block: bool,
     pub include_target_header: bool,
@@ -71,7 +72,7 @@ impl From<u64> for ScopeFlags {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Parameters {
     pub variant: ShaVariant,
     pub key: Option<Box<[u8]>>,

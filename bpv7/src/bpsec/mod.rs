@@ -163,8 +163,9 @@ impl SecurityBlock {
 fn parse_ranges<const D: usize>(
     seq: &mut cbor::decode::Sequence<D>,
     shortest: &mut bool,
+    mut offset: usize,
 ) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
-    let mut offset = seq.offset();
+    offset += seq.offset();
     seq.try_parse_array(|a, s, tags| {
         *shortest = *shortest && s && tags.is_empty() && a.is_definite();
         offset += a.offset();
@@ -230,7 +231,7 @@ impl cbor::decode::FromCbor for SecurityBlock {
             let parameters = if flags & 1 == 0 {
                 HashMap::new()
             } else {
-                parse_ranges(seq, &mut shortest)
+                parse_ranges(seq, &mut shortest, 0)
                     .map_field_err("Security Context Parameters")?
                     .unwrap_or_default()
             };
@@ -248,6 +249,7 @@ impl cbor::decode::FromCbor for SecurityBlock {
             }
 
             // Target Results
+            let offset = seq.offset();
             let (results, _) = seq
                 .parse_array(|a, s, tags| {
                     shortest = shortest && s && tags.is_empty() && a.is_definite();
@@ -255,7 +257,7 @@ impl cbor::decode::FromCbor for SecurityBlock {
                     let mut results = HashMap::new();
                     let mut idx = 0;
                     while let Some(target_results) =
-                        parse_ranges(a, &mut shortest).map_field_err("Security Results")?
+                        parse_ranges(a, &mut shortest, offset).map_field_err("Security Results")?
                     {
                         let Some(target) = targets.get(idx) else {
                             return Err(Error::MismatchedTargetResult);
