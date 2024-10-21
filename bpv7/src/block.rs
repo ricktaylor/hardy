@@ -41,7 +41,7 @@ impl Block {
                     // CRC Type
                     payload_offset += a.emit::<u64>(self.crc_type.into());
                     // Payload
-                    a.emit_raw(data);
+                    a.emit(data);
                     // CRC
                     if let CrcType::None = self.crc_type {
                     } else {
