@@ -1,5 +1,5 @@
 use super::*;
-use block::*;
+use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -257,7 +257,7 @@ impl Bundle {
         // Use an intermediate vector so we can check the payload was the last item
         let mut extension_blocks = Vec::new();
         while let Some((mut block, s, block_len)) =
-            blocks.try_parse::<(BlockWithNumber, bool, usize)>()?
+            blocks.try_parse::<(block::BlockWithNumber, bool, usize)>()?
         {
             shortest = shortest && s;
             block.block.data_start += offset;
@@ -276,7 +276,7 @@ impl Bundle {
         }
 
         // Add blocks
-        for BlockWithNumber { number, block } in extension_blocks {
+        for block::BlockWithNumber { number, block } in extension_blocks {
             if self.blocks.insert(number, block).is_some() {
                 return Err(BundleError::DuplicateBlockNumber(number));
             }
