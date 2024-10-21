@@ -5,6 +5,7 @@ use thiserror::Error;
 mod bcb_aes_gcm;
 mod bib_hmac_sha2;
 
+#[derive(Debug)]
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 pub enum SecurityContext {
@@ -33,6 +34,8 @@ impl From<u64> for SecurityContext {
     }
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
 pub struct SecurityBlock {
     pub context: SecurityContext,
     pub source: Eid,

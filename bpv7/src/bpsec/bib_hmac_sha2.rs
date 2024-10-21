@@ -34,6 +34,7 @@ impl From<u64> for ShaVariant {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ScopeFlags {
     pub include_primary_block: bool,
     pub include_target_header: bool,
@@ -113,7 +114,7 @@ impl Parameters {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Results(Box<[u8]>);
 
 impl Results {

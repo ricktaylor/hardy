@@ -236,7 +236,7 @@ where
     T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
     BundleError: From<<T as cbor::decode::FromCbor>::Error>,
 {
-    let data = &block.block_data(data);
+    let data = block.block_data(data);
     let (v, s, len) = cbor::decode::parse(&data)?;
     if len != data.len() {
         Err(BundleError::BlockAdditionalData(block.block_type))

@@ -2,7 +2,7 @@ use super::*;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum AesVariant {
     A128GCM,
     #[default]
@@ -30,6 +30,8 @@ impl From<u64> for AesVariant {
     }
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
 pub struct ScopeFlags {
     pub include_primary_block: bool,
     pub include_target_header: bool,
@@ -68,7 +70,7 @@ impl From<u64> for ScopeFlags {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Parameters {
     pub iv: Option<Box<[u8]>>,
     pub variant: AesVariant,
@@ -116,7 +118,7 @@ impl Parameters {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Results(Box<[u8]>);
 
 impl Results {
