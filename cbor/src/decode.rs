@@ -440,7 +440,7 @@ fn sequence_debug_fmt<const D: usize>(
     }
 }
 
-impl<'a, const D: usize> std::fmt::Debug for Sequence<'a, D> {
+impl<const D: usize> std::fmt::Debug for Sequence<'_, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut offset = 0;
         {
