@@ -1,4 +1,6 @@
-#[derive(Default, Debug, Copy, Clone)]
+use super::*;
+
+#[derive(Default, Debug, Clone)]
 pub struct BlockFlags {
     pub must_replicate: bool,
     pub report_on_failure: bool,
@@ -7,8 +9,8 @@ pub struct BlockFlags {
     pub unrecognised: u64,
 }
 
-impl From<BlockFlags> for u64 {
-    fn from(value: BlockFlags) -> Self {
+impl From<&BlockFlags> for u64 {
+    fn from(value: &BlockFlags) -> Self {
         let mut flags = value.unrecognised;
         if value.must_replicate {
             flags |= 1 << 0;
@@ -47,5 +49,20 @@ impl From<u64> for BlockFlags {
             }
         }
         flags
+    }
+}
+
+impl cbor::encode::ToCbor for &BlockFlags {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(u64::from(self))
+    }
+}
+
+impl cbor::decode::FromCbor for BlockFlags {
+    type Error = cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
     }
 }

@@ -99,8 +99,11 @@ impl Builder {
         // Emit extension blocks
         for (block_number, block) in self.extensions.into_iter().enumerate() {
             let (block, block_data) = block.build(block_number as u64 + 2, data.len());
-            bundle.blocks.insert(block_number as u64, block);
             data.extend(block_data);
+
+            update_extension_blocks(&block, &mut bundle, &data);
+
+            bundle.blocks.insert(block_number as u64, block);
         }
 
         // Emit payload
@@ -110,9 +113,6 @@ impl Builder {
 
         // End indefinite array
         data.push(0xFF);
-
-        // Update values from supported extension blocks
-        bundle.parse_extension_blocks(&data)?;
 
         Ok((bundle, data))
     }
@@ -129,7 +129,7 @@ impl Builder {
                 timestamp: CreationTimestamp::now(),
                 ..Default::default()
             },
-            flags: self.bundle_flags,
+            flags: self.bundle_flags.clone(),
             crc_type: self.crc_type,
             destination: std::mem::take(&mut self.destination),
             lifetime: self.lifetime,
@@ -138,6 +138,30 @@ impl Builder {
 
         let block_data = bundle.emit_primary_block(offset);
         (bundle, block_data)
+    }
+}
+
+pub fn update_extension_blocks(block: &Block, bundle: &mut Bundle, data: &[u8]) {
+    match &block.block_type {
+        BlockType::PreviousNode => {
+            bundle.previous_node = block
+                .parse_payload(data)
+                .map(|(v, _)| Some(v))
+                .expect("Previous Node ID");
+        }
+        BlockType::BundleAge => {
+            bundle.age = block
+                .parse_payload(data)
+                .map(|(v, _)| Some(v))
+                .expect("Bundle Age")
+        }
+        BlockType::HopCount => {
+            bundle.hop_count = block
+                .parse_payload(data)
+                .map(|(v, _)| Some(v))
+                .expect("Hop Count Block")
+        }
+        _ => {}
     }
 }
 

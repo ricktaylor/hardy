@@ -110,6 +110,24 @@ impl TryFrom<u64> for StatusReportReasonCode {
     }
 }
 
+impl cbor::encode::ToCbor for StatusReportReasonCode {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(u64::from(self))
+    }
+}
+
+impl cbor::decode::FromCbor for StatusReportReasonCode {
+    type Error = StatusReportError;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        if let Some((v, shortest, len)) = cbor::decode::try_parse::<(u64, bool, usize)>(data)? {
+            Ok(Some((v.try_into()?, shortest, len)))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StatusAssertion(pub Option<DtnTime>);
 
@@ -174,7 +192,7 @@ pub struct BundleStatusReport {
 impl cbor::encode::ToCbor for &BundleStatusReport {
     fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
         encoder.emit_array(
-            Some(self.bundle_id.fragment_info.map_or(4, |_| 6)),
+            Some(self.bundle_id.fragment_info.as_ref().map_or(4, |_| 6)),
             |a, _| {
                 // Statuses
                 a.emit_array(Some(4), |a, _| {
@@ -185,7 +203,7 @@ impl cbor::encode::ToCbor for &BundleStatusReport {
                 });
 
                 // Reason code
-                a.emit::<u64>(self.reason.into());
+                a.emit(self.reason);
                 // Source EID
                 a.emit(&self.bundle_id.source);
                 // Creation Timestamp
@@ -225,8 +243,8 @@ impl cbor::decode::FromCbor for BundleStatusReport {
             })
             .map_field_err("Bundle Status Information")?;
 
-            let (reason, s) = a.parse::<(u64, bool)>().map_field_err("Reason")?;
-            report.reason = reason.try_into()?;
+            let (reason, s) = a.parse().map_field_err("Reason")?;
+            report.reason = reason;
             shortest = shortest && s;
 
             let (source, s) = a.parse().map_field_err("Source")?;

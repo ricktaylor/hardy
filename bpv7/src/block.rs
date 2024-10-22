@@ -19,6 +19,20 @@ impl Block {
         .expect("Failed to parse block data")
     }
 
+    pub fn parse_payload<T>(&self, data: &[u8]) -> Result<(T, bool), BundleError>
+    where
+        T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
+        BundleError: From<<T as cbor::decode::FromCbor>::Error>,
+    {
+        let data = self.block_data(data);
+        let (v, s, len) = cbor::decode::parse(&data)?;
+        if len != data.len() {
+            Err(BundleError::BlockAdditionalData(self.block_type))
+        } else {
+            Ok((v, s))
+        }
+    }
+
     pub fn emit(&mut self, block_number: u64, data: &[u8], data_start: usize) -> Vec<u8> {
         let mut payload_offset = 0;
         let block_data = crc::append_crc_value(
@@ -33,13 +47,13 @@ impl Block {
                     payload_offset = offset;
 
                     // Block Type
-                    payload_offset += a.emit::<u64>(self.block_type.into());
+                    payload_offset += a.emit(self.block_type);
                     // Block Number
                     payload_offset += a.emit(block_number);
                     // Flags
-                    payload_offset += a.emit::<u64>(self.flags.into());
+                    payload_offset += a.emit(&self.flags);
                     // CRC Type
-                    payload_offset += a.emit::<u64>(self.crc_type.into());
+                    payload_offset += a.emit(self.crc_type);
                     // Payload
                     a.emit(data);
                     // CRC
@@ -71,10 +85,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
         cbor::decode::try_parse_array(data, |block, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && block.is_definite();
 
-            let (block_type, s) = block
-                .parse::<(u64, bool)>()
-                .map(|(v, s)| (v.into(), s))
-                .map_field_err("Block type code")?;
+            let (block_type, s) = block.parse().map_field_err("Block type code")?;
             shortest = shortest && s;
 
             let (block_number, s) = block.parse().map_field_err("Block number")?;
@@ -94,8 +105,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             shortest = shortest && s;
 
             let (flags, s) = block
-                .parse::<(u64, bool)>()
-                .map(|(v, s)| (v.into(), s))
+                .parse()
                 .map_field_err("Block processing control flags")?;
             shortest = shortest && s;
 

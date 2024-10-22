@@ -9,7 +9,7 @@ pub struct BundleId {
     pub fragment_info: Option<FragmentInfo>,
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct FragmentInfo {
     pub offset: u64,
     pub total_len: u64,
@@ -74,7 +74,7 @@ impl BundleId {
         .map(|(v, _)| v)
     }
     pub fn to_key(&self) -> String {
-        BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = self.fragment_info {
+        BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = &self.fragment_info {
             cbor::encode::emit_array(Some(4), |array, _| {
                 array.emit(&self.source);
                 array.emit(&self.timestamp);

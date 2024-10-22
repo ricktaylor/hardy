@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BlockType {
     Primary,
@@ -37,5 +39,20 @@ impl From<u64> for BlockType {
             12 => BlockType::BlockSecurity,
             value => BlockType::Unrecognised(value),
         }
+    }
+}
+
+impl cbor::encode::ToCbor for BlockType {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(u64::from(self))
+    }
+}
+
+impl cbor::decode::FromCbor for BlockType {
+    type Error = cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
     }
 }

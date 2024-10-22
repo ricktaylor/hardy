@@ -65,7 +65,7 @@ impl<'a> Editor<'a> {
                         *block_number,
                         builder::BlockTemplate {
                             block_type,
-                            flags: block.flags,
+                            flags: block.flags.clone(),
                             crc_type: block.crc_type,
                             data: Vec::new(),
                         },
@@ -95,7 +95,7 @@ impl<'a> Editor<'a> {
         // Create new bundle
         let mut bundle = Bundle {
             id: self.original.id.clone(),
-            flags: self.original.flags,
+            flags: self.original.flags.clone(),
             crc_type: self.original.crc_type,
             destination: self.original.destination.clone(),
             report_to: self.original.report_to.clone(),
@@ -116,8 +116,11 @@ impl<'a> Editor<'a> {
         for (block_number, block) in std::mem::take(&mut self.blocks).into_iter() {
             let (block, block_data) =
                 self.build_block(block_number, block, source_data, data.len());
-            bundle.blocks.insert(block_number, block);
             data.extend(block_data);
+
+            builder::update_extension_blocks(&block, &mut bundle, &data);
+
+            bundle.blocks.insert(block_number, block);
         }
 
         // Emit payload block
@@ -127,9 +130,6 @@ impl<'a> Editor<'a> {
 
         // End indefinite array
         data.push(0xFF);
-
-        // Update values from supported extension blocks
-        bundle.parse_extension_blocks(&data)?;
 
         Ok((bundle, data))
     }

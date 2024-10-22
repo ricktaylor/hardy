@@ -14,23 +14,33 @@ pub enum SecurityContext {
     Unrecognised(u64),
 }
 
-impl From<SecurityContext> for u64 {
-    fn from(value: SecurityContext) -> Self {
-        match value {
-            SecurityContext::BIB_HMAC_SHA2 => 1,
-            SecurityContext::BCB_AES_GCM => 2,
-            SecurityContext::Unrecognised(v) => v,
-        }
+impl cbor::encode::ToCbor for SecurityContext {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(match self {
+            Self::BIB_HMAC_SHA2 => 1,
+            Self::BCB_AES_GCM => 2,
+            Self::Unrecognised(v) => v,
+        })
     }
 }
 
-impl From<u64> for SecurityContext {
-    fn from(value: u64) -> Self {
-        match value {
-            1 => SecurityContext::BIB_HMAC_SHA2,
-            2 => SecurityContext::BCB_AES_GCM,
-            value => SecurityContext::Unrecognised(value),
-        }
+impl cbor::decode::FromCbor for SecurityContext {
+    type Error = cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+            o.map(|(value, shortest, len)| {
+                (
+                    match value {
+                        1 => Self::BIB_HMAC_SHA2,
+                        2 => Self::BCB_AES_GCM,
+                        value => Self::Unrecognised(value),
+                    },
+                    shortest,
+                    len,
+                )
+            })
+        })
     }
 }
 
@@ -213,11 +223,8 @@ impl cbor::decode::FromCbor for SecurityBlock {
                 })
                 .map_field_err("Security Targets field")?;
 
-            // Id
-            let (context, s) = seq
-                .parse::<(u64, bool)>()
-                .map(|(v, s)| (v.into(), s))
-                .map_field_err("Security Context Id field")?;
+            // Context
+            let (context, s) = seq.parse().map_field_err("Security Context Id field")?;
             shortest = shortest && s;
 
             // Flags

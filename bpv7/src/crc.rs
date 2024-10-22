@@ -53,6 +53,12 @@ impl From<CrcType> for u64 {
     }
 }
 
+impl cbor::encode::ToCbor for CrcType {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(u64::from(self))
+    }
+}
+
 impl cbor::decode::FromCbor for CrcType {
     type Error = self::Error;
 

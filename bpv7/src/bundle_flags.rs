@@ -1,4 +1,6 @@
-#[derive(Default, Debug, Copy, Clone)]
+use super::*;
+
+#[derive(Default, Debug, Clone)]
 pub struct BundleFlags {
     pub is_fragment: bool,
     pub is_admin_record: bool,
@@ -41,8 +43,8 @@ impl From<u64> for BundleFlags {
     }
 }
 
-impl From<BundleFlags> for u64 {
-    fn from(value: BundleFlags) -> Self {
+impl From<&BundleFlags> for u64 {
+    fn from(value: &BundleFlags) -> Self {
         let mut flags = value.unrecognised;
         if value.is_fragment {
             flags |= 1 << 0;
@@ -72,5 +74,20 @@ impl From<BundleFlags> for u64 {
             flags |= 1 << 18;
         }
         flags
+    }
+}
+
+impl cbor::encode::ToCbor for &BundleFlags {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(u64::from(self))
+    }
+}
+
+impl cbor::decode::FromCbor for BundleFlags {
+    type Error = cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
     }
 }

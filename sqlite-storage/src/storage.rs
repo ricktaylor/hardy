@@ -493,8 +493,14 @@ impl storage::MetadataStorage for Storage {
                 encode_eid(&bundle_id.source),
                 encode_creation_time(bundle_id.timestamp.creation_time),
                 as_i64(bundle_id.timestamp.sequence_number),
-                bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                bundle_id
+                    .fragment_info
+                    .as_ref()
+                    .map_or(-1, |f| as_i64(f.offset)),
+                bundle_id
+                    .fragment_info
+                    .as_ref()
+                    .map_or(-1, |f| as_i64(f.total_len)),
             ))?;
 
             let Some(mut row) = rows.next()? else {
@@ -627,7 +633,7 @@ impl storage::MetadataStorage for Storage {
                         status,
                         &metadata.storage_name,
                         encode_hash(&metadata.hash),
-                        as_i64(bundle.flags),
+                        as_i64(&bundle.flags),
                         as_i64(bundle.crc_type),
                         encode_eid(&bundle.id.source),
                         encode_eid(&bundle.destination),
@@ -635,12 +641,20 @@ impl storage::MetadataStorage for Storage {
                         encode_creation_time(bundle.id.timestamp.creation_time),
                         as_i64(bundle.id.timestamp.sequence_number),
                         as_i64(bundle.lifetime),
-                        bundle.id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                        bundle.id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                        bundle
+                            .id
+                            .fragment_info
+                            .as_ref()
+                            .map_or(-1, |f| as_i64(f.offset)),
+                        bundle
+                            .id
+                            .fragment_info
+                            .as_ref()
+                            .map_or(-1, |f| as_i64(f.total_len)),
                         bundle.previous_node.as_ref().map(encode_eid),
                         bundle.age.map(as_i64),
-                        bundle.hop_count.map(|h| as_i64(h.count)),
-                        bundle.hop_count.map(|h| as_i64(h.limit)),
+                        bundle.hop_count.as_ref().map(|h| as_i64(h.count)),
+                        bundle.hop_count.as_ref().map(|h| as_i64(h.limit)),
                         until,
                         ack_handle
                     ),
@@ -674,7 +688,7 @@ impl storage::MetadataStorage for Storage {
                         bundle_id,
                         as_i64(block.block_type),
                         as_i64(*block_num),
-                        as_i64(block.flags),
+                        as_i64(&block.flags),
                         as_i64(block.crc_type),
                         as_i64(block.data_start as u64),
                         as_i64(block.payload_offset as u64),
@@ -707,8 +721,14 @@ impl storage::MetadataStorage for Storage {
                     encode_eid(&bundle_id.source),
                     encode_creation_time(bundle_id.timestamp.creation_time),
                     as_i64(bundle_id.timestamp.sequence_number),
-                    bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                    bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.offset)),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.total_len)),
                 ))
                 .map(|count| count != 0)?
             {
@@ -754,8 +774,14 @@ impl storage::MetadataStorage for Storage {
                         encode_eid(&bundle_id.source),
                         encode_creation_time(bundle_id.timestamp.creation_time),
                         as_i64(bundle_id.timestamp.sequence_number),
-                        bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                        bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                        bundle_id
+                            .fragment_info
+                            .as_ref()
+                            .map_or(-1, |f| as_i64(f.offset)),
+                        bundle_id
+                            .fragment_info
+                            .as_ref()
+                            .map_or(-1, |f| as_i64(f.total_len)),
                     ),
                     |row| {
                         Ok((
@@ -811,8 +837,14 @@ impl storage::MetadataStorage for Storage {
                     encode_eid(&bundle_id.source),
                     encode_creation_time(bundle_id.timestamp.creation_time),
                     as_i64(bundle_id.timestamp.sequence_number),
-                    bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                    bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.offset)),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.total_len)),
                 ),
                 |row| columns_to_bundle_status(row, 0, 1, 2),
             )
@@ -852,8 +884,8 @@ impl storage::MetadataStorage for Storage {
                         encode_eid(&bundle_id.source),
                         encode_creation_time(bundle_id.timestamp.creation_time),
                         as_i64(bundle_id.timestamp.sequence_number),
-                        bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                        bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.offset)),
+                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.total_len)),
                     ))
             } else {
                 conn
@@ -874,8 +906,8 @@ impl storage::MetadataStorage for Storage {
                         encode_eid(&bundle_id.source),
                         encode_creation_time(bundle_id.timestamp.creation_time),
                         as_i64(bundle_id.timestamp.sequence_number),
-                        bundle_id.fragment_info.map_or(-1, |f| as_i64(f.offset)),
-                        bundle_id.fragment_info.map_or(-1, |f| as_i64(f.total_len)),
+                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.offset)),
+                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.total_len)),
                     ))
             };
 

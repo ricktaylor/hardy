@@ -107,8 +107,7 @@ fn parse_primary_block(
 
     // Parse flags
     let (flags, s) = block
-        .parse::<(u64, bool)>()
-        .map(|(v, s)| (BundleFlags::from(v), s))
+        .parse::<(BundleFlags, bool)>()
         .map_field_err("Bundle Processing Control Flags")?;
     shortest = shortest && s;
 
@@ -231,21 +230,6 @@ fn parse_primary_block(
     }
 }
 
-fn parse_known_block<T>(block: &Block, data: &[u8], shortest: &mut bool) -> Result<T, BundleError>
-where
-    T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
-    BundleError: From<<T as cbor::decode::FromCbor>::Error>,
-{
-    let data = block.block_data(data);
-    let (v, s, len) = cbor::decode::parse(&data)?;
-    if len != data.len() {
-        Err(BundleError::BlockAdditionalData(block.block_type))
-    } else {
-        *shortest = *shortest && s;
-        Ok(v)
-    }
-}
-
 impl Bundle {
     fn parse_blocks(
         &mut self,
@@ -308,34 +292,48 @@ impl Bundle {
                     if seen_previous_node {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    self.previous_node = Some(
-                        parse_known_block(block, data, &mut shortest)
-                            .map_field_err("Previous Node ID")?,
-                    );
+                    self.previous_node = block
+                        .parse_payload(data)
+                        .map(|(v, s)| {
+                            shortest = shortest && s;
+                            Some(v)
+                        })
+                        .map_field_err("Previous Node ID")?;
                     seen_previous_node = true;
                 }
                 BlockType::BundleAge => {
                     if seen_bundle_age {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    self.age = Some(
-                        parse_known_block(block, data, &mut shortest)
-                            .map_field_err("Bundle Age")?,
-                    );
+                    self.age = block
+                        .parse_payload(data)
+                        .map(|(v, s)| {
+                            shortest = shortest && s;
+                            Some(v)
+                        })
+                        .map_field_err("Bundle Age")?;
                     seen_bundle_age = true;
                 }
                 BlockType::HopCount => {
                     if seen_hop_count {
                         return Err(BundleError::DuplicateBlocks(block.block_type));
                     }
-                    self.hop_count = Some(
-                        parse_known_block(block, data, &mut shortest)
-                            .map_field_err("Hop Count Block")?,
-                    );
+                    self.hop_count = block
+                        .parse_payload(data)
+                        .map(|(v, s)| {
+                            shortest = shortest && s;
+                            Some(v)
+                        })
+                        .map_field_err("Hop Count Block")?;
                     seen_hop_count = true;
                 }
                 BlockType::BlockIntegrity | BlockType::BlockSecurity => {
-                    parse_known_block::<bpsec::SecurityBlock>(block, data, &mut shortest)
+                    block
+                        .parse_payload::<bpsec::SecurityBlock>(data)
+                        .map(|(v, s)| {
+                            shortest = shortest && s;
+                            v
+                        })
                         .and_then(|sb| {
                             for target in sb.results.keys() {
                                 sb.validate(block, self.blocks.get(target), data)?;
@@ -373,9 +371,9 @@ impl Bundle {
                     // Version
                     a.emit(7);
                     // Flags
-                    a.emit::<u64>(self.flags.into());
+                    a.emit(&self.flags);
                     // CRC
-                    a.emit::<u64>(self.crc_type.into());
+                    a.emit(self.crc_type);
                     // EIDs
                     a.emit(&self.destination);
                     a.emit(&self.id.source);

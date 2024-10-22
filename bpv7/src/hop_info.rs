@@ -1,7 +1,7 @@
 use super::*;
 use bundle::CaptureFieldErr;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct HopInfo {
     pub limit: u64,
     pub count: u64,

@@ -21,7 +21,7 @@ impl Dispatcher {
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
         let mut previous = false;
         let mut retries = 0;
-        let mut destination = bundle.bundle.destination.clone();
+        let mut destination = &bundle.bundle.destination;
 
         loop {
             // Check bundle expiry
@@ -33,7 +33,7 @@ impl Dispatcher {
             }
 
             // Lookup/Perform actions
-            let action = match fib.find(&destination).await {
+            let action = match fib.find(destination).await {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
                     return Ok(DispatchResult::Drop(reason));
@@ -63,7 +63,7 @@ impl Dispatcher {
                     // Increment Hop Count, etc...
                     let data = self.update_extension_blocks(bundle, (*source_data).as_ref())?;
 
-                    match e.forward_bundle(&destination, data.into()).await {
+                    match e.forward_bundle(destination, data.into()).await {
                         Ok(cla_registry::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
                             return self
@@ -133,8 +133,8 @@ impl Dispatcher {
                     .bundle
                     .previous_node
                     .as_ref()
-                    .unwrap_or(&bundle.bundle.id.source)
-                    .clone();
+                    .unwrap_or(&bundle.bundle.id.source);
+
                 trace!("Returning bundle to previous node: {destination}");
 
                 // Reset retry counter as we are attempting to return the bundle
@@ -182,11 +182,13 @@ impl Dispatcher {
             .build();
 
         // Increment Hop Count
-        if let Some(mut hop_count) = bundle.bundle.hop_count {
-            hop_count.count += 1;
+        if let Some(hop_count) = &bundle.bundle.hop_count {
             editor = editor
                 .replace_extension_block(bpv7::BlockType::HopCount)
-                .data(cbor::encode::emit(&hop_count))
+                .data(cbor::encode::emit(&bpv7::HopInfo {
+                    limit: hop_count.limit,
+                    count: hop_count.count + 1,
+                }))
                 .build();
         }
 

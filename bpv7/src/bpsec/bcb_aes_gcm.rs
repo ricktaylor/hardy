@@ -10,63 +10,33 @@ pub enum AesVariant {
     Unrecognised(u64),
 }
 
-impl From<AesVariant> for u64 {
-    fn from(value: AesVariant) -> Self {
-        match value {
-            AesVariant::A128GCM => 1,
-            AesVariant::A256GCM => 3,
-            AesVariant::Unrecognised(v) => v,
-        }
+impl cbor::encode::ToCbor for AesVariant {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(match self {
+            Self::A128GCM => 1,
+            Self::A256GCM => 3,
+            Self::Unrecognised(v) => v,
+        })
     }
 }
 
-impl From<u64> for AesVariant {
-    fn from(value: u64) -> Self {
-        match value {
-            1 => AesVariant::A128GCM,
-            3 => AesVariant::A256GCM,
-            v => AesVariant::Unrecognised(v),
-        }
-    }
-}
+impl cbor::decode::FromCbor for AesVariant {
+    type Error = cbor::decode::Error;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct ScopeFlags {
-    pub include_primary_block: bool,
-    pub include_target_header: bool,
-    pub include_security_header: bool,
-    pub unrecognised: u64,
-}
-
-impl Default for ScopeFlags {
-    fn default() -> Self {
-        Self {
-            include_primary_block: true,
-            include_target_header: true,
-            include_security_header: true,
-            unrecognised: 0,
-        }
-    }
-}
-
-impl From<u64> for ScopeFlags {
-    fn from(value: u64) -> Self {
-        let mut flags = Self {
-            unrecognised: value & !7,
-            ..Default::default()
-        };
-        for b in 0..=2 {
-            if value & (1 << b) != 0 {
-                match b {
-                    0 => flags.include_primary_block = true,
-                    1 => flags.include_target_header = true,
-                    2 => flags.include_security_header = true,
-                    _ => unreachable!(),
-                }
-            }
-        }
-        flags
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+            o.map(|(value, shortest, len)| {
+                (
+                    match value {
+                        1 => Self::A128GCM,
+                        3 => Self::A256GCM,
+                        v => Self::Unrecognised(v),
+                    },
+                    shortest,
+                    len,
+                )
+            })
+        })
     }
 }
 
@@ -75,7 +45,7 @@ pub struct Parameters {
     pub iv: Option<Box<[u8]>>,
     pub variant: AesVariant,
     pub key: Option<Box<[u8]>>,
-    pub flags: ScopeFlags,
+    pub flags: bib_hmac_sha2::ScopeFlags,
 }
 
 impl Parameters {
@@ -88,27 +58,23 @@ impl Parameters {
         for (id, range) in parameters {
             match id {
                 1 => {
-                    let (iv, s) =
-                        cbor::decode::parse::<(Box<[u8]>, bool)>(&data[range.start..range.end])?;
+                    let (iv, s) = cbor::decode::parse(&data[range.start..range.end])?;
                     result.iv = Some(iv);
                     shortest = shortest && s;
                 }
                 2 => {
-                    let (variant, s) =
-                        cbor::decode::parse::<(u64, bool)>(&data[range.start..range.end])?;
-                    result.variant = variant.into();
+                    let (variant, s) = cbor::decode::parse(&data[range.start..range.end])?;
+                    result.variant = variant;
                     shortest = shortest && s;
                 }
                 3 => {
-                    let (key, s) =
-                        cbor::decode::parse::<(Box<[u8]>, bool)>(&data[range.start..range.end])?;
+                    let (key, s) = cbor::decode::parse(&data[range.start..range.end])?;
                     result.key = Some(key);
                     shortest = shortest && s;
                 }
                 4 => {
-                    let (flags, s) =
-                        cbor::decode::parse::<(u64, bool)>(&data[range.start..range.end])?;
-                    result.flags = flags.into();
+                    let (flags, s) = cbor::decode::parse(&data[range.start..range.end])?;
+                    result.flags = flags;
                     shortest = shortest && s;
                 }
                 _ => return Err(bpsec::Error::InvalidContextParameter(*id)),

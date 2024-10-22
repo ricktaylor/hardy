@@ -187,7 +187,7 @@ impl Dispatcher {
             })
             .or_else(|| {
                 // Check hop count exceeded
-                bundle.bundle.hop_count.and_then(|hop_info| {
+                bundle.bundle.hop_count.as_ref().and_then(|hop_info| {
                     (hop_info.count >= hop_info.limit).then(|| {
                         trace!(
                             "Bundle hop-limit {}/{} exceeded",

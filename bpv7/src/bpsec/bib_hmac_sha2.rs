@@ -11,25 +11,35 @@ pub enum ShaVariant {
     Unrecognised(u64),
 }
 
-impl From<ShaVariant> for u64 {
-    fn from(value: ShaVariant) -> Self {
-        match value {
-            ShaVariant::HMAC_256_256 => 5,
-            ShaVariant::HMAC_384_384 => 6,
-            ShaVariant::HMAC_512_512 => 7,
-            ShaVariant::Unrecognised(v) => v,
-        }
+impl cbor::encode::ToCbor for ShaVariant {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+        encoder.emit(match self {
+            Self::HMAC_256_256 => 5,
+            Self::HMAC_384_384 => 6,
+            Self::HMAC_512_512 => 7,
+            Self::Unrecognised(v) => v,
+        })
     }
 }
 
-impl From<u64> for ShaVariant {
-    fn from(value: u64) -> Self {
-        match value {
-            5 => ShaVariant::HMAC_256_256,
-            6 => ShaVariant::HMAC_384_384,
-            7 => ShaVariant::HMAC_512_512,
-            v => ShaVariant::Unrecognised(v),
-        }
+impl cbor::decode::FromCbor for ShaVariant {
+    type Error = cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+            o.map(|(value, shortest, len)| {
+                (
+                    match value {
+                        5 => Self::HMAC_256_256,
+                        6 => Self::HMAC_384_384,
+                        7 => Self::HMAC_512_512,
+                        v => Self::Unrecognised(v),
+                    },
+                    shortest,
+                    len,
+                )
+            })
+        })
     }
 }
 
@@ -53,23 +63,29 @@ impl Default for ScopeFlags {
     }
 }
 
-impl From<u64> for ScopeFlags {
-    fn from(value: u64) -> Self {
-        let mut flags = Self {
-            unrecognised: value & !7,
-            ..Default::default()
-        };
-        for b in 0..=2 {
-            if value & (1 << b) != 0 {
-                match b {
-                    0 => flags.include_primary_block = true,
-                    1 => flags.include_target_header = true,
-                    2 => flags.include_security_header = true,
-                    _ => unreachable!(),
+impl cbor::decode::FromCbor for ScopeFlags {
+    type Error = cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+            o.map(|(value, shortest, len)| {
+                let mut flags = Self {
+                    unrecognised: value & !7,
+                    ..Default::default()
+                };
+                for b in 0..=2 {
+                    if value & (1 << b) != 0 {
+                        match b {
+                            0 => flags.include_primary_block = true,
+                            1 => flags.include_target_header = true,
+                            2 => flags.include_security_header = true,
+                            _ => unreachable!(),
+                        }
+                    }
                 }
-            }
-        }
-        flags
+                (flags, shortest, len)
+            })
+        })
     }
 }
 
@@ -90,21 +106,18 @@ impl Parameters {
         for (id, range) in parameters {
             match id {
                 1 => {
-                    let (variant, s) =
-                        cbor::decode::parse::<(u64, bool)>(&data[range.start..range.end])?;
-                    result.variant = variant.into();
+                    let (variant, s) = cbor::decode::parse(&data[range.start..range.end])?;
+                    result.variant = variant;
                     shortest = shortest && s;
                 }
                 2 => {
-                    let (key, s) =
-                        cbor::decode::parse::<(Box<[u8]>, bool)>(&data[range.start..range.end])?;
+                    let (key, s) = cbor::decode::parse(&data[range.start..range.end])?;
                     result.key = Some(key);
                     shortest = shortest && s;
                 }
                 3 => {
-                    let (flags, s) =
-                        cbor::decode::parse::<(u64, bool)>(&data[range.start..range.end])?;
-                    result.flags = flags.into();
+                    let (flags, s) = cbor::decode::parse(&data[range.start..range.end])?;
+                    result.flags = flags;
                     shortest = shortest && s;
                 }
                 _ => return Err(bpsec::Error::InvalidContextParameter(*id)),
