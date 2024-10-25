@@ -154,16 +154,25 @@ fn parse_status_assertion(
     a.parse_array(|a, s, tags| {
         *shortest = *shortest && s && tags.is_empty() && a.is_definite();
 
-        let (status, s) = a.parse().map_field_err("Status")?;
-        *shortest = *shortest && s;
+        let status = a
+            .parse()
+            .map(|(v, s)| {
+                *shortest = *shortest && s;
+                v
+            })
+            .map_field_err("Status")?;
 
         if status {
-            if let Some((timestamp, s)) = a
+            if let Some(timestamp) = a
                 .try_parse::<(DtnTime, bool)>()
+                .map(|o| {
+                    o.map(|(v, s)| {
+                        *shortest = *shortest && s;
+                        v
+                    })
+                })
                 .map_field_err("Timestamp")?
             {
-                *shortest = *shortest && s;
-
                 if timestamp.millisecs() == 0 {
                     Ok::<_, StatusReportError>(Some(StatusAssertion(None)))
                 } else {
@@ -243,15 +252,29 @@ impl cbor::decode::FromCbor for BundleStatusReport {
             })
             .map_field_err("Bundle Status Information")?;
 
-            let (reason, s) = a.parse().map_field_err("Reason")?;
-            report.reason = reason;
-            shortest = shortest && s;
+            report.reason = a
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Reason")?;
 
-            let (source, s) = a.parse().map_field_err("Source")?;
-            shortest = shortest && s;
+            let source = a
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Source")?;
 
-            let (timestamp, s) = a.parse().map_field_err("Timestamp")?;
-            shortest = shortest && s;
+            let timestamp = a
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Timestamp")?;
 
             report.bundle_id = BundleId {
                 source,
@@ -292,11 +315,16 @@ impl cbor::decode::FromCbor for AdministrativeRecord {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
-            let (record_type, s) = a.parse().map_field_err("Record Type Code")?;
+            shortest = shortest && !tags.is_empty() && a.is_definite();
 
-            shortest = shortest && !tags.is_empty() && a.is_definite() && s;
-
-            match record_type {
+            match a
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Record Type Code")?
+            {
                 1u64 => {
                     let (r, s) = a.parse().map_field_err("Bundle Status Report")?;
                     Ok((Self::BundleStatusReport(r), shortest && s))

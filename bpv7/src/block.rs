@@ -85,32 +85,41 @@ impl cbor::decode::FromCbor for BlockWithNumber {
         cbor::decode::try_parse_array(data, |block, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && block.is_definite();
 
-            let (block_type, s) = block.parse().map_field_err("Block type code")?;
-            shortest = shortest && s;
-
-            let (block_number, s) = block.parse().map_field_err("Block number")?;
-            match block_number {
-                0 => return Err(BundleError::InvalidBlockNumber),
-                1 => {
-                    if block_type != BlockType::Payload {
-                        return Err(BundleError::InvalidBlockNumber);
-                    }
-                }
-                _ => {
-                    if block_type == BlockType::Payload {
-                        return Err(BundleError::InvalidPayloadBlockNumber);
-                    }
-                }
-            }
-            shortest = shortest && s;
-
-            let (flags, s) = block
+            let block_type = block
                 .parse()
-                .map_field_err("Block processing control flags")?;
-            shortest = shortest && s;
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Block type code")?;
 
-            let (crc_type, s) = block.parse().map_field_err("CRC type")?;
-            shortest = shortest && s;
+            let block_number = block.parse().map_field_err("Block number").map(|(v, s)| {
+                shortest = shortest && s;
+                v
+            })?;
+            match (block_number, block_type) {
+                (1, BlockType::Payload) => {}
+                (0, _) | (1, _) | (_, BlockType::Payload) => {
+                    return Err(BundleError::InvalidBlockNumber(block_number, block_type))
+                }
+                _ => {}
+            }
+
+            let flags = block
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Block processing control flags")?;
+
+            let crc_type = block
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("CRC type")?;
 
             // Stash start of data
             let payload_offset = block.offset();

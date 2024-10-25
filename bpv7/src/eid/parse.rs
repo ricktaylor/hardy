@@ -142,10 +142,16 @@ impl cbor::decode::FromCbor for Eid {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
-            let (scheme, s) = a.parse().map_field_err("Scheme")?;
-            shortest = shortest && tags.is_empty() && a.is_definite() && s;
+            shortest = shortest && tags.is_empty() && a.is_definite();
 
-            match scheme {
+            match a
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err("Scheme")?
+            {
                 0 => Err(EidError::UnsupportedScheme("0".to_string())),
                 1 => match a
                     .parse_value(|value, s, tags| {

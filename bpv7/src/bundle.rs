@@ -22,13 +22,13 @@ pub enum BundleError {
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),
 
-    #[error("Bundle extension block must not be block number 0 or 1")]
-    InvalidBlockNumber,
+    #[error("Block number {0} is invalid for a {1} block")]
+    InvalidBlockNumber(u64, BlockType),
 
-    #[error("Bundle has multiple {0:?} blocks")]
+    #[error("Bundle has multiple {0} blocks")]
     DuplicateBlocks(BlockType),
 
-    #[error("{0:?} block has additional data")]
+    #[error("{0} block has additional data")]
     BlockAdditionalData(BlockType),
 
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
@@ -106,10 +106,13 @@ fn parse_primary_block(
     }
 
     // Parse flags
-    let (flags, s) = block
+    let flags = block
         .parse::<(BundleFlags, bool)>()
+        .map(|(v, s)| {
+            shortest = shortest && s;
+            v
+        })
         .map_field_err("Bundle Processing Control Flags")?;
-    shortest = shortest && s;
 
     // Parse CRC Type
     let crc_type = block.parse();
@@ -117,8 +120,13 @@ fn parse_primary_block(
     // Parse EIDs
     let dest_eid = block.parse();
     let source_eid = block.parse();
-    let (report_to, s) = block.parse().map_field_err("Report-to EID")?;
-    shortest = shortest && s;
+    let report_to = block
+        .parse()
+        .map(|(v, s)| {
+            shortest = shortest && s;
+            v
+        })
+        .map_field_err("Report-to EID")?;
 
     // Parse timestamp
     let timestamp = block.parse();
@@ -298,7 +306,7 @@ impl Bundle {
                             shortest = shortest && s;
                             Some(v)
                         })
-                        .map_field_err("Previous Node ID")?;
+                        .map_field_err("Previous Node Block")?;
                     seen_previous_node = true;
                 }
                 BlockType::BundleAge => {
@@ -491,88 +499,78 @@ impl cbor::decode::FromCbor for ValidBundle {
     type Error = BundleError;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        let Some(((bundle, mut valid, shortest), len)) =
-            cbor::decode::try_parse_array(data, |blocks, mut shortest, tags| {
-                // Check for shortest/correct form
-                shortest = shortest && !blocks.is_definite();
-                if shortest {
-                    // Appendix B of RFC9171
-                    let mut seen_55799 = false;
-                    for tag in &tags {
-                        match *tag {
-                            255799 if !seen_55799 => seen_55799 = true,
-                            _ => {
-                                shortest = false;
-                                break;
-                            }
+        cbor::decode::try_parse_array(data, |blocks, mut shortest, tags| {
+            // Check for shortest/correct form
+            shortest = shortest && !blocks.is_definite();
+            if shortest {
+                // Appendix B of RFC9171
+                let mut seen_55799 = false;
+                for tag in &tags {
+                    match *tag {
+                        255799 if !seen_55799 => seen_55799 = true,
+                        _ => {
+                            shortest = false;
+                            break;
                         }
                     }
                 }
+            }
 
-                // Parse Primary block
-                let block_start = blocks.offset();
-                let ((mut bundle, mut valid), block_len) = blocks
-                    .parse_array(|block, s, tags| {
-                        shortest = shortest && s && tags.is_empty() && block.is_definite();
+            // Parse Primary block
+            let block_start = blocks.offset();
+            let ((mut bundle, mut valid), block_len) = blocks
+                .parse_array(|block, s, tags| {
+                    shortest = shortest && s && tags.is_empty() && block.is_definite();
 
-                        parse_primary_block(data, block, block_start).map(|(bundle, valid, s)| {
-                            shortest = shortest && s;
-                            (bundle, valid)
-                        })
-                    })
-                    .map_field_err("Primary Block")?;
-
-                if valid {
-                    // Add a block 0
-                    bundle.blocks.insert(
-                        0,
-                        Block {
-                            block_type: BlockType::Primary,
-                            flags: BlockFlags {
-                                must_replicate: true,
-                                report_on_failure: true,
-                                delete_bundle_on_failure: true,
-                                ..Default::default()
-                            },
-                            crc_type: bundle.crc_type,
-                            data_start: block_start,
-                            payload_offset: 0,
-                            data_len: block_len,
-                        },
-                    );
-
-                    if let Ok(s) = bundle.parse_blocks(blocks, block_start + block_len, data) {
+                    parse_primary_block(data, block, block_start).map(|(bundle, valid, s)| {
                         shortest = shortest && s;
-                    } else {
-                        // Don't return an Err, just capture validity
-                        valid = false;
-                    }
-                }
+                        (bundle, valid)
+                    })
+                })
+                .map_field_err("Primary Block")?;
 
-                if !valid {
-                    // Just skip over the blocks, avoiding any further parsing
-                    blocks.skip_to_end(16)?;
-                }
-
-                Ok::<_, BundleError>((bundle, valid, shortest))
-            })?
-        else {
-            return Ok(None);
-        };
-
-        if len < data.len() {
-            valid = false;
-        }
-
-        Ok(Some((
             if valid {
-                ValidBundle::Valid(bundle)
-            } else {
-                ValidBundle::Invalid(bundle)
-            },
-            if valid { shortest } else { false },
-            len,
-        )))
+                // Add a block 0
+                bundle.blocks.insert(
+                    0,
+                    Block {
+                        block_type: BlockType::Primary,
+                        flags: BlockFlags {
+                            must_replicate: true,
+                            report_on_failure: true,
+                            delete_bundle_on_failure: true,
+                            ..Default::default()
+                        },
+                        crc_type: bundle.crc_type,
+                        data_start: block_start,
+                        payload_offset: 0,
+                        data_len: block_len,
+                    },
+                );
+
+                if let Ok(s) = bundle.parse_blocks(blocks, block_start + block_len, data) {
+                    shortest = shortest && s;
+                } else {
+                    // Don't return an Err, just capture validity
+                    valid = false;
+                }
+            }
+
+            if !valid {
+                // Just skip over the blocks, avoiding any further parsing
+                blocks.skip_to_end(16)?;
+            }
+            Ok::<_, BundleError>((bundle, valid, shortest))
+        })
+        .map(|o| {
+            o.map(|((bundle, valid, shortest), len)| {
+                if valid && len == data.len() {
+                    (ValidBundle::Valid(bundle), shortest, len)
+                } else {
+                    (ValidBundle::Invalid(bundle), false, len)
+                }
+            })
+        })
     }
 }
 

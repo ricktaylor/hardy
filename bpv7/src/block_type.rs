@@ -12,6 +12,24 @@ pub enum BlockType {
     Unrecognised(u64),
 }
 
+impl std::fmt::Display for BlockType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BlockType::Primary => write!(f, "Primary"),
+            BlockType::Payload => write!(f, "Payload"),
+            BlockType::PreviousNode => write!(f, "Previous Node"),
+            BlockType::BundleAge => write!(f, "Bundle Age"),
+            BlockType::HopCount => write!(f, "Hop Count"),
+            BlockType::BlockIntegrity => write!(f, "Bundle Integrity"),
+            BlockType::BlockSecurity => write!(f, "Bundle Security"),
+            BlockType::Unrecognised(v) if *v >= 192 && *v <= 255 => {
+                write!(f, "Private/Experimental type {v}")
+            }
+            BlockType::Unrecognised(v) => write!(f, "Unassigned type {v}"),
+        }
+    }
+}
+
 impl From<BlockType> for u64 {
     fn from(value: BlockType) -> Self {
         match value {
