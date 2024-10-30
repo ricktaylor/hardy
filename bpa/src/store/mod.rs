@@ -382,7 +382,7 @@ impl Store {
             .confirm_exists(&bundle.id)
             .await
             .trace_expect("Failed to confirm bundle existence");
-        if let Some(metadata) = &metadata {
+        if let Some(metadata) = metadata {
             let drop = if let metadata::BundleStatus::Tombstone(_) = metadata.status {
                 // Tombstone, ignore
                 warn!("Tombstone bundle data found: {storage_name}");
@@ -404,28 +404,38 @@ impl Store {
                     ));
                 return (0, 1);
             }
+
+            dispatcher
+                .check_bundle(metadata::Bundle { metadata, bundle }, valid)
+                .await
+                .trace_expect(&format!("Bundle validation failed for: {storage_name}"));
+
+            return (0, 0);
         }
-        let orphan = metadata.is_none();
 
         // Send to the dispatcher to sort out
+        let mut bundle = metadata::Bundle {
+            metadata: metadata::Metadata {
+                storage_name: Some(storage_name),
+                hash,
+                received_at: file_time,
+                ..Default::default()
+            },
+            bundle,
+        };
+
+        // If the bundle isn't valid, it must always be a Tombstone
+        if !valid {
+            bundle.metadata.status =
+                metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
+        }
+
         dispatcher
-            .restart_bundle(
-                metadata::Bundle {
-                    metadata: metadata.unwrap_or(metadata::Metadata {
-                        storage_name: Some(storage_name),
-                        hash,
-                        received_at: file_time,
-                        ..Default::default()
-                    }),
-                    bundle,
-                },
-                valid,
-                orphan,
-            )
+            .orphan_bundle(bundle, valid)
             .await
             .trace_expect("Failed to restart bundle");
 
-        (if orphan { 1 } else { 0 }, 0)
+        (1, 0)
     }
 
     #[instrument(skip_all)]

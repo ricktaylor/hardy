@@ -107,65 +107,42 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    pub async fn restart_bundle(
-        &self,
-        mut bundle: metadata::Bundle,
-        valid: bool,
-        orphan: bool,
-    ) -> Result<(), Error> {
-        if orphan {
-            // Report we have received the bundle
-            self.report_bundle_reception(
-                &bundle,
-                bpv7::StatusReportReasonCode::NoAdditionalInformation,
-            )
-            .await?;
+    pub async fn orphan_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
+        // Report we have received the bundle
+        self.report_bundle_reception(
+            &bundle,
+            bpv7::StatusReportReasonCode::NoAdditionalInformation,
+        )
+        .await?;
 
-            /* RACE: If there is a crash between the report creation(above) and the metadata store (below)
-             *  then we may send more than one "Received" Status Report when restarting,
-             *  but that is currently considered benign (as a duplicate report causes little harm)
-             *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
+        /* RACE: If there is a crash between the report creation(above) and the metadata store (below)
+         *  then we may send more than one "Received" Status Report when restarting,
+         *  but that is currently considered benign (as a duplicate report causes little harm)
+         *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
+         */
+
+        if !self
+            .store
+            .store_metadata(&bundle.metadata, &bundle.bundle)
+            .await?
+        {
+            /* Bundle with matching id already exists in the metadata store
+             * This can happen if we are receiving new bundles as we spool through restarted bundles
              */
+            trace!("Bundle with matching id already exists in the metadata store");
 
-            // If the bundle isn't valid, it will always be a Tombstone
-            if !valid {
-                bundle.metadata.status =
-                    metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
-            }
-
-            if !self
+            // Drop the stored data, and do not process further
+            return self
                 .store
-                .store_metadata(&bundle.metadata, &bundle.bundle)
-                .await?
-            {
-                /* Bundle with matching id already exists in the metadata store
-                 * This can happen if we are receiving new bundles as we spool through restarted bundles
-                 */
-                trace!("Bundle with matching id already exists in the metadata store");
-
-                // Drop the stored data, and do not process further
-                return self
-                    .store
-                    .delete_data(&bundle.metadata.storage_name.unwrap())
-                    .await;
-            }
+                .delete_data(&bundle.metadata.storage_name.unwrap())
+                .await;
         }
 
         self.check_bundle(bundle, valid).await
     }
 
     #[instrument(skip(self))]
-    async fn check_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
-        if !valid {
-            // Not valid, drop it
-            return self
-                .drop_bundle(
-                    bundle,
-                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                )
-                .await;
-        }
-
+    pub async fn check_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
         /* Always check bundles, no matter the state, as after restarting
          * the configured filters or code may have changed, and reprocessing is desired.
          */
@@ -178,25 +155,24 @@ impl Dispatcher {
         }
 
         // Check some basic semantic validity, lifetime first
-        let mut reason = bundle
-            .has_expired()
-            .then(|| {
-                trace!("Bundle lifetime has expired");
-                bpv7::StatusReportReasonCode::LifetimeExpired
-            })
-            .or_else(|| {
-                // Check hop count exceeded
-                bundle.bundle.hop_count.as_ref().and_then(|hop_info| {
-                    (hop_info.count >= hop_info.limit).then(|| {
-                        trace!(
-                            "Bundle hop-limit {}/{} exceeded",
-                            hop_info.count,
-                            hop_info.limit
-                        );
-                        bpv7::StatusReportReasonCode::HopLimitExceeded
-                    })
+        let mut reason = if !valid {
+            Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
+        } else if bundle.has_expired() {
+            trace!("Bundle lifetime has expired");
+            Some(bpv7::StatusReportReasonCode::LifetimeExpired)
+        } else {
+            // Check hop count exceeded
+            bundle.bundle.hop_count.as_ref().and_then(|hop_info| {
+                (hop_info.count >= hop_info.limit).then(|| {
+                    trace!(
+                        "Bundle hop-limit {}/{} exceeded",
+                        hop_info.count,
+                        hop_info.limit
+                    );
+                    bpv7::StatusReportReasonCode::HopLimitExceeded
                 })
-            });
+            })
+        };
 
         if reason.is_none() {
             // Check extension blocks
