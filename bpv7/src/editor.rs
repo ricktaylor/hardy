@@ -57,18 +57,17 @@ impl<'a> Editor<'a> {
             .iter()
             .find(|(_, block)| match block {
                 BlockTemplate::Keep(t) => *t == block_type,
-                BlockTemplate::Add(t) => t.block_type == block_type,
+                BlockTemplate::Add(t) => t.block_type() == block_type,
             })
             .and_then(|(block_number, template)| match template {
                 BlockTemplate::Keep(_) => self.original.blocks.get(block_number).map(|block| {
                     (
                         *block_number,
-                        builder::BlockTemplate {
+                        builder::BlockTemplate::new(
                             block_type,
-                            flags: block.flags.clone(),
-                            crc_type: block.crc_type,
-                            data: Vec::new(),
-                        },
+                            block.flags.clone(),
+                            block.crc_type,
+                        ),
                     )
                 }),
                 BlockTemplate::Add(template) => Some((*block_number, template.clone())),
@@ -88,74 +87,47 @@ impl<'a> Editor<'a> {
         self
     }
 
-    pub fn build(mut self, source_data: &[u8]) -> Result<(Bundle, Vec<u8>), BundleError> {
+    pub fn build(mut self, source_data: &[u8]) -> Result<Vec<u8>, BundleError> {
+        let primary_block = self.blocks.remove(&0).expect("No primary block!");
+        let payload_block = self.blocks.remove(&1).expect("No payload block!");
+
         // Begin indefinite array
         let mut data = vec![(4 << 5) | 31u8];
 
-        // Create new bundle
-        let mut bundle = Bundle {
-            id: self.original.id.clone(),
-            flags: self.original.flags.clone(),
-            crc_type: self.original.crc_type,
-            destination: self.original.destination.clone(),
-            report_to: self.original.report_to.clone(),
-            lifetime: self.original.lifetime,
-            ..Default::default()
-        };
-
         // Emit primary block
-        let primary_block = self.blocks.remove(&0).expect("No primary block!");
-        let (block, block_data) = self.build_block(0, primary_block, source_data, data.len());
-        bundle.blocks.insert(0, block);
-        data.extend(block_data);
-
-        // Stash payload block for last
-        let payload_block = self.blocks.remove(&1).expect("No payload block!");
+        data.extend(self.build_block(0, primary_block, source_data, data.len()));
 
         // Emit extension blocks
-        for (block_number, block) in std::mem::take(&mut self.blocks).into_iter() {
-            let (block, block_data) =
-                self.build_block(block_number, block, source_data, data.len());
-            data.extend(block_data);
-
-            builder::update_extension_blocks(&block, &mut bundle, &data);
-
-            bundle.blocks.insert(block_number, block);
+        for (block_number, block) in std::mem::take(&mut self.blocks) {
+            data.extend(self.build_block(block_number, block, source_data, data.len()));
         }
 
         // Emit payload block
-        let (block, block_data) = self.build_block(1, payload_block, source_data, data.len());
-        bundle.blocks.insert(1, block);
-        data.extend(block_data);
+        data.extend(self.build_block(1, payload_block, source_data, data.len()));
 
         // End indefinite array
         data.push(0xFF);
 
-        Ok((bundle, data))
+        Ok(data)
     }
 
     fn build_block(
         &self,
         block_number: u64,
         template: BlockTemplate,
-        source_data: &[u8],
+        data: &[u8],
         offset: usize,
-    ) -> (Block, Vec<u8>) {
+    ) -> Vec<u8> {
         match template {
             BlockTemplate::Keep(_) => {
-                let mut block = self
+                let block = self
                     .original
                     .blocks
                     .get(&block_number)
-                    .expect("Mismatched block in bundle!")
-                    .clone();
-
-                let block_data =
-                    source_data[block.data_start..block.data_start + block.data_len].to_vec();
-                block.data_start = offset;
-                (block, block_data)
+                    .expect("Mismatched block in bundle!");
+                data[block.data_start..block.data_start + block.data_len].to_vec()
             }
-            BlockTemplate::Add(template) => template.build(block_number, offset),
+            BlockTemplate::Add(template) => template.build(block_number, offset).1,
         }
     }
 }
@@ -163,7 +135,11 @@ impl<'a> Editor<'a> {
 impl<'a> BlockBuilder<'a> {
     fn new(editor: Editor<'a>, block_number: u64, block_type: BlockType) -> Self {
         Self {
-            template: builder::BlockTemplate::new(block_type, editor.original.crc_type),
+            template: builder::BlockTemplate::new(
+                block_type,
+                BlockFlags::default(),
+                editor.original.crc_type,
+            ),
             block_number,
             editor,
         }
@@ -181,19 +157,35 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn flags(mut self, flags: BlockFlags) -> Self {
-        self.template.flags = flags;
+    pub fn must_replicate(mut self, must_replicate: bool) -> Self {
+        self.template.must_replicate(must_replicate);
         self
     }
 
-    /*
-    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
-        self.template.crc_type = crc_type;
+    pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
+        self.template.report_on_failure(report_on_failure);
         self
-    }*/
+    }
+
+    pub fn delete_bundle_on_failure(mut self, delete_bundle_on_failure: bool) -> Self {
+        self.template
+            .delete_bundle_on_failure(delete_bundle_on_failure);
+        self
+    }
+
+    pub fn delete_block_on_failure(mut self, delete_block_on_failure: bool) -> Self {
+        self.template
+            .delete_block_on_failure(delete_block_on_failure);
+        self
+    }
+
+    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
+        self.template.crc_type(crc_type);
+        self
+    }
 
     pub fn data(mut self, data: Vec<u8>) -> Self {
-        self.template.data = data;
+        self.template.data(data);
         self
     }
 

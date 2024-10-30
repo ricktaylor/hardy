@@ -206,7 +206,7 @@ impl Dispatcher {
                 .build();
         }
 
-        editor.build(data).map(|(_, data)| data).map_err(Into::into)
+        editor.build(data).map_err(Into::into)
     }
 
     #[instrument(skip(self))]

@@ -12,25 +12,10 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn block_data(&self, data: &[u8]) -> Box<[u8]> {
+    pub fn block_data(&self, data: &[u8]) -> Result<Box<[u8]>, cbor::decode::Error> {
         cbor::decode::parse(
             &data[(self.data_start + self.payload_offset)..(self.data_start + self.data_len)],
         )
-        .expect("Failed to parse block data")
-    }
-
-    pub fn parse_payload<T>(&self, data: &[u8]) -> Result<(T, bool), BundleError>
-    where
-        T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
-        BundleError: From<<T as cbor::decode::FromCbor>::Error>,
-    {
-        let data = self.block_data(data);
-        let (v, s, len) = cbor::decode::parse(&data)?;
-        if len != data.len() {
-            Err(BundleError::BlockAdditionalData(self.block_type))
-        } else {
-            Ok((v, s))
-        }
     }
 
     pub fn emit(&mut self, block_number: u64, data: &[u8], data_start: usize) -> Vec<u8> {

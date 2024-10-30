@@ -39,3 +39,8 @@ path = "fuzz_targets/bundle.rs"
 test = false
 doc = false
 bench = false
+
+[lib]
+name = "test"
+path = "test.rs"
+test = true

@@ -15,19 +15,6 @@ pub struct Builder {
     extensions: Vec<BlockTemplate>,
 }
 
-#[derive(Clone)]
-pub struct BlockTemplate {
-    pub block_type: BlockType,
-    pub flags: BlockFlags,
-    pub crc_type: CrcType,
-    pub data: Vec<u8>,
-}
-
-pub struct BlockBuilder {
-    builder: Builder,
-    template: BlockTemplate,
-}
-
 impl Default for Builder {
     fn default() -> Self {
         Self {
@@ -37,7 +24,11 @@ impl Default for Builder {
             destination: Eid::default(),
             report_to: None,
             lifetime: DEFAULT_LIFETIME,
-            payload: BlockTemplate::new(BlockType::Payload, DEFAULT_CRC_TYPE),
+            payload: BlockTemplate::new(
+                BlockType::Payload,
+                BlockFlags::default(),
+                DEFAULT_CRC_TYPE,
+            ),
             extensions: Vec::new(),
         }
     }
@@ -53,10 +44,10 @@ impl Builder {
         self
     }
 
-    /*pub fn crc_type(mut self, crc_type: CrcType) -> Self {
+    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
         self.crc_type = crc_type;
         self
-    }*/
+    }
 
     pub fn source(mut self, source: Eid) -> Self {
         self.source = source;
@@ -100,9 +91,6 @@ impl Builder {
         for (block_number, block) in self.extensions.into_iter().enumerate() {
             let (block, block_data) = block.build(block_number as u64 + 2, data.len());
             data.extend(block_data);
-
-            update_extension_blocks(&block, &mut bundle, &data);
-
             bundle.blocks.insert(block_number as u64, block);
         }
 
@@ -141,66 +129,48 @@ impl Builder {
     }
 }
 
-pub fn update_extension_blocks(block: &Block, bundle: &mut Bundle, data: &[u8]) {
-    match &block.block_type {
-        BlockType::PreviousNode => {
-            bundle.previous_node = block
-                .parse_payload(data)
-                .map(|(v, _)| Some(v))
-                .expect("Previous Node ID");
-        }
-        BlockType::BundleAge => {
-            bundle.age = block
-                .parse_payload(data)
-                .map(|(v, _)| Some(v))
-                .expect("Bundle Age")
-        }
-        BlockType::HopCount => {
-            bundle.hop_count = block
-                .parse_payload(data)
-                .map(|(v, _)| Some(v))
-                .expect("Hop Count Block")
-        }
-        _ => {}
-    }
+pub struct BlockBuilder {
+    builder: Builder,
+    template: BlockTemplate,
 }
 
 impl BlockBuilder {
     fn new(builder: Builder, block_type: BlockType) -> Self {
         Self {
-            template: BlockTemplate::new(block_type, builder.crc_type),
+            template: BlockTemplate::new(block_type, BlockFlags::default(), builder.crc_type),
             builder,
         }
     }
 
-    /*pub fn must_replicate(mut self, must_replicate: bool) -> Self {
-        self.template.flags.must_replicate = must_replicate;
+    pub fn must_replicate(mut self, must_replicate: bool) -> Self {
+        self.template.must_replicate(must_replicate);
         self
     }
 
     pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
-        self.template.flags.report_on_failure = report_on_failure;
+        self.template.report_on_failure(report_on_failure);
         self
     }
 
     pub fn delete_bundle_on_failure(mut self, delete_bundle_on_failure: bool) -> Self {
-        self.template.flags.delete_bundle_on_failure = delete_bundle_on_failure;
+        self.template
+            .delete_bundle_on_failure(delete_bundle_on_failure);
         self
     }
 
     pub fn delete_block_on_failure(mut self, delete_block_on_failure: bool) -> Self {
-        self.template.flags.delete_block_on_failure = delete_block_on_failure;
+        self.template
+            .delete_block_on_failure(delete_block_on_failure);
         self
     }
 
     pub fn crc_type(mut self, crc_type: CrcType) -> Self {
-        self.template.crc_type = crc_type;
+        self.template.crc_type(crc_type);
         self
-    }*/
+    }
 
     pub fn data(mut self, data: Vec<u8>) -> Self {
-        // Just copy the data for now
-        self.template.data = data;
+        self.template.data(data);
         self
     }
 
@@ -214,14 +184,51 @@ impl BlockBuilder {
     }
 }
 
+#[derive(Clone)]
+pub struct BlockTemplate {
+    block_type: BlockType,
+    flags: BlockFlags,
+    crc_type: CrcType,
+    data: Vec<u8>,
+}
+
 impl BlockTemplate {
-    pub fn new(block_type: BlockType, crc_type: CrcType) -> Self {
+    pub fn new(block_type: BlockType, flags: BlockFlags, crc_type: CrcType) -> Self {
         Self {
             block_type,
-            flags: BlockFlags::default(),
+            flags,
             crc_type,
             data: Vec::new(),
         }
+    }
+
+    pub fn block_type(&self) -> BlockType {
+        self.block_type
+    }
+
+    pub fn must_replicate(&mut self, must_replicate: bool) {
+        self.flags.must_replicate = must_replicate;
+    }
+
+    pub fn report_on_failure(&mut self, report_on_failure: bool) {
+        self.flags.report_on_failure = report_on_failure;
+    }
+
+    pub fn delete_bundle_on_failure(&mut self, delete_bundle_on_failure: bool) {
+        self.flags.delete_bundle_on_failure = delete_bundle_on_failure;
+    }
+
+    pub fn delete_block_on_failure(&mut self, delete_block_on_failure: bool) {
+        self.flags.delete_block_on_failure = delete_block_on_failure;
+    }
+
+    pub fn crc_type(&mut self, crc_type: CrcType) {
+        self.crc_type = crc_type;
+    }
+
+    pub fn data(&mut self, data: Vec<u8>) {
+        // Just copy the data for now
+        self.data = data;
     }
 
     pub fn build(self, block_number: u64, data_start: usize) -> (Block, Vec<u8>) {

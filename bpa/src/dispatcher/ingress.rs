@@ -19,14 +19,13 @@ impl Dispatcher {
         }
 
         // Parse the bundle
-        let (bundle, data) = match cbor::decode::parse(&data)? {
-            (bpv7::ValidBundle::Valid(bundle), true) => (bundle, data.to_vec()),
-            (bpv7::ValidBundle::Valid(mut bundle), false) => {
-                // Rewrite the bundle
-                let data = bundle.canonicalise(&data)?;
-                (bundle, data)
+        let (bundle, data) = match bpv7::ValidBundle::parse(&data, |_| Ok(None))? {
+            bpv7::ValidBundle::Valid(bundle) => {
+                let data: Vec<u8> = data.into();
+                (bundle, data.into())
             }
-            (bpv7::ValidBundle::Invalid(bundle), _) => {
+            bpv7::ValidBundle::Canonicalised(bundle, data) => (bundle, data),
+            bpv7::ValidBundle::Invalid(bundle) => {
                 // Receive a fake bundle
                 return self
                     .receive_inner(
@@ -48,7 +47,7 @@ impl Dispatcher {
         };
 
         // Write the bundle data to the store
-        let (storage_name, hash) = self.store.store_data(data.into()).await?;
+        let (storage_name, hash) = self.store.store_data(data).await?;
 
         if let Err(e) = self
             .receive_inner(
@@ -115,12 +114,6 @@ impl Dispatcher {
         orphan: bool,
     ) -> Result<(), Error> {
         if orphan {
-            // If the bundle isn't valid, it will always be a Tombstone
-            if !valid {
-                bundle.metadata.status =
-                    metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
-            }
-
             // Report we have received the bundle
             self.report_bundle_reception(
                 &bundle,
@@ -133,6 +126,12 @@ impl Dispatcher {
              *  but that is currently considered benign (as a duplicate report causes little harm)
              *  and unlikely (as the report forwarding process is expected to take longer than the metadata.store)
              */
+
+            // If the bundle isn't valid, it will always be a Tombstone
+            if !valid {
+                bundle.metadata.status =
+                    metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
+            }
 
             if !self
                 .store
@@ -202,10 +201,6 @@ impl Dispatcher {
         if reason.is_none() {
             // Check extension blocks
             reason = self.check_extension_blocks(&bundle).await?;
-        }
-
-        if reason.is_none() {
-            // TODO: BPSec here!
         }
 
         if reason.is_none() {
