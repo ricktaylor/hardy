@@ -229,7 +229,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) -> usize {
-        let mut len = encoder.emit(Context::BCB_AES_GCM);
+        let mut len = encoder.emit(Context::BIB_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
             len += encoder.emit(0);
             len + encoder.emit(source)

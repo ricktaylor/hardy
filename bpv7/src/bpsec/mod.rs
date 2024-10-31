@@ -25,7 +25,7 @@ impl std::fmt::Display for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Context::BIB_HMAC_SHA2 => write!(f, "BIB-HMAC-SHA2"),
-            Context::BCB_AES_GCM => write!(f, "BCB-HAES-GCM"),
+            Context::BCB_AES_GCM => write!(f, "BCB-AES-GCM"),
             Context::Unrecognised(v) => write!(f, "Unrecognised {v}"),
         }
     }
