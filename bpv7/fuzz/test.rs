@@ -1,4 +1,5 @@
-/*#[cfg(test)]
+/*
+#[cfg(test)]
 use {hardy_bpv7::prelude::*, std::io::Write};
 
 #[test]
@@ -8,21 +9,15 @@ fn test() {
 
     let mut f = |_: &Eid| Ok(None);
 
-    let r = ValidBundle::parse(data, &mut f);
-    dbg!(&r);
-
-    if let Ok(ValidBundle::Rewritten(_, data)) = r {
+    if let Ok(ValidBundle::Rewritten(_, data)) = ValidBundle::parse(data, &mut f) {
         _ = std::fs::File::create("rewritten_bundle")
             .unwrap()
             .write_all(&data);
 
-        let r = ValidBundle::parse(&data, &mut f);
-        dbg!(&r);
-
-        match r {
+        match ValidBundle::parse(&data, &mut f) {
             Ok(ValidBundle::Valid(_)) => {}
             Ok(ValidBundle::Rewritten(_, _)) => panic!("Rewrite produced non-canonical results"),
-            Ok(ValidBundle::Invalid(_)) => panic!("Rewrite produced invalid results"),
+            Ok(ValidBundle::Invalid(_, e)) => panic!("Rewrite produced invalid results: {e}"),
             Err(_) => panic!("Rewrite errored"),
         };
     }

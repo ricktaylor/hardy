@@ -34,8 +34,14 @@ pub enum BundleError {
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
     MissingBundleAge,
 
-    #[error("Invalid bundle")]
-    InvalidBundle(Box<Bundle>),
+    #[error("Invalid bundle flag combination")]
+    InvalidFlags,
+
+    #[error("Invalid bundle: {error}")]
+    InvalidBundle {
+        bundle: Box<Bundle>,
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
 
     #[error(transparent)]
     InvalidBPSec(#[from] bpsec::Error),
@@ -625,7 +631,7 @@ impl Bundle {
 pub enum ValidBundle {
     Valid(Bundle),
     Rewritten(Bundle, Box<[u8]>),
-    Invalid(Bundle),
+    Invalid(Bundle, Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl ValidBundle {
@@ -689,15 +695,15 @@ impl ValidBundle {
                     noncanonical_blocks.extend(ncb);
                     Ok((bundle, noncanonical_blocks))
                 }
-                Err(_e) => {
-                    //dbg!(e);
-                    Err(BundleError::InvalidBundle(bundle.into()))
-                }
+                Err(e) => Err(BundleError::InvalidBundle {
+                    bundle: bundle.into(),
+                    error: e.into(),
+                }),
             }
         }) {
             Ok(((mut bundle, noncanonical_blocks), len)) => {
                 if len != data.len() {
-                    Ok(Self::Invalid(bundle))
+                    Ok(Self::Invalid(bundle, BundleError::AdditionalData.into()))
                 } else if !noncanonical_blocks.is_empty() {
                     let data = bundle.canonicalise(noncanonical_blocks, data)?;
                     Ok(Self::Rewritten(bundle, data))
@@ -705,7 +711,7 @@ impl ValidBundle {
                     Ok(Self::Valid(bundle))
                 }
             }
-            Err(BundleError::InvalidBundle(bundle)) => Ok(Self::Invalid(*bundle)),
+            Err(BundleError::InvalidBundle { bundle, error: e }) => Ok(Self::Invalid(*bundle, e)),
             Err(e) => Err(e),
         }
     }

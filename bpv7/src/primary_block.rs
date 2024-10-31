@@ -10,7 +10,7 @@ struct PartialPrimaryBlock {
     pub timestamp: Result<CreationTimestamp, BundleError>,
     pub lifetime: Result<u64, BundleError>,
     pub fragment_info: Result<Option<FragmentInfo>, BundleError>,
-    pub crc_result: Result<bool, BundleError>,
+    pub crc_result: Result<(), BundleError>,
 }
 
 impl cbor::decode::FromCbor for PartialPrimaryBlock {
@@ -109,10 +109,9 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                 Ok(crc_type) => crc::parse_crc_value(data, block, *crc_type)
                     .map(|s| {
                         shortest = shortest && s;
-                        true
                     })
                     .map_err(Into::into),
-                Err(_) => Ok(false),
+                Err(_) => Ok(()),
             };
 
             Ok((
@@ -237,32 +236,8 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 Ok(lifetime),
                 Ok(fragment_info),
                 Ok(crc_type),
-                Ok(true),
+                Ok(()),
             ) => {
-                let mut valid = true;
-
-                // Check flags
-                if let Eid::Null = source {
-                    if p.flags.is_fragment
-                        || !p.flags.do_not_fragment
-                        || p.flags.receipt_report_requested
-                        || p.flags.forward_report_requested
-                        || p.flags.delivery_report_requested
-                        || p.flags.delete_report_requested
-                    {
-                        // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                        valid = false;
-                    }
-                } else if p.flags.is_admin_record
-                    && (p.flags.receipt_report_requested
-                        || p.flags.forward_report_requested
-                        || p.flags.delivery_report_requested
-                        || p.flags.delete_report_requested)
-                {
-                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                    valid = false;
-                }
-
                 let block = Self {
                     flags: p.flags,
                     report_to: p.report_to,
@@ -273,28 +248,170 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     lifetime,
                     fragment_info,
                 };
-                if !valid {
-                    Err(BundleError::InvalidBundle(block.into_bundle().into()))
-                } else {
-                    Ok(Some((block, s, len)))
+
+                // Check flags
+                if let &Eid::Null = &block.source {
+                    if block.flags.is_fragment
+                        || !block.flags.do_not_fragment
+                        || block.flags.receipt_report_requested
+                        || block.flags.forward_report_requested
+                        || block.flags.delivery_report_requested
+                        || block.flags.delete_report_requested
+                    {
+                        // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
+                        return Err(BundleError::InvalidBundle {
+                            bundle: block.into_bundle().into(),
+                            error: BundleError::InvalidFlags.into(),
+                        });
+                    }
                 }
+
+                if block.flags.is_admin_record
+                    && (block.flags.receipt_report_requested
+                        || block.flags.forward_report_requested
+                        || block.flags.delivery_report_requested
+                        || block.flags.delete_report_requested)
+                {
+                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
+                    return Err(BundleError::InvalidBundle {
+                        bundle: block.into_bundle().into(),
+                        error: BundleError::InvalidFlags.into(),
+                    });
+                }
+
+                Ok(Some((block, s, len)))
             }
-            (destination, source, timestamp, lifetime, fragment_info, crc_type, _) => {
-                Err(BundleError::InvalidBundle(
-                    PrimaryBlock {
+            (Err(e), source, timestamp, lifetime, fragment_info, crc_type, _) => {
+                Err(BundleError::InvalidBundle {
+                    bundle: PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
                         crc_type: crc_type.unwrap_or_default(),
                         source: source.unwrap_or_default(),
-                        destination: destination.unwrap_or_default(),
+                        destination: Eid::default(),
                         timestamp: timestamp.unwrap_or_default(),
                         lifetime: lifetime.unwrap_or(0),
                         fragment_info: fragment_info.unwrap_or_default(),
                     }
                     .into_bundle()
                     .into(),
-                ))
+                    error: e.into(),
+                })
             }
+            (Ok(destination), Err(e), timestamp, lifetime, fragment_info, crc_type, _) => {
+                Err(BundleError::InvalidBundle {
+                    bundle: PrimaryBlock {
+                        flags: p.flags,
+                        report_to: p.report_to,
+                        crc_type: crc_type.unwrap_or_default(),
+                        source: Eid::default(),
+                        destination,
+                        timestamp: timestamp.unwrap_or_default(),
+                        lifetime: lifetime.unwrap_or(0),
+                        fragment_info: fragment_info.unwrap_or_default(),
+                    }
+                    .into_bundle()
+                    .into(),
+                    error: e.into(),
+                })
+            }
+            (Ok(destination), Ok(source), Err(e), lifetime, fragment_info, crc_type, _) => {
+                Err(BundleError::InvalidBundle {
+                    bundle: PrimaryBlock {
+                        flags: p.flags,
+                        report_to: p.report_to,
+                        crc_type: crc_type.unwrap_or_default(),
+                        source,
+                        destination,
+                        timestamp: CreationTimestamp::default(),
+                        lifetime: lifetime.unwrap_or(0),
+                        fragment_info: fragment_info.unwrap_or_default(),
+                    }
+                    .into_bundle()
+                    .into(),
+                    error: e.into(),
+                })
+            }
+            (Ok(destination), Ok(source), Ok(timestamp), Err(e), fragment_info, crc_type, _) => {
+                Err(BundleError::InvalidBundle {
+                    bundle: PrimaryBlock {
+                        flags: p.flags,
+                        report_to: p.report_to,
+                        crc_type: crc_type.unwrap_or_default(),
+                        source,
+                        destination,
+                        timestamp,
+                        lifetime: 0,
+                        fragment_info: fragment_info.unwrap_or_default(),
+                    }
+                    .into_bundle()
+                    .into(),
+                    error: e.into(),
+                })
+            }
+            (Ok(destination), Ok(source), Ok(timestamp), Ok(lifetime), Err(e), crc_type, _) => {
+                Err(BundleError::InvalidBundle {
+                    bundle: PrimaryBlock {
+                        flags: p.flags,
+                        report_to: p.report_to,
+                        crc_type: crc_type.unwrap_or_default(),
+                        source,
+                        destination,
+                        timestamp,
+                        lifetime,
+                        fragment_info: None,
+                    }
+                    .into_bundle()
+                    .into(),
+                    error: e.into(),
+                })
+            }
+            (
+                Ok(destination),
+                Ok(source),
+                Ok(timestamp),
+                Ok(lifetime),
+                Ok(fragment_info),
+                Err(e),
+                _,
+            ) => Err(BundleError::InvalidBundle {
+                bundle: PrimaryBlock {
+                    flags: p.flags,
+                    report_to: p.report_to,
+                    crc_type: CrcType::default(),
+                    source,
+                    destination,
+                    timestamp,
+                    lifetime,
+                    fragment_info,
+                }
+                .into_bundle()
+                .into(),
+                error: e.into(),
+            }),
+            (
+                Ok(destination),
+                Ok(source),
+                Ok(timestamp),
+                Ok(lifetime),
+                Ok(fragment_info),
+                Ok(crc_type),
+                Err(e),
+            ) => Err(BundleError::InvalidBundle {
+                bundle: PrimaryBlock {
+                    flags: p.flags,
+                    report_to: p.report_to,
+                    crc_type,
+                    source,
+                    destination,
+                    timestamp,
+                    lifetime,
+                    fragment_info,
+                }
+                .into_bundle()
+                .into(),
+                error: e.into(),
+            }),
         }
     }
 }

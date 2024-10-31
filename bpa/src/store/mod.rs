@@ -357,7 +357,9 @@ impl Store {
                     storage_name = new_storage_name;
                     (bundle, None, hash)
                 }
-                Ok(bpv7::ValidBundle::Invalid(bundle)) => {
+                Ok(bpv7::ValidBundle::Invalid(bundle, e)) => {
+                    warn!("Invalid bundle found: {storage_name}, {e}");
+
                     let hash = Some(hash(data.as_ref().as_ref()));
                     (
                         bundle,

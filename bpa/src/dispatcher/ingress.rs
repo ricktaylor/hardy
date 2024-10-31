@@ -25,8 +25,10 @@ impl Dispatcher {
                 (bundle, data.into())
             }
             bpv7::ValidBundle::Rewritten(bundle, data) => (bundle, data),
-            bpv7::ValidBundle::Invalid(bundle) => {
-                // Receive a fake bundle
+            bpv7::ValidBundle::Invalid(bundle, e) => {
+                trace!("Invalid bundle received: {e}");
+
+                // Don't bother saving the bundle data, it's garbage
                 return self
                     .receive_inner(
                         metadata::Bundle {
