@@ -103,7 +103,7 @@ impl cbor::encode::ToCbor for &OperationSet {
 
         // Results
         len + encoder.emit_array(Some(self.operations.len()), |a, _| {
-            for (idx, (_, op)) in self.operations.iter().enumerate() {
+            for (idx, op) in self.operations.values().enumerate() {
                 a.emit(idx);
                 op.emit_result(a);
             }

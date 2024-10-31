@@ -188,7 +188,7 @@ where
         for i1 in self.intervals.find(allocator_id) {
             for i2 in i1.find(node_number) {
                 for i3 in i2.find(service_number) {
-                    results.extend(i3.iter().map(|(_, t)| t).collect::<Vec<&T>>())
+                    results.extend(i3.values())
                 }
             }
         }

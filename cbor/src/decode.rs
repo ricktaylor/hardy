@@ -809,7 +809,7 @@ where
     T: FromCbor,
     T::Error: From<self::Error>,
 {
-    T::try_from_cbor(data).map(|r| r.map(|(v, _, _)| v))
+    T::try_from_cbor(data).map(|o| o.map(|(v, _, _)| v))
 }
 
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>

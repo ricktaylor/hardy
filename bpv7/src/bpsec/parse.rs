@@ -147,7 +147,7 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
             let mut shortest = true;
 
             // Targets
-            let (targets, _) = seq
+            let targets = seq
                 .parse_array(|a, s, tags| {
                     shortest = shortest && s && tags.is_empty() && a.is_definite();
                     let mut targets: Vec<u64> = Vec::new();
@@ -162,7 +162,8 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
                     }
                     Ok::<_, Error>(targets)
                 })
-                .map_field_err("Security Targets field")?;
+                .map_field_err("Security Targets field")?
+                .0;
             if targets.is_empty() {
                 return Err(Error::NoTargets);
             }
@@ -226,8 +227,8 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
                     }
                     Ok(results)
                 })
-                .map(|(v, _)| v)
-                .map_field_err("Security Targets field")?;
+                .map_field_err("Security Targets field")?
+                .0;
 
             if targets.len() != results.len() {
                 return Err(Error::MismatchedTargetResult);

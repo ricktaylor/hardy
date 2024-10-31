@@ -76,7 +76,7 @@ impl ClaRegistry {
         }
 
         // Do a linear search for re-registration with the same name
-        for (_, cla) in clas.iter_mut() {
+        for cla in clas.values() {
             if cla.ident != request.ident {
                 return Err(tonic::Status::already_exists(format!(
                     "CLA {} already registered",
