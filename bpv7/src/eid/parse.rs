@@ -75,7 +75,7 @@ fn ipn_from_str(s: &str) -> Result<Eid, EidError> {
             node_number,
             parts[1].parse().map_field_err("Service Number")?,
         )
-        .map(|(e, _)| e)
+        .map(|e| e.0)
     } else if parts.len() == 3 {
         ipn_from_parts(
             3,
@@ -83,7 +83,7 @@ fn ipn_from_str(s: &str) -> Result<Eid, EidError> {
             parts[1].parse().map_field_err("Node Number")?,
             parts[2].parse().map_field_err("Service Number")?,
         )
-        .map(|(e, _)| e)
+        .map(|e| e.0)
     } else {
         return Err(EidError::IpnInvalidComponents);
     }
@@ -175,7 +175,7 @@ impl cbor::decode::FromCbor for Eid {
                             .into()),
                         }
                     })
-                    .map(|((eid, shortest), _)| (eid, shortest))
+                    .map(|v| v.0)
                 {
                     Err(EidError::InvalidCBOR(e)) => {
                         Err(e).map_field_err("'dtn' scheme-specific part")
@@ -196,7 +196,7 @@ impl cbor::decode::FromCbor for Eid {
                         )
                         .into()),
                     })
-                    .map(|((eid, shortest), _)| (eid, shortest))
+                    .map(|v| v.0)
                 {
                     Err(EidError::InvalidCBOR(e)) => {
                         Err(e).map_field_err("'ipn' scheme-specific part")

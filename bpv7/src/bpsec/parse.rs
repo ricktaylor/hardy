@@ -136,7 +136,7 @@ fn parse_ranges<const D: usize>(
         }
         Ok(map)
     })
-    .map(|o| o.map(|(v, _)| v))
+    .map(|o| o.map(|v| v.0))
 }
 
 impl cbor::decode::FromCbor for AbstractSyntaxBlock {

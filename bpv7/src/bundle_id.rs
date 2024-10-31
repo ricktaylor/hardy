@@ -71,7 +71,7 @@ impl BundleId {
                 Ok(s)
             }
         })
-        .map(|(v, _)| v)
+        .map(|v| v.0)
     }
     pub fn to_key(&self) -> String {
         BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = &self.fragment_info {

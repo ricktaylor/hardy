@@ -19,7 +19,7 @@ impl Operation {
     pub fn verify(&self, key: &KeyMaterial, bundle: &Bundle, data: &[u8]) -> Result<(), Error> {
         match self {
             Operation::HMAC_SHA2(o) => o.verify(key, bundle, data),
-            Operation::Unrecognised(_, _) => Ok(()),
+            Operation::Unrecognised(..) => Ok(()),
         }
     }
 

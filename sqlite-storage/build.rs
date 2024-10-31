@@ -31,7 +31,7 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    m.sort_by(|(a, _), (b, _)| a.cmp(b));
+    m.sort_by(|a, b| a.0.cmp(&b.0));
 
     out.write_all(b"[")?;
     for (seq, file_path) in m {

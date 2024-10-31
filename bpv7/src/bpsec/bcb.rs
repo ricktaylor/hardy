@@ -24,7 +24,7 @@ impl Operation {
     ) -> Result<Box<[u8]>, Error> {
         match self {
             Operation::AES_GCM(op) => op.decrypt(key, bundle, data),
-            Operation::Unrecognised(_, _) => todo!(),
+            Operation::Unrecognised(..) => todo!(),
         }
     }
 

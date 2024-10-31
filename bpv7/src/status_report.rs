@@ -185,7 +185,7 @@ fn parse_status_assertion(
             Ok(None)
         }
     })
-    .map(|(o, _)| o)
+    .map(|o| o.0)
 }
 
 #[derive(Default, Debug, Clone)]
