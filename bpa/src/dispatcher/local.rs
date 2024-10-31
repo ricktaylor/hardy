@@ -68,7 +68,7 @@ impl Dispatcher {
             .source(request.source)
             .destination(request.destination)
             .add_payload_block(request.data.into())
-            .build()?;
+            .build();
 
         // Store to store
         let metadata = self

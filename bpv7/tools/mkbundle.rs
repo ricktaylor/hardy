@@ -41,6 +41,12 @@ fn main() {
         .read_to_end(&mut payload)
         .expect("Failed to read from input");
 
+    let output: &mut dyn Write = if let Some(output) = args.output {
+        &mut BufWriter::new(std::fs::File::create(output).expect("Failed to create output file"))
+    } else {
+        &mut BufWriter::new(std::io::stdout())
+    };
+
     let mut b = Builder::new()
         .source(args.source)
         .destination(args.destination);
@@ -56,15 +62,7 @@ fn main() {
         b = b.lifetime(lifetime.as_millis() as u64);
     }
 
-    b = b.add_payload_block(payload);
-
-    let (_, data) = b.build().expect("Failed to build bundle");
-
-    let output: &mut dyn Write = if let Some(output) = args.output {
-        &mut BufWriter::new(std::fs::File::create(output).expect("Failed to create output file"))
-    } else {
-        &mut BufWriter::new(std::io::stdout())
-    };
-
-    output.write_all(&data).expect("Failed to write bundle")
+    output
+        .write_all(&b.add_payload_block(payload).build().1)
+        .expect("Failed to write bundle")
 }

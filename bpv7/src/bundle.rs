@@ -518,8 +518,8 @@ impl Bundle {
         Ok(noncanonical_blocks)
     }
 
-    pub fn emit_primary_block(&mut self, offset: usize) -> Vec<u8> {
-        let block_data = primary_block::PrimaryBlock::emit(self);
+    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array, offset: usize) -> usize {
+        let len = array.emit_raw(&primary_block::PrimaryBlock::emit(self));
         self.blocks.insert(
             0,
             Block {
@@ -533,96 +533,100 @@ impl Bundle {
                 crc_type: self.crc_type,
                 data_start: offset,
                 payload_offset: 0,
-                data_len: block_data.len(),
+                data_len: len,
             },
         );
-        block_data
+        len
     }
 
     fn canonicalise(
         &mut self,
         mut noncanonical_blocks: HashSet<u64>,
         source_data: &[u8],
-    ) -> Result<Box<[u8]>, BundleError> {
-        // Begin indefinite array
-        let mut data = vec![(4 << 5) | 31u8];
-
-        // Emit primary block
-        if noncanonical_blocks.remove(&0) {
-            data.extend(self.emit_primary_block(data.len()));
-        } else {
-            self.blocks
-                .get_mut(&0)
-                .expect("Missing primary block!")
-                .copy(source_data, &mut data);
-        }
-
-        // Stash payload block for last
-        let mut payload_block = self.blocks.remove(&1).expect("No payload block!");
-
-        // Emit extension blocks
-        for (block_number, block) in &mut self.blocks {
-            if let BlockType::Primary | BlockType::Payload = block.block_type {
-                continue;
-            }
-            if noncanonical_blocks.remove(block_number) {
-                let block_data = match &block.block_type {
-                    BlockType::PreviousNode => block.emit(
-                        *block_number,
-                        &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
-                        data.len(),
-                    ),
-                    BlockType::BundleAge => block.emit(
-                        *block_number,
-                        &cbor::encode::emit(self.age.unwrap()),
-                        data.len(),
-                    ),
-                    BlockType::HopCount => block.emit(
-                        *block_number,
-                        &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
-                        data.len(),
-                    ),
-                    BlockType::BlockIntegrity => block.emit(
-                        *block_number,
-                        &cbor::encode::emit(
-                            &block
-                                .parse_payload::<bpsec::bib::OperationSet>(source_data)
-                                .map(|(v, _)| v)
-                                .unwrap(),
-                        ),
-                        data.len(),
-                    ),
-                    BlockType::BlockSecurity => block.emit(
-                        *block_number,
-                        &cbor::encode::emit(
-                            &block
-                                .parse_payload::<bpsec::bcb::OperationSet>(source_data)
-                                .map(|(v, _)| v)
-                                .unwrap(),
-                        ),
-                        data.len(),
-                    ),
-                    _ => block.emit(*block_number, &block.block_data(source_data)?, data.len()),
-                };
-                data.extend(block_data);
+    ) -> Vec<u8> {
+        cbor::encode::emit_array(None, |a, mut offset| {
+            // Emit primary block
+            if noncanonical_blocks.remove(&0) {
+                offset += self.emit_primary_block(a, offset);
             } else {
-                block.copy(source_data, &mut data);
+                offset += self
+                    .blocks
+                    .get_mut(&0)
+                    .expect("Missing primary block!")
+                    .copy(source_data, a, offset);
             }
-        }
 
-        // Emit payload block
-        let block_data = payload_block.emit(
-            1,
-            &cbor::encode::emit(payload_block.block_data(source_data)?.as_ref()),
-            data.len(),
-        );
-        data.extend(block_data);
-        self.blocks.insert(1, payload_block);
+            // Stash payload block for last
+            let mut payload_block = self.blocks.remove(&1).expect("No payload block!");
 
-        // End indefinite array
-        data.push(0xFF);
+            // Emit extension blocks
+            for (block_number, block) in &mut self.blocks {
+                if let BlockType::Primary | BlockType::Payload = block.block_type {
+                    continue;
+                }
+                if noncanonical_blocks.remove(block_number) {
+                    offset += match &block.block_type {
+                        BlockType::PreviousNode => block.emit(
+                            *block_number,
+                            &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
+                            a,
+                            offset,
+                        ),
+                        BlockType::BundleAge => block.emit(
+                            *block_number,
+                            &cbor::encode::emit(self.age.unwrap()),
+                            a,
+                            offset,
+                        ),
+                        BlockType::HopCount => block.emit(
+                            *block_number,
+                            &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
+                            a,
+                            offset,
+                        ),
+                        BlockType::BlockIntegrity => block.emit(
+                            *block_number,
+                            &cbor::encode::emit(
+                                &block
+                                    .parse_payload::<bpsec::bib::OperationSet>(source_data)
+                                    .unwrap()
+                                    .0,
+                            ),
+                            a,
+                            offset,
+                        ),
+                        BlockType::BlockSecurity => block.emit(
+                            *block_number,
+                            &cbor::encode::emit(
+                                &block
+                                    .parse_payload::<bpsec::bcb::OperationSet>(source_data)
+                                    .unwrap()
+                                    .0,
+                            ),
+                            a,
+                            offset,
+                        ),
+                        _ => block.emit(
+                            *block_number,
+                            &block.block_data(source_data).unwrap(),
+                            a,
+                            offset,
+                        ),
+                    };
+                } else {
+                    offset += block.copy(source_data, a, offset);
+                }
+            }
 
-        Ok(data.into())
+            // Emit payload block
+            payload_block.emit(
+                1,
+                &cbor::encode::emit(payload_block.block_data(source_data).unwrap().as_ref()),
+                a,
+                offset,
+            );
+            self.blocks.insert(1, payload_block);
+        })
     }
 }
 
@@ -705,8 +709,8 @@ impl ValidBundle {
                 if len != data.len() {
                     Ok(Self::Invalid(bundle, BundleError::AdditionalData.into()))
                 } else if !noncanonical_blocks.is_empty() {
-                    let data = bundle.canonicalise(noncanonical_blocks, data)?;
-                    Ok(Self::Rewritten(bundle, data))
+                    let data = bundle.canonicalise(noncanonical_blocks, data);
+                    Ok(Self::Rewritten(bundle, data.into()))
                 } else {
                     Ok(Self::Valid(bundle))
                 }

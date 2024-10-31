@@ -54,14 +54,13 @@ impl Dispatcher {
                 // Find the named CLA
                 if let Some(e) = self.cla_registry.find(endpoint.handle).await {
                     // Get bundle data from store, now we know we need it!
-
                     let Some(source_data) = self.load_data(bundle).await? else {
                         // Bundle data was deleted sometime during processing
                         return Ok(DispatchResult::Done);
                     };
 
                     // Increment Hop Count, etc...
-                    let data = self.update_extension_blocks(bundle, (*source_data).as_ref())?;
+                    let data = self.update_extension_blocks(bundle, source_data);
 
                     match e.forward_bundle(destination, data.into()).await {
                         Ok(cla_registry::ForwardBundleResult::Sent) => {
@@ -157,9 +156,9 @@ impl Dispatcher {
     fn update_extension_blocks(
         &self,
         bundle: &metadata::Bundle,
-        data: &[u8],
-    ) -> Result<Vec<u8>, Error> {
-        let mut editor = bpv7::Editor::new(&bundle.bundle);
+        source_data: hardy_bpa_api::storage::DataRef,
+    ) -> Vec<u8> {
+        let mut editor = bpv7::Editor::new(&bundle.bundle, source_data.as_ref().as_ref());
 
         // Remove unrecognized blocks we are supposed to
         for (block_number, block) in &bundle.bundle.blocks {
@@ -206,7 +205,7 @@ impl Dispatcher {
                 .build();
         }
 
-        editor.build(data).map_err(Into::into)
+        editor.build()
     }
 
     #[instrument(skip(self))]

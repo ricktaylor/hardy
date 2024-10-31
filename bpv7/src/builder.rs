@@ -79,33 +79,7 @@ impl Builder {
             .build()
     }
 
-    pub fn build(mut self) -> Result<(Bundle, Vec<u8>), BundleError> {
-        // Begin indefinite array
-        let mut data = vec![(4 << 5) | 31u8];
-
-        // Emit primary block
-        let (mut bundle, block_data) = self.build_primary_block(data.len());
-        data.extend(block_data);
-
-        // Emit extension blocks
-        for (block_number, block) in self.extensions.into_iter().enumerate() {
-            let (block, block_data) = block.build(block_number as u64 + 2, data.len());
-            data.extend(block_data);
-            bundle.blocks.insert(block_number as u64, block);
-        }
-
-        // Emit payload
-        let (block, block_data) = self.payload.build(1, data.len());
-        bundle.blocks.insert(1, block);
-        data.extend(block_data);
-
-        // End indefinite array
-        data.push(0xFF);
-
-        Ok((bundle, data))
-    }
-
-    fn build_primary_block(&mut self, offset: usize) -> (Bundle, Vec<u8>) {
+    pub fn build(mut self) -> (Bundle, Vec<u8>) {
         let mut bundle = Bundle {
             report_to: if let Some(report_to) = &mut self.report_to {
                 std::mem::take(report_to)
@@ -124,8 +98,22 @@ impl Builder {
             ..Default::default()
         };
 
-        let block_data = bundle.emit_primary_block(offset);
-        (bundle, block_data)
+        let data = cbor::encode::emit_array(None, |a, mut offset| {
+            // Emit primary block
+            offset += bundle.emit_primary_block(a, offset);
+
+            // Emit extension blocks
+            for (block_number, block) in self.extensions.into_iter().enumerate() {
+                let (block, len) = block.build(block_number as u64 + 2, a, offset);
+                offset += len;
+                bundle.blocks.insert(block_number as u64, block);
+            }
+
+            // Emit payload
+            bundle.blocks.insert(1, self.payload.build(1, a, offset).0);
+        });
+
+        (bundle, data)
     }
 }
 
@@ -231,18 +219,22 @@ impl BlockTemplate {
         self.data = data;
     }
 
-    pub fn build(self, block_number: u64, data_start: usize) -> (Block, Vec<u8>) {
+    pub fn build(
+        self,
+        block_number: u64,
+        array: &mut cbor::encode::Array,
+        offset: usize,
+    ) -> (Block, usize) {
         let mut block = Block {
             block_type: self.block_type,
             flags: self.flags,
             crc_type: self.crc_type,
-            data_start: 0,
+            data_start: offset,
             payload_offset: 0,
             data_len: 0,
         };
-
-        let block_data = block.emit(block_number, &self.data, data_start);
-        (block, block_data)
+        let block_len = block.emit(block_number, &self.data, array, offset);
+        (block, block_len)
     }
 }
 
@@ -252,6 +244,5 @@ fn test() {
         .source("ipn:1.0".parse().unwrap())
         .destination("ipn:2.0".parse().unwrap())
         .report_to("ipn:3.0".parse().unwrap())
-        .build()
-        .unwrap();
+        .build();
 }

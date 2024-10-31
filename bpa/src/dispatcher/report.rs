@@ -163,7 +163,7 @@ impl Dispatcher {
             .source(self.config.admin_endpoints.get_admin_endpoint(report_to))
             .destination(report_to.clone())
             .add_payload_block(payload)
-            .build()?;
+            .build();
 
         // Store to store
         let metadata = self

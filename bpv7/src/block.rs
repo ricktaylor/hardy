@@ -32,7 +32,13 @@ impl Block {
         }
     }
 
-    pub fn emit(&mut self, block_number: u64, data: &[u8], data_start: usize) -> Vec<u8> {
+    pub fn emit(
+        &mut self,
+        block_number: u64,
+        data: &[u8],
+        array: &mut cbor::encode::Array,
+        offset: usize,
+    ) -> usize {
         let mut payload_offset = 0;
         let block_data = crc::append_crc_value(
             self.crc_type,
@@ -63,17 +69,21 @@ impl Block {
                 },
             ),
         );
-
-        self.data_start = data_start;
+        self.data_start = offset;
         self.payload_offset = payload_offset;
         self.data_len = block_data.len();
-        block_data
+        array.emit_raw(&block_data)
     }
 
-    pub fn copy(&mut self, source_data: &[u8], data: &mut Vec<u8>) {
-        let data_start = data.len();
-        data.extend(&source_data[self.data_start..self.data_start + self.data_len]);
-        self.data_start = data_start;
+    pub fn copy(
+        &mut self,
+        source_data: &[u8],
+        array: &mut cbor::encode::Array,
+        offset: usize,
+    ) -> usize {
+        let len = array.emit_raw(&source_data[self.data_start..self.data_start + self.data_len]);
+        self.data_start = offset;
+        len
     }
 }
 

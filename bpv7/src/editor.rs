@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 pub struct Editor<'a> {
     original: &'a Bundle,
+    source_data: &'a [u8],
     blocks: HashMap<u64, BlockTemplate>,
 }
 
@@ -18,23 +19,21 @@ pub struct BlockBuilder<'a> {
 }
 
 impl<'a> Editor<'a> {
-    pub fn new(original: &'a Bundle) -> Self {
+    pub fn new(original: &'a Bundle, source_data: &'a [u8]) -> Self {
         Self {
             blocks: original
                 .blocks
                 .iter()
                 .map(|(block_number, block)| (*block_number, BlockTemplate::Keep(block.block_type)))
                 .collect(),
+            source_data,
             original,
         }
     }
 
     pub fn add_extension_block(self, block_type: BlockType) -> BlockBuilder<'a> {
-        if let BlockType::Primary = block_type {
-            panic!("Don't add primary blocks!");
-        }
-        if let BlockType::Payload = block_type {
-            panic!("Don't add payload blocks!");
+        if let BlockType::Primary | BlockType::Payload = block_type {
+            panic!("Don't add primary or payload blocks!");
         }
 
         // Find the lowest unused block_number
@@ -87,37 +86,31 @@ impl<'a> Editor<'a> {
         self
     }
 
-    pub fn build(mut self, source_data: &[u8]) -> Result<Vec<u8>, BundleError> {
-        let primary_block = self.blocks.remove(&0).expect("No primary block!");
-        let payload_block = self.blocks.remove(&1).expect("No payload block!");
+    pub fn build(mut self) -> Vec<u8> {
+        cbor::encode::emit_array(None, |a, mut offset| {
+            let primary_block = self.blocks.remove(&0).expect("No primary block!");
+            let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
-        // Begin indefinite array
-        let mut data = vec![(4 << 5) | 31u8];
+            // Emit primary block
+            offset += self.build_block(0, primary_block, a, offset);
 
-        // Emit primary block
-        data.extend(self.build_block(0, primary_block, source_data, data.len()));
+            // Emit extension blocks
+            for (block_number, block) in std::mem::take(&mut self.blocks) {
+                offset += self.build_block(block_number, block, a, offset);
+            }
 
-        // Emit extension blocks
-        for (block_number, block) in std::mem::take(&mut self.blocks) {
-            data.extend(self.build_block(block_number, block, source_data, data.len()));
-        }
-
-        // Emit payload block
-        data.extend(self.build_block(1, payload_block, source_data, data.len()));
-
-        // End indefinite array
-        data.push(0xFF);
-
-        Ok(data)
+            // Emit payload block
+            self.build_block(1, payload_block, a, offset);
+        })
     }
 
     fn build_block(
         &self,
         block_number: u64,
         template: BlockTemplate,
-        data: &[u8],
+        array: &mut cbor::encode::Array,
         offset: usize,
-    ) -> Vec<u8> {
+    ) -> usize {
         match template {
             BlockTemplate::Keep(_) => {
                 let block = self
@@ -125,9 +118,11 @@ impl<'a> Editor<'a> {
                     .blocks
                     .get(&block_number)
                     .expect("Mismatched block in bundle!");
-                data[block.data_start..block.data_start + block.data_len].to_vec()
+                array.emit_raw(
+                    &self.source_data[block.data_start..block.data_start + block.data_len],
+                )
             }
-            BlockTemplate::Add(template) => template.build(block_number, offset).1,
+            BlockTemplate::Add(template) => template.build(block_number, array, offset).1,
         }
     }
 }
