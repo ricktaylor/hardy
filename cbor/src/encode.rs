@@ -214,15 +214,15 @@ pub type Map<'a> = Sequence<'a, 2>;
 
 impl<'a, const D: usize> Sequence<'a, D> {
     fn new(encoder: &'a mut Encoder, count: Option<usize>) -> Self {
-        let offset = encoder.data.len();
-        if let Some(count) = count {
-            encoder.emit_uint_minor(if D == 1 { 4 } else { 5 }, count as u64);
+        let len = if let Some(count) = count {
+            encoder.emit_uint_minor(if D == 1 { 4 } else { 5 }, count as u64)
         } else {
             encoder.data.push((if D == 1 { 4 } else { 5 } << 5) | 31);
-        }
+            1
+        };
         Self {
+            offset: encoder.data.len() - len,
             encoder,
-            offset,
             count: count.map(|c| c * D),
             idx: 0,
         }
@@ -487,7 +487,7 @@ impl ToCbor for half::f16 {
 impl ToCbor for bool {
     fn to_cbor(self, encoder: &mut Encoder) -> usize {
         encoder.data.push((7 << 5) | if self { 21 } else { 20 });
-        2
+        1
     }
 }
 
