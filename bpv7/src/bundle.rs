@@ -34,6 +34,9 @@ pub enum BundleError {
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
     MissingBundleAge,
 
+    #[error("Invalid bundle")]
+    InvalidBundle(Box<Bundle>),
+
     #[error(transparent)]
     InvalidBPSec(#[from] bpsec::Error),
 
@@ -85,164 +88,6 @@ pub struct Bundle {
 
     // The extension blocks
     pub blocks: std::collections::HashMap<u64, Block>,
-}
-
-fn parse_primary_block(
-    data: &[u8],
-    block: &mut cbor::decode::Array,
-    block_start: usize,
-) -> Result<(Bundle, bool, bool), BundleError> {
-    // Check version
-    let (version, mut shortest) = block.parse().map_field_err("Version")?;
-    if version != 7 {
-        return Err(BundleError::UnsupportedVersion(version));
-    }
-
-    // Parse flags
-    let flags = block
-        .parse::<(BundleFlags, bool)>()
-        .map(|(v, s)| {
-            shortest = shortest && s;
-            v
-        })
-        .map_field_err("Bundle Processing Control Flags")?;
-
-    // Parse CRC Type
-    let crc_type = block.parse();
-
-    // Parse EIDs
-    let dest_eid = block.parse();
-    let source_eid = block.parse();
-    let report_to = block
-        .parse()
-        .map(|(v, s)| {
-            shortest = shortest && s;
-            v
-        })
-        .map_field_err("Report-to EID")?;
-
-    // Parse timestamp
-    let timestamp = block.parse();
-
-    // Parse lifetime
-    let lifetime = block.parse();
-
-    // Parse fragment parts
-    let fragment_info = if !flags.is_fragment {
-        Ok(None)
-    } else {
-        match (block.parse(), block.parse()) {
-            (Ok((offset, s1)), Ok((total_len, s2))) => {
-                shortest = shortest && s1 && s2;
-                Ok(Some(FragmentInfo { offset, total_len }))
-            }
-            (Err(e), _) => Err(e),
-            (_, Err(e)) => Err(e),
-        }
-    };
-
-    // Try to parse and check CRC
-    let crc_result = crc_type.map(|(crc_type, s1)| {
-        match crc::parse_crc_value(&data[block_start..], block, crc_type) {
-            Ok(s2) => (true, crc_type, s1 && s2),
-            _ => (false, crc_type, s1),
-        }
-    });
-
-    // By the time we get here we have just enough information to react to an invalid primary block
-    match (
-        dest_eid,
-        source_eid,
-        timestamp,
-        lifetime,
-        fragment_info,
-        crc_result,
-    ) {
-        (
-            Ok((destination, s1)),
-            Ok((source, s2)),
-            Ok((timestamp, s3)),
-            Ok((lifetime, s4)),
-            Ok(fragment_info),
-            Ok((true, crc_type, s5)),
-        ) => {
-            let mut valid = true;
-
-            // Check flags
-            if let Eid::Null = source {
-                if flags.is_fragment
-                    || !flags.do_not_fragment
-                    || flags.receipt_report_requested
-                    || flags.forward_report_requested
-                    || flags.delivery_report_requested
-                    || flags.delete_report_requested
-                {
-                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                    valid = false;
-                }
-            } else if flags.is_admin_record
-                && (flags.receipt_report_requested
-                    || flags.forward_report_requested
-                    || flags.delivery_report_requested
-                    || flags.delete_report_requested)
-            {
-                // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                valid = false;
-            }
-
-            Ok((
-                Bundle {
-                    id: BundleId {
-                        source,
-                        timestamp,
-                        fragment_info,
-                    },
-                    flags,
-                    crc_type,
-                    destination,
-                    report_to,
-                    lifetime,
-                    ..Default::default()
-                },
-                valid,
-                shortest && s1 && s2 && s3 && s4 && s5,
-            ))
-        }
-        (dest_eid, source_eid, timestamp, lifetime, fragment_info, crc_result) => {
-            Ok((
-                // Compose something out of what we have!
-                Bundle {
-                    id: BundleId {
-                        source: source_eid.map_or(Eid::Null, |(v, _)| v),
-                        timestamp: timestamp.map_or(Default::default(), |(v, _)| v),
-                        fragment_info: fragment_info.unwrap_or(None),
-                    },
-                    flags,
-                    crc_type: crc_result.map_or(CrcType::None, |(_, t, _)| t),
-                    destination: dest_eid.map_or(Eid::Null, |(v, _)| v),
-                    report_to,
-                    lifetime: lifetime.map_or(0, |(v, _)| v),
-                    ..Default::default()
-                },
-                false,
-                false,
-            ))
-        }
-    }
-}
-
-fn parse_payload<T>(block: &Block, data: &[u8]) -> Result<(T, bool), BundleError>
-where
-    T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
-    BundleError: From<<T as cbor::decode::FromCbor>::Error>,
-{
-    let data = block.block_data(data)?;
-    let (v, s, len) = cbor::decode::parse(&data)?;
-    if len != data.len() {
-        Err(BundleError::BlockAdditionalData(block.block_type))
-    } else {
-        Ok((v, s))
-    }
 }
 
 impl Bundle {
@@ -341,21 +186,22 @@ impl Bundle {
         mut offset: usize,
         data: &[u8],
         mut f: F,
-    ) -> Result<(HashSet<u64>, bool), BundleError>
+    ) -> Result<HashSet<u64>, BundleError>
     where
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
-        let mut shortest = true;
         let mut last_block_number = 0;
         let mut noncanonical_blocks = HashSet::new();
-        let mut bcbs = Vec::new();
         let mut blocks_to_check = HashMap::new();
+        let mut bcbs = Vec::new();
         let mut bibs_to_check = HashSet::new();
 
         while let Some((mut block, s, block_len)) =
             blocks.try_parse::<(block::BlockWithNumber, bool, usize)>()?
         {
-            shortest = shortest && s;
+            if !s {
+                noncanonical_blocks.insert(block.number);
+            }
             block.block.data_start += offset;
 
             // Check the block
@@ -382,11 +228,12 @@ impl Bundle {
 
                     bcbs.push((
                         block.number,
-                        parse_payload::<bpsec::bcb::OperationSet>(&block.block, data)
+                        block
+                            .block
+                            .parse_payload::<bpsec::bcb::OperationSet>(data)
                             .map(|(v, s)| {
                                 if !s {
                                     noncanonical_blocks.insert(block.number);
-                                    shortest = false;
                                 }
                                 v
                             })
@@ -488,7 +335,12 @@ impl Bundle {
                             .parse_bcb_payload(block, &mut bcb_keys, &bcb.source, op, data, &mut f)
                             .map_field_err("BPSec integrity extension block")?;
 
-                        // TODO - Check targets match!!
+                        // Check targets match!!
+                        for t in bib.operations.keys() {
+                            if !bcb.operations.contains_key(t) {
+                                return Err(bpsec::Error::BCBMustShareTarget.into());
+                            }
+                        }
 
                         bibs_to_check.remove(target);
                         bibs.push(bib);
@@ -520,18 +372,17 @@ impl Bundle {
         // Gather remaining BIBs
         for block_number in bibs_to_check {
             bibs.push(
-                parse_payload::<bpsec::bib::OperationSet>(
-                    self.blocks.get(&block_number).unwrap(),
-                    data,
-                )
-                .map(|(v, s)| {
-                    if !s {
-                        noncanonical_blocks.insert(block_number);
-                        shortest = false;
-                    }
-                    v
-                })
-                .map_field_err("BPSec integrity extension block")?,
+                self.blocks
+                    .get(&block_number)
+                    .unwrap()
+                    .parse_payload::<bpsec::bib::OperationSet>(data)
+                    .map(|(v, s)| {
+                        if !s {
+                            noncanonical_blocks.insert(block_number);
+                        }
+                        v
+                    })
+                    .map_field_err("BPSec integrity extension block")?,
             );
         }
 
@@ -552,7 +403,7 @@ impl Bundle {
                             &mut bib_keys,
                             &bib.source,
                             op,
-                            &self.write_primary_block(),
+                            &primary_block::PrimaryBlock::emit(self),
                             &mut f,
                         )?
                     }
@@ -623,33 +474,33 @@ impl Bundle {
             let block = self.blocks.get(block_number).unwrap();
             match block.block_type {
                 BlockType::PreviousNode => {
-                    self.previous_node = parse_payload(block, data)
+                    self.previous_node = block
+                        .parse_payload(data)
                         .map(|(v, s)| {
                             if !s {
                                 noncanonical_blocks.insert(*block_number);
-                                shortest = false;
                             }
                             Some(v)
                         })
                         .map_field_err("Previous Node Block")?;
                 }
                 BlockType::BundleAge => {
-                    self.age = parse_payload(block, data)
+                    self.age = block
+                        .parse_payload(data)
                         .map(|(v, s)| {
                             if !s {
                                 noncanonical_blocks.insert(*block_number);
-                                shortest = false;
                             }
                             Some(v)
                         })
                         .map_field_err("Bundle Age Block")?;
                 }
                 BlockType::HopCount => {
-                    self.hop_count = parse_payload(block, data)
+                    self.hop_count = block
+                        .parse_payload(data)
                         .map(|(v, s)| {
                             if !s {
                                 noncanonical_blocks.insert(*block_number);
-                                shortest = false;
                             }
                             Some(v)
                         })
@@ -658,45 +509,11 @@ impl Bundle {
                 _ => {}
             }
         }
-        Ok((noncanonical_blocks, shortest))
-    }
-
-    fn write_primary_block(&self) -> Vec<u8> {
-        crc::append_crc_value(
-            self.crc_type,
-            cbor::encode::emit_array(
-                Some(if let CrcType::None = self.crc_type {
-                    8
-                } else {
-                    9
-                }),
-                |a, _| {
-                    // Version
-                    a.emit(7);
-                    // Flags
-                    a.emit(&self.flags);
-                    // CRC
-                    a.emit(self.crc_type);
-                    // EIDs
-                    a.emit(&self.destination);
-                    a.emit(&self.id.source);
-                    a.emit(&self.report_to);
-                    // Timestamp
-                    a.emit(&self.id.timestamp);
-                    // Lifetime
-                    a.emit(self.lifetime);
-                    // CRC
-                    if let CrcType::None = self.crc_type {
-                    } else {
-                        a.skip_value();
-                    }
-                },
-            ),
-        )
+        Ok(noncanonical_blocks)
     }
 
     pub fn emit_primary_block(&mut self, offset: usize) -> Vec<u8> {
-        let block_data = self.write_primary_block();
+        let block_data = primary_block::PrimaryBlock::emit(self);
         self.blocks.insert(
             0,
             Block {
@@ -725,8 +542,14 @@ impl Bundle {
         let mut data = vec![(4 << 5) | 31u8];
 
         // Emit primary block
-        let block_data = self.emit_primary_block(data.len());
-        data.extend(block_data);
+        if noncanonical_blocks.remove(&0) {
+            data.extend(self.emit_primary_block(data.len()));
+        } else {
+            self.blocks
+                .get_mut(&0)
+                .expect("Missing primary block!")
+                .copy(source_data, &mut data);
+        }
 
         // Stash payload block for last
         let mut payload_block = self.blocks.remove(&1).expect("No payload block!");
@@ -736,8 +559,8 @@ impl Bundle {
             if let BlockType::Primary | BlockType::Payload = block.block_type {
                 continue;
             }
-            let block_data = if noncanonical_blocks.remove(block_number) {
-                match &block.block_type {
+            if noncanonical_blocks.remove(block_number) {
+                let block_data = match &block.block_type {
                     BlockType::PreviousNode => block.emit(
                         *block_number,
                         &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
@@ -756,7 +579,8 @@ impl Bundle {
                     BlockType::BlockIntegrity => block.emit(
                         *block_number,
                         &cbor::encode::emit(
-                            &parse_payload::<bpsec::bib::OperationSet>(block, source_data)
+                            &block
+                                .parse_payload::<bpsec::bib::OperationSet>(source_data)
                                 .map(|(v, _)| v)
                                 .unwrap(),
                         ),
@@ -765,18 +589,19 @@ impl Bundle {
                     BlockType::BlockSecurity => block.emit(
                         *block_number,
                         &cbor::encode::emit(
-                            &parse_payload::<bpsec::bcb::OperationSet>(block, source_data)
+                            &block
+                                .parse_payload::<bpsec::bcb::OperationSet>(source_data)
                                 .map(|(v, _)| v)
                                 .unwrap(),
                         ),
                         data.len(),
                     ),
-                    _ => unreachable!(),
-                }
+                    _ => block.emit(*block_number, &block.block_data(source_data)?, data.len()),
+                };
+                data.extend(block_data);
             } else {
-                block.emit(*block_number, &block.block_data(source_data)?, data.len())
-            };
-            data.extend(block_data);
+                block.copy(source_data, &mut data);
+            }
         }
 
         // Emit payload block
@@ -799,7 +624,7 @@ impl Bundle {
 #[derive(Debug)]
 pub enum ValidBundle {
     Valid(Bundle),
-    Canonicalised(Bundle, Box<[u8]>),
+    Rewritten(Bundle, Box<[u8]>),
     Invalid(Bundle),
 }
 
@@ -808,91 +633,80 @@ impl ValidBundle {
     where
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
-        let (mut bundle, valid, canonical, noncanonical_blocks) =
-            cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
-                // Check for shortest/correct form
-                canonical = canonical && !blocks.is_definite();
-                if canonical {
-                    // Appendix B of RFC9171
-                    let mut seen_55799 = false;
-                    for tag in &tags {
-                        match *tag {
-                            255799 if !seen_55799 => seen_55799 = true,
-                            _ => {
-                                canonical = false;
-                                break;
-                            }
+        match cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
+            let mut noncanonical_blocks = HashSet::new();
+
+            // Check for shortest/correct form
+            canonical = canonical && !blocks.is_definite();
+            if canonical {
+                // Appendix B of RFC9171
+                let mut seen_55799 = false;
+                for tag in &tags {
+                    match *tag {
+                        255799 if !seen_55799 => seen_55799 = true,
+                        _ => {
+                            canonical = false;
+                            break;
                         }
                     }
                 }
+            }
 
-                // Parse Primary block
-                let block_start = blocks.offset();
-                let ((mut bundle, mut valid), block_len) = blocks
-                    .parse_array(|block, s, tags| {
-                        canonical = canonical && s && tags.is_empty() && block.is_definite();
+            // Parse Primary block
+            let block_start = blocks.offset();
+            let (mut bundle, block_len) = blocks
+                .parse::<(primary_block::PrimaryBlock, bool, usize)>()
+                .map(|(v, s, len)| {
+                    canonical = canonical && s;
+                    (v.into_bundle(), len)
+                })
+                .map_field_err("Primary Block")?;
 
-                        parse_primary_block(data, block, block_start).map(|(bundle, valid, s)| {
-                            canonical = canonical && s;
-                            (bundle, valid)
-                        })
-                    })
-                    .map_field_err("Primary Block")?;
+            // Add a block 0
+            bundle.blocks.insert(
+                0,
+                Block {
+                    block_type: BlockType::Primary,
+                    flags: BlockFlags {
+                        must_replicate: true,
+                        report_on_failure: true,
+                        delete_bundle_on_failure: true,
+                        ..Default::default()
+                    },
+                    crc_type: bundle.crc_type,
+                    data_start: block_start,
+                    payload_offset: block_len,
+                    data_len: block_len,
+                },
+            );
 
-                let mut noncanonical_blocks = HashSet::new();
-                if valid {
-                    // Add a block 0
-                    bundle.blocks.insert(
-                        0,
-                        Block {
-                            block_type: BlockType::Primary,
-                            flags: BlockFlags {
-                                must_replicate: true,
-                                report_on_failure: true,
-                                delete_bundle_on_failure: true,
-                                ..Default::default()
-                            },
-                            crc_type: bundle.crc_type,
-                            data_start: block_start,
-                            payload_offset: 0,
-                            data_len: block_len,
-                        },
-                    );
+            if !canonical {
+                noncanonical_blocks.insert(0);
+            }
 
-                    let r = bundle.parse_blocks(blocks, block_start + block_len, data, f);
-                    if let Ok((ncb, s)) = r {
-                        canonical = canonical && s;
-                        noncanonical_blocks = ncb;
-                    } else {
-                        // Don't return an Err, just capture validity
-                        #[cfg(test)]
-                        dbg!(&r);
-
-                        valid = false;
-                    }
+            match bundle.parse_blocks(blocks, block_start + block_len, data, f) {
+                Ok(ncb) => {
+                    noncanonical_blocks.extend(ncb);
+                    Ok((bundle, noncanonical_blocks))
                 }
-
-                if !valid {
-                    // Just skip over the blocks, avoiding any further parsing
-                    blocks.skip_to_end(16)?;
+                Err(_e) => {
+                    //dbg!(e);
+                    Err(BundleError::InvalidBundle(bundle.into()))
                 }
-                Ok::<_, BundleError>((bundle, valid, canonical, noncanonical_blocks))
-            })
-            .map(|((bundle, valid, canonical, noncanonical_blocks), len)| {
-                (
-                    bundle,
-                    valid && len == data.len(),
-                    canonical,
-                    noncanonical_blocks,
-                )
-            })?;
-        if !valid {
-            Ok(Self::Invalid(bundle))
-        } else if !canonical {
-            let data = bundle.canonicalise(noncanonical_blocks, data)?;
-            Ok(Self::Canonicalised(bundle, data))
-        } else {
-            Ok(Self::Valid(bundle))
+            }
+        }) {
+            Ok(((mut bundle, noncanonical_blocks), len)) => {
+                if len != data.len() {
+                    Ok(Self::Invalid(bundle))
+                } else if !noncanonical_blocks.is_empty() {
+                    let data = bundle.canonicalise(noncanonical_blocks, data)?;
+                    Ok(Self::Rewritten(bundle, data))
+                } else {
+                    Ok(Self::Valid(bundle))
+                }
+            }
+            Err(BundleError::InvalidBundle(bundle)) => Ok(Self::Invalid(*bundle)),
+            Err(e) => Err(e),
         }
     }
 }

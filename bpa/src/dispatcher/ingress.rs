@@ -24,7 +24,7 @@ impl Dispatcher {
                 let data: Vec<u8> = data.into();
                 (bundle, data.into())
             }
-            bpv7::ValidBundle::Canonicalised(bundle, data) => (bundle, data),
+            bpv7::ValidBundle::Rewritten(bundle, data) => (bundle, data),
             bpv7::ValidBundle::Invalid(bundle) => {
                 // Receive a fake bundle
                 return self
@@ -40,7 +40,7 @@ impl Dispatcher {
                             },
                             bundle,
                         },
-                        false,
+                        Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
                     )
                     .await;
             }
@@ -60,7 +60,7 @@ impl Dispatcher {
                     },
                     bundle,
                 },
-                true,
+                None,
             )
             .await
         {
@@ -73,7 +73,11 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    async fn receive_inner(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
+    async fn receive_inner(
+        &self,
+        bundle: metadata::Bundle,
+        reason: Option<bpv7::StatusReportReasonCode>,
+    ) -> Result<(), Error> {
         // Report we have received the bundle
         self.report_bundle_reception(
             &bundle,
@@ -102,12 +106,16 @@ impl Dispatcher {
             Ok(())
         } else {
             // Check the bundle further
-            self.check_bundle(bundle, valid).await
+            self.check_bundle(bundle, reason).await
         }
     }
 
     #[instrument(skip(self))]
-    pub async fn orphan_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
+    pub async fn orphan_bundle(
+        &self,
+        bundle: metadata::Bundle,
+        reason: Option<bpv7::StatusReportReasonCode>,
+    ) -> Result<(), Error> {
         // Report we have received the bundle
         self.report_bundle_reception(
             &bundle,
@@ -138,11 +146,15 @@ impl Dispatcher {
                 .await;
         }
 
-        self.check_bundle(bundle, valid).await
+        self.check_bundle(bundle, reason).await
     }
 
     #[instrument(skip(self))]
-    pub async fn check_bundle(&self, bundle: metadata::Bundle, valid: bool) -> Result<(), Error> {
+    pub async fn check_bundle(
+        &self,
+        bundle: metadata::Bundle,
+        mut reason: Option<bpv7::StatusReportReasonCode>,
+    ) -> Result<(), Error> {
         /* Always check bundles, no matter the state, as after restarting
          * the configured filters or code may have changed, and reprocessing is desired.
          */
@@ -154,25 +166,23 @@ impl Dispatcher {
             );
         }
 
-        // Check some basic semantic validity, lifetime first
-        let mut reason = if !valid {
-            Some(bpv7::StatusReportReasonCode::BlockUnintelligible)
-        } else if bundle.has_expired() {
-            trace!("Bundle lifetime has expired");
-            Some(bpv7::StatusReportReasonCode::LifetimeExpired)
-        } else {
-            // Check hop count exceeded
-            bundle.bundle.hop_count.as_ref().and_then(|hop_info| {
-                (hop_info.count >= hop_info.limit).then(|| {
+        if reason.is_none() {
+            // Check some basic semantic validity, lifetime first
+            if bundle.has_expired() {
+                trace!("Bundle lifetime has expired");
+                reason = Some(bpv7::StatusReportReasonCode::LifetimeExpired);
+            } else if let Some(hop_info) = bundle.bundle.hop_count.as_ref() {
+                // Check hop count exceeded
+                if hop_info.count >= hop_info.limit {
                     trace!(
                         "Bundle hop-limit {}/{} exceeded",
                         hop_info.count,
                         hop_info.limit
                     );
-                    bpv7::StatusReportReasonCode::HopLimitExceeded
-                })
-            })
-        };
+                    reason = Some(bpv7::StatusReportReasonCode::HopLimitExceeded);
+                }
+            }
+        }
 
         if reason.is_none() {
             // Check extension blocks

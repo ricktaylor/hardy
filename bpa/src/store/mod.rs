@@ -331,13 +331,13 @@ impl Store {
         };
 
         // Parse the bundle
-        let (bundle, valid, hash) =
+        let (bundle, reason, hash) =
             match bpv7::ValidBundle::parse(data.as_ref().as_ref(), |_| Ok(None)) {
                 Ok(bpv7::ValidBundle::Valid(bundle)) => {
                     let hash = Some(hash(data.as_ref().as_ref()));
-                    (bundle, true, hash)
+                    (bundle, None, hash)
                 }
-                Ok(bpv7::ValidBundle::Canonicalised(bundle, data)) => {
+                Ok(bpv7::ValidBundle::Rewritten(bundle, data)) => {
                     warn!("Bundle in non-canonical format found: {storage_name}");
 
                     // Rewrite the bundle
@@ -355,11 +355,15 @@ impl Store {
                         ));
 
                     storage_name = new_storage_name;
-                    (bundle, true, hash)
+                    (bundle, None, hash)
                 }
                 Ok(bpv7::ValidBundle::Invalid(bundle)) => {
                     let hash = Some(hash(data.as_ref().as_ref()));
-                    (bundle, false, hash)
+                    (
+                        bundle,
+                        Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
+                        hash,
+                    )
                 }
                 Err(e) => {
                     // Parse failed badly, no idea who to report to
@@ -406,7 +410,7 @@ impl Store {
             }
 
             dispatcher
-                .check_bundle(metadata::Bundle { metadata, bundle }, valid)
+                .check_bundle(metadata::Bundle { metadata, bundle }, reason)
                 .await
                 .trace_expect(&format!("Bundle validation failed for: {storage_name}"));
 
@@ -425,13 +429,13 @@ impl Store {
         };
 
         // If the bundle isn't valid, it must always be a Tombstone
-        if !valid {
+        if reason.is_some() {
             bundle.metadata.status =
                 metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
         }
 
         dispatcher
-            .orphan_bundle(bundle, valid)
+            .orphan_bundle(bundle, reason)
             .await
             .trace_expect("Failed to restart bundle");
 

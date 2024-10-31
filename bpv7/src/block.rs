@@ -18,6 +18,20 @@ impl Block {
         )
     }
 
+    pub fn parse_payload<T>(&self, data: &[u8]) -> Result<(T, bool), BundleError>
+    where
+        T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
+        BundleError: From<<T as cbor::decode::FromCbor>::Error>,
+    {
+        let data = self.block_data(data)?;
+        let (v, s, len) = cbor::decode::parse(&data)?;
+        if len != data.len() {
+            Err(BundleError::BlockAdditionalData(self.block_type))
+        } else {
+            Ok((v, s))
+        }
+    }
+
     pub fn emit(&mut self, block_number: u64, data: &[u8], data_start: usize) -> Vec<u8> {
         let mut payload_offset = 0;
         let block_data = crc::append_crc_value(
@@ -55,6 +69,12 @@ impl Block {
         self.data_len = block_data.len();
         block_data
     }
+
+    pub fn copy(&mut self, source_data: &[u8], data: &mut Vec<u8>) {
+        let data_start = data.len();
+        data.extend(&source_data[self.data_start..self.data_start + self.data_len]);
+        self.data_start = data_start;
+    }
 }
 
 #[derive(Clone)]
@@ -84,7 +104,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             })?;
             match (block_number, block_type) {
                 (1, BlockType::Payload) => {}
-                (0, _) | (1, _) | (_, BlockType::Payload) => {
+                (0, _) | (1, _) | (_, BlockType::Primary) | (_, BlockType::Payload) => {
                     return Err(BundleError::InvalidBlockNumber(block_number, block_type))
                 }
                 _ => {}

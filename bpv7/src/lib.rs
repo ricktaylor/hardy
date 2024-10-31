@@ -16,6 +16,7 @@ mod eid;
 mod eid_pattern;
 mod eid_pattern_map;
 mod hop_info;
+mod primary_block;
 mod status_report;
 
 pub mod prelude {

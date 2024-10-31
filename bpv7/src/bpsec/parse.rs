@@ -81,9 +81,14 @@ impl UnknownOperation {
         id: u64,
     ) -> usize {
         let mut len = encoder.emit(id);
-        len += encoder.emit(if self.parameters.0.is_empty() { 0 } else { 1 });
-        len += encoder.emit(source);
-        len + encoder.emit(self.parameters.as_ref())
+        if self.parameters.0.is_empty() {
+            len += encoder.emit(0);
+            len + encoder.emit(source)
+        } else {
+            len += encoder.emit(1);
+            len += encoder.emit(source);
+            len + encoder.emit(self.parameters.as_ref())
+        }
     }
 
     pub fn emit_result(&self, array: &mut cbor::encode::Array) {
@@ -219,15 +224,14 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
                         results.insert(*target, target_results);
                         idx += 1;
                     }
-
-                    if targets.len() > idx {
-                        Err(Error::MismatchedTargetResult)
-                    } else {
-                        Ok(results)
-                    }
+                    Ok(results)
                 })
                 .map(|(v, _)| v)
                 .map_field_err("Security Targets field")?;
+
+            if targets.len() != results.len() {
+                return Err(Error::MismatchedTargetResult);
+            }
 
             Ok((
                 AbstractSyntaxBlock {
