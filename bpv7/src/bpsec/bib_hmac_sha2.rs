@@ -293,7 +293,7 @@ mod test {
             746f2067656e657261746520612033322d62797465207061796c6f6164ff"
         );
 
-        let ValidBundle::Valid(_) = ValidBundle::parse(data, |_| Ok(None)).unwrap() else {
+        let ValidBundle::Valid(..) = ValidBundle::parse(data, |_| Ok(None)).unwrap() else {
             panic!("No!");
         };
     }

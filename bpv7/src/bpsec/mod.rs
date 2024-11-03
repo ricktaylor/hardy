@@ -61,4 +61,5 @@ impl cbor::decode::FromCbor for Context {
     }
 }
 
+#[derive(Clone)]
 pub enum KeyMaterial {}
