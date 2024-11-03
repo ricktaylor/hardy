@@ -331,19 +331,20 @@ impl Store {
         };
 
         // Parse the bundle
-        let (bundle, reason, hash) =
+        let (bundle, reason, hash, report_unsupported) =
             match bpv7::ValidBundle::parse(data.as_ref().as_ref(), |_| Ok(None)) {
-                Ok(bpv7::ValidBundle::Valid(bundle)) => {
-                    let hash = Some(hash(data.as_ref().as_ref()));
-                    (bundle, None, hash)
-                }
-                Ok(bpv7::ValidBundle::Rewritten(bundle, data)) => {
+                Ok(bpv7::ValidBundle::Valid(bundle, report_unsupported)) => (
+                    bundle,
+                    None,
+                    Some(hash(data.as_ref().as_ref())),
+                    report_unsupported,
+                ),
+                Ok(bpv7::ValidBundle::Rewritten(bundle, data, report_unsupported)) => {
                     warn!("Bundle in non-canonical format found: {storage_name}");
 
                     // Rewrite the bundle
-                    let hash = Some(hash(&data));
                     let new_storage_name = bundle_storage
-                        .store(data)
+                        .store(&data)
                         .await
                         .trace_expect("Failed to store rewritten canonical bundle");
 
@@ -355,16 +356,15 @@ impl Store {
                         ));
 
                     storage_name = new_storage_name;
-                    (bundle, None, hash)
+                    (bundle, None, Some(hash(&data)), report_unsupported)
                 }
-                Ok(bpv7::ValidBundle::Invalid(bundle, e)) => {
+                Ok(bpv7::ValidBundle::Invalid(bundle, reason, e)) => {
                     warn!("Invalid bundle found: {storage_name}, {e}");
-
-                    let hash = Some(hash(data.as_ref().as_ref()));
                     (
                         bundle,
-                        Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                        hash,
+                        Some(reason),
+                        Some(hash(data.as_ref().as_ref())),
+                        false,
                     )
                 }
                 Err(e) => {
@@ -393,7 +393,8 @@ impl Store {
                 // Tombstone, ignore
                 warn!("Tombstone bundle data found: {storage_name}");
                 true
-            } else if metadata.storage_name == Some(storage_name.clone()) && metadata.hash == hash {
+            } else if metadata.storage_name.as_ref() == Some(&storage_name) && metadata.hash == hash
+            {
                 false
             } else {
                 warn!("Duplicate bundle data found: {storage_name}");
@@ -419,7 +420,6 @@ impl Store {
             return (0, 0);
         }
 
-        // Send to the dispatcher to sort out
         let mut bundle = metadata::Bundle {
             metadata: metadata::Metadata {
                 storage_name: Some(storage_name),
@@ -436,8 +436,9 @@ impl Store {
                 metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
         }
 
+        // Send to the dispatcher ingress as it is effectively a new bundle
         dispatcher
-            .orphan_bundle(bundle, reason)
+            .ingress_bundle(bundle, reason, report_unsupported)
             .await
             .trace_expect("Failed to restart bundle");
 
@@ -497,9 +498,9 @@ impl Store {
     }
 
     #[inline]
-    pub async fn store_data(&self, data: Box<[u8]>) -> Result<(Arc<str>, Arc<[u8]>), Error> {
+    pub async fn store_data(&self, data: &[u8]) -> Result<(Arc<str>, Arc<[u8]>), Error> {
         // Calculate hash
-        let hash = hash(&data);
+        let hash = hash(data);
 
         // Write to bundle storage
         self.bundle_storage
@@ -534,7 +535,7 @@ impl Store {
     pub async fn store(
         &self,
         bundle: &bpv7::Bundle,
-        data: Box<[u8]>,
+        data: &[u8],
         status: metadata::BundleStatus,
         received_at: Option<time::OffsetDateTime>,
     ) -> Result<Option<metadata::Metadata>, Error> {

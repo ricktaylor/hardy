@@ -11,9 +11,13 @@ pub enum Operation {
 impl Operation {
     pub fn context_id(&self) -> Context {
         match self {
-            Operation::AES_GCM(_) => Context::BCB_AES_GCM,
-            Operation::Unrecognised(id, _) => Context::Unrecognised(*id),
+            Self::AES_GCM(_) => Context::BCB_AES_GCM,
+            Self::Unrecognised(id, _) => Context::Unrecognised(*id),
         }
+    }
+
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Unrecognised(..))
     }
 
     pub fn decrypt(
@@ -23,22 +27,22 @@ impl Operation {
         data: &[u8],
     ) -> Result<Box<[u8]>, Error> {
         match self {
-            Operation::AES_GCM(op) => op.decrypt(key, bundle, data),
-            Operation::Unrecognised(..) => todo!(),
+            Self::AES_GCM(op) => op.decrypt(key, bundle, data),
+            Self::Unrecognised(..) => todo!(),
         }
     }
 
     fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) -> usize {
         match self {
-            Operation::AES_GCM(o) => o.emit_context(encoder, source),
-            Operation::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
+            Self::AES_GCM(o) => o.emit_context(encoder, source),
+            Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
         }
     }
 
     fn emit_result(&self, array: &mut cbor::encode::Array) {
         match self {
-            Operation::AES_GCM(o) => o.emit_result(array),
-            Operation::Unrecognised(_, o) => o.emit_result(array),
+            Self::AES_GCM(o) => o.emit_result(array),
+            Self::Unrecognised(_, o) => o.emit_result(array),
         }
     }
 }
@@ -46,6 +50,12 @@ impl Operation {
 pub struct OperationSet {
     pub source: Eid,
     pub operations: HashMap<u64, Operation>,
+}
+
+impl OperationSet {
+    pub fn is_unsupported(&self) -> bool {
+        self.operations.values().next().unwrap().is_unsupported()
+    }
 }
 
 impl cbor::decode::FromCbor for OperationSet {

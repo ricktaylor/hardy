@@ -20,6 +20,9 @@ pub enum Error {
     )]
     InvalidBCBTarget,
 
+    #[error("Processing failed on an extension block that has 'Delete block on failure' flag set, but is the target of a BCB")]
+    InvalidTargetFlags,
+
     #[error("{0} block must use CBOR canonical representation")]
     NotCanonical(BlockType),
 

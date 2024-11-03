@@ -24,12 +24,9 @@ impl Block {
         BundleError: From<<T as cbor::decode::FromCbor>::Error>,
     {
         let data = self.block_data(data)?;
-        let (v, s, len) = cbor::decode::parse(&data)?;
-        if len != data.len() {
-            Err(BundleError::BlockAdditionalData(self.block_type))
-        } else {
-            Ok((v, s))
-        }
+        cbor::decode::parse::<(T, bool, usize)>(&data)
+            .map(|(v, s, len)| (v, s && len == data.len()))
+            .map_err(Into::into)
     }
 
     pub fn emit(

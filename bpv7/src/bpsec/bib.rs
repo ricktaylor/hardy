@@ -11,29 +11,33 @@ pub enum Operation {
 impl Operation {
     pub fn context_id(&self) -> Context {
         match self {
-            Operation::HMAC_SHA2(_) => Context::BIB_HMAC_SHA2,
-            Operation::Unrecognised(id, _) => Context::Unrecognised(*id),
+            Self::HMAC_SHA2(_) => Context::BIB_HMAC_SHA2,
+            Self::Unrecognised(id, _) => Context::Unrecognised(*id),
         }
+    }
+
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Unrecognised(..))
     }
 
     pub fn verify(&self, key: &KeyMaterial, bundle: &Bundle, data: &[u8]) -> Result<(), Error> {
         match self {
-            Operation::HMAC_SHA2(o) => o.verify(key, bundle, data),
-            Operation::Unrecognised(..) => Ok(()),
+            Self::HMAC_SHA2(o) => o.verify(key, bundle, data),
+            Self::Unrecognised(..) => Ok(()),
         }
     }
 
     fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) -> usize {
         match self {
-            Operation::HMAC_SHA2(o) => o.emit_context(encoder, source),
-            Operation::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
+            Self::HMAC_SHA2(o) => o.emit_context(encoder, source),
+            Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
         }
     }
 
     fn emit_result(&self, array: &mut cbor::encode::Array) {
         match self {
-            Operation::HMAC_SHA2(o) => o.emit_result(array),
-            Operation::Unrecognised(_, o) => o.emit_result(array),
+            Self::HMAC_SHA2(o) => o.emit_result(array),
+            Self::Unrecognised(_, o) => o.emit_result(array),
         }
     }
 }
@@ -41,6 +45,12 @@ impl Operation {
 pub struct OperationSet {
     pub source: Eid,
     pub operations: HashMap<u64, Operation>,
+}
+
+impl OperationSet {
+    pub fn is_unsupported(&self) -> bool {
+        self.operations.values().next().unwrap().is_unsupported()
+    }
 }
 
 impl cbor::decode::FromCbor for OperationSet {

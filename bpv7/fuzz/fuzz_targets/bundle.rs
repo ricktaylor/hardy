@@ -6,8 +6,8 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let mut f = |_: &Eid| Ok(None);
 
-    if let Ok(ValidBundle::Rewritten(_, data)) = ValidBundle::parse(data, &mut f) {
-        let Ok(ValidBundle::Valid(_)) = ValidBundle::parse(&data, &mut f) else {
+    if let Ok(ValidBundle::Rewritten(_, data, _)) = ValidBundle::parse(data, &mut f) {
+        let Ok(ValidBundle::Valid(..)) = ValidBundle::parse(&data, &mut f) else {
             panic!("Rewrite borked");
         };
     }
