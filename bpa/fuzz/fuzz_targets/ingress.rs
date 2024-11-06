@@ -73,12 +73,10 @@ fn setup() -> tokio::runtime::Runtime {
 fn test_ingress(data: &[u8]) {
     RT.get_or_init(setup).block_on(async {
         let dispatcher = loop {
-            match DISPATCHER.get() {
-                Some(dispatcher) => break dispatcher,
-                None => {
-                    tokio::task::yield_now().await;
-                }
+            if let Some(dispatcher) = DISPATCHER.get() {
+                break dispatcher;
             }
+            tokio::task::yield_now().await;
         };
 
         let metrics = RT.get().unwrap().metrics();

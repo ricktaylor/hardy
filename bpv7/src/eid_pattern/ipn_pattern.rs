@@ -158,7 +158,7 @@ impl IpnPattern {
                     // Parse intervals
                     let mut intervals = s.split(',').try_fold(Vec::new(), |mut v, s| {
                         v.push(IpnInterval::parse(s, span)?);
-                        Ok::<Vec<IpnInterval>, EidPatternError>(v)
+                        Ok::<_, EidPatternError>(v)
                     })?;
 
                     if intervals.is_empty() {

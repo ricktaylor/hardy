@@ -63,17 +63,16 @@ impl Dispatcher {
     ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
         // Try to load the data, but treat errors as 'Storage Depleted'
         let storage_name = bundle.metadata.storage_name.as_ref().unwrap();
-        match self.store.load_data(storage_name).await? {
-            None => {
-                warn!("Bundle data {storage_name} has gone from storage");
-
-                // Report the bundle has gone
-                self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
-                    .await
-                    .map(|_| None)
-            }
-            Some(data) => Ok(Some(data)),
+        if let Some(data) = self.store.load_data(storage_name).await? {
+            return Ok(Some(data));
         }
+
+        warn!("Bundle data {storage_name} has gone from storage");
+
+        // Report the bundle has gone
+        self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+            .await
+            .map(|_| None)
     }
 
     #[instrument(skip(self))]

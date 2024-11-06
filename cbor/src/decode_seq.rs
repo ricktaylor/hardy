@@ -140,14 +140,12 @@ impl<'a, const D: usize> Sequence<'a, D> {
             Ok(None)
         } else {
             // Parse sub-item
-            match T::try_from_cbor(&self.data[*self.offset..])? {
-                Some((value, _, len)) => {
-                    self.parsed += 1;
-                    *self.offset += len;
-                    Ok(Some(value))
-                }
-                None => Ok(None),
-            }
+            let Some((value, _, len)) = T::try_from_cbor(&self.data[*self.offset..])? else {
+                return Ok(None);
+            };
+            self.parsed += 1;
+            *self.offset += len;
+            Ok(Some(value))
         }
     }
 

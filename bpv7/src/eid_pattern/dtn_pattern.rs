@@ -150,7 +150,7 @@ impl DtnSsp {
         let singles = parts.try_fold(Vec::new(), |mut v, s| {
             v.push(DtnSinglePattern::parse(s, span)?);
             span.inc(1);
-            Ok::<Vec<DtnSinglePattern>, EidPatternError>(v)
+            Ok::<_, EidPatternError>(v)
         })?;
 
         Ok(DtnSsp {
