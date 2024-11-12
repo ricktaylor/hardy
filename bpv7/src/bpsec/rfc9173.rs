@@ -123,7 +123,7 @@ mod test {
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
             ),
             &[(
-                Eid::Ipn3 {
+                Eid::Ipn {
                     allocator_id: 0,
                     node_number: 2,
                     service_number: 1,
@@ -145,7 +145,7 @@ mod test {
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
             ),
             &[(
-                Eid::Ipn3 {
+                Eid::Ipn {
                     allocator_id: 0,
                     node_number: 2,
                     service_number: 1,

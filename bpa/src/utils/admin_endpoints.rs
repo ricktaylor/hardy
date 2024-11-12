@@ -10,7 +10,7 @@ pub struct IpnNodeId {
 
 impl IpnNodeId {
     pub fn to_eid(&self, service_number: u32) -> Eid {
-        Eid::Ipn3 {
+        Eid::Ipn {
             allocator_id: self.allocator_id,
             node_number: self.node_number,
             service_number,
@@ -89,7 +89,7 @@ impl AdminEndpoints {
             },
             (Some(node_id), None) => match destination {
                 Eid::LocalNode { .. } => Eid::LocalNode { service_number: 0 },
-                Eid::Ipn2 { .. } => Eid::Ipn2 {
+                Eid::LegacyIpn { .. } => Eid::LegacyIpn {
                     allocator_id: node_id.allocator_id,
                     node_number: node_id.node_number,
                     service_number: 0,
@@ -98,7 +98,7 @@ impl AdminEndpoints {
             },
             (Some(ipn_node_id), Some(dtn_node_id)) => match destination {
                 Eid::LocalNode { .. } => Eid::LocalNode { service_number: 0 },
-                Eid::Ipn2 { .. } => Eid::Ipn2 {
+                Eid::LegacyIpn { .. } => Eid::LegacyIpn {
                     allocator_id: ipn_node_id.allocator_id,
                     node_number: ipn_node_id.node_number,
                     service_number: 0,
@@ -116,12 +116,12 @@ impl AdminEndpoints {
     pub fn is_local_service(&self, eid: &Eid) -> bool {
         match eid {
             Eid::LocalNode { .. } => true,
-            Eid::Ipn2 {
+            Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 ..
             }
-            | Eid::Ipn3 {
+            | Eid::Ipn {
                 allocator_id,
                 node_number,
                 ..
@@ -142,12 +142,12 @@ impl AdminEndpoints {
     pub fn is_admin_endpoint(&self, eid: &Eid) -> bool {
         match eid {
             Eid::LocalNode { service_number } => *service_number == 0,
-            Eid::Ipn2 {
+            Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 service_number,
             }
-            | Eid::Ipn3 {
+            | Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,
@@ -213,12 +213,12 @@ fn init_from_string(s: String) -> Result<AdminEndpoints, Error> {
     match s.parse()? {
         Eid::Null => Err(Error::NotNone),
         Eid::LocalNode { .. } => Err(Error::NotLocalNode),
-        Eid::Ipn2 {
+        Eid::LegacyIpn {
             allocator_id,
             node_number,
             service_number,
         }
-        | Eid::Ipn3 {
+        | Eid::Ipn {
             allocator_id,
             node_number,
             service_number,

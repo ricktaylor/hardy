@@ -28,12 +28,12 @@ impl IpnPatternItem {
                     && self.node_number.is_match(u32::MAX)
                     && self.service_number.is_match(*service_number)
             }
-            Eid::Ipn2 {
+            Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 service_number,
             }
-            | Eid::Ipn3 {
+            | Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,
@@ -47,7 +47,7 @@ impl IpnPatternItem {
     }
 
     pub fn is_exact(&self) -> Option<Eid> {
-        Some(Eid::Ipn3 {
+        Some(Eid::Ipn {
             allocator_id: self.allocator_id.is_exact()?,
             node_number: self.node_number.is_exact()?,
             service_number: self.service_number.is_exact()?,

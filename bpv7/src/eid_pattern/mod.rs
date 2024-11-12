@@ -85,12 +85,12 @@ impl From<Eid> for EidPattern {
                 })]
                 .into(),
             ),
-            Eid::Ipn2 {
+            Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 service_number,
             }
-            | Eid::Ipn3 {
+            | Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,

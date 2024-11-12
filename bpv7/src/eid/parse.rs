@@ -41,9 +41,9 @@ fn ipn_from_parts(
         Ok((Eid::Null, service_number == 0))
     } else if allocator_id == 0 && node_number == u32::MAX {
         Ok((Eid::LocalNode { service_number }, true))
-    } else if elements == 2 {
+    } else if elements == 2 && allocator_id != 0 {
         Ok((
-            Eid::Ipn2 {
+            Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 service_number,
@@ -52,7 +52,7 @@ fn ipn_from_parts(
         ))
     } else {
         Ok((
-            Eid::Ipn3 {
+            Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,

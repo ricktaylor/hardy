@@ -81,7 +81,7 @@ impl Config {
 
         if let Some(node_id) = &config.node_id {
             match node_id {
-                bpv7::Eid::Ipn2 { .. } | bpv7::Eid::Ipn3 { .. } => {}
+                bpv7::Eid::LegacyIpn { .. } | bpv7::Eid::Ipn { .. } => {}
                 bpv7::Eid::Dtn { node_name, .. } if !node_name.starts_with('~') => {}
                 _ => {
                     // Fatal!

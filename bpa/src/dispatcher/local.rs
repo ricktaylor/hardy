@@ -13,7 +13,7 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn local_dispatch(&self, mut request: SendRequest) -> Result<(), Error> {
         // Check to see if we should use ipn 2-element encoding
-        if let bpv7::Eid::Ipn3 {
+        if let bpv7::Eid::Ipn {
             allocator_id: da,
             node_number: dn,
             service_number: ds,
@@ -26,19 +26,19 @@ impl Dispatcher {
                 .find(&request.destination)
                 .is_empty()
             {
-                if let bpv7::Eid::Ipn3 {
+                if let bpv7::Eid::Ipn {
                     allocator_id: sa,
                     node_number: sn,
                     service_number: ss,
                 } = &request.source
                 {
-                    request.source = bpv7::Eid::Ipn2 {
+                    request.source = bpv7::Eid::LegacyIpn {
                         allocator_id: *sa,
                         node_number: *sn,
                         service_number: *ss,
                     };
                 }
-                request.destination = bpv7::Eid::Ipn2 {
+                request.destination = bpv7::Eid::LegacyIpn {
                     allocator_id: *da,
                     node_number: *dn,
                     service_number: *ds,

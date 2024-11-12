@@ -127,12 +127,12 @@ fn ipn_check(
     expected_service_number: u32,
 ) {
     match s.parse().expect("Failed to parse") {
-        Eid::Ipn2 {
+        Eid::LegacyIpn {
             allocator_id,
             node_number,
             service_number,
         }
-        | Eid::Ipn3 {
+        | Eid::Ipn {
             allocator_id,
             node_number,
             service_number,
