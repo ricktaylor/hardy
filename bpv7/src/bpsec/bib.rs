@@ -65,7 +65,7 @@ impl OperationSet {
         blocks_to_remove: &HashSet<u64>,
         source_data: &[u8],
     ) -> Result<Vec<u8>, bpsec::Error> {
-        cbor::decode::parse_value(&block.payload(source_data), |v, _, _| match v {
+        cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
             cbor::decode::Value::Bytes(data) => cbor::decode::parse::<OperationSet>(data)
                 .map(|op| op.rewrite_payload(blocks_to_remove, data)),
             cbor::decode::Value::ByteStream(data) => {

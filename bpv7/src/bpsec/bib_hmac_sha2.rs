@@ -1,6 +1,5 @@
 use super::*;
 use hmac::Mac;
-use zeroize::Zeroizing;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -45,73 +44,11 @@ impl cbor::decode::FromCbor for ShaVariant {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct ScopeFlags {
-    pub include_primary_block: bool,
-    pub include_target_header: bool,
-    pub include_security_header: bool,
-    pub unrecognised: u64,
-}
-
-impl Default for ScopeFlags {
-    fn default() -> Self {
-        Self {
-            include_primary_block: true,
-            include_target_header: true,
-            include_security_header: true,
-            unrecognised: 0,
-        }
-    }
-}
-
-impl cbor::decode::FromCbor for ScopeFlags {
-    type Error = cbor::decode::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
-            o.map(|(value, shortest, len)| {
-                let mut flags = Self {
-                    unrecognised: value & !7,
-                    ..Default::default()
-                };
-                for b in 0..=2 {
-                    if value & (1 << b) != 0 {
-                        match b {
-                            0 => flags.include_primary_block = true,
-                            1 => flags.include_target_header = true,
-                            2 => flags.include_security_header = true,
-                            _ => unreachable!(),
-                        }
-                    }
-                }
-                (flags, shortest, len)
-            })
-        })
-    }
-}
-
-impl cbor::encode::ToCbor for &ScopeFlags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        let mut flags = self.unrecognised;
-        if self.include_primary_block {
-            flags |= 1 << 0;
-        }
-        if self.include_target_header {
-            flags |= 1 << 1;
-        }
-        if self.include_security_header {
-            flags |= 1 << 2;
-        }
-        encoder.emit(flags)
-    }
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Parameters {
     pub variant: ShaVariant,
     pub key: Option<Box<[u8]>>,
-    pub flags: ScopeFlags,
+    pub flags: rfc9173::ScopeFlags,
 }
 
 impl Parameters {
@@ -159,7 +96,7 @@ impl cbor::encode::ToCbor for &Parameters {
         if self.key.is_some() {
             mask |= 1 << 2;
         }
-        if self.flags != ScopeFlags::default() {
+        if self.flags != rfc9173::ScopeFlags::default() {
             mask |= 1 << 3;
         }
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
@@ -227,8 +164,8 @@ impl Operation {
         !matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
-    fn unwrap_key(&self, _key: &KeyMaterial) -> Zeroizing<Box<[u8]>> {
-        Zeroizing::new(Box::from(*b"Testing!"))
+    fn unwrap_key(&self, key: &KeyMaterial) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
+        rfc9173::unwrap_key(key, &self.parameters.key).map_field_err("Wrapped key")
     }
 
     pub fn verify(
@@ -239,20 +176,20 @@ impl Operation {
     ) -> Result<(), Error> {
         match self.parameters.variant {
             ShaVariant::HMAC_256_256 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.unwrap_key(key))
-                    .map_field_err("SHA-256 Key material")?,
+                hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.unwrap_key(key)?)
+                    .map_field_err("SHA-256 Key")?,
                 args,
                 source_data,
             ),
             ShaVariant::HMAC_384_384 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha384>::new_from_slice(&self.unwrap_key(key))
-                    .map_field_err("SHA-384 Key material")?,
+                hmac::Hmac::<sha2::Sha384>::new_from_slice(&self.unwrap_key(key)?)
+                    .map_field_err("SHA-384 Key")?,
                 args,
                 source_data,
             ),
             ShaVariant::HMAC_512_512 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha512>::new_from_slice(&self.unwrap_key(key))
-                    .map_field_err("SHA-512 Key material")?,
+                hmac::Hmac::<sha2::Sha512>::new_from_slice(&self.unwrap_key(key)?)
+                    .map_field_err("SHA-512 Key")?,
                 args,
                 source_data,
             ),
@@ -270,7 +207,7 @@ impl Operation {
         M: hmac::Mac,
     {
         // Build IPT
-        mac.update(&cbor::encode::emit(&ScopeFlags {
+        mac.update(&cbor::encode::emit(&rfc9173::ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
             include_target_header: self.parameters.flags.include_target_header,
             include_security_header: self.parameters.flags.include_security_header,
@@ -401,27 +338,4 @@ pub fn parse(
         );
     }
     Ok((asb.source, operations))
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn rfc9173_appendix_a_1() {
-        // Note: I've tweaked the creation timestamp to be valid
-        let data = &hex_literal::hex!(
-            "9f88070000820282010282028202018202820201820118281a000f4240850b0200
-            005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
-            8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
-            f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
-            746f2067656e657261746520612033322d62797465207061796c6f6164ff"
-        );
-
-        let ValidBundle::Valid(..) =
-            ValidBundle::parse(data, |_| Ok(None)).expect("Failed to parse")
-        else {
-            panic!("No!");
-        };
-    }
 }

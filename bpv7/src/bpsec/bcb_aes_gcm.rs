@@ -1,6 +1,5 @@
 use super::*;
 use aes_gcm::KeyInit;
-use zeroize::Zeroizing;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -47,7 +46,7 @@ pub struct Parameters {
     pub iv: Box<[u8]>,
     pub variant: AesVariant,
     pub key: Option<Box<[u8]>>,
-    pub flags: bib_hmac_sha2::ScopeFlags,
+    pub flags: rfc9173::ScopeFlags,
 }
 
 impl Parameters {
@@ -118,7 +117,7 @@ impl cbor::encode::ToCbor for &Parameters {
         if self.key.is_some() {
             mask |= 1 << 3;
         }
-        if self.flags != bib_hmac_sha2::ScopeFlags::default() {
+        if self.flags != rfc9173::ScopeFlags::default() {
             mask |= 1 << 4;
         }
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
@@ -187,9 +186,8 @@ impl Operation {
         !matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
-    fn unwrap_key(&self, _key: &KeyMaterial) -> Zeroizing<Box<[u8]>> {
-        // TODO AES-KW
-        Zeroizing::new(Box::from(*b"Testing!"))
+    fn unwrap_key(&self, key: &KeyMaterial) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
+        rfc9173::unwrap_key(key, &self.parameters.key).map_field_err("Wrapped key")
     }
 
     pub fn decrypt(
@@ -207,13 +205,15 @@ impl Operation {
             |value, _, _| match value {
                 cbor::decode::Value::ByteStream(data) => match self.parameters.variant {
                     AesVariant::A128GCM => self.decrypt_inplace(
-                        aes_gcm::Aes128Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        aes_gcm::Aes128Gcm::new_from_slice(&self.unwrap_key(key)?)
+                            .map_field_err("AES-128 Key")?,
                         args,
                         source_data,
                         data,
                     ),
                     AesVariant::A256GCM => self.decrypt_inplace(
-                        aes_gcm::Aes256Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        aes_gcm::Aes256Gcm::new_from_slice(&self.unwrap_key(key)?)
+                            .map_field_err("AES-256 Key")?,
                         args,
                         source_data,
                         data,
@@ -222,13 +222,15 @@ impl Operation {
                 },
                 cbor::decode::Value::Bytes(data) => match self.parameters.variant {
                     AesVariant::A128GCM => self.decrypt_copy(
-                        aes_gcm::Aes128Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        aes_gcm::Aes128Gcm::new_from_slice(&self.unwrap_key(key)?)
+                            .map_field_err("AES-128 Key")?,
                         args,
                         source_data,
                         data,
                     ),
                     AesVariant::A256GCM => self.decrypt_copy(
-                        aes_gcm::Aes256Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        aes_gcm::Aes256Gcm::new_from_slice(&self.unwrap_key(key)?)
+                            .map_field_err("AES-256 Key")?,
                         args,
                         source_data,
                         data,
@@ -292,7 +294,7 @@ impl Operation {
 
     fn gen_aad(&self, args: OperationArgs, source_data: &[u8]) -> Vec<u8> {
         let mut encoder = cbor::encode::Encoder::new();
-        encoder.emit(&bib_hmac_sha2::ScopeFlags {
+        encoder.emit(&rfc9173::ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
             include_target_header: self.parameters.flags.include_target_header,
             include_security_header: self.parameters.flags.include_security_header,

@@ -50,16 +50,11 @@ pub enum Error {
     #[error("Invalid context {0}")]
     InvalidContext(Context),
 
-    //#[error("{0} block must use CBOR canonical representation")]
-    //NotCanonical(BlockType),
     #[error("Decryption failed")]
     DecryptionFailed,
 
     #[error("Verification failed")]
     VerificationFailed,
-
-    #[error("No key material for security operation source {0}")]
-    NoKeys(Eid),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {

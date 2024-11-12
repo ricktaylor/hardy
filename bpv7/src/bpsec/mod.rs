@@ -4,7 +4,7 @@ use std::{
     ops::Range,
     rc::Rc,
 };
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub mod bcb;
 mod bcb_aes_gcm;
@@ -12,6 +12,7 @@ pub mod bib;
 mod bib_hmac_sha2;
 mod error;
 mod parse;
+mod rfc9173;
 
 use error::CaptureFieldErr;
 
@@ -67,7 +68,10 @@ impl cbor::decode::FromCbor for Context {
 }
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub enum KeyMaterial {}
+pub enum KeyMaterial {
+    SymmetricKey(Box<[u8]>),
+    PrivateKey,
+}
 
 pub struct OperationArgs<'a> {
     pub target: &'a block::Block,
