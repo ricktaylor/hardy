@@ -262,7 +262,7 @@ impl Operation {
             cbor::decode::parse_value(args.target.payload(source_data), |value, s, tags| {
                 match value {
                     cbor::decode::Value::ByteStream(data) => {
-                        // This is horrible
+                        // This is horrible, but removes a potentially large data copy
                         let len = data.iter().try_fold(0u64, |len, d| {
                             len.checked_add(d.len() as u64)
                                 .ok_or(bpsec::Error::InvalidBIBTarget)
@@ -276,11 +276,11 @@ impl Operation {
                             mac.update(d);
                         }
                     }
-                    cbor::decode::Value::Bytes(data) if s && tags.is_empty() => {
+                    cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
                         mac.update(args.target.payload(source_data));
                     }
                     cbor::decode::Value::Bytes(data) => {
-                        // This is horrible
+                        // This is horrible, but removes a potentially large data copy
                         let mut header = cbor::encode::emit(data.len());
                         if let Some(m) = header.first_mut() {
                             *m |= 2 << 5;
