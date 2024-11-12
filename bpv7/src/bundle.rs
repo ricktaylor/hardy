@@ -177,6 +177,7 @@ impl Bundle {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn parse_blocks<F>(
         &mut self,
         canonical_primary_block: bool,
@@ -301,7 +302,7 @@ impl Bundle {
                 };
 
                 // Don't fully canonicalise BCB targets
-                if let Some(is_bpsec_target) = noncanonical_blocks.get_mut(&bcb_target_number) {
+                if let Some(is_bpsec_target) = noncanonical_blocks.get_mut(bcb_target_number) {
                     *is_bpsec_target = true;
                 }
 
@@ -646,10 +647,9 @@ impl Bundle {
                     })
                     .map_field_err("Hop Count Block")?,
                 _ => true,
-            } {
-                if !noncanonical_blocks.contains_key(block_number) {
-                    noncanonical_blocks.insert(*block_number, false);
-                }
+            } && !noncanonical_blocks.contains_key(block_number)
+            {
+                noncanonical_blocks.insert(*block_number, false);
             }
         }
 
