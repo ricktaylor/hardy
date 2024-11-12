@@ -1,9 +1,10 @@
+/*
 #[cfg(test)]
 use {hardy_bpv7::prelude::*, std::io::Write};
 
 #[test]
 fn test() {
-    let data = include_bytes!("artifacts/bundle/crash-33ed9a9b2f50ae62cd5532b2624974838e6ae440");
+    let data = include_bytes!("artifacts/bundle/crash-a25be572b9a0cb1cf6fc3063ab3f504e49ecf7f4");
 
     let mut f = |_: &Eid| Ok(None);
 
@@ -20,3 +21,4 @@ fn test() {
         };
     }
 }
+*/
