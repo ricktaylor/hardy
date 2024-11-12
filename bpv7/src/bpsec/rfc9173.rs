@@ -27,8 +27,10 @@ impl cbor::decode::FromCbor for ScopeFlags {
         cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
             o.map(|(value, shortest, len)| {
                 let mut flags = Self {
+                    include_primary_block: false,
+                    include_target_header: false,
+                    include_security_header: false,
                     unrecognised: value & !7,
-                    ..Default::default()
                 };
                 for b in 0..=2 {
                     if value & (1 << b) != 0 {
@@ -103,9 +105,12 @@ mod test {
             746f2067656e657261746520612033322d62797465207061796c6f6164ff"
         );
 
-        let ValidBundle::Valid(..) =
-            ValidBundle::parse(data, |_| Ok(None)).expect("Failed to parse")
-        else {
+        let ValidBundle::Valid(..) = ValidBundle::parse(data, |_| {
+            Ok(Some(bpsec::KeyMaterial::SymmetricKey(Box::new(
+                hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b"),
+            ))))
+        })
+        .expect("Failed to parse") else {
             panic!("No!");
         };
     }

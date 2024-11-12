@@ -259,22 +259,33 @@ impl Operation {
                 );
             }
         } else {
-            cbor::decode::parse_value(args.target.payload(source_data), |value, _, _| {
+            cbor::decode::parse_value(args.target.payload(source_data), |value, s, tags| {
                 match value {
                     cbor::decode::Value::ByteStream(data) => {
-                        /* REALLY UNCLEAR ON THIS!!
-                        mac.update(&cbor::encode::emit(d.into_iter().try_fold(
-                            0u64,
-                            |len, d| {
-                                len.checked_add(d.len() as u64)
-                                    .ok_or(bpsec::Error::NotCanonical(args.target.block.block_type))
-                            },
-                        )?));*/
+                        // This is horrible
+                        let len = data.iter().try_fold(0u64, |len, d| {
+                            len.checked_add(d.len() as u64)
+                                .ok_or(bpsec::Error::InvalidBIBTarget)
+                        })?;
+                        let mut header = cbor::encode::emit(len);
+                        if let Some(m) = header.first_mut() {
+                            *m |= 2 << 5;
+                        }
+                        mac.update(&header);
                         for d in data {
                             mac.update(d);
                         }
                     }
+                    cbor::decode::Value::Bytes(data) if s && tags.is_empty() => {
+                        mac.update(args.target.payload(source_data));
+                    }
                     cbor::decode::Value::Bytes(data) => {
+                        // This is horrible
+                        let mut header = cbor::encode::emit(data.len());
+                        if let Some(m) = header.first_mut() {
+                            *m |= 2 << 5;
+                        }
+                        mac.update(&header);
                         mac.update(data);
                     }
                     _ => unreachable!(),
