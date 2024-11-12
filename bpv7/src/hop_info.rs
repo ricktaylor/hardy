@@ -8,8 +8,8 @@ pub struct HopInfo {
 }
 
 impl cbor::encode::ToCbor for &HopInfo {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(2), |a, _| {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        encoder.emit_array(Some(2), |a| {
             a.emit(self.limit);
             a.emit(self.count);
         })

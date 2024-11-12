@@ -1,14 +1,14 @@
 use super::decode::*;
 use thiserror::Error;
 
-pub struct Sequence<'a, const D: usize> {
+pub struct Series<'a, const D: usize> {
     data: &'a [u8],
     count: Option<usize>,
     offset: &'a mut usize,
     parsed: usize,
 }
 
-impl<'a, const D: usize> Sequence<'a, D> {
+impl<'a, const D: usize> Series<'a, D> {
     pub(super) fn new(data: &'a [u8], count: Option<usize>, offset: &'a mut usize) -> Self {
         Self {
             data,
@@ -18,7 +18,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         }
     }
 
-    pub fn len(&self) -> Option<usize> {
+    pub fn count(&self) -> Option<usize> {
         self.count.map(|c| c / D)
     }
 
@@ -247,7 +247,7 @@ fn debug_fmt(
 }
 
 fn sequence_debug_fmt<const D: usize>(
-    sequence: &mut Sequence<'_, D>,
+    sequence: &mut Series<'_, D>,
     max_recursion: usize,
 ) -> Result<SequenceDebugInfo, DebugError> {
     if max_recursion == 0 {
@@ -308,11 +308,11 @@ fn sequence_debug_fmt<const D: usize>(
     }
 }
 
-impl<const D: usize> std::fmt::Debug for Sequence<'_, D> {
+impl<const D: usize> std::fmt::Debug for Series<'_, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut offset = 0;
         {
-            let mut self_cloned = Sequence::<D> {
+            let mut self_cloned = Series::<D> {
                 data: &self.data[*self.offset..],
                 count: self.count,
                 offset: &mut offset,

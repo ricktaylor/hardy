@@ -1,4 +1,6 @@
 use super::*;
+use aes_gcm::KeyInit;
+use zeroize::Zeroizing;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -11,7 +13,7 @@ pub enum AesVariant {
 }
 
 impl cbor::encode::ToCbor for AesVariant {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
             Self::A128GCM => 1,
             Self::A256GCM => 3,
@@ -40,9 +42,9 @@ impl cbor::decode::FromCbor for AesVariant {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Parameters {
-    pub iv: Option<Box<[u8]>>,
+    pub iv: Box<[u8]>,
     pub variant: AesVariant,
     pub key: Option<Box<[u8]>>,
     pub flags: bib_hmac_sha2::ScopeFlags,
@@ -54,52 +56,62 @@ impl Parameters {
         data: &[u8],
     ) -> Result<(Self, bool), bpsec::Error> {
         let mut shortest = true;
-        let mut result = Self::default();
+        let mut iv = None;
+        let mut variant = None;
+        let mut key = None;
+        let mut flags = None;
         for (id, range) in parameters {
             match id {
                 1 => {
-                    result.iv = Some(cbor::decode::parse(&data[range.start..range.end]).map(
-                        |(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        },
-                    )?);
+                    iv = Some(parse::decode_box(range, data).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
                 }
                 2 => {
-                    result.variant =
-                        cbor::decode::parse(&data[range.start..range.end]).map(|(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        })?;
-                }
-                3 => {
-                    result.key = Some(cbor::decode::parse(&data[range.start..range.end]).map(
+                    variant = Some(cbor::decode::parse(&data[range.start..range.end]).map(
                         |(v, s)| {
                             shortest = shortest && s;
                             v
                         },
                     )?);
                 }
+                3 => {
+                    key = Some(parse::decode_box(range, data).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
+                }
                 4 => {
-                    result.flags =
-                        cbor::decode::parse(&data[range.start..range.end]).map(|(v, s)| {
+                    flags = Some(cbor::decode::parse(&data[range.start..range.end]).map(
+                        |(v, s)| {
                             shortest = shortest && s;
                             v
-                        })?;
+                        },
+                    )?);
                 }
                 _ => return Err(bpsec::Error::InvalidContextParameter(id)),
             }
         }
-        Ok((result, shortest))
+        let Some(iv) = iv else {
+            return Err(bpsec::Error::MissingContextParameter(1));
+        };
+
+        Ok((
+            Self {
+                iv,
+                variant: variant.unwrap_or_default(),
+                key,
+                flags: flags.unwrap_or_default(),
+            },
+            shortest,
+        ))
     }
 }
 
 impl cbor::encode::ToCbor for &Parameters {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
-        let mut mask: u32 = 0;
-        if self.iv.is_some() {
-            mask |= 1 << 1;
-        }
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+        let mut mask: u32 = 1 << 1;
         if self.variant != AesVariant::default() {
             mask |= 1 << 2;
         }
@@ -109,13 +121,13 @@ impl cbor::encode::ToCbor for &Parameters {
         if self.flags != bib_hmac_sha2::ScopeFlags::default() {
             mask |= 1 << 4;
         }
-        encoder.emit_array(Some(mask.count_ones() as usize), |a, _| {
+        encoder.emit_array(Some(mask.count_ones() as usize), |a| {
             for b in 1..=4 {
                 if mask & (1 << b) != 0 {
-                    a.emit_array(Some(2), |a, _| {
+                    a.emit_array(Some(2), |a| {
                         a.emit(b);
                         match b {
-                            1 => a.emit(self.iv.as_ref().unwrap().as_ref()),
+                            1 => a.emit(self.iv.as_ref().as_ref()),
                             2 => a.emit(self.variant),
                             3 => a.emit(self.key.as_ref().unwrap().as_ref()),
                             4 => a.emit(&self.flags),
@@ -141,8 +153,7 @@ impl Results {
         for (id, range) in results {
             match id {
                 1 => {
-                    r.0 = cbor::decode::parse::<(Box<[u8]>, bool)>(&data[range.start..range.end])
-                        .map(|(v, s)| {
+                    r.0 = parse::decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?;
@@ -155,9 +166,9 @@ impl Results {
 }
 
 impl cbor::encode::ToCbor for &Results {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(1), |a, _| {
-            a.emit_array(Some(2), |a, _| {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit_array(Some(1), |a| {
+            a.emit_array(Some(2), |a| {
                 a.emit(1);
                 a.emit(self.0.as_ref());
             });
@@ -172,28 +183,159 @@ pub struct Operation {
 }
 
 impl Operation {
+    pub fn is_unsupported(&self) -> bool {
+        !matches!(self.parameters.variant, AesVariant::Unrecognised(_))
+    }
+
+    fn unwrap_key(&self, _key: &KeyMaterial) -> Zeroizing<Box<[u8]>> {
+        // TODO AES-KW
+        Zeroizing::new(Box::from(*b"Testing!"))
+    }
+
     pub fn decrypt(
         &self,
-        _key: &KeyMaterial,
-        _bundle: &Bundle,
-        _data: &[u8],
-    ) -> Result<Box<[u8]>, Error> {
-        todo!()
-    }
-
-    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) -> usize {
-        let mut len = encoder.emit(Context::BIB_HMAC_SHA2);
-        if self.parameters.as_ref() == &Parameters::default() {
-            len += encoder.emit(0);
-            len + encoder.emit(source)
-        } else {
-            len += encoder.emit(1);
-            len += encoder.emit(source);
-            len + encoder.emit(self.parameters.as_ref())
+        key: &KeyMaterial,
+        args: OperationArgs,
+        source_data: &[u8],
+    ) -> Result<Option<Box<[u8]>>, Error> {
+        if matches!(self.parameters.variant, AesVariant::Unrecognised(_)) {
+            return Ok(None);
         }
+
+        cbor::decode::parse_value(
+            args.target.payload(source_data),
+            |value, _, _| match value {
+                cbor::decode::Value::ByteStream(data) => match self.parameters.variant {
+                    AesVariant::A128GCM => self.decrypt_inplace(
+                        aes_gcm::Aes128Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        args,
+                        source_data,
+                        data,
+                    ),
+                    AesVariant::A256GCM => self.decrypt_inplace(
+                        aes_gcm::Aes256Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        args,
+                        source_data,
+                        data,
+                    ),
+                    AesVariant::Unrecognised(_) => unreachable!(),
+                },
+                cbor::decode::Value::Bytes(data) => match self.parameters.variant {
+                    AesVariant::A128GCM => self.decrypt_copy(
+                        aes_gcm::Aes128Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        args,
+                        source_data,
+                        data,
+                    ),
+                    AesVariant::A256GCM => self.decrypt_copy(
+                        aes_gcm::Aes256Gcm::new(self.unwrap_key(key).as_ref().into()),
+                        args,
+                        source_data,
+                        data,
+                    ),
+                    AesVariant::Unrecognised(_) => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+        )
+        .map(|v| v.0)
     }
 
-    pub fn emit_result(&self, array: &mut cbor::encode::Array) {
+    fn decrypt_copy<M>(
+        &self,
+        cipher: M,
+        args: OperationArgs,
+        source_data: &[u8],
+        data: &[u8],
+    ) -> Result<Option<Box<[u8]>>, bpsec::Error>
+    where
+        M: aes_gcm::aead::Aead,
+    {
+        cipher
+            .decrypt(
+                self.parameters.iv.as_ref().into(),
+                aes_gcm::aead::Payload {
+                    msg: data,
+                    aad: &self.gen_aad(args, source_data),
+                },
+            )
+            .map(|d| Some(d.into()))
+            .map_err(|_| bpsec::Error::DecryptionFailed)
+    }
+
+    fn decrypt_inplace<M>(
+        &self,
+        cipher: M,
+        args: OperationArgs,
+        source_data: &[u8],
+        data: &[&[u8]],
+    ) -> Result<Option<Box<[u8]>>, bpsec::Error>
+    where
+        M: aes_gcm::aead::AeadInPlace,
+    {
+        // Concatenate all the bytes
+        let mut data: Vec<u8> = data.iter().fold(Vec::new(), |mut data, d| {
+            data.extend(*d);
+            data
+        });
+
+        // Then decrypt in-place, this results in a single data copy
+        cipher
+            .decrypt_in_place(
+                self.parameters.iv.as_ref().into(),
+                &self.gen_aad(args, source_data),
+                &mut data,
+            )
+            .map(|_| Some(data.into()))
+            .map_err(|_| bpsec::Error::DecryptionFailed)
+    }
+
+    fn gen_aad(&self, args: OperationArgs, source_data: &[u8]) -> Vec<u8> {
+        let mut encoder = cbor::encode::Encoder::new();
+        encoder.emit(&bib_hmac_sha2::ScopeFlags {
+            include_primary_block: self.parameters.flags.include_primary_block,
+            include_target_header: self.parameters.flags.include_target_header,
+            include_security_header: self.parameters.flags.include_security_header,
+            ..Default::default()
+        });
+
+        if self.parameters.flags.include_primary_block {
+            if !args.canonical_primary_block {
+                encoder.emit_raw(primary_block::PrimaryBlock::emit(args.bundle));
+            } else {
+                encoder.emit_raw_slice(
+                    args.bundle
+                        .blocks
+                        .get(&0)
+                        .expect("Missing primary block!")
+                        .payload(source_data),
+                );
+            }
+        }
+
+        if self.parameters.flags.include_target_header {
+            encoder.emit(args.target.block_type);
+            encoder.emit(*args.target_number);
+            encoder.emit(&args.target.flags);
+        }
+
+        if self.parameters.flags.include_security_header {
+            encoder.emit(args.source.block_type);
+            encoder.emit(*args.source_number);
+            encoder.emit(&args.source.flags);
+        }
+
+        encoder.build()
+    }
+
+    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
+        encoder.emit(Context::BIB_HMAC_SHA2);
+        encoder.emit(1);
+        encoder.emit(source);
+        encoder.emit(self.parameters.as_ref());
+    }
+
+    pub fn emit_result(self, array: &mut cbor::encode::Array) {
         array.emit(&self.results);
     }
 }

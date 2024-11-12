@@ -12,31 +12,33 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn block_data(&self, data: &[u8]) -> Result<Box<[u8]>, cbor::decode::Error> {
-        cbor::decode::parse(
-            &data[(self.data_start + self.payload_offset)..(self.data_start + self.data_len)],
-        )
+    pub fn payload<'a>(&self, data: &'a [u8]) -> &'a [u8] {
+        &data[self.data_start + self.payload_offset..self.data_start + self.data_len]
     }
 
-    pub fn parse_payload<T>(&self, data: &[u8]) -> Result<(T, bool), BundleError>
+    pub fn parse_payload<T>(
+        &self,
+        payload_data: &[u8],
+    ) -> Result<(T, bool), <T as cbor::decode::FromCbor>::Error>
     where
         T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
-        BundleError: From<<T as cbor::decode::FromCbor>::Error>,
     {
-        let data = self.block_data(data)?;
-        cbor::decode::parse::<(T, bool, usize)>(&data)
-            .map(|(v, s, len)| (v, s && len == data.len()))
-            .map_err(Into::into)
+        cbor::decode::parse_value(payload_data, |v, shortest, tags| match v {
+            cbor::decode::Value::Bytes(data) => cbor::decode::parse::<(T, bool, usize)>(data)
+                .map(|(v, s, len)| (v, shortest && s && tags.is_empty() && len == data.len())),
+            cbor::decode::Value::ByteStream(data) => cbor::decode::parse::<(T, bool, usize)>(
+                &data.iter().fold(Vec::new(), |mut data, d| {
+                    data.extend(*d);
+                    data
+                }),
+            )
+            .map(|v| (v.0, false)),
+            _ => unreachable!(),
+        })
+        .map(|((v, s), len)| (v, s && len == payload_data.len()))
     }
 
-    pub fn emit(
-        &mut self,
-        block_number: u64,
-        data: &[u8],
-        array: &mut cbor::encode::Array,
-        offset: usize,
-    ) -> usize {
-        let mut payload_offset = 0;
+    pub fn emit(&mut self, block_number: u64, data: &[u8], array: &mut cbor::encode::Array) {
         let block_data = crc::append_crc_value(
             self.crc_type,
             cbor::encode::emit_array(
@@ -45,19 +47,16 @@ impl Block {
                 } else {
                     6
                 }),
-                |a, offset| {
-                    payload_offset = offset;
+                |a| {
+                    a.emit(self.block_type);
+                    a.emit(block_number);
+                    a.emit(&self.flags);
+                    a.emit(self.crc_type);
 
-                    // Block Type
-                    payload_offset += a.emit(self.block_type);
-                    // Block Number
-                    payload_offset += a.emit(block_number);
-                    // Flags
-                    payload_offset += a.emit(&self.flags);
-                    // CRC Type
-                    payload_offset += a.emit(self.crc_type);
                     // Payload
+                    self.payload_offset = a.offset();
                     a.emit(data);
+
                     // CRC
                     if let CrcType::None = self.crc_type {
                     } else {
@@ -66,21 +65,39 @@ impl Block {
                 },
             ),
         );
-        self.data_start = offset;
-        self.payload_offset = payload_offset;
+        self.data_start = array.offset();
         self.data_len = block_data.len();
-        array.emit_raw(&block_data)
+        array.emit_raw(block_data)
     }
 
-    pub fn copy(
+    pub fn rewrite(
         &mut self,
-        source_data: &[u8],
+        block_number: u64,
         array: &mut cbor::encode::Array,
-        offset: usize,
-    ) -> usize {
-        let len = array.emit_raw(&source_data[self.data_start..self.data_start + self.data_len]);
+        source_data: &[u8],
+    ) -> Result<(), cbor::decode::Error> {
+        cbor::decode::parse_value(self.payload(source_data), |value, _, _| {
+            match value {
+                cbor::decode::Value::Bytes(d) => self.emit(block_number, d, array),
+                cbor::decode::Value::ByteStream(d) => self.emit(
+                    block_number,
+                    &d.iter().fold(Vec::new(), |mut data, d| {
+                        data.extend(*d);
+                        data
+                    }),
+                    array,
+                ),
+                _ => unreachable!(),
+            };
+            Ok(())
+        })
+        .map(|_| ())
+    }
+
+    pub fn copy(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
+        let offset = array.offset();
+        array.emit_raw_slice(&source_data[self.data_start..self.data_start + self.data_len]);
         self.data_start = offset;
-        len
     }
 }
 
@@ -152,8 +169,9 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                 }
 
                 match value {
-                    cbor::decode::Value::Bytes(_, chunked) => {
-                        shortest = shortest && !chunked;
+                    cbor::decode::Value::Bytes(_) => Ok(()),
+                    cbor::decode::Value::ByteStream(_) => {
+                        shortest = false;
                         Ok(())
                     }
                     value => Err(cbor::decode::Error::IncorrectType(

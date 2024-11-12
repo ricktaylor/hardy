@@ -111,7 +111,7 @@ impl TryFrom<u64> for StatusReportReasonCode {
 }
 
 impl cbor::encode::ToCbor for StatusReportReasonCode {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }
@@ -131,16 +131,16 @@ impl cbor::decode::FromCbor for StatusReportReasonCode {
 #[derive(Debug, Clone)]
 pub struct StatusAssertion(pub Option<DtnTime>);
 
-fn emit_status_assertion(a: &mut cbor::encode::Array, sa: &Option<StatusAssertion>) -> usize {
+fn emit_status_assertion(a: &mut cbor::encode::Array, sa: &Option<StatusAssertion>) {
     // This is a horrible format!
     match sa {
-        None => a.emit_array(Some(1), |a, _| {
+        None => a.emit_array(Some(1), |a| {
             a.emit(false);
         }),
-        Some(StatusAssertion(None)) => a.emit_array(Some(1), |a, _| {
+        Some(StatusAssertion(None)) => a.emit_array(Some(1), |a| {
             a.emit(true);
         }),
-        Some(StatusAssertion(Some(timestamp))) => a.emit_array(Some(2), |a, _| {
+        Some(StatusAssertion(Some(timestamp))) => a.emit_array(Some(2), |a| {
             a.emit(true);
             a.emit(*timestamp);
         }),
@@ -199,12 +199,12 @@ pub struct BundleStatusReport {
 }
 
 impl cbor::encode::ToCbor for &BundleStatusReport {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
         encoder.emit_array(
             Some(self.bundle_id.fragment_info.as_ref().map_or(4, |_| 6)),
-            |a, _| {
+            |a| {
                 // Statuses
-                a.emit_array(Some(4), |a, _| {
+                a.emit_array(Some(4), |a| {
                     emit_status_assertion(a, &self.received);
                     emit_status_assertion(a, &self.forwarded);
                     emit_status_assertion(a, &self.delivered);
@@ -300,8 +300,8 @@ pub enum AdministrativeRecord {
 }
 
 impl cbor::encode::ToCbor for &AdministrativeRecord {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(2), |a, _| match self {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        encoder.emit_array(Some(2), |a| match self {
             AdministrativeRecord::BundleStatusReport(report) => {
                 a.emit(1);
                 a.emit(report);

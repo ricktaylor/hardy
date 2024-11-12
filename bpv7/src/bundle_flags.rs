@@ -78,7 +78,7 @@ impl From<&BundleFlags> for u64 {
 }
 
 impl cbor::encode::ToCbor for &BundleFlags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }

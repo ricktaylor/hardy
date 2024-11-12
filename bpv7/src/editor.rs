@@ -87,20 +87,20 @@ impl<'a> Editor<'a> {
     }
 
     pub fn build(mut self) -> Vec<u8> {
-        cbor::encode::emit_array(None, |a, mut offset| {
+        cbor::encode::emit_array(None, |a| {
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
             // Emit primary block
-            offset += self.build_block(0, primary_block, a, offset);
+            self.build_block(0, primary_block, a);
 
             // Emit extension blocks
             for (block_number, block) in std::mem::take(&mut self.blocks) {
-                offset += self.build_block(block_number, block, a, offset);
+                self.build_block(block_number, block, a);
             }
 
             // Emit payload block
-            self.build_block(1, payload_block, a, offset);
+            self.build_block(1, payload_block, a);
         })
     }
 
@@ -109,8 +109,7 @@ impl<'a> Editor<'a> {
         block_number: u64,
         template: BlockTemplate,
         array: &mut cbor::encode::Array,
-        offset: usize,
-    ) -> usize {
+    ) {
         match template {
             BlockTemplate::Keep(_) => {
                 let block = self
@@ -118,11 +117,13 @@ impl<'a> Editor<'a> {
                     .blocks
                     .get(&block_number)
                     .expect("Mismatched block in bundle!");
-                array.emit_raw(
+                array.emit_raw_slice(
                     &self.source_data[block.data_start..block.data_start + block.data_len],
-                )
+                );
             }
-            BlockTemplate::Add(template) => template.build(block_number, array, offset).1,
+            BlockTemplate::Add(template) => {
+                template.build(block_number, array);
+            }
         }
     }
 }

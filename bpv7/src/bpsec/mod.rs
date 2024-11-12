@@ -1,5 +1,10 @@
 use super::*;
-use std::{collections::HashMap, ops::Range, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    rc::Rc,
+};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub mod bcb;
 mod bcb_aes_gcm;
@@ -32,7 +37,7 @@ impl std::fmt::Display for Context {
 }
 
 impl cbor::encode::ToCbor for Context {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
             Self::BIB_HMAC_SHA2 => 1,
             Self::BCB_AES_GCM => 2,
@@ -61,5 +66,14 @@ impl cbor::decode::FromCbor for Context {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub enum KeyMaterial {}
+
+pub struct OperationArgs<'a> {
+    pub target: &'a block::Block,
+    pub target_number: &'a u64,
+    pub source: &'a block::Block,
+    pub source_number: &'a u64,
+    pub bundle: &'a Bundle,
+    pub canonical_primary_block: bool,
+}

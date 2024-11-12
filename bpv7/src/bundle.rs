@@ -13,6 +13,9 @@ pub enum BundleError {
     #[error("Bundle has no payload block")]
     MissingPayload,
 
+    #[error("Block {0} is not protected by a BPSec BIB or a CRC")]
+    MissingIntegrityCheck(u64),
+
     #[error("Bundle payload block must be block number 1")]
     InvalidPayloadBlockNumber,
 
@@ -22,7 +25,7 @@ pub enum BundleError {
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),
 
-    #[error("Block number {0} is invalid for a {1} block")]
+    #[error("{1} block cannot be block number {0}")]
     InvalidBlockNumber(u64, BlockType),
 
     #[error("Bundle has multiple {0} blocks")]
@@ -31,8 +34,8 @@ pub enum BundleError {
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
     MissingBundleAge,
 
-    #[error("Unsupported block type or block content sub-type")]
-    Unsupported,
+    #[error("Block {0} has an unsupported block type or block content sub-type")]
+    Unsupported(u64),
 
     #[error("Invalid bundle flag combination")]
     InvalidFlags,
@@ -140,20 +143,19 @@ pub struct Bundle {
 impl Bundle {
     fn bcb_decrypt_block<F>(
         &self,
-        block: &Block,
         keys: &mut KeyCache<F>,
         eid: &Eid,
         operation: &bpsec::bcb::Operation,
-        data: &[u8],
+        args: bpsec::OperationArgs,
+        source_data: &[u8],
     ) -> Result<Option<Box<[u8]>>, bpsec::Error>
     where
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
-        match keys.get(eid, operation.context_id())? {
-            Some(key) => operation
-                .decrypt(&key, self, &block.block_data(data)?)
-                .map(Some),
-            None => Ok(None),
+        if let Some(key) = keys.get(eid, operation.context_id())? {
+            operation.decrypt(&key, args, source_data)
+        } else {
+            Ok(None)
         }
     }
 
@@ -162,24 +164,27 @@ impl Bundle {
         keys: &mut KeyCache<F>,
         eid: &Eid,
         operation: &bpsec::bib::Operation,
-        data: &[u8],
+        args: bpsec::OperationArgs,
+        source_data: &[u8],
     ) -> Result<(), bpsec::Error>
     where
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
-        match keys.get(eid, operation.context_id())? {
-            Some(key) => operation.verify(&key, self, data),
-            None => Ok(()),
+        if let Some(key) = keys.get(eid, operation.context_id())? {
+            operation.verify(&key, args, source_data)
+        } else {
+            Ok(())
         }
     }
 
     fn parse_blocks<F>(
         &mut self,
+        canonical_primary_block: bool,
         blocks: &mut cbor::decode::Array,
         mut offset: usize,
-        data: &[u8],
+        source_data: &[u8],
         f: F,
-    ) -> Result<(HashSet<u64>, bool), BundleError>
+    ) -> Result<(HashSet<u64>, HashSet<u64>, bool), BundleError>
     where
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
@@ -226,7 +231,7 @@ impl Bundle {
 
                     let bcb = block
                         .block
-                        .parse_payload::<bpsec::bcb::OperationSet>(data)
+                        .parse_payload::<bpsec::bcb::OperationSet>(block.block.payload(source_data))
                         .map(|(v, s)| {
                             if !s {
                                 noncanonical_blocks.insert(block.number);
@@ -237,7 +242,7 @@ impl Bundle {
 
                     if bcb.is_unsupported() {
                         if block.block.flags.delete_bundle_on_failure {
-                            return Err(BundleError::Unsupported);
+                            return Err(BundleError::Unsupported(block.number));
                         }
 
                         if block.block.flags.report_on_failure {
@@ -248,7 +253,7 @@ impl Bundle {
                 }
                 BlockType::Unrecognised(_) => {
                     if block.block.flags.delete_bundle_on_failure {
-                        return Err(BundleError::Unsupported);
+                        return Err(BundleError::Unsupported(block.number));
                     }
 
                     if block.block.flags.delete_block_on_failure {
@@ -271,25 +276,27 @@ impl Bundle {
         }
 
         // Check the last block is the payload
-        match blocks_to_check.remove(&BlockType::Payload) {
-            None => return Err(BundleError::MissingPayload),
-            Some(block_number) => {
-                if block_number != last_block_number {
-                    return Err(BundleError::PayloadNotFinal);
-                }
+        if let Some(payload_block_number) = blocks_to_check.remove(&BlockType::Payload) {
+            if payload_block_number != last_block_number {
+                return Err(BundleError::PayloadNotFinal);
             }
+        } else {
+            return Err(BundleError::MissingPayload);
         }
 
         // Do the first BCB pass, checking BIBs and general sanity
         let keys = &mut KeyCache::new(f);
         let mut bcbs = Vec::new();
         let mut bib_targets = HashSet::new();
-        for (block_number, bcb) in &bcbs_to_check {
-            for (bcb_target, bcb_op) in &bcb.operations {
-                if !bcb_targets.insert(bcb_target) {
+        let mut bcb_target_counts = HashMap::new();
+        for (bcb_block_number, bcb) in &bcbs_to_check {
+            let bcb_block = self.blocks.get(bcb_block_number).unwrap();
+            let mut bcb_targets_remaining = bcb.operations.len();
+            for (bcb_target_number, bcb_op) in &bcb.operations {
+                if !bcb_targets.insert(bcb_target_number) {
                     return Err(bpsec::Error::DuplicateOpTarget.into());
                 }
-                let Some(bcb_target_block) = self.blocks.get(bcb_target) else {
+                let Some(bcb_target_block) = self.blocks.get(bcb_target_number) else {
                     return Err(bpsec::Error::MissingSecurityTarget.into());
                 };
 
@@ -300,49 +307,46 @@ impl Bundle {
                     }
                     BlockType::Payload => {
                         // Just validate
-                        if !self.blocks.get(block_number).unwrap().flags.must_replicate {
+                        if !bcb_block.flags.must_replicate {
                             return Err(bpsec::Error::BCBMustReplicate.into());
                         }
                     }
                     BlockType::BlockIntegrity => {
-                        if !bcb_op.is_unsupported() {
-                            let Some(bcb_data) = self.bcb_decrypt_block(
-                                bcb_target_block,
-                                keys,
-                                &bcb.source,
-                                bcb_op,
-                                data,
-                            )?
-                            else {
-                                return Err(bpsec::Error::NoKeys(bcb.source.clone()).into());
-                            };
-
-                            let (bib, s) =
-                                cbor::decode::parse::<(bpsec::bib::OperationSet, bool, usize)>(
-                                    &bcb_data,
-                                )
-                                .map(|(v, s, len)| (v, s && len == bcb_data.len()))
-                                .map_field_err("BPSec integrity extension block")?;
-                            if !s {
-                                return Err(
-                                    bpsec::Error::NotCanonical(BlockType::BlockIntegrity).into()
-                                );
-                            }
+                        if let Some(bib) = self.bcb_decrypt_block(
+                            keys,
+                            &bcb.source,
+                            bcb_op,
+                            bpsec::OperationArgs {
+                                target: bcb_target_block,
+                                target_number: bcb_target_number,
+                                source: bcb_block,
+                                source_number: bcb_block_number,
+                                bundle: self,
+                                canonical_primary_block,
+                            },
+                            source_data,
+                        )? {
+                            let bib = bcb_target_block
+                                .parse_payload::<bpsec::bib::OperationSet>(&bib)
+                                .map_field_err("BPSec integrity extension block")?
+                                .0;
 
                             if bib.is_unsupported() {
                                 if bcb_target_block.flags.delete_bundle_on_failure {
-                                    return Err(BundleError::Unsupported);
+                                    return Err(BundleError::Unsupported(*bcb_target_number));
                                 }
 
                                 if bcb_target_block.flags.delete_block_on_failure {
-                                    return Err(bpsec::Error::InvalidTargetFlags.into());
+                                    blocks_to_remove.insert(*bcb_target_number);
                                 }
 
                                 if bcb_target_block.flags.report_on_failure {
                                     report_unsupported = true;
                                 }
                             }
-                            // Validate targets, as they are encrypted by this BCB
+
+                            // Validate targets now, as they are encrypted by this BCB
+                            let mut bib_targets_remaining = bib.operations.len();
                             for (bib_target, bib_op) in bib.operations {
                                 // Check targets match
                                 if !bcb.operations.contains_key(&bib_target) {
@@ -364,111 +368,182 @@ impl Bundle {
                                 }
 
                                 // Decrypt the BIB target
-                                if let Some(data) = self.bcb_decrypt_block(
-                                    bib_target_block,
+                                if let Some(block_data) = self.bcb_decrypt_block(
                                     keys,
                                     &bcb.source,
                                     bcb_op,
-                                    data,
+                                    bpsec::OperationArgs {
+                                        target: bib_target_block,
+                                        target_number: &bib_target,
+                                        source: bcb_block,
+                                        source_number: bcb_block_number,
+                                        bundle: self,
+                                        canonical_primary_block,
+                                    },
+                                    source_data,
                                 )? {
-                                    if !bib_op.is_unsupported() {
-                                        // Do BIB verification
-                                        self.bib_verify_data(keys, &bib.source, &bib_op, &data)?;
-                                    }
+                                    // Do BIB verification
+                                    self.bib_verify_data(
+                                        keys,
+                                        &bib.source,
+                                        &bib_op,
+                                        bpsec::OperationArgs {
+                                            target: bib_target_block,
+                                            target_number: &bib_target,
+                                            source: bcb_target_block,
+                                            source_number: bcb_target_number,
+                                            bundle: self,
+                                            canonical_primary_block,
+                                        },
+                                        &block_data,
+                                    )?;
 
-                                    if !match bib_target_block.block_type {
+                                    // And parse
+                                    match bib_target_block.block_type {
                                         BlockType::PreviousNode => {
-                                            let (eid, s, len) = cbor::decode::parse(&data)
-                                                .map_field_err("Previous Node Block")?;
-                                            self.previous_node = Some(eid);
-                                            s && len == data.len()
+                                            self.previous_node = Some(
+                                                bib_target_block
+                                                    .parse_payload(&block_data)
+                                                    .map_field_err("Previous Node Block")?
+                                                    .0,
+                                            );
                                         }
                                         BlockType::BundleAge => {
-                                            let (age, s, len) = cbor::decode::parse(&data)
-                                                .map_field_err("Bundle Age Block")?;
-                                            self.age = Some(age);
-                                            s && len == data.len()
+                                            self.age = Some(
+                                                bib_target_block
+                                                    .parse_payload(&block_data)
+                                                    .map_field_err("Bundle Age Block")?
+                                                    .0,
+                                            );
                                         }
                                         BlockType::HopCount => {
-                                            let (hop_count, s, len) = cbor::decode::parse(&data)
-                                                .map_field_err("Hop Count Block")?;
-                                            self.hop_count = Some(hop_count);
-                                            s && len == data.len()
+                                            self.hop_count = Some(
+                                                bib_target_block
+                                                    .parse_payload(&block_data)
+                                                    .map_field_err("Hop Count Block")?
+                                                    .0,
+                                            );
                                         }
-                                        _ => true,
-                                    } {
-                                        return Err(bpsec::Error::NotCanonical(
-                                            bib_target_block.block_type,
-                                        )
-                                        .into());
+                                        _ => {}
                                     }
                                     blocks_to_check.remove(&bib_target_block.block_type);
                                 }
+
+                                // Check if the target block is supported
+                                if blocks_to_remove.contains(&bib_target) {
+                                    bib_targets_remaining -= 1;
+                                }
+                            }
+
+                            if bib_targets_remaining == 0 {
+                                // All targets are unsupported
+                                blocks_to_remove.insert(*bcb_target_number);
                             }
                         }
 
                         // Don't need to check this BIB again
-                        bibs_to_check.remove(bcb_target);
+                        bibs_to_check.remove(bcb_target_number);
 
-                        // Don't need to reprocess this BCB target
+                        // Don't need to reprocess this BCB target BIB
                         add_target = false;
                     }
                     _ => {}
                 }
 
-                if add_target {
-                    bcbs.push((*bcb_target, bcb_target_block, &bcb.source, bcb_op));
+                if blocks_to_remove.contains(bcb_target_number) {
+                    bcb_targets_remaining -= 1;
+                } else if add_target {
+                    bcbs.push((
+                        bcb_target_number,
+                        bcb_target_block,
+                        &bcb.source,
+                        bcb_op,
+                        bcb_block,
+                        bcb_block_number,
+                    ));
                 }
+            }
+
+            if bcb_targets_remaining == 0 {
+                blocks_to_remove.insert(*bcb_block_number);
+            } else {
+                bcb_target_counts.insert(*bcb_block_number, bcb_targets_remaining);
             }
         }
         drop(bcb_targets);
 
-        // Check non-BIB BCB targets next
-        for (target_block_number, target_block, source, op) in bcbs {
+        // Check non-BIB valid BCB targets next
+        for (target_block_number, target_block, source, op, bcb_block, bcb_block_number) in bcbs {
             // Skip blocks we have already processed as BIB targets
-            if bib_targets.contains(&target_block_number) {
+            if bib_targets.contains(target_block_number) {
                 continue;
             }
 
             // Confirm we can decrypt if we have keys
-            if let Some(data) = self.bcb_decrypt_block(target_block, keys, source, op, data)? {
-                if !match target_block.block_type {
+            if let Some(data) = self.bcb_decrypt_block(
+                keys,
+                source,
+                op,
+                bpsec::OperationArgs {
+                    target: target_block,
+                    target_number: target_block_number,
+                    source: bcb_block,
+                    source_number: bcb_block_number,
+                    bundle: self,
+                    canonical_primary_block,
+                },
+                source_data,
+            )? {
+                match target_block.block_type {
                     BlockType::PreviousNode => {
-                        let (eid, s, len) =
-                            cbor::decode::parse(&data).map_field_err("Previous Node Block")?;
-                        self.previous_node = Some(eid);
-                        s && len == data.len()
+                        self.previous_node = Some(
+                            target_block
+                                .parse_payload(&data)
+                                .map_field_err("Previous Node Block")?
+                                .0,
+                        );
                     }
                     BlockType::BundleAge => {
-                        let (age, s, len) =
-                            cbor::decode::parse(&data).map_field_err("Bundle Age Block")?;
-                        self.age = Some(age);
-                        s && len == data.len()
+                        self.age = Some(
+                            target_block
+                                .parse_payload(&data)
+                                .map_field_err("Bundle Age Block")?
+                                .0,
+                        );
                     }
                     BlockType::HopCount => {
-                        let (hop_count, s, len) =
-                            cbor::decode::parse(&data).map_field_err("Hop Count Block")?;
-                        self.hop_count = Some(hop_count);
-                        s && len == data.len()
+                        self.hop_count = Some(
+                            target_block
+                                .parse_payload(&data)
+                                .map_field_err("Hop Count Block")?
+                                .0,
+                        );
                     }
-                    _ => true,
-                } {
-                    return Err(bpsec::Error::NotCanonical(target_block.block_type).into());
+                    _ => {}
                 }
                 blocks_to_check.remove(&target_block.block_type);
+            }
+
+            if blocks_to_remove.contains(target_block_number) {
+                if let Some(remaining) = bcb_target_counts.get_mut(bcb_block_number) {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        blocks_to_remove.insert(*bcb_block_number);
+                    }
+                }
             }
         }
         drop(bcbs_to_check);
 
         // Check remaining BIB targets next
-        for block_number in bibs_to_check {
-            let bib_block = self.blocks.get(&block_number).unwrap();
+        for bib_block_number in bibs_to_check {
+            let bib_block = self.blocks.get(&bib_block_number).unwrap();
 
             let bib = bib_block
-                .parse_payload::<bpsec::bib::OperationSet>(data)
+                .parse_payload::<bpsec::bib::OperationSet>(bib_block.payload(source_data))
                 .map(|(v, s)| {
                     if !s {
-                        noncanonical_blocks.insert(block_number);
+                        noncanonical_blocks.insert(bib_block_number);
                     }
                     v
                 })
@@ -476,12 +551,11 @@ impl Bundle {
 
             if bib.is_unsupported() {
                 if bib_block.flags.delete_bundle_on_failure {
-                    return Err(BundleError::Unsupported);
+                    return Err(BundleError::Unsupported(bib_block_number));
                 }
 
                 if bib_block.flags.delete_block_on_failure {
-                    // TODO: This requires a rewrite of the BIB
-                    //blocks_to_remove.insert(block_number);
+                    blocks_to_remove.insert(bib_block_number);
                 }
 
                 if bib_block.flags.report_on_failure {
@@ -489,80 +563,77 @@ impl Bundle {
                 }
             }
 
-            for (bib_target, bib_op) in bib.operations {
+            let mut bib_targets_remaining = bib.operations.len();
+            for (bib_target, op) in bib.operations {
                 if !bib_targets.insert(bib_target) {
                     return Err(bpsec::Error::DuplicateOpTarget.into());
                 }
                 let Some(bib_target_block) = self.blocks.get(&bib_target) else {
                     return Err(bpsec::Error::MissingSecurityTarget.into());
                 };
+
+                // Verify BIB target
                 if let BlockType::BlockSecurity | BlockType::BlockIntegrity =
                     bib_target_block.block_type
                 {
                     return Err(bpsec::Error::InvalidBIBTarget.into());
                 }
 
-                // Check BIB target
-                let data = if let BlockType::Primary = bib_target_block.block_type {
-                    primary_block::PrimaryBlock::emit(self).into()
-                } else {
-                    bib_target_block.block_data(data)?
-                };
+                self.bib_verify_data(
+                    keys,
+                    &bib.source,
+                    &op,
+                    bpsec::OperationArgs {
+                        target: bib_target_block,
+                        target_number: &bib_target,
+                        source: bib_block,
+                        source_number: &bib_block_number,
+                        bundle: self,
+                        canonical_primary_block,
+                    },
+                    source_data,
+                )?;
 
-                if !bib_op.is_unsupported() {
-                    self.bib_verify_data(keys, &bib.source, &bib_op, &data)?;
+                if blocks_to_remove.contains(&bib_target) {
+                    bib_targets_remaining -= 1;
                 }
+            }
 
-                if !match bib_target_block.block_type {
-                    BlockType::PreviousNode => {
-                        let (eid, s, len) =
-                            cbor::decode::parse(&data).map_field_err("Previous Node Block")?;
-                        self.previous_node = Some(eid);
-                        s && len == data.len()
-                    }
-                    BlockType::BundleAge => {
-                        let (age, s, len) =
-                            cbor::decode::parse(&data).map_field_err("Bundle Age Block")?;
-                        self.age = Some(age);
-                        s && len == data.len()
-                    }
-                    BlockType::HopCount => {
-                        let (hop_count, s, len) =
-                            cbor::decode::parse(&data).map_field_err("Hop Count Block")?;
-                        self.hop_count = Some(hop_count);
-                        s && len == data.len()
-                    }
-                    _ => true,
-                } {
-                    return Err(bpsec::Error::NotCanonical(bib_target_block.block_type).into());
-                }
-                blocks_to_check.remove(&bib_target_block.block_type);
+            if bib_targets_remaining == 0 {
+                blocks_to_remove.insert(bib_block_number);
             }
         }
         drop(bib_targets);
 
+        // Check everything that isn't BCB covered
         for block_number in blocks_to_check.values() {
             let block = self.blocks.get(block_number).unwrap();
-            let data = block.block_data(data)?;
+            if let CrcType::None = block.crc_type {
+                return Err(BundleError::MissingIntegrityCheck(*block_number));
+            }
+
             if !match block.block_type {
-                BlockType::PreviousNode => {
-                    let (eid, s, len) =
-                        cbor::decode::parse(&data).map_field_err("Previous Node Block")?;
-                    self.previous_node = Some(eid);
-                    s && len == data.len()
-                }
-                BlockType::BundleAge => {
-                    let (age, s, len) =
-                        cbor::decode::parse(&data).map_field_err("Bundle Age Block")?;
-                    self.age = Some(age);
-                    s && len == data.len()
-                }
-                BlockType::HopCount => {
-                    let (hop_count, s, len) =
-                        cbor::decode::parse(&data).map_field_err("Hop Count Block")?;
-                    self.hop_count = Some(hop_count);
-                    s && len == data.len()
-                }
+                BlockType::PreviousNode => block
+                    .parse_payload(block.payload(source_data))
+                    .map(|(v, s)| {
+                        self.previous_node = Some(v);
+                        s
+                    })
+                    .map_field_err("Previous Node Block")?,
+                BlockType::BundleAge => block
+                    .parse_payload(block.payload(source_data))
+                    .map(|(v, s)| {
+                        self.age = Some(v);
+                        s
+                    })
+                    .map_field_err("Bundle Age Block")?,
+                BlockType::HopCount => block
+                    .parse_payload(block.payload(source_data))
+                    .map(|(v, s)| {
+                        self.hop_count = Some(v);
+                        s
+                    })
+                    .map_field_err("Hop Count Block")?,
                 _ => true,
             } {
                 noncanonical_blocks.insert(*block_number);
@@ -573,11 +644,24 @@ impl Bundle {
         if self.age.is_none() && self.id.timestamp.creation_time.is_none() {
             return Err(BundleError::MissingBundleAge);
         }
-        Ok((noncanonical_blocks, report_unsupported))
+
+        // Sanity filter
+        Ok((
+            noncanonical_blocks
+                .into_iter()
+                .filter(|t| !blocks_to_remove.contains(t))
+                .collect(),
+            blocks_to_remove,
+            report_unsupported,
+        ))
     }
 
-    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array, offset: usize) -> usize {
-        let len = array.emit_raw(&primary_block::PrimaryBlock::emit(self));
+    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
+        let data_start = array.offset();
+        let data = primary_block::PrimaryBlock::emit(self);
+        let data_len = data.len();
+        array.emit_raw(data);
+
         self.blocks.insert(
             0,
             Block {
@@ -589,29 +673,28 @@ impl Bundle {
                     ..Default::default()
                 },
                 crc_type: self.crc_type,
-                data_start: offset,
+                data_start,
                 payload_offset: 0,
-                data_len: len,
+                data_len,
             },
         );
-        len
     }
 
     fn canonicalise(
         &mut self,
         mut noncanonical_blocks: HashSet<u64>,
+        blocks_to_remove: HashSet<u64>,
         source_data: &[u8],
     ) -> Vec<u8> {
-        cbor::encode::emit_array(None, |a, mut offset| {
+        cbor::encode::emit_array(None, |a| {
             // Emit primary block
             if noncanonical_blocks.remove(&0) {
-                offset += self.emit_primary_block(a, offset);
+                self.emit_primary_block(a);
             } else {
-                offset += self
-                    .blocks
+                self.blocks
                     .get_mut(&0)
                     .expect("Missing primary block!")
-                    .copy(source_data, a, offset);
+                    .copy(source_data, a);
             }
 
             // Stash payload block for last
@@ -619,70 +702,59 @@ impl Bundle {
 
             // Emit extension blocks
             for (block_number, block) in &mut self.blocks {
-                if let BlockType::Primary | BlockType::Payload = block.block_type {
+                if let BlockType::Primary = block.block_type {
                     continue;
                 }
-                if noncanonical_blocks.remove(block_number) {
-                    offset += match &block.block_type {
-                        BlockType::PreviousNode => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
-                            a,
-                            offset,
-                        ),
-                        BlockType::BundleAge => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(self.age.unwrap()),
-                            a,
-                            offset,
-                        ),
-                        BlockType::HopCount => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
-                            a,
-                            offset,
-                        ),
-                        BlockType::BlockIntegrity => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(
-                                &block
-                                    .parse_payload::<bpsec::bib::OperationSet>(source_data)
-                                    .unwrap()
-                                    .0,
+                if !blocks_to_remove.contains(block_number) {
+                    if noncanonical_blocks.remove(block_number) {
+                        match block.block_type {
+                            BlockType::PreviousNode => block.emit(
+                                *block_number,
+                                &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
+                                a,
                             ),
-                            a,
-                            offset,
-                        ),
-                        BlockType::BlockSecurity => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(
-                                &block
-                                    .parse_payload::<bpsec::bcb::OperationSet>(source_data)
-                                    .unwrap()
-                                    .0,
+                            BlockType::BundleAge => {
+                                block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()), a)
+                            }
+                            BlockType::HopCount => block.emit(
+                                *block_number,
+                                &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
+                                a,
                             ),
-                            a,
-                            offset,
-                        ),
-                        _ => block.emit(
-                            *block_number,
-                            &block.block_data(source_data).unwrap(),
-                            a,
-                            offset,
-                        ),
-                    };
-                } else {
-                    offset += block.copy(source_data, a, offset);
+                            BlockType::BlockIntegrity => block.emit(
+                                *block_number,
+                                &bpsec::bib::OperationSet::rewrite(
+                                    block,
+                                    &blocks_to_remove,
+                                    source_data,
+                                )
+                                .expect("Invalid BIB Block"),
+                                a,
+                            ),
+                            BlockType::BlockSecurity => block.emit(
+                                *block_number,
+                                &bpsec::bcb::OperationSet::rewrite(
+                                    block,
+                                    &blocks_to_remove,
+                                    source_data,
+                                )
+                                .expect("Invalid BIB Block"),
+                                a,
+                            ),
+                            _ => block.rewrite(*block_number, a, source_data).unwrap(),
+                        }
+                    } else {
+                        block.copy(source_data, a);
+                    }
                 }
             }
 
             // Emit payload block
-            payload_block.emit(
-                1,
-                &cbor::encode::emit(payload_block.block_data(source_data).unwrap().as_ref()),
-                a,
-                offset,
-            );
+            if noncanonical_blocks.remove(&1) {
+                payload_block.rewrite(1, a, source_data).unwrap();
+            } else {
+                payload_block.copy(source_data, a);
+            }
             self.blocks.insert(1, payload_block);
         })
     }
@@ -706,8 +778,6 @@ impl ValidBundle {
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
         match cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
-            let mut noncanonical_blocks = HashSet::new();
-
             // Check for shortest/correct form
             canonical = canonical && !blocks.is_definite();
             if canonical {
@@ -725,11 +795,12 @@ impl ValidBundle {
             }
 
             // Parse Primary block
+            let mut canonical_primary_block = true;
             let block_start = blocks.offset();
             let (mut bundle, block_len) = blocks
                 .parse::<(primary_block::PrimaryBlock, bool, usize)>()
                 .map(|(v, s, len)| {
-                    canonical = canonical && s;
+                    canonical_primary_block = s;
                     (v.into_bundle(), len)
                 })
                 .map_field_err("Primary Block")?;
@@ -747,24 +818,33 @@ impl ValidBundle {
                     },
                     crc_type: bundle.crc_type,
                     data_start: block_start,
-                    payload_offset: block_len,
+                    payload_offset: 0,
                     data_len: block_len,
                 },
             );
 
-            if !canonical {
-                noncanonical_blocks.insert(0);
-            }
-
-            match bundle.parse_blocks(blocks, block_start + block_len, data, f) {
-                Ok((ncb, report_unsupported)) => {
-                    noncanonical_blocks.extend(ncb);
-                    Ok((bundle, noncanonical_blocks, report_unsupported))
+            match bundle.parse_blocks(
+                canonical_primary_block,
+                blocks,
+                block_start + block_len,
+                data,
+                f,
+            ) {
+                Ok((mut noncanonical_blocks, blocks_to_remove, report_unsupported)) => {
+                    if !canonical_primary_block || !canonical {
+                        noncanonical_blocks.insert(0);
+                    }
+                    Ok((
+                        bundle,
+                        noncanonical_blocks,
+                        blocks_to_remove,
+                        report_unsupported,
+                    ))
                 }
-                Err(BundleError::Unsupported) => Err(BundleError::InvalidBundle {
+                Err(BundleError::Unsupported(n)) => Err(BundleError::InvalidBundle {
                     bundle: bundle.into(),
                     reason: StatusReportReasonCode::BlockUnsupported,
-                    error: BundleError::Unsupported.into(),
+                    error: BundleError::Unsupported(n).into(),
                 }),
                 Err(e) => Err(BundleError::InvalidBundle {
                     bundle: bundle.into(),
@@ -773,15 +853,15 @@ impl ValidBundle {
                 }),
             }
         }) {
-            Ok(((mut bundle, noncanonical_blocks, report_unsupported), len)) => {
+            Ok(((mut bundle, noncanonical_blocks, block_to_remove, report_unsupported), len)) => {
                 if len != data.len() {
                     Ok(Self::Invalid(
                         bundle,
                         StatusReportReasonCode::BlockUnintelligible,
                         BundleError::AdditionalData.into(),
                     ))
-                } else if !noncanonical_blocks.is_empty() {
-                    let data = bundle.canonicalise(noncanonical_blocks, data);
+                } else if !noncanonical_blocks.is_empty() || !block_to_remove.is_empty() {
+                    let data = bundle.canonicalise(noncanonical_blocks, block_to_remove, data);
                     Ok(Self::Rewritten(bundle, data.into(), report_unsupported))
                 } else {
                     Ok(Self::Valid(bundle, report_unsupported))

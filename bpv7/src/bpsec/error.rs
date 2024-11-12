@@ -23,11 +23,11 @@ pub enum Error {
     #[error("Processing failed on an extension block that has 'Delete block on failure' flag set, but is the target of a BCB")]
     InvalidTargetFlags,
 
-    #[error("{0} block must use CBOR canonical representation")]
-    NotCanonical(BlockType),
-
     #[error("Invalid security context parameter id {0}")]
     InvalidContextParameter(u64),
+
+    #[error("Missing security context parameter id {0}")]
+    MissingContextParameter(u64),
 
     #[error("Invalid security context result id {0}")]
     InvalidContextResultId(u64),
@@ -50,8 +50,13 @@ pub enum Error {
     #[error("Invalid context {0}")]
     InvalidContext(Context),
 
+    //#[error("{0} block must use CBOR canonical representation")]
+    //NotCanonical(BlockType),
     #[error("Decryption failed")]
     DecryptionFailed,
+
+    #[error("Verification failed")]
+    VerificationFailed,
 
     #[error("No key material for security operation source {0}")]
     NoKeys(Eid),

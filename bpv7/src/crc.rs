@@ -54,7 +54,7 @@ impl From<CrcType> for u64 {
 }
 
 impl cbor::encode::ToCbor for CrcType {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }
@@ -79,7 +79,7 @@ pub fn parse_crc_value(
     // Parse CRC
     let mut crc_start = block.offset();
     let crc_value = block.try_parse_value(|value, shortest, tags| match value {
-        cbor::decode::Value::Bytes(crc, false) => match crc_type {
+        cbor::decode::Value::Bytes(crc) => match crc_type {
             CrcType::None => Err(Error::UnexpectedCrcValue),
             CrcType::CRC16_X25 => {
                 if crc.len() != 2 {

@@ -39,10 +39,11 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn load(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
-        let Some(v) = self.bundles.read().await.get(storage_name) else {
-            return Ok(None);
-        };
-        Ok(Some(Arc::new(DataRefWrapper(v.clone()))))
+        if let Some(v) = self.bundles.read().await.get(storage_name) {
+            Ok(Some(Arc::new(DataRefWrapper(v.clone()))))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn store(&self, data: &[u8]) -> storage::Result<Arc<str>> {

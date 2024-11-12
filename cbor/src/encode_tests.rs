@@ -101,9 +101,9 @@ fn rfc_tests() {
         *emit("\u{10151}" /* surrogate pair: \u{d800}\u{dd51} */,),
         hex!("64f0908591")
     );
-    assert_eq!(*emit_array(Some(0), |_, _| {}), hex!("80"));
+    assert_eq!(*emit_array(Some(0), |_| {}), hex!("80"));
     assert_eq!(
-        *emit_array(Some(3), |a, _| {
+        *emit_array(Some(3), |a| {
             a.emit(1);
             a.emit(2);
             a.emit(3);
@@ -111,13 +111,13 @@ fn rfc_tests() {
         hex!("83010203")
     );
     assert_eq!(
-        *emit_array(Some(3), |a, _| {
+        *emit_array(Some(3), |a| {
             a.emit(1);
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(2);
                 a.emit(3);
             });
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(4);
                 a.emit(5);
             });
@@ -125,16 +125,16 @@ fn rfc_tests() {
         hex!("8301820203820405")
     );
     assert_eq!(
-        *emit_array(Some(25), |a, _| {
+        *emit_array(Some(25), |a| {
             for i in 1..=25 {
                 a.emit(i);
             }
         }),
         hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819")
     );
-    assert_eq!(*emit_map(Some(0), |_, _| {}), hex!("a0"));
+    assert_eq!(*emit_map(Some(0), |_| {}), hex!("a0"));
     assert_eq!(
-        *emit_map(Some(2), |m, _| {
+        *emit_map(Some(2), |m| {
             m.emit(1);
             m.emit(2);
             m.emit(3);
@@ -143,11 +143,11 @@ fn rfc_tests() {
         hex!("a201020304")
     );
     assert_eq!(
-        *emit_map(Some(2), |m, _| {
+        *emit_map(Some(2), |m| {
             m.emit("a");
             m.emit(1);
             m.emit("b");
-            m.emit_array(Some(2), |a, _| {
+            m.emit_array(Some(2), |a| {
                 a.emit(2);
                 a.emit(3);
             });
@@ -155,9 +155,9 @@ fn rfc_tests() {
         hex!("a26161016162820203")
     );
     assert_eq!(
-        *emit_array(Some(2), |a, _| {
+        *emit_array(Some(2), |a| {
             a.emit("a");
-            a.emit_map(Some(1), |m, _| {
+            a.emit_map(Some(1), |m| {
                 m.emit("b");
                 m.emit("c");
             });
@@ -165,7 +165,7 @@ fn rfc_tests() {
         hex!("826161a161626163")
     );
     assert_eq!(
-        *emit_map(Some(5), |m, _| {
+        *emit_map(Some(5), |m| {
             m.emit("a");
             m.emit("A");
             m.emit("b");
@@ -193,15 +193,15 @@ fn rfc_tests() {
         }),
         hex!("7f657374726561646d696e67ff")
     );
-    assert_eq!(*emit_array(None, |_, _| {}), hex!("9fff"));
+    assert_eq!(*emit_array(None, |_| {}), hex!("9fff"));
     assert_eq!(
-        *emit_array(None, |a, _| {
+        *emit_array(None, |a| {
             a.emit(1);
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(2);
                 a.emit(3);
             });
-            a.emit_array(None, |a, _| {
+            a.emit_array(None, |a| {
                 a.emit(4);
                 a.emit(5);
             });
@@ -209,13 +209,13 @@ fn rfc_tests() {
         hex!("9f018202039f0405ffff")
     );
     assert_eq!(
-        *emit_array(None, |a, _| {
+        *emit_array(None, |a| {
             a.emit(1);
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(2);
                 a.emit(3);
             });
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(4);
                 a.emit(5);
             });
@@ -223,13 +223,13 @@ fn rfc_tests() {
         hex!("9f01820203820405ff")
     );
     assert_eq!(
-        *emit_array(Some(3), |a, _| {
+        *emit_array(Some(3), |a| {
             a.emit(1);
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(2);
                 a.emit(3);
             });
-            a.emit_array(None, |a, _| {
+            a.emit_array(None, |a| {
                 a.emit(4);
                 a.emit(5);
             });
@@ -237,13 +237,13 @@ fn rfc_tests() {
         hex!("83018202039f0405ff")
     );
     assert_eq!(
-        *emit_array(Some(3), |a, _| {
+        *emit_array(Some(3), |a| {
             a.emit(1);
-            a.emit_array(None, |a, _| {
+            a.emit_array(None, |a| {
                 a.emit(2);
                 a.emit(3);
             });
-            a.emit_array(Some(2), |a, _| {
+            a.emit_array(Some(2), |a| {
                 a.emit(4);
                 a.emit(5);
             });
@@ -251,7 +251,7 @@ fn rfc_tests() {
         hex!("83019f0203ff820405")
     );
     assert_eq!(
-        *emit_array(None, |a, _| {
+        *emit_array(None, |a| {
             for i in 1..=25 {
                 a.emit(i);
             }
@@ -259,11 +259,11 @@ fn rfc_tests() {
         hex!("9f0102030405060708090a0b0c0d0e0f101112131415161718181819ff")
     );
     assert_eq!(
-        *emit_map(None, |m, _| {
+        *emit_map(None, |m| {
             m.emit("a");
             m.emit(1);
             m.emit("b");
-            m.emit_array(None, |a, _| {
+            m.emit_array(None, |a| {
                 a.emit(2);
                 a.emit(3);
             });
@@ -271,9 +271,9 @@ fn rfc_tests() {
         hex!("bf61610161629f0203ffff")
     );
     assert_eq!(
-        *emit_array(Some(2), |a, _| {
+        *emit_array(Some(2), |a| {
             a.emit("a");
-            a.emit_map(None, |m, _| {
+            a.emit_map(None, |m| {
                 m.emit("b");
                 m.emit("c");
             });
@@ -281,7 +281,7 @@ fn rfc_tests() {
         hex!("826161bf61626163ff")
     );
     assert_eq!(
-        *emit_map(None, |m, _| {
+        *emit_map(None, |m| {
             m.emit("Fun");
             m.emit(true);
             m.emit("Amt");

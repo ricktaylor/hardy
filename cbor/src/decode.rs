@@ -47,10 +47,10 @@ pub trait FromCbor: Sized {
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error>;
 }
 
-pub type Structure<'a> = super::decode_seq::Sequence<'a, 0>;
-pub type Array<'a> = super::decode_seq::Sequence<'a, 1>;
-pub type Map<'a> = super::decode_seq::Sequence<'a, 2>;
-pub use super::decode_seq::Sequence;
+pub type Sequence<'a> = super::decode_seq::Series<'a, 0>;
+pub type Array<'a> = super::decode_seq::Series<'a, 1>;
+pub type Map<'a> = super::decode_seq::Series<'a, 2>;
+pub use super::decode_seq::Series;
 
 pub enum Value<'a, 'b: 'a> {
     UnsignedInteger(u64),
@@ -402,9 +402,9 @@ where
     try_parse_value(data, f)?.ok_or(Error::NotEnoughData.into())
 }
 
-pub fn try_parse_structure<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
+pub fn try_parse_sequence<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
 where
-    F: FnOnce(&mut Structure) -> Result<T, E>,
+    F: FnOnce(&mut Sequence) -> Result<T, E>,
     E: From<Error>,
 {
     if data.is_empty() {
@@ -412,18 +412,18 @@ where
     }
 
     let mut offset = 0;
-    let mut s = Structure::new(data, None, &mut offset);
+    let mut s = Sequence::new(data, None, &mut offset);
     let r = f(&mut s)?;
     s.complete().map(|_| Some((r, offset))).map_err(Into::into)
 }
 
 #[inline]
-pub fn parse_structure<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
+pub fn parse_sequence<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
-    F: FnOnce(&mut Structure) -> Result<T, E>,
+    F: FnOnce(&mut Sequence) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_structure(data, f)?.ok_or(Error::NotEnoughData.into())
+    try_parse_sequence(data, f)?.ok_or(Error::NotEnoughData.into())
 }
 
 pub fn try_parse_array<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
@@ -657,32 +657,6 @@ impl FromCbor for bool {
         .map(|o| o.map(|((v, s), len)| (v, s, len)))
     }
 }
-
-/*romCbor for Box<[u8]> {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        try_parse_value(data, |value, shortest, tags| match value {
-            Value::Bytes(v, chunked) => Ok((v.into(), shortest && !chunked && tags.is_empty())),
-            value => Err(Error::IncorrectType(
-                "Untagged Byte String".to_string(),
-                value.type_name(!tags.is_empty()),
-            )),
-        })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
-    }
-}*/
-
-/*impl FromCbor for String {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        try_parse_str(data, |value, shortest, tags| {
-            Ok((value.to_string(), shortest && tags.is_empty()))
-        })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
-    }
-}*/
 
 impl<T> FromCbor for Option<T>
 where

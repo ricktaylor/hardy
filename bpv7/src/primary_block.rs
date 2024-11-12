@@ -176,20 +176,14 @@ impl PrimaryBlock {
                     }
                     count
                 }),
-                |a, _| {
-                    // Version
+                |a| {
                     a.emit(7);
-                    // Flags
                     a.emit(&bundle.flags);
-                    // CRC
                     a.emit(bundle.crc_type);
-                    // EIDs
                     a.emit(&bundle.destination);
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
-                    // Timestamp
                     a.emit(&bundle.id.timestamp);
-                    // Lifetime
                     a.emit(bundle.lifetime);
 
                     // Fragment info

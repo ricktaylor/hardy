@@ -61,7 +61,7 @@ impl From<u64> for BlockType {
 }
 
 impl cbor::encode::ToCbor for BlockType {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }

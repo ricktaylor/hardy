@@ -53,7 +53,7 @@ impl From<u64> for BlockFlags {
 }
 
 impl cbor::encode::ToCbor for &BlockFlags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }

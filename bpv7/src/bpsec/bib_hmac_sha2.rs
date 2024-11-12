@@ -1,4 +1,6 @@
 use super::*;
+use hmac::Mac;
+use zeroize::Zeroizing;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -12,7 +14,7 @@ pub enum ShaVariant {
 }
 
 impl cbor::encode::ToCbor for ShaVariant {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
             Self::HMAC_256_256 => 5,
             Self::HMAC_384_384 => 6,
@@ -90,7 +92,7 @@ impl cbor::decode::FromCbor for ScopeFlags {
 }
 
 impl cbor::encode::ToCbor for &ScopeFlags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut flags = self.unrecognised;
         if self.include_primary_block {
             flags |= 1 << 0;
@@ -129,12 +131,10 @@ impl Parameters {
                         })?;
                 }
                 2 => {
-                    result.key = Some(cbor::decode::parse(&data[range.start..range.end]).map(
-                        |(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        },
-                    )?);
+                    result.key = Some(parse::decode_box(range, data).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
                 }
                 3 => {
                     result.flags =
@@ -151,7 +151,7 @@ impl Parameters {
 }
 
 impl cbor::encode::ToCbor for &Parameters {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut mask: u32 = 0;
         if self.variant != ShaVariant::default() {
             mask |= 1 << 1;
@@ -162,10 +162,10 @@ impl cbor::encode::ToCbor for &Parameters {
         if self.flags != ScopeFlags::default() {
             mask |= 1 << 3;
         }
-        encoder.emit_array(Some(mask.count_ones() as usize), |a, _| {
+        encoder.emit_array(Some(mask.count_ones() as usize), |a| {
             for b in 1..=3 {
                 if mask & (1 << b) != 0 {
-                    a.emit_array(Some(2), |a, _| {
+                    a.emit_array(Some(2), |a| {
                         a.emit(b);
                         match b {
                             1 => a.emit(self.variant),
@@ -193,8 +193,7 @@ impl Results {
         for (id, range) in results {
             match id {
                 1 => {
-                    r.0 = cbor::decode::parse::<(Box<[u8]>, bool)>(&data[range.start..range.end])
-                        .map(|(v, s)| {
+                    r.0 = parse::decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?;
@@ -207,9 +206,9 @@ impl Results {
 }
 
 impl cbor::encode::ToCbor for &Results {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(1), |a, _| {
-            a.emit_array(Some(2), |a, _| {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit_array(Some(1), |a| {
+            a.emit_array(Some(2), |a| {
                 a.emit(1);
                 a.emit(self.0.as_ref());
             });
@@ -224,23 +223,149 @@ pub struct Operation {
 }
 
 impl Operation {
-    pub fn verify(&self, _key: &KeyMaterial, _bundle: &Bundle, _data: &[u8]) -> Result<(), Error> {
-        todo!()
+    pub fn is_unsupported(&self) -> bool {
+        !matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
-    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) -> usize {
-        let mut len = encoder.emit(Context::BIB_HMAC_SHA2);
-        if self.parameters.as_ref() == &Parameters::default() {
-            len += encoder.emit(0);
-            len + encoder.emit(source)
-        } else {
-            len += encoder.emit(1);
-            len += encoder.emit(source);
-            len + encoder.emit(self.parameters.as_ref())
+    fn unwrap_key(&self, _key: &KeyMaterial) -> Zeroizing<Box<[u8]>> {
+        Zeroizing::new(Box::from(*b"Testing!"))
+    }
+
+    pub fn verify(
+        &self,
+        key: &KeyMaterial,
+        args: OperationArgs,
+        source_data: &[u8],
+    ) -> Result<(), Error> {
+        match self.parameters.variant {
+            ShaVariant::HMAC_256_256 => self.verify_inner(
+                hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.unwrap_key(key))
+                    .map_field_err("SHA-256 Key material")?,
+                args,
+                source_data,
+            ),
+            ShaVariant::HMAC_384_384 => self.verify_inner(
+                hmac::Hmac::<sha2::Sha384>::new_from_slice(&self.unwrap_key(key))
+                    .map_field_err("SHA-384 Key material")?,
+                args,
+                source_data,
+            ),
+            ShaVariant::HMAC_512_512 => self.verify_inner(
+                hmac::Hmac::<sha2::Sha512>::new_from_slice(&self.unwrap_key(key))
+                    .map_field_err("SHA-512 Key material")?,
+                args,
+                source_data,
+            ),
+            ShaVariant::Unrecognised(_) => Ok(()),
         }
     }
 
-    pub fn emit_result(&self, array: &mut cbor::encode::Array) {
+    pub fn verify_inner<M>(
+        &self,
+        mut mac: M,
+        args: OperationArgs,
+        source_data: &[u8],
+    ) -> Result<(), Error>
+    where
+        M: hmac::Mac,
+    {
+        // Build IPT
+        mac.update(&cbor::encode::emit(&ScopeFlags {
+            include_primary_block: self.parameters.flags.include_primary_block,
+            include_target_header: self.parameters.flags.include_target_header,
+            include_security_header: self.parameters.flags.include_security_header,
+            ..Default::default()
+        }));
+
+        if !matches!(args.target.block_type, BlockType::Primary) {
+            if self.parameters.flags.include_primary_block {
+                if !args.canonical_primary_block {
+                    mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
+                } else {
+                    mac.update(
+                        args.bundle
+                            .blocks
+                            .get(&0)
+                            .expect("Missing primary block!")
+                            .payload(source_data),
+                    );
+                }
+            }
+
+            if self.parameters.flags.include_target_header {
+                let mut encoder = cbor::encode::Encoder::new();
+                encoder.emit(args.target.block_type);
+                encoder.emit(*args.target_number);
+                encoder.emit(&args.target.flags);
+                mac.update(&encoder.build());
+            }
+        }
+
+        if self.parameters.flags.include_security_header {
+            let mut encoder = cbor::encode::Encoder::new();
+            encoder.emit(args.source.block_type);
+            encoder.emit(*args.source_number);
+            encoder.emit(&args.source.flags);
+            mac.update(&encoder.build());
+        }
+
+        if matches!(args.target.block_type, BlockType::Primary) {
+            if !args.canonical_primary_block {
+                mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
+            } else {
+                mac.update(
+                    args.bundle
+                        .blocks
+                        .get(&0)
+                        .expect("Missing primary block!")
+                        .payload(source_data),
+                );
+            }
+        } else {
+            cbor::decode::parse_value(args.target.payload(source_data), |value, _, _| {
+                match value {
+                    cbor::decode::Value::ByteStream(data) => {
+                        /* REALLY UNCLEAR ON THIS!!
+                        mac.update(&cbor::encode::emit(d.into_iter().try_fold(
+                            0u64,
+                            |len, d| {
+                                len.checked_add(d.len() as u64)
+                                    .ok_or(bpsec::Error::NotCanonical(args.target.block.block_type))
+                            },
+                        )?));*/
+                        for d in data {
+                            mac.update(d);
+                        }
+                    }
+                    cbor::decode::Value::Bytes(data) => {
+                        mac.update(data);
+                    }
+                    _ => unreachable!(),
+                }
+                Ok::<_, bpsec::Error>(())
+            })?;
+        }
+
+        if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
+            Err(bpsec::Error::VerificationFailed)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
+        encoder.emit(Context::BIB_HMAC_SHA2);
+        if self.parameters.as_ref() == &Parameters::default() {
+            encoder.emit(0);
+            encoder.emit(source);
+        } else {
+            encoder.emit(1);
+            encoder.emit(source);
+            encoder.emit(self.parameters.as_ref());
+        }
+    }
+
+    pub fn emit_result(self, array: &mut cbor::encode::Array) {
         array.emit(&self.results);
     }
 }
@@ -293,7 +418,9 @@ mod test {
             746f2067656e657261746520612033322d62797465207061796c6f6164ff"
         );
 
-        let ValidBundle::Valid(..) = ValidBundle::parse(data, |_| Ok(None)).unwrap() else {
+        let ValidBundle::Valid(..) =
+            ValidBundle::parse(data, |_| Ok(None)).expect("Failed to parse")
+        else {
             panic!("No!");
         };
     }

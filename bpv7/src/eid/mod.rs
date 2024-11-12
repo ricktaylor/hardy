@@ -40,8 +40,8 @@ pub enum Eid {
 }
 
 impl cbor::encode::ToCbor for &Eid {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(2), |a, _| match self {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        encoder.emit_array(Some(2), |a| match self {
             Eid::Null => {
                 a.emit(1);
                 a.emit(0);
@@ -64,7 +64,7 @@ impl cbor::encode::ToCbor for &Eid {
                 service_number,
             } => {
                 a.emit(2);
-                a.emit_array(Some(2), |a, _| {
+                a.emit_array(Some(2), |a| {
                     a.emit((*allocator_id as u64) << 32 | *node_number as u64);
                     a.emit(*service_number);
                 });
@@ -75,7 +75,7 @@ impl cbor::encode::ToCbor for &Eid {
                 service_number,
             } => {
                 a.emit(2);
-                a.emit_array(Some(2), |a, _| {
+                a.emit_array(Some(2), |a| {
                     a.emit(*node_number);
                     a.emit(*service_number);
                 });
@@ -86,7 +86,7 @@ impl cbor::encode::ToCbor for &Eid {
                 service_number,
             } => {
                 a.emit(2);
-                a.emit_array(Some(3), |a, _| {
+                a.emit_array(Some(3), |a| {
                     a.emit(*allocator_id);
                     a.emit(*node_number);
                     a.emit(*service_number);
@@ -94,14 +94,14 @@ impl cbor::encode::ToCbor for &Eid {
             }
             Eid::LocalNode { service_number } => {
                 a.emit(2);
-                a.emit_array(Some(2), |a, _| {
+                a.emit_array(Some(2), |a| {
                     a.emit(u32::MAX);
                     a.emit(*service_number);
                 });
             }
             Eid::Unknown { scheme, data } => {
                 a.emit(*scheme);
-                a.emit_raw(data);
+                a.emit_raw_slice(data);
             }
         })
     }

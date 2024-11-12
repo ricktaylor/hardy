@@ -17,27 +17,35 @@ impl Operation {
     }
 
     pub fn is_unsupported(&self) -> bool {
-        matches!(self, Self::Unrecognised(..))
+        match self {
+            Operation::HMAC_SHA2(operation) => operation.is_unsupported(),
+            Operation::Unrecognised(..) => true,
+        }
     }
 
-    pub fn verify(&self, key: &KeyMaterial, bundle: &Bundle, data: &[u8]) -> Result<(), Error> {
+    pub fn verify(
+        &self,
+        key: &KeyMaterial,
+        args: OperationArgs,
+        source_data: &[u8],
+    ) -> Result<(), Error> {
         match self {
-            Self::HMAC_SHA2(o) => o.verify(key, bundle, data),
+            Self::HMAC_SHA2(o) => o.verify(key, args, source_data),
             Self::Unrecognised(..) => Ok(()),
         }
     }
 
-    fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) -> usize {
+    fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid, source_data: &[u8]) {
         match self {
             Self::HMAC_SHA2(o) => o.emit_context(encoder, source),
-            Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
+            Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id, source_data),
         }
     }
 
-    fn emit_result(&self, array: &mut cbor::encode::Array) {
+    fn emit_result(self, array: &mut cbor::encode::Array, source_data: &[u8]) {
         match self {
             Self::HMAC_SHA2(o) => o.emit_result(array),
-            Self::Unrecognised(_, o) => o.emit_result(array),
+            Self::Unrecognised(_, o) => o.emit_result(array, source_data),
         }
     }
 }
@@ -50,6 +58,60 @@ pub struct OperationSet {
 impl OperationSet {
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().next().unwrap().is_unsupported()
+    }
+
+    pub fn rewrite(
+        block: &Block,
+        blocks_to_remove: &HashSet<u64>,
+        source_data: &[u8],
+    ) -> Result<Vec<u8>, bpsec::Error> {
+        cbor::decode::parse_value(&block.payload(source_data), |v, _, _| match v {
+            cbor::decode::Value::Bytes(data) => cbor::decode::parse::<OperationSet>(data)
+                .map(|op| op.rewrite_payload(blocks_to_remove, data)),
+            cbor::decode::Value::ByteStream(data) => {
+                let data = data.iter().fold(Vec::new(), |mut data, d| {
+                    data.extend(*d);
+                    data
+                });
+                cbor::decode::parse::<OperationSet>(&data)
+                    .map(|op| op.rewrite_payload(blocks_to_remove, &data))
+            }
+            _ => unreachable!(),
+        })
+        .map(|v| v.0)
+    }
+
+    fn rewrite_payload(self, blocks_to_remove: &HashSet<u64>, payload_data: &[u8]) -> Vec<u8> {
+        let mut encoder = cbor::encode::Encoder::new();
+
+        // Ensure we process operations in the same order
+        let ops = self
+            .operations
+            .into_iter()
+            .filter(|v| !blocks_to_remove.contains(&v.0))
+            .collect::<Vec<(u64, Operation)>>();
+
+        // Targets
+        encoder.emit_array(Some(ops.len()), |a| {
+            for (t, _) in &ops {
+                a.emit(*t);
+            }
+        });
+
+        // Context
+        ops.first()
+            .unwrap()
+            .1
+            .emit_context(&mut encoder, &self.source, payload_data);
+
+        // Results
+        encoder.emit_array(Some(ops.len()), |a| {
+            for (_, op) in ops {
+                op.emit_result(a, payload_data);
+            }
+        });
+
+        encoder.build()
     }
 }
 
@@ -70,8 +132,8 @@ impl cbor::decode::FromCbor for OperationSet {
                     Some((OperationSet { source, operations }, shortest, len))
                 })
             }
-            Context::Unrecognised(id) => parse::UnknownOperation::parse(asb, data, &mut shortest)
-                .map(|(source, operations)| {
+            Context::Unrecognised(id) => {
+                parse::UnknownOperation::parse(asb).map(|(source, operations)| {
                     Some((
                         OperationSet {
                             source,
@@ -83,34 +145,9 @@ impl cbor::decode::FromCbor for OperationSet {
                         shortest,
                         len,
                     ))
-                }),
+                })
+            }
             c => Err(Error::InvalidContext(c)),
         }
-    }
-}
-
-impl cbor::encode::ToCbor for &OperationSet {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
-        // Targets
-        let mut len = encoder.emit_array(Some(self.operations.len()), |a, _| {
-            for t in self.operations.keys() {
-                a.emit(*t);
-            }
-        });
-
-        // Context
-        len += self
-            .operations
-            .values()
-            .next()
-            .unwrap()
-            .emit_context(encoder, &self.source);
-
-        // Results
-        len + encoder.emit_array(Some(self.operations.len()), |a, _| {
-            for op in self.operations.values() {
-                op.emit_result(a);
-            }
-        })
     }
 }

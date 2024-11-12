@@ -13,7 +13,7 @@ where
     assert_eq!(v, expected);
 }
 
-fn test_sub_simple<T, const D: usize>(expected: T, seq: &mut Sequence<D>)
+fn test_sub_simple<T, const D: usize>(expected: T, seq: &mut Series<D>)
 where
     T: FromCbor + PartialEq + std::fmt::Debug,
     <T as FromCbor>::Error: From<Error> + std::fmt::Debug,
@@ -40,7 +40,7 @@ where
     );
 }
 
-fn test_sub_value<F, const D: usize>(expected_tags: &[u64], seq: &mut Sequence<D>, f: F)
+fn test_sub_value<F, const D: usize>(expected_tags: &[u64], seq: &mut Series<D>, f: F)
 where
     F: FnOnce(Value),
 {
@@ -59,7 +59,7 @@ fn test_string(expected: &str, data: &[u8]) {
     })
 }
 
-fn test_sub_string<const D: usize>(expected: &str, seq: &mut Sequence<D>) {
+fn test_sub_string<const D: usize>(expected: &str, seq: &mut Series<D>) {
     test_sub_value(&[], seq, |v| {
         assert!(matches!(v, Value::Text(s) if s == expected))
     })
@@ -81,7 +81,7 @@ where
 fn test_sub_array<F, const D: usize>(
     expected_tags: &[u64],
     is_definite: bool,
-    seq: &mut Sequence<D>,
+    seq: &mut Series<D>,
     f: F,
 ) where
     F: FnOnce(&mut Array),
@@ -111,7 +111,7 @@ where
 fn test_sub_map<F, const D: usize>(
     expected_tags: &[u64],
     is_definite: bool,
-    seq: &mut Sequence<D>,
+    seq: &mut Series<D>,
     f: F,
 ) where
     F: FnOnce(&mut Map),
@@ -238,7 +238,7 @@ fn rfc_tests() {
         "\u{10151}", /* surrogate pair: \u{d800}\u{dd51} */
         &hex!("64f0908591"),
     );
-    test_array(&[], true, &hex!("80"), |a| assert_eq!(a.len(), Some(0)));
+    test_array(&[], true, &hex!("80"), |a| assert_eq!(a.count(), Some(0)));
     test_array(&[], true, &hex!("83010203"), |a| {
         test_sub_simple(1, a);
         test_sub_simple(2, a);

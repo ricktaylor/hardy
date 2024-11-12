@@ -157,13 +157,30 @@ impl cbor::decode::FromCbor for Eid {
                     .parse_value(|value, s, tags| {
                         shortest = shortest && s && tags.is_empty();
                         match value {
-                            cbor::decode::Value::UnsignedInteger(0) => Ok((Eid::Null, shortest)),
-                            cbor::decode::Value::Text("none", chunked) => {
-                                Ok((Eid::Null, shortest && !chunked))
-                            }
-                            cbor::decode::Value::Text(s, chunked) => {
+                            cbor::decode::Value::UnsignedInteger(0)
+                            | cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
+                            cbor::decode::Value::Text(s) => {
                                 if let Some(s) = s.strip_prefix("//") {
-                                    parse_dtn_parts(s).map(|e| (e, shortest && !chunked))
+                                    parse_dtn_parts(s).map(|e| (e, shortest))
+                                } else {
+                                    Err(EidError::DtnMissingPrefix)
+                                }
+                            }
+                            cbor::decode::Value::TextStream(s) => {
+                                if let Some(s) = s
+                                    .iter()
+                                    .try_fold(String::new(), |mut v, s| {
+                                        // Check maximum valid DNS Name length
+                                        if s.len() + v.len() > 255 {
+                                            Err(EidError::DtnMissingPrefix)
+                                        } else {
+                                            v.push_str(s);
+                                            Ok::<_, EidError>(v)
+                                        }
+                                    })?
+                                    .strip_prefix("//")
+                                {
+                                    parse_dtn_parts(s).map(|e| (e, shortest))
                                 } else {
                                     Err(EidError::DtnMissingPrefix)
                                 }

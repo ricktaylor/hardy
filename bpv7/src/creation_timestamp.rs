@@ -18,8 +18,8 @@ impl CreationTimestamp {
 }
 
 impl cbor::encode::ToCbor for &CreationTimestamp {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(2), |a, _| {
+    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+        encoder.emit_array(Some(2), |a| {
             if let Some(timestamp) = self.creation_time {
                 a.emit(timestamp);
             } else {

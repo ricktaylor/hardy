@@ -98,19 +98,19 @@ impl Builder {
             ..Default::default()
         };
 
-        let data = cbor::encode::emit_array(None, |a, mut offset| {
+        let data = cbor::encode::emit_array(None, |a| {
             // Emit primary block
-            offset += bundle.emit_primary_block(a, offset);
+            bundle.emit_primary_block(a);
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {
-                let (block, len) = block.build(block_number as u64 + 2, a, offset);
-                offset += len;
-                bundle.blocks.insert(block_number as u64, block);
+                bundle
+                    .blocks
+                    .insert(block_number as u64, block.build(block_number as u64 + 2, a));
             }
 
             // Emit payload
-            bundle.blocks.insert(1, self.payload.build(1, a, offset).0);
+            bundle.blocks.insert(1, self.payload.build(1, a));
         });
 
         (bundle, data)
@@ -219,22 +219,17 @@ impl BlockTemplate {
         self.data = data;
     }
 
-    pub fn build(
-        self,
-        block_number: u64,
-        array: &mut cbor::encode::Array,
-        offset: usize,
-    ) -> (Block, usize) {
+    pub fn build(self, block_number: u64, array: &mut cbor::encode::Array) -> Block {
         let mut block = Block {
             block_type: self.block_type,
             flags: self.flags,
             crc_type: self.crc_type,
-            data_start: offset,
+            data_start: array.offset(),
             payload_offset: 0,
             data_len: 0,
         };
-        let block_len = block.emit(block_number, &self.data, array, offset);
-        (block, block_len)
+        block.emit(block_number, &self.data, array);
+        block
     }
 }
 

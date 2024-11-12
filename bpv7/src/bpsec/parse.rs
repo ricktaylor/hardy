@@ -1,117 +1,15 @@
 use super::*;
 use std::{collections::HashMap, ops::Range};
 
-#[derive(Debug)]
-struct UnknownData(HashMap<u64, Box<[u8]>>);
-
-impl UnknownData {
-    fn from_cbor(
-        ranges: HashMap<u64, Range<usize>>,
-        data: &[u8],
-    ) -> Result<(Self, bool), bpsec::Error> {
-        let mut shortest = true;
-        let mut new_ranges = HashMap::new();
-        for (t, range) in ranges {
-            let (value, s) =
-                cbor::decode::parse::<(Box<[u8]>, bool)>(&data[range.start..range.end])?;
-            shortest = shortest && s;
-            new_ranges.insert(t, value);
-        }
-        Ok((Self(new_ranges), shortest))
-    }
-}
-
-impl cbor::encode::ToCbor for &UnknownData {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) -> usize {
-        encoder.emit_array(Some(self.0.len()), |a, _| {
-            for (id, value) in &self.0 {
-                a.emit_array(Some(2), |a, _| {
-                    a.emit(*id);
-                    a.emit(value.as_ref());
-                });
-            }
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct UnknownOperation {
-    parameters: Rc<UnknownData>,
-    results: UnknownData,
-}
-
-impl UnknownOperation {
-    pub fn parse(
-        asb: parse::AbstractSyntaxBlock,
-        data: &[u8],
-        shortest: &mut bool,
-    ) -> Result<(Eid, HashMap<u64, Self>), Error> {
-        let parameters = Rc::from(
-            UnknownData::from_cbor(asb.parameters, data)
-                .map(|(p, s)| {
-                    *shortest = *shortest && s;
-                    p
-                })
-                .map_field_err("Unknown BPSec operation parameters")?,
-        );
-
-        // Unpack results
-        let mut operations = HashMap::new();
-        for (target, results) in asb.results {
-            operations.insert(
-                target,
-                Self {
-                    parameters: parameters.clone(),
-                    results: UnknownData::from_cbor(results, data)
-                        .map(|(v, s)| {
-                            *shortest = *shortest && s;
-                            v
-                        })
-                        .map_field_err("Unknown BPSec operation results")?,
-                },
-            );
-        }
-        Ok((asb.source, operations))
-    }
-
-    pub fn emit_context(
-        &self,
-        encoder: &mut cbor::encode::Encoder,
-        source: &Eid,
-        id: u64,
-    ) -> usize {
-        let mut len = encoder.emit(id);
-        if self.parameters.0.is_empty() {
-            len += encoder.emit(0);
-            len + encoder.emit(source)
-        } else {
-            len += encoder.emit(1);
-            len += encoder.emit(source);
-            len + encoder.emit(self.parameters.as_ref())
-        }
-    }
-
-    pub fn emit_result(&self, array: &mut cbor::encode::Array) {
-        array.emit(&self.results);
-    }
-}
-
-pub struct AbstractSyntaxBlock {
-    pub context: Context,
-    pub source: Eid,
-    pub parameters: HashMap<u64, Range<usize>>,
-    pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
-}
-
 fn parse_ranges<const D: usize>(
-    seq: &mut cbor::decode::Sequence<D>,
+    seq: &mut cbor::decode::Series<D>,
     shortest: &mut bool,
     mut offset: usize,
 ) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
     offset += seq.offset();
     seq.try_parse_array(|a, s, tags| {
         *shortest = *shortest && s && tags.is_empty() && a.is_definite();
-        offset += a.offset();
+        let mut outer_offset = a.offset();
 
         let mut map = HashMap::new();
         while let Some(((id, r), _)) = a.try_parse_array(|a, s, tags| {
@@ -125,25 +23,93 @@ fn parse_ranges<const D: usize>(
                 })
                 .map_field_err("Id")?;
 
-            let data_start = offset + a.offset();
-            if let Some((_, data_len)) = a.skip_value(16).map_field_err("Value")? {
-                Ok::<_, Error>((id, data_start..data_start + data_len))
-            } else {
-                Err(cbor::decode::Error::NotEnoughData.into())
-            }
+            let data_start = offset + outer_offset + a.offset();
+            let Some((_, data_len)) = a.skip_value(16).map_field_err("Value")? else {
+                return Err(cbor::decode::Error::NotEnoughData.into());
+            };
+            Ok::<_, Error>((id, data_start..data_start + data_len))
         })? {
             map.insert(id, r);
+            outer_offset = a.offset();
         }
         Ok(map)
     })
     .map(|o| o.map(|v| v.0))
 }
 
+#[derive(Debug)]
+pub struct UnknownOperation {
+    parameters: Rc<HashMap<u64, Range<usize>>>,
+    results: HashMap<u64, Range<usize>>,
+}
+
+impl UnknownOperation {
+    pub fn parse(asb: AbstractSyntaxBlock) -> Result<(Eid, HashMap<u64, Self>), Error> {
+        let parameters = Rc::from(asb.parameters);
+
+        // Unpack results
+        let mut operations = HashMap::new();
+        for (target, results) in asb.results {
+            operations.insert(
+                target,
+                Self {
+                    parameters: parameters.clone(),
+                    results,
+                },
+            );
+        }
+        Ok((asb.source, operations))
+    }
+
+    pub fn emit_context(
+        &self,
+        encoder: &mut cbor::encode::Encoder,
+        source: &Eid,
+        id: u64,
+        source_data: &[u8],
+    ) {
+        encoder.emit(id);
+        if self.parameters.is_empty() {
+            encoder.emit(0);
+            encoder.emit(source);
+        } else {
+            encoder.emit(1);
+            encoder.emit(source);
+            encoder.emit_array(Some(self.parameters.len()), |a| {
+                for (id, range) in self.parameters.iter() {
+                    a.emit_array(Some(2), |a| {
+                        a.emit(*id);
+                        a.emit_raw_slice(&source_data[range.start..range.end]);
+                    });
+                }
+            });
+        }
+    }
+
+    pub fn emit_result(&self, array: &mut cbor::encode::Array, source_data: &[u8]) {
+        array.emit_array(Some(self.results.len()), |a| {
+            for (id, range) in self.results.iter() {
+                a.emit_array(Some(2), |a| {
+                    a.emit(*id);
+                    a.emit_raw_slice(&source_data[range.start..range.end]);
+                });
+            }
+        });
+    }
+}
+
+pub struct AbstractSyntaxBlock {
+    pub context: Context,
+    pub source: Eid,
+    pub parameters: HashMap<u64, Range<usize>>,
+    pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
+}
+
 impl cbor::decode::FromCbor for AbstractSyntaxBlock {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_structure(data, |seq| {
+        cbor::decode::try_parse_sequence(data, |seq| {
             let mut shortest = true;
 
             // Targets
@@ -226,8 +192,7 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
                         idx += 1;
                     }
                     Ok(results)
-                })
-                .map_field_err("Security Targets field")?
+                })?
                 .0;
 
             if targets.len() != results.len() {
@@ -246,4 +211,27 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
         })
         .map(|o| o.map(|((v, s), len)| (v, s, len)))
     }
+}
+
+pub fn decode_box(
+    range: Range<usize>,
+    data: &[u8],
+) -> Result<(Box<[u8]>, bool), cbor::decode::Error> {
+    cbor::decode::parse_value(&data[range.start..range.end], |v, s, tags| match v {
+        cbor::decode::Value::Bytes(data) => Ok((data.into(), s && tags.is_empty())),
+        cbor::decode::Value::ByteStream(data) => Ok((
+            data.iter()
+                .fold(Vec::new(), |mut data, d| {
+                    data.extend(*d);
+                    data
+                })
+                .into(),
+            false,
+        )),
+        value => Err(cbor::decode::Error::IncorrectType(
+            "Untagged definite-length byte string".to_string(),
+            value.type_name(!tags.is_empty()),
+        )),
+    })
+    .map(|v| v.0)
 }
