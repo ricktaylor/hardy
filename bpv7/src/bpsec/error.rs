@@ -56,6 +56,9 @@ pub enum Error {
     #[error("Verification failed")]
     VerificationFailed,
 
+    #[error("No key material for security operation source {0}")]
+    NoKey(Eid),
+
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,

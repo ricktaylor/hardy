@@ -94,9 +94,14 @@ pub fn unwrap_key(
 mod test {
     use super::*;
 
-    fn do_test(data: &[u8], key: Box<[u8]>) {
-        match ValidBundle::parse(data, |_| {
-            Ok(Some(bpsec::KeyMaterial::SymmetricKey(key.clone())))
+    fn do_test(data: &[u8], keys: &[(Eid, Box<[u8]>)]) {
+        match ValidBundle::parse(data, |source| {
+            for (eid, key) in keys {
+                if eid == source {
+                    return Ok(Some(bpsec::KeyMaterial::SymmetricKey(key.clone())));
+                }
+            }
+            Err(bpsec::Error::NoKey(source.clone()))
         })
         .expect("Failed to parse")
         {
@@ -117,7 +122,14 @@ mod test {
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
             ),
-            Box::new(hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b")),
+            &[(
+                Eid::Ipn3 {
+                    allocator_id: 0,
+                    node_number: 2,
+                    service_number: 1,
+                },
+                hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
+            )],
         )
     }
 
@@ -132,7 +144,14 @@ mod test {
                 a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
             ),
-            Box::new(hex_literal::hex!("6162636465666768696a6b6c6d6e6f70")),
+            &[(
+                Eid::Ipn3 {
+                    allocator_id: 0,
+                    node_number: 2,
+                    service_number: 1,
+                },
+                hex_literal::hex!("6162636465666768696a6b6c6d6e6f70").into(),
+            )],
         )
     }
 }
