@@ -184,12 +184,12 @@ impl Bundle {
         mut offset: usize,
         source_data: &[u8],
         f: F,
-    ) -> Result<(HashSet<u64>, HashSet<u64>, bool), BundleError>
+    ) -> Result<(HashMap<u64, bool>, HashSet<u64>, bool), BundleError>
     where
         F: FnMut(&Eid) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
         let mut last_block_number = 0;
-        let mut noncanonical_blocks = HashSet::new();
+        let mut noncanonical_blocks = HashMap::new();
         let mut blocks_to_check = HashMap::new();
         let mut blocks_to_remove = HashSet::new();
         let mut report_unsupported = false;
@@ -202,7 +202,7 @@ impl Bundle {
             blocks.try_parse::<(block::BlockWithNumber, bool, usize)>()?
         {
             if !s {
-                noncanonical_blocks.insert(block.number);
+                noncanonical_blocks.insert(block.number, false);
             }
             block.block.data_start += offset;
 
@@ -234,7 +234,7 @@ impl Bundle {
                         .parse_payload::<bpsec::bcb::OperationSet>(block.block.payload(source_data))
                         .map(|(v, s)| {
                             if !s {
-                                noncanonical_blocks.insert(block.number);
+                                noncanonical_blocks.insert(block.number, false);
                             }
                             v
                         })
@@ -300,6 +300,11 @@ impl Bundle {
                     return Err(bpsec::Error::MissingSecurityTarget.into());
                 };
 
+                // Don't fully canonicalise BCB targets
+                if let Some(is_bpsec_target) = noncanonical_blocks.get_mut(&bcb_target_number) {
+                    *is_bpsec_target = true;
+                }
+
                 let mut add_target = !bcb_op.is_unsupported();
                 match bcb_target_block.block_type {
                     BlockType::BlockSecurity | BlockType::Primary => {
@@ -347,16 +352,17 @@ impl Bundle {
 
                             // Validate targets now, as they are encrypted by this BCB
                             let mut bib_targets_remaining = bib.operations.len();
-                            for (bib_target, bib_op) in bib.operations {
+                            for (bib_target_number, bib_op) in bib.operations {
                                 // Check targets match
-                                if !bcb.operations.contains_key(&bib_target) {
+                                if !bcb.operations.contains_key(&bib_target_number) {
                                     return Err(bpsec::Error::BCBMustShareTarget.into());
                                 }
-                                if !bib_targets.insert(bib_target) {
+                                if !bib_targets.insert(bib_target_number) {
                                     return Err(bpsec::Error::DuplicateOpTarget.into());
                                 }
 
-                                let Some(bib_target_block) = self.blocks.get(&bib_target) else {
+                                let Some(bib_target_block) = self.blocks.get(&bib_target_number)
+                                else {
                                     return Err(bpsec::Error::MissingSecurityTarget.into());
                                 };
 
@@ -374,7 +380,7 @@ impl Bundle {
                                     bcb_op,
                                     bpsec::OperationArgs {
                                         target: bib_target_block,
-                                        target_number: &bib_target,
+                                        target_number: &bib_target_number,
                                         source: bcb_block,
                                         source_number: bcb_block_number,
                                         bundle: self,
@@ -389,7 +395,7 @@ impl Bundle {
                                         &bib_op,
                                         bpsec::OperationArgs {
                                             target: bib_target_block,
-                                            target_number: &bib_target,
+                                            target_number: &bib_target_number,
                                             source: bcb_target_block,
                                             source_number: bcb_target_number,
                                             bundle: self,
@@ -430,7 +436,7 @@ impl Bundle {
                                 }
 
                                 // Check if the target block is supported
-                                if blocks_to_remove.contains(&bib_target) {
+                                if blocks_to_remove.contains(&bib_target_number) {
                                     bib_targets_remaining -= 1;
                                 }
                             }
@@ -473,9 +479,9 @@ impl Bundle {
         drop(bcb_targets);
 
         // Check non-BIB valid BCB targets next
-        for (target_block_number, target_block, source, op, bcb_block, bcb_block_number) in bcbs {
+        for (target_number, target_block, source, op, bcb_block, bcb_block_number) in bcbs {
             // Skip blocks we have already processed as BIB targets
-            if bib_targets.contains(target_block_number) {
+            if bib_targets.contains(target_number) {
                 continue;
             }
 
@@ -486,7 +492,7 @@ impl Bundle {
                 op,
                 bpsec::OperationArgs {
                     target: target_block,
-                    target_number: target_block_number,
+                    target_number,
                     source: bcb_block,
                     source_number: bcb_block_number,
                     bundle: self,
@@ -524,7 +530,7 @@ impl Bundle {
                 blocks_to_check.remove(&target_block.block_type);
             }
 
-            if blocks_to_remove.contains(target_block_number) {
+            if blocks_to_remove.contains(target_number) {
                 if let Some(remaining) = bcb_target_counts.get_mut(bcb_block_number) {
                     *remaining -= 1;
                     if *remaining == 0 {
@@ -543,7 +549,7 @@ impl Bundle {
                 .parse_payload::<bpsec::bib::OperationSet>(bib_block.payload(source_data))
                 .map(|(v, s)| {
                     if !s {
-                        noncanonical_blocks.insert(bib_block_number);
+                        noncanonical_blocks.insert(bib_block_number, false);
                     }
                     v
                 })
@@ -564,11 +570,11 @@ impl Bundle {
             }
 
             let mut bib_targets_remaining = bib.operations.len();
-            for (bib_target, op) in bib.operations {
-                if !bib_targets.insert(bib_target) {
+            for (bib_target_number, op) in bib.operations {
+                if !bib_targets.insert(bib_target_number) {
                     return Err(bpsec::Error::DuplicateOpTarget.into());
                 }
-                let Some(bib_target_block) = self.blocks.get(&bib_target) else {
+                let Some(bib_target_block) = self.blocks.get(&bib_target_number) else {
                     return Err(bpsec::Error::MissingSecurityTarget.into());
                 };
 
@@ -585,7 +591,7 @@ impl Bundle {
                     &op,
                     bpsec::OperationArgs {
                         target: bib_target_block,
-                        target_number: &bib_target,
+                        target_number: &bib_target_number,
                         source: bib_block,
                         source_number: &bib_block_number,
                         bundle: self,
@@ -594,8 +600,13 @@ impl Bundle {
                     source_data,
                 )?;
 
-                if blocks_to_remove.contains(&bib_target) {
+                if blocks_to_remove.contains(&bib_target_number) {
                     bib_targets_remaining -= 1;
+                }
+
+                // Don't fully canonicalise BIB targets
+                if let Some(is_bpsec_target) = noncanonical_blocks.get_mut(&bib_target_number) {
+                    *is_bpsec_target = true;
                 }
             }
 
@@ -636,7 +647,9 @@ impl Bundle {
                     .map_field_err("Hop Count Block")?,
                 _ => true,
             } {
-                noncanonical_blocks.insert(*block_number);
+                if !noncanonical_blocks.contains_key(block_number) {
+                    noncanonical_blocks.insert(*block_number, false);
+                }
             }
         }
 
@@ -646,14 +659,7 @@ impl Bundle {
         }
 
         // Sanity filter
-        Ok((
-            noncanonical_blocks
-                .into_iter()
-                .filter(|t| !blocks_to_remove.contains(t))
-                .collect(),
-            blocks_to_remove,
-            report_unsupported,
-        ))
+        Ok((noncanonical_blocks, blocks_to_remove, report_unsupported))
     }
 
     pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
@@ -682,13 +688,13 @@ impl Bundle {
 
     fn canonicalise(
         &mut self,
-        mut noncanonical_blocks: HashSet<u64>,
+        mut noncanonical_blocks: HashMap<u64, bool>,
         blocks_to_remove: HashSet<u64>,
         source_data: &[u8],
     ) -> Vec<u8> {
         cbor::encode::emit_array(None, |a| {
             // Emit primary block
-            if noncanonical_blocks.remove(&0) {
+            if noncanonical_blocks.remove(&0).is_some() {
                 self.emit_primary_block(a);
             } else {
                 self.blocks
@@ -706,22 +712,22 @@ impl Bundle {
                     continue;
                 }
                 if !blocks_to_remove.contains(block_number) {
-                    if noncanonical_blocks.remove(block_number) {
+                    if let Some(is_bpsec_target) = noncanonical_blocks.remove(block_number) {
                         match block.block_type {
-                            BlockType::PreviousNode => block.emit(
+                            BlockType::PreviousNode if !is_bpsec_target => block.emit(
                                 *block_number,
                                 &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
                                 a,
                             ),
-                            BlockType::BundleAge => {
+                            BlockType::BundleAge if !is_bpsec_target => {
                                 block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()), a)
                             }
-                            BlockType::HopCount => block.emit(
+                            BlockType::HopCount if !is_bpsec_target => block.emit(
                                 *block_number,
                                 &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
                                 a,
                             ),
-                            BlockType::BlockIntegrity => block.emit(
+                            BlockType::BlockIntegrity if !is_bpsec_target => block.emit(
                                 *block_number,
                                 &bpsec::bib::OperationSet::rewrite(
                                     block,
@@ -738,7 +744,7 @@ impl Bundle {
                                     &blocks_to_remove,
                                     source_data,
                                 )
-                                .expect("Invalid BIB Block"),
+                                .expect("Invalid BCB Block"),
                                 a,
                             ),
                             _ => block.rewrite(*block_number, a, source_data).unwrap(),
@@ -750,7 +756,7 @@ impl Bundle {
             }
 
             // Emit payload block
-            if noncanonical_blocks.remove(&1) {
+            if noncanonical_blocks.remove(&1).is_some() {
                 payload_block.rewrite(1, a, source_data).unwrap();
             } else {
                 payload_block.copy(source_data, a);
@@ -832,7 +838,7 @@ impl ValidBundle {
             ) {
                 Ok((mut noncanonical_blocks, blocks_to_remove, report_unsupported)) => {
                     if !canonical_primary_block || !canonical {
-                        noncanonical_blocks.insert(0);
+                        noncanonical_blocks.insert(0, false);
                     }
                     Ok((
                         bundle,
