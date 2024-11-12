@@ -94,24 +94,45 @@ pub fn unwrap_key(
 mod test {
     use super::*;
 
+    fn do_test(data: &[u8], key: Box<[u8]>) {
+        match ValidBundle::parse(data, |_| {
+            Ok(Some(bpsec::KeyMaterial::SymmetricKey(key.clone())))
+        })
+        .expect("Failed to parse")
+        {
+            ValidBundle::Valid(..) => {}
+            ValidBundle::Rewritten(..) => panic!("Non-canonical bundle"),
+            ValidBundle::Invalid(_, _, e) => panic!("Invalid bundle: {e}"),
+        }
+    }
+
     #[test]
     fn rfc9173_appendix_a_1() {
-        // Note: I've tweaked the creation timestamp to be valid
-        let data = &hex_literal::hex!(
-            "9f88070000820282010282028202018202820201820118281a000f4240850b0200
-            005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
-            8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
-            f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
-            746f2067656e657261746520612033322d62797465207061796c6f6164ff"
-        );
+        do_test(
+            // Note: I've tweaked the creation timestamp to be valid
+            &hex_literal::hex!(
+                "9f88070000820282010282028202018202820201820118281a000f4240850b0200
+                005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
+                8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
+                f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
+                746f2067656e657261746520612033322d62797465207061796c6f6164ff"
+            ),
+            Box::new(hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b")),
+        )
+    }
 
-        let ValidBundle::Valid(..) = ValidBundle::parse(data, |_| {
-            Ok(Some(bpsec::KeyMaterial::SymmetricKey(Box::new(
-                hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b"),
-            ))))
-        })
-        .expect("Failed to parse") else {
-            panic!("No!");
-        };
+    #[test]
+    fn rfc9173_appendix_a_2() {
+        do_test(
+            // Note: I've tweaked the creation timestamp to be valid
+            &hex_literal::hex!(
+                "9f88070000820282010282028202018202820201820118281a000f4240850c0201
+                0058508101020182028202018482014c5477656c7665313231323132820201820358
+                1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
+                a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
+                03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
+            ),
+            Box::new(hex_literal::hex!("6162636465666768696a6b6c6d6e6f70")),
+        )
     }
 }
