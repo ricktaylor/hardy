@@ -53,8 +53,8 @@ pub enum Error {
     #[error("Decryption failed")]
     DecryptionFailed,
 
-    #[error("Verification failed")]
-    VerificationFailed,
+    #[error("Integrity check failed")]
+    IntegrityCheckFailed,
 
     #[error("No key material for security operation source {0}")]
     NoKey(Eid),

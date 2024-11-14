@@ -86,19 +86,19 @@ fn tests() {
     ));
 
     assert!(
-        matches!(expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222"), EidError::InvalidField{ field, ..} if field == "Node Number")
+        matches!(expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222"), EidError::InvalidField{ field, ..} if field == "node number")
     );
     assert!(
-        matches!(expect_error("ipn:1.222222222222222222222222222222"), EidError::InvalidField{ field, ..} if field == "Service Number")
+        matches!(expect_error("ipn:1.222222222222222222222222222222"), EidError::InvalidField{ field, ..} if field == "service number")
     );
     assert!(
-        matches!(expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "Allocator Identifier")
+        matches!(expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "allocator identifier")
     );
     assert!(
-        matches!(expect_error("ipn:1.222222222222222222222222222222.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "Node Number")
+        matches!(expect_error("ipn:1.222222222222222222222222222222.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "node number")
     );
     assert!(
-        matches!(expect_error("ipn:1.2.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "Service Number")
+        matches!(expect_error("ipn:1.2.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "service number")
     );
 }
 

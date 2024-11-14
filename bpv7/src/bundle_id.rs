@@ -52,14 +52,14 @@ impl BundleId {
     pub fn from_key(k: &str) -> Result<Self, Error> {
         cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _, _| {
             let s = Self {
-                source: array.parse().map_field_err("Source EID")?,
-                timestamp: array.parse().map_field_err("Creation timestamp")?,
+                source: array.parse().map_field_err("source EID")?,
+                timestamp: array.parse().map_field_err("creation timestamp")?,
                 fragment_info: if let Some(4) = array.count() {
                     Some(FragmentInfo {
-                        offset: array.parse().map_field_err("Fragment offset")?,
+                        offset: array.parse().map_field_err("fragment offset")?,
                         total_len: array
                             .parse()
-                            .map_field_err("Total Application Data Unit Length")?,
+                            .map_field_err("total application data unit Length")?,
                     })
                 } else {
                     None

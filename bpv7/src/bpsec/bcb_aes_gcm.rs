@@ -187,7 +187,8 @@ impl Operation {
     }
 
     fn unwrap_key(&self, key: &KeyMaterial) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
-        rfc9173::unwrap_key(key, &self.parameters.key).map_field_err("Wrapped key")
+        rfc9173::unwrap_key(key, &self.parameters.key)
+            .map_field_err("wrapped key")
     }
 
     pub fn decrypt(

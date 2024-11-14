@@ -120,9 +120,9 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Block type code")?;
+                .map_field_err("block type code")?;
 
-            let block_number = block.parse().map_field_err("Block number").map(|(v, s)| {
+            let block_number = block.parse().map_field_err("block number").map(|(v, s)| {
                 shortest = shortest && s;
                 v
             })?;
@@ -140,7 +140,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Block processing control flags")?;
+                .map_field_err("block processing control flags")?;
 
             let crc_type = block
                 .parse()

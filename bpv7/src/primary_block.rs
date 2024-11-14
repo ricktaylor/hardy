@@ -27,7 +27,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Version")?;
+                .map_field_err("version")?;
             if version != 7 {
                 return Err(BundleError::InvalidVersion(version));
             }
@@ -39,7 +39,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Bundle Processing Control Flags")?;
+                .map_field_err("bundle processing control flags")?;
 
             // Parse CRC Type
             let crc_type = block
@@ -73,7 +73,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Report-to EID")?;
+                .map_field_err("report-to EID")?;
 
             // Parse timestamp
             let timestamp = block.parse().map(|(v, s)| {

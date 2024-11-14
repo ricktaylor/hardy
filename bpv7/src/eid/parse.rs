@@ -67,21 +67,21 @@ fn ipn_from_str(s: &str) -> Result<Eid, EidError> {
     if parts.len() == 2 {
         let mut node_number = u32::MAX;
         if parts[0] != "!" {
-            node_number = parts[0].parse().map_field_err("Node Number")?;
+            node_number = parts[0].parse().map_field_err("node number")?;
         }
         ipn_from_parts(
             3,
             0,
             node_number,
-            parts[1].parse().map_field_err("Service Number")?,
+            parts[1].parse().map_field_err("service number")?,
         )
         .map(|e| e.0)
     } else if parts.len() == 3 {
         ipn_from_parts(
             3,
-            parts[0].parse().map_field_err("Allocator Identifier")?,
-            parts[1].parse().map_field_err("Node Number")?,
-            parts[2].parse().map_field_err("Service Number")?,
+            parts[0].parse().map_field_err("allocator identifier")?,
+            parts[1].parse().map_field_err("node number")?,
+            parts[2].parse().map_field_err("service number")?,
         )
         .map(|e| e.0)
     } else {
@@ -150,7 +150,7 @@ impl cbor::decode::FromCbor for Eid {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Scheme")?
+                .map_field_err("EID scheme")?
             {
                 0 => Err(EidError::UnsupportedScheme("0".to_string())),
                 1 => match a

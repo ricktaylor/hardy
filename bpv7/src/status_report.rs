@@ -160,7 +160,7 @@ fn parse_status_assertion(
                 *shortest = *shortest && s;
                 v
             })
-            .map_field_err("Status")?;
+            .map_field_err("status")?;
 
         if status {
             if let Some(timestamp) = a
@@ -171,7 +171,7 @@ fn parse_status_assertion(
                         v
                     })
                 })
-                .map_field_err("Timestamp")?
+                .map_field_err("timestamp")?
             {
                 if timestamp.millisecs() == 0 {
                     Ok::<_, StatusReportError>(Some(StatusAssertion(None)))
@@ -240,17 +240,17 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                 shortest = shortest && s && tags.is_empty() && a.is_definite();
 
                 report.received =
-                    parse_status_assertion(a, &mut shortest).map_field_err("Received Status")?;
+                    parse_status_assertion(a, &mut shortest).map_field_err("received status")?;
                 report.forwarded =
-                    parse_status_assertion(a, &mut shortest).map_field_err("Forwarded Status")?;
+                    parse_status_assertion(a, &mut shortest).map_field_err("forwarded status")?;
                 report.delivered =
-                    parse_status_assertion(a, &mut shortest).map_field_err("Delivered Status")?;
+                    parse_status_assertion(a, &mut shortest).map_field_err("delivered status")?;
                 report.deleted =
-                    parse_status_assertion(a, &mut shortest).map_field_err("Deleted Status")?;
+                    parse_status_assertion(a, &mut shortest).map_field_err("deleted status")?;
 
                 Ok::<_, Self::Error>(())
             })
-            .map_field_err("Bundle Status Information")?;
+            .map_field_err("bundle status information")?;
 
             report.reason = a
                 .parse()
@@ -258,7 +258,7 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Reason")?;
+                .map_field_err("reason")?;
 
             let source = a
                 .parse()
@@ -266,7 +266,7 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Source")?;
+                .map_field_err("source")?;
 
             let timestamp = a
                 .parse()
@@ -274,7 +274,7 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Timestamp")?;
+                .map_field_err("timestamp")?;
 
             report.bundle_id = BundleId {
                 source,
@@ -282,10 +282,10 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                 fragment_info: None,
             };
 
-            if let Some(offset) = a.try_parse().map_field_err("Fragment offset")? {
+            if let Some(offset) = a.try_parse().map_field_err("fragment offset")? {
                 report.bundle_id.fragment_info = Some(FragmentInfo {
                     offset,
-                    total_len: a.parse().map_field_err("Fragment length")?,
+                    total_len: a.parse().map_field_err("fragment length")?,
                 });
             }
             Ok((report, shortest))
@@ -323,10 +323,10 @@ impl cbor::decode::FromCbor for AdministrativeRecord {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("Record Type Code")?
+                .map_field_err("record type code")?
             {
                 1u64 => {
-                    let (r, s) = a.parse().map_field_err("Bundle Status Report")?;
+                    let (r, s) = a.parse().map_field_err("bundle status report")?;
                     Ok((Self::BundleStatusReport(r), shortest && s))
                 }
                 v => Err(StatusReportError::UnknownAdminRecordType(v)),

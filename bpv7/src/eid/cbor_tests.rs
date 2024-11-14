@@ -4,11 +4,11 @@ use hex_literal::hex;
 #[test]
 fn tests() {
     // Positive tests
-    ipn_check2(&hex!("82 02 82 01 01"), 0, 1, 1);
-    ipn_check3(&hex!("82 02 83 00 01 01"), 0, 1, 1);
+    ipn_check(&hex!("82 02 82 01 01"), 0, 1, 1);
+    ipn_check(&hex!("82 02 83 00 01 01"), 0, 1, 1);
 
-    ipn_check2(&hex!("82 02 82 1B 000EE868 00000001 01"), 977000, 1, 1);
-    ipn_check3(&hex!("82 02 83 1A 000EE868 01 01"), 977000, 1, 1);
+    ipn_check_legacy(&hex!("82 02 82 1B 000EE868 00000001 01"), 977000, 1, 1);
+    ipn_check(&hex!("82 02 83 1A 000EE868 01 01"), 977000, 1, 1);
 
     null_check(&hex!("82 02 82 00 00"));
     null_check(&hex!("82 02 83 00 00 00"));
@@ -65,7 +65,7 @@ fn null_check(data: &[u8]) {
     );
 }
 
-fn ipn_check2(
+fn ipn_check_legacy(
     data: &[u8],
     expected_allocator_id: u32,
     expected_node_number: u32,
@@ -81,11 +81,11 @@ fn ipn_check2(
             assert_eq!(expected_node_number, node_number);
             assert_eq!(expected_service_number, service_number);
         }
-        _ => panic!("Not an ipn 2 EID!"),
+        _ => panic!("Not a legacy format ipn EID!"),
     };
 }
 
-fn ipn_check3(
+fn ipn_check(
     data: &[u8],
     expected_allocator_id: u32,
     expected_node_number: u32,
@@ -101,6 +101,6 @@ fn ipn_check3(
             assert_eq!(expected_node_number, node_number);
             assert_eq!(expected_service_number, service_number);
         }
-        _ => panic!("Not an ipn 3 EID!"),
+        _ => panic!("Not an ipn EID!"),
     };
 }
