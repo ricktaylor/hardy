@@ -295,7 +295,7 @@ impl Operation {
         }
 
         if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
-            Err(bpsec::Error::VerificationFailed)
+            Err(bpsec::Error::IntegrityCheckFailed)
         } else {
             Ok(())
         }
