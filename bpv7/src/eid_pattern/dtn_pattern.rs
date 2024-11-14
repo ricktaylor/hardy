@@ -22,7 +22,7 @@ impl DtnPatternItem {
         }
     }
 
-    pub fn is_exact(&self) -> Option<Eid> {
+    pub(super) fn is_exact(&self) -> Option<Eid> {
         match self {
             DtnPatternItem::None => Some(Eid::Null),
             DtnPatternItem::DtnSsp(s) => s.is_exact(),
@@ -33,7 +33,7 @@ impl DtnPatternItem {
     dtn-ssp = dtn-wkssp-exact / dtn-fullssp
     dtn-wkssp-exact = "none"
     */
-    pub fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
+    pub(super) fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         match s {
             "**" => {
                 span.inc(2);

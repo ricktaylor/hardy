@@ -16,6 +16,7 @@ impl IpnPatternItem {
             service_number: IpnPattern::Wildcard,
         }
     }
+
     pub fn is_match(&self, eid: &Eid) -> bool {
         match eid {
             Eid::Null => {
@@ -46,7 +47,7 @@ impl IpnPatternItem {
         }
     }
 
-    pub fn is_exact(&self) -> Option<Eid> {
+    pub(super) fn is_exact(&self) -> Option<Eid> {
         Some(Eid::Ipn {
             allocator_id: self.allocator_id.is_exact()?,
             node_number: self.node_number.is_exact()?,
@@ -57,7 +58,7 @@ impl IpnPatternItem {
     /*
     ipn-ssp = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
     */
-    pub fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
+    pub(super) fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
         if s == "**" {
             return Ok(IpnPatternItem::new_any());
         }
