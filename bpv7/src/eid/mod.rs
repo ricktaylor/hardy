@@ -12,7 +12,7 @@ mod cbor_tests;
 
 pub use error::EidError;
 
-#[derive(Default, Clone, Hash, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Eid {
     #[default]
     Null,
@@ -37,94 +37,6 @@ pub enum Eid {
         scheme: u64,
         data: Box<[u8]>,
     },
-}
-
-impl PartialEq for Eid {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::LocalNode {
-                    service_number: l_service_number,
-                },
-                Self::LocalNode {
-                    service_number: r_service_number,
-                },
-            ) => l_service_number == r_service_number,
-            (
-                Self::LegacyIpn {
-                    allocator_id: l_allocator_id,
-                    node_number: l_node_number,
-                    service_number: l_service_number,
-                },
-                Self::LegacyIpn {
-                    allocator_id: r_allocator_id,
-                    node_number: r_node_number,
-                    service_number: r_service_number,
-                },
-            )
-            | (
-                Self::LegacyIpn {
-                    allocator_id: l_allocator_id,
-                    node_number: l_node_number,
-                    service_number: l_service_number,
-                },
-                Self::Ipn {
-                    allocator_id: r_allocator_id,
-                    node_number: r_node_number,
-                    service_number: r_service_number,
-                },
-            )
-            | (
-                Self::Ipn {
-                    allocator_id: l_allocator_id,
-                    node_number: l_node_number,
-                    service_number: l_service_number,
-                },
-                Self::LegacyIpn {
-                    allocator_id: r_allocator_id,
-                    node_number: r_node_number,
-                    service_number: r_service_number,
-                },
-            )
-            | (
-                Self::Ipn {
-                    allocator_id: l_allocator_id,
-                    node_number: l_node_number,
-                    service_number: l_service_number,
-                },
-                Self::Ipn {
-                    allocator_id: r_allocator_id,
-                    node_number: r_node_number,
-                    service_number: r_service_number,
-                },
-            ) => {
-                l_allocator_id == r_allocator_id
-                    && l_node_number == r_node_number
-                    && l_service_number == r_service_number
-            }
-            (
-                Self::Dtn {
-                    node_name: l_node_name,
-                    demux: l_demux,
-                },
-                Self::Dtn {
-                    node_name: r_node_name,
-                    demux: r_demux,
-                },
-            ) => l_node_name == r_node_name && l_demux == r_demux,
-            (
-                Self::Unknown {
-                    scheme: l_scheme,
-                    data: l_data,
-                },
-                Self::Unknown {
-                    scheme: r_scheme,
-                    data: r_data,
-                },
-            ) => l_scheme == r_scheme && l_data == r_data,
-            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
-        }
-    }
 }
 
 impl cbor::encode::ToCbor for &Eid {
@@ -194,12 +106,6 @@ impl cbor::encode::ToCbor for &Eid {
         })
     }
 }
-
-/*impl cbor::encode::ToCbor for Eid {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
-        encoder.emit(&self)
-    }
-}*/
 
 impl std::fmt::Debug for Eid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
