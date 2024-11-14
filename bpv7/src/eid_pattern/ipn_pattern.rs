@@ -68,22 +68,25 @@ impl IpnPatternItem {
             return Err(EidPatternError::Expecting(".".to_string(), span.clone()));
         };
 
-        let allocator_id = IpnPattern::parse(s1, span)?;
+        let id1 = IpnPattern::parse(s1, span)?;
         span.inc(1);
 
-        let Some((s1, s)) = s.split_once('.') else {
-            IpnPattern::parse(s, span)?;
-            return Err(EidPatternError::Expecting(".".to_string(), span.clone()));
-        };
+        if let Some((s1, s)) = s.split_once('.') {
+            let node_number = IpnPattern::parse(s1, span)?;
+            span.inc(1);
 
-        let node_number = IpnPattern::parse(s1, span)?;
-        span.inc(1);
-
-        Ok(IpnPatternItem {
-            allocator_id,
-            node_number,
-            service_number: IpnPattern::parse(s, span)?,
-        })
+            Ok(IpnPatternItem {
+                allocator_id: id1,
+                node_number,
+                service_number: IpnPattern::parse(s, span)?,
+            })
+        } else {
+            Ok(IpnPatternItem {
+                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                node_number: id1,
+                service_number: IpnPattern::parse(s, span)?,
+            })
+        }
     }
 }
 
