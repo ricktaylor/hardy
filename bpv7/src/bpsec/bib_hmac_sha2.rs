@@ -153,6 +153,32 @@ impl cbor::encode::ToCbor for &Results {
     }
 }
 
+fn update_primary_block<M>(mac: &mut M, args: &OperationArgs, source_data: &[u8])
+where
+    M: hmac::Mac,
+{
+    if !args.canonical_primary_block {
+        mac.update(&cbor::encode::emit(primary_block::PrimaryBlock::emit(
+            args.bundle,
+        )));
+    } else {
+        // This is horrible, but removes a copy
+        let data = args
+            .bundle
+            .blocks
+            .get(&0)
+            .expect("Missing primary block!")
+            .payload(source_data);
+
+        let mut header = cbor::encode::emit(data.len());
+        if let Some(m) = header.first_mut() {
+            *m |= 2 << 5;
+        }
+        mac.update(&header);
+        mac.update(data);
+    }
+}
+
 #[derive(Debug)]
 pub struct Operation {
     parameters: Rc<Parameters>,
@@ -161,7 +187,7 @@ pub struct Operation {
 
 impl Operation {
     pub fn is_unsupported(&self) -> bool {
-        !matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
+        matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
     fn unwrap_key(&self, key: &KeyMaterial) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
@@ -216,17 +242,7 @@ impl Operation {
 
         if !matches!(args.target.block_type, BlockType::Primary) {
             if self.parameters.flags.include_primary_block {
-                if !args.canonical_primary_block {
-                    mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
-                } else {
-                    mac.update(
-                        args.bundle
-                            .blocks
-                            .get(&0)
-                            .expect("Missing primary block!")
-                            .payload(source_data),
-                    );
-                }
+                update_primary_block(&mut mac, &args, source_data);
             }
 
             if self.parameters.flags.include_target_header {
@@ -247,17 +263,7 @@ impl Operation {
         }
 
         if matches!(args.target.block_type, BlockType::Primary) {
-            if !args.canonical_primary_block {
-                mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
-            } else {
-                mac.update(
-                    args.bundle
-                        .blocks
-                        .get(&0)
-                        .expect("Missing primary block!")
-                        .payload(source_data),
-                );
-            }
+            update_primary_block(&mut mac, &args, source_data);
         } else {
             cbor::decode::parse_value(args.target.payload(source_data), |value, s, tags| {
                 match value {

@@ -13,8 +13,8 @@ pub enum BundleError {
     #[error("Bundle has no payload block")]
     MissingPayload,
 
-    #[error("Block {0} is not protected by a BPSec BIB or a CRC")]
-    MissingIntegrityCheck(u64),
+    #[error("Primary block is not protected by a BPSec BIB or a CRC")]
+    MissingIntegrityCheck,
 
     #[error("Bundle payload block must be block number 1")]
     InvalidPayloadBlockNumber,
@@ -615,15 +615,17 @@ impl Bundle {
                 blocks_to_remove.insert(bib_block_number);
             }
         }
+
+        if let CrcType::None = self.crc_type {
+            if !bib_targets.contains(&0) {
+                return Err(BundleError::MissingIntegrityCheck);
+            }
+        }
         drop(bib_targets);
 
         // Check everything that isn't BCB covered
         for block_number in blocks_to_check.values() {
             let block = self.blocks.get(block_number).unwrap();
-            if let CrcType::None = block.crc_type {
-                return Err(BundleError::MissingIntegrityCheck(*block_number));
-            }
-
             if !match block.block_type {
                 BlockType::PreviousNode => block
                     .parse_payload(block.payload(source_data))
