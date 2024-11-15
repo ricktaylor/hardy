@@ -153,30 +153,16 @@ impl cbor::encode::ToCbor for &Results {
     }
 }
 
-fn update_primary_block<M>(mac: &mut M, args: &OperationArgs, source_data: &[u8])
+fn emit_data_<M>(mac: &mut M, data: &[u8])
 where
     M: hmac::Mac,
 {
-    if !args.canonical_primary_block {
-        mac.update(&cbor::encode::emit(primary_block::PrimaryBlock::emit(
-            args.bundle,
-        )));
-    } else {
-        // This is horrible, but removes a copy
-        let data = args
-            .bundle
-            .blocks
-            .get(&0)
-            .expect("Missing primary block!")
-            .payload(source_data);
-
-        let mut header = cbor::encode::emit(data.len());
-        if let Some(m) = header.first_mut() {
-            *m |= 2 << 5;
-        }
-        mac.update(&header);
-        mac.update(data);
+    let mut header = cbor::encode::emit(data.len());
+    if let Some(m) = header.first_mut() {
+        *m |= 2 << 5;
     }
+    mac.update(&header);
+    mac.update(data);
 }
 
 #[derive(Debug)]
@@ -190,36 +176,31 @@ impl Operation {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
-    fn unwrap_key(&self, key: &KeyMaterial) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
-        rfc9173::unwrap_key(key, &self.parameters.key).map_field_err("wrapped key")
-    }
-
     pub fn verify(
         &self,
         key: &KeyMaterial,
         args: OperationArgs,
-        source_data: &[u8],
-    ) -> Result<(), Error> {
+        payload_data: Option<&[u8]>,
+    ) -> Result<bool, Error> {
+        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+
         match self.parameters.variant {
             ShaVariant::HMAC_256_256 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.unwrap_key(key)?)
-                    .map_field_err("SHA-256 Key")?,
+                hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).map_field_err("SHA-256 key")?,
                 args,
-                source_data,
+                payload_data,
             ),
             ShaVariant::HMAC_384_384 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha384>::new_from_slice(&self.unwrap_key(key)?)
-                    .map_field_err("SHA-384 Key")?,
+                hmac::Hmac::<sha2::Sha384>::new_from_slice(&key).map_field_err("SHA-384 key")?,
                 args,
-                source_data,
+                payload_data,
             ),
             ShaVariant::HMAC_512_512 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha512>::new_from_slice(&self.unwrap_key(key)?)
-                    .map_field_err("SHA-512 Key")?,
+                hmac::Hmac::<sha2::Sha512>::new_from_slice(&key).map_field_err("SHA-512 key")?,
                 args,
-                source_data,
+                payload_data,
             ),
-            ShaVariant::Unrecognised(_) => Ok(()),
+            ShaVariant::Unrecognised(_) => Ok(false),
         }
     }
 
@@ -227,11 +208,13 @@ impl Operation {
         &self,
         mut mac: M,
         args: OperationArgs,
-        source_data: &[u8],
-    ) -> Result<(), Error>
+        payload_data: Option<&[u8]>,
+    ) -> Result<bool, Error>
     where
         M: hmac::Mac,
     {
+        let mut primary_block_protected = false;
+
         // Build IPT
         mac.update(&cbor::encode::emit(&rfc9173::ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
@@ -242,7 +225,19 @@ impl Operation {
 
         if !matches!(args.target.block_type, BlockType::Primary) {
             if self.parameters.flags.include_primary_block {
-                update_primary_block(&mut mac, &args, source_data);
+                primary_block_protected = true;
+
+                if !args.canonical_primary_block {
+                    mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
+                } else {
+                    mac.update(
+                        args.bundle
+                            .blocks
+                            .get(&0)
+                            .expect("Missing primary block!")
+                            .payload(args.bundle_data),
+                    );
+                }
             }
 
             if self.parameters.flags.include_target_header {
@@ -263,9 +258,25 @@ impl Operation {
         }
 
         if matches!(args.target.block_type, BlockType::Primary) {
-            update_primary_block(&mut mac, &args, source_data);
+            primary_block_protected = true;
+
+            if !args.canonical_primary_block {
+                emit_data_(&mut mac, &primary_block::PrimaryBlock::emit(args.bundle));
+            } else {
+                emit_data_(
+                    &mut mac,
+                    args.bundle
+                        .blocks
+                        .get(&0)
+                        .expect("Missing primary block!")
+                        .payload(args.bundle_data),
+                );
+            }
+        } else if let Some(payload_data) = payload_data {
+            emit_data_(&mut mac, payload_data);
         } else {
-            cbor::decode::parse_value(args.target.payload(source_data), |value, s, tags| {
+            let payload_data = args.target.payload(args.bundle_data);
+            cbor::decode::parse_value(payload_data, |value, s, tags| {
                 match value {
                     cbor::decode::Value::ByteStream(data) => {
                         // This is horrible, but removes a potentially large data copy
@@ -283,16 +294,10 @@ impl Operation {
                         }
                     }
                     cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
-                        mac.update(args.target.payload(source_data));
+                        mac.update(payload_data);
                     }
                     cbor::decode::Value::Bytes(data) => {
-                        // This is horrible, but removes a potentially large data copy
-                        let mut header = cbor::encode::emit(data.len());
-                        if let Some(m) = header.first_mut() {
-                            *m |= 2 << 5;
-                        }
-                        mac.update(&header);
-                        mac.update(data);
+                        emit_data_(&mut mac, data);
                     }
                     _ => unreachable!(),
                 }
@@ -303,7 +308,7 @@ impl Operation {
         if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
             Err(bpsec::Error::IntegrityCheckFailed)
         } else {
-            Ok(())
+            Ok(primary_block_protected)
         }
     }
 

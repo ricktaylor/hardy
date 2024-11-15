@@ -18,11 +18,12 @@ impl Block {
 
     pub fn parse_payload<T>(
         &self,
-        payload_data: &[u8],
+        source_data: &[u8],
     ) -> Result<(T, bool), <T as cbor::decode::FromCbor>::Error>
     where
         T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
     {
+        let payload_data = self.payload(source_data);
         cbor::decode::parse_value(payload_data, |v, shortest, tags| match v {
             cbor::decode::Value::Bytes(data) => cbor::decode::parse::<(T, bool, usize)>(data)
                 .map(|(v, s, len)| (v, shortest && s && tags.is_empty() && len == data.len())),

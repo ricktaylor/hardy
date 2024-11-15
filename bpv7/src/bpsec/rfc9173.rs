@@ -65,11 +65,13 @@ impl cbor::encode::ToCbor for &ScopeFlags {
 }
 
 pub fn unwrap_key(
-    key_material: &KeyMaterial,
+    source: &Eid,
+    key: &KeyMaterial,
     wrapped_key: &Option<Box<[u8]>>,
-) -> Result<Zeroizing<Box<[u8]>>, aes_kw::Error> {
-    let KeyMaterial::SymmetricKey(key_material) = key_material else {
-        return Err(aes_kw::Error::InvalidKekSize { size: 0 });
+) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
+    // We only care about symmetric keys
+    let KeyMaterial::SymmetricKey(key_material) = key else {
+        return Err(bpsec::Error::NoKey(source.clone()));
     };
 
     let Some(wrapped_key) = wrapped_key else {
@@ -88,20 +90,21 @@ pub fn unwrap_key(
             .unwrap_vec(wrapped_key)
             .map(|v| Zeroizing::from(Box::from(v))),
     }
+    .map_field_err("wrapped key")
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
 
-    fn do_test(data: &[u8], keys: &[(Eid, Box<[u8]>)]) {
-        match ValidBundle::parse(data, |source| {
-            for (eid, key) in keys {
-                if eid == source {
-                    return Ok(Some(bpsec::KeyMaterial::SymmetricKey(key.clone())));
+    fn do_test(data: &[u8], keys: &[(EidPattern, Context, Box<[u8]>)]) {
+        match ValidBundle::parse(data, |source, context| {
+            for (eid, c2, key) in keys {
+                if &context == c2 && eid.is_match(source) {
+                    return Ok(Some(KeyMaterial::SymmetricKey(key.clone())));
                 }
             }
-            Err(bpsec::Error::NoKey(source.clone()))
+            Ok(None)
         })
         .expect("Failed to parse")
         {
@@ -114,20 +117,17 @@ mod test {
     #[test]
     fn rfc9173_appendix_a_1() {
         do_test(
-            // Note: I've tweaked the creation timestamp to be valid
+            // Note: I've tweaked the creation timestamp to be valid, and added a CRC
             &hex_literal::hex!(
-                "9f88070000820282010282028202018202820201820118281a000f4240850b0200
+                "9f89070001820282010282028202018202820201820118281a000f424042e4fe850b0200
                 005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
                 8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
             ),
             &[(
-                Eid::Ipn {
-                    allocator_id: 0,
-                    node_number: 2,
-                    service_number: 1,
-                },
+                "ipn:2.1".parse().unwrap(),
+                Context::BIB_HMAC_SHA2,
                 hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
             )],
         )
@@ -136,20 +136,17 @@ mod test {
     #[test]
     fn rfc9173_appendix_a_2() {
         do_test(
-            // Note: I've tweaked the creation timestamp to be valid
+            // Note: I've tweaked the creation timestamp to be valid, and added a CRC
             &hex_literal::hex!(
-                "9f88070000820282010282028202018202820201820118281a000f4240850c0201
+                "9f89070001820282010282028202018202820201820118281a000f424042e4fe850c0201
                 0058508101020182028202018482014c5477656c7665313231323132820201820358
                 1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
                 a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
             ),
             &[(
-                Eid::Ipn {
-                    allocator_id: 0,
-                    node_number: 2,
-                    service_number: 1,
-                },
+                "ipn:2.1".parse().unwrap(),
+                Context::BCB_AES_GCM,
                 hex_literal::hex!("6162636465666768696a6b6c6d6e6f70").into(),
             )],
         )
@@ -170,20 +167,46 @@ mod test {
             ),
             &[
                 (
-                    Eid::Ipn {
-                        allocator_id: 0,
-                        node_number: 3,
-                        service_number: 0,
-                    },
+                    "ipn:3.0".parse().unwrap(),
+                    Context::BIB_HMAC_SHA2,
                     hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
                 ),
                 (
-                    Eid::Ipn {
-                        allocator_id: 0,
-                        node_number: 2,
-                        service_number: 1,
-                    },
+                    "ipn:2.1".parse().unwrap(),
+                    Context::BCB_AES_GCM,
                     hex_literal::hex!("71776572747975696f70617364666768").into(),
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn rfc9173_appendix_a_4() {
+        do_test(
+            &hex_literal::hex!(
+                // I have added a bundle age block
+                "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+                005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
+                420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
+                9b88029191850c0201005849820301020182028202018382014c5477656c76653132
+                313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
+                50d2c51cb2481792dae8b21d848cede99b850704000041018501010000582390eab6
+                457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+            ),
+            &[
+                (
+                    "ipn:2.1".parse().unwrap(),
+                    Context::BIB_HMAC_SHA2,
+                    hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
+                ),
+                (
+                    "ipn:2.1".parse().unwrap(),
+                    Context::BCB_AES_GCM,
+                    hex_literal::hex!(
+                        "71776572747975696f70617364666768
+                      71776572747975696f70617364666768"
+                    )
+                    .into(),
                 ),
             ],
         )

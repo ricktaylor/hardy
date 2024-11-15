@@ -27,10 +27,9 @@ impl Operation {
         &self,
         key: &KeyMaterial,
         args: OperationArgs,
-        source_data: &[u8],
-    ) -> Result<Option<Box<[u8]>>, Error> {
+    ) -> Result<Option<(Box<[u8]>, bool)>, Error> {
         match self {
-            Self::AES_GCM(op) => op.decrypt(key, args, source_data),
+            Self::AES_GCM(op) => op.decrypt(key, args),
             Self::Unrecognised(..) => Ok(None),
         }
     }

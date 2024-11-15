@@ -186,20 +186,16 @@ impl Operation {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
-    fn unwrap_key(&self, key: &KeyMaterial) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
-        rfc9173::unwrap_key(key, &self.parameters.key)
-            .map_field_err("wrapped key")
-    }
-
     pub fn decrypt(
         &self,
         key: &KeyMaterial,
         args: OperationArgs,
-        source_data: &[u8],
-    ) -> Result<Option<Box<[u8]>>, Error> {
+    ) -> Result<Option<(Box<[u8]>, bool)>, Error> {
         if matches!(self.parameters.variant, AesVariant::Unrecognised(_)) {
             return Ok(None);
         }
+
+        let mut primary_block_protected = false;
 
         let mut encoder = cbor::encode::Encoder::new();
         encoder.emit(&rfc9173::ScopeFlags {
@@ -210,6 +206,8 @@ impl Operation {
         });
 
         if self.parameters.flags.include_primary_block {
+            primary_block_protected = true;
+
             if !args.canonical_primary_block {
                 encoder.emit_raw(primary_block::PrimaryBlock::emit(args.bundle));
             } else {
@@ -218,7 +216,7 @@ impl Operation {
                         .blocks
                         .get(&0)
                         .expect("Missing primary block!")
-                        .payload(source_data),
+                        .payload(args.bundle_data),
                 );
             }
         }
@@ -236,55 +234,55 @@ impl Operation {
         }
         let aad = encoder.build();
 
-        let mut data = cbor::decode::parse_value(
-            args.target.payload(source_data),
-            |value, _, _| match value {
-                cbor::decode::Value::ByteStream(data) => {
-                    // Concatenate all the bytes
-                    Ok::<_, Error>(data.iter().fold(Vec::new(), |mut data, d| {
-                        data.extend(*d);
-                        data
-                    }))
+        let mut data =
+            cbor::decode::parse_value(args.target.payload(args.bundle_data), |value, _, _| {
+                match value {
+                    cbor::decode::Value::ByteStream(data) => {
+                        // Concatenate all the bytes
+                        Ok::<_, Error>(data.iter().fold(Vec::new(), |mut data, d| {
+                            data.extend(*d);
+                            data
+                        }))
+                    }
+                    cbor::decode::Value::Bytes(data) => Ok(data.into()),
+                    _ => unreachable!(),
                 }
-                cbor::decode::Value::Bytes(data) => Ok(data.into()),
-                _ => unreachable!(),
-            },
-        )
-        .map(|v| v.0)?;
+            })
+            .map(|v| v.0)?;
 
         // Append authentication tag
         data.extend_from_slice(&self.results.0);
 
+        let key = &rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+
         match self.parameters.variant {
             AesVariant::A128GCM => self.decrypt_inner(
-                aes_gcm::Aes128Gcm::new_from_slice(&self.unwrap_key(key)?)
-                    .map_field_err("AES-128 Key")?,
+                aes_gcm::Aes128Gcm::new_from_slice(&key).map_field_err("AES-128 key")?,
                 aad,
-                data,
+                &mut data,
             ),
             AesVariant::A256GCM => self.decrypt_inner(
-                aes_gcm::Aes256Gcm::new_from_slice(&self.unwrap_key(key)?)
-                    .map_field_err("AES-256 Key")?,
+                aes_gcm::Aes256Gcm::new_from_slice(&key).map_field_err("AES-256 key")?,
                 aad,
-                data,
+                &mut data,
             ),
             AesVariant::Unrecognised(_) => unreachable!(),
         }
+        .map(|_| Some((data.into(), primary_block_protected)))
     }
 
     fn decrypt_inner<M>(
         &self,
         cipher: M,
         aad: Vec<u8>,
-        mut data: Vec<u8>,
-    ) -> Result<Option<Box<[u8]>>, bpsec::Error>
+        data: &mut Vec<u8>,
+    ) -> Result<(), bpsec::Error>
     where
         M: aes_gcm::aead::AeadInPlace,
     {
         // Decrypt in-place, this results in a single data copy
         cipher
-            .decrypt_in_place(self.parameters.iv.as_ref().into(), &aad, &mut data)
-            .map(|_| Some(data.into()))
+            .decrypt_in_place(self.parameters.iv.as_ref().into(), &aad, data)
             .map_err(|_| bpsec::Error::DecryptionFailed)
     }
 

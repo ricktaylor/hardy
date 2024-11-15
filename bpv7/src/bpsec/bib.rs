@@ -27,11 +27,11 @@ impl Operation {
         &self,
         key: &KeyMaterial,
         args: OperationArgs,
-        source_data: &[u8],
-    ) -> Result<(), Error> {
+        payload_data: Option<&[u8]>,
+    ) -> Result<bool, Error> {
         match self {
-            Self::HMAC_SHA2(o) => o.verify(key, args, source_data),
-            Self::Unrecognised(..) => Ok(()),
+            Self::HMAC_SHA2(o) => o.verify(key, args, payload_data),
+            Self::Unrecognised(..) => Ok(false),
         }
     }
 

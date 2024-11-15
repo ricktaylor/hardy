@@ -332,7 +332,7 @@ impl Store {
 
         // Parse the bundle
         let (bundle, reason, hash, report_unsupported) =
-            match bpv7::ValidBundle::parse(data.as_ref().as_ref(), |_| Ok(None)) {
+            match bpv7::ValidBundle::parse(data.as_ref().as_ref(), |_, _| Ok(None)) {
                 Ok(bpv7::ValidBundle::Valid(bundle, report_unsupported)) => (
                     bundle,
                     None,

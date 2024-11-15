@@ -23,6 +23,7 @@ pub mod prelude {
     pub use super::block::Block;
     pub use super::block_flags::BlockFlags;
     pub use super::block_type::BlockType;
+    pub use super::bpsec::KeyMaterial;
     pub use super::builder::Builder;
     pub use super::bundle::{Bundle, BundleError, ValidBundle};
     pub use super::bundle_flags::BundleFlags;

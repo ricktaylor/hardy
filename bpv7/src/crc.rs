@@ -77,7 +77,6 @@ pub fn parse_crc_value(
     crc_type: CrcType,
 ) -> Result<bool, Error> {
     // Parse CRC
-    let mut crc_start = block.offset();
     let crc_value = block.try_parse_value(|value, shortest, tags| match value {
         cbor::decode::Value::Bytes(crc) => match crc_type {
             CrcType::None => Err(Error::UnexpectedCrcValue),
@@ -109,27 +108,28 @@ pub fn parse_crc_value(
         .into()),
     })?;
 
+    let crc_val_end = block.offset();
+    let crc_end = block.end()?.unwrap_or(crc_val_end);
+
     // Now check CRC
     match (crc_type, crc_value) {
         (CrcType::None, None) => Ok(true),
-        (CrcType::CRC16_X25, Some(((crc_value, shortest), len))) => {
-            crc_start += len - 2;
+        (CrcType::CRC16_X25, Some(((crc_value, shortest), _))) => {
             let mut digest = X25.digest();
-            digest.update(&data[0..crc_start]);
+            digest.update(&data[0..crc_val_end - 2]);
             digest.update(&[0u8; 2]);
-            digest.update(&data[crc_start + 2..]);
+            digest.update(&data[crc_val_end..crc_end]);
             if crc_value != digest.finalize() as u32 {
                 Err(Error::IncorrectCrc)
             } else {
                 Ok(shortest)
             }
         }
-        (CrcType::CRC32_CASTAGNOLI, Some(((crc_value, shortest), len))) => {
-            crc_start += len - 4;
+        (CrcType::CRC32_CASTAGNOLI, Some(((crc_value, shortest), _))) => {
             let mut digest = CASTAGNOLI.digest();
-            digest.update(&data[0..crc_start]);
+            digest.update(&data[0..crc_val_end - 4]);
             digest.update(&[0u8; 4]);
-            digest.update(&data[crc_start + 4..]);
+            digest.update(&data[crc_val_end..crc_end]);
             if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {

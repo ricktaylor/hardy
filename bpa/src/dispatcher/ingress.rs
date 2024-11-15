@@ -19,7 +19,7 @@ impl Dispatcher {
         }
 
         // Parse the bundle
-        match bpv7::ValidBundle::parse(&data, |_| Ok(None))? {
+        match bpv7::ValidBundle::parse(&data, |_, _| Ok(None))? {
             bpv7::ValidBundle::Valid(bundle, report_unsupported) => {
                 // Write the bundle data to the store
                 let (storage_name, hash) = self.store.store_data(&data).await?;

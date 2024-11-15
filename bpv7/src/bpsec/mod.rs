@@ -18,7 +18,7 @@ use error::CaptureFieldErr;
 
 pub use error::Error;
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 pub enum Context {
@@ -74,10 +74,12 @@ pub enum KeyMaterial {
 }
 
 pub struct OperationArgs<'a> {
+    pub bpsec_source: &'a Eid,
     pub target: &'a block::Block,
     pub target_number: &'a u64,
     pub source: &'a block::Block,
     pub source_number: &'a u64,
     pub bundle: &'a Bundle,
     pub canonical_primary_block: bool,
+    pub bundle_data: &'a [u8],
 }
