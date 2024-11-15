@@ -166,7 +166,7 @@ impl Bundle {
         if let Some(key) = keys.get(args.bpsec_source, operation.context_id())? {
             operation.verify(key, args, payload_data)
         } else {
-            Ok(false)
+            Ok(args.target_number == &0)
         }
     }
 

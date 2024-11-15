@@ -200,7 +200,7 @@ impl Operation {
                 args,
                 payload_data,
             ),
-            ShaVariant::Unrecognised(_) => Ok(false),
+            ShaVariant::Unrecognised(_) => Ok(args.target_number == &0),
         }
     }
 

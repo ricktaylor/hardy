@@ -31,7 +31,7 @@ impl Operation {
     ) -> Result<bool, Error> {
         match self {
             Self::HMAC_SHA2(o) => o.verify(key, args, payload_data),
-            Self::Unrecognised(..) => Ok(false),
+            Self::Unrecognised(..) => Ok(args.target_number == &0),
         }
     }
 
