@@ -153,47 +153,44 @@ impl cbor::decode::FromCbor for Eid {
                 .map_field_err("EID scheme")?
             {
                 0 => Err(EidError::UnsupportedScheme("0".to_string())),
-                1 => match a
-                    .parse_value(|value, s, tags| {
-                        shortest = shortest && s && tags.is_empty();
-                        match value {
-                            cbor::decode::Value::UnsignedInteger(0)
-                            | cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
-                            cbor::decode::Value::Text(s) => {
-                                if let Some(s) = s.strip_prefix("//") {
-                                    parse_dtn_parts(s).map(|e| (e, shortest))
-                                } else {
-                                    Err(EidError::DtnMissingPrefix)
-                                }
+                1 => match a.parse_value(|value, s, tags| {
+                    shortest = shortest && s && tags.is_empty();
+                    match value {
+                        cbor::decode::Value::UnsignedInteger(0)
+                        | cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
+                        cbor::decode::Value::Text(s) => {
+                            if let Some(s) = s.strip_prefix("//") {
+                                parse_dtn_parts(s).map(|e| (e, shortest))
+                            } else {
+                                Err(EidError::DtnMissingPrefix)
                             }
-                            cbor::decode::Value::TextStream(s) => {
-                                if let Some(s) = s
-                                    .iter()
-                                    .try_fold(String::new(), |mut v, s| {
-                                        // Check maximum valid DNS Name length
-                                        if s.len() + v.len() > 255 {
-                                            Err(EidError::DtnMissingPrefix)
-                                        } else {
-                                            v.push_str(s);
-                                            Ok::<_, EidError>(v)
-                                        }
-                                    })?
-                                    .strip_prefix("//")
-                                {
-                                    parse_dtn_parts(s).map(|e| (e, shortest))
-                                } else {
-                                    Err(EidError::DtnMissingPrefix)
-                                }
-                            }
-                            value => Err(cbor::decode::Error::IncorrectType(
-                                "Untagged Text String or O".to_string(),
-                                value.type_name(!tags.is_empty()),
-                            )
-                            .into()),
                         }
-                    })
-                    .map(|v| v.0)
-                {
+                        cbor::decode::Value::TextStream(s) => {
+                            if let Some(s) = s
+                                .iter()
+                                .try_fold(String::new(), |mut v, s| {
+                                    // Check maximum valid DNS Name length
+                                    if s.len() + v.len() > 255 {
+                                        Err(EidError::DtnMissingPrefix)
+                                    } else {
+                                        v.push_str(s);
+                                        Ok::<_, EidError>(v)
+                                    }
+                                })?
+                                .strip_prefix("//")
+                            {
+                                parse_dtn_parts(s).map(|e| (e, shortest))
+                            } else {
+                                Err(EidError::DtnMissingPrefix)
+                            }
+                        }
+                        value => Err(cbor::decode::Error::IncorrectType(
+                            "Untagged Text String or O".to_string(),
+                            value.type_name(!tags.is_empty()),
+                        )
+                        .into()),
+                    }
+                }) {
                     Err(EidError::InvalidCBOR(e)) => {
                         Err(e).map_field_err("'dtn' scheme-specific part")
                     }
@@ -202,19 +199,16 @@ impl cbor::decode::FromCbor for Eid {
                     }
                     r => r,
                 },
-                2 => match a
-                    .parse_value(|value, s, tags| match value {
-                        cbor::decode::Value::Array(a) => {
-                            ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
-                        }
-                        value => Err(cbor::decode::Error::IncorrectType(
-                            "Untagged Array".to_string(),
-                            value.type_name(!tags.is_empty()),
-                        )
-                        .into()),
-                    })
-                    .map(|v| v.0)
-                {
+                2 => match a.parse_value(|value, s, tags| match value {
+                    cbor::decode::Value::Array(a) => {
+                        ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
+                    }
+                    value => Err(cbor::decode::Error::IncorrectType(
+                        "Untagged Array".to_string(),
+                        value.type_name(!tags.is_empty()),
+                    )
+                    .into()),
+                }) {
                     Err(EidError::InvalidCBOR(e)) => {
                         Err(e).map_field_err("'ipn' scheme-specific part")
                     }
@@ -225,16 +219,16 @@ impl cbor::decode::FromCbor for Eid {
                 },
                 scheme => {
                     let start = a.offset();
-                    if let Some((_, len)) = a.skip_value(16).map_err(Into::<EidError>::into)? {
+                    if a.skip_value(16).map_err(Into::<EidError>::into)?.is_none() {
+                        Err(EidError::UnsupportedScheme(scheme.to_string()))
+                    } else {
                         Ok((
                             Eid::Unknown {
                                 scheme,
-                                data: data[start..start + len].into(),
+                                data: data[start..a.offset()].into(),
                             },
                             shortest,
                         ))
-                    } else {
-                        Err(EidError::UnsupportedScheme(scheme.to_string()))
                     }
                 }
             }

@@ -114,7 +114,7 @@ pub fn parse_crc_value(
     // Now check CRC
     match (crc_type, crc_value) {
         (CrcType::None, None) => Ok(true),
-        (CrcType::CRC16_X25, Some(((crc_value, shortest), _))) => {
+        (CrcType::CRC16_X25, Some((crc_value, shortest))) => {
             let mut digest = X25.digest();
             digest.update(&data[0..crc_val_end - 2]);
             digest.update(&[0u8; 2]);
@@ -125,7 +125,7 @@ pub fn parse_crc_value(
                 Ok(shortest)
             }
         }
-        (CrcType::CRC32_CASTAGNOLI, Some(((crc_value, shortest), _))) => {
+        (CrcType::CRC32_CASTAGNOLI, Some((crc_value, shortest))) => {
             let mut digest = CASTAGNOLI.digest();
             digest.update(&data[0..crc_val_end - 4]);
             digest.update(&[0u8; 4]);

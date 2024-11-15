@@ -12,7 +12,7 @@ fn parse_ranges<const D: usize>(
         let mut outer_offset = a.offset();
 
         let mut map = HashMap::new();
-        while let Some(((id, r), _)) = a.try_parse_array(|a, s, tags| {
+        while let Some((id, r)) = a.try_parse_array(|a, s, tags| {
             *shortest = *shortest && s && tags.is_empty() && a.is_definite();
 
             let id = a
@@ -24,17 +24,16 @@ fn parse_ranges<const D: usize>(
                 .map_field_err("id")?;
 
             let data_start = offset + outer_offset + a.offset();
-            let Some((_, data_len)) = a.skip_value(16).map_field_err("value")? else {
+            if a.skip_value(16).map_field_err("value")?.is_none() {
                 return Err(cbor::decode::Error::NotEnoughData.into());
             };
-            Ok::<_, Error>((id, data_start..data_start + data_len))
+            Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
         })? {
             map.insert(id, r);
             outer_offset = a.offset();
         }
         Ok(map)
     })
-    .map(|o| o.map(|v| v.0))
 }
 
 #[derive(Debug)]
@@ -128,8 +127,7 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
                     }
                     Ok::<_, Error>(targets)
                 })
-                .map_field_err("security targets")?
-                .0;
+                .map_field_err("security targets")?;
             if targets.is_empty() {
                 return Err(Error::NoTargets);
             }
@@ -175,25 +173,23 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
 
             // Target Results
             let offset = seq.offset();
-            let results = seq
-                .parse_array(|a, s, tags| {
-                    shortest = shortest && s && tags.is_empty() && a.is_definite();
+            let results = seq.parse_array(|a, s, tags| {
+                shortest = shortest && s && tags.is_empty() && a.is_definite();
 
-                    let mut results = HashMap::new();
-                    let mut idx = 0;
-                    while let Some(target_results) =
-                        parse_ranges(a, &mut shortest, offset).map_field_err("security results")?
-                    {
-                        let Some(target) = targets.get(idx) else {
-                            return Err(Error::MismatchedTargetResult);
-                        };
+                let mut results = HashMap::new();
+                let mut idx = 0;
+                while let Some(target_results) =
+                    parse_ranges(a, &mut shortest, offset).map_field_err("security results")?
+                {
+                    let Some(target) = targets.get(idx) else {
+                        return Err(Error::MismatchedTargetResult);
+                    };
 
-                        results.insert(*target, target_results);
-                        idx += 1;
-                    }
-                    Ok(results)
-                })?
-                .0;
+                    results.insert(*target, target_results);
+                    idx += 1;
+                }
+                Ok(results)
+            })?;
 
             if targets.len() != results.len() {
                 return Err(Error::MismatchedTargetResult);
