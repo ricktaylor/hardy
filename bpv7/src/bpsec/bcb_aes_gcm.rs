@@ -186,6 +186,7 @@ impl Operation {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn decrypt(
         &self,
         key: &KeyMaterial,
@@ -253,7 +254,7 @@ impl Operation {
         // Append authentication tag
         data.extend_from_slice(&self.results.0);
 
-        let key = &rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
         match self.parameters.variant {
             AesVariant::A128GCM => self.decrypt_inner(

@@ -109,8 +109,8 @@ where
             self.keys.insert(source.clone(), HashMap::new());
         }
         let inner = self.keys.get_mut(source).unwrap();
-        if !inner.contains_key(&context) {
-            inner.insert(context, (self.f)(source, context)?);
+        if let std::collections::hash_map::Entry::Vacant(e) = inner.entry(context) {
+            e.insert((self.f)(source, context)?);
         }
         Ok(inner.get(&context).unwrap().as_ref())
     }
@@ -136,6 +136,7 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    #[allow(clippy::type_complexity)]
     fn bcb_decrypt_block<F>(
         &self,
         keys: &mut KeyCache<F>,

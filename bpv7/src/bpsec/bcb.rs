@@ -23,6 +23,7 @@ impl Operation {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn decrypt(
         &self,
         key: &KeyMaterial,
