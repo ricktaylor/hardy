@@ -190,7 +190,7 @@ impl Bundle {
         let mut bcbs_to_check = Vec::new();
         let mut bibs_to_check = HashSet::new();
         let mut bcb_targets = HashSet::new();
-        let mut primary_block_protected = false;
+        let mut protects_primary_block = HashSet::new();
 
         // Parse the blocks and build a map
         while let Some((mut block, s, block_len)) =
@@ -327,7 +327,7 @@ impl Bundle {
                             },
                         )? {
                             if p {
-                                primary_block_protected = true;
+                                protects_primary_block.insert(*bcb_block_number);
                             }
                             let bib = cbor::decode::parse::<bpsec::bib::OperationSet>(&bib)
                                 .map_field_err("BPSec integrity extension block")?;
@@ -386,7 +386,7 @@ impl Bundle {
                                     },
                                 )? {
                                     if p {
-                                        primary_block_protected = true;
+                                        protects_primary_block.insert(*bcb_block_number);
                                     }
 
                                     // Do BIB verification
@@ -405,7 +405,7 @@ impl Bundle {
                                         },
                                         Some(&block_data),
                                     )? {
-                                        bib_targets.insert(0);
+                                        protects_primary_block.insert(*bcb_target_number);
                                     }
 
                                     // And parse
@@ -499,7 +499,7 @@ impl Bundle {
                 },
             )? {
                 if p {
-                    primary_block_protected = true;
+                    protects_primary_block.insert(*bcb_block_number);
                 }
 
                 match target_block.block_type {
@@ -579,7 +579,7 @@ impl Bundle {
                     return Err(bpsec::Error::InvalidBIBTarget.into());
                 }
 
-                self.bib_verify_data(
+                if self.bib_verify_data(
                     keys,
                     &op,
                     bpsec::OperationArgs {
@@ -593,7 +593,9 @@ impl Bundle {
                         bundle_data: source_data,
                     },
                     None,
-                )?;
+                )? {
+                    protects_primary_block.insert(bib_block_number);
+                }
 
                 if blocks_to_remove.contains(&bib_target_number) {
                     bib_targets_remaining -= 1;
@@ -607,12 +609,6 @@ impl Bundle {
 
             if bib_targets_remaining == 0 {
                 blocks_to_remove.insert(bib_block_number);
-            }
-        }
-
-        if let CrcType::None = self.crc_type {
-            if !primary_block_protected && !bib_targets.contains(&0) {
-                return Err(BundleError::MissingIntegrityCheck);
             }
         }
         drop(bib_targets);
@@ -652,6 +648,18 @@ impl Bundle {
         // Check bundle age exists if needed
         if self.age.is_none() && self.id.timestamp.creation_time.is_none() {
             return Err(BundleError::MissingBundleAge);
+        }
+
+        if let CrcType::None = self.crc_type {
+            if protects_primary_block.is_empty() {
+                return Err(BundleError::MissingIntegrityCheck);
+            }
+
+            // We are going to need to add a CRC to the primary block!
+            if protects_primary_block.is_subset(&blocks_to_remove) {
+                self.crc_type = CrcType::CRC32_CASTAGNOLI;
+                noncanonical_blocks.insert(0, false);
+            }
         }
 
         // Sanity filter

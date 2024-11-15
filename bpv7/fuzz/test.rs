@@ -1,17 +1,17 @@
 /*
 #[cfg(test)]
-use {hardy_bpv7::prelude::*, std::io::Write};
+use hardy_bpv7::prelude::*;
 
 #[test]
 fn test() {
-    let data = include_bytes!("artifacts/bundle/crash-a25be572b9a0cb1cf6fc3063ab3f504e49ecf7f4");
+    let data = include_bytes!("artifacts/bundle/crash-8aa61d901e8d1de6a6a3784633f9a676dbd3f358");
 
-    let mut f = |_: &Eid| Ok(None);
+    println!("Original: {:02x?}", &data);
+
+    let mut f = |_: &Eid, _| Ok(None);
 
     if let Ok(ValidBundle::Rewritten(_, data, _)) = ValidBundle::parse(data, &mut f) {
-        _ = std::fs::File::create("rewritten_bundle")
-            .unwrap()
-            .write_all(&data);
+        println!("Rewrite: {:02x?}", &data);
 
         match ValidBundle::parse(&data, &mut f) {
             Ok(ValidBundle::Valid(..)) => {}
