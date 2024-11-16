@@ -197,6 +197,21 @@ impl Bundle {
             }
             block.block.data_start += offset;
 
+            // Check for unsupported CRC type
+            if let CrcType::Unrecognised(v) = &block.block.crc_type {
+                if block.block.flags.delete_bundle_on_failure {
+                    return Err(crc::Error::InvalidType(*v).into());
+                }
+
+                if block.block.flags.delete_block_on_failure {
+                    blocks_to_remove.insert(block.number);
+                }
+
+                if block.block.flags.report_on_failure {
+                    report_unsupported = true;
+                }
+            }
+
             // Check the block
             match block.block.block_type {
                 BlockType::Primary => unreachable!(),

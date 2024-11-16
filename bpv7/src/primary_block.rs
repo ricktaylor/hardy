@@ -275,6 +275,16 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     });
                 }
 
+                // Check for unsupported CRC
+                if let CrcType::Unrecognised(crc_type) = crc_type {
+                    // Unknown CRC type
+                    return Err(BundleError::InvalidBundle {
+                        bundle: block.into_bundle().into(),
+                        reason: StatusReportReasonCode::BlockUnsupported,
+                        error: crc::Error::InvalidType(crc_type).into(),
+                    });
+                }
+
                 Ok(Some((block, s, len)))
             }
             (Err(e), source, timestamp, lifetime, fragment_info, crc_type, _) => {

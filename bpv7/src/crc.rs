@@ -29,27 +29,31 @@ pub enum Error {
 #[derive(Default, Debug, Copy, Clone)]
 pub enum CrcType {
     #[default]
-    None = 0,
-    CRC16_X25 = 1,
-    CRC32_CASTAGNOLI = 2,
+    None,
+    CRC16_X25,
+    CRC32_CASTAGNOLI,
+    Unrecognised(u64),
 }
 
-impl TryFrom<u64> for CrcType {
-    type Error = self::Error;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
+impl From<u64> for CrcType {
+    fn from(value: u64) -> Self {
         match value {
-            0 => Ok(Self::None),
-            1 => Ok(Self::CRC16_X25),
-            2 => Ok(Self::CRC32_CASTAGNOLI),
-            _ => Err(Error::InvalidType(value)),
+            0 => Self::None,
+            1 => Self::CRC16_X25,
+            2 => Self::CRC32_CASTAGNOLI,
+            v => Self::Unrecognised(v),
         }
     }
 }
 
 impl From<CrcType> for u64 {
     fn from(value: CrcType) -> Self {
-        value as u64
+        match value {
+            CrcType::None => 0,
+            CrcType::CRC16_X25 => 1,
+            CrcType::CRC32_CASTAGNOLI => 2,
+            CrcType::Unrecognised(v) => v,
+        }
     }
 }
 
@@ -64,7 +68,7 @@ impl cbor::decode::FromCbor for CrcType {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         if let Some((v, shortest, len)) = cbor::decode::try_parse::<(u64, bool, usize)>(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
+            Ok(Some((v.into(), shortest, len)))
         } else {
             Ok(None)
         }
@@ -100,6 +104,7 @@ pub fn parse_crc_value(
                     ))
                 }
             }
+            CrcType::Unrecognised(_) => Ok((0, true)),
         },
         _ => Err(cbor::decode::Error::IncorrectType(
             "Definite-length Byte String".to_string(),
@@ -136,6 +141,7 @@ pub fn parse_crc_value(
                 Ok(shortest)
             }
         }
+        (CrcType::Unrecognised(_), Some(_)) => Ok(true),
         _ => Err(Error::MissingCrc),
     }
 }
@@ -156,7 +162,7 @@ pub fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
             digest.update(&[0; 4]);
             data.extend_from_slice(&digest.finalize().to_be_bytes());
         }
-        CrcType::None => {}
+        _ => {}
     }
     data
 }
