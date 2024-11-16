@@ -178,10 +178,13 @@ impl Operation {
 
     pub fn verify(
         &self,
-        key: &KeyMaterial,
+        key: Option<&KeyMaterial>,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<bool, Error> {
+        let Some(key) = key else {
+            return Ok(args.target_number == &0 || self.parameters.flags.include_primary_block);
+        };
         let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
         match self.parameters.variant {
@@ -200,7 +203,9 @@ impl Operation {
                 args,
                 payload_data,
             ),
-            ShaVariant::Unrecognised(_) => Ok(args.target_number == &0),
+            ShaVariant::Unrecognised(_) => {
+                Ok(args.target_number == &0 || self.parameters.flags.include_primary_block)
+            }
         }
     }
 
@@ -213,8 +218,6 @@ impl Operation {
     where
         M: hmac::Mac,
     {
-        let mut primary_block_protected = false;
-
         // Build IPT
         mac.update(&cbor::encode::emit(&rfc9173::ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
@@ -225,8 +228,6 @@ impl Operation {
 
         if !matches!(args.target.block_type, BlockType::Primary) {
             if self.parameters.flags.include_primary_block {
-                primary_block_protected = true;
-
                 if !args.canonical_primary_block {
                     mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
                 } else {
@@ -258,8 +259,6 @@ impl Operation {
         }
 
         if matches!(args.target.block_type, BlockType::Primary) {
-            primary_block_protected = true;
-
             if !args.canonical_primary_block {
                 emit_data_(&mut mac, &primary_block::PrimaryBlock::emit(args.bundle));
             } else {
@@ -308,7 +307,7 @@ impl Operation {
         if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
             Err(bpsec::Error::IntegrityCheckFailed)
         } else {
-            Ok(primary_block_protected)
+            Ok(args.target_number == &0 || self.parameters.flags.include_primary_block)
         }
     }
 

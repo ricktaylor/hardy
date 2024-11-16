@@ -25,7 +25,7 @@ impl Operation {
 
     pub fn verify(
         &self,
-        key: &KeyMaterial,
+        key: Option<&KeyMaterial>,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<bool, Error> {

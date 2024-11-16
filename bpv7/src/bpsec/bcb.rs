@@ -26,12 +26,12 @@ impl Operation {
     #[allow(clippy::type_complexity)]
     pub fn decrypt(
         &self,
-        key: &KeyMaterial,
+        key: Option<&KeyMaterial>,
         args: OperationArgs,
-    ) -> Result<Option<(Box<[u8]>, bool)>, Error> {
+    ) -> Result<(Option<Box<[u8]>>, bool), Error> {
         match self {
             Self::AES_GCM(op) => op.decrypt(key, args),
-            Self::Unrecognised(..) => Ok(None),
+            Self::Unrecognised(..) => Ok((None, args.target_number == &0)),
         }
     }
 

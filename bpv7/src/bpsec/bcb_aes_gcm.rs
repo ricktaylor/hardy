@@ -189,15 +189,9 @@ impl Operation {
     #[allow(clippy::type_complexity)]
     pub fn decrypt(
         &self,
-        key: &KeyMaterial,
+        key: Option<&KeyMaterial>,
         args: OperationArgs,
-    ) -> Result<Option<(Box<[u8]>, bool)>, Error> {
-        if matches!(self.parameters.variant, AesVariant::Unrecognised(_)) {
-            return Ok(None);
-        }
-
-        let mut primary_block_protected = false;
-
+    ) -> Result<(Option<Box<[u8]>>, bool), Error> {
         let mut encoder = cbor::encode::Encoder::new();
         encoder.emit(&rfc9173::ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
@@ -207,8 +201,6 @@ impl Operation {
         });
 
         if self.parameters.flags.include_primary_block {
-            primary_block_protected = true;
-
             if !args.canonical_primary_block {
                 encoder.emit_raw(primary_block::PrimaryBlock::emit(args.bundle));
             } else {
@@ -254,36 +246,45 @@ impl Operation {
         // Append authentication tag
         data.extend_from_slice(&self.results.0);
 
+        let Some(key) = key else {
+            return Ok((None, self.parameters.flags.include_primary_block));
+        };
         let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
         match self.parameters.variant {
             AesVariant::A128GCM => self.decrypt_inner(
                 aes_gcm::Aes128Gcm::new_from_slice(&key).map_field_err("AES-128 key")?,
                 aad,
-                &mut data,
+                data,
             ),
             AesVariant::A256GCM => self.decrypt_inner(
                 aes_gcm::Aes256Gcm::new_from_slice(&key).map_field_err("AES-256 key")?,
                 aad,
-                &mut data,
+                data,
             ),
-            AesVariant::Unrecognised(_) => unreachable!(),
+            AesVariant::Unrecognised(_) => Ok((None, self.parameters.flags.include_primary_block)),
         }
-        .map(|_| Some((data.into(), primary_block_protected)))
     }
 
+    #[allow(clippy::type_complexity)]
     fn decrypt_inner<M>(
         &self,
         cipher: M,
         aad: Vec<u8>,
-        data: &mut Vec<u8>,
-    ) -> Result<(), bpsec::Error>
+        mut data: Vec<u8>,
+    ) -> Result<(Option<Box<[u8]>>, bool), Error>
     where
         M: aes_gcm::aead::AeadInPlace,
     {
         // Decrypt in-place, this results in a single data copy
         cipher
-            .decrypt_in_place(self.parameters.iv.as_ref().into(), &aad, data)
+            .decrypt_in_place(self.parameters.iv.as_ref().into(), &aad, &mut data)
+            .map(|_| {
+                (
+                    Some(data.into()),
+                    self.parameters.flags.include_primary_block,
+                )
+            })
             .map_err(|_| bpsec::Error::DecryptionFailed)
     }
 

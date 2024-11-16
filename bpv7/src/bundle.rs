@@ -142,15 +142,11 @@ impl Bundle {
         keys: &mut KeyCache<F>,
         operation: &bpsec::bcb::Operation,
         args: bpsec::OperationArgs,
-    ) -> Result<Option<(Box<[u8]>, bool)>, bpsec::Error>
+    ) -> Result<(Option<Box<[u8]>>, bool), bpsec::Error>
     where
         F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
-        if let Some(key) = keys.get(args.bpsec_source, operation.context_id())? {
-            operation.decrypt(key, args)
-        } else {
-            Ok(None)
-        }
+        operation.decrypt(keys.get(args.bpsec_source, operation.context_id())?, args)
     }
 
     fn bib_verify_data<F>(
@@ -163,11 +159,11 @@ impl Bundle {
     where
         F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
-        if let Some(key) = keys.get(args.bpsec_source, operation.context_id())? {
-            operation.verify(key, args, payload_data)
-        } else {
-            Ok(args.target_number == &0)
-        }
+        operation.verify(
+            keys.get(args.bpsec_source, operation.context_id())?,
+            args,
+            payload_data,
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -312,23 +308,28 @@ impl Bundle {
                         }
                     }
                     BlockType::BlockIntegrity => {
-                        if let Some((bib, p)) = self.bcb_decrypt_block(
-                            keys,
-                            bcb_op,
-                            bpsec::OperationArgs {
-                                bpsec_source: &bcb.source,
-                                target: bcb_target_block,
-                                target_number: bcb_target_number,
-                                source: bcb_block,
-                                source_number: bcb_block_number,
-                                bundle: self,
-                                canonical_primary_block,
-                                bundle_data: source_data,
-                            },
-                        )? {
-                            if p {
-                                protects_primary_block.insert(*bcb_block_number);
-                            }
+                        if let Some(bib) = self
+                            .bcb_decrypt_block(
+                                keys,
+                                bcb_op,
+                                bpsec::OperationArgs {
+                                    bpsec_source: &bcb.source,
+                                    target: bcb_target_block,
+                                    target_number: bcb_target_number,
+                                    source: bcb_block,
+                                    source_number: bcb_block_number,
+                                    bundle: self,
+                                    canonical_primary_block,
+                                    bundle_data: source_data,
+                                },
+                            )
+                            .map(|(v, p)| {
+                                if p {
+                                    protects_primary_block.insert(*bcb_block_number);
+                                }
+                                v
+                            })?
+                        {
                             let bib = cbor::decode::parse::<bpsec::bib::OperationSet>(&bib)
                                 .map_field_err("BPSec integrity extension block")?;
 
@@ -371,24 +372,28 @@ impl Bundle {
                                 };
 
                                 // Decrypt the BIB target
-                                if let Some((block_data, p)) = self.bcb_decrypt_block(
-                                    keys,
-                                    bcb_op,
-                                    bpsec::OperationArgs {
-                                        bpsec_source: &bcb.source,
-                                        target: bib_target_block,
-                                        target_number: &bib_target_number,
-                                        source: bcb_block,
-                                        source_number: bcb_block_number,
-                                        bundle: self,
-                                        canonical_primary_block,
-                                        bundle_data: source_data,
-                                    },
-                                )? {
-                                    if p {
-                                        protects_primary_block.insert(*bcb_block_number);
-                                    }
-
+                                if let Some(block_data) = self
+                                    .bcb_decrypt_block(
+                                        keys,
+                                        bcb_op,
+                                        bpsec::OperationArgs {
+                                            bpsec_source: &bcb.source,
+                                            target: bib_target_block,
+                                            target_number: &bib_target_number,
+                                            source: bcb_block,
+                                            source_number: bcb_block_number,
+                                            bundle: self,
+                                            canonical_primary_block,
+                                            bundle_data: source_data,
+                                        },
+                                    )
+                                    .map(|(v, p)| {
+                                        if p {
+                                            protects_primary_block.insert(*bcb_block_number);
+                                        }
+                                        v
+                                    })?
+                                {
                                     // Do BIB verification
                                     if self.bib_verify_data(
                                         keys,
@@ -484,24 +489,28 @@ impl Bundle {
             }
 
             // Confirm we can decrypt if we have keys
-            if let Some((block_data, p)) = self.bcb_decrypt_block(
-                keys,
-                op,
-                bpsec::OperationArgs {
-                    bpsec_source: source,
-                    target: target_block,
-                    target_number,
-                    source: bcb_block,
-                    source_number: bcb_block_number,
-                    bundle: self,
-                    canonical_primary_block,
-                    bundle_data: source_data,
-                },
-            )? {
-                if p {
-                    protects_primary_block.insert(*bcb_block_number);
-                }
-
+            if let Some(block_data) = self
+                .bcb_decrypt_block(
+                    keys,
+                    op,
+                    bpsec::OperationArgs {
+                        bpsec_source: source,
+                        target: target_block,
+                        target_number,
+                        source: bcb_block,
+                        source_number: bcb_block_number,
+                        bundle: self,
+                        canonical_primary_block,
+                        bundle_data: source_data,
+                    },
+                )
+                .map(|(v, p)| {
+                    if p {
+                        protects_primary_block.insert(*bcb_block_number);
+                    }
+                    v
+                })?
+            {
                 match target_block.block_type {
                     BlockType::PreviousNode => {
                         self.previous_node = Some(
