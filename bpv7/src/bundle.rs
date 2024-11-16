@@ -660,14 +660,10 @@ impl Bundle {
         }
 
         if let CrcType::None = self.crc_type {
-            if protects_primary_block.is_empty() {
+            if protects_primary_block.is_empty()
+                || protects_primary_block.is_subset(&blocks_to_remove)
+            {
                 return Err(BundleError::MissingIntegrityCheck);
-            }
-
-            // We are going to need to add a CRC to the primary block!
-            if protects_primary_block.is_subset(&blocks_to_remove) {
-                self.crc_type = CrcType::CRC32_CASTAGNOLI;
-                noncanonical_blocks.insert(0, false);
             }
         }
 
