@@ -12,7 +12,7 @@ fn compile_proto(proto: impl AsRef<Path>) -> std::io::Result<()> {
     tonic_build::configure()
         .bytes(["."])
         .protoc_arg("--experimental_allow_proto3_optional") // for older systems
-        .compile(&[proto_path], &[proto_dir])
+        .compile_protos(&[proto_path], &[proto_dir])
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

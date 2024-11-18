@@ -1,9 +1,12 @@
 use super::*;
-use notify::{
-    event::{CreateKind, RemoveKind},
-    EventKind, RecursiveMode, Watcher,
+use notify_debouncer_full::{
+    new_debouncer,
+    notify::{
+        event::{CreateKind, RemoveKind},
+        EventKind, RecursiveMode,
+    },
+    DebouncedEvent,
 };
-use notify_debouncer_full::{new_debouncer, DebouncedEvent};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -115,13 +118,8 @@ impl StaticRoutes {
             .trace_expect("Failed to create file watcher");
 
             debouncer
-                .watcher()
                 .watch(&routes_dir, RecursiveMode::NonRecursive)
                 .trace_expect("Failed to watch file");
-
-            debouncer
-                .cache()
-                .add_root(&routes_dir, RecursiveMode::NonRecursive);
 
             loop {
                 tokio::select! {
