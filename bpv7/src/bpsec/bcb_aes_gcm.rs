@@ -139,7 +139,7 @@ impl cbor::encode::ToCbor for &Parameters {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Results(Box<[u8]>);
 
 impl Results {
@@ -148,19 +148,24 @@ impl Results {
         data: &[u8],
     ) -> Result<(Self, bool), bpsec::Error> {
         let mut shortest = true;
-        let mut r = Self::default();
+        let mut r = None;
         for (id, range) in results {
             match id {
                 1 => {
-                    r.0 = parse::decode_box(range, data).map(|(v, s)| {
+                    r = Some(parse::decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
-                    })?;
+                    })?);
                 }
-                _ => return Err(bpsec::Error::InvalidContextResultId(id)),
+                _ => return Err(bpsec::Error::InvalidContextResult(id)),
             }
         }
-        Ok((r, shortest))
+
+        if let Some(r) = r {
+            Ok((Self(r), shortest))
+        } else {
+            Err(bpsec::Error::InvalidContextResult(1))
+        }
     }
 }
 

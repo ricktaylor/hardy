@@ -30,7 +30,10 @@ pub enum Error {
     MissingContextParameter(u64),
 
     #[error("Invalid security context result id {0}")]
-    InvalidContextResultId(u64),
+    InvalidContextResult(u64),
+
+    #[error("Missing security context result id {0}")]
+    MissingContextResult(u64),
 
     #[error("BCBs must have the 'Block must be replicated in every fragment' flag set if one of the targets is the payload block")]
     BCBMustReplicate,
