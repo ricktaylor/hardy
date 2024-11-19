@@ -330,9 +330,9 @@ impl Bundle {
                                 bpsec::OperationArgs {
                                     bpsec_source: &bcb.source,
                                     target: bcb_target_block,
-                                    target_number: bcb_target_number,
+                                    target_number: *bcb_target_number,
                                     source: bcb_block,
-                                    source_number: bcb_block_number,
+                                    source_number: *bcb_block_number,
                                     bundle: self,
                                     canonical_primary_block,
                                     bundle_data: source_data,
@@ -394,9 +394,9 @@ impl Bundle {
                                         bpsec::OperationArgs {
                                             bpsec_source: &bcb.source,
                                             target: bib_target_block,
-                                            target_number: &bib_target_number,
+                                            target_number: bib_target_number,
                                             source: bcb_block,
-                                            source_number: bcb_block_number,
+                                            source_number: *bcb_block_number,
                                             bundle: self,
                                             canonical_primary_block,
                                             bundle_data: source_data,
@@ -416,9 +416,9 @@ impl Bundle {
                                         bpsec::OperationArgs {
                                             bpsec_source: &bib.source,
                                             target: bib_target_block,
-                                            target_number: &bib_target_number,
+                                            target_number: bib_target_number,
                                             source: bcb_target_block,
-                                            source_number: bcb_target_number,
+                                            source_number: *bcb_target_number,
                                             bundle: self,
                                             canonical_primary_block,
                                             bundle_data: source_data,
@@ -478,12 +478,12 @@ impl Bundle {
                     bcb_targets_remaining -= 1;
                 } else if add_target {
                     bcbs.push((
-                        bcb_target_number,
+                        *bcb_target_number,
                         bcb_target_block,
                         &bcb.source,
                         bcb_op,
                         bcb_block,
-                        bcb_block_number,
+                        *bcb_block_number,
                     ));
                 }
             }
@@ -499,7 +499,7 @@ impl Bundle {
         // Check non-BIB valid BCB targets next
         for (target_number, target_block, source, op, bcb_block, bcb_block_number) in bcbs {
             // Skip blocks we have already processed as BIB targets
-            if bib_targets.contains(target_number) {
+            if bib_targets.contains(&target_number) {
                 continue;
             }
 
@@ -511,7 +511,7 @@ impl Bundle {
                     bpsec::OperationArgs {
                         bpsec_source: source,
                         target: target_block,
-                        target_number,
+                        target_number: target_number,
                         source: bcb_block,
                         source_number: bcb_block_number,
                         bundle: self,
@@ -521,7 +521,7 @@ impl Bundle {
                 )
                 .map(|(v, p)| {
                     if p {
-                        protects_primary_block.insert(*bcb_block_number);
+                        protects_primary_block.insert(bcb_block_number);
                     }
                     v
                 })?
@@ -548,11 +548,11 @@ impl Bundle {
                 blocks_to_check.remove(&target_block.block_type);
             }
 
-            if blocks_to_remove.contains(target_number) {
-                if let Some(remaining) = bcb_target_counts.get_mut(bcb_block_number) {
+            if blocks_to_remove.contains(&target_number) {
+                if let Some(remaining) = bcb_target_counts.get_mut(&bcb_block_number) {
                     *remaining -= 1;
                     if *remaining == 0 {
-                        blocks_to_remove.insert(*bcb_block_number);
+                        blocks_to_remove.insert(bcb_block_number);
                     }
                 }
             }
@@ -609,9 +609,9 @@ impl Bundle {
                     bpsec::OperationArgs {
                         bpsec_source: &bib.source,
                         target: bib_target_block,
-                        target_number: &bib_target_number,
+                        target_number: bib_target_number,
                         source: bib_block,
-                        source_number: &bib_block_number,
+                        source_number: bib_block_number,
                         bundle: self,
                         canonical_primary_block,
                         bundle_data: source_data,

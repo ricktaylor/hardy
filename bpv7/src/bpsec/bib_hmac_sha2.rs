@@ -188,7 +188,7 @@ impl Operation {
         payload_data: Option<&[u8]>,
     ) -> Result<bool, Error> {
         let Some(key) = key else {
-            return Ok(args.target_number == &0 || self.parameters.flags.include_primary_block);
+            return Ok(args.target_number == 0 || self.parameters.flags.include_primary_block);
         };
         let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
@@ -209,7 +209,7 @@ impl Operation {
                 payload_data,
             ),
             ShaVariant::Unrecognised(_) => {
-                Ok(args.target_number == &0 || self.parameters.flags.include_primary_block)
+                Ok(args.target_number == 0 || self.parameters.flags.include_primary_block)
             }
         }
     }
@@ -249,7 +249,7 @@ impl Operation {
             if self.parameters.flags.include_target_header {
                 let mut encoder = cbor::encode::Encoder::new();
                 encoder.emit(args.target.block_type);
-                encoder.emit(*args.target_number);
+                encoder.emit(args.target_number);
                 encoder.emit(&args.target.flags);
                 mac.update(&encoder.build());
             }
@@ -258,7 +258,7 @@ impl Operation {
         if self.parameters.flags.include_security_header {
             let mut encoder = cbor::encode::Encoder::new();
             encoder.emit(args.source.block_type);
-            encoder.emit(*args.source_number);
+            encoder.emit(args.source_number);
             encoder.emit(&args.source.flags);
             mac.update(&encoder.build());
         }
@@ -312,7 +312,7 @@ impl Operation {
         if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
             Err(bpsec::Error::IntegrityCheckFailed)
         } else {
-            Ok(args.target_number == &0 || self.parameters.flags.include_primary_block)
+            Ok(args.target_number == 0 || self.parameters.flags.include_primary_block)
         }
     }
 

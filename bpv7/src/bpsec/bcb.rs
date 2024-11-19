@@ -31,7 +31,7 @@ impl Operation {
     ) -> Result<(Option<Box<[u8]>>, bool), Error> {
         match self {
             Self::AES_GCM(op) => op.decrypt(key, args),
-            Self::Unrecognised(..) => Ok((None, args.target_number == &0)),
+            Self::Unrecognised(..) => Ok((None, args.target_number == 0)),
         }
     }
 

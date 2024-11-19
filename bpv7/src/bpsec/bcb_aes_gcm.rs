@@ -221,13 +221,13 @@ impl Operation {
 
         if self.parameters.flags.include_target_header {
             encoder.emit(args.target.block_type);
-            encoder.emit(*args.target_number);
+            encoder.emit(args.target_number);
             encoder.emit(&args.target.flags);
         }
 
         if self.parameters.flags.include_security_header {
             encoder.emit(args.source.block_type);
-            encoder.emit(*args.source_number);
+            encoder.emit(args.source_number);
             encoder.emit(&args.source.flags);
         }
         let aad = encoder.build();

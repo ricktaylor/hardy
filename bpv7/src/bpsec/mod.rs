@@ -76,9 +76,9 @@ pub enum KeyMaterial {
 pub struct OperationArgs<'a> {
     pub bpsec_source: &'a Eid,
     pub target: &'a block::Block,
-    pub target_number: &'a u64,
+    pub target_number: u64,
     pub source: &'a block::Block,
-    pub source_number: &'a u64,
+    pub source_number: u64,
     pub bundle: &'a Bundle,
     pub canonical_primary_block: bool,
     pub bundle_data: &'a [u8],
