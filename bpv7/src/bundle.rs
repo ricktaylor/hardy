@@ -670,6 +670,7 @@ impl Bundle {
                     .map_field_err("Hop Count Block")?,
                 _ => true,
             } && !noncanonical_blocks.contains_key(block_number)
+                && !matches!(block.crc_type, CrcType::Unrecognised(_))
             {
                 noncanonical_blocks.insert(*block_number, false);
             }

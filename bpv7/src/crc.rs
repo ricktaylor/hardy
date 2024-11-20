@@ -148,6 +148,7 @@ pub fn parse_crc_value(
 
 pub fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
     match crc_type {
+        CrcType::None => {}
         CrcType::CRC16_X25 => {
             data.push(0x42);
             let mut digest = X25.digest();
@@ -162,7 +163,7 @@ pub fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
             digest.update(&[0; 4]);
             data.extend_from_slice(&digest.finalize().to_be_bytes());
         }
-        _ => {}
+        _ => unreachable!(),
     }
     data
 }
