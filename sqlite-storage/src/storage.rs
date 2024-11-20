@@ -350,8 +350,10 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
            23: bundle_blocks.block_flags,
            24: bundle_blocks.block_crc_type,
            25: bundle_blocks.data_start,
-           26: bundle_blocks.payload_offset,
-           27: bundle_blocks.data_len
+           26: bundle_blocks.data_len,
+           27: bundle_blocks.payload_offset,
+           28: bundle_blocks.payload_len,
+           29: bundle_blocks.bcb,
     */
 
     while let Some(mut row) = rows.next()? {
@@ -414,8 +416,10 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
                 flags: as_u64(row.get(23)?).into(),
                 crc_type: as_u64(row.get(24)?).into(),
                 data_start: as_u64(row.get(25)?) as usize,
-                payload_offset: as_u64(row.get(26)?) as usize,
-                data_len: as_u64(row.get(27)?) as usize,
+                data_len: as_u64(row.get(26)?) as usize,
+                payload_offset: as_u64(row.get(27)?) as usize,
+                payload_len: as_u64(row.get(28)?) as usize,
+                bcb: row.get::<_, Option<i64>>(29)?.map(as_u64),
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -476,8 +480,10 @@ impl storage::MetadataStorage for Storage {
                     block_flags,
                     block_crc_type,
                     data_start,
+                    data_len,
                     payload_offset,
-                    data_len
+                    payload_len,
+                    bcb
                 FROM bundles
                 JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
                 WHERE 
@@ -566,8 +572,10 @@ impl storage::MetadataStorage for Storage {
                     flags: as_u64(row.get(23)?).into(),
                     crc_type: as_u64(row.get(24)?).into(),
                     data_start: as_u64(row.get(25)?) as usize,
-                    payload_offset: as_u64(row.get(26)?) as usize,
-                    data_len: as_u64(row.get(27)?) as usize,
+                    data_len: as_u64(row.get(26)?) as usize,
+                    payload_offset: as_u64(row.get(27)?) as usize,
+                    payload_len: as_u64(row.get(28)?) as usize,
+                    bcb: row.get::<_, Option<i64>>(29)?.map(as_u64),
                 };
 
                 if bundle.blocks.insert(block_number, block).is_some() {
@@ -679,8 +687,10 @@ impl storage::MetadataStorage for Storage {
                             block_flags,
                             block_crc_type,
                             data_start,
+                            data_len
                             payload_offset,
-                            data_len)
+                            payload_len,
+                            bcb)
                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8);"#,
                 )?;
                 for (block_num, block) in &bundle.blocks {
@@ -691,8 +701,10 @@ impl storage::MetadataStorage for Storage {
                         as_i64(&block.flags),
                         as_i64(block.crc_type),
                         as_i64(block.data_start as u64),
-                        as_i64(block.payload_offset as u64),
                         as_i64(block.data_len as u64),
+                        as_i64(block.payload_offset as u64),
+                        as_i64(block.payload_len as u64),
+                        block.bcb.map(as_i64),
                     ))?;
                 }
             }
@@ -955,8 +967,10 @@ impl storage::MetadataStorage for Storage {
                         block_flags,
                         block_crc_type,
                         data_start,
+                        data_len,
                         payload_offset,
-                        data_len
+                        payload_len,
+                        bcb
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
                     WHERE status IN (?1,?2) AND unixepoch(wait_until) <= unixepoch(?3);"#,
@@ -1011,8 +1025,10 @@ impl storage::MetadataStorage for Storage {
                             block_flags,
                             block_crc_type,
                             data_start,
+                            data_len,
                             payload_offset,
-                            data_len
+                            payload_len,
+                            bcb
                         FROM subset
                         JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
                 )?
@@ -1059,8 +1075,10 @@ impl storage::MetadataStorage for Storage {
                         block_flags,
                         block_crc_type,
                         data_start,
+                        data_len,
                         payload_offset,
-                        data_len
+                        payload_len,
+                        bcb
                     FROM bundles
                     JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
                     WHERE status = ?1 AND destination = ?2;"#,

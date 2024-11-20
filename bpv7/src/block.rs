@@ -7,13 +7,16 @@ pub struct Block {
     pub flags: BlockFlags,
     pub crc_type: CrcType,
     pub data_start: usize,
-    pub payload_offset: usize,
     pub data_len: usize,
+    pub payload_offset: usize,
+    pub payload_len: usize,
+    pub bcb: Option<u64>,
 }
 
 impl Block {
     pub fn payload<'a>(&self, data: &'a [u8]) -> &'a [u8] {
-        &data[self.data_start + self.payload_offset..self.data_start + self.data_len]
+        &data[self.data_start + self.payload_offset
+            ..self.data_start + self.payload_offset + self.payload_len]
     }
 
     pub fn parse_payload<T>(
@@ -67,7 +70,7 @@ impl Block {
             ),
         );
         self.data_start = array.offset();
-        self.data_len = block_data.len();
+        self.payload_len = block_data.len();
         array.emit_raw(block_data)
     }
 
@@ -95,10 +98,14 @@ impl Block {
         .map(|_| ())
     }
 
-    pub fn copy(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
+    pub fn copy_mut(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
         let offset = array.offset();
         array.emit_raw_slice(&source_data[self.data_start..self.data_start + self.data_len]);
         self.data_start = offset;
+    }
+
+    pub fn copy(&self, source_data: &[u8], array: &mut cbor::encode::Array) {
+        array.emit_raw_slice(&source_data[self.data_start..self.data_start + self.data_len]);
     }
 }
 
@@ -181,6 +188,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                     )),
                 }
             })?;
+            let payload_len = block.offset() - payload_offset;
 
             // Check CRC
             shortest = crc::parse_crc_value(data, block, crc_type)? && shortest;
@@ -193,8 +201,10 @@ impl cbor::decode::FromCbor for BlockWithNumber {
                         flags,
                         crc_type,
                         data_start: 0,
-                        payload_offset,
                         data_len: 0,
+                        payload_offset,
+                        payload_len,
+                        bcb: None,
                     },
                 },
                 shortest,

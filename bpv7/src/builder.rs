@@ -100,7 +100,7 @@ impl Builder {
 
         let data = cbor::encode::emit_array(None, |a| {
             // Emit primary block
-            bundle.emit_primary_block(a);
+            bundle.emit_primary_block(a, None);
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {
@@ -225,8 +225,10 @@ impl BlockTemplate {
             flags: self.flags,
             crc_type: self.crc_type,
             data_start: array.offset(),
-            payload_offset: 0,
             data_len: 0,
+            payload_offset: 0,
+            payload_len: 0,
+            bcb: None,
         };
         block.emit(block_number, &self.data, array);
         block

@@ -185,7 +185,7 @@ impl Bundle {
         let mut report_unsupported = false;
         let mut bcbs_to_check = Vec::new();
         let mut bibs_to_check = HashSet::new();
-        let mut bcb_targets = HashSet::new();
+        let mut bcb_targets = HashMap::new();
         let mut protects_primary_block = HashSet::new();
 
         // Parse the blocks and build a map
@@ -299,7 +299,10 @@ impl Bundle {
             let bcb_block = self.blocks.get(bcb_block_number).unwrap();
             let mut bcb_targets_remaining = bcb.operations.len();
             for (bcb_target_number, bcb_op) in &bcb.operations {
-                if !bcb_targets.insert(bcb_target_number) {
+                if bcb_targets
+                    .insert(*bcb_target_number, *bcb_block_number)
+                    .is_some()
+                {
                     return Err(bpsec::Error::DuplicateOpTarget.into());
                 }
                 let Some(bcb_target_block) = self.blocks.get(bcb_target_number) else {
@@ -494,7 +497,6 @@ impl Bundle {
                 bcb_target_counts.insert(*bcb_block_number, bcb_targets_remaining);
             }
         }
-        drop(bcb_targets);
 
         // Check non-BIB valid BCB targets next
         for (target_number, target_block, source, op, bcb_block, bcb_block_number) in bcbs {
@@ -511,7 +513,7 @@ impl Bundle {
                     bpsec::OperationArgs {
                         bpsec_source: source,
                         target: target_block,
-                        target_number: target_number,
+                        target_number,
                         source: bcb_block,
                         source_number: bcb_block_number,
                         bundle: self,
@@ -557,7 +559,11 @@ impl Bundle {
                 }
             }
         }
-        drop(bcbs_to_check);
+
+        // Record the BCB that targets this block
+        for (bcb_target, bcb) in bcb_targets {
+            self.blocks.get_mut(&bcb_target).unwrap().bcb = Some(bcb);
+        }
 
         // Check remaining BIB targets next
         for bib_block_number in bibs_to_check {
@@ -686,10 +692,10 @@ impl Bundle {
         Ok((noncanonical_blocks, blocks_to_remove, report_unsupported))
     }
 
-    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
+    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array, bcb: Option<u64>) {
         let data_start = array.offset();
         let data = primary_block::PrimaryBlock::emit(self);
-        let data_len = data.len();
+        let payload_len = data.len();
         array.emit_raw(data);
 
         self.blocks.insert(
@@ -704,8 +710,10 @@ impl Bundle {
                 },
                 crc_type: self.crc_type,
                 data_start,
+                data_len: payload_len,
                 payload_offset: 0,
-                data_len,
+                payload_len,
+                bcb,
             },
         );
     }
@@ -719,7 +727,10 @@ impl Bundle {
         cbor::encode::emit_array(None, |a| {
             // Emit primary block
             if noncanonical_blocks.remove(&0).is_some() {
-                self.emit_primary_block(a);
+                self.emit_primary_block(
+                    a,
+                    self.blocks.get(&0).expect("Missing primary block!").bcb,
+                );
             } else {
                 self.blocks
                     .get_mut(&0)
@@ -783,7 +794,7 @@ impl Bundle {
             if noncanonical_blocks.remove(&1).is_some() {
                 payload_block.rewrite(1, a, source_data).unwrap();
             } else {
-                payload_block.copy(source_data, a);
+                payload_block.copy_mut(source_data, a);
             }
             self.blocks.insert(1, payload_block);
         })
@@ -848,8 +859,10 @@ impl ValidBundle {
                     },
                     crc_type: bundle.crc_type,
                     data_start: block_start,
-                    payload_offset: 0,
                     data_len: block_len,
+                    payload_offset: 0,
+                    payload_len: block_len,
+                    bcb: None,
                 },
             );
 

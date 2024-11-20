@@ -34,8 +34,10 @@ CREATE TABLE bundle_blocks (
     block_flags INTEGER NOT NULL,
     block_crc_type INTEGER NOT NULL,
     data_start INTEGER NOT NULL,
+    data_len INTEGER NOT NULL,
     payload_offset INTEGER NOT NULL,
-    data_len INTEGER NOT NULL
+    payload_len INTEGER NOT NULL,
+    bcb INTEGER
 ) STRICT;
 
 CREATE TABLE unconfirmed_bundles (

@@ -112,14 +112,11 @@ impl<'a> Editor<'a> {
     ) {
         match template {
             BlockTemplate::Keep(_) => {
-                let block = self
-                    .original
+                self.original
                     .blocks
                     .get(&block_number)
-                    .expect("Mismatched block in bundle!");
-                array.emit_raw_slice(
-                    &self.source_data[block.data_start..block.data_start + block.data_len],
-                );
+                    .expect("Mismatched block in bundle!")
+                    .copy(self.source_data, array);
             }
             BlockTemplate::Add(template) => {
                 template.build(block_number, array);
