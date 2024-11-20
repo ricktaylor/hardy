@@ -98,9 +98,9 @@ impl Block {
         .map(|_| ())
     }
 
-    pub fn copy_mut(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
+    pub fn write(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
         let offset = array.offset();
-        array.emit_raw_slice(&source_data[self.data_start..self.data_start + self.data_len]);
+        self.copy(source_data, array);
         self.data_start = offset;
     }
 

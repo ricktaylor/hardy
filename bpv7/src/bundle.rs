@@ -794,7 +794,7 @@ impl Bundle {
             if noncanonical_blocks.remove(&1).is_some() {
                 payload_block.rewrite(1, a, source_data).unwrap();
             } else {
-                payload_block.copy_mut(source_data, a);
+                payload_block.write(source_data, a);
             }
             self.blocks.insert(1, payload_block);
         })
