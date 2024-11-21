@@ -239,7 +239,7 @@ impl Bundle {
                         .block
                         .parse_payload::<bpsec::bcb::OperationSet>(source_data)
                         .map(|(v, s)| {
-                            if !s {
+                            if !s && !matches!(block.block.crc_type, CrcType::Unrecognised(_)) {
                                 noncanonical_blocks.insert(block.number, false);
                             }
                             v
@@ -572,7 +572,7 @@ impl Bundle {
             let bib = bib_block
                 .parse_payload::<bpsec::bib::OperationSet>(source_data)
                 .map(|(v, s)| {
-                    if !s {
+                    if !s && !matches!(bib_block.crc_type, CrcType::Unrecognised(_)) {
                         noncanonical_blocks.insert(bib_block_number, false);
                     }
                     v
