@@ -151,6 +151,7 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    #[allow(clippy::type_complexity)]
     fn bcb_decrypt_block(
         &self,
         keys: &mut impl KeyCache,
