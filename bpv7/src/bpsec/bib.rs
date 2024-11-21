@@ -28,10 +28,13 @@ impl Operation {
         key: Option<&KeyMaterial>,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<bool, Error> {
+    ) -> Result<OperationResult, Error> {
         match self {
             Self::HMAC_SHA2(o) => o.verify(key, args, payload_data),
-            Self::Unrecognised(..) => Ok(args.target_number == 0),
+            Self::Unrecognised(..) => Ok(OperationResult {
+                protects_primary_block: args.target_number == 0,
+                can_sign: false,
+            }),
         }
     }
 
@@ -48,6 +51,11 @@ impl Operation {
             Self::Unrecognised(_, o) => o.emit_result(array, source_data),
         }
     }
+}
+
+pub struct OperationResult {
+    pub protects_primary_block: bool,
+    pub can_sign: bool,
 }
 
 pub struct OperationSet {

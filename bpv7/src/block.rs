@@ -211,11 +211,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             ))
         })
         .map(|o| {
-            o.map(|((mut block, mut shortest), len)| {
-                if let CrcType::Unrecognised(_) = &block.block.crc_type {
-                    // The CRC stops us canonicalising this block
-                    shortest = true;
-                }
+            o.map(|((mut block, shortest), len)| {
                 block.block.data_len = len;
                 (block, shortest, len)
             })

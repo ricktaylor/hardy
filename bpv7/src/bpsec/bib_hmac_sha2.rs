@@ -158,10 +158,7 @@ impl cbor::encode::ToCbor for &Results {
     }
 }
 
-fn emit_data_<M>(mac: &mut M, data: &[u8])
-where
-    M: hmac::Mac,
-{
+fn emit_data(mac: &mut impl hmac::Mac, data: &[u8]) {
     let mut header = cbor::encode::emit(data.len());
     if let Some(m) = header.first_mut() {
         *m |= 2 << 5;
@@ -186,9 +183,13 @@ impl Operation {
         key: Option<&KeyMaterial>,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<bool, Error> {
+    ) -> Result<bib::OperationResult, Error> {
         let Some(key) = key else {
-            return Ok(args.target_number == 0 || self.parameters.flags.include_primary_block);
+            return Ok(bib::OperationResult {
+                protects_primary_block: args.target_number == 0
+                    || self.parameters.flags.include_primary_block,
+                can_sign: false,
+            });
         };
         let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
@@ -208,9 +209,11 @@ impl Operation {
                 args,
                 payload_data,
             ),
-            ShaVariant::Unrecognised(_) => {
-                Ok(args.target_number == 0 || self.parameters.flags.include_primary_block)
-            }
+            ShaVariant::Unrecognised(_) => Ok(bib::OperationResult {
+                protects_primary_block: args.target_number == 0
+                    || self.parameters.flags.include_primary_block,
+                can_sign: false,
+            }),
         }
     }
 
@@ -219,7 +222,7 @@ impl Operation {
         mut mac: M,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<bool, Error>
+    ) -> Result<bib::OperationResult, Error>
     where
         M: hmac::Mac,
     {
@@ -265,9 +268,9 @@ impl Operation {
 
         if matches!(args.target.block_type, BlockType::Primary) {
             if !args.canonical_primary_block {
-                emit_data_(&mut mac, &primary_block::PrimaryBlock::emit(args.bundle));
+                emit_data(&mut mac, &primary_block::PrimaryBlock::emit(args.bundle));
             } else {
-                emit_data_(
+                emit_data(
                     &mut mac,
                     args.bundle
                         .blocks
@@ -277,7 +280,7 @@ impl Operation {
                 );
             }
         } else if let Some(payload_data) = payload_data {
-            emit_data_(&mut mac, payload_data);
+            emit_data(&mut mac, payload_data);
         } else {
             let payload_data = args.target.payload(args.bundle_data);
             cbor::decode::parse_value(payload_data, |value, s, tags| {
@@ -301,7 +304,7 @@ impl Operation {
                         mac.update(payload_data);
                     }
                     cbor::decode::Value::Bytes(data) => {
-                        emit_data_(&mut mac, data);
+                        emit_data(&mut mac, data);
                     }
                     _ => unreachable!(),
                 }
@@ -312,7 +315,11 @@ impl Operation {
         if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
             Err(bpsec::Error::IntegrityCheckFailed)
         } else {
-            Ok(args.target_number == 0 || self.parameters.flags.include_primary_block)
+            Ok(bib::OperationResult {
+                protects_primary_block: args.target_number == 0
+                    || self.parameters.flags.include_primary_block,
+                can_sign: true,
+            })
         }
     }
 

@@ -23,15 +23,18 @@ impl Operation {
         }
     }
 
-    #[allow(clippy::type_complexity)]
     pub fn decrypt(
         &self,
         key: Option<&KeyMaterial>,
         args: OperationArgs,
-    ) -> Result<(Option<Box<[u8]>>, bool), Error> {
+    ) -> Result<OperationResult, Error> {
         match self {
             Self::AES_GCM(op) => op.decrypt(key, args),
-            Self::Unrecognised(..) => Ok((None, args.target_number == 0)),
+            Self::Unrecognised(..) => Ok(OperationResult {
+                plaintext: None,
+                protects_primary_block: args.target_number == 0,
+                can_encrypt: false,
+            }),
         }
     }
 
@@ -48,6 +51,12 @@ impl Operation {
             Self::Unrecognised(_, o) => o.emit_result(array, source_data),
         }
     }
+}
+
+pub struct OperationResult {
+    pub plaintext: Option<Box<[u8]>>,
+    pub protects_primary_block: bool,
+    pub can_encrypt: bool,
 }
 
 pub struct OperationSet {
