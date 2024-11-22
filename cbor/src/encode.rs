@@ -274,6 +274,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_raw_slice(data);
     }
 
+    /// Append an additional slice of data, without incrementing the field count
+    pub fn append_raw_slice(&mut self, data: &[u8]) {
+        self.encoder.emit_raw_slice(data);
+    }
+
     pub fn emit<T>(&mut self, value: T)
     where
         Self: Sized,

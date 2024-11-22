@@ -42,7 +42,10 @@ impl Block {
         .map(|((v, s), len)| (v, s && len == payload_data.len()))
     }
 
-    pub fn emit(&mut self, block_number: u64, data: &[u8], array: &mut cbor::encode::Array) {
+    fn emit_inner<F>(&mut self, block_number: u64, array: &mut cbor::encode::Array, f: F)
+    where
+        F: FnOnce(&mut cbor::encode::Array),
+    {
         let block_data = crc::append_crc_value(
             self.crc_type,
             cbor::encode::emit_array(
@@ -59,7 +62,7 @@ impl Block {
 
                     // Payload
                     self.payload_offset = a.offset();
-                    a.emit(data);
+                    f(a);
 
                     // CRC
                     if let CrcType::None = self.crc_type {
@@ -74,6 +77,10 @@ impl Block {
         array.emit_raw(block_data)
     }
 
+    pub fn emit(&mut self, block_number: u64, data: &[u8], array: &mut cbor::encode::Array) {
+        self.emit_inner(block_number, array, |a| a.emit(data));
+    }
+
     pub fn rewrite(
         &mut self,
         block_number: u64,
@@ -82,15 +89,21 @@ impl Block {
     ) -> Result<(), cbor::decode::Error> {
         cbor::decode::parse_value(self.payload(source_data), |value, _, _| {
             match value {
-                cbor::decode::Value::Bytes(d) => self.emit(block_number, d, array),
-                cbor::decode::Value::ByteStream(d) => self.emit(
-                    block_number,
-                    &d.iter().fold(Vec::new(), |mut data, d| {
-                        data.extend(*d);
-                        data
-                    }),
-                    array,
-                ),
+                cbor::decode::Value::Bytes(data) => self.emit(block_number, data, array),
+                cbor::decode::Value::ByteStream(data) => {
+                    // This is horrible, but removes a potentially large data copy
+                    let len = data.iter().fold(0u64, |len, d| len + d.len() as u64);
+                    let mut header = cbor::encode::emit(len);
+                    if let Some(m) = header.first_mut() {
+                        *m |= 2 << 5;
+                    }
+                    self.emit_inner(block_number, array, |a| {
+                        a.emit_raw(header);
+                        for d in data {
+                            a.append_raw_slice(*d);
+                        }
+                    })
+                }
                 _ => unreachable!(),
             };
             Ok(())
