@@ -236,7 +236,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.encoder.offset() - self.start
     }
 
-    fn check_bounds(&mut self) -> &mut Encoder {
+    fn next_field(&mut self) -> &mut Encoder {
         self.idx += 1;
         match self.count {
             Some(count) if self.idx > count => {
@@ -260,18 +260,18 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     pub fn skip_value(&mut self) {
-        self.check_bounds();
+        self.next_field();
     }
 
     pub fn emit_raw<I>(&mut self, data: I)
     where
         I: IntoIterator<Item = u8>,
     {
-        self.check_bounds().emit_raw(data)
+        self.next_field().emit_raw(data)
     }
 
     pub fn emit_raw_slice(&mut self, data: &[u8]) {
-        self.check_bounds().emit_raw_slice(data);
+        self.next_field().emit_raw_slice(data);
     }
 
     pub fn emit<T>(&mut self, value: T)
@@ -279,7 +279,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         Self: Sized,
         T: ToCbor,
     {
-        self.check_bounds().emit(value)
+        self.next_field().emit(value)
     }
 
     pub fn emit_tagged<T, I, U>(&mut self, value: T, tags: I)
@@ -288,14 +288,14 @@ impl<'a, const D: usize> Sequence<'a, D> {
         I: IntoIterator<Item = U>,
         U: num_traits::ToPrimitive,
     {
-        self.check_bounds().emit_tagged(value, tags)
+        self.next_field().emit_tagged(value, tags)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut ByteStream),
     {
-        self.check_bounds().emit_byte_stream(f)
+        self.next_field().emit_byte_stream(f)
     }
 
     pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
@@ -304,14 +304,14 @@ impl<'a, const D: usize> Sequence<'a, D> {
         I: IntoIterator<Item = T>,
         T: num_traits::ToPrimitive,
     {
-        self.check_bounds().emit_byte_stream_tagged(tags, f)
+        self.next_field().emit_byte_stream_tagged(tags, f)
     }
 
     pub fn emit_text_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut TextStream),
     {
-        self.check_bounds().emit_text_stream(f)
+        self.next_field().emit_text_stream(f)
     }
 
     pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
@@ -320,14 +320,14 @@ impl<'a, const D: usize> Sequence<'a, D> {
         I: IntoIterator<Item = T>,
         T: num_traits::ToPrimitive,
     {
-        self.check_bounds().emit_text_stream_tagged(tags, f)
+        self.next_field().emit_text_stream_tagged(tags, f)
     }
 
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Array),
     {
-        self.check_bounds().emit_array(count, f)
+        self.next_field().emit_array(count, f)
     }
 
     pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
@@ -336,14 +336,14 @@ impl<'a, const D: usize> Sequence<'a, D> {
         I: IntoIterator<Item = T>,
         T: num_traits::ToPrimitive,
     {
-        self.check_bounds().emit_array_tagged(count, tags, f)
+        self.next_field().emit_array_tagged(count, tags, f)
     }
 
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
     {
-        self.check_bounds().emit_map(count, f)
+        self.next_field().emit_map(count, f)
     }
 
     pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
@@ -352,7 +352,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         I: IntoIterator<Item = T>,
         T: num_traits::ToPrimitive,
     {
-        self.check_bounds().emit_map_tagged(count, tags, f)
+        self.next_field().emit_map_tagged(count, tags, f)
     }
 }
 
