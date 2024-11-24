@@ -100,7 +100,7 @@ impl Block {
                     self.emit_inner(block_number, array, |a| {
                         a.emit_raw(header);
                         for d in data {
-                            a.append_raw_slice(*d);
+                            a.append_raw_slice(d);
                         }
                     })
                 }

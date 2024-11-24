@@ -365,26 +365,24 @@ impl Bundle {
                             &mut protects_primary_block,
                             &mut noncanonical_blocks,
                         )? {
-                            let bib = cbor::decode::parse::<(bpsec::bib::OperationSet, bool)>(&bib)
-                                .map(|(v, s)| {
-                                    if !s {
-                                        // If we can't re-encrypt, we can't rewrite
-                                        if !can_encrypt {
-                                            return Err(BundleError::NonCanonical);
-                                        }
+                            let (bib, s) =
+                                cbor::decode::parse::<(bpsec::bib::OperationSet, bool)>(&bib)
+                                    .map_field_err("BPSec integrity extension block")?;
+                            if !s {
+                                // If we can't re-encrypt, we can't rewrite
+                                if !can_encrypt {
+                                    return Err(BundleError::NonCanonical);
+                                }
 
-                                        noncanonical_blocks.insert(
-                                            *bcb_target_number,
-                                            NoncanonicalInfo {
-                                                bcb_can_rewrite: true,
-                                                is_payload_noncanonical: true,
-                                                ..Default::default()
-                                            },
-                                        );
-                                    }
-                                    Ok(v)
-                                })
-                                .map_field_err("BPSec integrity extension block")??;
+                                noncanonical_blocks.insert(
+                                    *bcb_target_number,
+                                    NoncanonicalInfo {
+                                        bcb_can_rewrite: true,
+                                        is_payload_noncanonical: true,
+                                        ..Default::default()
+                                    },
+                                );
+                            };
 
                             if bib.is_unsupported() {
                                 if bcb_target_block.flags.delete_bundle_on_failure {
@@ -460,12 +458,11 @@ impl Bundle {
                                         &mut noncanonical_blocks,
                                     )?;
 
+                                    // And parse if needed
                                     if blocks_to_check
                                         .remove(&bib_target_block.block_type)
                                         .is_some()
-                                    {
-                                        // And parse
-                                        if !match bib_target_block.block_type {
+                                        && !match bib_target_block.block_type {
                                             BlockType::PreviousNode => {
                                                 cbor::decode::parse::<(Eid, bool)>(&block_data)
                                                     .map(|(v, s)| {
@@ -491,22 +488,22 @@ impl Bundle {
                                                     .map_field_err("Hop Count Block")?
                                             }
                                             _ => true,
-                                        } {
-                                            // If we can't re-encrypt or re-sign, we can't rewrite
-                                            if !can_encrypt || !can_resign {
-                                                return Err(BundleError::NonCanonical);
-                                            }
-
-                                            noncanonical_blocks.insert(
-                                                *bcb_target_number,
-                                                NoncanonicalInfo {
-                                                    bcb_can_rewrite: true,
-                                                    bib_source: Some(*bcb_target_number),
-                                                    bib_can_rewrite: true,
-                                                    is_payload_noncanonical: true,
-                                                },
-                                            );
                                         }
+                                    {
+                                        // If we can't re-encrypt or re-sign, we can't rewrite
+                                        if !can_encrypt || !can_resign {
+                                            return Err(BundleError::NonCanonical);
+                                        }
+
+                                        noncanonical_blocks.insert(
+                                            *bcb_target_number,
+                                            NoncanonicalInfo {
+                                                bcb_can_rewrite: true,
+                                                bib_source: Some(*bcb_target_number),
+                                                bib_can_rewrite: true,
+                                                is_payload_noncanonical: true,
+                                            },
+                                        );
                                     }
                                 }
 
@@ -576,8 +573,8 @@ impl Bundle {
                 &mut protects_primary_block,
                 &mut noncanonical_blocks,
             )? {
-                if blocks_to_check.remove(&target_block.block_type).is_some() {
-                    if !match target_block.block_type {
+                if blocks_to_check.remove(&target_block.block_type).is_some()
+                    && !match target_block.block_type {
                         BlockType::PreviousNode => cbor::decode::parse::<(Eid, bool)>(&block_data)
                             .map(|(v, s)| {
                                 self.previous_node = Some(v);
@@ -597,21 +594,21 @@ impl Bundle {
                             })
                             .map_field_err("Hop Count Block")?,
                         _ => true,
-                    } {
-                        // If we can't re-encrypt, we can't rewrite
-                        if !can_encrypt {
-                            return Err(BundleError::NonCanonical);
-                        }
-
-                        noncanonical_blocks.insert(
-                            target_number,
-                            NoncanonicalInfo {
-                                bcb_can_rewrite: true,
-                                is_payload_noncanonical: true,
-                                ..Default::default()
-                            },
-                        );
                     }
+                {
+                    // If we can't re-encrypt, we can't rewrite
+                    if !can_encrypt {
+                        return Err(BundleError::NonCanonical);
+                    }
+
+                    noncanonical_blocks.insert(
+                        target_number,
+                        NoncanonicalInfo {
+                            bcb_can_rewrite: true,
+                            is_payload_noncanonical: true,
+                            ..Default::default()
+                        },
+                    );
                 }
             }
 
@@ -698,8 +695,7 @@ impl Bundle {
                 if blocks_to_check
                     .remove(&bib_target_block.block_type)
                     .is_some()
-                {
-                    if !match bib_target_block.block_type {
+                    && !match bib_target_block.block_type {
                         BlockType::PreviousNode => bib_target_block
                             .parse_payload(source_data)
                             .map(|(v, s)| {
@@ -722,22 +718,22 @@ impl Bundle {
                             })
                             .map_field_err("Hop Count Block")?,
                         _ => true,
-                    } {
-                        // If we can't re-sign, we can't rewrite
-                        if !can_resign {
-                            return Err(BundleError::NonCanonical);
-                        }
-
-                        noncanonical_blocks.insert(
-                            bib_target_number,
-                            NoncanonicalInfo {
-                                bib_source: Some(bib_block_number),
-                                bib_can_rewrite: true,
-                                is_payload_noncanonical: true,
-                                ..Default::default()
-                            },
-                        );
                     }
+                {
+                    // If we can't re-sign, we can't rewrite
+                    if !can_resign {
+                        return Err(BundleError::NonCanonical);
+                    }
+
+                    noncanonical_blocks.insert(
+                        bib_target_number,
+                        NoncanonicalInfo {
+                            bib_source: Some(bib_block_number),
+                            bib_can_rewrite: true,
+                            is_payload_noncanonical: true,
+                            ..Default::default()
+                        },
+                    );
                 }
 
                 if blocks_to_remove.contains(&bib_target_number) {
