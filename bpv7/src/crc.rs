@@ -141,7 +141,7 @@ pub fn parse_crc_value(
                 Ok(shortest)
             }
         }
-        (CrcType::Unrecognised(_), Some(_)) => Ok(true),
+        (CrcType::Unrecognised(t), _) => Err(Error::InvalidType(t)),
         _ => Err(Error::MissingCrc),
     }
 }
