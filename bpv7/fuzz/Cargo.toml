@@ -11,8 +11,6 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 hardy-bpv7 = { path = ".." }
 hardy-cbor = { path = "../../cbor" }
-
-[dev-dependencies]
 hex-literal = "0.4.1"
 
 [[bin]]

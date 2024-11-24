@@ -3,11 +3,34 @@
 use hardy_bpv7::prelude::*;
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|data: &[u8]| {
-    let mut f = |_: &Eid, _| Ok(None);
+fn get_keys(
+    source: &Eid,
+    context: bpsec::Context,
+) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error> {
+    let keys: &[(EidPattern, bpsec::Context, &'static [u8])] = &[
+        (
+            "ipn:3.0".parse().unwrap(),
+            bpsec::Context::BIB_HMAC_SHA2,
+            &hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b"),
+        ),
+        (
+            "ipn:2.1".parse().unwrap(),
+            bpsec::Context::BCB_AES_GCM,
+            &hex_literal::hex!("71776572747975696f70617364666768"),
+        ),
+    ];
 
-    if let Ok(ValidBundle::Rewritten(_, data, _)) = ValidBundle::parse(data, &mut f) {
-        let Ok(ValidBundle::Valid(..)) = ValidBundle::parse(&data, &mut f) else {
+    for (eid, c2, key) in keys {
+        if &context == c2 && eid.is_match(source) {
+            return Ok(Some(bpsec::KeyMaterial::SymmetricKey(Box::from(*key))));
+        }
+    }
+    Ok(None)
+}
+
+fuzz_target!(|data: &[u8]| {
+    if let Ok(ValidBundle::Rewritten(_, data, _)) = ValidBundle::parse(data, get_keys) {
+        let Ok(ValidBundle::Valid(..)) = ValidBundle::parse(&data, get_keys) else {
             panic!("Rewrite borked");
         };
     }
