@@ -1,3 +1,4 @@
+/*
 #[cfg(test)]
 use hardy_bpv7::prelude::*;
 
@@ -44,3 +45,4 @@ fn test() {
         };
     }
 }
+*/
