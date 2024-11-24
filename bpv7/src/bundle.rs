@@ -40,6 +40,9 @@ pub enum BundleError {
     #[error("Invalid bundle flag combination")]
     InvalidFlags,
 
+    #[error("Bundle or block is not in canonical form")]
+    NonCanonical,
+
     #[error("Invalid bundle: {error}")]
     InvalidBundle {
         bundle: Box<Bundle>,
@@ -129,6 +132,7 @@ struct NoncanonicalInfo {
     bcb_can_rewrite: bool,
     bib_source: Option<u64>,
     bib_can_rewrite: bool,
+    is_payload_noncanonical: bool,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -216,7 +220,7 @@ impl Bundle {
         keys: &mut impl KeyCache,
     ) -> Result<(HashMap<u64, NoncanonicalInfo>, HashSet<u64>, bool), BundleError> {
         let mut last_block_number = 0;
-        let mut noncanonical_blocks = HashMap::new();
+        let mut noncanonical_blocks: HashMap<u64, NoncanonicalInfo> = HashMap::new();
         let mut blocks_to_check = HashMap::new();
         let mut blocks_to_remove = HashSet::new();
         let mut report_unsupported = false;
@@ -262,7 +266,10 @@ impl Bundle {
                         .parse_payload::<bpsec::bcb::OperationSet>(source_data)
                         .map(|(v, s)| {
                             if !s {
-                                noncanonical_blocks.entry(block.number).or_default();
+                                noncanonical_blocks
+                                    .entry(block.number)
+                                    .or_default()
+                                    .is_payload_noncanonical = true;
                             }
                             v
                         })
@@ -361,14 +368,23 @@ impl Bundle {
                             let bib = cbor::decode::parse::<(bpsec::bib::OperationSet, bool)>(&bib)
                                 .map(|(v, s)| {
                                     if !s {
-                                        noncanonical_blocks
-                                            .entry(*bcb_target_number)
-                                            .or_default()
-                                            .bcb_can_rewrite = can_encrypt;
+                                        // If we can't re-encrypt, we can't rewrite
+                                        if !can_encrypt {
+                                            return Err(BundleError::NonCanonical);
+                                        }
+
+                                        noncanonical_blocks.insert(
+                                            *bcb_target_number,
+                                            NoncanonicalInfo {
+                                                bcb_can_rewrite: true,
+                                                is_payload_noncanonical: true,
+                                                ..Default::default()
+                                            },
+                                        );
                                     }
-                                    v
+                                    Ok(v)
                                 })
-                                .map_field_err("BPSec integrity extension block")?;
+                                .map_field_err("BPSec integrity extension block")??;
 
                             if bib.is_unsupported() {
                                 if bcb_target_block.flags.delete_bundle_on_failure {
@@ -444,45 +460,54 @@ impl Bundle {
                                         &mut noncanonical_blocks,
                                     )?;
 
-                                    let info = NoncanonicalInfo {
-                                        bcb_can_rewrite: can_encrypt,
-                                        bib_source: Some(*bcb_target_number),
-                                        bib_can_rewrite: can_resign,
-                                    };
+                                    if blocks_to_check
+                                        .remove(&bib_target_block.block_type)
+                                        .is_some()
+                                    {
+                                        // And parse
+                                        if !match bib_target_block.block_type {
+                                            BlockType::PreviousNode => {
+                                                cbor::decode::parse::<(Eid, bool)>(&block_data)
+                                                    .map(|(v, s)| {
+                                                        self.previous_node = Some(v);
+                                                        s
+                                                    })
+                                                    .map_field_err("Previous Node Block")?
+                                            }
+                                            BlockType::BundleAge => {
+                                                cbor::decode::parse::<(u64, bool)>(&block_data)
+                                                    .map(|(v, s)| {
+                                                        self.age = Some(v);
+                                                        s
+                                                    })
+                                                    .map_field_err("Bundle Age Block")?
+                                            }
+                                            BlockType::HopCount => {
+                                                cbor::decode::parse::<(HopInfo, bool)>(&block_data)
+                                                    .map(|(v, s)| {
+                                                        self.hop_count = Some(v);
+                                                        s
+                                                    })
+                                                    .map_field_err("Hop Count Block")?
+                                            }
+                                            _ => true,
+                                        } {
+                                            // If we can't re-encrypt or re-sign, we can't rewrite
+                                            if !can_encrypt || !can_resign {
+                                                return Err(BundleError::NonCanonical);
+                                            }
 
-                                    // And parse
-                                    if !match bib_target_block.block_type {
-                                        BlockType::PreviousNode => {
-                                            cbor::decode::parse::<(Eid, bool)>(&block_data)
-                                                .map(|(v, s)| {
-                                                    self.previous_node = Some(v);
-                                                    s
-                                                })
-                                                .map_field_err("Previous Node Block")?
+                                            noncanonical_blocks.insert(
+                                                *bcb_target_number,
+                                                NoncanonicalInfo {
+                                                    bcb_can_rewrite: true,
+                                                    bib_source: Some(*bcb_target_number),
+                                                    bib_can_rewrite: true,
+                                                    is_payload_noncanonical: true,
+                                                },
+                                            );
                                         }
-                                        BlockType::BundleAge => {
-                                            cbor::decode::parse::<(u64, bool)>(&block_data)
-                                                .map(|(v, s)| {
-                                                    self.age = Some(v);
-                                                    s
-                                                })
-                                                .map_field_err("Bundle Age Block")?
-                                        }
-                                        BlockType::HopCount => {
-                                            cbor::decode::parse::<(HopInfo, bool)>(&block_data)
-                                                .map(|(v, s)| {
-                                                    self.hop_count = Some(v);
-                                                    s
-                                                })
-                                                .map_field_err("Hop Count Block")?
-                                        }
-                                        _ => true,
-                                    } {
-                                        *noncanonical_blocks
-                                            .entry(bib_target_number)
-                                            .or_default() = info;
                                     }
-                                    blocks_to_check.remove(&bib_target_block.block_type);
                                 }
 
                                 // Check if the target block is supported
@@ -551,33 +576,43 @@ impl Bundle {
                 &mut protects_primary_block,
                 &mut noncanonical_blocks,
             )? {
-                if !match target_block.block_type {
-                    BlockType::PreviousNode => cbor::decode::parse::<(Eid, bool)>(&block_data)
-                        .map(|(v, s)| {
-                            self.previous_node = Some(v);
-                            s
-                        })
-                        .map_field_err("Previous Node Block")?,
-                    BlockType::BundleAge => cbor::decode::parse::<(u64, bool)>(&block_data)
-                        .map(|(v, s)| {
-                            self.age = Some(v);
-                            s
-                        })
-                        .map_field_err("Bundle Age Block")?,
-                    BlockType::HopCount => cbor::decode::parse::<(HopInfo, bool)>(&block_data)
-                        .map(|(v, s)| {
-                            self.hop_count = Some(v);
-                            s
-                        })
-                        .map_field_err("Hop Count Block")?,
-                    _ => true,
-                } {
-                    noncanonical_blocks
-                        .entry(target_number)
-                        .or_default()
-                        .bcb_can_rewrite = can_encrypt;
+                if blocks_to_check.remove(&target_block.block_type).is_some() {
+                    if !match target_block.block_type {
+                        BlockType::PreviousNode => cbor::decode::parse::<(Eid, bool)>(&block_data)
+                            .map(|(v, s)| {
+                                self.previous_node = Some(v);
+                                s
+                            })
+                            .map_field_err("Previous Node Block")?,
+                        BlockType::BundleAge => cbor::decode::parse::<(u64, bool)>(&block_data)
+                            .map(|(v, s)| {
+                                self.age = Some(v);
+                                s
+                            })
+                            .map_field_err("Bundle Age Block")?,
+                        BlockType::HopCount => cbor::decode::parse::<(HopInfo, bool)>(&block_data)
+                            .map(|(v, s)| {
+                                self.hop_count = Some(v);
+                                s
+                            })
+                            .map_field_err("Hop Count Block")?,
+                        _ => true,
+                    } {
+                        // If we can't re-encrypt, we can't rewrite
+                        if !can_encrypt {
+                            return Err(BundleError::NonCanonical);
+                        }
+
+                        noncanonical_blocks.insert(
+                            target_number,
+                            NoncanonicalInfo {
+                                bcb_can_rewrite: true,
+                                is_payload_noncanonical: true,
+                                ..Default::default()
+                            },
+                        );
+                    }
                 }
-                blocks_to_check.remove(&target_block.block_type);
             }
 
             if blocks_to_remove.contains(&target_number) {
@@ -603,7 +638,10 @@ impl Bundle {
                 .parse_payload::<bpsec::bib::OperationSet>(source_data)
                 .map(|(v, s)| {
                     if !s {
-                        noncanonical_blocks.entry(bib_block_number).or_default();
+                        noncanonical_blocks
+                            .entry(bib_block_number)
+                            .or_default()
+                            .is_payload_noncanonical = true;
                     }
                     v
                 })
@@ -639,7 +677,7 @@ impl Bundle {
                     return Err(bpsec::Error::InvalidBIBTarget.into());
                 }
 
-                self.bib_verify_data(
+                let can_resign = self.bib_verify_data(
                     keys,
                     &op,
                     bpsec::OperationArgs {
@@ -657,6 +695,51 @@ impl Bundle {
                     &mut noncanonical_blocks,
                 )?;
 
+                if blocks_to_check
+                    .remove(&bib_target_block.block_type)
+                    .is_some()
+                {
+                    if !match bib_target_block.block_type {
+                        BlockType::PreviousNode => bib_target_block
+                            .parse_payload(source_data)
+                            .map(|(v, s)| {
+                                self.previous_node = Some(v);
+                                s
+                            })
+                            .map_field_err("Previous Node Block")?,
+                        BlockType::BundleAge => bib_target_block
+                            .parse_payload(source_data)
+                            .map(|(v, s)| {
+                                self.age = Some(v);
+                                s
+                            })
+                            .map_field_err("Bundle Age Block")?,
+                        BlockType::HopCount => bib_target_block
+                            .parse_payload(source_data)
+                            .map(|(v, s)| {
+                                self.hop_count = Some(v);
+                                s
+                            })
+                            .map_field_err("Hop Count Block")?,
+                        _ => true,
+                    } {
+                        // If we can't re-sign, we can't rewrite
+                        if !can_resign {
+                            return Err(BundleError::NonCanonical);
+                        }
+
+                        noncanonical_blocks.insert(
+                            bib_target_number,
+                            NoncanonicalInfo {
+                                bib_source: Some(bib_block_number),
+                                bib_can_rewrite: true,
+                                is_payload_noncanonical: true,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+
                 if blocks_to_remove.contains(&bib_target_number) {
                     bib_targets_remaining -= 1;
                 }
@@ -667,9 +750,9 @@ impl Bundle {
             }
         }
 
-        // Check everything that isn't BCB covered
-        for block_number in blocks_to_check.values() {
-            let block = self.blocks.get(block_number).unwrap();
+        // Check everything that isn't already checked
+        for (_, block_number) in blocks_to_check {
+            let block = self.blocks.get(&block_number).unwrap();
             if !match block.block_type {
                 BlockType::PreviousNode => block
                     .parse_payload(source_data)
@@ -694,7 +777,10 @@ impl Bundle {
                     .map_field_err("Hop Count Block")?,
                 _ => true,
             } {
-                noncanonical_blocks.entry(*block_number).or_default();
+                noncanonical_blocks
+                    .entry(block_number)
+                    .or_default()
+                    .is_payload_noncanonical = true;
             }
         }
 
@@ -711,15 +797,6 @@ impl Bundle {
             }
         }
 
-        // Filter non-canonical blocks
-        noncanonical_blocks.retain(|k, _| !blocks_to_remove.contains(k));
-
-        // Check to see if any non-canonical blocks have unsupported CRCs - which is fatal
-        for k in noncanonical_blocks.keys() {
-            if let CrcType::Unrecognised(t) = self.blocks.get(k).unwrap().crc_type {
-                return Err(crc::Error::InvalidType(t).into());
-            }
-        }
         Ok((noncanonical_blocks, blocks_to_remove, report_unsupported))
     }
 
@@ -772,48 +849,59 @@ impl Bundle {
                     continue;
                 }
 
-                if let Some(info) = noncanonical_blocks.remove(block_number) {
-                    // TODO: We can be much smarter here with re-signing/re-encrypting the data
-                    let can_rewrite = block.bcb.is_none() && info.bib_source.is_none();
+                // Skip blocks to be removed
+                if !blocks_to_remove.contains(block_number) {
+                    if let Some(info) = noncanonical_blocks.remove(block_number) {
+                        // TODO: We can be much smarter here with re-signing/re-encrypting the data
+                        let can_rewrite = block.bcb.is_none() && info.bib_source.is_none();
 
-                    match block.block_type {
-                        BlockType::PreviousNode if can_rewrite => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
-                            a,
-                        ),
-                        BlockType::BundleAge if can_rewrite => {
-                            block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()), a)
+                        match block.block_type {
+                            BlockType::PreviousNode
+                                if info.is_payload_noncanonical && can_rewrite =>
+                            {
+                                block.emit(
+                                    *block_number,
+                                    &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
+                                    a,
+                                )
+                            }
+                            BlockType::BundleAge if info.is_payload_noncanonical && can_rewrite => {
+                                block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()), a)
+                            }
+                            BlockType::HopCount if can_rewrite => block.emit(
+                                *block_number,
+                                &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
+                                a,
+                            ),
+                            BlockType::BlockIntegrity
+                                if info.is_payload_noncanonical && can_rewrite =>
+                            {
+                                block.emit(
+                                    *block_number,
+                                    &bpsec::bib::OperationSet::rewrite(
+                                        block,
+                                        &blocks_to_remove,
+                                        source_data,
+                                    )
+                                    .unwrap(),
+                                    a,
+                                )
+                            }
+                            BlockType::BlockSecurity if info.is_payload_noncanonical => block.emit(
+                                *block_number,
+                                &bpsec::bcb::OperationSet::rewrite(
+                                    block,
+                                    &blocks_to_remove,
+                                    source_data,
+                                )
+                                .unwrap(),
+                                a,
+                            ),
+                            _ => block.rewrite(*block_number, a, source_data).unwrap(),
                         }
-                        BlockType::HopCount if can_rewrite => block.emit(
-                            *block_number,
-                            &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
-                            a,
-                        ),
-                        BlockType::BlockIntegrity if can_rewrite => block.emit(
-                            *block_number,
-                            &bpsec::bib::OperationSet::rewrite(
-                                block,
-                                &blocks_to_remove,
-                                source_data,
-                            )
-                            .unwrap(),
-                            a,
-                        ),
-                        BlockType::BlockSecurity => block.emit(
-                            *block_number,
-                            &bpsec::bcb::OperationSet::rewrite(
-                                block,
-                                &blocks_to_remove,
-                                source_data,
-                            )
-                            .unwrap(),
-                            a,
-                        ),
-                        _ => block.rewrite(*block_number, a, source_data).unwrap(),
+                    } else {
+                        block.copy(source_data, a);
                     }
-                } else if !blocks_to_remove.contains(block_number) {
-                    block.copy(source_data, a);
                 }
             }
 

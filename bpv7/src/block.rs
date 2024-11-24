@@ -27,19 +27,19 @@ impl Block {
         T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
     {
         let payload_data = self.payload(source_data);
-        cbor::decode::parse_value(payload_data, |v, shortest, tags| match v {
+        cbor::decode::parse_value(payload_data, |v, _, tags| match v {
             cbor::decode::Value::Bytes(data) => cbor::decode::parse::<(T, bool, usize)>(data)
-                .map(|(v, s, len)| (v, shortest && s && tags.is_empty() && len == data.len())),
-            cbor::decode::Value::ByteStream(data) => cbor::decode::parse::<(T, bool, usize)>(
-                &data.iter().fold(Vec::new(), |mut data, d| {
+                .map(|(v, s, len)| (v, s && tags.is_empty() && len == data.len())),
+            cbor::decode::Value::ByteStream(data) => {
+                cbor::decode::parse::<T>(&data.iter().fold(Vec::new(), |mut data, d| {
                     data.extend(*d);
                     data
-                }),
-            )
-            .map(|v| (v.0, false)),
+                }))
+                .map(|v| (v, false))
+            }
             _ => unreachable!(),
         })
-        .map(|((v, s), len)| (v, s && len == payload_data.len()))
+        .map(|((v, s), _)| (v, s))
     }
 
     fn emit_inner<F>(&mut self, block_number: u64, array: &mut cbor::encode::Array, f: F)
