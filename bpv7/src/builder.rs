@@ -100,7 +100,7 @@ impl Builder {
 
         let data = cbor::encode::emit_array(None, |a| {
             // Emit primary block
-            bundle.emit_primary_block(a, None);
+            bundle.emit_primary_block(a);
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {

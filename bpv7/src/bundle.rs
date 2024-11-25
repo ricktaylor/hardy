@@ -714,7 +714,7 @@ impl Bundle {
         Ok((noncanonical_blocks, blocks_to_remove, report_unsupported))
     }
 
-    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array, bcb: Option<u64>) {
+    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
         let data_start = array.offset();
         let data = primary_block::PrimaryBlock::emit(self);
         let payload_len = data.len();
@@ -735,7 +735,7 @@ impl Bundle {
                 data_len: payload_len,
                 payload_offset: 0,
                 payload_len,
-                bcb,
+                bcb: None,
             },
         );
     }
@@ -749,7 +749,7 @@ impl Bundle {
         cbor::encode::emit_array(None, |a| {
             // Emit primary block
             if noncanonical_blocks.remove(&0).is_some() {
-                self.emit_primary_block(a, self.blocks.get(&0).unwrap().bcb);
+                self.emit_primary_block(a);
             } else {
                 self.blocks.get_mut(&0).unwrap().copy(source_data, a);
             }
