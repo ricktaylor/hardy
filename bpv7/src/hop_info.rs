@@ -1,5 +1,5 @@
 use super::*;
-use bundle::CaptureFieldErr;
+use error::CaptureFieldErr;
 
 #[derive(Debug, Clone)]
 pub struct HopInfo {
@@ -17,14 +17,14 @@ impl cbor::encode::ToCbor for &HopInfo {
 }
 
 impl cbor::decode::FromCbor for HopInfo {
-    type Error = BundleError;
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, shortest, tags| {
             let (limit, s1) = a.parse().map_field_err("hop limit")?;
             let (count, s2) = a.parse().map_field_err("hop count")?;
 
-            Ok::<_, BundleError>((
+            Ok::<_, Error>((
                 HopInfo { limit, count },
                 shortest && tags.is_empty() && a.is_definite() && s1 && s2,
             ))

@@ -1,20 +1,20 @@
 use super::*;
-use bundle::CaptureFieldErr;
+use error::CaptureFieldErr;
 
 struct PartialPrimaryBlock {
     pub flags: BundleFlags,
-    pub crc_type: Result<CrcType, BundleError>,
-    pub source: Result<Eid, BundleError>,
-    pub destination: Result<Eid, BundleError>,
+    pub crc_type: Result<CrcType, Error>,
+    pub source: Result<Eid, Error>,
+    pub destination: Result<Eid, Error>,
     pub report_to: Eid,
-    pub timestamp: Result<CreationTimestamp, BundleError>,
-    pub lifetime: Result<u64, BundleError>,
-    pub fragment_info: Result<Option<FragmentInfo>, BundleError>,
-    pub crc_result: Result<(), BundleError>,
+    pub timestamp: Result<CreationTimestamp, Error>,
+    pub lifetime: Result<u64, Error>,
+    pub fragment_info: Result<Option<FragmentInfo>, Error>,
+    pub crc_result: Result<(), Error>,
 }
 
 impl cbor::decode::FromCbor for PartialPrimaryBlock {
-    type Error = BundleError;
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |block, s, tags| {
@@ -29,7 +29,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                 })
                 .map_field_err("version")?;
             if version != 7 {
-                return Err(BundleError::InvalidVersion(version));
+                return Err(Error::InvalidVersion(version));
             }
 
             // Parse flags
@@ -204,7 +204,7 @@ impl PrimaryBlock {
 }
 
 impl cbor::decode::FromCbor for PrimaryBlock {
-    type Error = BundleError;
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         let Some((p, s, len)) =
@@ -253,10 +253,10 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         || block.flags.delete_report_requested
                     {
                         // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                        return Err(BundleError::InvalidBundle {
+                        return Err(Error::InvalidBundle {
                             bundle: block.into_bundle().into(),
                             reason: StatusReportReasonCode::BlockUnintelligible,
-                            error: BundleError::InvalidFlags.into(),
+                            error: Error::InvalidFlags.into(),
                         });
                     }
                 }
@@ -268,17 +268,17 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         || block.flags.delete_report_requested)
                 {
                     // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                    return Err(BundleError::InvalidBundle {
+                    return Err(Error::InvalidBundle {
                         bundle: block.into_bundle().into(),
                         reason: StatusReportReasonCode::BlockUnintelligible,
-                        error: BundleError::InvalidFlags.into(),
+                        error: Error::InvalidFlags.into(),
                     });
                 }
 
                 Ok(Some((block, s, len)))
             }
             (Err(e), source, timestamp, lifetime, fragment_info, crc_type, _) => {
-                Err(BundleError::InvalidBundle {
+                Err(Error::InvalidBundle {
                     bundle: PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
@@ -292,7 +292,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     .into_bundle()
                     .into(),
                     reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: BundleError::InvalidField {
+                    error: Error::InvalidField {
                         field: "Destination EID",
                         source: e.into(),
                     }
@@ -300,7 +300,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 })
             }
             (Ok(destination), Err(e), timestamp, lifetime, fragment_info, crc_type, _) => {
-                Err(BundleError::InvalidBundle {
+                Err(Error::InvalidBundle {
                     bundle: PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
@@ -314,7 +314,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     .into_bundle()
                     .into(),
                     reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: BundleError::InvalidField {
+                    error: Error::InvalidField {
                         field: "Source EID",
                         source: e.into(),
                     }
@@ -322,7 +322,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 })
             }
             (Ok(destination), Ok(source), Err(e), lifetime, fragment_info, crc_type, _) => {
-                Err(BundleError::InvalidBundle {
+                Err(Error::InvalidBundle {
                     bundle: PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
@@ -336,7 +336,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     .into_bundle()
                     .into(),
                     reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: BundleError::InvalidField {
+                    error: Error::InvalidField {
                         field: "Creation Timestamp",
                         source: e.into(),
                     }
@@ -344,7 +344,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 })
             }
             (Ok(destination), Ok(source), Ok(timestamp), Err(e), fragment_info, crc_type, _) => {
-                Err(BundleError::InvalidBundle {
+                Err(Error::InvalidBundle {
                     bundle: PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
@@ -358,7 +358,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     .into_bundle()
                     .into(),
                     reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: BundleError::InvalidField {
+                    error: Error::InvalidField {
                         field: "Lifetime",
                         source: e.into(),
                     }
@@ -366,7 +366,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 })
             }
             (Ok(destination), Ok(source), Ok(timestamp), Ok(lifetime), Err(e), crc_type, _) => {
-                Err(BundleError::InvalidBundle {
+                Err(Error::InvalidBundle {
                     bundle: PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
@@ -380,7 +380,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     .into_bundle()
                     .into(),
                     reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: BundleError::InvalidField {
+                    error: Error::InvalidField {
                         field: "Fragment Info",
                         source: e.into(),
                     }
@@ -395,7 +395,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 Ok(fragment_info),
                 Err(e),
                 _,
-            ) => Err(BundleError::InvalidBundle {
+            ) => Err(Error::InvalidBundle {
                 bundle: PrimaryBlock {
                     flags: p.flags,
                     report_to: p.report_to,
@@ -409,7 +409,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 .into_bundle()
                 .into(),
                 reason: StatusReportReasonCode::BlockUnintelligible,
-                error: BundleError::InvalidField {
+                error: Error::InvalidField {
                     field: "CRC Type",
                     source: e.into(),
                 }
@@ -423,7 +423,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 Ok(fragment_info),
                 Ok(crc_type),
                 Err(e),
-            ) => Err(BundleError::InvalidBundle {
+            ) => Err(Error::InvalidBundle {
                 bundle: PrimaryBlock {
                     flags: p.flags,
                     report_to: p.report_to,
@@ -437,7 +437,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 .into_bundle()
                 .into(),
                 reason: StatusReportReasonCode::BlockUnintelligible,
-                error: BundleError::InvalidField {
+                error: Error::InvalidField {
                     field: "CRC Value",
                     source: e.into(),
                 }

@@ -1,88 +1,6 @@
 use super::*;
+use error::CaptureFieldErr;
 use std::collections::{HashMap, HashSet};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum BundleError {
-    #[error("Bundle has additional data after end of CBOR array")]
-    AdditionalData,
-
-    #[error("Unsupported bundle protocol version {0}")]
-    InvalidVersion(u64),
-
-    #[error("Bundle has no payload block")]
-    MissingPayload,
-
-    #[error("Primary block is not protected by a BPSec BIB or a CRC")]
-    MissingIntegrityCheck,
-
-    #[error("Bundle payload block must be block number 1")]
-    InvalidPayloadBlockNumber,
-
-    #[error("Final block of bundle is not a payload block")]
-    PayloadNotFinal,
-
-    #[error("Bundle has more than one block with block number {0}")]
-    DuplicateBlockNumber(u64),
-
-    #[error("{1} block cannot be block number {0}")]
-    InvalidBlockNumber(u64, BlockType),
-
-    #[error("Bundle has multiple {0} blocks")]
-    DuplicateBlocks(BlockType),
-
-    #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
-    MissingBundleAge,
-
-    #[error("Block {0} has an unsupported block type or block content sub-type")]
-    Unsupported(u64),
-
-    #[error("Invalid bundle flag combination")]
-    InvalidFlags,
-
-    #[error("Bundle or block is not in canonical form")]
-    NonCanonical,
-
-    #[error("Invalid bundle: {error}")]
-    InvalidBundle {
-        bundle: Box<Bundle>,
-        reason: StatusReportReasonCode,
-        error: Box<dyn std::error::Error + Send + Sync>,
-    },
-
-    #[error(transparent)]
-    InvalidBPSec(#[from] bpsec::Error),
-
-    #[error(transparent)]
-    InvalidCrc(#[from] crc::Error),
-
-    #[error(transparent)]
-    InvalidEid(#[from] eid::EidError),
-
-    #[error("Failed to parse {field}: {source}")]
-    InvalidField {
-        field: &'static str,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-
-    #[error(transparent)]
-    InvalidCBOR(#[from] cbor::decode::Error),
-}
-
-pub trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, BundleError>;
-}
-
-impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
-    for std::result::Result<T, E>
-{
-    fn map_field_err(self, field: &'static str) -> Result<T, BundleError> {
-        self.map_err(|e| BundleError::InvalidField {
-            field,
-            source: e.into(),
-        })
-    }
-}
 
 trait KeyCache {
     fn get<'a>(
@@ -218,7 +136,7 @@ impl Bundle {
         mut offset: usize,
         source_data: &[u8],
         keys: &mut impl KeyCache,
-    ) -> Result<(HashMap<u64, NoncanonicalInfo>, HashSet<u64>, bool), BundleError> {
+    ) -> Result<(HashMap<u64, NoncanonicalInfo>, HashSet<u64>, bool), Error> {
         let mut last_block_number = 0;
         let mut noncanonical_blocks: HashMap<u64, NoncanonicalInfo> = HashMap::new();
         let mut blocks_to_check = HashMap::new();
@@ -250,7 +168,7 @@ impl Bundle {
                         .insert(block.block.block_type, block.number)
                         .is_some()
                     {
-                        return Err(BundleError::DuplicateBlocks(block.block.block_type));
+                        return Err(Error::DuplicateBlocks(block.block.block_type));
                     }
                 }
                 BlockType::BlockIntegrity => {
@@ -277,7 +195,7 @@ impl Bundle {
 
                     if bcb.is_unsupported() {
                         if block.block.flags.delete_bundle_on_failure {
-                            return Err(BundleError::Unsupported(block.number));
+                            return Err(Error::Unsupported(block.number));
                         }
 
                         if block.block.flags.report_on_failure {
@@ -288,7 +206,7 @@ impl Bundle {
                 }
                 BlockType::Unrecognised(_) => {
                     if block.block.flags.delete_bundle_on_failure {
-                        return Err(BundleError::Unsupported(block.number));
+                        return Err(Error::Unsupported(block.number));
                     }
 
                     if block.block.flags.delete_block_on_failure {
@@ -303,7 +221,7 @@ impl Bundle {
 
             // Add block
             if self.blocks.insert(block.number, block.block).is_some() {
-                return Err(BundleError::DuplicateBlockNumber(block.number));
+                return Err(Error::DuplicateBlockNumber(block.number));
             }
 
             last_block_number = block.number;
@@ -313,10 +231,10 @@ impl Bundle {
         // Check the last block is the payload
         if let Some(payload_block_number) = blocks_to_check.remove(&BlockType::Payload) {
             if payload_block_number != last_block_number {
-                return Err(BundleError::PayloadNotFinal);
+                return Err(Error::PayloadNotFinal);
             }
         } else {
-            return Err(BundleError::MissingPayload);
+            return Err(Error::MissingPayload);
         }
 
         // Do the first BCB pass, checking BIBs and general sanity
@@ -371,7 +289,7 @@ impl Bundle {
                             if !s {
                                 // If we can't re-encrypt, we can't rewrite
                                 if !can_encrypt {
-                                    return Err(BundleError::NonCanonical);
+                                    return Err(Error::NonCanonical(*bcb_target_number));
                                 }
 
                                 noncanonical_blocks.insert(
@@ -386,7 +304,7 @@ impl Bundle {
 
                             if bib.is_unsupported() {
                                 if bcb_target_block.flags.delete_bundle_on_failure {
-                                    return Err(BundleError::Unsupported(*bcb_target_number));
+                                    return Err(Error::Unsupported(*bcb_target_number));
                                 }
 
                                 if bcb_target_block.flags.delete_block_on_failure {
@@ -492,7 +410,7 @@ impl Bundle {
                                     {
                                         // If we can't re-encrypt or re-sign, we can't rewrite
                                         if !can_encrypt || !can_resign {
-                                            return Err(BundleError::NonCanonical);
+                                            return Err(Error::NonCanonical(*bcb_target_number));
                                         }
 
                                         noncanonical_blocks.insert(
@@ -598,7 +516,7 @@ impl Bundle {
                 {
                     // If we can't re-encrypt, we can't rewrite
                     if !can_encrypt {
-                        return Err(BundleError::NonCanonical);
+                        return Err(Error::NonCanonical(target_number));
                     }
 
                     noncanonical_blocks.insert(
@@ -646,7 +564,7 @@ impl Bundle {
 
             if bib.is_unsupported() {
                 if bib_block.flags.delete_bundle_on_failure {
-                    return Err(BundleError::Unsupported(bib_block_number));
+                    return Err(Error::Unsupported(bib_block_number));
                 }
 
                 if bib_block.flags.delete_block_on_failure {
@@ -722,7 +640,7 @@ impl Bundle {
                 {
                     // If we can't re-sign, we can't rewrite
                     if !can_resign {
-                        return Err(BundleError::NonCanonical);
+                        return Err(Error::NonCanonical(bib_target_number));
                     }
 
                     noncanonical_blocks.insert(
@@ -782,14 +700,14 @@ impl Bundle {
 
         // Check bundle age exists if needed
         if self.age.is_none() && self.id.timestamp.creation_time.is_none() {
-            return Err(BundleError::MissingBundleAge);
+            return Err(Error::MissingBundleAge);
         }
 
         if let CrcType::None = self.crc_type {
             if protects_primary_block.is_empty()
                 || protects_primary_block.is_subset(&blocks_to_remove)
             {
-                return Err(BundleError::MissingIntegrityCheck);
+                return Err(Error::MissingIntegrityCheck);
             }
         }
 
@@ -925,7 +843,7 @@ pub enum ValidBundle {
 }
 
 impl ValidBundle {
-    pub fn parse<F>(data: &[u8], f: F) -> Result<Self, BundleError>
+    pub fn parse<F>(data: &[u8], f: F) -> Result<Self, Error>
     where
         F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     {
@@ -997,12 +915,12 @@ impl ValidBundle {
                         report_unsupported,
                     ))
                 }
-                Err(BundleError::Unsupported(n)) => Err(BundleError::InvalidBundle {
+                Err(Error::Unsupported(n)) => Err(Error::InvalidBundle {
                     bundle: bundle.into(),
                     reason: StatusReportReasonCode::BlockUnsupported,
-                    error: BundleError::Unsupported(n).into(),
+                    error: Error::Unsupported(n).into(),
                 }),
-                Err(e) => Err(BundleError::InvalidBundle {
+                Err(e) => Err(Error::InvalidBundle {
                     bundle: bundle.into(),
                     reason: StatusReportReasonCode::BlockUnintelligible,
                     error: e.into(),
@@ -1014,7 +932,7 @@ impl ValidBundle {
                     Ok(Self::Invalid(
                         bundle,
                         StatusReportReasonCode::BlockUnintelligible,
-                        BundleError::AdditionalData.into(),
+                        Error::AdditionalData.into(),
                     ))
                 } else if !noncanonical_blocks.is_empty() || !block_to_remove.is_empty() {
                     let data = bundle.canonicalise(noncanonical_blocks, block_to_remove, data);
@@ -1023,7 +941,7 @@ impl ValidBundle {
                     Ok(Self::Valid(bundle, report_unsupported))
                 }
             }
-            Err(BundleError::InvalidBundle {
+            Err(Error::InvalidBundle {
                 bundle,
                 reason,
                 error: e,

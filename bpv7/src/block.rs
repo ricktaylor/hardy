@@ -1,5 +1,5 @@
 use super::*;
-use bundle::CaptureFieldErr;
+use error::CaptureFieldErr;
 
 #[derive(Debug, Clone)]
 pub struct Block {
@@ -129,7 +129,7 @@ pub struct BlockWithNumber {
 }
 
 impl cbor::decode::FromCbor for BlockWithNumber {
-    type Error = BundleError;
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |block, mut shortest, tags| {
@@ -150,7 +150,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             match (block_number, block_type) {
                 (1, BlockType::Payload) => {}
                 (0, _) | (1, _) | (_, BlockType::Primary) | (_, BlockType::Payload) => {
-                    return Err(BundleError::InvalidBlockNumber(block_number, block_type))
+                    return Err(Error::InvalidBlockNumber(block_number, block_type))
                 }
                 _ => {}
             }

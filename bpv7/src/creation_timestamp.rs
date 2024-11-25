@@ -1,5 +1,5 @@
 use super::*;
-use bundle::CaptureFieldErr;
+use error::CaptureFieldErr;
 
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
 pub struct CreationTimestamp {
@@ -31,7 +31,7 @@ impl cbor::encode::ToCbor for &CreationTimestamp {
 }
 
 impl cbor::decode::FromCbor for CreationTimestamp {
-    type Error = BundleError;
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         cbor::decode::try_parse_array(data, |a, shortest, tags| {
