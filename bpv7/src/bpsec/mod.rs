@@ -1,9 +1,5 @@
 use super::*;
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Range,
-    rc::Rc,
-};
+use std::{collections::HashMap, ops::Range, rc::Rc};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub mod bcb;
@@ -71,15 +67,4 @@ impl cbor::decode::FromCbor for Context {
 pub enum KeyMaterial {
     SymmetricKey(Box<[u8]>),
     PrivateKey,
-}
-
-pub struct OperationArgs<'a> {
-    pub bpsec_source: &'a Eid,
-    pub target: &'a block::Block,
-    pub target_number: u64,
-    pub source: &'a block::Block,
-    pub source_number: u64,
-    pub bundle: &'a Bundle,
-    pub canonical_primary_block: bool,
-    pub bundle_data: &'a [u8],
 }

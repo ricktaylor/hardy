@@ -178,10 +178,57 @@ impl Operation {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
+    pub fn sign(
+        &mut self,
+        key: Option<&KeyMaterial>,
+        args: bib::OperationArgs,
+        payload_data: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        let Some(key) = key else {
+            return Err(Error::NoKey(args.bpsec_source.clone()));
+        };
+        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+
+        self.results.0 = match self.parameters.variant {
+            ShaVariant::HMAC_256_256 => self
+                .calculate_hmac(
+                    hmac::Hmac::<sha2::Sha256>::new_from_slice(&key)
+                        .map_field_err("SHA-256 key")?,
+                    &args,
+                    payload_data,
+                )?
+                .into_bytes()
+                .as_slice()
+                .into(),
+            ShaVariant::HMAC_384_384 => self
+                .calculate_hmac(
+                    hmac::Hmac::<sha2::Sha384>::new_from_slice(&key)
+                        .map_field_err("SHA-384 key")?,
+                    &args,
+                    payload_data,
+                )?
+                .into_bytes()
+                .as_slice()
+                .into(),
+            ShaVariant::HMAC_512_512 => self
+                .calculate_hmac(
+                    hmac::Hmac::<sha2::Sha512>::new_from_slice(&key)
+                        .map_field_err("SHA-512 key")?,
+                    &args,
+                    payload_data,
+                )?
+                .into_bytes()
+                .as_slice()
+                .into(),
+            ShaVariant::Unrecognised(_) => unreachable!(),
+        };
+        Ok(())
+    }
+
     pub fn verify(
         &self,
         key: Option<&KeyMaterial>,
-        args: OperationArgs,
+        args: bib::OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<bib::OperationResult, Error> {
         let Some(key) = key else {
@@ -193,36 +240,71 @@ impl Operation {
         };
         let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
-        match self.parameters.variant {
-            ShaVariant::HMAC_256_256 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).map_field_err("SHA-256 key")?,
-                args,
-                payload_data,
-            ),
-            ShaVariant::HMAC_384_384 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha384>::new_from_slice(&key).map_field_err("SHA-384 key")?,
-                args,
-                payload_data,
-            ),
-            ShaVariant::HMAC_512_512 => self.verify_inner(
-                hmac::Hmac::<sha2::Sha512>::new_from_slice(&key).map_field_err("SHA-512 key")?,
-                args,
-                payload_data,
-            ),
-            ShaVariant::Unrecognised(_) => Ok(bib::OperationResult {
-                protects_primary_block: args.target_number == 0
-                    || self.parameters.flags.include_primary_block,
-                can_sign: false,
-            }),
-        }
+        let can_sign = match self.parameters.variant {
+            ShaVariant::HMAC_256_256 => {
+                if self
+                    .calculate_hmac(
+                        hmac::Hmac::<sha2::Sha256>::new_from_slice(&key)
+                            .map_field_err("SHA-256 key")?,
+                        &args,
+                        payload_data,
+                    )?
+                    .into_bytes()
+                    .as_slice()
+                    != self.results.0.as_ref()
+                {
+                    return Err(bpsec::Error::IntegrityCheckFailed);
+                }
+                true
+            }
+            ShaVariant::HMAC_384_384 => {
+                if self
+                    .calculate_hmac(
+                        hmac::Hmac::<sha2::Sha384>::new_from_slice(&key)
+                            .map_field_err("SHA-384 key")?,
+                        &args,
+                        payload_data,
+                    )?
+                    .into_bytes()
+                    .as_slice()
+                    != self.results.0.as_ref()
+                {
+                    return Err(bpsec::Error::IntegrityCheckFailed);
+                }
+                true
+            }
+            ShaVariant::HMAC_512_512 => {
+                if self
+                    .calculate_hmac(
+                        hmac::Hmac::<sha2::Sha512>::new_from_slice(&key)
+                            .map_field_err("SHA-512 key")?,
+                        &args,
+                        payload_data,
+                    )?
+                    .into_bytes()
+                    .as_slice()
+                    != self.results.0.as_ref()
+                {
+                    return Err(bpsec::Error::IntegrityCheckFailed);
+                }
+                true
+            }
+            ShaVariant::Unrecognised(_) => false,
+        };
+
+        Ok(bib::OperationResult {
+            protects_primary_block: args.target_number == 0
+                || self.parameters.flags.include_primary_block,
+            can_sign,
+        })
     }
 
-    pub fn verify_inner<M>(
+    pub fn calculate_hmac<M>(
         &self,
         mut mac: M,
-        args: OperationArgs,
+        args: &bib::OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<bib::OperationResult, Error>
+    ) -> Result<hmac::digest::CtOutput<M>, Error>
     where
         M: hmac::Mac,
     {
@@ -236,8 +318,8 @@ impl Operation {
 
         if !matches!(args.target.block_type, BlockType::Primary) {
             if self.parameters.flags.include_primary_block {
-                if !args.canonical_primary_block {
-                    mac.update(&primary_block::PrimaryBlock::emit(args.bundle));
+                if let Some(p) = args.primary_block {
+                    mac.update(p);
                 } else {
                     mac.update(
                         args.bundle
@@ -267,8 +349,8 @@ impl Operation {
         }
 
         if matches!(args.target.block_type, BlockType::Primary) {
-            if !args.canonical_primary_block {
-                emit_data(&mut mac, &primary_block::PrimaryBlock::emit(args.bundle));
+            if let Some(p) = args.primary_block {
+                emit_data(&mut mac, p);
             } else {
                 emit_data(
                     &mut mac,
@@ -312,15 +394,7 @@ impl Operation {
             })?;
         }
 
-        if mac.finalize().into_bytes().as_slice() != self.results.0.as_ref() {
-            Err(bpsec::Error::IntegrityCheckFailed)
-        } else {
-            Ok(bib::OperationResult {
-                protects_primary_block: args.target_number == 0
-                    || self.parameters.flags.include_primary_block,
-                can_sign: true,
-            })
-        }
+        Ok(mac.finalize())
     }
 
     pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {

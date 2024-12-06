@@ -38,13 +38,22 @@ fn parse_ranges<const D: usize>(
 
 #[derive(Debug)]
 pub struct UnknownOperation {
-    parameters: Rc<HashMap<u64, Range<usize>>>,
-    results: HashMap<u64, Range<usize>>,
+    parameters: Rc<HashMap<u64, Box<[u8]>>>,
+    results: HashMap<u64, Box<[u8]>>,
 }
 
 impl UnknownOperation {
-    pub fn parse(asb: AbstractSyntaxBlock) -> Result<(Eid, HashMap<u64, Self>), Error> {
-        let parameters = Rc::from(asb.parameters);
+    pub fn parse(
+        asb: AbstractSyntaxBlock,
+        source_data: &[u8],
+    ) -> Result<(Eid, HashMap<u64, Self>), Error> {
+        let parameters = Rc::from(asb.parameters.into_iter().fold(
+            HashMap::new(),
+            |mut map, (id, range)| {
+                map.insert(id, source_data[range].into());
+                map
+            },
+        ));
 
         // Unpack results
         let mut operations = HashMap::new();
@@ -53,20 +62,19 @@ impl UnknownOperation {
                 target,
                 Self {
                     parameters: parameters.clone(),
-                    results,
+                    results: results
+                        .into_iter()
+                        .fold(HashMap::new(), |mut map, (id, range)| {
+                            map.insert(id, source_data[range].into());
+                            map
+                        }),
                 },
             );
         }
         Ok((asb.source, operations))
     }
 
-    pub fn emit_context(
-        &self,
-        encoder: &mut cbor::encode::Encoder,
-        source: &Eid,
-        id: u64,
-        source_data: &[u8],
-    ) {
+    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid, id: u64) {
         encoder.emit(id);
         if self.parameters.is_empty() {
             encoder.emit(0);
@@ -75,22 +83,22 @@ impl UnknownOperation {
             encoder.emit(1);
             encoder.emit(source);
             encoder.emit_array(Some(self.parameters.len()), |a| {
-                for (id, range) in self.parameters.iter() {
+                for (id, result) in self.parameters.iter() {
                     a.emit_array(Some(2), |a| {
                         a.emit(*id);
-                        a.emit_raw_slice(&source_data[range.start..range.end]);
+                        a.emit_raw_slice(result);
                     });
                 }
             });
         }
     }
 
-    pub fn emit_result(&self, array: &mut cbor::encode::Array, source_data: &[u8]) {
+    pub fn emit_result(&self, array: &mut cbor::encode::Array) {
         array.emit_array(Some(self.results.len()), |a| {
-            for (id, range) in self.results.iter() {
+            for (id, result) in &self.results {
                 a.emit_array(Some(2), |a| {
                     a.emit(*id);
-                    a.emit_raw_slice(&source_data[range.start..range.end]);
+                    a.emit_raw_slice(result);
                 });
             }
         });

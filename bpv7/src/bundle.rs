@@ -45,14 +45,6 @@ where
     }
 }
 
-#[derive(Default)]
-struct NoncanonicalInfo {
-    bcb_can_rewrite: bool,
-    bib_source: Option<u64>,
-    bib_can_rewrite: bool,
-    is_payload_noncanonical: bool,
-}
-
 #[derive(Default, Debug, Clone)]
 pub struct Bundle {
     // From Primary Block
@@ -73,647 +65,6 @@ pub struct Bundle {
 }
 
 impl Bundle {
-    #[allow(clippy::type_complexity)]
-    fn bcb_decrypt_block(
-        &self,
-        keys: &mut impl KeyCache,
-        operation: &bpsec::bcb::Operation,
-        args: bpsec::OperationArgs,
-        protects_primary_block: &mut HashSet<u64>,
-        noncanonical_blocks: &mut HashMap<u64, NoncanonicalInfo>,
-    ) -> Result<(Option<Box<[u8]>>, bool), bpsec::Error> {
-        let source_number = args.source_number;
-        let target_number = args.target_number;
-        let r = operation.decrypt(keys.get(args.bpsec_source, operation.context_id())?, args)?;
-        if r.protects_primary_block {
-            protects_primary_block.insert(source_number);
-        }
-        if r.can_encrypt {
-            // Remember that the non-canonical block is a re-encryptable BCB target
-            if let Some(info) = noncanonical_blocks.get_mut(&target_number) {
-                info.bcb_can_rewrite = true;
-            }
-        }
-        Ok((r.plaintext, r.can_encrypt))
-    }
-
-    fn bib_verify_data(
-        &self,
-        keys: &mut impl KeyCache,
-        operation: &bpsec::bib::Operation,
-        args: bpsec::OperationArgs,
-        payload_data: Option<&[u8]>,
-        protects_primary_block: &mut HashSet<u64>,
-        noncanonical_blocks: &mut HashMap<u64, NoncanonicalInfo>,
-    ) -> Result<bool, bpsec::Error> {
-        let source_number = args.source_number;
-        let target_number = args.target_number;
-        let r = operation.verify(
-            keys.get(args.bpsec_source, operation.context_id())?,
-            args,
-            payload_data,
-        )?;
-        if r.protects_primary_block {
-            protects_primary_block.insert(source_number);
-        }
-
-        // Remember that the non-canonical block is a BIB target
-        if let Some(info) = noncanonical_blocks.get_mut(&target_number) {
-            info.bib_source = Some(source_number);
-            info.bib_can_rewrite = r.can_sign;
-        }
-
-        Ok(r.can_sign)
-    }
-
-    /* Refactoring this huge function into parts doesn't really help readability,
-     * and seems to drive the borrow checker insane */
-    #[allow(clippy::type_complexity)]
-    fn parse_blocks(
-        &mut self,
-        canonical_primary_block: bool,
-        blocks: &mut cbor::decode::Array,
-        mut offset: usize,
-        source_data: &[u8],
-        keys: &mut impl KeyCache,
-    ) -> Result<(HashMap<u64, NoncanonicalInfo>, HashSet<u64>, bool), Error> {
-        let mut last_block_number = 0;
-        let mut noncanonical_blocks: HashMap<u64, NoncanonicalInfo> = HashMap::new();
-        let mut blocks_to_check = HashMap::new();
-        let mut blocks_to_remove = HashSet::new();
-        let mut report_unsupported = false;
-        let mut bcbs_to_check = Vec::new();
-        let mut bibs_to_check = HashSet::new();
-        let mut bcb_targets = HashMap::new();
-        let mut protects_primary_block = HashSet::new();
-
-        // Parse the blocks and build a map
-        while let Some((mut block, s, block_len)) =
-            blocks.try_parse::<(block::BlockWithNumber, bool, usize)>()?
-        {
-            if !s {
-                noncanonical_blocks.entry(block.number).or_default();
-            }
-            block.block.data_start += offset;
-
-            // Check the block
-            match block.block.block_type {
-                BlockType::Primary => unreachable!(),
-                BlockType::Payload
-                | BlockType::PreviousNode
-                | BlockType::BundleAge
-                | BlockType::HopCount => {
-                    // Confirm no duplicates
-                    if blocks_to_check
-                        .insert(block.block.block_type, block.number)
-                        .is_some()
-                    {
-                        return Err(Error::DuplicateBlocks(block.block.block_type));
-                    }
-                }
-                BlockType::BlockIntegrity => {
-                    bibs_to_check.insert(block.number);
-                }
-                BlockType::BlockSecurity => {
-                    if block.block.flags.delete_block_on_failure {
-                        return Err(bpsec::Error::BCBDeleteFlag.into());
-                    }
-
-                    let bcb = block
-                        .block
-                        .parse_payload::<bpsec::bcb::OperationSet>(source_data)
-                        .map(|(v, s)| {
-                            if !s {
-                                noncanonical_blocks
-                                    .entry(block.number)
-                                    .or_default()
-                                    .is_payload_noncanonical = true;
-                            }
-                            v
-                        })
-                        .map_field_err("BPSec confidentiality extension block")?;
-
-                    if bcb.is_unsupported() {
-                        if block.block.flags.delete_bundle_on_failure {
-                            return Err(Error::Unsupported(block.number));
-                        }
-
-                        if block.block.flags.report_on_failure {
-                            report_unsupported = true;
-                        }
-                    }
-                    bcbs_to_check.push((block.number, bcb));
-                }
-                BlockType::Unrecognised(_) => {
-                    if block.block.flags.delete_bundle_on_failure {
-                        return Err(Error::Unsupported(block.number));
-                    }
-
-                    if block.block.flags.delete_block_on_failure {
-                        blocks_to_remove.insert(block.number);
-                    }
-
-                    if block.block.flags.report_on_failure {
-                        report_unsupported = true;
-                    }
-                }
-            }
-
-            // Add block
-            if self.blocks.insert(block.number, block.block).is_some() {
-                return Err(Error::DuplicateBlockNumber(block.number));
-            }
-
-            last_block_number = block.number;
-            offset += block_len;
-        }
-
-        // Check the last block is the payload
-        if let Some(payload_block_number) = blocks_to_check.remove(&BlockType::Payload) {
-            if payload_block_number != last_block_number {
-                return Err(Error::PayloadNotFinal);
-            }
-        } else {
-            return Err(Error::MissingPayload);
-        }
-
-        // Do the first BCB pass, checking BIBs and general sanity
-        let mut bcbs = Vec::new();
-        let mut bib_targets = HashSet::new();
-        let mut bcb_target_counts = HashMap::new();
-        for (bcb_block_number, bcb) in &bcbs_to_check {
-            let bcb_block = self.blocks.get(bcb_block_number).unwrap();
-            let mut bcb_targets_remaining = bcb.operations.len();
-            for (bcb_target_number, bcb_op) in &bcb.operations {
-                if bcb_targets
-                    .insert(*bcb_target_number, *bcb_block_number)
-                    .is_some()
-                {
-                    return Err(bpsec::Error::DuplicateOpTarget.into());
-                }
-                let Some(bcb_target_block) = self.blocks.get(bcb_target_number) else {
-                    return Err(bpsec::Error::MissingSecurityTarget.into());
-                };
-
-                let mut add_target = !bcb_op.is_unsupported();
-                match bcb_target_block.block_type {
-                    BlockType::BlockSecurity | BlockType::Primary => {
-                        return Err(bpsec::Error::InvalidBCBTarget.into())
-                    }
-                    BlockType::Payload => {
-                        // Just validate
-                        if !bcb_block.flags.must_replicate {
-                            return Err(bpsec::Error::BCBMustReplicate.into());
-                        }
-                    }
-                    BlockType::BlockIntegrity => {
-                        if let (Some(bib), can_encrypt) = self.bcb_decrypt_block(
-                            keys,
-                            bcb_op,
-                            bpsec::OperationArgs {
-                                bpsec_source: &bcb.source,
-                                target: bcb_target_block,
-                                target_number: *bcb_target_number,
-                                source: bcb_block,
-                                source_number: *bcb_block_number,
-                                bundle: self,
-                                canonical_primary_block,
-                                bundle_data: source_data,
-                            },
-                            &mut protects_primary_block,
-                            &mut noncanonical_blocks,
-                        )? {
-                            let (bib, s) =
-                                cbor::decode::parse::<(bpsec::bib::OperationSet, bool)>(&bib)
-                                    .map_field_err("BPSec integrity extension block")?;
-                            if !s {
-                                // If we can't re-encrypt, we can't rewrite
-                                if !can_encrypt {
-                                    return Err(Error::NonCanonical(*bcb_target_number));
-                                }
-
-                                noncanonical_blocks.insert(
-                                    *bcb_target_number,
-                                    NoncanonicalInfo {
-                                        bcb_can_rewrite: true,
-                                        is_payload_noncanonical: true,
-                                        ..Default::default()
-                                    },
-                                );
-                            };
-
-                            if bib.is_unsupported() {
-                                if bcb_target_block.flags.delete_bundle_on_failure {
-                                    return Err(Error::Unsupported(*bcb_target_number));
-                                }
-
-                                if bcb_target_block.flags.delete_block_on_failure {
-                                    blocks_to_remove.insert(*bcb_target_number);
-                                }
-
-                                if bcb_target_block.flags.report_on_failure {
-                                    report_unsupported = true;
-                                }
-                            }
-
-                            // Validate targets now, as they are encrypted by this BCB
-                            let mut bib_targets_remaining = bib.operations.len();
-                            for (bib_target_number, bib_op) in bib.operations {
-                                if !bib_targets.insert(bib_target_number) {
-                                    return Err(bpsec::Error::DuplicateOpTarget.into());
-                                }
-
-                                let Some(bib_target_block) = self.blocks.get(&bib_target_number)
-                                else {
-                                    return Err(bpsec::Error::MissingSecurityTarget.into());
-                                };
-
-                                // Check BIB target
-                                if let BlockType::BlockSecurity | BlockType::BlockIntegrity =
-                                    bib_target_block.block_type
-                                {
-                                    return Err(bpsec::Error::InvalidBIBTarget.into());
-                                }
-
-                                // Find correct bcb_op for target
-                                let Some(bcb_op) = bcb.operations.get(&bib_target_number) else {
-                                    return Err(bpsec::Error::BCBMustShareTarget.into());
-                                };
-
-                                // Decrypt the BIB target
-                                if let (Some(block_data), can_encrypt) = self.bcb_decrypt_block(
-                                    keys,
-                                    bcb_op,
-                                    bpsec::OperationArgs {
-                                        bpsec_source: &bcb.source,
-                                        target: bib_target_block,
-                                        target_number: bib_target_number,
-                                        source: bcb_block,
-                                        source_number: *bcb_block_number,
-                                        bundle: self,
-                                        canonical_primary_block,
-                                        bundle_data: source_data,
-                                    },
-                                    &mut protects_primary_block,
-                                    &mut noncanonical_blocks,
-                                )? {
-                                    // Do BIB verification
-                                    let can_resign = self.bib_verify_data(
-                                        keys,
-                                        &bib_op,
-                                        bpsec::OperationArgs {
-                                            bpsec_source: &bib.source,
-                                            target: bib_target_block,
-                                            target_number: bib_target_number,
-                                            source: bcb_target_block,
-                                            source_number: *bcb_target_number,
-                                            bundle: self,
-                                            canonical_primary_block,
-                                            bundle_data: source_data,
-                                        },
-                                        Some(&block_data),
-                                        &mut protects_primary_block,
-                                        &mut noncanonical_blocks,
-                                    )?;
-
-                                    // And parse if needed
-                                    if blocks_to_check
-                                        .remove(&bib_target_block.block_type)
-                                        .is_some()
-                                        && !match bib_target_block.block_type {
-                                            BlockType::PreviousNode => {
-                                                cbor::decode::parse::<(Eid, bool)>(&block_data)
-                                                    .map(|(v, s)| {
-                                                        self.previous_node = Some(v);
-                                                        s
-                                                    })
-                                                    .map_field_err("Previous Node Block")?
-                                            }
-                                            BlockType::BundleAge => {
-                                                cbor::decode::parse::<(u64, bool)>(&block_data)
-                                                    .map(|(v, s)| {
-                                                        self.age = Some(v);
-                                                        s
-                                                    })
-                                                    .map_field_err("Bundle Age Block")?
-                                            }
-                                            BlockType::HopCount => {
-                                                cbor::decode::parse::<(HopInfo, bool)>(&block_data)
-                                                    .map(|(v, s)| {
-                                                        self.hop_count = Some(v);
-                                                        s
-                                                    })
-                                                    .map_field_err("Hop Count Block")?
-                                            }
-                                            _ => true,
-                                        }
-                                    {
-                                        // If we can't re-encrypt or re-sign, we can't rewrite
-                                        if !can_encrypt || !can_resign {
-                                            return Err(Error::NonCanonical(*bcb_target_number));
-                                        }
-
-                                        noncanonical_blocks.insert(
-                                            *bcb_target_number,
-                                            NoncanonicalInfo {
-                                                bcb_can_rewrite: true,
-                                                bib_source: Some(*bcb_target_number),
-                                                bib_can_rewrite: true,
-                                                is_payload_noncanonical: true,
-                                            },
-                                        );
-                                    }
-                                }
-
-                                // Check if the target block is supported
-                                if blocks_to_remove.contains(&bib_target_number) {
-                                    bib_targets_remaining -= 1;
-                                }
-                            }
-
-                            if bib_targets_remaining == 0 {
-                                // All targets are unsupported
-                                blocks_to_remove.insert(*bcb_target_number);
-                            }
-                        }
-
-                        // Don't need to check this BIB again
-                        bibs_to_check.remove(bcb_target_number);
-
-                        // Don't need to reprocess this BCB target BIB
-                        add_target = false;
-                    }
-                    _ => {}
-                }
-
-                if blocks_to_remove.contains(bcb_target_number) {
-                    bcb_targets_remaining -= 1;
-                } else if add_target {
-                    bcbs.push((
-                        *bcb_target_number,
-                        bcb_target_block,
-                        &bcb.source,
-                        bcb_op,
-                        bcb_block,
-                        *bcb_block_number,
-                    ));
-                }
-            }
-
-            if bcb_targets_remaining == 0 {
-                blocks_to_remove.insert(*bcb_block_number);
-            } else {
-                bcb_target_counts.insert(*bcb_block_number, bcb_targets_remaining);
-            }
-        }
-
-        // Check non-BIB valid BCB targets next
-        for (target_number, target_block, source, op, bcb_block, bcb_block_number) in bcbs {
-            // Skip blocks we have already processed as BIB targets
-            if bib_targets.contains(&target_number) {
-                continue;
-            }
-
-            // Confirm we can decrypt if we have keys
-            if let (Some(block_data), can_encrypt) = self.bcb_decrypt_block(
-                keys,
-                op,
-                bpsec::OperationArgs {
-                    bpsec_source: source,
-                    target: target_block,
-                    target_number,
-                    source: bcb_block,
-                    source_number: bcb_block_number,
-                    bundle: self,
-                    canonical_primary_block,
-                    bundle_data: source_data,
-                },
-                &mut protects_primary_block,
-                &mut noncanonical_blocks,
-            )? {
-                if blocks_to_check.remove(&target_block.block_type).is_some()
-                    && !match target_block.block_type {
-                        BlockType::PreviousNode => cbor::decode::parse::<(Eid, bool)>(&block_data)
-                            .map(|(v, s)| {
-                                self.previous_node = Some(v);
-                                s
-                            })
-                            .map_field_err("Previous Node Block")?,
-                        BlockType::BundleAge => cbor::decode::parse::<(u64, bool)>(&block_data)
-                            .map(|(v, s)| {
-                                self.age = Some(v);
-                                s
-                            })
-                            .map_field_err("Bundle Age Block")?,
-                        BlockType::HopCount => cbor::decode::parse::<(HopInfo, bool)>(&block_data)
-                            .map(|(v, s)| {
-                                self.hop_count = Some(v);
-                                s
-                            })
-                            .map_field_err("Hop Count Block")?,
-                        _ => true,
-                    }
-                {
-                    // If we can't re-encrypt, we can't rewrite
-                    if !can_encrypt {
-                        return Err(Error::NonCanonical(target_number));
-                    }
-
-                    noncanonical_blocks.insert(
-                        target_number,
-                        NoncanonicalInfo {
-                            bcb_can_rewrite: true,
-                            is_payload_noncanonical: true,
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-
-            if blocks_to_remove.contains(&target_number) {
-                if let Some(remaining) = bcb_target_counts.get_mut(&bcb_block_number) {
-                    *remaining -= 1;
-                    if *remaining == 0 {
-                        blocks_to_remove.insert(bcb_block_number);
-                    }
-                }
-            }
-        }
-
-        // Record the BCB that targets this block
-        for (bcb_target, bcb) in bcb_targets {
-            self.blocks.get_mut(&bcb_target).unwrap().bcb = Some(bcb);
-        }
-
-        // Check remaining BIB targets next
-        for bib_block_number in bibs_to_check {
-            let bib_block = self.blocks.get(&bib_block_number).unwrap();
-
-            let bib = bib_block
-                .parse_payload::<bpsec::bib::OperationSet>(source_data)
-                .map(|(v, s)| {
-                    if !s {
-                        noncanonical_blocks
-                            .entry(bib_block_number)
-                            .or_default()
-                            .is_payload_noncanonical = true;
-                    }
-                    v
-                })
-                .map_field_err("BPSec integrity extension block")?;
-
-            if bib.is_unsupported() {
-                if bib_block.flags.delete_bundle_on_failure {
-                    return Err(Error::Unsupported(bib_block_number));
-                }
-
-                if bib_block.flags.delete_block_on_failure {
-                    blocks_to_remove.insert(bib_block_number);
-                }
-
-                if bib_block.flags.report_on_failure {
-                    report_unsupported = true;
-                }
-            }
-
-            let mut bib_targets_remaining = bib.operations.len();
-            for (bib_target_number, op) in bib.operations {
-                if !bib_targets.insert(bib_target_number) {
-                    return Err(bpsec::Error::DuplicateOpTarget.into());
-                }
-                let Some(bib_target_block) = self.blocks.get(&bib_target_number) else {
-                    return Err(bpsec::Error::MissingSecurityTarget.into());
-                };
-
-                // Verify BIB target
-                if let BlockType::BlockSecurity | BlockType::BlockIntegrity =
-                    bib_target_block.block_type
-                {
-                    return Err(bpsec::Error::InvalidBIBTarget.into());
-                }
-
-                let can_resign = self.bib_verify_data(
-                    keys,
-                    &op,
-                    bpsec::OperationArgs {
-                        bpsec_source: &bib.source,
-                        target: bib_target_block,
-                        target_number: bib_target_number,
-                        source: bib_block,
-                        source_number: bib_block_number,
-                        bundle: self,
-                        canonical_primary_block,
-                        bundle_data: source_data,
-                    },
-                    None,
-                    &mut protects_primary_block,
-                    &mut noncanonical_blocks,
-                )?;
-
-                if blocks_to_check
-                    .remove(&bib_target_block.block_type)
-                    .is_some()
-                    && !match bib_target_block.block_type {
-                        BlockType::PreviousNode => bib_target_block
-                            .parse_payload(source_data)
-                            .map(|(v, s)| {
-                                self.previous_node = Some(v);
-                                s
-                            })
-                            .map_field_err("Previous Node Block")?,
-                        BlockType::BundleAge => bib_target_block
-                            .parse_payload(source_data)
-                            .map(|(v, s)| {
-                                self.age = Some(v);
-                                s
-                            })
-                            .map_field_err("Bundle Age Block")?,
-                        BlockType::HopCount => bib_target_block
-                            .parse_payload(source_data)
-                            .map(|(v, s)| {
-                                self.hop_count = Some(v);
-                                s
-                            })
-                            .map_field_err("Hop Count Block")?,
-                        _ => true,
-                    }
-                {
-                    // If we can't re-sign, we can't rewrite
-                    if !can_resign {
-                        return Err(Error::NonCanonical(bib_target_number));
-                    }
-
-                    noncanonical_blocks.insert(
-                        bib_target_number,
-                        NoncanonicalInfo {
-                            bib_source: Some(bib_block_number),
-                            bib_can_rewrite: true,
-                            is_payload_noncanonical: true,
-                            ..Default::default()
-                        },
-                    );
-                }
-
-                if blocks_to_remove.contains(&bib_target_number) {
-                    bib_targets_remaining -= 1;
-                }
-            }
-
-            if bib_targets_remaining == 0 {
-                blocks_to_remove.insert(bib_block_number);
-            }
-        }
-
-        // Check everything that isn't already checked
-        for (_, block_number) in blocks_to_check {
-            let block = self.blocks.get(&block_number).unwrap();
-            if !match block.block_type {
-                BlockType::PreviousNode => block
-                    .parse_payload(source_data)
-                    .map(|(v, s)| {
-                        self.previous_node = Some(v);
-                        s
-                    })
-                    .map_field_err("Previous Node Block")?,
-                BlockType::BundleAge => block
-                    .parse_payload(source_data)
-                    .map(|(v, s)| {
-                        self.age = Some(v);
-                        s
-                    })
-                    .map_field_err("Bundle Age Block")?,
-                BlockType::HopCount => block
-                    .parse_payload(source_data)
-                    .map(|(v, s)| {
-                        self.hop_count = Some(v);
-                        s
-                    })
-                    .map_field_err("Hop Count Block")?,
-                _ => true,
-            } {
-                noncanonical_blocks
-                    .entry(block_number)
-                    .or_default()
-                    .is_payload_noncanonical = true;
-            }
-        }
-
-        // Check bundle age exists if needed
-        if self.age.is_none() && self.id.timestamp.creation_time.is_none() {
-            return Err(Error::MissingBundleAge);
-        }
-
-        if let CrcType::None = self.crc_type {
-            if protects_primary_block.is_empty()
-                || protects_primary_block.is_subset(&blocks_to_remove)
-            {
-                return Err(Error::MissingIntegrityCheck);
-            }
-        }
-
-        Ok((noncanonical_blocks, blocks_to_remove, report_unsupported))
-    }
-
     pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
         let data_start = array.offset();
         let data = primary_block::PrimaryBlock::emit(self);
@@ -740,16 +91,507 @@ impl Bundle {
         );
     }
 
-    fn canonicalise(
-        &mut self,
-        mut noncanonical_blocks: HashMap<u64, NoncanonicalInfo>,
-        blocks_to_remove: HashSet<u64>,
+    fn parse_payload<T>(
+        &self,
+        block_number: &u64,
+        decrypted_data: &HashMap<u64, (Box<[u8]>, bool)>,
         source_data: &[u8],
-    ) -> Vec<u8> {
-        cbor::encode::emit_array(None, |a| {
-            // Emit primary block
-            if noncanonical_blocks.remove(&0).is_some() {
-                self.emit_primary_block(a);
+    ) -> Result<(&Block, T, bool), Error>
+    where
+        T: cbor::decode::FromCbor<Error: From<cbor::decode::Error> + Into<Error>>,
+    {
+        if let Some((block_data, can_encrypt)) = decrypted_data.get(block_number) {
+            match cbor::decode::parse::<(T, bool, usize)>(block_data)
+                .map(|(v, s, len)| (v, s && len == block_data.len()))
+            {
+                Ok((v, s)) => {
+                    // If we can't re-encrypt, we can't rewrite
+                    if !s && !can_encrypt {
+                        Err(Error::NonCanonical(*block_number))
+                    } else {
+                        Ok((self.blocks.get(block_number).unwrap(), v, s))
+                    }
+                }
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            let block = self.blocks.get(block_number).unwrap();
+            cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
+                cbor::decode::Value::Bytes(data) => cbor::decode::parse::<(T, bool, usize)>(data)
+                    .map(|(v, s, len)| (v, s && len == data.len())),
+                cbor::decode::Value::ByteStream(data) => cbor::decode::parse::<(T, bool, usize)>(
+                    &data.iter().fold(Vec::new(), |mut data, d| {
+                        data.extend(*d);
+                        data
+                    }),
+                )
+                .map(|(v, s, len)| (v, s && len == data.len())),
+                _ => unreachable!(),
+            })
+            .map(|((v, s), _)| (block, v, s))
+            .map_err(Into::into)
+        }
+    }
+
+    /* Refactoring this huge function into parts doesn't really help readability,
+     * and seems to drive the borrow checker insane */
+    #[allow(clippy::type_complexity)]
+    fn parse_blocks(
+        &mut self,
+        canonical_bundle: bool,
+        canonical_primary_block: bool,
+        blocks: &mut cbor::decode::Array,
+        mut offset: usize,
+        source_data: &[u8],
+        keys: &mut impl KeyCache,
+    ) -> Result<(Option<Box<[u8]>>, bool), Error> {
+        let mut last_block_number = 0;
+        let mut noncanonical_blocks: HashMap<u64, bool> = HashMap::new();
+        let mut blocks_to_check = HashMap::new();
+        let mut blocks_to_remove = HashSet::new();
+        let mut report_unsupported = false;
+        let mut bcbs_to_check = Vec::new();
+        let mut bibs_to_check = HashSet::new();
+
+        // Parse the blocks and build a map
+        while let Some((mut block, canonical, block_len)) =
+            blocks.try_parse::<(block::BlockWithNumber, bool, usize)>()?
+        {
+            block.block.data_start += offset;
+
+            if !canonical {
+                noncanonical_blocks.insert(block.number, false);
+            }
+
+            // Check the block
+            match block.block.block_type {
+                BlockType::Primary => unreachable!(),
+                BlockType::Payload
+                | BlockType::PreviousNode
+                | BlockType::BundleAge
+                | BlockType::HopCount => {
+                    // Confirm no duplicates
+                    if blocks_to_check
+                        .insert(block.block.block_type, block.number)
+                        .is_some()
+                    {
+                        return Err(Error::DuplicateBlocks(block.block.block_type));
+                    }
+                }
+                BlockType::BlockIntegrity => {
+                    bibs_to_check.insert(block.number);
+                }
+                BlockType::BlockSecurity => {
+                    bcbs_to_check.push(block.number);
+                }
+                BlockType::Unrecognised(_) => {
+                    if block.block.flags.delete_bundle_on_failure {
+                        return Err(Error::Unsupported(block.number));
+                    }
+
+                    if block.block.flags.report_on_failure {
+                        report_unsupported = true;
+                    }
+
+                    if block.block.flags.delete_block_on_failure {
+                        noncanonical_blocks.remove(&block.number);
+                        blocks_to_remove.insert(block.number);
+                    }
+                }
+            }
+
+            // Add block
+            if self.blocks.insert(block.number, block.block).is_some() {
+                return Err(Error::DuplicateBlockNumber(block.number));
+            }
+
+            last_block_number = block.number;
+            offset += block_len;
+        }
+
+        // Check the last block is the payload
+        if let Some(payload_block_number) = blocks_to_check.remove(&BlockType::Payload) {
+            if payload_block_number != last_block_number {
+                return Err(Error::PayloadNotFinal);
+            }
+        } else {
+            return Err(Error::MissingPayload);
+        }
+
+        // Check for spurious extra data
+        if blocks.offset() != source_data.len() {
+            return Err(Error::AdditionalData);
+        }
+
+        // Rewrite primary block if required
+        let primary_block = if !canonical_primary_block {
+            Some(primary_block::PrimaryBlock::emit(self))
+        } else {
+            None
+        };
+
+        // Decrypt all BCB targets first
+        let mut decrypted_data = HashMap::new();
+        let mut protects_primary_block = HashSet::new();
+        let mut bcb_targets = HashMap::new();
+        let mut bcbs = HashMap::new();
+        for bcb_block_number in bcbs_to_check {
+            // Parse the BCB
+            let (bcb_block, bcb, s) = self
+                .parse_payload::<bpsec::bcb::OperationSet>(
+                    &bcb_block_number,
+                    &HashMap::new(),
+                    source_data,
+                )
+                .map_field_err("BPSec confidentiality extension block")?;
+
+            if !s {
+                noncanonical_blocks.insert(bcb_block_number, true);
+            }
+
+            if bcb_block.flags.delete_block_on_failure {
+                return Err(bpsec::Error::BCBDeleteFlag.into());
+            }
+
+            if bcb.is_unsupported() {
+                if bcb_block.flags.delete_bundle_on_failure {
+                    return Err(Error::Unsupported(bcb_block_number));
+                }
+
+                if bcb_block.flags.delete_block_on_failure {
+                    return Err(bpsec::Error::BCBDeleteFlag.into());
+                }
+
+                if bcb_block.flags.report_on_failure {
+                    report_unsupported = true;
+                }
+            }
+
+            // Decrypt targets
+            for (target_number, op) in &bcb.operations {
+                if bcb_targets
+                    .insert(*target_number, bcb_block_number)
+                    .is_some()
+                {
+                    return Err(bpsec::Error::DuplicateOpTarget.into());
+                }
+                let Some(target_block) = self.blocks.get(target_number) else {
+                    return Err(bpsec::Error::MissingSecurityTarget.into());
+                };
+
+                match target_block.block_type {
+                    BlockType::BlockSecurity | BlockType::Primary => {
+                        return Err(bpsec::Error::InvalidBCBTarget.into())
+                    }
+                    BlockType::Payload => {
+                        // Check flags
+                        if !bcb_block.flags.must_replicate {
+                            return Err(bpsec::Error::BCBMustReplicate.into());
+                        }
+                    }
+                    _ => {}
+                }
+
+                // Confirm we can decrypt if we have keys
+                let r = op.decrypt(
+                    keys.get(&bcb.source, op.context_id())?,
+                    bpsec::bcb::OperationArgs {
+                        bpsec_source: &bcb.source,
+                        target: target_block,
+                        target_number: *target_number,
+                        source: bcb_block,
+                        source_number: bcb_block_number,
+                        bundle: self,
+                        primary_block: primary_block.as_deref(),
+                        bundle_data: source_data,
+                    },
+                    None,
+                )?;
+
+                if !blocks_to_remove.contains(target_number) {
+                    if r.protects_primary_block {
+                        protects_primary_block.insert(bcb_block_number);
+                    }
+
+                    if let Some(block_data) = r.plaintext {
+                        decrypted_data.insert(*target_number, (block_data, r.can_encrypt));
+                    } else if let BlockType::BlockIntegrity = target_block.block_type {
+                        // We can't decrypt, therefore we cannot check the BIB
+                        bibs_to_check.remove(target_number);
+                    }
+                }
+            }
+
+            bcbs.insert(bcb_block_number, bcb);
+        }
+        for (target, bcb) in bcb_targets {
+            // Note the target is a BCB target
+            self.blocks.get_mut(&target).unwrap().bcb = Some(bcb);
+        }
+
+        // Now parse all the non-BIBs we need to check
+        for (block_type, block_number) in blocks_to_check {
+            if !match block_type {
+                BlockType::PreviousNode => {
+                    let (_, v, s) = self
+                        .parse_payload(&block_number, &decrypted_data, source_data)
+                        .map_field_err("Previous Node Block")?;
+                    self.previous_node = Some(v);
+                    s
+                }
+                BlockType::BundleAge => {
+                    let (_, v, s) = self
+                        .parse_payload(&block_number, &decrypted_data, source_data)
+                        .map_field_err("Bundle Age Block")?;
+                    self.age = Some(v);
+                    s
+                }
+                BlockType::HopCount => {
+                    let (_, v, s) = self
+                        .parse_payload(&block_number, &decrypted_data, source_data)
+                        .map_field_err("Hop Count Block")?;
+                    self.hop_count = Some(v);
+                    s
+                }
+                _ => true,
+            } {
+                noncanonical_blocks.insert(block_number, true);
+            }
+        }
+
+        // Check bundle age exists if needed
+        if self.age.is_none() && self.id.timestamp.creation_time.is_none() {
+            return Err(Error::MissingBundleAge);
+        }
+
+        // Now parse all BIBs
+        let mut bibs = HashMap::new();
+        let mut bib_targets = HashSet::new();
+        for bib_block_number in bibs_to_check {
+            let (bib_block, mut bib, canonical) = self
+                .parse_payload::<bpsec::bib::OperationSet>(
+                    &bib_block_number,
+                    &decrypted_data,
+                    source_data,
+                )
+                .map_field_err("BPSec integrity extension block")?;
+
+            if bib.is_unsupported() {
+                if bib_block.flags.delete_bundle_on_failure {
+                    return Err(Error::Unsupported(bib_block_number));
+                }
+
+                if bib_block.flags.report_on_failure {
+                    report_unsupported = true;
+                }
+
+                if bib_block.flags.delete_block_on_failure {
+                    noncanonical_blocks.remove(&bib_block_number);
+                    blocks_to_remove.insert(bib_block_number);
+                    continue;
+                }
+            }
+
+            let bcb = bib_block.bcb.and_then(|b| bcbs.get(&b));
+
+            // Check targets
+            for (target_number, op) in &bib.operations {
+                if !bib_targets.insert(*target_number) {
+                    return Err(bpsec::Error::DuplicateOpTarget.into());
+                }
+                let Some(target_block) = self.blocks.get(target_number) else {
+                    return Err(bpsec::Error::MissingSecurityTarget.into());
+                };
+
+                // Verify BIB target
+                if let BlockType::BlockSecurity | BlockType::BlockIntegrity =
+                    target_block.block_type
+                {
+                    return Err(bpsec::Error::InvalidBIBTarget.into());
+                }
+
+                if let Some(bcb) = bcb {
+                    // Check we share a target with our BCB
+                    if !bcb.operations.contains_key(target_number) {
+                        return Err(bpsec::Error::BCBMustShareTarget.into());
+                    }
+                }
+
+                let (payload_data, can_encrypt) = decrypted_data
+                    .get(target_number)
+                    .map_or((None, true), |(v, c)| (Some(v.as_ref()), *c));
+
+                let r = op.verify(
+                    keys.get(&bib.source, op.context_id())?,
+                    bpsec::bib::OperationArgs {
+                        bpsec_source: &bib.source,
+                        target: target_block,
+                        target_number: *target_number,
+                        source: bib_block,
+                        source_number: bib_block_number,
+                        bundle: self,
+                        primary_block: primary_block.as_deref(),
+                        bundle_data: source_data,
+                    },
+                    payload_data,
+                )?;
+
+                if !blocks_to_remove.contains(target_number) {
+                    if r.protects_primary_block {
+                        protects_primary_block.insert(bib_block_number);
+                    }
+
+                    if let Some(true) = noncanonical_blocks.get(target_number) {
+                        // If we can't re-encrypt or re-sign, we can't rewrite
+                        if !can_encrypt || !r.can_sign {
+                            return Err(Error::NonCanonical(*target_number));
+                        }
+                    }
+                }
+            }
+
+            // Remove targets scheduled for removal
+            let old_len = bib.operations.len();
+            bib.operations.retain(|k, _| !blocks_to_remove.contains(k));
+            if bib.operations.is_empty() {
+                noncanonical_blocks.remove(&bib_block_number);
+                protects_primary_block.remove(&bib_block_number);
+                blocks_to_remove.insert(bib_block_number);
+                continue;
+            } else if !canonical || bib.operations.len() != old_len {
+                noncanonical_blocks.insert(bib_block_number, true);
+                bibs.insert(bib_block_number, (bib_block, bib));
+            }
+        }
+
+        // Reduce BCB targets scheduled for removal
+        bcbs.retain(|bcb_block_number, bcb| {
+            let old_len = bcb.operations.len();
+            bcb.operations.retain(|k, _| !blocks_to_remove.contains(k));
+            if bcb.operations.is_empty() {
+                noncanonical_blocks.remove(bcb_block_number);
+                protects_primary_block.remove(bcb_block_number);
+                blocks_to_remove.insert(*bcb_block_number);
+                false
+            } else if bcb.operations.len() != old_len {
+                noncanonical_blocks.insert(*bcb_block_number, true);
+                true
+            } else {
+                false
+            }
+        });
+
+        // Check we have at least some primary block protection
+        if let CrcType::None = self.crc_type {
+            if protects_primary_block.is_empty()
+                || protects_primary_block.is_subset(&blocks_to_remove)
+            {
+                return Err(Error::MissingIntegrityCheck);
+            }
+        }
+
+        // If we have nothing to rewrite, get out now
+        if canonical_bundle
+            && canonical_primary_block
+            && noncanonical_blocks.is_empty()
+            && blocks_to_remove.is_empty()
+        {
+            return Ok((None, report_unsupported));
+        }
+
+        // Now start rewriting blocks
+        let mut new_payloads: HashMap<u64, Box<[u8]>> = HashMap::new();
+        noncanonical_blocks.retain(|block_number, is_payload_noncanonical| {
+            if *is_payload_noncanonical {
+                match self.blocks.get(block_number).unwrap().block_type {
+                    BlockType::PreviousNode => {
+                        new_payloads.insert(
+                            *block_number,
+                            cbor::encode::emit(self.previous_node.as_ref().unwrap()).into(),
+                        );
+                        false
+                    }
+                    BlockType::BundleAge => {
+                        new_payloads
+                            .insert(*block_number, cbor::encode::emit(self.age.unwrap()).into());
+                        false
+                    }
+                    BlockType::HopCount => {
+                        new_payloads.insert(
+                            *block_number,
+                            cbor::encode::emit(self.hop_count.as_ref().unwrap()).into(),
+                        );
+                        false
+                    }
+                    BlockType::BlockIntegrity | BlockType::BlockSecurity => {
+                        /* ignore for now  */
+                        true
+                    }
+                    _ => unreachable!(),
+                }
+            } else {
+                true
+            }
+        });
+
+        // Update BIBs
+        for (bib_block_number, (bib_block, mut bib)) in bibs {
+            for (target_number, op) in &mut bib.operations {
+                if let Some(payload_data) = new_payloads.get(target_number) {
+                    let target_block = self.blocks.get(target_number).unwrap();
+                    op.sign(
+                        keys.get(&bib.source, op.context_id())?,
+                        bpsec::bib::OperationArgs {
+                            bpsec_source: &bib.source,
+                            target: target_block,
+                            target_number: *target_number,
+                            source: bib_block,
+                            source_number: bib_block_number,
+                            bundle: self,
+                            primary_block: primary_block.as_deref(),
+                            bundle_data: source_data,
+                        },
+                        Some(payload_data),
+                    )?;
+                }
+            }
+
+            noncanonical_blocks.remove(&bib_block_number);
+            new_payloads.insert(bib_block_number, cbor::encode::emit(bib).into());
+        }
+
+        // Encrypt blocks and update BCBs
+        for (bcb_block_number, mut bcb) in bcbs {
+            let bcb_block = self.blocks.get(&bcb_block_number).unwrap();
+            for (target_number, op) in &mut bcb.operations {
+                if let Some(payload_data) = new_payloads.get(target_number) {
+                    let target_block = self.blocks.get(target_number).unwrap();
+                    let new_data = op.encrypt(
+                        keys.get(&bcb.source, op.context_id())?,
+                        bpsec::bcb::OperationArgs {
+                            bpsec_source: &bcb.source,
+                            target: target_block,
+                            target_number: *target_number,
+                            source: bcb_block,
+                            source_number: bcb_block_number,
+                            bundle: self,
+                            primary_block: primary_block.as_deref(),
+                            bundle_data: source_data,
+                        },
+                        Some(payload_data),
+                    )?;
+                    new_payloads.insert(*target_number, new_data);
+                }
+            }
+
+            noncanonical_blocks.remove(&bcb_block_number);
+            new_payloads.insert(bcb_block_number, cbor::encode::emit(bcb).into());
+        }
+
+        let new_data = cbor::encode::emit_array(None, |a| {
+            // Emit primary
+            if let Some(p) = primary_block {
+                a.emit_raw(p);
             } else {
                 self.blocks.get_mut(&0).unwrap().copy(source_data, a);
             }
@@ -757,76 +599,34 @@ impl Bundle {
             // Stash payload block for last
             let mut payload_block = self.blocks.remove(&1).unwrap();
 
-            // Emit extension blocks
-            for (block_number, block) in &mut self.blocks {
-                if let BlockType::Primary = block.block_type {
-                    continue;
+            self.blocks.retain(|block_number, block| {
+                if *block_number == 0 {
+                    return true;
+                }
+                if blocks_to_remove.contains(block_number) {
+                    return false;
                 }
 
-                // Skip blocks to be removed
-                if !blocks_to_remove.contains(block_number) {
-                    if let Some(info) = noncanonical_blocks.remove(block_number) {
-                        // TODO: We can be much smarter here with re-signing/re-encrypting the data
-                        let can_rewrite = block.bcb.is_none() && info.bib_source.is_none();
-
-                        match block.block_type {
-                            BlockType::PreviousNode
-                                if info.is_payload_noncanonical && can_rewrite =>
-                            {
-                                block.emit(
-                                    *block_number,
-                                    &cbor::encode::emit(self.previous_node.as_ref().unwrap()),
-                                    a,
-                                )
-                            }
-                            BlockType::BundleAge if info.is_payload_noncanonical && can_rewrite => {
-                                block.emit(*block_number, &cbor::encode::emit(self.age.unwrap()), a)
-                            }
-                            BlockType::HopCount if can_rewrite => block.emit(
-                                *block_number,
-                                &cbor::encode::emit(self.hop_count.as_ref().unwrap()),
-                                a,
-                            ),
-                            BlockType::BlockIntegrity
-                                if info.is_payload_noncanonical && can_rewrite =>
-                            {
-                                block.emit(
-                                    *block_number,
-                                    &bpsec::bib::OperationSet::rewrite(
-                                        block,
-                                        &blocks_to_remove,
-                                        source_data,
-                                    )
-                                    .unwrap(),
-                                    a,
-                                )
-                            }
-                            BlockType::BlockSecurity if info.is_payload_noncanonical => block.emit(
-                                *block_number,
-                                &bpsec::bcb::OperationSet::rewrite(
-                                    block,
-                                    &blocks_to_remove,
-                                    source_data,
-                                )
-                                .unwrap(),
-                                a,
-                            ),
-                            _ => block.rewrite(*block_number, a, source_data).unwrap(),
-                        }
-                    } else {
-                        block.copy(source_data, a);
-                    }
+                if let Some(data) = new_payloads.remove(block_number) {
+                    block.emit(*block_number, &data, a);
+                } else if noncanonical_blocks.remove(block_number).is_some() {
+                    block.rewrite(*block_number, a, source_data);
+                } else {
+                    // Copy canonical blocks verbatim
+                    block.write(source_data, a);
                 }
-            }
+                true
+            });
 
             // Emit payload block
             if noncanonical_blocks.remove(&1).is_some() {
-                payload_block.rewrite(1, a, source_data).unwrap();
+                payload_block.rewrite(1, a, source_data);
             } else {
                 payload_block.write(source_data, a);
             }
             self.blocks.insert(1, payload_block);
-        })
+        });
+        Ok((Some(new_data.into()), report_unsupported))
     }
 }
 
@@ -843,11 +643,12 @@ pub enum ValidBundle {
 }
 
 impl ValidBundle {
-    pub fn parse<F>(data: &[u8], f: F) -> Result<Self, Error>
-    where
-        F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
-    {
-        match cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
+    pub fn parse(
+        data: &[u8],
+        f: impl FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+    ) -> Result<Self, Error> {
+        let mut keys = KeyCacheImpl::new(f);
+        cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
             // Check for shortest/correct form
             canonical = canonical && !blocks.is_definite();
             if canonical {
@@ -865,15 +666,21 @@ impl ValidBundle {
             }
 
             // Parse Primary block
-            let mut canonical_primary_block = true;
+            let canonical_primary_block;
             let block_start = blocks.offset();
-            let (mut bundle, block_len) = blocks
-                .parse::<(primary_block::PrimaryBlock, bool, usize)>()
-                .map(|(v, s, len)| {
-                    canonical_primary_block = s;
-                    (v.into_bundle(), len)
-                })
-                .map_field_err("Primary Block")?;
+            let (mut bundle, block_len) =
+                match blocks.parse::<(primary_block::PrimaryBlock, bool, usize)>() {
+                    Ok((v, s, len)) => {
+                        canonical_primary_block = s;
+                        (v.into_bundle(), len)
+                    }
+                    Err(Error::InvalidBundle {
+                        bundle,
+                        reason,
+                        error,
+                    }) => return Ok(Self::Invalid(*bundle, reason, error)),
+                    Err(e) => return Err(e).map_field_err("Primary Block"),
+                };
 
             // Add a block 0
             bundle.blocks.insert(
@@ -895,58 +702,31 @@ impl ValidBundle {
                 },
             );
 
-            let mut keys = KeyCacheImpl::new(f);
-
+            // And now parse the blocks
             match bundle.parse_blocks(
+                canonical,
                 canonical_primary_block,
                 blocks,
                 block_start + block_len,
                 data,
                 &mut keys,
             ) {
-                Ok((mut noncanonical_blocks, blocks_to_remove, report_unsupported)) => {
-                    if !canonical_primary_block || !canonical {
-                        noncanonical_blocks.entry(0).or_default();
-                    }
-                    Ok((
-                        bundle,
-                        noncanonical_blocks,
-                        blocks_to_remove,
-                        report_unsupported,
-                    ))
+                Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
+                Ok((Some(new_data), report_unsupported)) => {
+                    Ok(Self::Rewritten(bundle, new_data, report_unsupported))
                 }
-                Err(Error::Unsupported(n)) => Err(Error::InvalidBundle {
-                    bundle: bundle.into(),
-                    reason: StatusReportReasonCode::BlockUnsupported,
-                    error: Error::Unsupported(n).into(),
-                }),
-                Err(e) => Err(Error::InvalidBundle {
-                    bundle: bundle.into(),
-                    reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: e.into(),
-                }),
+                Err(Error::Unsupported(n)) => Ok(Self::Invalid(
+                    bundle,
+                    StatusReportReasonCode::BlockUnsupported,
+                    Error::Unsupported(n).into(),
+                )),
+                Err(e) => Ok(Self::Invalid(
+                    bundle,
+                    StatusReportReasonCode::BlockUnintelligible,
+                    e.into(),
+                )),
             }
-        }) {
-            Ok(((mut bundle, noncanonical_blocks, block_to_remove, report_unsupported), len)) => {
-                if len != data.len() {
-                    Ok(Self::Invalid(
-                        bundle,
-                        StatusReportReasonCode::BlockUnintelligible,
-                        Error::AdditionalData.into(),
-                    ))
-                } else if !noncanonical_blocks.is_empty() || !block_to_remove.is_empty() {
-                    let data = bundle.canonicalise(noncanonical_blocks, block_to_remove, data);
-                    Ok(Self::Rewritten(bundle, data.into(), report_unsupported))
-                } else {
-                    Ok(Self::Valid(bundle, report_unsupported))
-                }
-            }
-            Err(Error::InvalidBundle {
-                bundle,
-                reason,
-                error: e,
-            }) => Ok(Self::Invalid(*bundle, reason, e)),
-            Err(e) => Err(e),
-        }
+        })
+        .map(|v| v.0)
     }
 }

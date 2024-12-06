@@ -8,6 +8,17 @@ pub enum Operation {
     Unrecognised(u64, parse::UnknownOperation),
 }
 
+pub struct OperationArgs<'a> {
+    pub bpsec_source: &'a Eid,
+    pub target: &'a block::Block,
+    pub target_number: u64,
+    pub source: &'a block::Block,
+    pub source_number: u64,
+    pub bundle: &'a Bundle,
+    pub primary_block: Option<&'a [u8]>,
+    pub bundle_data: &'a [u8],
+}
+
 impl Operation {
     pub fn context_id(&self) -> Context {
         match self {
@@ -23,13 +34,26 @@ impl Operation {
         }
     }
 
+    pub fn encrypt(
+        &mut self,
+        key: Option<&KeyMaterial>,
+        args: OperationArgs,
+        payload_data: Option<&[u8]>,
+    ) -> Result<Box<[u8]>, Error> {
+        match self {
+            Self::AES_GCM(op) => op.encrypt(key, args, payload_data),
+            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
+        }
+    }
+
     pub fn decrypt(
         &self,
         key: Option<&KeyMaterial>,
         args: OperationArgs,
+        payload_data: Option<&[u8]>,
     ) -> Result<OperationResult, Error> {
         match self {
-            Self::AES_GCM(op) => op.decrypt(key, args),
+            Self::AES_GCM(op) => op.decrypt(key, args, payload_data),
             Self::Unrecognised(..) => Ok(OperationResult {
                 plaintext: None,
                 protects_primary_block: args.target_number == 0,
@@ -38,17 +62,17 @@ impl Operation {
         }
     }
 
-    fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid, source_data: &[u8]) {
+    fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
         match self {
             Self::AES_GCM(o) => o.emit_context(encoder, source),
-            Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id, source_data),
+            Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
         }
     }
 
-    fn emit_result(self, array: &mut cbor::encode::Array, source_data: &[u8]) {
+    fn emit_result(self, array: &mut cbor::encode::Array) {
         match self {
             Self::AES_GCM(o) => o.emit_result(array),
-            Self::Unrecognised(_, o) => o.emit_result(array, source_data),
+            Self::Unrecognised(_, o) => o.emit_result(array),
         }
     }
 }
@@ -68,36 +92,14 @@ impl OperationSet {
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().next().unwrap().is_unsupported()
     }
+}
 
-    pub fn rewrite(
-        block: &Block,
-        blocks_to_remove: &HashSet<u64>,
-        source_data: &[u8],
-    ) -> Result<Vec<u8>, bpsec::Error> {
-        cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
-            cbor::decode::Value::Bytes(data) => cbor::decode::parse::<OperationSet>(data)
-                .map(|op| op.rewrite_payload(blocks_to_remove, data)),
-            cbor::decode::Value::ByteStream(data) => {
-                let data = data.iter().fold(Vec::new(), |mut data, d| {
-                    data.extend(*d);
-                    data
-                });
-                cbor::decode::parse::<OperationSet>(&data)
-                    .map(|op| op.rewrite_payload(blocks_to_remove, &data))
-            }
-            _ => unreachable!(),
-        })
-        .map(|v| v.0)
-    }
-
-    fn rewrite_payload(self, blocks_to_remove: &HashSet<u64>, payload_data: &[u8]) -> Vec<u8> {
-        let mut encoder = cbor::encode::Encoder::new();
-
+impl cbor::encode::ToCbor for OperationSet {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         // Ensure we process operations in the same order
         let ops = self
             .operations
             .into_iter()
-            .filter(|v| !blocks_to_remove.contains(&v.0))
             .collect::<Vec<(u64, Operation)>>();
 
         // Targets
@@ -108,19 +110,14 @@ impl OperationSet {
         });
 
         // Context
-        ops.first()
-            .unwrap()
-            .1
-            .emit_context(&mut encoder, &self.source, payload_data);
+        ops.first().unwrap().1.emit_context(encoder, &self.source);
 
         // Results
         encoder.emit_array(Some(ops.len()), |a| {
             for (_, op) in ops {
-                op.emit_result(a, payload_data);
+                op.emit_result(a);
             }
         });
-
-        encoder.build()
     }
 }
 
@@ -142,7 +139,7 @@ impl cbor::decode::FromCbor for OperationSet {
                 })
             }
             Context::Unrecognised(id) => {
-                parse::UnknownOperation::parse(asb).map(|(source, operations)| {
+                parse::UnknownOperation::parse(asb, data).map(|(source, operations)| {
                     Some((
                         OperationSet {
                             source,

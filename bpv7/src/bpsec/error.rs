@@ -15,6 +15,9 @@ pub enum Error {
     #[error("BIBs must not target BIBs or BCBs")]
     InvalidBIBTarget,
 
+    #[error("Unrecognised BPSec context")]
+    UnrecognisedContext(u64),
+
     #[error(
         "BCBs must not target other BCBs, the primary block, or BIBs that don't share targets"
     )]
@@ -55,6 +58,9 @@ pub enum Error {
 
     #[error("Decryption failed")]
     DecryptionFailed,
+
+    #[error("Encryption failed")]
+    EncryptionFailed,
 
     #[error("Integrity check failed")]
     IntegrityCheckFailed,

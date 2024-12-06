@@ -19,33 +19,12 @@ impl Block {
             ..self.data_start + self.payload_offset + self.payload_len]
     }
 
-    pub fn parse_payload<T>(
-        &self,
-        source_data: &[u8],
-    ) -> Result<(T, bool), <T as cbor::decode::FromCbor>::Error>
-    where
-        T: cbor::decode::FromCbor<Error: From<cbor::decode::Error>>,
-    {
-        let payload_data = self.payload(source_data);
-        cbor::decode::parse_value(payload_data, |v, _, tags| match v {
-            cbor::decode::Value::Bytes(data) => cbor::decode::parse::<(T, bool, usize)>(data)
-                .map(|(v, s, len)| (v, s && tags.is_empty() && len == data.len())),
-            cbor::decode::Value::ByteStream(data) => {
-                cbor::decode::parse::<T>(&data.iter().fold(Vec::new(), |mut data, d| {
-                    data.extend(*d);
-                    data
-                }))
-                .map(|v| (v, false))
-            }
-            _ => unreachable!(),
-        })
-        .map(|((v, s), _)| (v, s))
-    }
-
-    fn emit_inner<F>(&mut self, block_number: u64, array: &mut cbor::encode::Array, f: F)
-    where
-        F: FnOnce(&mut cbor::encode::Array),
-    {
+    fn emit_inner(
+        &mut self,
+        block_number: u64,
+        array: &mut cbor::encode::Array,
+        f: impl FnOnce(&mut cbor::encode::Array),
+    ) {
         let block_data = crc::append_crc_value(
             self.crc_type,
             cbor::encode::emit_array(
@@ -86,7 +65,7 @@ impl Block {
         block_number: u64,
         array: &mut cbor::encode::Array,
         source_data: &[u8],
-    ) -> Result<(), cbor::decode::Error> {
+    ) {
         cbor::decode::parse_value(self.payload(source_data), |value, _, _| {
             match value {
                 cbor::decode::Value::Bytes(data) => self.emit(block_number, data, array),
@@ -106,9 +85,9 @@ impl Block {
                 }
                 _ => unreachable!(),
             };
-            Ok(())
+            Ok::<(), cbor::decode::Error>(())
         })
-        .map(|_| ())
+        .unwrap();
     }
 
     pub fn write(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
