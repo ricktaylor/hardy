@@ -39,10 +39,7 @@ impl<T> IntervalMap<T>
 where
     T: Clone,
 {
-    fn insert<F>(&mut self, i: &Interval, f: F) -> &mut T
-    where
-        F: FnOnce() -> T,
-    {
+    fn insert(&mut self, i: &Interval, f: impl FnOnce() -> T) -> &mut T {
         match i {
             Interval::All => self.any.get_or_insert_with(f),
             Interval::Exact(n) => self.exact.entry(*n).or_insert_with(f),

@@ -32,10 +32,10 @@ fn get_keys(
 fn test() {
     let data = include_bytes!("artifacts/bundle/crash-0c47614714278e9e65c9eef00f256397abcbc358");
 
-    println!("Original: {:02x?}", &data);
+    eprintln!("Original: {:02x?}", &data);
 
     if let Ok(ValidBundle::Rewritten(_, data, _)) = ValidBundle::parse(data, get_keys) {
-        println!("Rewrite: {:02x?}", &data);
+        eprintln!("Rewrite: {:02x?}", &data);
 
         match ValidBundle::parse(&data, get_keys) {
             Ok(ValidBundle::Valid(..)) => {}
