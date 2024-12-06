@@ -19,6 +19,11 @@ pub struct OperationArgs<'a> {
     pub bundle_data: &'a [u8],
 }
 
+pub struct OperationResult {
+    pub protects_primary_block: bool,
+    pub can_sign: bool,
+}
+
 impl Operation {
     pub fn context_id(&self) -> Context {
         match self {
@@ -74,11 +79,6 @@ impl Operation {
             Self::Unrecognised(_, o) => o.emit_result(array),
         }
     }
-}
-
-pub struct OperationResult {
-    pub protects_primary_block: bool,
-    pub can_sign: bool,
 }
 
 pub struct OperationSet {

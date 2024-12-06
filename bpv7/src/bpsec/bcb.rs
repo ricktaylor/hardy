@@ -19,6 +19,12 @@ pub struct OperationArgs<'a> {
     pub bundle_data: &'a [u8],
 }
 
+pub struct OperationResult {
+    pub plaintext: Option<Box<[u8]>>,
+    pub protects_primary_block: bool,
+    pub can_encrypt: bool,
+}
+
 impl Operation {
     pub fn context_id(&self) -> Context {
         match self {
@@ -75,12 +81,6 @@ impl Operation {
             Self::Unrecognised(_, o) => o.emit_result(array),
         }
     }
-}
-
-pub struct OperationResult {
-    pub plaintext: Option<Box<[u8]>>,
-    pub protects_primary_block: bool,
-    pub can_encrypt: bool,
 }
 
 pub struct OperationSet {
