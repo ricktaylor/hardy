@@ -7,3 +7,6 @@ fuzz_target!(|data: &[u8]| {
         _ = s.parse::<hardy_bpv7::prelude::EidPattern>();
     }
 });
+
+// cargo cov -- export --format=lcov  -instr-profile ./fuzz/coverage/eid_pattern_str/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/eid_pattern_str -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/eid_pattern_str/lcov.info
+// cargo cov -- show --format=html  -instr-profile ./fuzz/coverage/eid_pattern_str/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/eid_pattern_str -o ./fuzz/coverage/eid_pattern_str/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
