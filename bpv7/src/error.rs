@@ -42,13 +42,6 @@ pub enum Error {
     #[error("Block {0} is not in canonical form")]
     NonCanonical(u64),
 
-    #[error("Invalid bundle: {error}")]
-    InvalidBundle {
-        bundle: Box<Bundle>,
-        reason: StatusReportReasonCode,
-        error: Box<dyn std::error::Error + Send + Sync>,
-    },
-
     #[error(transparent)]
     InvalidBPSec(#[from] bpsec::Error),
 

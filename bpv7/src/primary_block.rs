@@ -142,23 +142,27 @@ pub struct PrimaryBlock {
     pub timestamp: CreationTimestamp,
     pub lifetime: u64,
     pub fragment_info: Option<FragmentInfo>,
+    pub error: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl PrimaryBlock {
-    pub fn into_bundle(self) -> Bundle {
-        Bundle {
-            id: BundleId {
-                source: self.source,
-                timestamp: self.timestamp,
-                fragment_info: self.fragment_info,
+    pub fn into_bundle(self) -> (Bundle, Option<Box<dyn std::error::Error + Send + Sync>>) {
+        (
+            Bundle {
+                id: BundleId {
+                    source: self.source,
+                    timestamp: self.timestamp,
+                    fragment_info: self.fragment_info,
+                },
+                flags: self.flags,
+                crc_type: self.crc_type,
+                destination: self.destination,
+                report_to: self.report_to,
+                lifetime: self.lifetime,
+                ..Default::default()
             },
-            flags: self.flags,
-            crc_type: self.crc_type,
-            destination: self.destination,
-            report_to: self.report_to,
-            lifetime: self.lifetime,
-            ..Default::default()
-        }
+            self.error,
+        )
     }
 
     pub fn emit(bundle: &Bundle) -> Vec<u8> {
@@ -214,94 +218,77 @@ impl cbor::decode::FromCbor for PrimaryBlock {
         };
 
         // Compose something out of what we have!
-        match (
-            p.destination,
-            p.source,
-            p.timestamp,
-            p.lifetime,
-            p.fragment_info,
-            p.crc_type,
-            p.crc_result,
-        ) {
-            (
-                Ok(destination),
-                Ok(source),
-                Ok(timestamp),
-                Ok(lifetime),
-                Ok(fragment_info),
-                Ok(crc_type),
-                Ok(()),
-            ) => {
-                let block = Self {
-                    flags: p.flags,
-                    report_to: p.report_to,
-                    crc_type,
-                    source,
-                    destination,
-                    timestamp,
-                    lifetime,
-                    fragment_info,
-                };
+        Ok(Some((
+            match (
+                p.destination,
+                p.source,
+                p.timestamp,
+                p.lifetime,
+                p.fragment_info,
+                p.crc_type,
+                p.crc_result,
+            ) {
+                (
+                    Ok(destination),
+                    Ok(source),
+                    Ok(timestamp),
+                    Ok(lifetime),
+                    Ok(fragment_info),
+                    Ok(crc_type),
+                    Ok(()),
+                ) => {
+                    let mut block = Self {
+                        flags: p.flags,
+                        report_to: p.report_to,
+                        crc_type,
+                        source,
+                        destination,
+                        timestamp,
+                        lifetime,
+                        fragment_info,
+                        error: None,
+                    };
 
-                // Check flags
-                if let &Eid::Null = &block.source {
-                    if block.flags.is_fragment
+                    // Check flags
+                    if matches!(&block.source,&Eid::Null if block.flags.is_fragment
                         || !block.flags.do_not_fragment
                         || block.flags.receipt_report_requested
                         || block.flags.forward_report_requested
                         || block.flags.delivery_report_requested
-                        || block.flags.delete_report_requested
+                        || block.flags.delete_report_requested)
                     {
                         // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                        return Err(Error::InvalidBundle {
-                            bundle: block.into_bundle().into(),
-                            reason: StatusReportReasonCode::BlockUnintelligible,
-                            error: Error::InvalidFlags.into(),
-                        });
+                        block.error = Some(Error::InvalidFlags.into());
+                    } else if block.flags.is_admin_record
+                        && (block.flags.receipt_report_requested
+                            || block.flags.forward_report_requested
+                            || block.flags.delivery_report_requested
+                            || block.flags.delete_report_requested)
+                    {
+                        // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
+                        block.error = Some(Error::InvalidFlags.into());
                     }
+                    block
                 }
-
-                if block.flags.is_admin_record
-                    && (block.flags.receipt_report_requested
-                        || block.flags.forward_report_requested
-                        || block.flags.delivery_report_requested
-                        || block.flags.delete_report_requested)
-                {
-                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                    return Err(Error::InvalidBundle {
-                        bundle: block.into_bundle().into(),
-                        reason: StatusReportReasonCode::BlockUnintelligible,
-                        error: Error::InvalidFlags.into(),
-                    });
-                }
-
-                Ok(Some((block, s, len)))
-            }
-            (Err(e), source, timestamp, lifetime, fragment_info, crc_type, _) => {
-                Err(Error::InvalidBundle {
-                    bundle: PrimaryBlock {
-                        flags: p.flags,
-                        report_to: p.report_to,
-                        crc_type: crc_type.unwrap_or_default(),
-                        source: source.unwrap_or_default(),
-                        destination: Eid::default(),
-                        timestamp: timestamp.unwrap_or_default(),
-                        lifetime: lifetime.unwrap_or(0),
-                        fragment_info: fragment_info.unwrap_or_default(),
-                    }
-                    .into_bundle()
-                    .into(),
-                    reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: Error::InvalidField {
-                        field: "Destination EID",
-                        source: e.into(),
-                    }
-                    .into(),
-                })
-            }
-            (Ok(destination), Err(e), timestamp, lifetime, fragment_info, crc_type, _) => {
-                Err(Error::InvalidBundle {
-                    bundle: PrimaryBlock {
+                (Err(e), source, timestamp, lifetime, fragment_info, crc_type, _) => PrimaryBlock {
+                    flags: p.flags,
+                    report_to: p.report_to,
+                    crc_type: crc_type.unwrap_or_default(),
+                    source: source.unwrap_or_default(),
+                    destination: Eid::default(),
+                    timestamp: timestamp.unwrap_or_default(),
+                    lifetime: lifetime.unwrap_or(0),
+                    fragment_info: fragment_info.unwrap_or_default(),
+                    error: Some(
+                        Error::InvalidField {
+                            field: "Destination EID",
+                            source: e.into(),
+                        }
+                        .into(),
+                    ),
+                },
+                (Ok(destination), Err(e), timestamp, lifetime, fragment_info, crc_type, _) => {
+                    PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
                         crc_type: crc_type.unwrap_or_default(),
@@ -310,20 +297,17 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         timestamp: timestamp.unwrap_or_default(),
                         lifetime: lifetime.unwrap_or(0),
                         fragment_info: fragment_info.unwrap_or_default(),
+                        error: Some(
+                            Error::InvalidField {
+                                field: "Source EID",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ),
                     }
-                    .into_bundle()
-                    .into(),
-                    reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: Error::InvalidField {
-                        field: "Source EID",
-                        source: e.into(),
-                    }
-                    .into(),
-                })
-            }
-            (Ok(destination), Ok(source), Err(e), lifetime, fragment_info, crc_type, _) => {
-                Err(Error::InvalidBundle {
-                    bundle: PrimaryBlock {
+                }
+                (Ok(destination), Ok(source), Err(e), lifetime, fragment_info, crc_type, _) => {
+                    PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
                         crc_type: crc_type.unwrap_or_default(),
@@ -332,42 +316,42 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         timestamp: CreationTimestamp::default(),
                         lifetime: lifetime.unwrap_or(0),
                         fragment_info: fragment_info.unwrap_or_default(),
+                        error: Some(
+                            Error::InvalidField {
+                                field: "Creation Timestamp",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ),
                     }
-                    .into_bundle()
-                    .into(),
-                    reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: Error::InvalidField {
-                        field: "Creation Timestamp",
-                        source: e.into(),
-                    }
-                    .into(),
-                })
-            }
-            (Ok(destination), Ok(source), Ok(timestamp), Err(e), fragment_info, crc_type, _) => {
-                Err(Error::InvalidBundle {
-                    bundle: PrimaryBlock {
-                        flags: p.flags,
-                        report_to: p.report_to,
-                        crc_type: crc_type.unwrap_or_default(),
-                        source,
-                        destination,
-                        timestamp,
-                        lifetime: 0,
-                        fragment_info: fragment_info.unwrap_or_default(),
-                    }
-                    .into_bundle()
-                    .into(),
-                    reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: Error::InvalidField {
-                        field: "Lifetime",
-                        source: e.into(),
-                    }
-                    .into(),
-                })
-            }
-            (Ok(destination), Ok(source), Ok(timestamp), Ok(lifetime), Err(e), crc_type, _) => {
-                Err(Error::InvalidBundle {
-                    bundle: PrimaryBlock {
+                }
+                (
+                    Ok(destination),
+                    Ok(source),
+                    Ok(timestamp),
+                    Err(e),
+                    fragment_info,
+                    crc_type,
+                    _,
+                ) => PrimaryBlock {
+                    flags: p.flags,
+                    report_to: p.report_to,
+                    crc_type: crc_type.unwrap_or_default(),
+                    source,
+                    destination,
+                    timestamp,
+                    lifetime: 0,
+                    fragment_info: fragment_info.unwrap_or_default(),
+                    error: Some(
+                        Error::InvalidField {
+                            field: "Lifetime",
+                            source: e.into(),
+                        }
+                        .into(),
+                    ),
+                },
+                (Ok(destination), Ok(source), Ok(timestamp), Ok(lifetime), Err(e), crc_type, _) => {
+                    PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
                         crc_type: crc_type.unwrap_or_default(),
@@ -376,27 +360,24 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         timestamp,
                         lifetime,
                         fragment_info: None,
+                        error: Some(
+                            Error::InvalidField {
+                                field: "Fragment Info",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ),
                     }
-                    .into_bundle()
-                    .into(),
-                    reason: StatusReportReasonCode::BlockUnintelligible,
-                    error: Error::InvalidField {
-                        field: "Fragment Info",
-                        source: e.into(),
-                    }
-                    .into(),
-                })
-            }
-            (
-                Ok(destination),
-                Ok(source),
-                Ok(timestamp),
-                Ok(lifetime),
-                Ok(fragment_info),
-                Err(e),
-                _,
-            ) => Err(Error::InvalidBundle {
-                bundle: PrimaryBlock {
+                }
+                (
+                    Ok(destination),
+                    Ok(source),
+                    Ok(timestamp),
+                    Ok(lifetime),
+                    Ok(fragment_info),
+                    Err(e),
+                    _,
+                ) => PrimaryBlock {
                     flags: p.flags,
                     report_to: p.report_to,
                     crc_type: CrcType::default(),
@@ -405,26 +386,23 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     timestamp,
                     lifetime,
                     fragment_info,
-                }
-                .into_bundle()
-                .into(),
-                reason: StatusReportReasonCode::BlockUnintelligible,
-                error: Error::InvalidField {
-                    field: "CRC Type",
-                    source: e.into(),
-                }
-                .into(),
-            }),
-            (
-                Ok(destination),
-                Ok(source),
-                Ok(timestamp),
-                Ok(lifetime),
-                Ok(fragment_info),
-                Ok(crc_type),
-                Err(e),
-            ) => Err(Error::InvalidBundle {
-                bundle: PrimaryBlock {
+                    error: Some(
+                        Error::InvalidField {
+                            field: "CRC Type",
+                            source: e.into(),
+                        }
+                        .into(),
+                    ),
+                },
+                (
+                    Ok(destination),
+                    Ok(source),
+                    Ok(timestamp),
+                    Ok(lifetime),
+                    Ok(fragment_info),
+                    Ok(crc_type),
+                    Err(e),
+                ) => PrimaryBlock {
                     flags: p.flags,
                     report_to: p.report_to,
                     crc_type,
@@ -433,16 +411,17 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     timestamp,
                     lifetime,
                     fragment_info,
-                }
-                .into_bundle()
-                .into(),
-                reason: StatusReportReasonCode::BlockUnintelligible,
-                error: Error::InvalidField {
-                    field: "CRC Value",
-                    source: e.into(),
-                }
-                .into(),
-            }),
-        }
+                    error: Some(
+                        Error::InvalidField {
+                            field: "CRC Value",
+                            source: e.into(),
+                        }
+                        .into(),
+                    ),
+                },
+            },
+            s,
+            len,
+        )))
     }
 }

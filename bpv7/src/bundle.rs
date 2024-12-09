@@ -666,21 +666,19 @@ impl ValidBundle {
             }
 
             // Parse Primary block
-            let canonical_primary_block;
             let block_start = blocks.offset();
-            let (mut bundle, block_len) =
-                match blocks.parse::<(primary_block::PrimaryBlock, bool, usize)>() {
-                    Ok((v, s, len)) => {
-                        canonical_primary_block = s;
-                        (v.into_bundle(), len)
-                    }
-                    Err(Error::InvalidBundle {
-                        bundle,
-                        reason,
-                        error,
-                    }) => return Ok(Self::Invalid(*bundle, reason, error)),
-                    Err(e) => return Err(e).map_field_err("Primary Block"),
-                };
+            let (primary_block, canonical_primary_block, block_len) = blocks
+                .parse::<(primary_block::PrimaryBlock, bool, usize)>()
+                .map_field_err("Primary Block")?;
+
+            let (mut bundle, e) = primary_block.into_bundle();
+            if let Some(e) = e {
+                return Ok(Self::Invalid(
+                    bundle,
+                    StatusReportReasonCode::BlockUnintelligible,
+                    e,
+                ));
+            }
 
             // Add a block 0
             bundle.blocks.insert(
