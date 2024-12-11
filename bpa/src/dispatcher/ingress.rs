@@ -176,15 +176,6 @@ impl Dispatcher {
             }
         }
 
-        if reason.is_none() {
-            // Check extension blocks
-            reason = self.check_extension_blocks(&bundle).await?;
-        }
-
-        if reason.is_none() {
-            // TODO: Pluggable Ingress filters!
-        }
-
         if reason.is_some() {
             // Not valid, drop it
             return self.drop_bundle(bundle, reason).await;
@@ -192,43 +183,5 @@ impl Dispatcher {
 
         // Now process in parallel
         self.dispatch_bundle(bundle).await
-    }
-
-    async fn check_extension_blocks(
-        &self,
-        bundle: &metadata::Bundle,
-    ) -> Result<Option<bpv7::StatusReportReasonCode>, Error> {
-        let mut unsupported = false;
-        for (block_number, block) in &bundle.bundle.blocks {
-            if block.flags.unrecognised != 0 {
-                trace!(
-                    "Block {block_number} has unrecognised flag bits set: {:#x}",
-                    block.flags.unrecognised
-                );
-            }
-
-            if let bpv7::BlockType::Unrecognised(value) = &block.block_type {
-                if value <= &191 {
-                    trace!("Extension block {block_number} uses unrecognised type code {value}");
-                }
-
-                if block.flags.report_on_failure {
-                    // Only report once!
-                    if !unsupported {
-                        self.report_bundle_reception(
-                            bundle,
-                            bpv7::StatusReportReasonCode::BlockUnsupported,
-                        )
-                        .await?;
-                        unsupported = true;
-                    }
-                }
-
-                if block.flags.delete_bundle_on_failure {
-                    return Ok(Some(bpv7::StatusReportReasonCode::BlockUnsupported));
-                }
-            }
-        }
-        Ok(None)
     }
 }
