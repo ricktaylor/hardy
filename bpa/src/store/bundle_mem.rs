@@ -1,7 +1,10 @@
 use super::*;
 use hardy_bpa_api::async_trait;
 use rand::distributions::{Alphanumeric, DistString};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{hash_map, HashMap},
+    sync::Arc,
+};
 use tokio::sync::RwLock;
 
 pub const CONFIG_KEY: &str = "mem-storage";
@@ -47,17 +50,15 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn store(&self, data: &[u8]) -> storage::Result<Arc<str>> {
-        let mut data = Arc::from(data);
         let mut bundles = self.bundles.write().await;
+        let mut rng = rand::thread_rng();
         loop {
-            let storage_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 64);
+            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
 
-            let Some(prev) = bundles.insert(storage_name.clone(), data) else {
+            if let hash_map::Entry::Vacant(e) = bundles.entry(storage_name.clone()) {
+                e.insert(Arc::from(data));
                 return Ok(storage_name.into());
-            };
-
-            // Swap back
-            data = bundles.insert(storage_name, prev).unwrap();
+            }
         }
     }
 

@@ -1,6 +1,9 @@
 use super::*;
 use hardy_bpa_api::{async_trait, metadata};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{hash_map, HashMap},
+    sync::Arc,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -36,20 +39,14 @@ impl storage::MetadataStorage for Storage {
         metadata: &metadata::Metadata,
         bundle: &bpv7::Bundle,
     ) -> storage::Result<bool> {
-        let mut entries = self.entries.write().await;
-
-        if let Some(prev) = entries.insert(
-            bundle.id.clone(),
-            metadata::Bundle {
+        if let hash_map::Entry::Vacant(e) = self.entries.write().await.entry(bundle.id.clone()) {
+            e.insert(metadata::Bundle {
                 metadata: metadata.clone(),
                 bundle: bundle.clone(),
-            },
-        ) {
-            // Put the old value back
-            entries.insert(bundle.id.clone(), prev);
-            Ok(false)
-        } else {
+            });
             Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
