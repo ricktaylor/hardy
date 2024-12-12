@@ -94,13 +94,13 @@ impl Bundle {
     fn parse_payload<T>(
         &self,
         block_number: &u64,
-        decrypted_data: &HashMap<u64, (Box<[u8]>, bool)>,
+        decrypted_data: Option<&(Box<[u8]>, bool)>,
         source_data: &[u8],
     ) -> Result<(&Block, T, bool), Error>
     where
         T: cbor::decode::FromCbor<Error: From<cbor::decode::Error> + Into<Error>>,
     {
-        if let Some((block_data, can_encrypt)) = decrypted_data.get(block_number) {
+        if let Some((block_data, can_encrypt)) = decrypted_data {
             match cbor::decode::parse::<(T, bool, usize)>(block_data)
                 .map(|(v, s, len)| (v, s && len == block_data.len()))
             {
@@ -237,12 +237,8 @@ impl Bundle {
         let mut bcbs = HashMap::new();
         for bcb_block_number in bcbs_to_check {
             // Parse the BCB
-            let (bcb_block, bcb, s) = self
-                .parse_payload::<bpsec::bcb::OperationSet>(
-                    &bcb_block_number,
-                    &HashMap::new(),
-                    source_data,
-                )
+            let (bcb_block, mut bcb, s) = self
+                .parse_payload::<bpsec::bcb::OperationSet>(&bcb_block_number, None, source_data)
                 .map_field_err("BPSec confidentiality extension block")?;
 
             if !s {
@@ -268,6 +264,7 @@ impl Bundle {
             }
 
             // Decrypt targets
+            let mut targets_to_drop = HashSet::new();
             for (target_number, op) in &bcb.operations {
                 if bcb_targets
                     .insert(*target_number, bcb_block_number)
@@ -309,23 +306,46 @@ impl Bundle {
                 )?;
 
                 if !blocks_to_remove.contains(target_number) {
-                    if r.protects_primary_block {
-                        protects_primary_block.insert(bcb_block_number);
-                    }
+                    match (target_block.block_type, r.plaintext) {
+                        (BlockType::PreviousNode | BlockType::HopCount, Some(block_data)) => {
+                            // We will always replace these blocks when forwarded
+                            decrypted_data.insert(*target_number, (block_data, true));
 
-                    if let Some(block_data) = r.plaintext {
-                        decrypted_data.insert(*target_number, (block_data, r.can_encrypt));
-                    } else if let BlockType::BlockIntegrity = target_block.block_type {
-                        // We can't decrypt, therefore we cannot check the BIB
-                        bibs_to_check.remove(target_number);
+                            // We will rewrite the block unencrypted for now
+                            noncanonical_blocks.insert(*target_number, true);
+
+                            // And not re-encrypt
+                            targets_to_drop.insert(*target_number);
+                        }
+                        (BlockType::BlockIntegrity, None) => {
+                            // We can't decrypt, therefore we cannot check the BIB
+                            bibs_to_check.remove(target_number);
+                        }
+                        (_, Some(block_data)) => {
+                            decrypted_data.insert(*target_number, (block_data, r.can_encrypt));
+
+                            if r.protects_primary_block {
+                                protects_primary_block.insert(bcb_block_number);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
 
+            // Remove any operations we need to rewrite
+            if !targets_to_drop.is_empty() {
+                bcb.operations.retain(|k, _| !targets_to_drop.contains(k));
+
+                // Ensure we rewrite the BCB
+                noncanonical_blocks.insert(bcb_block_number, true);
+            }
+
             bcbs.insert(bcb_block_number, bcb);
         }
+
+        // Mark all blocks that are BCB targets
         for (target, bcb) in bcb_targets {
-            // Note the target is a BCB target
             self.blocks.get_mut(&target).unwrap().bcb = Some(bcb);
         }
 
@@ -334,21 +354,33 @@ impl Bundle {
             if !match block_type {
                 BlockType::PreviousNode => {
                     let (_, v, s) = self
-                        .parse_payload(&block_number, &decrypted_data, source_data)
+                        .parse_payload(
+                            &block_number,
+                            decrypted_data.get(&block_number),
+                            source_data,
+                        )
                         .map_field_err("Previous Node Block")?;
                     self.previous_node = Some(v);
                     s
                 }
                 BlockType::BundleAge => {
                     let (_, v, s) = self
-                        .parse_payload(&block_number, &decrypted_data, source_data)
+                        .parse_payload(
+                            &block_number,
+                            decrypted_data.get(&block_number),
+                            source_data,
+                        )
                         .map_field_err("Bundle Age Block")?;
                     self.age = Some(v);
                     s
                 }
                 BlockType::HopCount => {
                     let (_, v, s) = self
-                        .parse_payload(&block_number, &decrypted_data, source_data)
+                        .parse_payload(
+                            &block_number,
+                            decrypted_data.get(&block_number),
+                            source_data,
+                        )
                         .map_field_err("Hop Count Block")?;
                     self.hop_count = Some(v);
                     s
@@ -371,7 +403,7 @@ impl Bundle {
             let (bib_block, mut bib, canonical) = self
                 .parse_payload::<bpsec::bib::OperationSet>(
                     &bib_block_number,
-                    &decrypted_data,
+                    decrypted_data.get(&bib_block_number),
                     source_data,
                 )
                 .map_field_err("BPSec integrity extension block")?;
@@ -392,6 +424,7 @@ impl Bundle {
                 }
             }
 
+            let mut targets_to_drop = HashSet::new();
             let bcb = bib_block.bcb.and_then(|b| bcbs.get(&b));
 
             // Check targets
@@ -437,14 +470,19 @@ impl Bundle {
                 )?;
 
                 if !blocks_to_remove.contains(target_number) {
-                    if r.protects_primary_block {
-                        protects_primary_block.insert(bib_block_number);
-                    }
+                    if let BlockType::PreviousNode | BlockType::HopCount = target_block.block_type {
+                        // Do not re-sign, we will rewrite when we forward
+                        targets_to_drop.insert(*target_number);
+                    } else {
+                        if let Some(true) = noncanonical_blocks.get(target_number) {
+                            // If we can't re-encrypt or re-sign, we can't rewrite
+                            if !can_encrypt || !r.can_sign {
+                                return Err(Error::NonCanonical(*target_number));
+                            }
+                        }
 
-                    if let Some(true) = noncanonical_blocks.get(target_number) {
-                        // If we can't re-encrypt or re-sign, we can't rewrite
-                        if !can_encrypt || !r.can_sign {
-                            return Err(Error::NonCanonical(*target_number));
+                        if r.protects_primary_block {
+                            protects_primary_block.insert(bib_block_number);
                         }
                     }
                 }
@@ -452,7 +490,8 @@ impl Bundle {
 
             // Remove targets scheduled for removal
             let old_len = bib.operations.len();
-            bib.operations.retain(|k, _| !blocks_to_remove.contains(k));
+            bib.operations
+                .retain(|k, _| !blocks_to_remove.contains(k) && !targets_to_drop.contains(k));
             if bib.operations.is_empty() {
                 noncanonical_blocks.remove(&bib_block_number);
                 protects_primary_block.remove(&bib_block_number);
@@ -483,9 +522,7 @@ impl Bundle {
 
         // Check we have at least some primary block protection
         if let CrcType::None = self.crc_type {
-            if protects_primary_block.is_empty()
-                || protects_primary_block.is_subset(&blocks_to_remove)
-            {
+            if protects_primary_block.is_empty() {
                 return Err(Error::MissingIntegrityCheck);
             }
         }
@@ -599,6 +636,7 @@ impl Bundle {
             // Stash payload block for last
             let mut payload_block = self.blocks.remove(&1).unwrap();
 
+            // Emit blocks
             self.blocks.retain(|block_number, block| {
                 if *block_number == 0 {
                     return true;
