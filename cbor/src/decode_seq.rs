@@ -1,4 +1,9 @@
 use super::decode::*;
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 use thiserror::Error;
 
 pub struct Series<'a, const D: usize> {
@@ -207,8 +212,8 @@ enum SequenceDebugInfo {
     Map(Vec<(SequenceDebugInfo, SequenceDebugInfo)>),
 }
 
-impl std::fmt::Debug for SequenceDebugInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for SequenceDebugInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Unknown => f.write_str("..."),
             Self::Value(s) => f.write_str(s),
@@ -308,8 +313,8 @@ fn sequence_debug_fmt<const D: usize>(
     }
 }
 
-impl<const D: usize> std::fmt::Debug for Series<'_, D> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<const D: usize> core::fmt::Debug for Series<'_, D> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut offset = 0;
         {
             let mut self_cloned = Series::<D> {

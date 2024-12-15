@@ -1,11 +1,14 @@
 #![cfg(test)]
+extern crate std;
+use std::prelude::rust_2021::*;
+
 use super::decode::*;
 use hex_literal::hex;
 
 fn test_simple<T>(expected: T, data: &[u8])
 where
-    T: FromCbor + PartialEq + std::fmt::Debug,
-    <T as FromCbor>::Error: From<Error> + std::fmt::Debug,
+    T: FromCbor + PartialEq + core::fmt::Debug,
+    <T as FromCbor>::Error: From<Error> + core::fmt::Debug,
 {
     let (v, s, len) = parse::<(T, bool, usize)>(data).unwrap();
     assert!(s);
@@ -15,8 +18,8 @@ where
 
 fn test_sub_simple<T, const D: usize>(expected: T, seq: &mut Series<D>)
 where
-    T: FromCbor + PartialEq + std::fmt::Debug,
-    <T as FromCbor>::Error: From<Error> + std::fmt::Debug,
+    T: FromCbor + PartialEq + core::fmt::Debug,
+    <T as FromCbor>::Error: From<Error> + core::fmt::Debug,
 {
     let (v, s) = seq.parse::<(T, bool)>().unwrap();
     assert!(s);

@@ -1,5 +1,10 @@
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::str::Utf8Error;
 use num_traits::FromPrimitive;
-use std::str::Utf8Error;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -35,7 +40,7 @@ pub enum Error {
     InvalidUtf8(#[from] Utf8Error),
 
     #[error(transparent)]
-    TryFromIntError(#[from] std::num::TryFromIntError),
+    TryFromIntError(#[from] core::num::TryFromIntError),
 
     #[error("Loss of floating-point precision")]
     PrecisionLoss,
@@ -113,8 +118,8 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
     }
 }
 
-impl<'a, 'b: 'a> std::fmt::Debug for Value<'a, 'b> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'a, 'b: 'a> core::fmt::Debug for Value<'a, 'b> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Value::UnsignedInteger(n) => write!(f, "{n:?}"),
             Value::NegativeInteger(n) => write!(f, "-{n:?}"),
@@ -154,9 +159,9 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
 
 fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
     match data.len().cmp(&N) {
-        std::cmp::Ordering::Less => Err(Error::NotEnoughData),
-        std::cmp::Ordering::Equal => Ok(data.try_into().unwrap()),
-        std::cmp::Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
+        core::cmp::Ordering::Less => Err(Error::NotEnoughData),
+        core::cmp::Ordering::Equal => Ok(data.try_into().unwrap()),
+        core::cmp::Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
     }
 }
 
@@ -270,7 +275,7 @@ where
             offset += len + 1;
             let mut t = Vec::new();
             for b in v {
-                t.push(std::str::from_utf8(b).map_err(Into::into)?);
+                t.push(core::str::from_utf8(b).map_err(Into::into)?);
             }
             f(Value::TextStream(&t), shortest && s, tags)
         }
@@ -279,7 +284,7 @@ where
             let (t, s, len) = parse_data_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
             f(
-                Value::Text(std::str::from_utf8(t).map_err(Into::into)?),
+                Value::Text(core::str::from_utf8(t).map_err(Into::into)?),
                 shortest && s,
                 tags,
             )
