@@ -12,8 +12,8 @@ enum BlockTemplate {
     Add(builder::BlockTemplate),
 }
 
-pub struct BlockBuilder<'a> {
-    editor: Editor<'a>,
+pub struct BlockBuilder<'a, 'b> {
+    editor: &'b mut Editor<'a>,
     block_number: u64,
     template: builder::BlockTemplate,
 }
@@ -31,7 +31,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn add_extension_block(self, block_type: BlockType) -> BlockBuilder<'a> {
+    pub fn add_extension_block(&mut self, block_type: BlockType) -> BlockBuilder<'a, '_> {
         if let BlockType::Primary | BlockType::Payload = block_type {
             panic!("Don't add primary or payload blocks!");
         }
@@ -46,7 +46,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn replace_extension_block(self, block_type: BlockType) -> BlockBuilder<'a> {
+    pub fn replace_extension_block(&mut self, block_type: BlockType) -> BlockBuilder<'a, '_> {
         if let BlockType::Primary = block_type {
             panic!("Don't replace primary block!");
         }
@@ -78,12 +78,11 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn remove_extension_block(mut self, block_number: u64) -> Self {
+    pub fn remove_extension_block(&mut self, block_number: u64) {
         if block_number == 0 || block_number == 1 {
             panic!("Don't remove primary or payload blocks!");
         }
         self.blocks.remove(&block_number);
-        self
     }
 
     pub fn build(mut self) -> Vec<u8> {
@@ -125,8 +124,8 @@ impl<'a> Editor<'a> {
     }
 }
 
-impl<'a> BlockBuilder<'a> {
-    fn new(editor: Editor<'a>, block_number: u64, block_type: BlockType) -> Self {
+impl<'a, 'b> BlockBuilder<'a, 'b> {
+    fn new(editor: &'b mut Editor<'a>, block_number: u64, block_type: BlockType) -> Self {
         Self {
             template: builder::BlockTemplate::new(
                 block_type,
@@ -139,7 +138,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     fn new_from_template(
-        editor: Editor<'a>,
+        editor: &'b mut Editor<'a>,
         block_number: u64,
         template: builder::BlockTemplate,
     ) -> Self {
@@ -182,7 +181,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn build(mut self) -> Editor<'a> {
+    pub fn build(self) -> &'b mut Editor<'a> {
         self.editor
             .blocks
             .insert(self.block_number, BlockTemplate::Add(self.template));

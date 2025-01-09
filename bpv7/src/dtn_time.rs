@@ -55,8 +55,6 @@ impl TryFrom<time::OffsetDateTime> for DtnTime {
 
 impl From<DtnTime> for time::OffsetDateTime {
     fn from(dtn_time: DtnTime) -> Self {
-        DTN_EPOCH.saturating_add(time::Duration::saturating_seconds_f64(
-            (dtn_time.millisecs / 1_000) as f64 + ((dtn_time.millisecs % 1_0000) as f64 / 1_000f64),
-        ))
+        DTN_EPOCH.saturating_add(time::Duration::milliseconds(dtn_time.millisecs as i64))
     }
 }

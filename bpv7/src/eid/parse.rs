@@ -37,28 +37,25 @@ fn ipn_from_parts(
     node_number: u32,
     service_number: u32,
 ) -> Result<(Eid, bool), EidError> {
-    if allocator_id == 0 && node_number == 0 {
-        Ok((Eid::Null, service_number == 0))
-    } else if allocator_id == 0 && node_number == u32::MAX {
-        Ok((Eid::LocalNode { service_number }, true))
-    } else if elements == 2 && allocator_id != 0 {
-        Ok((
+    match (allocator_id, node_number) {
+        (0, 0) => Ok((Eid::Null, service_number == 0)),
+        (0, u32::MAX) => Ok((Eid::LocalNode { service_number }, true)),
+        _ if elements == 2 => Ok((
             Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 service_number,
             },
             true,
-        ))
-    } else {
-        Ok((
+        )),
+        _ => Ok((
             Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,
             },
             true,
-        ))
+        )),
     }
 }
 
@@ -104,7 +101,7 @@ impl std::str::FromStr for Eid {
         } else if let Some(s) = s.strip_prefix("ipn:") {
             ipn_from_str(s)
         } else if let Some((schema, _)) = s.split_once(':') {
-            Err(EidError::UnsupportedScheme(schema.to_string()))
+            Err(EidError::UnknownScheme(schema.to_string()))
         } else {
             Err(EidError::MissingScheme)
         }
@@ -152,7 +149,7 @@ impl cbor::decode::FromCbor for Eid {
                 })
                 .map_field_err("EID scheme")?
             {
-                0 => Err(EidError::UnsupportedScheme("0".to_string())),
+                0 => Err(EidError::UnsupportedScheme(0)),
                 1 => match a.parse_value(|value, s, tags| {
                     shortest = shortest && s && tags.is_empty();
                     match value {
@@ -220,7 +217,7 @@ impl cbor::decode::FromCbor for Eid {
                 scheme => {
                     let start = a.offset();
                     if a.skip_value(16).map_err(Into::<EidError>::into)?.is_none() {
-                        Err(EidError::UnsupportedScheme(scheme.to_string()))
+                        Err(EidError::UnsupportedScheme(scheme))
                     } else {
                         Ok((
                             Eid::Unknown {

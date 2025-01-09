@@ -8,7 +8,7 @@ struct PartialPrimaryBlock {
     pub destination: Result<Eid, Error>,
     pub report_to: Eid,
     pub timestamp: Result<CreationTimestamp, Error>,
-    pub lifetime: Result<u64, Error>,
+    pub lifetime: Result<time::Duration, Error>,
     pub fragment_info: Result<Option<FragmentInfo>, Error>,
     pub crc_result: Result<(), Error>,
 }
@@ -86,7 +86,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                 .parse()
                 .map(|(v, s)| {
                     shortest = shortest && s;
-                    v
+                    time::Duration::milliseconds(v)
                 })
                 .map_err(Into::into);
 
@@ -140,7 +140,7 @@ pub struct PrimaryBlock {
     pub destination: Eid,
     pub report_to: Eid,
     pub timestamp: CreationTimestamp,
-    pub lifetime: u64,
+    pub lifetime: time::Duration,
     pub fragment_info: Option<FragmentInfo>,
     pub error: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
@@ -188,7 +188,7 @@ impl PrimaryBlock {
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
                     a.emit(&bundle.id.timestamp);
-                    a.emit(bundle.lifetime);
+                    a.emit(bundle.lifetime.whole_microseconds() as u64);
 
                     // Fragment info
                     if let Some(fragment_info) = &bundle.id.fragment_info {
@@ -277,7 +277,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     source: source.unwrap_or_default(),
                     destination: Eid::default(),
                     timestamp: timestamp.unwrap_or_default(),
-                    lifetime: lifetime.unwrap_or(0),
+                    lifetime: lifetime.unwrap_or_default(),
                     fragment_info: fragment_info.unwrap_or_default(),
                     error: Some(
                         Error::InvalidField {
@@ -295,7 +295,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         source: Eid::default(),
                         destination,
                         timestamp: timestamp.unwrap_or_default(),
-                        lifetime: lifetime.unwrap_or(0),
+                        lifetime: lifetime.unwrap_or_default(),
                         fragment_info: fragment_info.unwrap_or_default(),
                         error: Some(
                             Error::InvalidField {
@@ -314,7 +314,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         source,
                         destination,
                         timestamp: CreationTimestamp::default(),
-                        lifetime: lifetime.unwrap_or(0),
+                        lifetime: lifetime.unwrap_or_default(),
                         fragment_info: fragment_info.unwrap_or_default(),
                         error: Some(
                             Error::InvalidField {
@@ -340,7 +340,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     source,
                     destination,
                     timestamp,
-                    lifetime: 0,
+                    lifetime: time::Duration::default(),
                     fragment_info: fragment_info.unwrap_or_default(),
                     error: Some(
                         Error::InvalidField {

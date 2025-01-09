@@ -9,9 +9,13 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-bpa = { path = "..", features = ["mem-storage"] }
-config = { version = "0.14.0", features = ["toml"] }
-tokio = { version = "1.39.3", features = ["macros", "rt-multi-thread", "time"] }
+hardy-bpv7 = { path = "../../bpv7" }
+hardy-bpa = { path = ".." }
+tokio = { version = "1.39.3", features = ["rt", "time"] }
+time = { version = "0.3.36", features = ["parsing"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+tracing-log = "0.2.0"
 
 [[bin]]
 name = "ingress"

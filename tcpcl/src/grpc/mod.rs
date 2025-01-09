@@ -24,9 +24,7 @@ pub fn init(
     // Start serving
     task_set.spawn(async move {
         router
-            .serve_with_shutdown(grpc_address, async {
-                cancel_token.cancelled().await;
-            })
+            .serve_with_shutdown(grpc_address, cancel_token.cancelled())
             .await
             .trace_expect("Failed to start gRPC server")
     });

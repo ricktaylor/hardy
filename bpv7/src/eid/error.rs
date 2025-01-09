@@ -30,8 +30,11 @@ pub enum EidError {
     #[error("Missing scheme separator")]
     MissingScheme,
 
+    #[error("Unknown EID scheme {0}")]
+    UnknownScheme(String),
+
     #[error("Unsupported EID scheme {0}")]
-    UnsupportedScheme(String),
+    UnsupportedScheme(u64),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {

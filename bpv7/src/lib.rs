@@ -33,7 +33,7 @@ pub mod prelude {
     pub use super::dtn_time::DtnTime;
     pub use super::editor::Editor;
     pub use super::eid::{Eid, EidError};
-    pub use super::eid_pattern::{EidPattern, EidPatternError};
+    pub use super::eid_pattern::{EidPattern, EidPatternError, IpnPattern};
     pub use super::eid_pattern_map::EidPatternMap;
     pub use super::error::Error;
     pub use super::hop_info::HopInfo;

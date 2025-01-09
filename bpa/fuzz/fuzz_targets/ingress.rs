@@ -1,70 +1,80 @@
 #![no_main]
 
-use hardy_bpa::*;
+use hardy_bpa::async_trait;
+use hardy_bpv7::prelude as bpv7;
 use libfuzzer_sys::fuzz_target;
+use std::sync::Arc;
 
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-static DISPATCHER: std::sync::OnceLock<std::sync::Arc<dispatcher::Dispatcher>> =
-    std::sync::OnceLock::new();
+static SINK: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>> = std::sync::OnceLock::new();
+
+struct NullCla {}
+
+#[async_trait]
+impl hardy_bpa::cla::Cla for NullCla {
+    async fn on_connect(&self, sink: Box<dyn hardy_bpa::cla::Sink>) -> hardy_bpa::cla::Result<()> {
+        if SINK.set(sink).is_err() {
+            panic!("Double connect()");
+        }
+        Ok(())
+    }
+
+    fn on_disconnect(&self) {
+        todo!()
+    }
+
+    async fn forward(
+        &self,
+        _destination: &bpv7::Eid,
+        _addr: Option<&[u8]>,
+        _data: &[u8],
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
+        todo!()
+    }
+}
 
 fn setup() -> tokio::runtime::Runtime {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with_target(true)
+        .init();
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
 
     rt.spawn(async {
-        let mut filename = std::env::current_dir().unwrap();
-        filename.push("fuzz/ingress.config");
-
-        let config = config::Config::builder()
-            .add_source(config::File::from(filename).format(config::FileFormat::Toml))
-            .build()
-            .unwrap();
-        utils::logger::init(&config);
-
-        // Get administrative endpoints
-        let administrative_endpoints = utils::admin_endpoints::AdminEndpoints::init(&config);
-
-        // New store
-        let store = store::Store::new(&config, false);
-
-        // New FIB
-        let fib = fib::Fib::new(&config);
-
-        // New registries
-        let cla_registry = cla_registry::ClaRegistry::new(&config, fib.clone());
-        let app_registry =
-            app_registry::AppRegistry::new(&config, administrative_endpoints.clone());
-
-        // Prepare for graceful shutdown
-        let (mut task_set, cancel_token) = utils::cancel::new_cancellable_set();
+        let bpa = hardy_bpa::bpa::Bpa::start(hardy_bpa::bpa::Config {
+            status_reports: true,
+            max_forwarding_delay: 0,
+            admin_endpoints: vec![bpv7::Eid::Ipn {
+                allocator_id: 0,
+                node_number: 1,
+                service_number: 0,
+            }],
+            ..Default::default()
+        })
+        .await;
 
         // Load static routes
-        if let Some(fib) = &fib {
-            static_routes::init(&config, fib.clone(), &mut task_set, cancel_token.clone()).await;
-        }
+        bpa.add_forwarding_action(
+            "fuzz",
+            &"ipn:*.*.*|dtn://**/**".parse().unwrap(),
+            &hardy_bpa::fib::Action::Store(
+                time::OffsetDateTime::parse(
+                    "2035-01-02T11:12:13Z",
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .unwrap(),
+            ),
+            100,
+        )
+        .await
+        .unwrap();
 
-        // Create a new dispatcher
-        let dispatcher = dispatcher::Dispatcher::new(
-            &config,
-            administrative_endpoints,
-            store.clone(),
-            cla_registry,
-            app_registry,
-            fib,
-            &mut task_set,
-            cancel_token.clone(),
-        );
-
-        // Start the store - this can take a while as the store is walked
-        store
-            .start(dispatcher.clone(), &mut task_set, cancel_token.clone())
-            .await;
-
-        DISPATCHER.get_or_init(|| dispatcher);
-
-        while task_set.join_next().await.is_some() {}
+        let cla = Arc::new(NullCla {});
+        bpa.register_cla("fuzz", "test", cla).await.unwrap();
     });
 
     rt
@@ -72,9 +82,9 @@ fn setup() -> tokio::runtime::Runtime {
 
 fn test_ingress(data: &[u8]) {
     RT.get_or_init(setup).block_on(async {
-        let dispatcher = loop {
-            if let Some(dispatcher) = DISPATCHER.get() {
-                break dispatcher;
+        let sink = loop {
+            if let Some(sink) = SINK.get() {
+                break sink;
             }
             tokio::task::yield_now().await;
         };
@@ -82,7 +92,7 @@ fn test_ingress(data: &[u8]) {
         let metrics = RT.get().unwrap().metrics();
         let cur_tasks = metrics.num_alive_tasks();
 
-        _ = dispatcher.receive_bundle(data.to_vec().into()).await;
+        let _ = sink.dispatch(data).await;
 
         // This is horrible, but ensures we actually reach the async parts...
         while metrics.num_alive_tasks() > cur_tasks {

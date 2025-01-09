@@ -2,7 +2,7 @@ use super::*;
 
 // Default values
 const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
-const DEFAULT_LIFETIME: u64 = time::Duration::new(24 * 60 * 60, 0).whole_milliseconds() as u64;
+const DEFAULT_LIFETIME: time::Duration = time::Duration::days(1);
 
 pub struct Builder {
     bundle_flags: BundleFlags,
@@ -10,7 +10,7 @@ pub struct Builder {
     source: Eid,
     destination: Eid,
     report_to: Option<Eid>,
-    lifetime: u64,
+    lifetime: time::Duration,
     payload: BlockTemplate,
     extensions: Vec<BlockTemplate>,
 }
@@ -39,41 +39,41 @@ impl Builder {
         Default::default()
     }
 
-    pub fn flags(mut self, flags: BundleFlags) -> Self {
+    pub fn flags(&mut self, flags: BundleFlags) -> &mut Self {
         self.bundle_flags = flags;
         self
     }
 
-    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
+    pub fn crc_type(&mut self, crc_type: CrcType) -> &mut Self {
         self.crc_type = crc_type;
         self
     }
 
-    pub fn source(mut self, source: Eid) -> Self {
+    pub fn source(&mut self, source: Eid) -> &mut Self {
         self.source = source;
         self
     }
 
-    pub fn destination(mut self, destination: Eid) -> Self {
+    pub fn destination(&mut self, destination: Eid) -> &mut Self {
         self.destination = destination;
         self
     }
 
-    pub fn report_to(mut self, report_to: Eid) -> Self {
+    pub fn report_to(&mut self, report_to: Eid) -> &mut Self {
         self.report_to = Some(report_to);
         self
     }
 
-    pub fn lifetime(mut self, lifetime: u64) -> Self {
+    pub fn lifetime(&mut self, lifetime: time::Duration) -> &mut Self {
         self.lifetime = lifetime;
         self
     }
 
-    pub fn add_extension_block(self, block_type: BlockType) -> BlockBuilder {
+    pub fn add_extension_block(&mut self, block_type: BlockType) -> BlockBuilder {
         BlockBuilder::new(self, block_type)
     }
 
-    pub fn add_payload_block(self, data: Vec<u8>) -> Self {
+    pub fn add_payload_block(&mut self, data: Vec<u8>) -> &mut Self {
         self.add_extension_block(BlockType::Payload)
             .data(data)
             .build()
@@ -117,13 +117,13 @@ impl Builder {
     }
 }
 
-pub struct BlockBuilder {
-    builder: Builder,
+pub struct BlockBuilder<'a> {
+    builder: &'a mut Builder,
     template: BlockTemplate,
 }
 
-impl BlockBuilder {
-    fn new(builder: Builder, block_type: BlockType) -> Self {
+impl<'a> BlockBuilder<'a> {
+    fn new(builder: &'a mut Builder, block_type: BlockType) -> Self {
         Self {
             template: BlockTemplate::new(block_type, BlockFlags::default(), builder.crc_type),
             builder,
@@ -162,7 +162,7 @@ impl BlockBuilder {
         self
     }
 
-    pub fn build(mut self) -> Builder {
+    pub fn build(self) -> &'a mut Builder {
         if let BlockType::Payload = self.template.block_type {
             self.builder.payload = self.template;
         } else {
@@ -237,9 +237,11 @@ impl BlockTemplate {
 
 #[test]
 fn test() {
-    Builder::new()
-        .source("ipn:1.0".parse().unwrap())
+    let mut b = Builder::new();
+
+    b.source("ipn:1.0".parse().unwrap())
         .destination("ipn:2.0".parse().unwrap())
-        .report_to("ipn:3.0".parse().unwrap())
-        .build();
+        .report_to("ipn:3.0".parse().unwrap());
+
+    b.build();
 }

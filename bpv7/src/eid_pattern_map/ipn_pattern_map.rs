@@ -25,7 +25,7 @@ fn unpack_intervals(item: &IpnPattern) -> Vec<Interval> {
 TODO: This is an inefficient implementation
 Ideally this would be rewritten as some kind of 3 dimensional kd-tree
 */
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 struct IntervalMap<T>
 where
     T: Clone,
@@ -103,7 +103,7 @@ where
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct IpnPatternMap<I, T>
 where
     I: Eq + std::hash::Hash + Clone,

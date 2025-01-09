@@ -73,6 +73,7 @@ impl BundleId {
         })
         .map(|v| v.0)
     }
+
     pub fn to_key(&self) -> String {
         BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = &self.fragment_info {
             cbor::encode::emit_array(Some(4), |array| {

@@ -41,8 +41,8 @@ fn tests() {
     assert!(matches!(expect_error(""), EidError::MissingScheme));
     assert!(matches!(expect_error("dtn"), EidError::MissingScheme));
     assert!(matches!(expect_error("ipn"), EidError::MissingScheme));
-    assert!(matches!(expect_error(":"), EidError::UnsupportedScheme(s) if s == ""));
-    assert!(matches!(expect_error("spaniel:"), EidError::UnsupportedScheme(s) if s == "spaniel"));
+    assert!(matches!(expect_error(":"), EidError::UnknownScheme(s) if s == ""));
+    assert!(matches!(expect_error("spaniel:"), EidError::UnknownScheme(s) if s == "spaniel"));
 
     assert!(matches!(expect_error("dtn:"), EidError::DtnMissingPrefix));
     assert!(matches!(expect_error("dtn:/"), EidError::DtnMissingPrefix));

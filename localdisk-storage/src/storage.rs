@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa_api::{async_trait, storage, storage::BundleStorage, storage::DataRef};
+use hardy_bpa::{async_trait, storage, storage::BundleStorage, storage::DataRef};
 use rand::prelude::*;
 use std::{
     collections::HashMap,

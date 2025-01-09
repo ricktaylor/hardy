@@ -2,30 +2,30 @@ use super::*;
 
 impl Dispatcher {
     #[instrument(skip(self, data))]
-    pub async fn receive_bundle(&self, data: Bytes) -> Result<(), Error> {
+    pub async fn receive_bundle(&self, data: &[u8]) -> cla::Result<()> {
         // Capture received_at as soon as possible
         let received_at = Some(time::OffsetDateTime::now_utc());
 
         // Do a fast pre-check
         if data.is_empty() {
-            return Err(cbor::decode::Error::NotEnoughData.into());
+            return Err(bpv7::Error::InvalidCBOR(cbor::decode::Error::NotEnoughData).into());
         } else if data[0] == 0x06 {
             trace!("Data looks like a BPv6 bundle");
-            return Err(cbor::decode::Error::IncorrectType(
+            return Err(bpv7::Error::InvalidCBOR(cbor::decode::Error::IncorrectType(
                 "BPv7 bundle".to_string(),
                 "Possible BPv6 bundle".to_string(),
-            )
+            ))
             .into());
         }
 
         // Parse the bundle
-        match bpv7::ValidBundle::parse(&data, |_, _| Ok(None))? {
+        match bpv7::ValidBundle::parse(data, |_, _| Ok(None))? {
             bpv7::ValidBundle::Valid(bundle, report_unsupported) => {
                 // Write the bundle data to the store
-                let (storage_name, hash) = self.store.store_data(&data).await?;
+                let (storage_name, hash) = self.store.store_data(data).await?;
                 self.ingress_bundle(
-                    metadata::Bundle {
-                        metadata: metadata::Metadata {
+                    bundle::Bundle {
+                        metadata: BundleMetadata {
                             storage_name: Some(storage_name),
                             hash: Some(hash),
                             received_at,
@@ -41,8 +41,8 @@ impl Dispatcher {
                 // Write the bundle data to the store
                 let (storage_name, hash) = self.store.store_data(&data).await?;
                 self.ingress_bundle(
-                    metadata::Bundle {
-                        metadata: metadata::Metadata {
+                    bundle::Bundle {
+                        metadata: BundleMetadata {
                             storage_name: Some(storage_name),
                             hash: Some(hash),
                             received_at,
@@ -59,11 +59,9 @@ impl Dispatcher {
 
                 // Don't bother saving the bundle data, it's garbage
                 self.ingress_bundle(
-                    metadata::Bundle {
-                        metadata: metadata::Metadata {
-                            status: metadata::BundleStatus::Tombstone(
-                                time::OffsetDateTime::now_utc(),
-                            ),
+                    bundle::Bundle {
+                        metadata: BundleMetadata {
+                            status: BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
                             received_at,
                             ..Default::default()
                         },
@@ -75,12 +73,13 @@ impl Dispatcher {
             }
         }
         .await
+        .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
     pub async fn ingress_bundle(
         &self,
-        bundle: metadata::Bundle,
+        bundle: bundle::Bundle,
         reason: Option<bpv7::StatusReportReasonCode>,
         report_unsupported: bool,
     ) -> Result<(), Error> {
@@ -144,7 +143,7 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn check_bundle(
         &self,
-        bundle: metadata::Bundle,
+        bundle: bundle::Bundle,
         mut reason: Option<bpv7::StatusReportReasonCode>,
     ) -> Result<(), Error> {
         /* Always check bundles, no matter the state, as after restarting

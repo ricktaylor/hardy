@@ -1,34 +1,23 @@
 use super::*;
 
-pub struct CollectResponse {
-    pub bundle_id: String,
-    pub expiry: time::OffsetDateTime,
-    pub app_ack_requested: bool,
-    pub data: Bytes,
-}
-
 impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn collect(
         &self,
-        destination: bpv7::Eid,
-        bundle_id: String,
-    ) -> Result<Option<CollectResponse>, Error> {
+        destination: &bpv7::Eid,
+        bundle_id: &bpv7::BundleId,
+    ) -> Result<Option<service::Bundle>, Error> {
         // Lookup bundle
-        let Some(bundle) = self
-            .store
-            .load(&bpv7::BundleId::from_key(&bundle_id)?)
-            .await?
-        else {
+        let Some(bundle) = self.store.load(bundle_id).await? else {
             return Ok(None);
         };
 
         // Double check that we are returning something valid
-        let metadata::BundleStatus::CollectionPending = &bundle.metadata.status else {
+        let BundleStatus::CollectionPending = &bundle.metadata.status else {
             return Ok(None);
         };
 
-        if bundle.bundle.destination != destination || bundle.has_expired() {
+        if &bundle.bundle.destination != destination || bundle.has_expired() {
             return Ok(None);
         }
 
@@ -42,11 +31,11 @@ impl Dispatcher {
         self.report_bundle_delivery(&bundle).await?;
 
         // Prepare the response
-        let response = CollectResponse {
-            bundle_id: bundle.bundle.id.to_key(),
-            data: data.as_ref().as_ref().to_vec().into(),
+        let response = service::Bundle {
             expiry: bundle.expiry(),
-            app_ack_requested: bundle.bundle.flags.app_ack_requested,
+            ack_requested: bundle.bundle.flags.app_ack_requested,
+            id: bundle.bundle.id.clone(),
+            payload: data.as_ref().as_ref().into(),
         };
 
         // And we are done with the bundle
@@ -58,8 +47,8 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn poll_for_collection(
         &self,
-        destination: bpv7::Eid,
-        tx: tokio::sync::mpsc::Sender<metadata::Bundle>,
+        destination: &bpv7::Eid,
+        tx: storage::Sender,
     ) -> Result<(), Error> {
         self.store.poll_for_collection(destination, tx).await
     }

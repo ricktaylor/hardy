@@ -7,7 +7,7 @@ mod ipn_pattern_map;
 
 type Entries<I, T> = HashMap<I, T>;
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct EidPatternMap<I, T>
 where
     I: Eq + std::hash::Hash + Clone + Default,

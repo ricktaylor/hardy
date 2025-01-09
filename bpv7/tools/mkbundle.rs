@@ -47,22 +47,24 @@ fn main() {
         &mut BufWriter::new(std::io::stdout())
     };
 
-    let mut b = Builder::new()
-        .source(args.source)
-        .destination(args.destination);
+    let mut b = Builder::new();
+
+    b.source(args.source).destination(args.destination);
 
     if let Some(report_to) = args.report_to {
-        b = b.report_to(report_to);
+        b.report_to(report_to);
     }
 
     if let Some(lifetime) = args.lifetime {
         if lifetime.as_millis() > u64::MAX as u128 {
             panic!("Lifetime too long!")
         }
-        b = b.lifetime(lifetime.as_millis() as u64);
+        b.lifetime(time::Duration::milliseconds(lifetime.as_millis() as i64));
     }
 
+    b.add_payload_block(payload);
+
     output
-        .write_all(&b.add_payload_block(payload).build().1)
+        .write_all(&b.build().1)
         .expect("Failed to write bundle")
 }

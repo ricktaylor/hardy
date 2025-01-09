@@ -4,7 +4,7 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub(super) async fn administrative_bundle(
         &self,
-        bundle: &mut metadata::Bundle,
+        bundle: &mut bundle::Bundle,
     ) -> Result<DispatchResult, Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
@@ -29,7 +29,6 @@ impl Dispatcher {
             Ok(bpv7::AdministrativeRecord::BundleStatusReport(report)) => {
                 // Check if the report is for a bundle sourced from a local service
                 if !self
-                    .config
                     .admin_endpoints
                     .is_local_service(&report.bundle_id.source)
                 {
@@ -39,49 +38,47 @@ impl Dispatcher {
                     )))
                 } else {
                     // Find a live service to notify
-                    if let Some(endpoint) = self
-                        .app_registry
-                        .find_by_eid(&report.bundle_id.source)
-                        .await
+                    if let Some(service) =
+                        self.service_registry.find(&report.bundle_id.source).await
                     {
                         // Notify the service
                         if let Some(assertion) = report.received {
-                            endpoint
-                                .status_notify(
+                            service
+                                .on_status_notify(
                                     &report.bundle_id,
-                                    app_registry::StatusKind::Received,
+                                    service::StatusNotify::Received,
                                     report.reason,
-                                    assertion.0.map(|t| t.into()),
+                                    assertion.0,
                                 )
                                 .await
                         }
                         if let Some(assertion) = report.forwarded {
-                            endpoint
-                                .status_notify(
+                            service
+                                .on_status_notify(
                                     &report.bundle_id,
-                                    app_registry::StatusKind::Forwarded,
+                                    service::StatusNotify::Forwarded,
                                     report.reason,
-                                    assertion.0.map(|t| t.into()),
+                                    assertion.0,
                                 )
                                 .await
                         }
                         if let Some(assertion) = report.delivered {
-                            endpoint
-                                .status_notify(
+                            service
+                                .on_status_notify(
                                     &report.bundle_id,
-                                    app_registry::StatusKind::Delivered,
+                                    service::StatusNotify::Delivered,
                                     report.reason,
-                                    assertion.0.map(|t| t.into()),
+                                    assertion.0,
                                 )
                                 .await
                         }
                         if let Some(assertion) = report.deleted {
-                            endpoint
-                                .status_notify(
+                            service
+                                .on_status_notify(
                                     &report.bundle_id,
-                                    app_registry::StatusKind::Deleted,
+                                    service::StatusNotify::Deleted,
                                     report.reason,
-                                    assertion.0.map(|t| t.into()),
+                                    assertion.0,
                                 )
                                 .await
                         }

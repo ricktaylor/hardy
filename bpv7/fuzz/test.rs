@@ -1,4 +1,3 @@
-/*
 #[cfg(test)]
 use hardy_bpv7::prelude::*;
 
@@ -30,7 +29,7 @@ fn get_keys(
 
 #[test]
 fn test() {
-    let data = include_bytes!("artifacts/bundle/crash-0c47614714278e9e65c9eef00f256397abcbc358");
+    let data = include_bytes!("artifacts/bundle/crash-449da37b1546358dfc7c978b03a4183457794f5a");
 
     eprintln!("Original: {:02x?}", &data);
 
@@ -45,4 +44,3 @@ fn test() {
         };
     }
 }
-*/

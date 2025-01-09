@@ -1,6 +1,5 @@
 mod admin;
 mod collect;
-mod config;
 mod dispatch;
 mod forward;
 mod fragment;
@@ -10,57 +9,53 @@ mod report;
 
 use super::*;
 use dispatch::DispatchResult;
-use hardy_cbor as cbor;
-pub use local::SendRequest;
-use std::sync::Arc;
-use tokio_util::bytes::Bytes;
-use utils::cancel::cancellable_sleep;
+use metadata::*;
 
 pub struct Dispatcher {
-    config: self::config::Config,
     cancel_token: tokio_util::sync::CancellationToken,
     store: Arc<store::Store>,
-    tx: tokio::sync::mpsc::Sender<metadata::Bundle>,
-    cla_registry: cla_registry::ClaRegistry,
-    app_registry: app_registry::AppRegistry,
-    fib: Option<fib::Fib>,
+    tx: tokio::sync::mpsc::Sender<bundle::Bundle>,
+    service_registry: Arc<service_registry::ServiceRegistry>,
+    fib: Arc<fib_impl::Fib>,
+    ipn_2_element: bpv7::EidPatternMap<(), ()>,
+
+    // Config options
+    status_reports: bool,
+    wait_sample_interval: time::Duration,
+    admin_endpoints: Arc<admin_endpoints::AdminEndpoints>,
+    max_forwarding_delay: u32,
 }
 
 impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        config: &::config::Config,
-        admin_endpoints: utils::admin_endpoints::AdminEndpoints,
+        config: &bpa::Config,
         store: Arc<store::Store>,
-        cla_registry: cla_registry::ClaRegistry,
-        app_registry: app_registry::AppRegistry,
-        fib: Option<fib::Fib>,
-        task_set: &mut tokio::task::JoinSet<()>,
+        admin_endpoints: Arc<admin_endpoints::AdminEndpoints>,
+        service_registry: Arc<service_registry::ServiceRegistry>,
+        fib: Arc<fib_impl::Fib>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Arc<Self> {
+    ) -> (Self, tokio::sync::mpsc::Receiver<bundle::Bundle>) {
         // Create a channel for bundles
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let dispatcher = Arc::new(Self {
-            config: self::config::Config::new(config, admin_endpoints),
-            cancel_token,
-            store,
-            tx,
-            cla_registry,
-            app_registry,
-            fib,
-        });
-
-        // Spawn the dispatch task
-        let dispatcher_cloned = dispatcher.clone();
-        task_set.spawn(dispatch::dispatch_task(dispatcher_cloned, rx));
-
-        dispatcher
+        (
+            Self {
+                cancel_token,
+                store,
+                tx,
+                service_registry,
+                fib,
+                ipn_2_element: config.ipn_2_element.clone().unwrap_or_default(),
+                status_reports: config.status_reports,
+                wait_sample_interval: config.wait_sample_interval,
+                admin_endpoints,
+                max_forwarding_delay: config.max_forwarding_delay,
+            },
+            rx,
+        )
     }
 
-    async fn load_data(
-        &self,
-        bundle: &metadata::Bundle,
-    ) -> Result<Option<hardy_bpa_api::storage::DataRef>, Error> {
+    async fn load_data(&self, bundle: &bundle::Bundle) -> Result<Option<storage::DataRef>, Error> {
         // Try to load the data, but treat errors as 'Storage Depleted'
         let storage_name = bundle.metadata.storage_name.as_ref().unwrap();
         if let Some(data) = self.store.load_data(storage_name).await? {
@@ -76,9 +71,9 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    async fn drop_bundle(
+    pub async fn drop_bundle(
         &self,
-        mut bundle: metadata::Bundle,
+        mut bundle: bundle::Bundle,
         reason: Option<bpv7::StatusReportReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
@@ -86,13 +81,13 @@ impl Dispatcher {
         }
 
         // Leave a tombstone in the metadata, so we can ignore duplicates
-        if let metadata::BundleStatus::Tombstone(_) = bundle.metadata.status {
+        if let BundleStatus::Tombstone(_) = bundle.metadata.status {
             // Don't update Tombstone timestamp
         } else {
             self.store
                 .set_status(
                     &mut bundle,
-                    metadata::BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
+                    BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
                 )
                 .await?;
         }
@@ -106,11 +101,7 @@ impl Dispatcher {
          * This is done even after we have set a Tombstone
          * status above to avoid a race
          */
-        if self
-            .config
-            .admin_endpoints
-            .is_admin_endpoint(&bundle.bundle.id.source)
-        {
+        if self.admin_endpoints.contains(&bundle.bundle.id.source) {
             self.store.delete_metadata(&bundle.bundle.id).await?;
         }
         Ok(())

@@ -10,7 +10,7 @@ A performant, compliant, and extensible BPv7 DTN solution for the Cloud.
 
 ## Components
 
-The Hardy project is composed of a number of modular components, written in reliable, accessible, asynchronous Rust.  
+The Hardy project is composed of a number of modular components, written in reliable, accessible, asynchronous Rust.
 
 Every component is designed to be executed independently, and intercommunicate using gRPC APIs, making the solution ideal for hosting in a containerized Cloud environment.
 
@@ -22,9 +22,9 @@ The Hardy project provides a set of components and utility libraries, namely:
 
 1. `proto`: The protobuf v3 specifications of the various gRPC APIs used across the project.
 
-1. [`bpa`](./bpa/README.md): The `hardy-bpa` modular BPv7 Bundle Processing Agent and router.
+1. [`bpa-server`](./bpa-server/README.md): The `hardy-bpa-server` modular BPv7 Bundle Processing Agent and router.
 
-1. `bpa-api`: A Rust library defining the `hardy-bpa` plugin APIs 
+1. `bpa`: A Rust library of a complete bundle processing agent.
 
 1. `localdisk-storage`: A Rust library implementing a 'bundle storage engine' plugin that uses the local filesystem.
 

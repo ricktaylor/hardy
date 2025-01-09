@@ -3,24 +3,14 @@ use super::*;
 impl Dispatcher {
     pub(super) async fn forward_bundle(
         &self,
-        bundle: &mut metadata::Bundle,
+        bundle: &mut bundle::Bundle,
     ) -> Result<DispatchResult, Error> {
-        let Some(fib) = &self.fib else {
-            /* If forwarding is disabled in the configuration, then we can only deliver bundles.
-             * As we have decided that the bundle is not for a local service, we cannot deliver.
-             * Therefore, we respond with a Destination endpoint ID unavailable report */
-            trace!("Bundle should be forwarded, but forwarding is disabled");
-            return Ok(DispatchResult::Drop(Some(
-                bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-            )));
-        };
-
         // TODO: Pluggable Egress filters!
 
         /* We loop here, as the FIB could tell us that there should be a CLA to use to forward
          * But it might be rebooting or jammed, so we keep retrying for a "reasonable" amount of time */
         let mut previous = false;
-        let mut retries = 0;
+        let mut retries: u32 = 0;
         let mut destination = &bundle.bundle.destination;
 
         loop {
@@ -33,12 +23,12 @@ impl Dispatcher {
             }
 
             // Lookup/Perform actions
-            let action = match fib.find(destination).await {
+            let action = match self.fib.find(destination).await {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
                     return Ok(DispatchResult::Drop(reason));
                 }
-                Ok(fib::ForwardAction {
+                Ok(fib_impl::ForwardAction {
                     clas,
                     until: Some(until),
                 }) if clas.is_empty() => {
@@ -50,55 +40,54 @@ impl Dispatcher {
             let mut congestion_wait = None;
 
             // For each CLA
-            for endpoint in &action.clas {
-                // Find the named CLA
-                if let Some(e) = self.cla_registry.find(endpoint.handle).await {
-                    // Get bundle data from store, now we know we need it!
-                    let Some(source_data) = self.load_data(bundle).await? else {
-                        // Bundle data was deleted sometime during processing
-                        return Ok(DispatchResult::Done);
-                    };
+            for neighbour in &action.clas {
+                // Get bundle data from store, now we know we need it!
+                let Some(source_data) = self.load_data(bundle).await? else {
+                    // Bundle data was deleted sometime during processing
+                    return Ok(DispatchResult::Done);
+                };
 
-                    // Increment Hop Count, etc...
-                    let data = self.update_extension_blocks(bundle, source_data);
+                // Increment Hop Count, etc...
+                let data = self.update_extension_blocks(bundle, source_data);
 
-                    match e.forward_bundle(destination, data.into()).await {
-                        Ok(cla_registry::ForwardBundleResult::Sent) => {
-                            // We have successfully forwarded!
-                            return self
-                                .report_bundle_forwarded(bundle)
-                                .await
-                                .map(|_| DispatchResult::Drop(None));
-                        }
-                        Ok(cla_registry::ForwardBundleResult::Pending(handle, until)) => {
-                            // CLA will report successful forwarding
-                            // Don't wait longer than expiry
-                            let until = until.unwrap_or_else(|| {
+                match neighbour
+                    .cla
+                    .forward(destination, neighbour.addr.as_deref(), &data)
+                    .await
+                {
+                    Ok(cla::ForwardBundleResult::Sent) => {
+                        // We have successfully forwarded!
+                        return self
+                            .report_bundle_forwarded(bundle)
+                            .await
+                            .map(|_| DispatchResult::Drop(None));
+                    }
+                    Ok(cla::ForwardBundleResult::Pending(handle, until)) => {
+                        // CLA will report successful forwarding
+                        // Don't wait longer than expiry
+                        let until = until.unwrap_or_else(|| {
                                 warn!("CLA endpoint has not provided a suitable AckPending delay, defaulting to 1 minute");
                                 time::OffsetDateTime::now_utc() + time::Duration::minutes(1)
                             }).min(bundle.expiry());
 
-                            // Set the bundle status to 'Forward Acknowledgement Pending' and re-dispatch
-                            return self
-                                .store
-                                .set_status(
-                                    bundle,
-                                    metadata::BundleStatus::ForwardAckPending(handle, until),
-                                )
-                                .await
-                                .map(|_| DispatchResult::Continue);
-                        }
-                        Ok(cla_registry::ForwardBundleResult::Congested(until)) => {
-                            trace!("CLA reported congestion, retry at: {until}");
-
-                            // Remember the shortest wait for a retry, in case we have ECMP
-                            congestion_wait = congestion_wait
-                                .map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)))
-                        }
-                        Err(e) => trace!("CLA failed to forward {e}"),
+                        // Set the bundle status to 'Forward Acknowledgement Pending' and re-dispatch
+                        return self
+                            .store
+                            .set_status(bundle, BundleStatus::ForwardAckPending(handle, until))
+                            .await
+                            .map(|_| DispatchResult::Continue);
                     }
-                } else {
-                    trace!("FIB has entry for unknown CLA: {endpoint:?}");
+                    Ok(cla::ForwardBundleResult::Congested(until)) => {
+                        trace!("CLA reported congestion, retry at: {until}");
+
+                        // Remember the shortest wait for a retry, in case we have ECMP
+                        congestion_wait = congestion_wait
+                            .map_or(Some(until), |w: time::OffsetDateTime| Some(w.min(until)))
+                    }
+                    Err(cla::Error::Disconnected) => {
+                        // Ignore if the FIB is slightly out of sync
+                    }
+                    Err(e) => error!("CLA failed to forward: {e}"),
                 }
                 // Try the next CLA, this one is busy, broken or missing
             }
@@ -116,7 +105,7 @@ impl Dispatcher {
                 }
 
                 return self.bundle_wait(bundle, until).await;
-            } else if retries >= self.config.max_forwarding_delay {
+            } else if retries >= self.max_forwarding_delay {
                 if previous {
                     // We have delayed long enough trying to find a route to previous_node
                     trace!("Failed to return bundle to previous node, no route");
@@ -145,7 +134,7 @@ impl Dispatcher {
                 trace!("Retrying ({retries}) FIB lookup to allow FIB and CLAs to resync");
 
                 // Async sleep for 1 second
-                if !cancellable_sleep(time::Duration::seconds(1), &self.cancel_token).await {
+                if !utils::cancellable_sleep(time::Duration::seconds(1), &self.cancel_token).await {
                     // Cancelled
                     return Ok(DispatchResult::Done);
                 }
@@ -155,8 +144,8 @@ impl Dispatcher {
 
     fn update_extension_blocks(
         &self,
-        bundle: &metadata::Bundle,
-        source_data: hardy_bpa_api::storage::DataRef,
+        bundle: &bundle::Bundle,
+        source_data: storage::DataRef,
     ) -> Vec<u8> {
         let mut editor = bpv7::Editor::new(&bundle.bundle, source_data.as_ref().as_ref());
 
@@ -164,25 +153,23 @@ impl Dispatcher {
         for (block_number, block) in &bundle.bundle.blocks {
             if let bpv7::BlockType::Unrecognised(_) = &block.block_type {
                 if block.flags.delete_block_on_failure {
-                    editor = editor.remove_extension_block(*block_number);
+                    editor.remove_extension_block(*block_number);
                 }
             }
         }
 
         // Previous Node Block
-        editor = editor
+        editor
             .replace_extension_block(bpv7::BlockType::PreviousNode)
             .data(cbor::encode::emit(
-                &self
-                    .config
-                    .admin_endpoints
+                self.admin_endpoints
                     .get_admin_endpoint(&bundle.bundle.destination),
             ))
             .build();
 
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
-            editor = editor
+            editor
                 .replace_extension_block(bpv7::BlockType::HopCount)
                 .data(cbor::encode::emit(&bpv7::HopInfo {
                     limit: hop_count.limit,
@@ -199,7 +186,7 @@ impl Dispatcher {
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;
 
-            editor = editor
+            editor
                 .replace_extension_block(bpv7::BlockType::BundleAge)
                 .data(cbor::encode::emit(bundle_age))
                 .build();
@@ -212,33 +199,19 @@ impl Dispatcher {
     pub async fn confirm_forwarding(
         &self,
         handle: u32,
-        bundle_id: &str,
-    ) -> Result<(), tonic::Status> {
-        let Some(bundle) = self
-            .store
-            .load(
-                &bpv7::BundleId::from_key(bundle_id)
-                    .map_err(|e| tonic::Status::from_error(e.into()))?,
-            )
-            .await
-            .map_err(tonic::Status::from_error)?
-        else {
-            return Err(tonic::Status::not_found("No such bundle"));
-        };
+        bundle_id: &bpv7::BundleId,
+    ) -> cla::Result<()> {
+        if let Some(bundle) = self.store.load(bundle_id).await? {
+            if let BundleStatus::ForwardAckPending(t, _) = &bundle.metadata.status {
+                if t == &handle {
+                    // Report bundle forwarded
+                    self.report_bundle_forwarded(&bundle).await?;
 
-        match &bundle.metadata.status {
-            metadata::BundleStatus::ForwardAckPending(t, _) if t == &handle => {
-                // Report bundle forwarded
-                self.report_bundle_forwarded(&bundle)
-                    .await
-                    .map_err(tonic::Status::from_error)?;
-
-                // And drop the bundle
-                self.drop_bundle(bundle, None)
-                    .await
-                    .map_err(tonic::Status::from_error)
+                    // And drop the bundle
+                    self.drop_bundle(bundle, None).await?;
+                }
             }
-            _ => Err(tonic::Status::not_found("No such bundle")),
         }
+        Ok(())
     }
 }

@@ -12,7 +12,7 @@ default = ["mmap"]
 mmap = ["dep:memmap2"]
 
 [dependencies]
-hardy-bpa-api = { path = "../bpa-api" }
+hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.39.3", features = ["rt-multi-thread", "fs"] }
 serde = { version = "1.0.210", features = ["derive"] }
 rand = "0.8.5"

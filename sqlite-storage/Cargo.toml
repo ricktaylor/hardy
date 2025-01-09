@@ -8,7 +8,7 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-hardy-bpa-api = { path = "../bpa-api" }
+hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.32.1", features = ["bundled", "time"] }

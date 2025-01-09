@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "bpa-server",
     "bpa",
     "bpa/fuzz",
-    "bpa-api",
     "bpv7",
     "bpv7/fuzz",
     "cbor",

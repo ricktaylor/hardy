@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct HashableRegEx(regex::Regex);
 
 impl std::cmp::PartialEq for HashableRegEx {
@@ -26,7 +26,7 @@ where
     values: Vec<&'a T>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 struct Node<I, T>
 where
     I: Eq + std::hash::Hash + Clone + Default,
@@ -67,7 +67,7 @@ where
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct DtnPatternMap<I, T>
 where
     I: Eq + std::hash::Hash + Clone + Default,

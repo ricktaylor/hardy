@@ -1,5 +1,9 @@
 use super::*;
-use hardy_bpa_api::{async_trait, metadata, storage};
+use hardy_bpa::{
+    async_trait,
+    metadata::{BundleMetadata, BundleStatus},
+    storage,
+};
 use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
@@ -32,7 +36,6 @@ pub enum Error {
 #[derive(Debug)]
 #[repr(i64)]
 enum StatusCodes {
-    IngressPending = 0,
     DispatchPending = 1,
     ReassemblyPending = 2,
     CollectionPending = 3,
@@ -45,7 +48,6 @@ enum StatusCodes {
 impl From<i64> for StatusCodes {
     fn from(value: i64) -> Self {
         match value {
-            0 => Self::IngressPending,
             1 => Self::DispatchPending,
             2 => Self::ReassemblyPending,
             3 => Self::CollectionPending,
@@ -65,29 +67,20 @@ impl From<StatusCodes> for i64 {
 }
 
 fn bundle_status_to_parts(
-    value: &metadata::BundleStatus,
+    value: &BundleStatus,
 ) -> (i64, Option<i64>, Option<time::OffsetDateTime>) {
     match value {
-        metadata::BundleStatus::IngressPending => (StatusCodes::IngressPending.into(), None, None),
-        metadata::BundleStatus::DispatchPending => {
-            (StatusCodes::DispatchPending.into(), None, None)
-        }
-        metadata::BundleStatus::ReassemblyPending => {
-            (StatusCodes::ReassemblyPending.into(), None, None)
-        }
-        metadata::BundleStatus::CollectionPending => {
-            (StatusCodes::CollectionPending.into(), None, None)
-        }
-        metadata::BundleStatus::ForwardPending => (StatusCodes::ForwardPending.into(), None, None),
-        metadata::BundleStatus::ForwardAckPending(handle, until) => (
+        BundleStatus::DispatchPending => (StatusCodes::DispatchPending.into(), None, None),
+        BundleStatus::ReassemblyPending => (StatusCodes::ReassemblyPending.into(), None, None),
+        BundleStatus::CollectionPending => (StatusCodes::CollectionPending.into(), None, None),
+        BundleStatus::ForwardPending => (StatusCodes::ForwardPending.into(), None, None),
+        BundleStatus::ForwardAckPending(handle, until) => (
             StatusCodes::ForwardAckPending.into(),
             Some(*handle as i64),
             Some(*until),
         ),
-        metadata::BundleStatus::Waiting(until) => (StatusCodes::Waiting.into(), None, Some(*until)),
-        metadata::BundleStatus::Tombstone(from) => {
-            (StatusCodes::Tombstone.into(), None, Some(*from))
-        }
+        BundleStatus::Waiting(until) => (StatusCodes::Waiting.into(), None, Some(*until)),
+        BundleStatus::Tombstone(from) => (StatusCodes::Tombstone.into(), None, Some(*from)),
     }
 }
 
@@ -96,26 +89,21 @@ fn columns_to_bundle_status(
     idx1: usize,
     idx2: usize,
     idx3: usize,
-) -> rusqlite::Result<metadata::BundleStatus> {
+) -> rusqlite::Result<BundleStatus> {
     match (
         row.get::<_, i64>(idx1)?.into(),
         row.get::<_, Option<i64>>(idx2)?,
         row.get::<_, Option<time::OffsetDateTime>>(idx3)?,
     ) {
-        (StatusCodes::IngressPending, None, None) => Ok(metadata::BundleStatus::IngressPending),
-        (StatusCodes::DispatchPending, None, None) => Ok(metadata::BundleStatus::DispatchPending),
-        (StatusCodes::ReassemblyPending, None, None) => {
-            Ok(metadata::BundleStatus::ReassemblyPending)
+        (StatusCodes::DispatchPending, None, None) => Ok(BundleStatus::DispatchPending),
+        (StatusCodes::ReassemblyPending, None, None) => Ok(BundleStatus::ReassemblyPending),
+        (StatusCodes::CollectionPending, None, None) => Ok(BundleStatus::CollectionPending),
+        (StatusCodes::ForwardPending, None, None) => Ok(BundleStatus::ForwardPending),
+        (StatusCodes::ForwardAckPending, Some(handle), Some(until)) => {
+            Ok(BundleStatus::ForwardAckPending(handle as u32, until))
         }
-        (StatusCodes::CollectionPending, None, None) => {
-            Ok(metadata::BundleStatus::CollectionPending)
-        }
-        (StatusCodes::ForwardPending, None, None) => Ok(metadata::BundleStatus::ForwardPending),
-        (StatusCodes::ForwardAckPending, Some(handle), Some(until)) => Ok(
-            metadata::BundleStatus::ForwardAckPending(handle as u32, until),
-        ),
-        (StatusCodes::Waiting, None, Some(until)) => Ok(metadata::BundleStatus::Waiting(until)),
-        (StatusCodes::Tombstone, None, Some(from)) => Ok(metadata::BundleStatus::Tombstone(from)),
+        (StatusCodes::Waiting, None, Some(until)) => Ok(BundleStatus::Waiting(until)),
+        (StatusCodes::Tombstone, None, Some(from)) => Ok(BundleStatus::Tombstone(from)),
         (v, t, d) => panic!("Invalid BundleStatus value combination {v:?}/{t:?}/{d:?}"),
     }
 }
@@ -316,6 +304,12 @@ fn as_u64(v: i64) -> u64 {
     v as u64
 }
 
+// Quick helper for type conversion
+#[inline]
+fn as_duration(v: i64) -> time::Duration {
+    time::Duration::milliseconds(v)
+}
+
 #[inline]
 fn as_i64<T: Into<u64>>(v: T) -> i64 {
     let v: u64 = v.into();
@@ -358,7 +352,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
 
     while let Some(mut row) = rows.next()? {
         let bundle_id: i64 = row.get(0)?;
-        let metadata = metadata::Metadata {
+        let metadata = BundleMetadata {
             status: columns_to_bundle_status(row, 1, 20, 19)?,
             storage_name: row.get(2)?,
             hash: decode_hash(row, 3)?,
@@ -391,14 +385,14 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
             crc_type: as_u64(row.get(6)?).into(),
             destination: decode_eid(row, 8)?,
             report_to: decode_eid(row, 9)?,
-            lifetime: as_u64(row.get(12)?),
+            lifetime: as_duration(row.get(12)?),
             blocks: HashMap::new(),
             previous_node: match row.get_ref(15)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
                 v => panic!("EID encoded as unusual sqlite type: {:?}", v),
             },
-            age: row.get::<_, Option<i64>>(16)?.map(as_u64),
+            age: row.get::<_, Option<i64>>(16)?.map(as_duration),
             hop_count: match row.get_ref(17)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Integer(i) => Some(bpv7::HopInfo {
@@ -436,10 +430,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
             }
         }
 
-        if tx
-            .blocking_send(metadata::Bundle { bundle, metadata })
-            .is_err()
-        {
+        if tx.blocking_send((metadata, bundle)).is_err() {
             break;
         }
     }
@@ -449,7 +440,10 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
-    async fn load(&self, bundle_id: &bpv7::BundleId) -> storage::Result<Option<metadata::Bundle>> {
+    async fn load(
+        &self,
+        bundle_id: &bpv7::BundleId,
+    ) -> storage::Result<Option<(BundleMetadata, bpv7::Bundle)>> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
             let mut stmt = conn.prepare_cached(
@@ -514,7 +508,7 @@ impl storage::MetadataStorage for Storage {
             };
 
             let bundle_id: i64 = row.get(0)?;
-            let metadata = metadata::Metadata {
+            let metadata = BundleMetadata {
                 status: columns_to_bundle_status(row, 1, 20, 19)?,
                 storage_name: row.get(2)?,
                 hash: decode_hash(row, 3)?,
@@ -547,14 +541,14 @@ impl storage::MetadataStorage for Storage {
                 crc_type: as_u64(row.get(6)?).into(),
                 destination: decode_eid(row, 8)?,
                 report_to: decode_eid(row, 9)?,
-                lifetime: as_u64(row.get(12)?),
+                lifetime: as_duration(row.get(12)?),
                 blocks: HashMap::new(),
                 previous_node: match row.get_ref(15)? {
                     rusqlite::types::ValueRef::Null => None,
                     rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
                     v => panic!("EID encoded as unusual sqlite type: {:?}", v),
                 },
-                age: row.get::<_, Option<i64>>(16)?.map(as_u64),
+                age: row.get::<_, Option<i64>>(16)?.map(as_duration),
                 hop_count: match row.get_ref(17)? {
                     rusqlite::types::ValueRef::Null => None,
                     rusqlite::types::ValueRef::Integer(i) => Some(bpv7::HopInfo {
@@ -591,7 +585,7 @@ impl storage::MetadataStorage for Storage {
                     panic!("More than one bundle in query!");
                 }
             }
-            Ok(Some(metadata::Bundle { bundle, metadata }))
+            Ok(Some((metadata, bundle)))
         })
         .await
     }
@@ -599,7 +593,7 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn store(
         &self,
-        metadata: &metadata::Metadata,
+        metadata: &BundleMetadata,
         bundle: &bpv7::Bundle,
     ) -> storage::Result<bool> {
         let metadata = metadata.clone();
@@ -648,7 +642,7 @@ impl storage::MetadataStorage for Storage {
                         encode_eid(&bundle.report_to),
                         encode_creation_time(bundle.id.timestamp.creation_time),
                         as_i64(bundle.id.timestamp.sequence_number),
-                        as_i64(bundle.lifetime),
+                        as_i64(bundle.lifetime.whole_milliseconds() as u64),
                         bundle
                             .id
                             .fragment_info
@@ -660,7 +654,7 @@ impl storage::MetadataStorage for Storage {
                             .as_ref()
                             .map_or(-1, |f| as_i64(f.total_len)),
                         bundle.previous_node.as_ref().map(encode_eid),
-                        bundle.age.map(as_i64),
+                        bundle.age.map(|v| as_i64(v.whole_milliseconds() as u64)),
                         bundle.hop_count.as_ref().map(|h| as_i64(h.count)),
                         bundle.hop_count.as_ref().map(|h| as_i64(h.limit)),
                         until,
@@ -756,7 +750,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &bpv7::BundleId,
-    ) -> storage::Result<Option<metadata::Metadata>> {
+    ) -> storage::Result<Option<BundleMetadata>> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
             let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -798,7 +792,7 @@ impl storage::MetadataStorage for Storage {
                     |row| {
                         Ok((
                             row.get::<_, i64>(0)?,
-                            metadata::Metadata {
+                            BundleMetadata {
                                 status: columns_to_bundle_status(row, 1, 2, 3)?,
                                 storage_name: row.get(4)?,
                                 hash: decode_hash(row, 5)?,
@@ -830,7 +824,7 @@ impl storage::MetadataStorage for Storage {
     async fn get_bundle_status(
         &self,
         bundle_id: &bpv7::BundleId,
-    ) -> storage::Result<Option<metadata::BundleStatus>> {
+    ) -> storage::Result<Option<BundleStatus>> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
             conn.prepare_cached(
@@ -870,14 +864,14 @@ impl storage::MetadataStorage for Storage {
     async fn set_bundle_status(
         &self,
         bundle_id: &bpv7::BundleId,
-        status: &metadata::BundleStatus,
+        status: &BundleStatus,
     ) -> storage::Result<()> {
         let bundle_id = bundle_id.clone();
         let status = status.clone();
         self.pooled_connection(move |conn| {
             let (status_code, ack_handle, until) = bundle_status_to_parts(&status);
 
-            let r = if let metadata::BundleStatus::Tombstone(_) = status {
+            let r = if let BundleStatus::Tombstone(_) = status {
                 conn
                     .prepare_cached(
                         r#"UPDATE bundles 
@@ -1042,9 +1036,10 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self, tx))]
     async fn poll_for_collection(
         &self,
-        destination: bpv7::Eid,
+        destination: &bpv7::Eid,
         tx: storage::Sender,
     ) -> storage::Result<()> {
+        let destination = destination.clone();
         self.pooled_connection(move |conn| {
             unpack_bundles(
                 conn.prepare_cached(
