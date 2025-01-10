@@ -1,4 +1,4 @@
-pub mod settings;
+mod settings;
 mod static_routes;
 
 // This is the generic Error type used almost everywhere

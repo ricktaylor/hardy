@@ -77,6 +77,7 @@ fn parse_route(input: &mut &[u8]) -> PResult<(bpv7::EidPattern, StaticRoute)> {
         .map(|(_, (pattern, (action, priority)), _, _)| (pattern, StaticRoute { priority, action }))
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_routes(input: &mut &[u8]) -> PResult<Vec<(bpv7::EidPattern, StaticRoute)>> {
     repeat_till(
         0..,
