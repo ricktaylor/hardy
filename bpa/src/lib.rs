@@ -24,7 +24,13 @@ use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{error, info, trace, warn};
+
+#[cfg(fuzzing)]
+use fuzz_macros::instrument;
+
+#[cfg(not(fuzzing))]
+use tracing::instrument;
 
 // Re-export for consistency
 pub use async_trait::async_trait;

@@ -852,6 +852,7 @@ name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "fuzz-macros",
  "hardy-bpv7",
  "hardy-cbor",
  "rand",

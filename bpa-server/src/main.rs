@@ -6,7 +6,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{error, info, trace, warn};
 
 fn listen_for_cancel(
     bpa: Arc<hardy_bpa::bpa::Bpa>,

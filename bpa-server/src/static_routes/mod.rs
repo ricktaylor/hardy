@@ -158,7 +158,6 @@ impl StaticRoutes {
     }
 }
 
-#[instrument(skip_all)]
 pub async fn init(
     config: &::config::Config,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
