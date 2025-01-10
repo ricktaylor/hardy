@@ -108,7 +108,9 @@ impl Store {
                             }
                         }
                     },
-                    _ = cancel_token.cancelled() => break,
+                    _ = cancel_token.cancelled() => {
+                        rx.close();
+                    }
                 }
             }
         });
@@ -154,7 +156,9 @@ impl Store {
                             results.push(r);
                         },
                     },
-                    _ = cancel_token.cancelled() => break
+                    _ = cancel_token.cancelled() => {
+                        rx.close()
+                    }
                 }
             }
             results
@@ -398,7 +402,9 @@ impl Store {
                                 }
                             },
                         },
-                        _ = cancel_token.cancelled() => break,
+                        _ = cancel_token.cancelled() => {
+                            rx.close();
+                        }
                     }
                 }
             });

@@ -18,15 +18,14 @@ fn listen_for_cancel(
             _ = term_handler.recv() => {
                 // Signal stop
                 info!("Received terminate signal, stopping...");
-                cancel_token.cancel();
             }
             _ = tokio::signal::ctrl_c() => {
                 // Signal stop
                 info!("Received CTRL+C, stopping...");
-                cancel_token.cancel();
             }
-            _ = cancel_token.cancelled() => {}
         }
+
+        cancel_token.cancel();
     });
 }
 

@@ -214,20 +214,23 @@ impl Dispatcher {
                     }
                     timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(SECS));
                 },
-                bundle = rx.recv() => {
-                    let dispatcher = self.clone();
-                    let bundle = bundle.trace_expect("Dispatcher channel unexpectedly closed");
-
-                    task_set.spawn(async move {
-                        dispatcher.process_bundle(bundle).await.trace_expect("Failed to dispatch bundle");
-                    });
+                bundle = rx.recv() => match bundle {
+                    Some(bundle) => {
+                        let dispatcher = self.clone();
+                        task_set.spawn(async move {
+                            dispatcher.process_bundle(bundle).await.trace_expect("Failed to dispatch bundle");
+                        });
+                    },
+                    None => break
                 },
                 Some(r) = task_set.join_next(), if !task_set.is_empty() => {
                     r.trace_expect("Task terminated unexpectedly");
-
                     bundles_processed = bundles_processed.saturating_add(1);
                 },
-                _ = self.cancel_token.cancelled() => break
+                _ = self.cancel_token.cancelled() => {
+                    // Close the queue, we're done
+                    rx.close();
+                }
             }
         }
 
