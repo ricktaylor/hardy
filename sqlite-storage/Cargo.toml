@@ -12,19 +12,19 @@ hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.32.1", features = ["bundled", "time"] }
-tokio = { version = "1.39.3", features = ["rt-multi-thread"] }
-thiserror = "2.0.3"
-serde = { version = "1.0.210", features = ["derive"] }
-config = { version = "0.14.0", features = ["toml"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
+thiserror = "2.0.10"
+serde = { version = "1.0.217", features = ["derive"] }
+config = { version = "0.15.4", features = ["toml"] }
 directories = "5.0.1"
-tracing = "0.1.40"
+tracing = "0.1.41"
 base64 = "0.22.1"
-time = "0.3.36"
+time = "0.3.37"
 cfg-if = "1.0.0"
 trace-err = "0.1.1"
 
 [build-dependencies]
-built = "0.7.4"
-regex = "1.11.0"
+built = "0.7.5"
+regex = "1.11.1"
 sha1 = "0.10.6"
 base64 = "0.22.1"

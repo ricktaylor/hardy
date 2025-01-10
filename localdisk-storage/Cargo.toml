@@ -13,22 +13,22 @@ mmap = ["dep:memmap2"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
-tokio = { version = "1.39.3", features = ["rt-multi-thread", "fs"] }
-serde = { version = "1.0.210", features = ["derive"] }
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "fs"] }
+serde = { version = "1.0.217", features = ["derive"] }
 rand = "0.8.5"
-config = { version = "0.14.0", features = ["toml"] }
+config = { version = "0.15.4", features = ["toml"] }
 directories = "5.0.1"
-tracing = "0.1.40"
-memmap2 = { version = "0.9.4", optional = true }
-time = "0.3.36"
+tracing = "0.1.41"
+memmap2 = { version = "0.9.5", optional = true }
+time = "0.3.37"
 cfg-if = "1.0.0"
 trace-err = "0.1.1"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.168"
+libc = "0.2.169"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
 
 [build-dependencies]
-built = "0.7.4"
+built = "0.7.5"
