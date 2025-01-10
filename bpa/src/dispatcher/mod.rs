@@ -11,6 +11,8 @@ use super::*;
 use dispatch::DispatchResult;
 use metadata::*;
 
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
 pub struct Dispatcher {
     cancel_token: tokio_util::sync::CancellationToken,
     store: Arc<store::Store>,

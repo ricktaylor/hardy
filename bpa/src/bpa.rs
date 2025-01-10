@@ -1,5 +1,7 @@
 use super::*;
 
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
 pub struct Config {
     pub status_reports: bool,
     pub wait_sample_interval: time::Duration,
@@ -37,7 +39,7 @@ impl std::fmt::Debug for Config {
 }
 
 pub struct Bpa {
-    store: Arc<store::Store>,
+    //store: Arc<store::Store>,
     fib: Arc<fib_impl::Fib>,
     cla_registry: Arc<cla_registry::ClaRegistry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
@@ -83,7 +85,7 @@ impl Bpa {
         let jh = tokio::spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
 
         Self {
-            store,
+            //store,
             fib,
             cla_registry,
             service_registry,

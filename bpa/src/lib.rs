@@ -17,9 +17,6 @@ pub mod metadata;
 pub mod service;
 pub mod storage;
 
-// This is the generic Error type used almost everywhere
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
-
 use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use std::sync::Arc;

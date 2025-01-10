@@ -413,12 +413,12 @@ impl Store {
     }
 
     #[inline]
-    pub async fn load_data(&self, storage_name: &str) -> Result<Option<storage::DataRef>, Error> {
+    pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
         self.bundle_storage.load(storage_name).await
     }
 
     #[inline]
-    pub async fn store_data(&self, data: &[u8]) -> Result<(Arc<str>, Arc<[u8]>), Error> {
+    pub async fn store_data(&self, data: &[u8]) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
         // Calculate hash
         let hash = hash(data);
 
@@ -434,7 +434,7 @@ impl Store {
         &self,
         metadata: &BundleMetadata,
         bundle: &bpv7::Bundle,
-    ) -> Result<bool, Error> {
+    ) -> storage::Result<bool> {
         // Write to metadata store
         Ok(self
             .metadata_storage
@@ -444,7 +444,10 @@ impl Store {
     }
 
     #[inline]
-    pub async fn load(&self, bundle_id: &bpv7::BundleId) -> Result<Option<bundle::Bundle>, Error> {
+    pub async fn load(
+        &self,
+        bundle_id: &bpv7::BundleId,
+    ) -> storage::Result<Option<bundle::Bundle>> {
         self.metadata_storage.load(bundle_id).await.map(|v| {
             v.map(|(m, b)| bundle::Bundle {
                 metadata: m,
@@ -460,7 +463,7 @@ impl Store {
         data: &[u8],
         status: BundleStatus,
         received_at: Option<time::OffsetDateTime>,
-    ) -> Result<Option<BundleMetadata>, Error> {
+    ) -> storage::Result<Option<BundleMetadata>> {
         // Write to bundle storage
         let (storage_name, hash) = self.store_data(data).await?;
 
@@ -494,7 +497,7 @@ impl Store {
         &self,
         destination: &bpv7::Eid,
         tx: storage::Sender,
-    ) -> Result<(), Error> {
+    ) -> storage::Result<()> {
         self.metadata_storage
             .poll_for_collection(destination, tx)
             .await
@@ -504,7 +507,7 @@ impl Store {
     pub async fn check_status(
         &self,
         bundle_id: &bpv7::BundleId,
-    ) -> Result<Option<BundleStatus>, Error> {
+    ) -> storage::Result<Option<BundleStatus>> {
         self.metadata_storage.get_bundle_status(bundle_id).await
     }
 
@@ -513,7 +516,7 @@ impl Store {
         &self,
         bundle: &mut bundle::Bundle,
         status: BundleStatus,
-    ) -> Result<(), Error> {
+    ) -> storage::Result<()> {
         if bundle.metadata.status == status {
             Ok(())
         } else {
@@ -525,13 +528,13 @@ impl Store {
     }
 
     #[inline]
-    pub async fn delete_data(&self, storage_name: &str) -> Result<(), Error> {
+    pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
         // Delete the bundle from the bundle store
         self.bundle_storage.remove(storage_name).await
     }
 
     #[inline]
-    pub async fn delete_metadata(&self, bundle_id: &bpv7::BundleId) -> Result<(), Error> {
+    pub async fn delete_metadata(&self, bundle_id: &bpv7::BundleId) -> storage::Result<()> {
         // Delete the bundle from the bundle store
         self.metadata_storage.remove(bundle_id).await
     }
