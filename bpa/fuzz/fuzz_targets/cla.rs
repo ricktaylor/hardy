@@ -32,7 +32,8 @@ impl NullCla {
     }
 
     async fn disconnect(&self) {
-        if let Some(sink) = self.sink.lock().unwrap().take() {
+        let sink = self.sink.lock().unwrap().take();
+        if let Some(sink) = sink {
             _ = sink.disconnect().await;
         }
     }
@@ -61,7 +62,7 @@ impl hardy_bpa::cla::Cla for NullCla {
 
 fn setup() -> tokio::runtime::Runtime {
     tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
         .with_target(true)
         .init();
 
@@ -71,7 +72,7 @@ fn setup() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn test_ingress(data: &[u8]) {
+fuzz_target!(|data: &[u8]| {
     // Full lifecycle
     RT.get_or_init(setup).block_on(async {
         // New BPA
@@ -108,20 +109,11 @@ fn test_ingress(data: &[u8]) {
 
         cla.dispatch(data).await;
 
+        cla.disconnect().await;
+
         bpa.shutdown().await;
     });
-}
-
-fuzz_target!(|data: &[u8]| {
-    test_ingress(data);
 });
-
-#[test]
-fn test() {
-    test_ingress(include_bytes!(
-        "../artifacts/cla/leak-df58248c414f342c81e056b40bee12d17a08bf61"
-    ));
-}
 
 // cargo cov -- show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
 // cargo cov -- export --format=lcov  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/ingress/lcov.info
