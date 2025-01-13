@@ -41,23 +41,21 @@ impl Store {
         self.bundle_storage_check(dispatcher.clone(), cancel_token.clone())
             .await;
 
+        // Now check the metadata storage for old data
+        self.metadata_storage_check(dispatcher.clone(), cancel_token.clone())
+            .await;
+
+        info!("Store restarted");
+
         if !cancel_token.is_cancelled() {
-            // Now check the metadata storage for old data
-            self.metadata_storage_check(dispatcher.clone(), cancel_token.clone())
-                .await;
-
-            if !cancel_token.is_cancelled() {
-                info!("Store restarted");
-
-                // Spawn a waiter
-                let metadata_storage = self.metadata_storage.clone();
-                task_set.spawn(Self::check_waiting(
-                    self.wait_sample_interval,
-                    metadata_storage,
-                    dispatcher,
-                    cancel_token,
-                ));
-            }
+            // Spawn a waiter
+            let metadata_storage = self.metadata_storage.clone();
+            task_set.spawn(Self::check_waiting(
+                self.wait_sample_interval,
+                metadata_storage,
+                dispatcher,
+                cancel_token,
+            ));
         }
     }
 
