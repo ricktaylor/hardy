@@ -38,6 +38,8 @@ impl Dispatcher {
                 )
             }
             bpv7::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
+                trace!("Received bundle has been rewritten");
+
                 // Write the bundle data to the store
                 let (storage_name, hash) = self.store.store_data(&data).await?;
                 self.ingress_bundle(

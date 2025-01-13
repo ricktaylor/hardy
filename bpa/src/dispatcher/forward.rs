@@ -114,7 +114,7 @@ impl Dispatcher {
                     )));
                 }
 
-                trace!("Failed to forward bundle, no route");
+                trace!("Failed to forward bundle to {destination}, no route");
 
                 // Return the bundle to the source via the 'previous_node' or 'bundle.source'
                 destination = bundle
@@ -123,7 +123,7 @@ impl Dispatcher {
                     .as_ref()
                     .unwrap_or(&bundle.bundle.id.source);
 
-                trace!("Returning bundle to previous node: {destination}");
+                trace!("Returning bundle to previous node {destination}");
 
                 // Reset retry counter as we are attempting to return the bundle
                 retries = 0;
