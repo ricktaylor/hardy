@@ -15,7 +15,7 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self))]
-    async fn process_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
+    pub async fn process_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
         /* This is a classic looped state machine */
         loop {
             let result = match &bundle.metadata.status {

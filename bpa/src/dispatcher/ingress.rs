@@ -180,7 +180,7 @@ impl Dispatcher {
             return self.drop_bundle(bundle, reason).await;
         }
 
-        // Now process in parallel
-        self.dispatch_bundle(bundle).await
+        // Now process the bundle
+        self.process_bundle(bundle).await
     }
 }
