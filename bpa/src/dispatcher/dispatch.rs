@@ -87,7 +87,10 @@ impl Dispatcher {
     ) -> Result<DispatchResult, Error> {
         // Check to see if waiting is even worth it
         if until > bundle.expiry() {
-            trace!("Bundle lifetime is shorter than wait period");
+            trace!(
+                "Bundle lifetime {} is less than wait deadline {until}",
+                bundle.expiry()
+            );
             return Ok(DispatchResult::Drop(Some(
                 bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
             )));
@@ -96,7 +99,7 @@ impl Dispatcher {
         let wait = until - time::OffsetDateTime::now_utc();
         if wait > self.wait_sample_interval {
             // Nothing to do now, it will be picked up later
-            trace!("Bundle will wait offline until: {until}");
+            trace!("Bundle will wait offline until {until}");
             return self
                 .store
                 .set_status(bundle, BundleStatus::Waiting(until))
@@ -122,7 +125,10 @@ impl Dispatcher {
         bundle: &mut bundle::Bundle,
     ) -> Result<DispatchResult, Error> {
         if until > bundle.expiry() {
-            trace!("Bundle lifetime is shorter than wait period");
+            trace!(
+                "Bundle lifetime {} is less than wait deadline {until}",
+                bundle.expiry()
+            );
             return Ok(DispatchResult::Drop(Some(
                 bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
             )));

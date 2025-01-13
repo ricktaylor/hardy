@@ -108,13 +108,13 @@ impl Dispatcher {
             } else if retries >= self.max_forwarding_delay {
                 if previous {
                     // We have delayed long enough trying to find a route to previous_node
-                    trace!("Failed to return bundle to previous node, no route");
+                    trace!("Failed to return bundle to previous node, no route to node");
                     return Ok(DispatchResult::Drop(Some(
                         bpv7::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
                     )));
                 }
 
-                trace!("Failed to forward bundle to {destination}, no route");
+                trace!("Failed to forward bundle to {destination}, no route to node");
 
                 // Return the bundle to the source via the 'previous_node' or 'bundle.source'
                 destination = bundle
