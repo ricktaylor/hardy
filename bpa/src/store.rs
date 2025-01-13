@@ -113,6 +113,7 @@ impl Store {
                     }
                 }
             }
+            bundles
         });
 
         self.metadata_storage
@@ -120,7 +121,8 @@ impl Store {
             .await
             .trace_expect("Failed to get unconfirmed bundles");
 
-        h.await.trace_expect("Task terminated unexpectedly")
+        let bundles = h.await.trace_expect("Task terminated unexpectedly");
+        info!("Metadata storage check complete, {bundles} bundles cleaned up");
     }
 
     #[instrument(skip_all)]
@@ -200,7 +202,7 @@ impl Store {
             loop {
                 tokio::select! {
                     () = &mut timer => {
-                        info!("Bundle restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
+                        info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
                         timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
                     },
                     // Throttle the number of tasks
@@ -234,7 +236,7 @@ impl Store {
             orphans = orphans.saturating_add(o);
             bad = bad.saturating_add(b);
         }
-        info!("Bundle restart complete, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
+        info!("Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
     }
 
     #[instrument(skip(metadata_storage, bundle_storage, dispatcher))]

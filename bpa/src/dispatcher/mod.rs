@@ -36,13 +36,12 @@ impl Dispatcher {
         admin_endpoints: Arc<admin_endpoints::AdminEndpoints>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         fib: Arc<fib_impl::Fib>,
-        cancel_token: tokio_util::sync::CancellationToken,
     ) -> (Self, tokio::sync::mpsc::Receiver<bundle::Bundle>) {
         // Create a channel for bundles
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         (
             Self {
-                cancel_token,
+                cancel_token: tokio_util::sync::CancellationToken::new(),
                 store,
                 tx,
                 service_registry,
@@ -55,6 +54,11 @@ impl Dispatcher {
             },
             rx,
         )
+    }
+
+    pub async fn shutdown(&self) {
+        self.cancel_token.cancel();
+        self.tx.closed().await
     }
 
     async fn load_data(&self, bundle: &bundle::Bundle) -> Result<Option<storage::DataRef>, Error> {

@@ -40,7 +40,7 @@ pub trait Cla: Send + Sync {
 
 #[async_trait]
 pub trait Sink: Send + Sync {
-    async fn disconnect(self);
+    async fn disconnect(&self);
 
     async fn dispatch(&self, data: &[u8]) -> Result<()>;
 

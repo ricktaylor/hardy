@@ -69,7 +69,7 @@ struct Sink {
 
 #[async_trait]
 impl cla::Sink for Sink {
-    async fn disconnect(self) {
+    async fn disconnect(&self) {
         self.registry.unregister(self.handle).await
     }
 
@@ -114,6 +114,15 @@ impl ClaRegistry {
         Self {
             clas: RwLock::new(HashMap::new()),
             fib,
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        for (_, cla) in self.clas.write().await.drain() {
+            cla.connected.disconnect();
+            cla.cla.on_disconnect();
+
+            info!("Unregistered CLA: {}/{}", cla.protocol, cla.ident);
         }
     }
 

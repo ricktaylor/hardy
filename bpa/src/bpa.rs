@@ -43,9 +43,7 @@ pub struct Bpa {
     fib: Arc<fib_impl::Fib>,
     cla_registry: Arc<cla_registry::ClaRegistry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
-    cancel_token: tokio_util::sync::CancellationToken,
     dispatcher: Arc<dispatcher::Dispatcher>,
-    jh: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Bpa {
@@ -68,8 +66,6 @@ impl Bpa {
             admin_endpoints.clone(),
         ));
 
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-
         // Create a new dispatcher
         let (dispatcher, rx) = dispatcher::Dispatcher::new(
             &config,
@@ -77,33 +73,26 @@ impl Bpa {
             admin_endpoints,
             service_registry.clone(),
             fib.clone(),
-            cancel_token.clone(),
         );
         let dispatcher = Arc::new(dispatcher);
 
         // Spawn the dispatch task
-        let jh = tokio::spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
+        tokio::spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
 
         Self {
             //store,
             fib,
             cla_registry,
             service_registry,
-            cancel_token,
             dispatcher,
-            jh: std::sync::Mutex::new(Some(jh)),
         }
     }
 
     #[instrument(skip(self))]
-    pub async fn shutdown(&self) -> Result<(), Error> {
-        self.cancel_token.cancel();
-
-        // Wait on the JoinHandle if it's still there
-        let Some(jh) = self.jh.lock().trace_expect("Mutex failure").take() else {
-            return Ok(());
-        };
-        jh.await.map_err(Into::into)
+    pub async fn shutdown(&self) {
+        self.dispatcher.shutdown().await;
+        self.service_registry.shutdown().await;
+        self.cla_registry.shutdown().await;
     }
 
     #[instrument(skip(self, service))]

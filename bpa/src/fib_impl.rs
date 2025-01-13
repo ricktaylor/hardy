@@ -35,7 +35,7 @@ impl std::fmt::Display for Action {
             }
             Self::Forward(c) => write!(f, "forward {}", c),
             Self::Via(eid) => write!(f, "via {eid}"),
-            Self::Store(until) => write!(f, "Wait until {until}"),
+            Self::Store(until) => write!(f, "store until {until}"),
         }
     }
 }

@@ -12,7 +12,7 @@ struct Sink {
 
 #[async_trait]
 impl service::Sink for Sink {
-    async fn disconnect(self) {
+    async fn disconnect(&self) {
         self.registry.unregister(&self.eid).await
     }
 
@@ -77,6 +77,16 @@ impl ServiceRegistry {
         Self {
             admin_endpoints,
             services: Default::default(),
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        for (eid, service) in self.services.write().await.drain() {
+            service.connected.disconnect();
+
+            service.service.on_disconnect();
+
+            info!("Unregistered service: {}", eid);
         }
     }
 

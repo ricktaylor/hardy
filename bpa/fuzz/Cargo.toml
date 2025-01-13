@@ -23,3 +23,10 @@ path = "fuzz_targets/ingress.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "cla"
+path = "fuzz_targets/cla.rs"
+test = false
+doc = false
+bench = false

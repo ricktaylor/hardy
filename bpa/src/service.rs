@@ -73,7 +73,7 @@ pub struct Bundle {
 
 #[async_trait]
 pub trait Sink: Send + Sync {
-    async fn disconnect(self);
+    async fn disconnect(&self);
 
     async fn send(
         &self,
