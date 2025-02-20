@@ -40,7 +40,7 @@ fn ipn_from_parts(
     match (allocator_id, node_number) {
         (0, 0) => Ok((Eid::Null, service_number == 0)),
         (0, u32::MAX) => Ok((Eid::LocalNode { service_number }, true)),
-        _ if elements == 2 => Ok((
+        _ if elements == 2 && allocator_id != 0 => Ok((
             Eid::LegacyIpn {
                 allocator_id,
                 node_number,
