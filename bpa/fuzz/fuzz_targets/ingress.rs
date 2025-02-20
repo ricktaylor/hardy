@@ -19,7 +19,7 @@ impl hardy_bpa::cla::Cla for NullCla {
         Ok(())
     }
 
-    fn on_disconnect(&self) {
+    async fn on_disconnect(&self) {
         todo!()
     }
 

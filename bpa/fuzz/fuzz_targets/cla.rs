@@ -8,31 +8,36 @@ use std::sync::Arc;
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 
 struct NullCla {
-    sink: std::sync::Mutex<Option<Box<dyn hardy_bpa::cla::Sink>>>,
+    sink: tokio::sync::Mutex<Option<Box<dyn hardy_bpa::cla::Sink>>>,
 }
 
 impl NullCla {
     fn new() -> Self {
         Self {
-            sink: std::sync::Mutex::new(None),
+            sink: tokio::sync::Mutex::new(None),
         }
     }
 
     async fn dispatch(&self, data: &[u8]) {
-        let guard = self.sink.lock().unwrap();
+        let mut guard = self.sink.lock().await;
 
         let sink = loop {
             if let Some(sink) = guard.as_ref() {
                 break sink;
             }
+
+            drop(guard);
+
             tokio::task::yield_now().await;
+
+            guard = self.sink.lock().await;
         };
 
         _ = sink.dispatch(data).await;
     }
 
     async fn disconnect(&self) {
-        let sink = self.sink.lock().unwrap().take();
+        let sink = self.sink.lock().await.take();
         if let Some(sink) = sink {
             _ = sink.disconnect().await;
         }
@@ -42,12 +47,12 @@ impl NullCla {
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
     async fn on_connect(&self, sink: Box<dyn hardy_bpa::cla::Sink>) -> hardy_bpa::cla::Result<()> {
-        self.sink.lock().unwrap().replace(sink);
+        self.sink.lock().await.replace(sink);
         Ok(())
     }
 
-    fn on_disconnect(&self) {
-        *self.sink.lock().unwrap() = None;
+    async fn on_disconnect(&self) {
+        *self.sink.lock().await = None;
     }
 
     async fn forward(

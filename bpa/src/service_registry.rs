@@ -83,8 +83,7 @@ impl ServiceRegistry {
     pub async fn shutdown(&self) {
         for (eid, service) in self.services.write().await.drain() {
             service.connected.disconnect();
-
-            service.service.on_disconnect();
+            service.service.on_disconnect().await;
 
             info!("Unregistered service: {}", eid);
         }
@@ -261,8 +260,7 @@ impl ServiceRegistry {
     async fn unregister(&self, eid: &bpv7::Eid) {
         if let Some(service) = self.services.write().await.remove(eid) {
             service.connected.disconnect();
-
-            service.service.on_disconnect();
+            service.service.on_disconnect().await;
 
             info!("Unregistered service: {}", eid);
         }

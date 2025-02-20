@@ -28,7 +28,7 @@ pub enum ForwardBundleResult {
 pub trait Cla: Send + Sync {
     async fn on_connect(&self, sink: Box<dyn Sink>) -> Result<()>;
 
-    fn on_disconnect(&self);
+    async fn on_disconnect(&self);
 
     async fn forward(
         &self,

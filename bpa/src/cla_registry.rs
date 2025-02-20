@@ -120,7 +120,7 @@ impl ClaRegistry {
     pub async fn shutdown(&self) {
         for (_, cla) in self.clas.write().await.drain() {
             cla.connected.disconnect();
-            cla.cla.on_disconnect();
+            cla.cla.on_disconnect().await;
 
             info!("Unregistered CLA: {}/{}", cla.protocol, cla.ident);
         }
@@ -188,7 +188,7 @@ impl ClaRegistry {
         let cla = self.clas.write().await.remove(&handle);
         if let Some(cla) = cla {
             cla.connected.disconnect();
-            cla.cla.on_disconnect();
+            cla.cla.on_disconnect().await;
 
             info!("Unregistered CLA: {}/{}", cla.protocol, cla.ident);
         }

@@ -39,7 +39,7 @@ pub enum StatusNotify {
 pub trait Service: Send + Sync {
     async fn on_connect(&self, sink: Box<dyn Sink>, eid: &bpv7::Eid) -> Result<()>;
 
-    fn on_disconnect(&self);
+    async fn on_disconnect(&self);
 
     async fn on_received(&self, bundle_id: &bpv7::BundleId, expiry: time::OffsetDateTime);
 
