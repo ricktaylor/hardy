@@ -49,6 +49,8 @@ pub struct Bpa {
 impl Bpa {
     #[instrument]
     pub async fn start(config: Config) -> Self {
+        trace!("Starting new BPA");
+
         // Build admin endpoints
         let admin_endpoints = Arc::new(admin_endpoints::AdminEndpoints::new(
             &config.admin_endpoints,
@@ -79,6 +81,8 @@ impl Bpa {
         // Spawn the dispatch task
         tokio::spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
 
+        trace!("BPA started");
+
         Self {
             //store,
             fib,
@@ -90,9 +94,13 @@ impl Bpa {
 
     #[instrument(skip(self))]
     pub async fn shutdown(&self) {
+        trace!("Shutting down BPA");
+
         self.dispatcher.shutdown().await;
         self.service_registry.shutdown().await;
         self.cla_registry.shutdown().await;
+
+        trace!("BPA stopped");
     }
 
     #[instrument(skip(self, service))]
