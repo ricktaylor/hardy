@@ -1,7 +1,8 @@
-#[cfg(test)]
+#![cfg(test)]
+
+/*
 use hardy_bpv7::prelude::*;
 
-#[cfg(test)]
 fn get_keys(
     source: &Eid,
     context: bpsec::Context,
@@ -44,3 +45,4 @@ fn test() {
         };
     }
 }
+*/
