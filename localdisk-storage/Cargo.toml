@@ -14,7 +14,7 @@ mmap = ["dep:memmap2"]
 [dependencies]
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.43.0", features = ["rt-multi-thread", "fs"] }
-serde = { version = "1.0.217", features = ["derive"] }
+serde = { version = "1.0.218", features = ["derive"] }
 rand = "0.8.5"
 config = { version = "0.15.4", features = ["toml"] }
 directories = "5.0.1"

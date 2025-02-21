@@ -33,7 +33,7 @@ tokio-util = "0.7.13"
 tonic = "0.12.3"
 prost-types = "0.13"
 config = { version = "0.15.4", features = ["toml"] }
-serde = { version = "1.0.217", features = ["derive"] }
+serde = { version = "1.0.218", features = ["derive"] }
 getopts = "0.2.21"
 directories = "5.0.1"
 time = { version = "0.3.37", features = ["macros", "parsing"] }
