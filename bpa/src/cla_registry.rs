@@ -74,10 +74,7 @@ impl cla::Sink for Sink {
     }
 
     async fn dispatch(&self, data: &[u8]) -> cla::Result<()> {
-        self.dispatcher
-            .receive_bundle(data)
-            .await
-            .map_err(Into::into)
+        self.dispatcher.receive_bundle(data).await
     }
 
     async fn confirm_forwarding(&self, bundle_id: &bpv7::BundleId) -> cla::Result<()> {
@@ -138,12 +135,12 @@ impl ClaRegistry {
             let mut clas = self.clas.write().await;
 
             // Compose a handle
-            let mut rng = rand::thread_rng();
-            let mut handle = rng.gen::<std::num::NonZeroU32>().into();
+            let mut rng = rand::rng();
+            let mut handle = rng.random::<std::num::NonZeroU32>().into();
 
             // Check handle is unique
             while clas.contains_key(&handle) {
-                handle = rng.gen::<std::num::NonZeroU32>().into();
+                handle = rng.random::<std::num::NonZeroU32>().into();
             }
 
             // Confirm the ident is unique
@@ -185,8 +182,7 @@ impl ClaRegistry {
 
     #[instrument(skip(self))]
     async fn unregister(&self, handle: u32) {
-        let cla = self.clas.write().await.remove(&handle);
-        if let Some(cla) = cla {
+        if let Some(cla) = self.clas.write().await.remove(&handle) {
             cla.connected.disconnect();
             cla.cla.on_disconnect().await;
 
@@ -212,7 +208,6 @@ impl ClaRegistry {
         self.fib
             .add_neighbour(destination, addr, priority, cla)
             .await
-            .map_err(Into::into)
     }
 
     async fn remove_neighbour(&self, handle: u32, destination: &bpv7::Eid) {

@@ -1,19 +1,19 @@
 use super::*;
 use winnow::{
-    ascii::{dec_uint, line_ending, space0, space1, Caseless},
+    ModalResult, Parser,
+    ascii::{Caseless, dec_uint, line_ending, space0, space1},
     combinator::{alt, eof, opt, repeat_till, separated_pair},
     stream::AsChar,
     token::take_till,
-    PResult, Parser,
 };
 
-fn parse_priority(input: &mut &[u8]) -> PResult<u32> {
+fn parse_priority(input: &mut &[u8]) -> ModalResult<u32> {
     (space1, Caseless("priority"), space1, dec_uint)
         .map(|(_, _, _, v)| v)
         .parse_next(input)
 }
 
-fn parse_drop(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
+fn parse_drop(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
     (
         (
             Caseless("drop"),
@@ -25,7 +25,7 @@ fn parse_drop(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
         .parse_next(input)
 }
 
-fn parse_via(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
+fn parse_via(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
     (
         (separated_pair(
             Caseless("via"),
@@ -38,7 +38,7 @@ fn parse_via(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
         .parse_next(input)
 }
 
-fn parse_store(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
+fn parse_store(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
     (
         (separated_pair(
             (Caseless("store"), opt((space1, Caseless("until")))),
@@ -56,17 +56,17 @@ fn parse_store(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
         .parse_next(input)
 }
 
-fn parse_action(input: &mut &[u8]) -> PResult<(Action, Option<u32>)> {
+fn parse_action(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
     alt((parse_drop, parse_via, parse_store)).parse_next(input)
 }
 
-fn parse_pattern(input: &mut &[u8]) -> PResult<bpv7::EidPattern> {
+fn parse_pattern(input: &mut &[u8]) -> ModalResult<bpv7::EidPattern> {
     take_till(1.., AsChar::is_space)
         .parse_to()
         .parse_next(input)
 }
 
-fn parse_route(input: &mut &[u8]) -> PResult<(bpv7::EidPattern, StaticRoute)> {
+fn parse_route(input: &mut &[u8]) -> ModalResult<(bpv7::EidPattern, StaticRoute)> {
     (
         space0,
         separated_pair(parse_pattern, space1, parse_action),
@@ -78,7 +78,7 @@ fn parse_route(input: &mut &[u8]) -> PResult<(bpv7::EidPattern, StaticRoute)> {
 }
 
 #[allow(clippy::type_complexity)]
-fn parse_routes(input: &mut &[u8]) -> PResult<Vec<(bpv7::EidPattern, StaticRoute)>> {
+fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<(bpv7::EidPattern, StaticRoute)>> {
     repeat_till(
         0..,
         alt((

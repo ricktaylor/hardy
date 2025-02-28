@@ -69,12 +69,12 @@ impl AppRegistry {
         };
 
         // Compose a token
-        let mut token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let mut token = Alphanumeric.sample_string(&mut rand::rng(), 16);
         let mut applications = self.applications.write().await;
 
         // Check token is unique
         while applications.applications_by_token.contains_key(&token) {
-            token = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+            token = Alphanumeric.sample_string(&mut rand::rng(), 16);
         }
 
         // Compose EID
@@ -112,11 +112,11 @@ impl AppRegistry {
                     (None, Some(node_id)) => node_id
                         .to_eid(&format!(
                             "auto/{}",
-                            Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+                            Alphanumeric.sample_string(&mut rand::rng(), 16)
                         ))
                         .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?,
                     (Some(node_id), _) => node_id.to_eid(
-                        (Into::<u16>::into(rand::thread_rng().gen::<std::num::NonZeroU16>())
+                        (Into::<u16>::into(rand::rng().gen::<std::num::NonZeroU16>())
                             & 0x7F7Fu16) as u32,
                     ),
                     _ => unreachable!(),

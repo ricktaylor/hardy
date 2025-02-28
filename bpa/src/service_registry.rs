@@ -1,6 +1,6 @@
 use super::*;
-use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
+use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
@@ -108,7 +108,7 @@ impl ServiceRegistry {
                     };
 
                     if s.is_empty() {
-                        let mut rng = rand::thread_rng();
+                        let mut rng = rand::rng();
                         loop {
                             let eid = format!(
                                 "dtn://{node_id}/auto/{}",
@@ -137,12 +137,12 @@ impl ServiceRegistry {
                     };
 
                     if *s == 0 {
-                        let mut rng = rand::thread_rng();
+                        let mut rng = rand::rng();
                         loop {
                             let eid = bpv7::Eid::Ipn {
                                 allocator_id,
                                 node_number,
-                                service_number: rng.gen_range(0x10000..=u32::MAX),
+                                service_number: rng.random_range(0x10000..=u32::MAX),
                             };
                             if !services.contains_key(&eid) {
                                 break eid;
@@ -161,13 +161,13 @@ impl ServiceRegistry {
                     }
                 }
                 None => {
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
                     if let Some((allocator_id, node_number)) = self.admin_endpoints.ipn_node_id() {
                         loop {
                             let eid = bpv7::Eid::Ipn {
                                 allocator_id,
                                 node_number,
-                                service_number: rng.gen_range(0x10000..=u32::MAX),
+                                service_number: rng.random_range(0x10000..=u32::MAX),
                             };
                             if !services.contains_key(&eid) {
                                 break eid;

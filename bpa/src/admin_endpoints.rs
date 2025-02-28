@@ -20,10 +20,10 @@ impl AdminEndpoints {
             }
         }
         if h.is_empty() {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             h.insert(Eid::Ipn {
-                allocator_id: rng.gen_range(0x40000000..0x80000000),
-                node_number: rng.gen_range(1..=u32::MAX),
+                allocator_id: rng.random_range(0x40000000..0x80000000),
+                node_number: rng.random_range(1..=u32::MAX),
                 service_number: 0,
             });
         }

@@ -1,7 +1,7 @@
 use super::*;
-use rand::distributions::{Alphanumeric, DistString};
+use rand::distr::{Alphanumeric, SampleString};
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{HashMap, hash_map},
     sync::Arc,
 };
 use tokio::sync::RwLock;
@@ -40,7 +40,7 @@ impl storage::BundleStorage for Storage {
 
     async fn store(&self, data: &[u8]) -> storage::Result<Arc<str>> {
         let mut bundles = self.bundles.write().await;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         loop {
             let storage_name = Alphanumeric.sample_string(&mut rng, 64);
 

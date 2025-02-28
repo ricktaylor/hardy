@@ -37,8 +37,7 @@ impl NullCla {
     }
 
     async fn disconnect(&self) {
-        let sink = self.sink.lock().await.take();
-        if let Some(sink) = sink {
+        if let Some(sink) = self.sink.lock().await.take() {
             _ = sink.disconnect().await;
         }
     }

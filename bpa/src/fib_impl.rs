@@ -133,7 +133,7 @@ impl Fib {
 
         if action.clas.len() > 1 {
             // For ECMP, we need a random order
-            action.clas.shuffle(&mut rand::thread_rng());
+            action.clas.shuffle(&mut rand::rng());
         }
         Ok(action)
     }

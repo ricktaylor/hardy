@@ -15,9 +15,9 @@ mmap = ["dep:memmap2"]
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.43.0", features = ["rt-multi-thread", "fs"] }
 serde = { version = "1.0.218", features = ["derive"] }
-rand = "0.8.5"
-config = { version = "0.15.4", features = ["toml"] }
-directories = "5.0.1"
+rand = "0.9.0"
+config = { version = "0.15.8", features = ["toml"] }
+directories = "6.0.0"
 tracing = "0.1.41"
 memmap2 = { version = "0.9.5", optional = true }
 time = "0.3.37"
@@ -25,10 +25,10 @@ cfg-if = "1.0.0"
 trace-err = "0.1.1"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.169"
+libc = "0.2.170"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
 
 [build-dependencies]
-built = "0.7.5"
+built = "0.7.7"

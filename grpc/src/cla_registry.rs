@@ -67,7 +67,7 @@ impl ClaRegistry {
         let mut clas = self.clas.write().await;
 
         // Compose a handle
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut handle = rng.gen::<std::num::NonZeroU32>().into();
 
         // Check handle is unique

@@ -65,14 +65,14 @@ impl Storage {
 }
 
 fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     loop {
         // Random subdirectory
         let mut file_path = [
             root,
-            &PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)),
-            &PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)),
-            &PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)),
+            &PathBuf::from(format!("{:x}", rng.random::<u16>() % 4096)),
+            &PathBuf::from(format!("{:x}", rng.random::<u16>() % 4096)),
+            &PathBuf::from(format!("{:x}", rng.random::<u16>() % 4096)),
         ]
         .iter()
         .collect::<PathBuf>();
@@ -81,7 +81,7 @@ fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
         std::fs::create_dir_all(&file_path)?;
 
         // Add a random filename
-        file_path.push(PathBuf::from(format!("{:x}", rng.gen::<u16>() % 4096)));
+        file_path.push(PathBuf::from(format!("{:x}", rng.random::<u16>() % 4096)));
 
         // Stop races between threads by creating a 0-length file
         if let Err(e) = std::fs::OpenOptions::new()
