@@ -29,7 +29,7 @@ config = { version = "0.15.8", features = ["toml"] }
 serde = { version = "1.0.218", features = ["derive"] }
 getopts = "0.2.21"
 directories = "6.0.0"
-thiserror = "2.0.11"
+thiserror = "2.0.12"
 time = { version = "0.3.37", features = ["parsing"] }
 cfg-if = "1.0.0"
 tracing = "0.1.41"
