@@ -14,7 +14,7 @@ path = "tools/mkbundle.rs"
 [dependencies]
 hardy-cbor = { path = "../cbor" }
 thiserror = "2.0.12"
-time = { version = "0.3.37", features = ["macros"] }
+time = { version = "0.3.39", features = ["macros"] }
 base64 = "0.22.1"
 regex = "1.11.1"
 urlencoding = "2.1.3"

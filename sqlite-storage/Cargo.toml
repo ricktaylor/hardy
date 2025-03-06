@@ -15,13 +15,13 @@ rusqlite = { version = "0.33.0", features = ["bundled", "time"] }
 tokio = { version = "1.43.0", features = ["rt-multi-thread"] }
 thiserror = "2.0.12"
 serde = { version = "1.0.218", features = ["derive"] }
-config = { version = "0.15.8", features = ["toml"] }
+config = { version = "0.15.9", features = ["toml"] }
 directories = "6.0.0"
 tracing = "0.1.41"
 base64 = "0.22.1"
-time = "0.3.37"
+time = "0.3.39"
 cfg-if = "1.0.0"
-trace-err = "0.1.1"
+trace-err = "0.1.2"
 
 [build-dependencies]
 built = "0.7.7"

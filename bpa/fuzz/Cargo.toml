@@ -12,7 +12,7 @@ libfuzzer-sys = "0.4"
 hardy-bpv7 = { path = "../../bpv7" }
 hardy-bpa = { path = ".." }
 tokio = { version = "1.43.0", features = ["rt", "time"] }
-time = { version = "0.3.37", features = ["parsing"] }
+time = { version = "0.3.39", features = ["parsing"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"

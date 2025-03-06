@@ -234,7 +234,9 @@ impl Store {
             orphans = orphans.saturating_add(o);
             bad = bad.saturating_add(b);
         }
-        info!("Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
+        info!(
+            "Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found"
+        );
     }
 
     #[instrument(skip(metadata_storage, bundle_storage, dispatcher))]
