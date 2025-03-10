@@ -26,7 +26,7 @@ tokio = { version = "1.43.0", features = [
 ] }
 tokio-util = "0.7.13"
 config = { version = "0.15.9", features = ["toml"] }
-serde = { version = "1.0.218", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
 getopts = "0.2.21"
 directories = "6.0.0"
 thiserror = "2.0.12"
