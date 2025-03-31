@@ -18,12 +18,12 @@ pub enum Error {
     #[error("Unrecognised BPSec context")]
     UnrecognisedContext(u64),
 
-    #[error(
-        "BCBs must not target other BCBs, the primary block, or BIBs that don't share targets"
-    )]
+    #[error("BCBs must not target other BCBs, the primary block, or BIBs that don't share targets")]
     InvalidBCBTarget,
 
-    #[error("Processing failed on an extension block that has 'Delete block on failure' flag set, but is the target of a BCB")]
+    #[error(
+        "Processing failed on an extension block that has 'Delete block on failure' flag set, but is the target of a BCB"
+    )]
     InvalidTargetFlags,
 
     #[error("Invalid security context parameter id {0}")]
@@ -38,16 +38,22 @@ pub enum Error {
     #[error("Missing security context result id {0}")]
     MissingContextResult(u64),
 
-    #[error("BCBs must have the 'Block must be replicated in every fragment' flag set if one of the targets is the payload block")]
+    #[error(
+        "BCBs must have the 'Block must be replicated in every fragment' flag set if one of the targets is the payload block"
+    )]
     BCBMustReplicate,
 
-    #[error("BCBs must not have the 'Block must be removed from bundle if it can't be processed' flag set.")]
+    #[error(
+        "BCBs must not have the 'Block must be removed from bundle if it can't be processed' flag set."
+    )]
     BCBDeleteFlag,
 
     #[error("BCBs must not target a BIB unless it shares a security target with that BIB")]
     BCBMustShareTarget,
 
-    #[error("The same security service must not be applied to a security target more than once in a bundle")]
+    #[error(
+        "The same security service must not be applied to a security target more than once in a bundle"
+    )]
     DuplicateOpTarget,
 
     #[error("No targets in BPSec extension block")]

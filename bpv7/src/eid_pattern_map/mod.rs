@@ -151,9 +151,7 @@ where
                     }
                     r
                 } else*/
-                {
-                    None
-                }
+                None
             }
         }
     }

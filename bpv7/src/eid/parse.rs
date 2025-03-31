@@ -1,5 +1,4 @@
 use super::*;
-
 use error::CaptureFieldErr;
 
 fn parse_dtn_parts(s: &str) -> Result<Eid, EidError> {

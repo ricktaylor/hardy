@@ -169,8 +169,7 @@ impl Dispatcher {
                 if hop_info.count >= hop_info.limit {
                     trace!(
                         "Bundle hop-limit {}/{} exceeded",
-                        hop_info.count,
-                        hop_info.limit
+                        hop_info.count, hop_info.limit
                     );
                     reason = Some(bpv7::StatusReportReasonCode::HopLimitExceeded);
                 }

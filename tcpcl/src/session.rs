@@ -586,8 +586,7 @@ where
                     } else if msg != expected_reply {
                         trace!(
                             "Mismatched SESS_TERM message: {:?}, expected {:?}",
-                            msg,
-                            expected_reply
+                            msg, expected_reply
                         );
                     }
                     break;
@@ -880,8 +879,7 @@ where
                 } else if msg != expected_reply {
                     trace!(
                         "Mismatched SESS_TERM message: {:?}, expected {:?}",
-                        msg,
-                        expected_reply
+                        msg, expected_reply
                     );
                 }
                 break;

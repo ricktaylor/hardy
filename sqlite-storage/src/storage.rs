@@ -665,7 +665,7 @@ impl storage::MetadataStorage for Storage {
 
             let bundle_id = match bundle_id {
                 Err(rusqlite::Error::SqliteFailure(e, _)) if e.extended_code == 2067 => {
-                    return Ok(false)
+                    return Ok(false);
                 }
                 bundle_id => bundle_id.trace_expect("Failed to load bundle metadata"),
             };

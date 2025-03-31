@@ -8,7 +8,9 @@ impl Dispatcher {
     ) -> Result<DispatchResult, Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
-            trace!("Received a bundle for an administrative endpoint that isn't marked as an administrative record");
+            trace!(
+                "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
+            );
             return Ok(DispatchResult::Drop(Some(
                 bpv7::StatusReportReasonCode::BlockUnintelligible,
             )));

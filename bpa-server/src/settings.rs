@@ -98,7 +98,9 @@ pub fn init() -> Option<(config::Config, bool)> {
             format!("Using base configuration file '{source}' specified on command line");
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else if let Ok(source) = std::env::var("HARDY_BPA_SERVER_CONFIG_FILE") {
-        config_source = format!("Using base configuration file '{source}' specified by HARDY_BPA_SERVER_CONFIG_FILE environment variable");
+        config_source = format!(
+            "Using base configuration file '{source}' specified by HARDY_BPA_SERVER_CONFIG_FILE environment variable"
+        );
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else {
         let path = config_dir().join(format!("{}.config", built_info::PKG_NAME));
@@ -202,7 +204,9 @@ fn load_admin_endpoints(config: &config::Config) -> Vec<bpv7::Eid> {
         .trace_expect("Invalid administrative_endpoints in configuration")
     {
         None => {
-            info!("No 'administrative_endpoints' values in configuration, falling back to random ipn NodeId");
+            info!(
+                "No 'administrative_endpoints' values in configuration, falling back to random ipn NodeId"
+            );
             Vec::new()
         }
         Some(v) => match v.kind {
@@ -248,7 +252,9 @@ fn load_admin_endpoints(config: &config::Config) -> Vec<bpv7::Eid> {
 
                 if eids.is_empty() {
                     if a.is_empty() {
-                        info!("No 'administrative_endpoints' values in configuration, falling back to random ipn NodeId");
+                        info!(
+                            "No 'administrative_endpoints' values in configuration, falling back to random ipn NodeId"
+                        );
                     } else {
                         error!("No valid 'administrative_endpoints' values in configuration");
                         panic!("No valid 'administrative_endpoints' values in configuration");

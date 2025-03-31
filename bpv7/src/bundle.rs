@@ -278,7 +278,7 @@ impl Bundle {
 
                 match target_block.block_type {
                     BlockType::BlockSecurity | BlockType::Primary => {
-                        return Err(bpsec::Error::InvalidBCBTarget.into())
+                        return Err(bpsec::Error::InvalidBCBTarget.into());
                     }
                     BlockType::Payload => {
                         // Check flags

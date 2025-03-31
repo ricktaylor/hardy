@@ -1,6 +1,6 @@
 use super::*;
 use metadata::*;
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use thiserror::Error;
 use tokio::sync::RwLock;
 

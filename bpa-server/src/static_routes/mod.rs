@@ -2,12 +2,11 @@ use super::*;
 use hardy_bpa::fib::Action;
 use hardy_bpv7::prelude as bpv7;
 use notify_debouncer_full::{
-    new_debouncer,
+    DebouncedEvent, new_debouncer,
     notify::{
-        event::{CreateKind, RemoveKind},
         EventKind, RecursiveMode,
+        event::{CreateKind, RemoveKind},
     },
-    DebouncedEvent,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -151,7 +150,7 @@ impl StaticRoutes {
                             }
                         }
                     },
-                    _ = cancel_token.cancelled() => { 
+                    _ = cancel_token.cancelled() => {
                         rx.close();
                     }
                 }

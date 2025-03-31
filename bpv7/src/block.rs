@@ -129,7 +129,7 @@ impl cbor::decode::FromCbor for BlockWithNumber {
             match (block_number, block_type) {
                 (1, BlockType::Payload) => {}
                 (0, _) | (1, _) | (_, BlockType::Primary) | (_, BlockType::Payload) => {
-                    return Err(Error::InvalidBlockNumber(block_number, block_type))
+                    return Err(Error::InvalidBlockNumber(block_number, block_type));
                 }
                 _ => {}
             }

@@ -53,7 +53,6 @@ impl Eid {
                 node_number: _,
                 service_number,
             } => *service_number == 0,
-
             Eid::Dtn {
                 node_name: _,
                 demux,

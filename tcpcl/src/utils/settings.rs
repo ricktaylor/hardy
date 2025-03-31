@@ -80,7 +80,9 @@ pub fn init() -> Option<(config::Config, String)> {
             format!("Using base configuration file '{source}' specified on command line");
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else if let Ok(source) = std::env::var("HARDY_TCPCL_CONFIG_FILE") {
-        config_source = format!("Using base configuration file '{source}' specified by HARDY_TCPCL_CONFIG_FILE environment variable");
+        config_source = format!(
+            "Using base configuration file '{source}' specified by HARDY_TCPCL_CONFIG_FILE environment variable"
+        );
         b = b.add_source(config::File::with_name(&source).format(config::FileFormat::Toml))
     } else {
         let path = config_dir().join(format!("{}.config", built_info::PKG_NAME));
