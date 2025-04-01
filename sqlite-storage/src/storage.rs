@@ -681,11 +681,11 @@ impl storage::MetadataStorage for Storage {
                             block_flags,
                             block_crc_type,
                             data_start,
-                            data_len
+                            data_len,
                             payload_offset,
                             payload_len,
                             bcb)
-                        VALUES (?1,?2,?3,?4,?5,?6,?7,?8);"#,
+                        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);"#,
                 )?;
                 for (block_num, block) in &bundle.blocks {
                     block_stmt.execute((
