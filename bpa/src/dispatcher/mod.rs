@@ -24,21 +24,25 @@ pub struct Dispatcher {
     // Config options
     status_reports: bool,
     wait_sample_interval: time::Duration,
-    admin_endpoints: Arc<admin_endpoints::AdminEndpoints>,
+    admin_endpoints: admin_endpoints::AdminEndpoints,
     max_forwarding_delay: u32,
 }
 
 impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        config: &bpa::Config,
+        config: &config::Config,
         store: Arc<store::Store>,
-        admin_endpoints: Arc<admin_endpoints::AdminEndpoints>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         fib: Arc<fib_impl::Fib>,
     ) -> (Self, tokio::sync::mpsc::Receiver<bundle::Bundle>) {
         // Create a channel for bundles
         let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut ipn_2_element = bpv7::EidPatternMap::<(), ()>::new();
+        for e in &config.ipn_2_element {
+            ipn_2_element.insert(e, (), ());
+        }
+
         (
             Self {
                 cancel_token: tokio_util::sync::CancellationToken::new(),
@@ -46,10 +50,10 @@ impl Dispatcher {
                 tx,
                 service_registry,
                 fib,
-                ipn_2_element: config.ipn_2_element.clone().unwrap_or_default(),
+                ipn_2_element,
                 status_reports: config.status_reports,
                 wait_sample_interval: config.wait_sample_interval,
-                admin_endpoints,
+                admin_endpoints: config.admin_endpoints.clone(),
                 max_forwarding_delay: config.max_forwarding_delay,
             },
             rx,

@@ -1,4 +1,4 @@
-mod settings;
+mod config;
 mod static_routes;
 
 // This is the generic Error type used almost everywhere
@@ -6,7 +6,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, trace};
 
 fn listen_for_cancel(
     bpa: Arc<hardy_bpa::bpa::Bpa>,
@@ -45,19 +45,20 @@ fn listen_for_cancel(
 #[tokio::main]
 async fn main() {
     // Parse command line
-    let Some((config, upgrade)) = settings::init() else {
+    let Some(config) = config::init() else {
         return;
     };
 
-    let bpa =
-        Arc::new(hardy_bpa::bpa::Bpa::start(settings::load_bpa_config(&config, upgrade)).await);
+    let bpa = Arc::new(hardy_bpa::bpa::Bpa::start(&config.bpa).await);
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let mut task_set = tokio::task::JoinSet::new();
 
     // Load static routes
-    static_routes::init(&config, bpa.clone(), &mut task_set, cancel_token.clone()).await;
+    if let Some(config) = config.static_routes {
+        static_routes::init(config, bpa.clone(), &mut task_set, cancel_token.clone()).await;
+    }
 
     // And wait for shutdown signal
     listen_for_cancel(bpa, &mut task_set, cancel_token);

@@ -30,7 +30,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 getopts = "0.2.21"
 directories = "6.0.0"
 thiserror = "2.0.12"
-time = { version = "0.3.39", features = ["parsing"] }
+time = "0.3.39"
 cfg-if = "1.0.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"

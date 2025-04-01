@@ -7,13 +7,7 @@ use hardy_bpa::{
 use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 use trace_err::*;
 use tracing::*;
@@ -109,56 +103,9 @@ fn columns_to_bundle_status(
 }
 
 impl Storage {
-    #[instrument(skip(config))]
-    pub fn init(
-        config: &HashMap<String, config::Value>,
-        mut upgrade: bool,
-    ) -> Arc<dyn storage::MetadataStorage> {
+    pub fn init(config: Config, mut upgrade: bool) -> Arc<dyn storage::MetadataStorage> {
         // Compose DB name
-        let file_path = config
-            .get("db_dir")
-            .map_or_else(
-                || {
-                    directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME)
-                        .map_or_else(
-                            || {
-                                cfg_if::cfg_if! {
-                                    if #[cfg(unix)] {
-                                        Path::new("/var/spool").join(built_info::PKG_NAME)
-                                    } else if #[cfg(windows)] {
-                                        std::env::current_exe().join(built_info::PKG_NAME)
-                                    } else {
-                                        compile_error!("No idea how to determine default local store directory for target platform")
-                                    }
-                                }
-                            },
-                            |project_dirs| {
-                                project_dirs.cache_dir().into()
-                                // Lin: /home/alice/.store/barapp
-                                // Win: C:\Users\Alice\AppData\Local\Foo Corp\Bar App\store
-                                // Mac: /Users/Alice/Library/stores/com.Foo-Corp.Bar-App
-                            },
-                        )
-                },
-                |v| {
-                    v.clone()
-                        .into_string().trace_expect("Invalid 'db_dir' value in configuration").into()
-                },
-            )
-            .join("metadata.db");
-
-        let timeout = config
-            .get("timeout")
-            .map_or(Duration::from_secs(5), |timeout| {
-                Duration::from_secs(
-                    timeout
-                        .clone()
-                        .into_int()
-                        .trace_expect("Invalid 'timeout' value in configuration")
-                        .try_into()
-                        .trace_expect("Invalid 'timeout' value in configuration"),
-                )
-            });
+        let file_path = config.db_dir.join("metadata.db");
 
         info!("Using database: {}", file_path.display());
 
@@ -216,7 +163,7 @@ impl Storage {
 
         Arc::new(Storage {
             path: file_path,
-            timeout,
+            timeout: config.timeout,
         })
     }
 

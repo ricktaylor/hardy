@@ -1,4 +1,5 @@
 use super::*;
+use serde::{Deserialize, Serialize};
 
 mod dtn_pattern;
 mod error;
@@ -13,7 +14,9 @@ pub use dtn_pattern::*;
 pub use error::EidPatternError;
 pub use ipn_pattern::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "String")]
+#[serde(try_from = "&str")]
 pub enum EidPattern {
     Set(Box<[EidPatternItem]>),
     Any,
@@ -60,6 +63,20 @@ impl std::str::FromStr for EidPattern {
             }
             Ok(EidPattern::Set(v.into()))
         }
+    }
+}
+
+impl TryFrom<&str> for EidPattern {
+    type Error = EidPatternError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<EidPattern> for String {
+    fn from(value: EidPattern) -> Self {
+        value.to_string()
     }
 }
 

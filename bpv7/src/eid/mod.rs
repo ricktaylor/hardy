@@ -1,4 +1,5 @@
 use super::*;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod error;
@@ -12,7 +13,9 @@ mod cbor_tests;
 
 pub use error::EidError;
 
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(into = "String")]
+#[serde(try_from = "&str")]
 pub enum Eid {
     #[default]
     Null,
@@ -37,62 +40,6 @@ pub enum Eid {
         scheme: u64,
         data: Box<[u8]>,
     },
-}
-
-impl Eid {
-    pub fn is_admin_endpoint(&self) -> bool {
-        match self {
-            Eid::LocalNode { service_number }
-            | Eid::LegacyIpn {
-                allocator_id: _,
-                node_number: _,
-                service_number,
-            }
-            | Eid::Ipn {
-                allocator_id: _,
-                node_number: _,
-                service_number,
-            } => *service_number == 0,
-            Eid::Dtn {
-                node_name: _,
-                demux,
-            } => demux.is_empty(),
-            _ => false,
-        }
-    }
-
-    pub fn try_into_admin_endpoint(&self) -> Result<Eid, EidError> {
-        match self {
-            Eid::Null => Ok(Eid::Null),
-            Eid::LocalNode { .. } => Ok(Eid::LocalNode { service_number: 0 }),
-            Eid::LegacyIpn {
-                allocator_id,
-                node_number,
-                service_number: _,
-            } => Ok(Eid::LegacyIpn {
-                allocator_id: *allocator_id,
-                node_number: *node_number,
-                service_number: 0,
-            }),
-            Eid::Ipn {
-                allocator_id,
-                node_number,
-                service_number: _,
-            } => Ok(Eid::Ipn {
-                allocator_id: *allocator_id,
-                node_number: *node_number,
-                service_number: 0,
-            }),
-            Eid::Dtn {
-                node_name,
-                demux: _,
-            } => Ok(Eid::Dtn {
-                node_name: node_name.clone(),
-                demux: [].into(),
-            }),
-            Eid::Unknown { scheme, .. } => Err(EidError::UnsupportedScheme(*scheme)),
-        }
-    }
 }
 
 impl cbor::encode::ToCbor for &Eid {

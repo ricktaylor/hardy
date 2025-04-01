@@ -107,6 +107,20 @@ impl std::str::FromStr for Eid {
     }
 }
 
+impl TryFrom<&str> for Eid {
+    type Error = EidError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<Eid> for String {
+    fn from(value: Eid) -> Self {
+        value.to_string()
+    }
+}
+
 fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid, bool), EidError> {
     let (v1, s1) = value.parse()?;
     let (v2, s2) = value.parse()?;

@@ -8,13 +8,33 @@ use notify_debouncer_full::{
         event::{CreateKind, RemoveKind},
     },
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::*;
 
-mod config;
 mod parse;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub routes_file: PathBuf,
+    pub priority: u32,
+    pub watch: bool,
+    pub protocol_id: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            routes_file: crate::config::config_dir().join("static_routes"),
+            priority: 100,
+            watch: true,
+            protocol_id: "static_routes".to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct StaticRoute {
@@ -24,7 +44,7 @@ struct StaticRoute {
 
 #[derive(Clone)]
 pub struct StaticRoutes {
-    config: config::Config,
+    config: Config,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
     routes: HashMap<bpv7::EidPattern, StaticRoute>,
 }
@@ -160,20 +180,28 @@ impl StaticRoutes {
 }
 
 pub async fn init(
-    config: &::config::Config,
+    mut config: Config,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
-    if let Some(config) = config::Config::new(config) {
-        StaticRoutes {
-            config,
-            bpa,
-            routes: HashMap::new(),
-        }
-        .init(task_set, cancel_token)
-        .await;
-    } else {
-        info!("No static routes configured");
+    // Try to create canonical file path
+    if let Ok(r) = config.routes_file.canonicalize() {
+        config.routes_file = r;
     }
+
+    // Ensure it's absolute
+    if config.routes_file.is_relative() {
+        let mut path = std::env::current_dir().trace_expect("Failed to get current directory");
+        path.push(&config.routes_file);
+        config.routes_file = path;
+    }
+
+    StaticRoutes {
+        config,
+        bpa,
+        routes: HashMap::new(),
+    }
+    .init(task_set, cancel_token)
+    .await
 }

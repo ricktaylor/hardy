@@ -13,7 +13,7 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(config: &bpa::Config) -> Self {
+    pub fn new(config: &config::Config) -> Self {
         // Init pluggable storage engines
         Self {
             wait_sample_interval: config.wait_sample_interval,
@@ -181,8 +181,7 @@ impl Store {
         // We're going to spawn a bunch of tasks
         let parallelism = std::thread::available_parallelism()
             .map(Into::into)
-            .unwrap_or(1)
-            + 1;
+            .unwrap_or(1);
         let mut task_set = tokio::task::JoinSet::new();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 

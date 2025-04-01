@@ -1,4 +1,3 @@
-mod admin_endpoints;
 mod bundle;
 mod bundle_mem;
 mod cla_registry;
@@ -10,8 +9,10 @@ mod service_registry;
 mod store;
 mod utils;
 
+pub mod admin_endpoints;
 pub mod bpa;
 pub mod cla;
+pub mod config;
 pub mod fib;
 pub mod metadata;
 pub mod service;

@@ -45,14 +45,15 @@ fn setup() -> tokio::runtime::Runtime {
         .unwrap();
 
     rt.spawn(async {
-        let bpa = hardy_bpa::bpa::Bpa::start(hardy_bpa::bpa::Config {
+        let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
             max_forwarding_delay: 0,
-            admin_endpoints: vec![bpv7::Eid::Ipn {
+            admin_endpoints: hardy_bpa::admin_endpoints::AdminEndpoints::init(&[bpv7::Eid::Ipn {
                 allocator_id: 0,
                 node_number: 1,
                 service_number: 0,
-            }],
+            }])
+            .unwrap(),
             ..Default::default()
         })
         .await;

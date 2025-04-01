@@ -68,14 +68,14 @@ impl Service {
 }
 
 pub struct ServiceRegistry {
-    admin_endpoints: Arc<admin_endpoints::AdminEndpoints>,
+    admin_endpoints: admin_endpoints::AdminEndpoints,
     services: RwLock<HashMap<bpv7::Eid, Arc<Service>>>,
 }
 
 impl ServiceRegistry {
-    pub fn new(admin_endpoints: Arc<admin_endpoints::AdminEndpoints>) -> Self {
+    pub fn new(config: &config::Config) -> Self {
         Self {
-            admin_endpoints,
+            admin_endpoints: config.admin_endpoints.clone(),
             services: Default::default(),
         }
     }

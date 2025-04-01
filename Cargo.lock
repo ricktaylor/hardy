@@ -533,6 +533,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b42b6fa04a440b495c8b04d0e71b707c585f83cb9cb28cf8cd0d976c315e31b4"
 dependencies = [
  "powerfmt",
+ "serde",
 ]
 
 [[package]]
@@ -863,6 +864,7 @@ dependencies = [
  "hardy-bpv7",
  "hardy-cbor",
  "rand 0.9.0",
+ "serde",
  "sha2",
  "thiserror",
  "time",
@@ -930,6 +932,7 @@ dependencies = [
  "hmac",
  "humantime",
  "regex",
+ "serde",
  "sha2",
  "thiserror",
  "time",
@@ -971,7 +974,6 @@ version = "0.1.0"
 dependencies = [
  "built",
  "cfg-if",
- "config",
  "directories",
  "hardy-bpa",
  "libc",
@@ -1003,7 +1005,6 @@ dependencies = [
  "base64 0.22.1",
  "built",
  "cfg-if",
- "config",
  "directories",
  "hardy-bpa",
  "hardy-bpv7",
