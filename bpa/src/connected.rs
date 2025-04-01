@@ -8,7 +8,7 @@ impl std::fmt::Debug for ConnectedFlag {
     }
 }
 
-impl std::default::Default for ConnectedFlag {
+impl Default for ConnectedFlag {
     fn default() -> Self {
         Self::new(false)
     }
