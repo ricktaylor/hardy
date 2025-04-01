@@ -24,7 +24,7 @@ cfg-if = "1.0.0"
 trace-err = "0.1.2"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.170"
+libc = "0.2.171"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
