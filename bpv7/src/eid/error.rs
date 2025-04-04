@@ -3,18 +3,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum EidError {
-    #[error("dtn URI node-name is empty")]
-    DtnNodeNameEmpty,
-
-    #[error("dtn URI missing name-delim '/'")]
-    DtnMissingSlash,
-
-    #[error("dtn URIs must start with '//'")]
-    DtnMissingPrefix,
-
-    #[error("dtn URI demux part is empty")]
-    DtnEmptyDemuxPart,
-
     #[error("Invalid ipn allocator id {0}")]
     IpnInvalidAllocatorId(u64),
 
@@ -24,17 +12,11 @@ pub enum EidError {
     #[error("Invalid ipn service number {0}")]
     IpnInvalidServiceNumber(u64),
 
-    #[error("Only 2 or 3 components in an ipn URI")]
-    IpnInvalidComponents,
-
-    #[error("Missing scheme separator")]
-    MissingScheme,
-
-    #[error("Unknown EID scheme {0}")]
-    UnknownScheme(String),
-
     #[error("Unsupported EID scheme {0}")]
     UnsupportedScheme(u64),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
@@ -44,9 +26,6 @@ pub enum EidError {
 
     #[error(transparent)]
     InvalidCBOR(#[from] cbor::decode::Error),
-
-    #[error(transparent)]
-    InvalidUtf8(#[from] std::string::FromUtf8Error),
 }
 
 pub trait CaptureFieldErr<T> {

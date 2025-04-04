@@ -1,109 +1,169 @@
 use super::*;
 use error::CaptureFieldErr;
+use std::borrow::Cow;
+use winnow::{
+    ModalResult, Parser,
+    ascii::dec_uint,
+    combinator::{alt, fail, opt, preceded, repeat, separated, terminated},
+    stream::AsChar,
+    token::{one_of, take_while},
+};
 
-fn parse_dtn_parts(s: &str) -> Result<Eid, EidError> {
-    if let Some((s1, s2)) = s.split_once('/') {
-        if s1.is_empty() {
-            Err(EidError::DtnNodeNameEmpty)
-        } else {
-            let node_name = urlencoding::decode(s1)?.into();
-            let demux = s2
-                .split('/')
-                .try_fold(Vec::new(), |mut v: Vec<Box<str>>, s| {
-                    v.push(urlencoding::decode(s)?.into());
-                    Ok::<_, EidError>(v)
-                })?;
-
-            for (idx, s) in demux.iter().enumerate() {
-                if s.is_empty() && idx != demux.len() - 1 {
-                    return Err(EidError::DtnEmptyDemuxPart);
-                }
+fn parse_ipn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
+    (
+        dec_uint,
+        preceded(".", dec_uint),
+        opt(preceded(".", dec_uint)),
+    )
+        .try_map(|(a, b, c)| match (a, b, c) {
+            (0, 0, Some(0)) | (0, 0, None) => Ok(Eid::Null),
+            (0, 0, Some(service_number)) | (0, service_number, None) => {
+                Err(EidError::IpnInvalidServiceNumber(service_number as u64))
             }
-
-            Ok(Eid::Dtn {
-                node_name,
-                demux: demux.into(),
-            })
-        }
-    } else {
-        Err(EidError::DtnMissingSlash)
-    }
-}
-
-fn ipn_from_parts(
-    elements: usize,
-    allocator_id: u32,
-    node_number: u32,
-    service_number: u32,
-) -> Result<(Eid, bool), EidError> {
-    match (allocator_id, node_number) {
-        (0, 0) => Ok((Eid::Null, service_number == 0)),
-        (0, u32::MAX) => Ok((Eid::LocalNode { service_number }, true)),
-        _ if elements == 2 && allocator_id != 0 => Ok((
-            Eid::LegacyIpn {
+            (0, u32::MAX, Some(service_number)) | (u32::MAX, service_number, None) => {
+                Ok(Eid::LocalNode { service_number })
+            }
+            (allocator_id, node_number, Some(service_number)) => Ok(Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,
-            },
-            true,
-        )),
-        _ => Ok((
-            Eid::Ipn {
-                allocator_id,
+            }),
+            (node_number, service_number, None) => Ok(Eid::Ipn {
+                allocator_id: 0,
                 node_number,
                 service_number,
-            },
-            true,
-        )),
+            }),
+        })
+        .parse_next(input)
+}
+
+fn parse_local_node(input: &mut &[u8]) -> ModalResult<Eid> {
+    preceded("!.", dec_uint)
+        .map(|service_number| Eid::LocalNode { service_number })
+        .parse_next(input)
+}
+
+fn parse_ipn(input: &mut &[u8]) -> ModalResult<Eid> {
+    (alt((parse_local_node, parse_ipn_parts, fail))).parse_next(input)
+}
+
+fn from_hex_digit(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => digit - b'a' + 10,
     }
 }
 
-fn ipn_from_str(s: &str) -> Result<Eid, EidError> {
-    let parts = s.split('.').collect::<Vec<&str>>();
-    if parts.len() == 2 {
-        let mut node_number = u32::MAX;
-        if parts[0] != "!" {
-            node_number = parts[0].parse().map_field_err("node number")?;
-        }
-        ipn_from_parts(
-            3,
-            0,
-            node_number,
-            parts[1].parse().map_field_err("service number")?,
+fn parse_pchar<'a>(input: &mut &'a [u8]) -> ModalResult<Cow<'a, str>> {
+    alt((
+        take_while(
+            1..,
+            (
+                AsChar::is_alphanum,
+                '-',
+                '.',
+                '_',
+                '~',
+                '!',
+                '$',
+                '&',
+                '\'',
+                '(',
+                ')',
+                '*',
+                '+',
+                ',',
+                ';',
+                '=',
+                ':',
+                '@',
+            ),
         )
-        .map(|e| e.0)
-    } else if parts.len() == 3 {
-        ipn_from_parts(
-            3,
-            parts[0].parse().map_field_err("allocator identifier")?,
-            parts[1].parse().map_field_err("node number")?,
-            parts[2].parse().map_field_err("service number")?,
+        .map(|v| Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) })),
+        preceded(
+            '%',
+            (one_of(AsChar::is_hex_digit), one_of(AsChar::is_hex_digit)),
         )
-        .map(|e| e.0)
-    } else {
-        return Err(EidError::IpnInvalidComponents);
-    }
+        .map(|(first, second)| {
+            /* This is a more cautious UTF8 url decode expansion */
+            let first = from_hex_digit(first);
+            let second = from_hex_digit(second);
+            if first <= 7 {
+                let val = [(first << 4) | second];
+                Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+            } else {
+                let val = [0xC0u8 | (first >> 2), 0x80u8 | ((first & 3) << 4) | second];
+                Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+            }
+        }),
+        fail,
+    ))
+    .parse_next(input)
+}
+
+fn parse_dtn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
+    (
+        terminated(
+            repeat(1.., parse_pchar)
+                .fold(String::new, |mut acc, v| {
+                    if acc.is_empty() {
+                        acc = v.into()
+                    } else {
+                        acc.push_str(&v)
+                    }
+                    acc
+                })
+                .map(Into::<Box<str>>::into),
+            "/",
+        ),
+        separated(
+            0..,
+            repeat(0.., parse_pchar)
+                .fold(String::new, |mut acc, v| {
+                    if acc.is_empty() {
+                        acc = v.into()
+                    } else {
+                        acc.push_str(&v)
+                    }
+                    acc
+                })
+                .map(Into::<Box<str>>::into),
+            "/",
+        ),
+    )
+        .map(|(node_name, demux): (Box<str>, Vec<Box<str>>)| Eid::Dtn {
+            node_name,
+            demux: demux.into(),
+        })
+        .parse_next(input)
+}
+
+fn parse_dtn(input: &mut &[u8]) -> ModalResult<Eid> {
+    alt((
+        "none".map(|_| Eid::Null),
+        preceded("//", parse_dtn_parts),
+        fail,
+    ))
+    .parse_next(input)
+}
+
+pub fn parse_eid(input: &mut &[u8]) -> ModalResult<Eid> {
+    alt((
+        preceded("dtn:", parse_dtn),
+        preceded("ipn:", parse_ipn),
+        fail,
+    ))
+    .parse_next(input)
 }
 
 impl std::str::FromStr for Eid {
     type Err = EidError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(s) = s.strip_prefix("dtn:") {
-            if let Some(s) = s.strip_prefix("//") {
-                parse_dtn_parts(s)
-            } else if s == "none" {
-                Ok(Eid::Null)
-            } else {
-                Err(EidError::DtnMissingPrefix)
-            }
-        } else if let Some(s) = s.strip_prefix("ipn:") {
-            ipn_from_str(s)
-        } else if let Some((schema, _)) = s.split_once(':') {
-            Err(EidError::UnknownScheme(schema.to_string()))
-        } else {
-            Err(EidError::MissingScheme)
-        }
+        parse_eid
+            .parse(s.as_bytes())
+            .map_err(|e| EidError::ParseError(e.to_string()))
     }
 }
 
@@ -122,28 +182,61 @@ impl From<Eid> for String {
 }
 
 fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid, bool), EidError> {
-    let (v1, s1) = value.parse()?;
-    let (v2, s2) = value.parse()?;
-    let v3 = value.try_parse()?;
-
-    if let Some((v3, s3)) = v3 {
-        if v1 > u32::MAX as u64 {
-            return Err(EidError::IpnInvalidAllocatorId(v1));
-        } else if v2 > u32::MAX as u64 {
-            return Err(EidError::IpnInvalidNodeNumber(v2));
-        } else if v3 > u32::MAX as u64 {
-            return Err(EidError::IpnInvalidServiceNumber(v3));
-        }
-
-        ipn_from_parts(3, v1 as u32, v2 as u32, v3 as u32)
-            .map(|(e, s)| (e, shortest && s && s1 && s2 && s3))
+    let (a, s1) = value.parse()?;
+    let (b, s2) = value.parse()?;
+    let (c, shortest) = if let Some((c, s3)) = value.try_parse()? {
+        (Some(c), shortest && s1 && s2 && s3)
     } else {
-        if v2 > u32::MAX as u64 {
-            return Err(EidError::IpnInvalidServiceNumber(v2));
-        }
+        (None, shortest && s1 && s2)
+    };
 
-        ipn_from_parts(2, (v1 >> 32) as u32, v1 as u32, v2 as u32)
-            .map(|(e, s)| (e, shortest && s && s1 && s2))
+    const MAX: u64 = u32::MAX as u64;
+
+    match (a, b, c) {
+        (0, 0, Some(0)) => Ok((Eid::Null, false)),
+        (0, 0, None) => Ok((Eid::Null, shortest)),
+        (0, 0, Some(s)) | (0, s, None) => Err(EidError::IpnInvalidServiceNumber(s)),
+        (a, _, Some(_)) if a > MAX => Err(EidError::IpnInvalidAllocatorId(a)),
+        (_, n, Some(_)) if n > MAX => Err(EidError::IpnInvalidNodeNumber(n)),
+        (_, _, Some(s)) | (_, s, None) if s > MAX => Err(EidError::IpnInvalidServiceNumber(s)),
+        (0, MAX, Some(s)) | (MAX, s, None) => Ok((
+            Eid::LocalNode {
+                service_number: s as u32,
+            },
+            false,
+        )),
+        (0, n, Some(s)) => Ok((
+            Eid::Ipn {
+                allocator_id: 0,
+                node_number: n as u32,
+                service_number: s as u32,
+            },
+            false,
+        )),
+        (a, n, Some(s)) => Ok((
+            Eid::Ipn {
+                allocator_id: a as u32,
+                node_number: n as u32,
+                service_number: s as u32,
+            },
+            shortest,
+        )),
+        (n, s, None) if n <= MAX => Ok((
+            Eid::Ipn {
+                allocator_id: 0,
+                node_number: n as u32,
+                service_number: s as u32,
+            },
+            shortest,
+        )),
+        (fqnn, s, None) => Ok((
+            Eid::LegacyIpn {
+                allocator_id: (fqnn >> 32) as u32,
+                node_number: (fqnn & MAX) as u32,
+                service_number: s as u32,
+            },
+            shortest,
+        )),
     }
 }
 
@@ -163,52 +256,34 @@ impl cbor::decode::FromCbor for Eid {
                 .map_field_err("EID scheme")?
             {
                 0 => Err(EidError::UnsupportedScheme(0)),
-                1 => match a.parse_value(|value, s, tags| {
-                    shortest = shortest && s && tags.is_empty();
-                    match value {
-                        cbor::decode::Value::UnsignedInteger(0)
-                        | cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
-                        cbor::decode::Value::Text(s) => {
-                            if let Some(s) = s.strip_prefix("//") {
-                                parse_dtn_parts(s).map(|e| (e, shortest))
-                            } else {
-                                Err(EidError::DtnMissingPrefix)
+                1 => a
+                    .parse_value(|value, s, tags| {
+                        shortest = shortest && s && tags.is_empty();
+                        match value {
+                            cbor::decode::Value::UnsignedInteger(0)
+                            | cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
+                            cbor::decode::Value::Text(s) => parse_dtn
+                                .parse(s.as_bytes())
+                                .map(|e| (e, shortest))
+                                .map_err(|e| EidError::ParseError(e.to_string())),
+                            cbor::decode::Value::TextStream(s) => {
+                                let s = s.iter().fold(String::new(), |mut acc, s| {
+                                    acc.push_str(s);
+                                    acc
+                                });
+                                parse_dtn
+                                    .parse(s.as_bytes())
+                                    .map(|e| (e, shortest))
+                                    .map_err(|e| EidError::ParseError(e.to_string()))
                             }
+                            value => Err(cbor::decode::Error::IncorrectType(
+                                "Untagged Text String or O".to_string(),
+                                value.type_name(!tags.is_empty()),
+                            )
+                            .into()),
                         }
-                        cbor::decode::Value::TextStream(s) => {
-                            if let Some(s) = s
-                                .iter()
-                                .try_fold(String::new(), |mut v, s| {
-                                    // Check maximum valid DNS Name length
-                                    if s.len() + v.len() > 255 {
-                                        Err(EidError::DtnMissingPrefix)
-                                    } else {
-                                        v.push_str(s);
-                                        Ok::<_, EidError>(v)
-                                    }
-                                })?
-                                .strip_prefix("//")
-                            {
-                                parse_dtn_parts(s).map(|e| (e, shortest))
-                            } else {
-                                Err(EidError::DtnMissingPrefix)
-                            }
-                        }
-                        value => Err(cbor::decode::Error::IncorrectType(
-                            "Untagged Text String or O".to_string(),
-                            value.type_name(!tags.is_empty()),
-                        )
-                        .into()),
-                    }
-                }) {
-                    Err(EidError::InvalidCBOR(e)) => {
-                        Err(e).map_field_err("'dtn' scheme-specific part")
-                    }
-                    Err(EidError::InvalidUtf8(e)) => {
-                        Err(e).map_field_err("'dtn' scheme-specific part")
-                    }
-                    r => r,
-                },
+                    })
+                    .map_field_err("'dtn' scheme-specific part"),
                 2 => match a.parse_value(|value, s, tags| match value {
                     cbor::decode::Value::Array(a) => {
                         ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
@@ -220,9 +295,6 @@ impl cbor::decode::FromCbor for Eid {
                     .into()),
                 }) {
                     Err(EidError::InvalidCBOR(e)) => {
-                        Err(e).map_field_err("'ipn' scheme-specific part")
-                    }
-                    Err(EidError::InvalidUtf8(e)) => {
                         Err(e).map_field_err("'ipn' scheme-specific part")
                     }
                     r => r,

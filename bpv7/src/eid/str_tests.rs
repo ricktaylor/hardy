@@ -17,89 +17,55 @@ fn tests() {
     null_check("ipn:0.0.0");
     null_check("dtn:none");
 
-    dtn_check("dtn://somewhere/", "somewhere", "");
-    dtn_check("dtn://somewhere/else", "somewhere", "else");
-    dtn_check("dtn://somewhere/else/", "somewhere", "else/");
-    dtn_check("dtn://somewhere%2Felse/", "somewhere%2Felse", "");
+    dtn_check("dtn://somewhere/", "somewhere", &[""]);
+    dtn_check("dtn://somewhere/else", "somewhere", &["else"]);
+    dtn_check("dtn://somewhere/else/", "somewhere", &["else", ""]);
+    dtn_check("dtn://somewhere%2Felse/", "somewhere/else", &[""]);
     dtn_check(
         "dtn://somewhere/over/the/rainbow",
         "somewhere",
-        "over/the/rainbow",
+        &["over", "the", "rainbow"],
     );
     dtn_check(
         "dtn://somewhere/over%2Fthe/rainbow",
         "somewhere",
-        "over%2Fthe/rainbow",
+        &["over/the", "rainbow"],
     );
     dtn_check(
         "dtn://somewhere%2Fover/the%2Frainbow",
-        "somewhere%2Fover",
-        "the%2Frainbow",
+        "somewhere/over",
+        &["the/rainbow"],
     );
+
+    dtn_check("dtn://somewhere//", "somewhere", &["", ""]);
+    dtn_check("dtn://somewhere//else", "somewhere", &["", "else"]);
 
     // Negative tests
-    assert!(matches!(expect_error(""), EidError::MissingScheme));
-    assert!(matches!(expect_error("dtn"), EidError::MissingScheme));
-    assert!(matches!(expect_error("ipn"), EidError::MissingScheme));
-    assert!(matches!(expect_error(":"), EidError::UnknownScheme(s) if s == ""));
-    assert!(matches!(expect_error("spaniel:"), EidError::UnknownScheme(s) if s == "spaniel"));
+    expect_error("");
+    expect_error("dtn");
+    expect_error("ipn");
+    expect_error(":");
+    expect_error("spaniel:");
 
-    assert!(matches!(expect_error("dtn:"), EidError::DtnMissingPrefix));
-    assert!(matches!(expect_error("dtn:/"), EidError::DtnMissingPrefix));
-    assert!(matches!(
-        expect_error("dtn:somewhere"),
-        EidError::DtnMissingPrefix
-    ));
-    assert!(matches!(
-        expect_error("dtn:/somewhere"),
-        EidError::DtnMissingPrefix
-    ));
-    assert!(matches!(expect_error("dtn://"), EidError::DtnMissingSlash));
-    assert!(matches!(
-        expect_error("dtn://somewhere"),
-        EidError::DtnMissingSlash
-    ));
-    assert!(matches!(
-        expect_error("dtn:///else"),
-        EidError::DtnNodeNameEmpty
-    ));
-    assert!(matches!(
-        expect_error("dtn://somewhere//"),
-        EidError::DtnEmptyDemuxPart
-    ));
-    assert!(matches!(
-        expect_error("dtn://somewhere//else"),
-        EidError::DtnEmptyDemuxPart
-    ));
+    expect_error("dtn:");
+    expect_error("dtn:/");
+    expect_error("dtn:somewhere");
+    expect_error("dtn:/somewhere");
+    expect_error("dtn://");
+    expect_error("dtn://somewhere");
+    expect_error("dtn:///else");
 
-    assert!(matches!(
-        expect_error("ipn:"),
-        EidError::IpnInvalidComponents
-    ));
-    assert!(matches!(
-        expect_error("ipn:1"),
-        EidError::IpnInvalidComponents
-    ));
-    assert!(matches!(
-        expect_error("ipn:1.2.3.4"),
-        EidError::IpnInvalidComponents
-    ));
+    expect_error("ipn:");
+    expect_error("ipn:1");
+    expect_error("ipn:1.2.3.4");
 
-    assert!(
-        matches!(expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222"), EidError::InvalidField{ field, ..} if field == "node number")
+    expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222");
+    expect_error("ipn:1.222222222222222222222222222222");
+    expect_error(
+        "ipn:11111111111111111111111111111.222222222222222222222222222222.33333333333333333333333333333333333",
     );
-    assert!(
-        matches!(expect_error("ipn:1.222222222222222222222222222222"), EidError::InvalidField{ field, ..} if field == "service number")
-    );
-    assert!(
-        matches!(expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "allocator identifier")
-    );
-    assert!(
-        matches!(expect_error("ipn:1.222222222222222222222222222222.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "node number")
-    );
-    assert!(
-        matches!(expect_error("ipn:1.2.33333333333333333333333333333333333"), EidError::InvalidField{ field, ..} if field == "service number")
-    );
+    expect_error("ipn:1.222222222222222222222222222222.33333333333333333333333333333333333");
+    expect_error("ipn:1.2.33333333333333333333333333333333333");
 }
 
 fn expect_error(s: &str) -> EidError {
@@ -145,17 +111,14 @@ fn ipn_check(
     };
 }
 
-fn dtn_check(s: &str, expected_node_name: &str, expected_demux: &str) {
+fn dtn_check(s: &str, expected_node_name: &str, expected_demux: &[&str]) {
     let Eid::Dtn { node_name, demux } = s.parse().expect("Failed to parse") else {
         panic!("Not a dtn EID!")
     };
-    assert_eq!(urlencoding::encode(&node_name), expected_node_name);
-    assert_eq!(
-        demux
-            .iter()
-            .map(|s| urlencoding::encode(s))
-            .collect::<Vec<std::borrow::Cow<str>>>()
-            .join("/"),
-        expected_demux
-    );
+    assert_eq!(node_name.as_ref(), expected_node_name);
+
+    assert_eq!(demux.len(), expected_demux.len());
+    for (i, j) in demux.iter().zip(expected_demux.iter()) {
+        assert_eq!(i.as_ref(), *j);
+    }
 }
