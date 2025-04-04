@@ -328,9 +328,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.31"
+version = "4.5.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "027bb0d98429ae334a8698531da7077bdf906419543a35a55c2cb1b66437d767"
+checksum = "d8aa86934b44c19c50f87cc2790e19f54f7a67aedb64101c2e1a2e5ecfb73944"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -338,9 +338,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.31"
+version = "4.5.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5589e0cba072e0f3d23791efac0fd8627b49c829c196a492e88168e6a669d863"
+checksum = "2414dbb2dd0695280da6ea9261e327479e9d37b0630f6b53ba2a11c60c679fd9"
 dependencies = [
  "anstream",
  "anstyle",
@@ -350,9 +350,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.5.28"
+version = "4.5.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf4ced95c6f4a675af3da73304b9ac4ed991640c36374e4b46795c49e17cf1ed"
+checksum = "09176aae279615badda0765c0c0b3f6ed53f4709118af73cf4655d85d1530cd7"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -863,6 +863,7 @@ dependencies = [
  "fuzz-macros",
  "hardy-bpv7",
  "hardy-cbor",
+ "hardy-eid-pattern",
  "rand 0.9.0",
  "serde",
  "sha2",
@@ -900,7 +901,7 @@ dependencies = [
  "directories",
  "getopts",
  "hardy-bpa",
- "hardy-bpv7",
+ "hardy-eid-pattern",
  "hardy-localdisk-storage",
  "hardy-sqlite-storage",
  "notify",
@@ -931,7 +932,6 @@ dependencies = [
  "hex-literal",
  "hmac",
  "humantime",
- "regex",
  "serde",
  "sha2",
  "thiserror",
@@ -966,6 +966,27 @@ name = "hardy-cbor-fuzz"
 version = "0.0.0"
 dependencies = [
  "hardy-cbor",
+ "libfuzzer-sys",
+]
+
+[[package]]
+name = "hardy-eid-pattern"
+version = "0.1.0"
+dependencies = [
+ "hardy-bpv7",
+ "hex-literal",
+ "regex",
+ "serde",
+ "thiserror",
+ "urlencoding",
+ "winnow",
+]
+
+[[package]]
+name = "hardy-eid_pattern-fuzz"
+version = "0.0.0"
+dependencies = [
+ "hardy-eid-pattern",
  "libfuzzer-sys",
 ]
 
@@ -1159,9 +1180,9 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "humantime"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
+checksum = "9b112acc8b3adf4b107a8ec20977da0273a8c386765a3ec0229bd500a1443f9f"
 
 [[package]]
 name = "hyper"

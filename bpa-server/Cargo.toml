@@ -16,7 +16,7 @@ packaged-installation = []
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
-hardy-bpv7 = { path = "../bpv7" }
+hardy-eid-pattern = { path = "../eid_pattern" }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", optional = true }
 tokio = { version = "1.44.0", features = [

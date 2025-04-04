@@ -55,17 +55,17 @@ fn parse_action(input: &mut &[u8]) -> ModalResult<StaticRoute> {
         .parse_next(input)
 }
 
-fn parse_pattern(input: &mut &[u8]) -> ModalResult<bpv7::EidPattern> {
+fn parse_pattern(input: &mut &[u8]) -> ModalResult<eid_pattern::EidPattern> {
     take_till(1.., AsChar::is_space)
         .parse_to()
         .parse_next(input)
 }
 
-fn parse_route(input: &mut &[u8]) -> ModalResult<(bpv7::EidPattern, StaticRoute)> {
+fn parse_route(input: &mut &[u8]) -> ModalResult<(eid_pattern::EidPattern, StaticRoute)> {
     (parse_pattern, preceded(space1, parse_action)).parse_next(input)
 }
 
-fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(bpv7::EidPattern, StaticRoute)>> {
+fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(eid_pattern::EidPattern, StaticRoute)>> {
     alt((
         preceded(space0, opt(terminated(parse_route, space0))),
         ('#', rest).map(|_| None),
@@ -74,9 +74,11 @@ fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(bpv7::EidPattern, Static
 }
 
 #[allow(clippy::type_complexity)]
-fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<(bpv7::EidPattern, StaticRoute)>> {
+fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<(eid_pattern::EidPattern, StaticRoute)>> {
     separated(0.., till_line_ending.and_then(parse_line), line_ending)
-        .map(|v: Vec<Option<(bpv7::EidPattern, StaticRoute)>>| v.into_iter().flatten().collect())
+        .map(|v: Vec<Option<(eid_pattern::EidPattern, StaticRoute)>>| {
+            v.into_iter().flatten().collect()
+        })
         .parse_next(input)
 }
 
@@ -84,7 +86,7 @@ pub async fn load_routes(
     routes_file: &PathBuf,
     ignore_errors: bool,
     watching: bool,
-) -> Result<Vec<(bpv7::EidPattern, StaticRoute)>, Error> {
+) -> Result<Vec<(eid_pattern::EidPattern, StaticRoute)>, Error> {
     match tokio::fs::read(routes_file).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
             trace!(

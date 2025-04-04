@@ -19,7 +19,7 @@ pub struct Dispatcher {
     tx: tokio::sync::mpsc::Sender<bundle::Bundle>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     fib: Arc<fib_impl::Fib>,
-    ipn_2_element: bpv7::EidPatternMap<(), ()>,
+    ipn_2_element: eid_pattern::EidPatternMap<(), ()>,
 
     // Config options
     status_reports: bool,
@@ -38,7 +38,7 @@ impl Dispatcher {
     ) -> (Self, tokio::sync::mpsc::Receiver<bundle::Bundle>) {
         // Create a channel for bundles
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let mut ipn_2_element = bpv7::EidPatternMap::<(), ()>::new();
+        let mut ipn_2_element = eid_pattern::EidPatternMap::<(), ()>::new();
         for e in &config.ipn_2_element {
             ipn_2_element.insert(e, (), ());
         }

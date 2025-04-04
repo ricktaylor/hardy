@@ -1,0 +1,19 @@
+[package]
+name = "hardy-eid_pattern-fuzz"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hardy-eid-pattern = { path = ".." }
+
+[[bin]]
+name = "eid_pattern_str"
+path = "fuzz_targets/eid_pattern_str.rs"
+test = false
+doc = false
+bench = false

@@ -1,7 +1,8 @@
-use super::*;
+use hardy_bpv7::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod dtn_pattern;
+mod eid_pattern_map;
 mod error;
 mod ipn_pattern;
 
@@ -30,7 +31,7 @@ impl EidPattern {
         }
     }
 
-    pub(super) fn is_exact(&self) -> Option<Eid> {
+    pub(crate) fn is_exact(&self) -> Option<Eid> {
         match self {
             EidPattern::Any => None,
             EidPattern::Set(items) => {
@@ -208,7 +209,7 @@ impl EidPatternItem {
         }
     }
 
-    pub(super) fn is_exact(&self) -> Option<Eid> {
+    pub(crate) fn is_exact(&self) -> Option<Eid> {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.is_exact(),
             EidPatternItem::DtnPatternItem(i) => i.is_exact(),
@@ -310,4 +311,9 @@ impl std::fmt::Display for EidPatternItem {
             EidPatternItem::AnyTextScheme(v) => write!(f, "{v}:**"),
         }
     }
+}
+
+pub mod prelude {
+    pub use super::eid_pattern_map::EidPatternMap;
+    pub use super::{EidPattern, EidPatternError, IpnPattern};
 }

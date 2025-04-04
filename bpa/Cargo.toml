@@ -10,6 +10,7 @@ crate-type = ["rlib"]
 [dependencies]
 hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
+hardy-eid-pattern = { path = "../eid_pattern" }
 fuzz-macros = { path = "../fuzz-macros" }
 time = { version = "0.3.39", features = ["serde-human-readable"] }
 async-trait = "0.1.87"

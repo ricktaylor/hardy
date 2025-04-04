@@ -13,8 +13,6 @@ mod creation_timestamp;
 mod dtn_time;
 mod editor;
 mod eid;
-mod eid_pattern;
-mod eid_pattern_map;
 mod error;
 mod hop_info;
 mod primary_block;
@@ -33,8 +31,6 @@ pub mod prelude {
     pub use super::dtn_time::DtnTime;
     pub use super::editor::Editor;
     pub use super::eid::{Eid, EidError};
-    pub use super::eid_pattern::{EidPattern, EidPatternError, IpnPattern};
-    pub use super::eid_pattern_map::EidPatternMap;
     pub use super::error::Error;
     pub use super::hop_info::HopInfo;
     pub use super::status_report::{

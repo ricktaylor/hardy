@@ -8,6 +8,8 @@ members = [
     "bpv7/fuzz",
     "cbor",
     "cbor/fuzz",
+    "eid_pattern",
+    "eid_pattern/fuzz",
     "localdisk-storage",
     "proto",
     "sqlite-storage",

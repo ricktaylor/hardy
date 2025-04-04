@@ -97,10 +97,10 @@ pub fn unwrap_key(
 mod test {
     use super::*;
 
-    fn do_test(data: &[u8], keys: &[(EidPattern, Context, Box<[u8]>)]) {
+    fn do_test(data: &[u8], keys: &[(Eid, Context, Box<[u8]>)]) {
         match ValidBundle::parse(data, |source, context| {
             for (eid, c2, key) in keys {
-                if &context == c2 && eid.is_match(source) {
+                if &context == c2 && eid == source {
                     return Ok(Some(KeyMaterial::SymmetricKey(key.clone())));
                 }
             }

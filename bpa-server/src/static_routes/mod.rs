@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpa::fib::Action;
-use hardy_bpv7::prelude as bpv7;
+use hardy_eid_pattern::prelude as eid_pattern;
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{
@@ -46,7 +46,7 @@ struct StaticRoute {
 pub struct StaticRoutes {
     config: Config,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
-    routes: HashMap<bpv7::EidPattern, StaticRoute>,
+    routes: HashMap<eid_pattern::EidPattern, StaticRoute>,
 }
 
 impl StaticRoutes {

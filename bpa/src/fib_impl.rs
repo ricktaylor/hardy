@@ -65,7 +65,7 @@ struct TableEntry {
     action: Action,
 }
 
-type Table = bpv7::EidPatternMap<TableKey, Vec<TableEntry>>;
+type Table = eid_pattern::EidPatternMap<TableKey, Vec<TableEntry>>;
 
 pub struct Fib {
     entries: RwLock<Table>,
@@ -82,7 +82,7 @@ impl Fib {
     pub async fn add(
         &self,
         id: &str,
-        pattern: &bpv7::EidPattern,
+        pattern: &eid_pattern::EidPattern,
         action: &fib::Action,
         priority: u32,
     ) -> fib::Result<()> {
@@ -107,7 +107,7 @@ impl Fib {
     }
 
     #[instrument(skip_all)]
-    pub async fn remove(&self, id: &str, pattern: &bpv7::EidPattern) -> usize {
+    pub async fn remove(&self, id: &str, pattern: &eid_pattern::EidPattern) -> usize {
         self.entries
             .write()
             .await

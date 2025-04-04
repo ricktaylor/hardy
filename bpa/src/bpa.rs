@@ -85,14 +85,18 @@ impl Bpa {
     pub async fn add_forwarding_action(
         &self,
         id: &str,
-        pattern: &bpv7::EidPattern,
+        pattern: &eid_pattern::EidPattern,
         action: &fib::Action,
         priority: u32,
     ) -> fib::Result<()> {
         self.fib.add(id, pattern, action, priority).await
     }
 
-    pub async fn remove_forwarding_action(&self, id: &str, pattern: &bpv7::EidPattern) -> usize {
+    pub async fn remove_forwarding_action(
+        &self,
+        id: &str,
+        pattern: &eid_pattern::EidPattern,
+    ) -> usize {
         self.fib.remove(id, pattern).await
     }
 }

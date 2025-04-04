@@ -7,7 +7,7 @@ fn get_keys(
     source: &Eid,
     context: bpsec::Context,
 ) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error> {
-    let keys: &[(EidPattern, bpsec::Context, &'static [u8])] = &[
+    let keys: &[(Eid, bpsec::Context, &'static [u8])] = &[
         (
             "ipn:3.0".parse().unwrap(),
             bpsec::Context::BIB_HMAC_SHA2,
@@ -21,7 +21,7 @@ fn get_keys(
     ];
 
     for (eid, c2, key) in keys {
-        if &context == c2 && eid.is_match(source) {
+        if &context == c2 && eid == source {
             return Ok(Some(bpsec::KeyMaterial::SymmetricKey(Box::from(*key))));
         }
     }

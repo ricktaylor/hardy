@@ -15,7 +15,7 @@ pub struct Config {
     pub bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
 
     pub admin_endpoints: admin_endpoints::AdminEndpoints,
-    pub ipn_2_element: Vec<bpv7::EidPattern>,
+    pub ipn_2_element: Vec<eid_pattern::EidPattern>,
 }
 
 impl Default for Config {
