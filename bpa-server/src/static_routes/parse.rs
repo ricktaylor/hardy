@@ -2,56 +2,56 @@ use super::*;
 use winnow::{
     ModalResult, Parser,
     ascii::{Caseless, dec_uint, line_ending, space0, space1, till_line_ending},
-    combinator::{alt, opt, separated, separated_pair},
+    combinator::{alt, fail, opt, preceded, separated, terminated},
     stream::AsChar,
     token::{rest, take_till},
 };
 
 fn parse_priority(input: &mut &[u8]) -> ModalResult<u32> {
-    (Caseless("priority"), space1, dec_uint)
-        .map(|(_, _, v)| v)
-        .parse_next(input)
+    preceded(Caseless("priority"), preceded(space1, dec_uint)).parse_next(input)
 }
 
 fn parse_drop(input: &mut &[u8]) -> ModalResult<Action> {
-    ((
+    preceded(
         Caseless("drop"),
-        opt((space1, dec_uint.try_map(|v: u64| v.try_into()))),
+        opt(preceded(space1, dec_uint.try_map(|v: u64| v.try_into()))),
     )
-        .map(|(_, v)| Action::Drop(v.map(|v| v.1))))
+    .map(Action::Drop)
     .parse_next(input)
 }
 
 fn parse_via(input: &mut &[u8]) -> ModalResult<Action> {
-    (separated_pair(
+    preceded(
         Caseless("via"),
-        space1,
-        take_till(1.., AsChar::is_space).parse_to(),
+        preceded(space1, take_till(1.., AsChar::is_space).parse_to()),
     )
-    .map(|(_, v)| Action::Via(v)))
+    .map(Action::Via)
     .parse_next(input)
 }
 
 fn parse_store(input: &mut &[u8]) -> ModalResult<Action> {
-    (separated_pair(
+    preceded(
         (Caseless("store"), opt((space1, Caseless("until")))),
-        space1,
-        take_till(1.., AsChar::is_space).try_map(|s| {
-            time::OffsetDateTime::parse(
-                &String::from_utf8_lossy(s),
-                &time::format_description::well_known::Rfc3339,
-            )
-        }),
+        preceded(
+            space1,
+            take_till(1.., AsChar::is_space).try_map(|s| {
+                time::OffsetDateTime::parse(
+                    &String::from_utf8_lossy(s),
+                    &time::format_description::well_known::Rfc3339,
+                )
+            }),
+        )
+        .map(Action::Store),
     )
-    .map(|(_, v)| Action::Store(v)))
     .parse_next(input)
 }
 
-fn parse_action(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
+fn parse_action(input: &mut &[u8]) -> ModalResult<StaticRoute> {
     (
-        alt((parse_drop, parse_via, parse_store)),
-        opt((space1, parse_priority).map(|(_, v)| v)),
+        alt((parse_drop, parse_via, parse_store, fail)),
+        opt(preceded(space1, parse_priority)),
     )
+        .map(|(action, priority)| StaticRoute { priority, action })
         .parse_next(input)
 }
 
@@ -62,14 +62,12 @@ fn parse_pattern(input: &mut &[u8]) -> ModalResult<bpv7::EidPattern> {
 }
 
 fn parse_route(input: &mut &[u8]) -> ModalResult<(bpv7::EidPattern, StaticRoute)> {
-    separated_pair(parse_pattern, space1, parse_action)
-        .map(|(pattern, (action, priority))| (pattern, StaticRoute { priority, action }))
-        .parse_next(input)
+    (parse_pattern, preceded(space1, parse_action)).parse_next(input)
 }
 
 fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(bpv7::EidPattern, StaticRoute)>> {
     alt((
-        (space0, opt(parse_route), space0).map(|(_, v, _)| v),
+        preceded(space0, opt(terminated(parse_route, space0))),
         ('#', rest).map(|_| None),
     ))
     .parse_next(input)

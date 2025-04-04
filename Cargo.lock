@@ -937,6 +937,7 @@ dependencies = [
  "thiserror",
  "time",
  "urlencoding",
+ "winnow",
  "zeroize",
 ]
 
