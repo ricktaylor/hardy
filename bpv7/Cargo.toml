@@ -24,7 +24,7 @@ aes-gcm = "0.10.3"
 zeroize = { version = "1.8.1", features = ["derive"] }
 aes-kw = { version = "0.2.1", features = ["alloc","std"] }
 serde = { version = "1.0.219", features = ["derive"] }
-winnow = "0.7.3"
+winnow = "0.7.4"
 #[mkbundle.dependencies]
 clap = { version = "4.5.31", features = ["derive","cargo"] }
 humantime = "2.1.0"

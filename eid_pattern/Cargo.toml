@@ -13,7 +13,7 @@ thiserror = "2.0.12"
 regex = "1.11.1"
 urlencoding = "2.1.3"
 serde = { version = "1.0.219", features = ["derive"] }
-winnow = "0.7.3"
+winnow = "0.7.4"
 
 [dev-dependencies]
 hex-literal = "1.0.0"
