@@ -126,7 +126,7 @@ impl cbor::encode::ToCbor for &Parameters {
                     a.emit_array(Some(2), |a| {
                         a.emit(b);
                         match b {
-                            1 => a.emit(self.iv.as_ref().as_ref()),
+                            1 => a.emit(self.iv.as_ref()),
                             2 => a.emit(self.variant),
                             3 => a.emit(self.key.as_ref().unwrap().as_ref()),
                             4 => a.emit(&self.flags),
