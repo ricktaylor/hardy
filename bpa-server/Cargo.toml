@@ -40,7 +40,6 @@ notify = { version = "8.0.0", default-features = false, features = [
     "macos_kqueue",
 ] }
 trace-err = "0.1.2"
-sha2 = "0.10.8"
 winnow = "0.7.3"
 anyhow = "1.0.97"
 
