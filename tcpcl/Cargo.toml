@@ -30,7 +30,7 @@ tokio = { version = "1.44.0", features = [
     "time",
 ] }
 tokio-util = "0.7.13"
-tonic = "0.12.3"
+tonic = "0.13.0"
 prost-types = "0.13"
 config = { version = "0.15.9", features = ["toml"] }
 serde = { version = "1.0.219", features = ["derive"] }
