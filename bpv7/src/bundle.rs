@@ -210,12 +210,12 @@ impl Bundle {
         }
 
         // Check the last block is the payload
-        if let Some(payload_block_number) = blocks_to_check.remove(&BlockType::Payload) {
-            if payload_block_number != last_block_number {
-                return Err(Error::PayloadNotFinal);
-            }
-        } else {
-            return Err(Error::MissingPayload);
+        if blocks_to_check
+            .remove(&BlockType::Payload)
+            .ok_or(Error::MissingPayload)?
+            != last_block_number
+        {
+            return Err(Error::PayloadNotFinal);
         }
 
         // Check for spurious extra data

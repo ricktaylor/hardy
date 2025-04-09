@@ -67,11 +67,9 @@ impl cbor::decode::FromCbor for CrcType {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = cbor::decode::try_parse::<(u64, bool, usize)>(data)? {
-            Ok(Some((v.into(), shortest, len)))
-        } else {
-            Ok(None)
-        }
+        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+            .map(|o| o.map(|(v, shortest, len)| (v.into(), shortest, len)))
+            .map_err(Into::into)
     }
 }
 

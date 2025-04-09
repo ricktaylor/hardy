@@ -139,11 +139,10 @@ impl Results {
             }
         }
 
-        if let Some(r) = r {
-            Ok((Self(r), shortest))
-        } else {
-            Err(bpsec::Error::InvalidContextResult(1))
-        }
+        Ok((
+            Self(r.ok_or(bpsec::Error::InvalidContextResult(1))?),
+            shortest,
+        ))
     }
 }
 
