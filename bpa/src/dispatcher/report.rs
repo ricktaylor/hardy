@@ -174,6 +174,7 @@ impl Dispatcher {
 
         // Put bundle into channel
         self.dispatch_bundle(bundle::Bundle { metadata, bundle })
-            .await
+            .await;
+        Ok(())
     }
 }

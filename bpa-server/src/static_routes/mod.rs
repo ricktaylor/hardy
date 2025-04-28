@@ -1,6 +1,6 @@
 use super::*;
-use hardy_bpa::fib::Action;
-use hardy_eid_pattern::prelude as eid_pattern;
+use hardy_bpa::routes::Action;
+use hardy_eid_pattern as eid_pattern;
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{
@@ -81,7 +81,7 @@ impl StaticRoutes {
         {
             if let Some(v2) = self.routes.get(&pattern) {
                 if &r != v2 {
-                    drop_routes.push(pattern.clone());
+                    drop_routes.push((pattern.clone(), r.clone()));
                     add_routes.push((pattern, r));
                 }
             } else {
@@ -90,29 +90,29 @@ impl StaticRoutes {
         }
 
         // Drop routes
-        for k in drop_routes {
+        for (k, v) in drop_routes {
             self.routes.remove(&k);
             self.bpa
-                .remove_forwarding_action(&self.config.protocol_id, &k)
-                .await;
-        }
-
-        // Add routes
-        for (k, v) in add_routes {
-            if let Err(e) = self
-                .bpa
-                .add_forwarding_action(
+                .remove_forwarding_action(
                     &self.config.protocol_id,
                     &k,
                     &v.action,
                     v.priority.unwrap_or(self.config.priority),
                 )
-                .await
-            {
-                error!("Failed to insert static route: {k:?}: {e}");
-            } else {
-                self.routes.insert(k, v);
-            }
+                .await;
+        }
+
+        // Add routes
+        for (k, v) in add_routes {
+            self.bpa
+                .add_forwarding_action(
+                    self.config.protocol_id.clone(),
+                    k.clone(),
+                    v.action.clone(),
+                    v.priority.unwrap_or(self.config.priority),
+                )
+                .await;
+            self.routes.insert(k, v);
         }
         Ok(())
     }

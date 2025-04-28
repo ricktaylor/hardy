@@ -34,7 +34,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, std::hash::Hash)]
 pub enum StatusReportReasonCode {
     #[default]
     NoAdditionalInformation,

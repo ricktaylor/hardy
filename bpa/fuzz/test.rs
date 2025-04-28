@@ -80,7 +80,6 @@ fn test() {
             // New BPA
             let bpa = hardy_bpa::bpa::Bpa::start(hardy_bpa::bpa::Config {
                 status_reports: true,
-                max_forwarding_delay: 0,
                 admin_endpoints: vec![bpv7::Eid::Ipn {
                     allocator_id: 0,
                     node_number: 1,

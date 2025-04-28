@@ -1,15 +1,20 @@
 use super::*;
 use std::ops::RangeInclusive;
+use winnow::{
+    ModalResult, Parser,
+    ascii::dec_uint,
+    combinator::{alt, delimited, opt, preceded, separated},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IpnPatternItem {
-    pub allocator_id: IpnPattern,
-    pub node_number: IpnPattern,
-    pub service_number: IpnPattern,
+    pub(crate) allocator_id: IpnPattern,
+    pub(crate) node_number: IpnPattern,
+    pub(crate) service_number: IpnPattern,
 }
 
 impl IpnPatternItem {
-    pub fn new_any() -> Self {
+    pub(crate) fn new_any() -> Self {
         Self {
             allocator_id: IpnPattern::Wildcard,
             node_number: IpnPattern::Wildcard,
@@ -17,76 +22,26 @@ impl IpnPatternItem {
         }
     }
 
-    pub fn is_match(&self, eid: &Eid) -> bool {
-        match eid {
-            Eid::Null => {
-                self.allocator_id.is_match(0)
-                    && self.node_number.is_match(0)
-                    && self.service_number.is_match(0)
-            }
-            Eid::LocalNode { service_number } => {
-                self.allocator_id.is_match(0)
-                    && self.node_number.is_match(u32::MAX)
-                    && self.service_number.is_match(*service_number)
-            }
-            Eid::LegacyIpn {
+    pub(crate) fn new(allocator_id: u32, node_number: u32, service_number: u32) -> Self {
+        Self {
+            allocator_id: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
                 allocator_id,
+            )]),
+            node_number: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
                 node_number,
+            )]),
+            service_number: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
                 service_number,
-            }
-            | Eid::Ipn {
-                allocator_id,
-                node_number,
-                service_number,
-            } => {
-                self.allocator_id.is_match(*allocator_id)
-                    && self.node_number.is_match(*node_number)
-                    && self.service_number.is_match(*service_number)
-            }
-            _ => false,
+            )]),
         }
     }
 
-    pub(super) fn is_exact(&self) -> Option<Eid> {
+    pub(super) fn try_to_eid(&self) -> Option<Eid> {
         Some(Eid::Ipn {
-            allocator_id: self.allocator_id.is_exact()?,
-            node_number: self.node_number.is_exact()?,
-            service_number: self.service_number.is_exact()?,
+            allocator_id: self.allocator_id.try_to_eid()?,
+            node_number: self.node_number.try_to_eid()?,
+            service_number: self.service_number.try_to_eid()?,
         })
-    }
-
-    /*
-    ipn-ssp = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
-    */
-    pub(super) fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if s == "**" {
-            return Ok(IpnPatternItem::new_any());
-        }
-
-        let Some((s1, s)) = s.split_once('.') else {
-            IpnPattern::parse(s, span)?;
-            return Err(EidPatternError::Expecting(".".to_string(), span.clone()));
-        };
-
-        let id1 = IpnPattern::parse(s1, span)?;
-        span.inc(1);
-
-        if let Some((s1, s)) = s.split_once('.') {
-            let node_number = IpnPattern::parse(s1, span)?;
-            span.inc(1);
-
-            Ok(IpnPatternItem {
-                allocator_id: id1,
-                node_number,
-                service_number: IpnPattern::parse(s, span)?,
-            })
-        } else {
-            Ok(IpnPatternItem {
-                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
-                node_number: id1,
-                service_number: IpnPattern::parse(s, span)?,
-            })
-        }
     }
 }
 
@@ -107,124 +62,16 @@ pub enum IpnPattern {
 }
 
 impl IpnPattern {
-    fn is_match(&self, v: u32) -> bool {
-        match self {
-            IpnPattern::Range(r) => r.iter().any(|r| r.is_match(v)),
-            IpnPattern::Wildcard => true,
-        }
-    }
-
-    fn is_exact(&self) -> Option<u32> {
+    fn try_to_eid(&self) -> Option<u32> {
         match self {
             IpnPattern::Range(r) => {
                 if r.len() != 1 {
                     None
                 } else {
-                    r[0].is_exact()
+                    r[0].try_to_u32()
                 }
             }
             IpnPattern::Wildcard => None,
-        }
-    }
-
-    /*
-    ipn-part-pat = ipn-number / ipn-range / wildcard
-    ipn-number = "0" / non-zero-number
-    ipn-range = "[" ipn-interval *( "," ipn-interval ) "]"
-    */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        match s {
-            "*" => {
-                span.inc(1);
-                Ok(IpnPattern::Wildcard)
-            }
-            "0" => {
-                span.inc(1);
-                Ok(IpnPattern::Range(vec![IpnInterval::Number(0)]))
-            }
-            _ => match s.chars().nth(0) {
-                Some('1'..='9') => {
-                    let Ok(v) = s.parse() else {
-                        return Err(EidPatternError::InvalidIpnNumber(
-                            span.subset(s.chars().count()),
-                        ));
-                    };
-                    span.inc(s.chars().count());
-                    Ok(IpnPattern::Range(vec![IpnInterval::Number(v)]))
-                }
-                Some('[') => {
-                    let Some(s) = s[1..].strip_suffix(']') else {
-                        span.offset(s.chars().count() - 1);
-                        return Err(EidPatternError::Expecting("]".to_string(), span.subset(1)));
-                    };
-                    span.inc(1);
-
-                    // Parse intervals
-                    let mut intervals = s.split(',').try_fold(Vec::new(), |mut v, s| {
-                        v.push(IpnInterval::parse(s, span)?);
-                        Ok::<_, EidPatternError>(v)
-                    })?;
-
-                    if intervals.is_empty() {
-                        Err(EidPatternError::InvalidIpnNumber(
-                            span.subset(s.chars().count()),
-                        ))
-                    } else {
-                        // Sort
-                        intervals.sort();
-
-                        // Dedup
-                        intervals.dedup();
-
-                        // Merge intervals
-                        let mut i = intervals.into_iter();
-                        let mut intervals = Vec::new();
-                        let mut curr = i.next().unwrap();
-                        for next in i {
-                            match (&curr, &next) {
-                                (IpnInterval::Number(n1), IpnInterval::Number(n2))
-                                    if *n2 == n1 + 1 =>
-                                {
-                                    curr = IpnInterval::Range(*n1..=*n2);
-                                }
-                                (IpnInterval::Number(n), IpnInterval::Range(r))
-                                    if n == r.start() =>
-                                {
-                                    curr = next;
-                                }
-                                (IpnInterval::Number(n), IpnInterval::Range(r))
-                                    if n + 1 == *r.start() =>
-                                {
-                                    curr = IpnInterval::Range(*n..=*r.end());
-                                }
-                                (IpnInterval::Range(r), IpnInterval::Number(n))
-                                    if r.contains(n) => {}
-                                (IpnInterval::Range(r), IpnInterval::Number(n))
-                                    if r.end() + 1 == *n =>
-                                {
-                                    curr = IpnInterval::Range(*r.start()..=*n);
-                                }
-                                (IpnInterval::Range(r1), IpnInterval::Range(r2))
-                                    if *r2.start() <= r1.end() + 1 =>
-                                {
-                                    curr = IpnInterval::Range(*r1.start()..=*r2.end());
-                                }
-                                _ => {
-                                    intervals.push(curr);
-                                    curr = next;
-                                }
-                            }
-                        }
-                        intervals.push(curr);
-
-                        span.inc(1);
-                        Ok(IpnPattern::Range(intervals))
-                    }
-                }
-                _ => Err(EidPatternError::InvalidIpnNumber(
-                    span.subset(s.chars().count()),
-                )),
-            },
         }
     }
 }
@@ -291,66 +138,112 @@ impl std::cmp::Ord for IpnInterval {
 }
 
 impl IpnInterval {
-    fn is_match(&self, v: u32) -> bool {
-        match self {
-            IpnInterval::Number(n) => *n == v,
-            IpnInterval::Range(r) => r.contains(&v),
-        }
-    }
-
-    fn is_exact(&self) -> Option<u32> {
+    fn try_to_u32(&self) -> Option<u32> {
         match self {
             IpnInterval::Number(n) => Some(*n),
             IpnInterval::Range(_) => None,
         }
     }
+}
 
-    /*
-    ipn-interval = ipn-number [ "-" ipn-number ]
-    */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if let Some((s1, s2)) = s.split_once('-') {
-            let start = Self::parse_number(s1, span)?;
-            span.inc(1);
-            let end = Self::parse_number(s2, span)?;
+// ipn-pat-item = "ipn:" (ipn-ssp3 / ipn-ssp2)
+// ipn-ssp3 = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
+// ipn-ssp2 = ipn-part-pat nbr-delim ipn-part-pat
+pub(crate) fn parse_ipn_pat_item(input: &mut &[u8]) -> ModalResult<EidPatternItem> {
+    preceded(
+        "ipn:",
+        alt((
+            "**".map(|_| IpnPatternItem::new_any()),
+            (
+                parse_ipn_part_pat,
+                preceded(".", parse_ipn_part_pat),
+                opt(preceded(".", parse_ipn_part_pat)),
+            )
+                .map(|(a, b, c)| {
+                    let (a, b, c) = if let Some(c) = c {
+                        (a, b, c)
+                    } else {
+                        (IpnPattern::Range(vec![IpnInterval::Number(0)]), a, b)
+                    };
+                    IpnPatternItem {
+                        allocator_id: a,
+                        node_number: b,
+                        service_number: c,
+                    }
+                }),
+        )),
+    )
+    .map(EidPatternItem::IpnPatternItem)
+    .parse_next(input)
+}
 
-            if start == end {
-                Ok(IpnInterval::Number(start))
-            } else {
-                // Inclusive range!
-                Ok(IpnInterval::Range(start..=end))
-            }
-        } else {
-            Ok(IpnInterval::Number(Self::parse_number(s, span)?))
-        }
-    }
+// ipn-part-pat = ipn-decimal / ipn-range / wildcard
+fn parse_ipn_part_pat(input: &mut &[u8]) -> ModalResult<IpnPattern> {
+    alt((
+        "*".map(|_| IpnPattern::Wildcard),
+        dec_uint.map(|v| IpnPattern::Range(vec![IpnInterval::Number(v)])),
+        parse_ipn_range,
+    ))
+    .parse_next(input)
+}
 
-    /*
-    ipn-number = "0" / non-zero-number
-    */
-    fn parse_number(s: &str, span: &mut Span) -> Result<u32, EidPatternError> {
-        match s.chars().nth(0) {
-            Some('0') => {
-                if s.len() > 1 {
-                    return Err(EidPatternError::InvalidIpnNumber(
-                        span.subset(s.chars().count()),
-                    ));
+// ipn-range = "[" ipn-interval *( "," ipn-interval ) "]"
+fn parse_ipn_range(input: &mut &[u8]) -> ModalResult<IpnPattern> {
+    delimited("[", separated(1.., parse_ipn_interval, ","), "]")
+        .map(|mut intervals: Vec<IpnInterval>| {
+            // Sort
+            intervals.sort();
+
+            // Dedup
+            intervals.dedup();
+
+            // Merge intervals
+            let mut i = intervals.into_iter();
+            let mut intervals = Vec::new();
+            let mut curr = i.next().unwrap();
+            for next in i {
+                match (&curr, &next) {
+                    (IpnInterval::Number(n1), IpnInterval::Number(n2)) if *n2 == n1 + 1 => {
+                        curr = IpnInterval::Range(*n1..=*n2);
+                    }
+                    (IpnInterval::Number(n), IpnInterval::Range(r)) if n == r.start() => {
+                        curr = next;
+                    }
+                    (IpnInterval::Number(n), IpnInterval::Range(r)) if n + 1 == *r.start() => {
+                        curr = IpnInterval::Range(*n..=*r.end());
+                    }
+                    (IpnInterval::Range(r), IpnInterval::Number(n)) if r.contains(n) => {}
+                    (IpnInterval::Range(r), IpnInterval::Number(n)) if r.end() + 1 == *n => {
+                        curr = IpnInterval::Range(*r.start()..=*n);
+                    }
+                    (IpnInterval::Range(r1), IpnInterval::Range(r2))
+                        if *r2.start() <= r1.end() + 1 =>
+                    {
+                        curr = IpnInterval::Range(*r1.start()..=*r2.end());
+                    }
+                    _ => {
+                        intervals.push(curr);
+                        curr = next;
+                    }
                 }
-                span.inc(1);
-                Ok(0)
             }
-            Some('1'..='9') => {
-                let Ok(v) = s.parse() else {
-                    return Err(EidPatternError::InvalidIpnNumber(
-                        span.subset(s.chars().count()),
-                    ));
-                };
-                span.inc(s.chars().count());
-                Ok(v)
-            }
-            _ => Err(EidPatternError::InvalidIpnNumber(
-                span.subset(s.chars().count()),
-            )),
-        }
-    }
+            intervals.push(curr);
+            IpnPattern::Range(intervals)
+        })
+        .parse_next(input)
+}
+
+// ipn-interval = ipn-decimal [ "-" (ipn-decimal / "max") ]
+fn parse_ipn_interval(input: &mut &[u8]) -> ModalResult<IpnInterval> {
+    (
+        dec_uint,
+        opt(preceded("-", alt((dec_uint, "max".map(|_| u32::MAX))))),
+    )
+        .map(|(start, end)| {
+            end.map_or_else(
+                || IpnInterval::Number(start),
+                |end| IpnInterval::Range(start..=end),
+            )
+        })
+        .parse_next(input)
 }

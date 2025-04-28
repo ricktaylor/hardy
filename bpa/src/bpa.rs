@@ -4,7 +4,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct Bpa {
     //store: Arc<store::Store>,
-    fib: Arc<fib_impl::Fib>,
+    rib: Arc<rib::Rib>,
     cla_registry: Arc<cla_registry::ClaRegistry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
@@ -18,30 +18,27 @@ impl Bpa {
         // New store
         let store = Arc::new(store::Store::new(config));
 
-        // New FIB
-        let fib = Arc::new(fib_impl::Fib::new());
+        // New RIB
+        let rib = rib::Rib::new();
 
         // New registries
-        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(fib.clone()));
+        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(rib.clone()));
         let service_registry = Arc::new(service_registry::ServiceRegistry::new(config));
 
         // Create a new dispatcher
-        let (dispatcher, rx) = dispatcher::Dispatcher::new(
+        let dispatcher = dispatcher::Dispatcher::new(
             config,
             store.clone(),
             service_registry.clone(),
-            fib.clone(),
+            rib.clone(),
+            cla_registry.clone(),
         );
-        let dispatcher = Arc::new(dispatcher);
-
-        // Spawn the dispatch task
-        tokio::spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
 
         trace!("BPA started");
 
         Self {
             //store,
-            fib,
+            rib,
             cla_registry,
             service_registry,
             dispatcher,
@@ -73,30 +70,31 @@ impl Bpa {
     #[instrument(skip(self, cla))]
     pub async fn register_cla(
         &self,
-        ident: &str,
-        kind: &str,
+        ident_prefix: &str,
         cla: Arc<dyn cla::Cla>,
-    ) -> cla::Result<()> {
+    ) -> cla::Result<String> {
         self.cla_registry
-            .register(ident, kind, cla, self.dispatcher.clone())
+            .register(ident_prefix, cla, self.dispatcher.clone())
             .await
     }
 
     pub async fn add_forwarding_action(
         &self,
-        id: &str,
-        pattern: &eid_pattern::EidPattern,
-        action: &fib::Action,
+        source: String,
+        pattern: eid_pattern::EidPattern,
+        action: routes::Action,
         priority: u32,
-    ) -> fib::Result<()> {
-        self.fib.add(id, pattern, action, priority).await
+    ) {
+        self.rib.add(pattern, source, action, priority).await
     }
 
     pub async fn remove_forwarding_action(
         &self,
-        id: &str,
+        source: &str,
         pattern: &eid_pattern::EidPattern,
-    ) -> usize {
-        self.fib.remove(id, pattern).await
+        action: &routes::Action,
+        priority: u32,
+    ) -> bool {
+        self.rib.remove(pattern, source, action, priority).await
     }
 }

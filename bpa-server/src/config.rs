@@ -149,10 +149,6 @@ pub fn init() -> Option<Config> {
         info!("Bundle status reports are enabled");
     }
 
-    if config.bpa.max_forwarding_delay == 0 {
-        info!("Forwarding synchronization delay disabled by configuration");
-    }
-
     Some(config)
 }
 

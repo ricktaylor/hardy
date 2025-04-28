@@ -1,7 +1,16 @@
 use super::*;
 
 impl Dispatcher {
-    #[instrument(skip(self))]
+    pub(super) async fn fragment(
+        &self,
+        _mtu: usize,
+        _bundle: &mut bundle::Bundle,
+        _data: Vec<u8>,
+    ) -> Result<DispatchResult, Error> {
+        warn!("Bundle requires fragmentation");
+        todo!()
+    }
+
     pub(super) async fn reassemble(
         &self,
         _bundle: &mut bundle::Bundle,

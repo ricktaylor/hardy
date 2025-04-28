@@ -577,7 +577,7 @@ impl Bundle {
 
         // Update BIBs
         for (bib_block_number, (bib_block, mut bib)) in bibs {
-            for (target_number, op) in &mut bib.operations {
+            for (target_number, op) in bib.operations.iter_mut() {
                 if let Some(payload_data) = new_payloads.get(target_number) {
                     let target_block = self.blocks.get(target_number).unwrap();
                     op.sign(
@@ -604,7 +604,7 @@ impl Bundle {
         // Encrypt blocks and update BCBs
         for (bcb_block_number, mut bcb) in bcbs {
             let bcb_block = self.blocks.get(&bcb_block_number).unwrap();
-            for (target_number, op) in &mut bcb.operations {
+            for (target_number, op) in bcb.operations.iter_mut() {
                 if let Some(payload_data) = new_payloads.get(target_number) {
                     let target_block = self.blocks.get(target_number).unwrap();
                     let new_data = op.encrypt(

@@ -18,7 +18,7 @@ impl Dispatcher {
         } = destination
         {
             // Check configured entries
-            if !self.ipn_2_element.find(&destination).is_empty() {
+            if self.ipn_2_element.contains(&destination) {
                 if let bpv7::Eid::Ipn {
                     allocator_id: sa,
                     node_number: sn,

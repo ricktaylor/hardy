@@ -18,14 +18,16 @@ pub struct Dispatcher {
     store: Arc<store::Store>,
     tx: tokio::sync::mpsc::Sender<bundle::Bundle>,
     service_registry: Arc<service_registry::ServiceRegistry>,
-    fib: Arc<fib_impl::Fib>,
-    ipn_2_element: eid_pattern::EidPatternMap<(), ()>,
+    rib: Arc<rib::Rib>,
+    cla_registry: Arc<cla_registry::ClaRegistry>,
+    ipn_2_element: Arc<eid_pattern::EidPatternSet>,
 
     // Config options
     status_reports: bool,
-    wait_sample_interval: time::Duration,
     admin_endpoints: admin_endpoints::AdminEndpoints,
-    max_forwarding_delay: u32,
+
+    // JoinHandles
+    run_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Dispatcher {
@@ -34,35 +36,52 @@ impl Dispatcher {
         config: &config::Config,
         store: Arc<store::Store>,
         service_registry: Arc<service_registry::ServiceRegistry>,
-        fib: Arc<fib_impl::Fib>,
-    ) -> (Self, tokio::sync::mpsc::Receiver<bundle::Bundle>) {
+        rib: Arc<rib::Rib>,
+        cla_registry: Arc<cla_registry::ClaRegistry>,
+    ) -> Arc<Self> {
         // Create a channel for bundles
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let mut ipn_2_element = eid_pattern::EidPatternMap::<(), ()>::new();
-        for e in &config.ipn_2_element {
-            ipn_2_element.insert(e, (), ());
-        }
+        let dispatcher = Arc::new(Self {
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            store,
+            tx,
+            service_registry,
+            rib,
+            cla_registry,
+            ipn_2_element: Arc::new(config.ipn_2_element.iter().fold(
+                eid_pattern::EidPatternSet::new(),
+                |mut acc, e| {
+                    acc.insert(e.clone());
+                    acc
+                },
+            )),
+            status_reports: config.status_reports,
+            admin_endpoints: config.admin_endpoints.clone(),
+            run_handle: std::sync::Mutex::new(None),
+        });
 
-        (
-            Self {
-                cancel_token: tokio_util::sync::CancellationToken::new(),
-                store,
-                tx,
-                service_registry,
-                fib,
-                ipn_2_element,
-                status_reports: config.status_reports,
-                wait_sample_interval: config.wait_sample_interval,
-                admin_endpoints: config.admin_endpoints.clone(),
-                max_forwarding_delay: config.max_forwarding_delay,
-            },
-            rx,
-        )
+        // Spawn the dispatch task
+        *dispatcher
+            .run_handle
+            .lock()
+            .trace_expect("Lock issue in dispatcher new()") = Some(tokio::spawn(
+            dispatcher::Dispatcher::run(dispatcher.clone(), rx),
+        ));
+
+        dispatcher
     }
 
     pub async fn shutdown(&self) {
         self.cancel_token.cancel();
-        self.tx.closed().await
+
+        if let Some(j) = {
+            self.run_handle
+                .lock()
+                .trace_expect("Lock issue in dispatcher shutdown()")
+                .take()
+        } {
+            _ = j.await;
+        }
     }
 
     async fn load_data(&self, bundle: &bundle::Bundle) -> Result<Option<storage::DataRef>, Error> {

@@ -33,10 +33,8 @@ enum StatusCodes {
     DispatchPending = 1,
     ReassemblyPending = 2,
     CollectionPending = 3,
-    ForwardPending = 4,
-    ForwardAckPending = 5,
-    Waiting = 6,
-    Tombstone = 7,
+    Waiting = 4,
+    Tombstone = 5,
 }
 
 impl From<i64> for StatusCodes {
@@ -45,10 +43,8 @@ impl From<i64> for StatusCodes {
             1 => Self::DispatchPending,
             2 => Self::ReassemblyPending,
             3 => Self::CollectionPending,
-            4 => Self::ForwardPending,
-            5 => Self::ForwardAckPending,
-            6 => Self::Waiting,
-            7 => Self::Tombstone,
+            4 => Self::Waiting,
+            5 => Self::Tombstone,
             _ => panic!("Invalid BundleStatus value {value}"),
         }
     }
@@ -67,13 +63,6 @@ fn bundle_status_to_parts(
         BundleStatus::DispatchPending => (StatusCodes::DispatchPending.into(), None, None),
         BundleStatus::ReassemblyPending => (StatusCodes::ReassemblyPending.into(), None, None),
         BundleStatus::CollectionPending => (StatusCodes::CollectionPending.into(), None, None),
-        BundleStatus::ForwardPending => (StatusCodes::ForwardPending.into(), None, None),
-        BundleStatus::ForwardAckPending(handle, until) => (
-            StatusCodes::ForwardAckPending.into(),
-            Some(*handle as i64),
-            Some(*until),
-        ),
-        BundleStatus::Waiting(until) => (StatusCodes::Waiting.into(), None, Some(*until)),
         BundleStatus::Tombstone(from) => (StatusCodes::Tombstone.into(), None, Some(*from)),
     }
 }
@@ -92,11 +81,6 @@ fn columns_to_bundle_status(
         (StatusCodes::DispatchPending, None, None) => Ok(BundleStatus::DispatchPending),
         (StatusCodes::ReassemblyPending, None, None) => Ok(BundleStatus::ReassemblyPending),
         (StatusCodes::CollectionPending, None, None) => Ok(BundleStatus::CollectionPending),
-        (StatusCodes::ForwardPending, None, None) => Ok(BundleStatus::ForwardPending),
-        (StatusCodes::ForwardAckPending, Some(handle), Some(until)) => {
-            Ok(BundleStatus::ForwardAckPending(handle as u32, until))
-        }
-        (StatusCodes::Waiting, None, Some(until)) => Ok(BundleStatus::Waiting(until)),
         (StatusCodes::Tombstone, None, Some(from)) => Ok(BundleStatus::Tombstone(from)),
         (v, t, d) => panic!("Invalid BundleStatus value combination {v:?}/{t:?}/{d:?}"),
     }
@@ -870,61 +854,6 @@ impl storage::MetadataStorage for Storage {
                 Ok(())
             }
         }).await
-    }
-
-    #[instrument(skip(self, tx))]
-    async fn get_waiting_bundles(
-        &self,
-        limit: time::OffsetDateTime,
-        tx: storage::Sender,
-    ) -> storage::Result<()> {
-        self.pooled_connection(move |conn| {
-            unpack_bundles(
-                conn.prepare_cached(
-                    r#"SELECT 
-                        bundles.id,
-                        status,
-                        storage_name,
-                        hash,
-                        received_at,
-                        flags,
-                        crc_type,
-                        source,
-                        destination,
-                        report_to,
-                        creation_time,
-                        creation_seq_num,
-                        lifetime,                    
-                        fragment_offset,
-                        fragment_total_len,
-                        previous_node,
-                        age,
-                        hop_count,
-                        hop_limit,
-                        wait_until,
-                        ack_handle,
-                        block_num,
-                        block_type,
-                        block_flags,
-                        block_crc_type,
-                        data_start,
-                        data_len,
-                        payload_offset,
-                        payload_len,
-                        bcb
-                    FROM bundles
-                    JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
-                    WHERE status IN (?1,?2) AND unixepoch(wait_until) <= unixepoch(?3);"#,
-                )?
-                .query((
-                    StatusCodes::ForwardAckPending as i64,
-                    StatusCodes::Waiting as i64,
-                    limit,
-                ))?,
-                &tx,
-            )
-        })
-        .await
     }
 
     #[instrument(skip_all)]

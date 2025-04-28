@@ -78,41 +78,6 @@ impl storage::MetadataStorage for Storage {
         Ok(None)
     }
 
-    async fn get_waiting_bundles(
-        &self,
-        limit: time::OffsetDateTime,
-        tx: storage::Sender,
-    ) -> storage::Result<()> {
-        // Drop all tombstones and collect waiting
-        let mut tombstones = Vec::new();
-
-        let mut entries = self.entries.write().await;
-
-        for (bundle_id, (m, b)) in entries.iter() {
-            match m.status {
-                BundleStatus::Tombstone(from)
-                    if from + time::Duration::seconds(5) < time::OffsetDateTime::now_utc() =>
-                {
-                    tombstones.push(bundle_id.clone());
-                }
-                BundleStatus::ForwardAckPending(_, until) | BundleStatus::Waiting(until)
-                    if until <= limit =>
-                {
-                    if tx.send((m.clone(), b.clone())).await.is_err() {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Remove tombstones from index
-        for bundle_id in tombstones {
-            entries.remove(&bundle_id);
-        }
-        Ok(())
-    }
-
     async fn get_unconfirmed_bundles(&self, _tx: storage::Sender) -> storage::Result<()> {
         // We have no persistence, so therefore no orphans
         Ok(())

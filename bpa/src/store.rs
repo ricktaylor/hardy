@@ -7,7 +7,6 @@ fn hash(data: &[u8]) -> Arc<[u8]> {
 }
 
 pub struct Store {
-    wait_sample_interval: time::Duration,
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
 }
@@ -16,7 +15,6 @@ impl Store {
     pub fn new(config: &config::Config) -> Self {
         // Init pluggable storage engines
         Self {
-            wait_sample_interval: config.wait_sample_interval,
             metadata_storage: config
                 .metadata_storage
                 .as_ref()
@@ -34,29 +32,16 @@ impl Store {
     pub async fn start(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
         info!("Starting store consistency check...");
-        self.bundle_storage_check(dispatcher.clone(), cancel_token.clone())
+        self.bundle_storage_check(dispatcher.clone(), &cancel_token)
             .await;
 
         // Now check the metadata storage for old data
-        self.metadata_storage_check(dispatcher.clone(), cancel_token.clone())
-            .await;
+        self.metadata_storage_check(dispatcher, cancel_token).await;
 
         info!("Store restarted");
-
-        if !cancel_token.is_cancelled() {
-            // Spawn a waiter
-            let metadata_storage = self.metadata_storage.clone();
-            task_set.spawn(Self::check_waiting(
-                self.wait_sample_interval,
-                metadata_storage,
-                dispatcher,
-                cancel_token,
-            ));
-        }
     }
 
     #[instrument(skip_all)]
@@ -71,14 +56,12 @@ impl Store {
         let h = tokio::spawn(async move {
             // Give some feedback
             let mut bundles = 0u64;
-            let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
-            tokio::pin!(timer);
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
 
             loop {
                 tokio::select! {
-                    () = &mut timer => {
+                    _ = timer.tick() => {
                         info!("Metadata storage check in progress, {bundles} bundles cleaned up");
-                        timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
                     },
                     bundle = rx.recv() => match bundle {
                         None => break,
@@ -140,14 +123,12 @@ impl Store {
 
             // Give some feedback
             let mut bundles = 0u64;
-            let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
-            tokio::pin!(timer);
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
 
             loop {
                 tokio::select! {
-                    () = &mut timer => {
+                    _ = timer.tick() => {
                         info!("Bundle storage check in progress, {bundles} bundles found");
-                        timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
                     },
                     r = rx.recv() => match r {
                         None => break,
@@ -176,7 +157,7 @@ impl Store {
     async fn bundle_storage_check(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        cancel_token: tokio_util::sync::CancellationToken,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
         let parallelism = std::thread::available_parallelism()
@@ -186,8 +167,7 @@ impl Store {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
         // Give some feedback
-        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(5));
-        tokio::pin!(timer);
+        let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
         let mut bundles = 0u64;
         let mut orphans = 0u64;
         let mut bad = 0u64;
@@ -198,9 +178,8 @@ impl Store {
 
             loop {
                 tokio::select! {
-                    () = &mut timer => {
+                    _ = timer.tick() => {
                         info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
-                        timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(5));
                     },
                     // Throttle the number of tasks
                     permit = semaphore.clone().acquire_owned() => {
@@ -369,56 +348,6 @@ impl Store {
         (1, 0)
     }
 
-    #[instrument(skip_all)]
-    async fn check_waiting(
-        wait_sample_interval: time::Duration,
-        metadata_storage: Arc<dyn storage::MetadataStorage>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) {
-        while utils::cancellable_sleep(wait_sample_interval, &cancel_token).await {
-            // Get all bundles that are ready before now() + self.config.wait_sample_interval
-            let limit = time::OffsetDateTime::now_utc() + wait_sample_interval;
-
-            let (tx, mut rx) =
-                tokio::sync::mpsc::channel::<(metadata::BundleMetadata, bpv7::Bundle)>(16);
-            let dispatcher = dispatcher.clone();
-            let cancel_token = cancel_token.clone();
-
-            let h = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        bundle = rx.recv() => match bundle {
-                            None => break,
-                            Some((m,b)) => {
-                                // Double check returned bundles
-                                match m.status {
-                                    BundleStatus::ForwardAckPending(_, until)
-                                    | BundleStatus::Waiting(until)
-                                        if until <= limit =>
-                                    {
-                                        dispatcher.dispatch_bundle(bundle::Bundle{metadata:m,bundle:b}).await.trace_expect("Failed to dispatch bundle");
-                                    }
-                                    _ => {}
-                                }
-                            },
-                        },
-                        _ = cancel_token.cancelled() => {
-                            rx.close();
-                        }
-                    }
-                }
-            });
-
-            metadata_storage
-                .get_waiting_bundles(limit, tx)
-                .await
-                .trace_expect("get_waiting_bundles failed");
-
-            h.await.trace_expect("polling task failed")
-        }
-    }
-
     #[inline]
     pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
         self.bundle_storage.load(storage_name).await
@@ -508,14 +437,6 @@ impl Store {
         self.metadata_storage
             .poll_for_collection(destination, tx)
             .await
-    }
-
-    #[inline]
-    pub async fn check_status(
-        &self,
-        bundle_id: &bpv7::BundleId,
-    ) -> storage::Result<Option<BundleStatus>> {
-        self.metadata_storage.get_bundle_status(bundle_id).await
     }
 
     #[instrument(skip(self))]

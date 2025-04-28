@@ -67,19 +67,6 @@ impl ClaSink for Service {
     }
 
     #[instrument(skip(self))]
-    async fn confirm_forwarding(
-        &self,
-        request: Request<ConfirmForwardingRequest>,
-    ) -> Result<Response<ConfirmForwardingResponse>, Status> {
-        let request = request.into_inner();
-        self.cla_registry.exists(request.handle).await?;
-        self.dispatcher
-            .confirm_forwarding(request.handle, &request.bundle_id)
-            .await
-            .map(|_| Response::new(ConfirmForwardingResponse {}))
-    }
-
-    #[instrument(skip(self))]
     async fn add_neighbour(
         &self,
         request: Request<AddNeighbourRequest>,
