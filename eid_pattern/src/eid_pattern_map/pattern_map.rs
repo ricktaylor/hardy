@@ -162,7 +162,7 @@ impl<V: Eq + std::hash::Hash> PatternMap<V> {
         }
     }
 
-    pub fn iter(&self, eid: &Eid) -> impl Iterator<Item = &V> {
+    pub fn find(&self, eid: &Eid) -> impl Iterator<Item = &V> {
         self.any
             .iter()
             .chain(self.exact.get(eid).map(|v| v.iter()).into_iter().flatten())

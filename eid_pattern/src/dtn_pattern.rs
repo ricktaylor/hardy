@@ -28,6 +28,18 @@ impl std::cmp::PartialEq for HashableRegEx {
 
 impl std::cmp::Eq for HashableRegEx {}
 
+impl std::cmp::PartialOrd for HashableRegEx {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(&other))
+    }
+}
+
+impl std::cmp::Ord for HashableRegEx {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.as_str().cmp(other.0.as_str())
+    }
+}
+
 impl std::hash::Hash for HashableRegEx {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.as_str().hash(state);
@@ -40,7 +52,7 @@ impl std::fmt::Display for HashableRegEx {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnPatternItem {
     DtnNone,
     DtnSsp(DtnSsp),
@@ -72,7 +84,7 @@ impl std::fmt::Display for DtnPatternItem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DtnSsp {
     pub(crate) node_name: DtnNodeNamePattern,
     pub(crate) demux: Box<[DtnSinglePattern]>,
@@ -120,7 +132,7 @@ impl std::fmt::Display for DtnSsp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnNodeNamePattern {
     PatternMatch(PatternMatch),
     MultiWildcard,
@@ -144,7 +156,7 @@ impl std::fmt::Display for DtnNodeNamePattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnSinglePattern {
     PatternMatch(PatternMatch),
     Wildcard,
@@ -168,7 +180,7 @@ impl std::fmt::Display for DtnSinglePattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PatternMatch {
     Exact(Box<str>),
     Regex(HashableRegEx),

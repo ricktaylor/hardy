@@ -6,7 +6,7 @@ use winnow::{
     combinator::{alt, delimited, opt, preceded, separated},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IpnPatternItem {
     pub(crate) allocator_id: IpnPattern,
     pub(crate) node_number: IpnPattern,
@@ -55,7 +55,7 @@ impl std::fmt::Display for IpnPatternItem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IpnPattern {
     Range(Vec<IpnInterval>),
     Wildcard,

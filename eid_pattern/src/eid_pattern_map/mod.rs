@@ -39,11 +39,11 @@ impl<V: Eq + std::hash::Hash> EidPatternMap<V> {
     }
 
     pub fn contains(&self, eid: &Eid) -> bool {
-        self.0.iter(eid).next().is_some()
+        self.0.find(eid).next().is_some()
     }
 
     pub fn find(&self, eid: &Eid) -> Vec<&V> {
-        self.0.iter(eid).collect()
+        self.0.find(eid).collect()
     }
 }
 
@@ -78,7 +78,7 @@ impl EidPatternSet {
     }
 
     pub fn contains(&self, eid: &Eid) -> bool {
-        self.0.iter(eid).next().is_some()
+        self.0.find(eid).next().is_some()
     }
 }
 

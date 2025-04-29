@@ -1,3 +1,5 @@
+#![feature(extract_if)]
+
 use hardy_bpv7::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -22,7 +24,7 @@ pub enum Error {
     NotExact,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String")]
 #[serde(try_from = "&str")]
 pub enum EidPattern {
@@ -134,7 +136,7 @@ impl std::fmt::Display for EidPattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EidPatternItem {
     IpnPatternItem(ipn_pattern::IpnPatternItem),
     #[cfg(feature = "dtn-pat-item")]
