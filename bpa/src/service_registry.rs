@@ -260,6 +260,11 @@ impl ServiceRegistry {
     }
 
     async fn disconnect_service(&self, service: Arc<Service>) {
+        // Remove local service from RIB
+        self.rib
+            .remove_local(&service.service_id.clone().into(), &service)
+            .await;
+
         service.service.on_disconnect().await;
 
         info!("Unregistered service: {}", service.service_id);
