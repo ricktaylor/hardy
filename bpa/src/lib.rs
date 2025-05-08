@@ -1,18 +1,19 @@
+#![feature(extract_if)]
+
 mod bundle;
 mod bundle_mem;
 mod cla_registry;
-mod connected;
 mod dispatcher;
 mod metadata_mem;
 mod rib;
 mod service_registry;
 mod store;
 
-pub mod admin_endpoints;
 pub mod bpa;
 pub mod cla;
 pub mod config;
 pub mod metadata;
+pub mod node_ids;
 pub mod routes;
 pub mod service;
 pub mod storage;

@@ -45,13 +45,8 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_connect(
-        &self,
-        _ident: &str,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-    ) -> hardy_bpa::cla::Result<()> {
+    async fn on_connect(&self, _ident: &str, sink: Box<dyn hardy_bpa::cla::Sink>) {
         self.sink.lock().await.replace(sink);
-        Ok(())
     }
 
     async fn on_disconnect(&self) {
@@ -85,18 +80,20 @@ fuzz_target!(|data: &[u8]| {
         // New BPA
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
-            admin_endpoints: hardy_bpa::admin_endpoints::AdminEndpoints::init(&[bpv7::Eid::Ipn {
+            node_ids: [bpv7::Eid::Ipn {
                 allocator_id: 0,
                 node_number: 1,
                 service_number: 0,
-            }])
+            }]
+            .as_slice()
+            .try_into()
             .unwrap(),
             ..Default::default()
         })
         .await;
 
         // Load static routes
-        bpa.add_forwarding_action(
+        bpa.add_route(
             "fuzz".to_string(),
             "ipn:*.*.*|dtn://**/**".parse().unwrap(),
             hardy_bpa::routes::Action::Store(
@@ -111,7 +108,7 @@ fuzz_target!(|data: &[u8]| {
         .await;
 
         let cla = Arc::new(NullCla::new());
-        bpa.register_cla("fuzz", cla.clone()).await.unwrap();
+        bpa.register_cla("fuzz", cla.clone()).await;
 
         cla.dispatch(data).await;
 

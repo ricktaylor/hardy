@@ -19,11 +19,11 @@ impl Bpa {
         let store = Arc::new(store::Store::new(config));
 
         // New RIB
-        let rib = rib::Rib::new();
+        let rib = rib::Rib::new(config);
 
         // New registries
         let cla_registry = Arc::new(cla_registry::ClaRegistry::new(rib.clone()));
-        let service_registry = Arc::new(service_registry::ServiceRegistry::new(config));
+        let service_registry = Arc::new(service_registry::ServiceRegistry::new(rib.clone()));
 
         // Create a new dispatcher
         let dispatcher = dispatcher::Dispatcher::new(
@@ -31,7 +31,6 @@ impl Bpa {
             store.clone(),
             service_registry.clone(),
             rib.clone(),
-            cla_registry.clone(),
         );
 
         trace!("BPA started");
@@ -59,36 +58,34 @@ impl Bpa {
     #[instrument(skip(self, service))]
     pub async fn register_service(
         &self,
-        eid: Option<&service::ServiceName<'_>>,
+        service_id: Option<service::ServiceId<'_>>,
         service: Arc<dyn service::Service>,
-    ) -> service::Result<()> {
+    ) -> service::Result<bpv7::Eid> {
         self.service_registry
-            .register(eid, service, self.dispatcher.clone())
+            .register(service_id, service, &self.dispatcher)
             .await
     }
 
     #[instrument(skip(self, cla))]
-    pub async fn register_cla(
-        &self,
-        ident_prefix: &str,
-        cla: Arc<dyn cla::Cla>,
-    ) -> cla::Result<String> {
+    pub async fn register_cla(&self, ident_prefix: &str, cla: Arc<dyn cla::Cla>) -> String {
         self.cla_registry
-            .register(ident_prefix, cla, self.dispatcher.clone())
+            .register(ident_prefix, cla, &self.dispatcher)
             .await
     }
 
-    pub async fn add_forwarding_action(
+    #[instrument(skip(self))]
+    pub async fn add_route(
         &self,
         source: String,
         pattern: eid_pattern::EidPattern,
         action: routes::Action,
         priority: u32,
     ) {
-        self.rib.add(pattern, source, action, priority).await
+        self.rib.add(pattern, source, action.into(), priority).await
     }
 
-    pub async fn remove_forwarding_action(
+    #[instrument(skip(self))]
+    pub async fn remove_route(
         &self,
         source: &str,
         pattern: &eid_pattern::EidPattern,

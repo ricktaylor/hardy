@@ -82,12 +82,4 @@ impl storage::MetadataStorage for Storage {
         // We have no persistence, so therefore no orphans
         Ok(())
     }
-
-    async fn poll_for_collection(
-        &self,
-        _destination: &bpv7::Eid,
-        _tx: storage::Sender,
-    ) -> storage::Result<()> {
-        todo!()
-    }
 }

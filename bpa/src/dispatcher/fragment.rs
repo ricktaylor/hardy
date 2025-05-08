@@ -4,17 +4,14 @@ impl Dispatcher {
     pub(super) async fn fragment(
         &self,
         _mtu: usize,
-        _bundle: &mut bundle::Bundle,
+        _bundle: bundle::Bundle,
         _data: Vec<u8>,
-    ) -> Result<DispatchResult, Error> {
+    ) -> Result<(), Error> {
         warn!("Bundle requires fragmentation");
         todo!()
     }
 
-    pub(super) async fn reassemble(
-        &self,
-        _bundle: &mut bundle::Bundle,
-    ) -> Result<DispatchResult, Error> {
+    pub(super) async fn reassemble(&self, _bundle: bundle::Bundle) -> Result<(), Error> {
         /* Either wait for more fragments to arrive
         self.store.set_status(&mut bundle, BundleStatus::ReassemblyPending).await?;
 

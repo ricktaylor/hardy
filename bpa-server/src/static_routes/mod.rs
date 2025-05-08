@@ -93,7 +93,7 @@ impl StaticRoutes {
         for (k, v) in drop_routes {
             self.routes.remove(&k);
             self.bpa
-                .remove_forwarding_action(
+                .remove_route(
                     &self.config.protocol_id,
                     &k,
                     &v.action,
@@ -105,7 +105,7 @@ impl StaticRoutes {
         // Add routes
         for (k, v) in add_routes {
             self.bpa
-                .add_forwarding_action(
+                .add_route(
                     self.config.protocol_id.clone(),
                     k.clone(),
                     v.action.clone(),

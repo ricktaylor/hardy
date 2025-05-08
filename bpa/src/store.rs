@@ -428,17 +428,6 @@ impl Store {
         }
     }
 
-    #[inline]
-    pub async fn poll_for_collection(
-        &self,
-        destination: &bpv7::Eid,
-        tx: storage::Sender,
-    ) -> storage::Result<()> {
-        self.metadata_storage
-            .poll_for_collection(destination, tx)
-            .await
-    }
-
     #[instrument(skip(self))]
     pub async fn set_status(
         &self,

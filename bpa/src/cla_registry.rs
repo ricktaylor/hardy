@@ -1,48 +1,90 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Weak,
+};
 use tokio::sync::{Mutex, RwLock};
 
 pub struct Cla {
-    cla: Arc<dyn cla::Cla>,
-    connected: connected::ConnectedFlag,
+    pub cla: Arc<dyn cla::Cla>,
     subnets: Mutex<HashSet<eid_pattern::EidPattern>>,
+    ident: String,
 }
 
-impl Cla {
-    pub async fn forward(
-        &self,
-        destination: &bpv7::Eid,
-        data: &[u8],
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        if !self.connected.is_connected() {
-            return Err(cla::Error::Disconnected);
-        }
-        self.cla.forward(destination, data).await
+impl PartialEq for Cla {
+    fn eq(&self, other: &Self) -> bool {
+        self.ident == other.ident
+    }
+}
+
+impl Eq for Cla {}
+
+impl PartialOrd for Cla {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Cla {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.ident.cmp(&other.ident)
+    }
+}
+
+impl std::hash::Hash for Cla {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ident.hash(state);
+    }
+}
+
+impl std::fmt::Debug for Cla {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cla")
+            .field("ident", &self.ident)
+            .field("subnets", &self.subnets)
+            .finish()
     }
 }
 
 struct Sink {
+    cla: Weak<Cla>,
     registry: Arc<ClaRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
-    ident: String,
 }
 
 #[async_trait]
 impl cla::Sink for Sink {
     async fn disconnect(&self) {
-        self.registry.unregister(&self.ident).await
+        if let Some(cla) = self.cla.upgrade() {
+            self.registry.unregister(cla).await
+        }
     }
 
     async fn dispatch(&self, data: &[u8]) -> cla::Result<()> {
         self.dispatcher.receive_bundle(data).await
     }
 
-    async fn add_subnet(&self, pattern: eid_pattern::EidPattern) {
-        self.registry.add_subnet(&self.ident, pattern).await
+    async fn add_subnet(&self, pattern: eid_pattern::EidPattern) -> cla::Result<()> {
+        let Some(cla) = self.cla.upgrade() else {
+            return Err(cla::Error::Disconnected);
+        };
+        self.registry.add_subnet(&cla, pattern).await;
+        Ok(())
     }
 
-    async fn remove_subnet(&self, pattern: &eid_pattern::EidPattern) -> bool {
-        self.registry.remove_subnet(&self.ident, pattern).await
+    async fn remove_subnet(&self, pattern: &eid_pattern::EidPattern) -> cla::Result<bool> {
+        let Some(cla) = self.cla.upgrade() else {
+            return Err(cla::Error::Disconnected);
+        };
+        Ok(self.registry.remove_subnet(&cla, pattern).await)
+    }
+}
+
+impl Drop for Sink {
+    fn drop(&mut self) {
+        if let Some(cla) = self.cla.upgrade() {
+            tokio::runtime::Handle::current().block_on(self.registry.unregister(cla));
+        }
     }
 }
 
@@ -66,12 +108,16 @@ impl ClaRegistry {
     }
 
     pub async fn shutdown(&self) {
-        let e = { self.inner.write().await.clas.drain().collect::<Vec<_>>() };
-        for (ident, cla) in e {
-            cla.connected.disconnect();
-            cla.cla.on_disconnect().await;
-
-            info!("Unregistered CLA: {ident}");
+        for cla in self
+            .inner
+            .write()
+            .await
+            .clas
+            .drain()
+            .map(|(_, v)| v)
+            .collect::<Vec<_>>()
+        {
+            self.disconnect_cla(cla).await;
         }
     }
 
@@ -79,13 +125,12 @@ impl ClaRegistry {
         self: &Arc<Self>,
         ident_prefix: &str,
         cla: Arc<dyn cla::Cla>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-    ) -> cla::Result<String> {
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> String {
         // Scope lock
         let (cla, ident) = {
             let mut inner = self.inner.write().await;
 
-            // Incrememnt
             let next = if let Some(next) = inner.next_ids.get_mut(ident_prefix) {
                 *next += 1;
                 *next
@@ -93,12 +138,13 @@ impl ClaRegistry {
                 inner.next_ids.insert(ident_prefix.into(), 0);
                 0
             };
+
             let ident = format!("{ident_prefix}/{next}");
 
             let cla = Arc::new(Cla {
                 cla,
-                connected: connected::ConnectedFlag::default(),
                 subnets: Default::default(),
+                ident: ident.clone(),
             });
 
             inner.clas.insert(ident.clone(), cla.clone());
@@ -107,107 +153,48 @@ impl ClaRegistry {
 
         info!("Registered new CLA: {ident}");
 
-        if let Err(e) = cla
-            .cla
+        cla.cla
             .on_connect(
                 &ident,
                 Box::new(Sink {
+                    cla: Arc::downgrade(&cla),
                     registry: self.clone(),
                     dispatcher: dispatcher.clone(),
-                    ident: ident.clone(),
                 }),
             )
-            .await
-        {
-            // Connect failed
-            info!("New CLA {ident} failed to connect {}", e.to_string());
+            .await;
 
-            if let Some(cla) = self.inner.write().await.clas.remove(&ident) {
-                for pattern in cla.subnets.lock().await.drain() {
-                    self.rib.remove_forward(&pattern, &ident).await;
-                }
-
-                info!("Unregistered CLA: {ident}");
-            }
-            return Err(e);
-        }
-
-        cla.connected.connect();
-
-        Ok(ident)
+        ident
     }
 
-    #[instrument(skip(self))]
-    async fn unregister(&self, ident: &str) {
-        let cla = {
-            self.inner
-                .write()
-                .await
-                .clas
-                .remove(ident)
-                .trace_expect("Invalid CLA ident: {ident}")
-        };
-
-        for pattern in cla.subnets.lock().await.drain() {
-            self.rib.remove_forward(&pattern, ident).await;
+    async fn unregister(&self, cla: Arc<Cla>) {
+        if let Some(cla) = self.inner.write().await.clas.remove(&cla.ident) {
+            self.disconnect_cla(cla).await;
         }
+    }
 
-        cla.connected.disconnect();
+    async fn disconnect_cla(&self, cla: Arc<Cla>) {
         cla.cla.on_disconnect().await;
 
-        info!("Unregistered CLA: {ident}");
-    }
-
-    #[instrument(skip(self))]
-    async fn add_subnet(&self, ident: &str, pattern: eid_pattern::EidPattern) {
-        let cla = {
-            self.inner
-                .read()
-                .await
-                .clas
-                .get(ident)
-                .trace_expect("Invalid CLA ident: {ident}")
-                .clone()
-        };
-
-        {
-            if cla.subnets.lock().await.insert(pattern.clone()) {
-                return;
-            }
+        for pattern in cla.subnets.lock().await.drain().collect::<Vec<_>>() {
+            self.rib.remove_forward(&pattern, &cla.ident).await;
         }
 
-        self.rib.add_forward(pattern, ident).await
+        info!("Unregistered CLA: {}", cla.ident);
     }
 
-    async fn remove_subnet(&self, ident: &str, pattern: &eid_pattern::EidPattern) -> bool {
-        let cla = {
-            self.inner
-                .read()
-                .await
-                .clas
-                .get(ident)
-                .trace_expect("Invalid CLA ident: {ident}")
-                .clone()
-        };
+    async fn add_subnet(&self, cla: &Arc<Cla>, pattern: eid_pattern::EidPattern) {
+        if cla.subnets.lock().await.insert(pattern.clone()) {
+            return;
+        }
+        self.rib.add_forward(pattern, &cla.ident, cla.clone()).await
+    }
 
-        let exists = { cla.subnets.lock().await.remove(pattern) };
-        if exists {
-            self.rib.remove_forward(pattern, ident).await
+    async fn remove_subnet(&self, cla: &Cla, pattern: &eid_pattern::EidPattern) -> bool {
+        if cla.subnets.lock().await.remove(pattern) {
+            self.rib.remove_forward(pattern, &cla.ident).await
         } else {
             false
         }
-    }
-
-    pub async fn forward(
-        &self,
-        ident: &str,
-        destination: &bpv7::Eid,
-        data: &[u8],
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        let Some(cla) = self.inner.read().await.clas.get(ident).cloned() else {
-            return Err(cla::Error::Disconnected);
-        };
-
-        cla.forward(destination, data).await
     }
 }

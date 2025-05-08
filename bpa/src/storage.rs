@@ -27,8 +27,6 @@ pub trait MetadataStorage: Send + Sync {
     async fn confirm_exists(&self, bundle_id: &bpv7::BundleId) -> Result<Option<BundleMetadata>>;
 
     async fn get_unconfirmed_bundles(&self, tx: Sender) -> Result<()>;
-
-    async fn poll_for_collection(&self, destination: &bpv7::Eid, tx: Sender) -> Result<()>;
 }
 
 pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;

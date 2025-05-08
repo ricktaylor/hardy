@@ -167,10 +167,7 @@ impl Dispatcher {
             } else if let Some(hop_info) = bundle.bundle.hop_count.as_ref() {
                 // Check hop count exceeded
                 if hop_info.count >= hop_info.limit {
-                    trace!(
-                        "Bundle hop-limit {}/{} exceeded",
-                        hop_info.count, hop_info.limit
-                    );
+                    trace!("Bundle hop-limit {} exceeded", hop_info.limit);
                     reason = Some(bpv7::StatusReportReasonCode::HopLimitExceeded);
                 }
             }
@@ -182,6 +179,6 @@ impl Dispatcher {
         }
 
         // Now process the bundle
-        self.process_bundle(bundle).await
+        self.dispatch_bundle(bundle).await
     }
 }
