@@ -133,12 +133,11 @@ impl ApplicationSink for Service {
             while let Some(bundle) = rx_inner.recv().await {
                 // Double check that we are returning something valid
                 if let BundleStatus::CollectionPending = &bundle.metadata.status {
-                    let expiry = bundle.expiry();
-                    if expiry > time::OffsetDateTime::now_utc()
+                    if bundle.has_expired()
                         && tx_outer
                             .send(Ok(PollResponse {
                                 bundle_id: bundle.bundle.id.to_key(),
-                                expiry: Some(to_timestamp(expiry)),
+                                expiry: Some(to_timestamp(bundle.expiry())),
                             }))
                             .await
                             .is_err()

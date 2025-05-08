@@ -30,7 +30,7 @@ impl std::cmp::Eq for HashableRegEx {}
 
 impl std::cmp::PartialOrd for HashableRegEx {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(&other))
+        Some(self.cmp(other))
     }
 }
 
