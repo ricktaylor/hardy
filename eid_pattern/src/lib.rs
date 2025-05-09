@@ -1,5 +1,3 @@
-#![feature(extract_if)]
-
 use hardy_bpv7::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

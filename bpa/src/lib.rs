@@ -1,5 +1,3 @@
-#![feature(extract_if)]
-
 mod bundle;
 mod bundle_mem;
 mod cla_registry;
