@@ -31,8 +31,8 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn load(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
-        if let Some(v) = self.bundles.read().await.get(storage_name) {
-            Ok(Some(Arc::new(DataRefWrapper(v.clone()))))
+        if let Some(v) = self.bundles.read().await.get(storage_name).cloned() {
+            Ok(Some(Arc::new(DataRefWrapper(v))))
         } else {
             Ok(None)
         }

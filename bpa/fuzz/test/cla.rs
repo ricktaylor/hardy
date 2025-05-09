@@ -1,11 +1,10 @@
-#![no_main]
+#![cfg(test)]
 
 use hardy_bpa::async_trait;
 use hardy_bpv7::prelude as bpv7;
-use libfuzzer_sys::fuzz_target;
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
 
-static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+use crate::get_runtime;
 
 struct NullCla {
     sink: tokio::sync::Mutex<Option<Box<dyn hardy_bpa::cla::Sink>>>,
@@ -63,21 +62,9 @@ impl hardy_bpa::cla::Cla for NullCla {
     }
 }
 
-fn setup() -> tokio::runtime::Runtime {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
-        .with_target(true)
-        .init();
-
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-}
-
-fuzz_target!(|data: &[u8]| {
+fn test_cla(data: &[u8]) {
     // Full lifecycle
-    RT.get_or_init(setup).block_on(async {
+    get_runtime().block_on(async {
         // New BPA
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
@@ -117,7 +104,38 @@ fuzz_target!(|data: &[u8]| {
 
         bpa.shutdown().await;
     });
-});
+}
 
-// cargo cov -- show --format=html  -instr-profile ./fuzz/coverage/cla/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/cla -o ./fuzz/coverage/cla/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
-// cargo cov -- export --format=lcov  -instr-profile ./fuzz/coverage/cla/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/cla -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/cla/lcov.info
+#[test]
+fn test() {
+    test_cla(include_bytes!(
+        "../artifacts/cla/slow-unit-0b540e80eea850ccb06685fbbae71dce6b87ff39"
+    ));
+}
+
+#[test]
+fn test_all() {
+    match std::fs::read_dir("./corpus/cla") {
+        Err(e) => {
+            eprintln!(
+                "Failed to open dir: {e}, curr dir: {}",
+                std::env::current_dir().unwrap().to_string_lossy()
+            );
+        }
+        Ok(dir) => {
+            for entry in dir {
+                if let Ok(path) = entry {
+                    let path = path.path();
+                    if path.is_file() {
+                        if let Ok(mut file) = std::fs::File::open(&path) {
+                            let mut buffer = Vec::new();
+                            if file.read_to_end(&mut buffer).is_ok() {
+                                test_cla(&buffer);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
