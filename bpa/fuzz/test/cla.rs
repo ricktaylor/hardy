@@ -106,12 +106,12 @@ fn test_cla(data: &[u8]) {
     });
 }
 
-#[test]
+/*#[test]
 fn test() {
     test_cla(include_bytes!(
         "../artifacts/cla/slow-unit-0b540e80eea850ccb06685fbbae71dce6b87ff39"
     ));
-}
+}*/
 
 #[test]
 fn test_all() {

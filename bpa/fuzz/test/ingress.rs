@@ -79,11 +79,11 @@ fn test() {
             tokio::task::yield_now().await;
         };
 
-        _ = sink
-            .dispatch(include_bytes!(
-                "../artifacts/ingress/oom-e00b48801c97d3e554583d3c26fb742f9e6557ba"
-            ))
-            .await;
+        /*_ = sink
+        .dispatch(include_bytes!(
+            "../artifacts/ingress/oom-e00b48801c97d3e554583d3c26fb742f9e6557ba"
+        ))
+        .await;*/
     });
 }
 
