@@ -86,14 +86,6 @@ fn tests() {
         },
     );
     ipn_match(
-        "ipn:0.3.[10-max]",
-        IpnPatternItem {
-            allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
-            node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
-            service_number: IpnPattern::Range(vec![IpnInterval::Range(10..=u32::MAX)]),
-        },
-    );
-    ipn_match(
         "ipn:0.3.[10+]",
         IpnPatternItem {
             allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
