@@ -13,6 +13,5 @@ pub enum BundleStatus {
     #[default]
     DispatchPending,
     ReassemblyPending,
-    CollectionPending,
     Tombstone(time::OffsetDateTime),
 }
