@@ -67,7 +67,7 @@ fn start() {
     });
 }
 
-/*#[test]
+#[test]
 fn test() {
     start();
 
@@ -79,13 +79,20 @@ fn test() {
             tokio::task::yield_now().await;
         };
 
-        _ = sink
-        .dispatch(include_bytes!(
-            "../artifacts/ingress/oom-e00b48801c97d3e554583d3c26fb742f9e6557ba"
-        ))
-        .await;
+        if let Ok(mut file) =
+            std::fs::File::open("./artifacts/ingress/oom-e00b48801c97d3e554583d3c26fb742f9e6557ba")
+        {
+            let mut buffer = Vec::new();
+            if file.read_to_end(&mut buffer).is_ok() {
+                _ = get_runtime()
+                    .spawn(async move {
+                        _ = sink.dispatch(&buffer).await;
+                    })
+                    .await;
+            }
+        }
     });
-}*/
+}
 
 #[test]
 fn test_all() {
@@ -110,8 +117,8 @@ fn test_all() {
         Ok(dir) => {
             get_runtime().block_on(async {
                 for entry in dir {
-                    if let Ok(path) = entry {
-                        let path = path.path();
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
                         if path.is_file() {
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = Vec::new();

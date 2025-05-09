@@ -106,12 +106,17 @@ fn test_cla(data: &[u8]) {
     });
 }
 
-/*#[test]
+#[test]
 fn test() {
-    test_cla(include_bytes!(
-        "../artifacts/cla/slow-unit-0b540e80eea850ccb06685fbbae71dce6b87ff39"
-    ));
-}*/
+    if let Ok(mut file) =
+        std::fs::File::open("../artifacts/cla/slow-unit-0b540e80eea850ccb06685fbbae71dce6b87ff39")
+    {
+        let mut buffer = Vec::new();
+        if file.read_to_end(&mut buffer).is_ok() {
+            test_cla(&buffer);
+        }
+    }
+}
 
 #[test]
 fn test_all() {
