@@ -27,6 +27,9 @@ pub enum Error {
     #[error("{1:?} block cannot be block number {0}")]
     InvalidBlockNumber(u64, BlockType),
 
+    #[error("Invalid fragment information: offset {0}, total length {1}")]
+    InvalidFragmentInfo(u64, u64),
+
     #[error("Bundle has multiple {0:?} blocks")]
     DuplicateBlocks(BlockType),
 
