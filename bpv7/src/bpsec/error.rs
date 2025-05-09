@@ -59,7 +59,7 @@ pub enum Error {
     #[error("No targets in BPSec extension block")]
     NoTargets,
 
-    #[error("Invalid context {0}")]
+    #[error("Invalid context {0:?}")]
     InvalidContext(Context),
 
     #[error("Decryption failed")]

@@ -1,188 +1,225 @@
 use super::*;
+use dtn_pattern::*;
 
-#[derive(Debug, Clone)]
-struct HashableRegEx(regex::Regex);
+#[derive(Debug)]
+struct Node<V: PartialEq> {
+    exact: HashMap<Box<str>, Box<Node<V>>>,
+    regex: HashMap<HashableRegEx, Box<Node<V>>>,
+    any: Option<Box<Node<V>>>,
+    all: Vec<Arc<V>>,
+    values: Vec<Arc<V>>,
+}
 
-impl std::cmp::PartialEq for HashableRegEx {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.as_str() == other.0.as_str()
+impl<V: PartialEq> Default for Node<V> {
+    fn default() -> Self {
+        Self {
+            exact: Default::default(),
+            regex: Default::default(),
+            any: Default::default(),
+            all: Default::default(),
+            values: Default::default(),
+        }
     }
 }
 
-impl std::cmp::Eq for HashableRegEx {}
+impl<V: PartialEq> Node<V> {
+    fn is_empty(&self) -> bool {
+        self.all.is_empty()
+            && self.values.is_empty()
+            && self.any.is_none()
+            && self.exact.is_empty()
+            && self.regex.is_empty()
+    }
 
-impl std::hash::Hash for HashableRegEx {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.as_str().hash(state);
+    fn find_last(&self) -> impl Iterator<Item = &Arc<V>> {
+        self.all.iter().chain(self.values.iter())
+    }
+
+    fn find(
+        &self,
+        s: &str,
+    ) -> (
+        impl Iterator<Item = &Box<Node<V>>>,
+        impl Iterator<Item = &Arc<V>>,
+    ) {
+        (
+            self.any
+                .as_ref()
+                .into_iter()
+                .chain(self.exact.get(s))
+                .chain({
+                    self.regex
+                        .iter()
+                        .filter_map(|(k, v)| k.is_match(s).then_some(v))
+                }),
+            self.all.iter(),
+        )
     }
 }
 
-struct Matches<'a, I, T>
-where
-    I: Eq + std::hash::Hash + Clone + Default,
-    T: Clone + Default,
-{
-    sub_nodes: Vec<&'a Node<I, T>>,
-    values: Vec<&'a T>,
+#[derive(Debug)]
+pub struct DtnPatternMap<V: Eq + std::hash::Hash> {
+    root: Node<V>,
+    none: Vec<Arc<V>>,
 }
 
-#[derive(Default, Debug, Clone)]
-struct Node<I, T>
-where
-    I: Eq + std::hash::Hash + Clone + Default,
-    T: Clone + Default,
-{
-    exact: HashMap<Box<str>, Box<Node<I, T>>>,
-    regex: HashMap<HashableRegEx, Box<Node<I, T>>>,
-    any: Option<Box<Node<I, T>>>,
-    all: Entries<I, T>,
-    values: Entries<I, T>,
-}
+impl<V: Eq + std::hash::Hash> DtnPatternMap<V> {
+    pub fn is_empty(&self) -> bool {
+        self.root.is_empty() && self.none.is_empty()
+    }
 
-impl<I, T> Node<I, T>
-where
-    I: Eq + std::hash::Hash + Clone + Default,
-    T: Clone + Default,
-{
-    fn find(&self, s: &str) -> Matches<I, T> {
-        let mut m = Matches {
-            sub_nodes: Vec::new(),
-            values: self.all.values().collect(),
-        };
-
-        if let Some(n) = self.exact.get(s) {
-            m.sub_nodes.push(n);
+    pub fn insert(&mut self, pattern: DtnPatternItem, value: Arc<V>) {
+        match pattern {
+            DtnPatternItem::DtnNone => self.none.push(value),
+            DtnPatternItem::DtnSsp(pattern) => self.insert_item(pattern, value),
         }
+    }
 
-        if let Some(any) = &self.any {
-            m.sub_nodes.push(any)
-        }
-
-        for (k, v) in &self.regex {
-            if k.0.is_match(s) {
-                m.sub_nodes.push(v)
+    fn insert_item(&mut self, pattern: DtnSsp, value: Arc<V>) {
+        let mut node = match pattern.node_name {
+            DtnNodeNamePattern::PatternMatch(PatternMatch::Exact(s)) => {
+                self.root.exact.entry(s).or_default()
             }
-        }
-        m
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-pub struct DtnPatternMap<I, T>
-where
-    I: Eq + std::hash::Hash + Clone + Default,
-    T: Clone + Default,
-{
-    auths: Node<I, T>,
-}
-
-impl<I, T> DtnPatternMap<I, T>
-where
-    I: Eq + std::hash::Hash + Clone + Default,
-    T: Clone + Default,
-{
-    pub fn insert(&mut self, key: &DtnSsp, id: I, value: T) -> Option<T> {
-        let mut demux = match &key.authority {
-            DtnAuthPattern::PatternMatch(PatternMatch::Exact(s)) => {
-                self.auths.exact.entry(s.clone()).or_default().as_mut()
+            DtnNodeNamePattern::PatternMatch(PatternMatch::Regex(r)) => {
+                self.root.regex.entry(r).or_default()
             }
-            DtnAuthPattern::PatternMatch(PatternMatch::Regex(r)) => self
-                .auths
-                .regex
-                .entry(HashableRegEx(r.clone()))
-                .or_default()
-                .as_mut(),
-            DtnAuthPattern::MultiWildcard => {
-                self.auths.any.get_or_insert_with(Box::default).as_mut()
+            DtnNodeNamePattern::MultiWildcard => {
+                self.root.any.get_or_insert_with(Box::default).as_mut()
             }
         };
 
-        for s in &key.singles {
-            demux = match s {
+        for s in pattern.demux {
+            node = match s {
                 DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)) => {
-                    demux.exact.entry(s.clone()).or_default().as_mut()
+                    node.exact.entry(s).or_default()
                 }
-                DtnSinglePattern::PatternMatch(PatternMatch::Regex(r)) => demux
-                    .regex
-                    .entry(HashableRegEx(r.clone()))
-                    .or_default()
-                    .as_mut(),
-                DtnSinglePattern::Wildcard => demux.any.get_or_insert_with(Box::default).as_mut(),
+                DtnSinglePattern::PatternMatch(PatternMatch::Regex(r)) => {
+                    node.regex.entry(r).or_default()
+                }
+                DtnSinglePattern::Wildcard => node.any.get_or_insert_with(Box::default),
             };
         }
 
-        demux = match &key.last {
-            DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Exact(s))) => {
-                demux.exact.entry(s.clone()).or_default()
-            }
-            DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Regex(r))) => {
-                demux.regex.entry(HashableRegEx(r.clone())).or_default()
-            }
-            DtnLastPattern::Single(DtnSinglePattern::Wildcard) => {
-                demux.any.get_or_insert_with(Box::default)
-            }
-            DtnLastPattern::MultiWildcard => return demux.all.insert(id, value),
+        if pattern.last_wild {
+            node.all.push(value);
+        } else {
+            node.values.push(value);
+        }
+    }
+
+    pub fn remove(&mut self, pattern: &DtnPatternItem, results: &mut HashSet<Arc<V>>) {
+        // Handle Null first
+        let DtnPatternItem::DtnSsp(pattern) = pattern else {
+            return results.extend(std::mem::take(&mut self.none));
         };
 
-        demux.values.insert(id, value)
+        results.extend(std::mem::take(&mut self.root.all));
+
+        let mut node = match &pattern.node_name {
+            DtnNodeNamePattern::PatternMatch(PatternMatch::Exact(s)) => self.root.exact.get_mut(s),
+            DtnNodeNamePattern::PatternMatch(PatternMatch::Regex(r)) => self.root.regex.get_mut(r),
+            DtnNodeNamePattern::MultiWildcard => self.root.any.as_mut(),
+        };
+
+        for s in &pattern.demux {
+            let Some(n) = node else {
+                break;
+            };
+
+            results.extend(std::mem::take(&mut n.all));
+
+            node = match s {
+                DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)) => n.exact.get_mut(s),
+                DtnSinglePattern::PatternMatch(PatternMatch::Regex(r)) => n.regex.get_mut(r),
+                DtnSinglePattern::Wildcard => n.any.as_mut(),
+            };
+        }
+
+        if let Some(n) = node {
+            results.extend(std::mem::take(&mut n.values));
+        }
     }
 
-    pub fn remove<J>(&mut self, key: &DtnSsp, id: &J) -> Option<T>
-    where
-        I: std::borrow::Borrow<J>,
-        J: std::hash::Hash + Eq + ?Sized,
-    {
-        let mut demux = match &key.authority {
-            DtnAuthPattern::PatternMatch(PatternMatch::Exact(s)) => self.auths.exact.get_mut(s),
-            DtnAuthPattern::PatternMatch(PatternMatch::Regex(r)) => {
-                self.auths.regex.get_mut(&HashableRegEx(r.clone()))
-            }
-            DtnAuthPattern::MultiWildcard => self.auths.any.as_mut(),
-        }?;
+    pub fn remove_if<F: Fn(&V) -> bool>(
+        &mut self,
+        pattern: &DtnPatternItem,
+        f: F,
+        results: &mut HashSet<Arc<V>>,
+    ) {
+        // Handle Null first
+        let DtnPatternItem::DtnSsp(pattern) = pattern else {
+            return results.extend(self.none.extract_if(.., |v| f(v)));
+        };
 
-        for s in &key.singles {
-            demux = match s {
-                DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)) => demux.exact.get_mut(s),
-                DtnSinglePattern::PatternMatch(PatternMatch::Regex(r)) => {
-                    demux.regex.get_mut(&HashableRegEx(r.clone()))
+        results.extend(self.root.all.extract_if(.., |v| f(v)));
+
+        let mut node = match &pattern.node_name {
+            DtnNodeNamePattern::PatternMatch(PatternMatch::Exact(s)) => self.root.exact.get_mut(s),
+            DtnNodeNamePattern::PatternMatch(PatternMatch::Regex(r)) => self.root.regex.get_mut(r),
+            DtnNodeNamePattern::MultiWildcard => self.root.any.as_mut(),
+        };
+
+        for s in &pattern.demux {
+            let Some(n) = node else {
+                break;
+            };
+
+            results.extend(n.all.extract_if(.., |v| f(v)));
+
+            node = match s {
+                DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)) => n.exact.get_mut(s),
+                DtnSinglePattern::PatternMatch(PatternMatch::Regex(r)) => n.regex.get_mut(r),
+                DtnSinglePattern::Wildcard => n.any.as_mut(),
+            };
+        }
+
+        if let Some(n) = node {
+            results.extend(n.values.extract_if(.., |v| f(v)));
+        }
+    }
+
+    pub fn find(&self, eid: &Eid) -> impl Iterator<Item = &Arc<V>> {
+        (if let Eid::Dtn { node_name, demux } = eid {
+            Some({
+                let (nodes, root_results) = self.root.find(node_name);
+                let mut nodes = nodes.collect::<Vec<_>>();
+                let mut results = Vec::new();
+                for s in demux {
+                    let mut subnodes = Vec::new();
+                    for node in nodes {
+                        let (n, v) = node.find(s);
+                        subnodes.extend(n);
+                        results.push(v);
+                    }
+                    nodes = subnodes;
                 }
-                DtnSinglePattern::Wildcard => demux.any.as_mut(),
-            }?;
-        }
 
-        match &key.last {
-            DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Exact(s))) => {
-                demux.exact.get_mut(s)
+                root_results
+                    .chain(results.into_iter().flatten())
+                    .chain(nodes.into_iter().flat_map(|n| n.find_last()))
+            })
+        } else {
+            None
+        })
+        .into_iter()
+        .flatten()
+        .chain(
+            if let Eid::Null = eid {
+                Some(self.none.iter())
+            } else {
+                None
             }
-            DtnLastPattern::Single(DtnSinglePattern::PatternMatch(PatternMatch::Regex(r))) => {
-                demux.regex.get_mut(&HashableRegEx(r.clone()))
-            }
-            DtnLastPattern::Single(DtnSinglePattern::Wildcard) => demux.any.as_mut(),
-            DtnLastPattern::MultiWildcard => return demux.all.remove(id),
-        }?
-        .values
-        .remove(id)
+            .into_iter()
+            .flatten(),
+        )
     }
+}
 
-    pub fn find(&self, node_name: &str, demux: &[Box<str>]) -> Vec<&T> {
-        let m = self.auths.find(node_name);
-        let mut nodes = m.sub_nodes;
-        let mut values = m.values;
-
-        for s in demux {
-            let mut sub_nodes = Vec::new();
-            for n in &nodes {
-                let m = n.find(s);
-                sub_nodes.extend(m.sub_nodes);
-                values.extend(m.values);
-            }
-            nodes = sub_nodes;
+impl<V: Eq + std::hash::Hash> Default for DtnPatternMap<V> {
+    fn default() -> Self {
+        Self {
+            root: Default::default(),
+            none: Default::default(),
         }
-
-        for n in &nodes {
-            values.extend(n.values.values());
-        }
-
-        values
     }
 }

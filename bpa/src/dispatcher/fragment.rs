@@ -1,11 +1,17 @@
 use super::*;
 
 impl Dispatcher {
-    #[instrument(skip(self))]
-    pub(super) async fn reassemble(
+    pub(super) async fn fragment(
         &self,
-        _bundle: &mut bundle::Bundle,
-    ) -> Result<DispatchResult, Error> {
+        _mtu: usize,
+        _bundle: bundle::Bundle,
+        _data: Vec<u8>,
+    ) -> Result<(), Error> {
+        warn!("Bundle requires fragmentation");
+        todo!()
+    }
+
+    pub(super) async fn reassemble(&self, _bundle: bundle::Bundle) -> Result<(), Error> {
         /* Either wait for more fragments to arrive
         self.store.set_status(&mut bundle, BundleStatus::ReassemblyPending).await?;
 

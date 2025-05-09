@@ -24,10 +24,13 @@ pub enum Error {
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),
 
-    #[error("{1} block cannot be block number {0}")]
+    #[error("{1:?} block cannot be block number {0}")]
     InvalidBlockNumber(u64, BlockType),
 
-    #[error("Bundle has multiple {0} blocks")]
+    #[error("Invalid fragment information: offset {0}, total length {1}")]
+    InvalidFragmentInfo(u64, u64),
+
+    #[error("Bundle has multiple {0:?} blocks")]
     DuplicateBlocks(BlockType),
 
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]

@@ -22,12 +22,6 @@
 # Should we generate Status Reports?
 #status_reports = false
 
-# Maximum time to retry forwarding, to allow for service synchronization, in seconds. 0 disables retrying
-#max_forwarding_delay = 5
-
-# Interval between checking for waiting bundles, in seconds > 0.
-#wait_sample_interval = 60
-
 # Which storage engine should we use
 # This is dependant on the package configuration
 #metadata_storage = "sqlite"

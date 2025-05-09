@@ -4,7 +4,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct Bpa {
     //store: Arc<store::Store>,
-    fib: Arc<fib_impl::Fib>,
+    rib: Arc<rib::Rib>,
     cla_registry: Arc<cla_registry::ClaRegistry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
@@ -18,30 +18,26 @@ impl Bpa {
         // New store
         let store = Arc::new(store::Store::new(config));
 
-        // New FIB
-        let fib = Arc::new(fib_impl::Fib::new());
+        // New RIB
+        let rib = rib::Rib::new(config);
 
         // New registries
-        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(fib.clone()));
-        let service_registry = Arc::new(service_registry::ServiceRegistry::new(config));
+        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(rib.clone()));
+        let service_registry = Arc::new(service_registry::ServiceRegistry::new(rib.clone()));
 
         // Create a new dispatcher
-        let (dispatcher, rx) = dispatcher::Dispatcher::new(
+        let dispatcher = dispatcher::Dispatcher::new(
             config,
             store.clone(),
             service_registry.clone(),
-            fib.clone(),
+            rib.clone(),
         );
-        let dispatcher = Arc::new(dispatcher);
-
-        // Spawn the dispatch task
-        tokio::spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
 
         trace!("BPA started");
 
         Self {
             //store,
-            fib,
+            rib,
             cla_registry,
             service_registry,
             dispatcher,
@@ -62,41 +58,40 @@ impl Bpa {
     #[instrument(skip(self, service))]
     pub async fn register_service(
         &self,
-        eid: Option<&service::ServiceName<'_>>,
+        service_id: Option<service::ServiceId<'_>>,
         service: Arc<dyn service::Service>,
-    ) -> service::Result<()> {
+    ) -> service::Result<bpv7::Eid> {
         self.service_registry
-            .register(eid, service, self.dispatcher.clone())
+            .register(service_id, service, &self.dispatcher)
             .await
     }
 
     #[instrument(skip(self, cla))]
-    pub async fn register_cla(
-        &self,
-        ident: &str,
-        kind: &str,
-        cla: Arc<dyn cla::Cla>,
-    ) -> cla::Result<()> {
+    pub async fn register_cla(&self, ident_prefix: &str, cla: Arc<dyn cla::Cla>) -> String {
         self.cla_registry
-            .register(ident, kind, cla, self.dispatcher.clone())
+            .register(ident_prefix, cla, &self.dispatcher)
             .await
     }
 
-    pub async fn add_forwarding_action(
+    #[instrument(skip(self))]
+    pub async fn add_route(
         &self,
-        id: &str,
-        pattern: &eid_pattern::EidPattern,
-        action: &fib::Action,
+        source: String,
+        pattern: eid_pattern::EidPattern,
+        action: routes::Action,
         priority: u32,
-    ) -> fib::Result<()> {
-        self.fib.add(id, pattern, action, priority).await
+    ) {
+        self.rib.add(pattern, source, action.into(), priority).await
     }
 
-    pub async fn remove_forwarding_action(
+    #[instrument(skip(self))]
+    pub async fn remove_route(
         &self,
-        id: &str,
+        source: &str,
         pattern: &eid_pattern::EidPattern,
-    ) -> usize {
-        self.fib.remove(id, pattern).await
+        action: &routes::Action,
+        priority: u32,
+    ) -> bool {
+        self.rib.remove(pattern, source, action, priority).await
     }
 }

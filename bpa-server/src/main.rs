@@ -9,7 +9,6 @@ use trace_err::*;
 use tracing::{error, info, trace};
 
 fn listen_for_cancel(
-    bpa: Arc<hardy_bpa::bpa::Bpa>,
     task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -36,9 +35,6 @@ fn listen_for_cancel(
 
         // Cancel everything
         cancel_token.cancel();
-
-        // Shutdown the BPA
-        bpa.shutdown().await;
     });
 }
 
@@ -61,9 +57,15 @@ async fn main() {
     }
 
     // And wait for shutdown signal
-    listen_for_cancel(bpa, &mut task_set, cancel_token);
+    listen_for_cancel(&mut task_set, cancel_token.clone());
 
     info!("Started successfully");
+
+    // And wait for cancel token
+    cancel_token.cancelled().await;
+
+    // Shut down bpa
+    bpa.shutdown().await;
 
     // Wait for all tasks to finish
     while let Some(r) = task_set.join_next().await {

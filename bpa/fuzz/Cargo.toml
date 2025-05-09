@@ -33,5 +33,5 @@ bench = false
 
 [lib]
 name = "test"
-path = "test.rs"
+path = "test/mod.rs"
 test = true

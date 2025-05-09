@@ -39,7 +39,7 @@ pub mod prelude {
     };
 
     pub mod bpsec {
-        pub use super::super::bpsec::{Context, Error, KeyMaterial};
+        pub use crate::bpsec::{Context, Error, KeyMaterial};
     }
 }
 

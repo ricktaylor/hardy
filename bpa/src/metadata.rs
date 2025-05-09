@@ -13,9 +13,5 @@ pub enum BundleStatus {
     #[default]
     DispatchPending,
     ReassemblyPending,
-    CollectionPending,
-    ForwardPending,
-    ForwardAckPending(u32, time::OffsetDateTime),
-    Waiting(time::OffsetDateTime),
     Tombstone(time::OffsetDateTime),
 }

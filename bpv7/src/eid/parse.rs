@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use winnow::{
     ModalResult, Parser,
     ascii::dec_uint,
-    combinator::{alt, fail, opt, preceded, repeat, separated, terminated},
+    combinator::{alt, opt, preceded, repeat, separated, terminated},
     stream::AsChar,
     token::{one_of, take_while},
 };
@@ -44,7 +44,7 @@ fn parse_local_node(input: &mut &[u8]) -> ModalResult<Eid> {
 }
 
 fn parse_ipn(input: &mut &[u8]) -> ModalResult<Eid> {
-    (alt((parse_local_node, parse_ipn_parts, fail))).parse_next(input)
+    (alt((parse_local_node, parse_ipn_parts))).parse_next(input)
 }
 
 fn from_hex_digit(digit: u8) -> u8 {
@@ -61,23 +61,15 @@ fn parse_pchar<'a>(input: &mut &'a [u8]) -> ModalResult<Cow<'a, str>> {
             1..,
             (
                 AsChar::is_alphanum,
-                '-',
-                '.',
-                '_',
-                '~',
                 '!',
                 '$',
-                '&',
-                '\'',
-                '(',
-                ')',
-                '*',
-                '+',
-                ',',
+                '&'..'.',
+                ':',
                 ';',
                 '=',
-                ':',
                 '@',
+                '_',
+                '~',
             ),
         )
         .map(|v| Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) })),
@@ -97,7 +89,6 @@ fn parse_pchar<'a>(input: &mut &'a [u8]) -> ModalResult<Cow<'a, str>> {
                 Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
             }
         }),
-        fail,
     ))
     .parse_next(input)
 }
@@ -140,21 +131,11 @@ fn parse_dtn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
 }
 
 fn parse_dtn(input: &mut &[u8]) -> ModalResult<Eid> {
-    alt((
-        "none".map(|_| Eid::Null),
-        preceded("//", parse_dtn_parts),
-        fail,
-    ))
-    .parse_next(input)
+    alt(("none".map(|_| Eid::Null), preceded("//", parse_dtn_parts))).parse_next(input)
 }
 
 pub fn parse_eid(input: &mut &[u8]) -> ModalResult<Eid> {
-    alt((
-        preceded("dtn:", parse_dtn),
-        preceded("ipn:", parse_ipn),
-        fail,
-    ))
-    .parse_next(input)
+    alt((preceded("dtn:", parse_dtn), preceded("ipn:", parse_ipn))).parse_next(input)
 }
 
 impl std::str::FromStr for Eid {

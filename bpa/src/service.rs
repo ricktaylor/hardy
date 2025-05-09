@@ -17,12 +17,18 @@ pub enum Error {
     #[error("There is no dtn node id configured")]
     NoDtnNodeId,
 
+    #[error("The sink is disconnected")]
+    Disconnected,
+
+    #[error("Invalid bundle destination {0}")]
+    InvalidDestination(bpv7::Eid),
+
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
-#[derive(Debug)]
-pub enum ServiceName<'a> {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ServiceId<'a> {
     DtnService(&'a str),
     IpnService(u32),
 }
@@ -37,11 +43,11 @@ pub enum StatusNotify {
 
 #[async_trait]
 pub trait Service: Send + Sync {
-    async fn on_connect(&self, sink: Box<dyn Sink>, eid: &bpv7::Eid) -> Result<()>;
+    async fn on_connect(&self, sink: Box<dyn Sink>, source: &bpv7::Eid);
 
     async fn on_disconnect(&self);
 
-    async fn on_received(&self, bundle_id: &bpv7::BundleId, expiry: time::OffsetDateTime);
+    async fn on_receive(&self, bundle: &bpv7::Bundle, data: &[u8], expiry: time::OffsetDateTime);
 
     async fn on_status_notify(
         &self,
@@ -82,6 +88,4 @@ pub trait Sink: Send + Sync {
         lifetime: time::Duration,
         flags: Option<SendFlags>,
     ) -> Result<bpv7::BundleId>;
-
-    async fn collect(&self, bundle_id: &bpv7::BundleId) -> Result<Option<Bundle>>;
 }

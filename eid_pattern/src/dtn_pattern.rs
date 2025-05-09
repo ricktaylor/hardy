@@ -1,49 +1,76 @@
 use super::*;
+use std::borrow::Cow;
+use winnow::{
+    ModalResult, Parser,
+    combinator::{alt, delimited, preceded, repeat, terminated},
+    stream::AsChar,
+    token::{one_of, take_while},
+};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
+pub struct HashableRegEx(regex::Regex);
+
+impl HashableRegEx {
+    pub fn try_new(v: &str) -> Result<Self, regex::Error> {
+        Ok(Self(regex::RegexBuilder::new(v).build()?))
+    }
+
+    pub fn is_match(&self, haystack: &str) -> bool {
+        self.0.is_match(haystack)
+    }
+}
+
+impl std::cmp::PartialEq for HashableRegEx {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl std::cmp::Eq for HashableRegEx {}
+
+impl std::cmp::PartialOrd for HashableRegEx {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::cmp::Ord for HashableRegEx {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.as_str().cmp(other.0.as_str())
+    }
+}
+
+impl std::hash::Hash for HashableRegEx {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.as_str().hash(state);
+    }
+}
+
+impl std::fmt::Display for HashableRegEx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnPatternItem {
+    DtnNone,
     DtnSsp(DtnSsp),
-    None,
 }
 
 impl DtnPatternItem {
-    pub fn new_any() -> Self {
-        DtnPatternItem::DtnSsp(DtnSsp {
-            authority: DtnAuthPattern::MultiWildcard,
-            singles: [].into(),
-            last: DtnLastPattern::MultiWildcard,
+    pub(super) fn new_any() -> Self {
+        Self::DtnSsp(DtnSsp {
+            node_name: DtnNodeNamePattern::MultiWildcard,
+            demux: [].into(),
+            last_wild: true,
         })
     }
 
-    pub fn is_match(&self, eid: &Eid) -> bool {
+    pub(super) fn try_to_eid(&self) -> Option<Eid> {
         match self {
-            DtnPatternItem::None => matches!(eid, Eid::Null),
-            DtnPatternItem::DtnSsp(s) => s.is_match(eid),
-        }
-    }
-
-    pub(super) fn is_exact(&self) -> Option<Eid> {
-        match self {
-            DtnPatternItem::None => Some(Eid::Null),
-            DtnPatternItem::DtnSsp(s) => s.is_exact(),
-        }
-    }
-
-    /*
-    dtn-ssp = dtn-wkssp-exact / dtn-fullssp
-    dtn-wkssp-exact = "none"
-    */
-    pub(super) fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        match s {
-            "**" => {
-                span.inc(2);
-                Ok(DtnPatternItem::new_any())
-            }
-            "none" => {
-                span.inc(4);
-                Ok(DtnPatternItem::None)
-            }
-            _ => Ok(DtnPatternItem::DtnSsp(DtnSsp::parse(s, span)?)),
+            DtnPatternItem::DtnNone => Some(Eid::Null),
+            DtnPatternItem::DtnSsp(s) => s.try_to_eid(),
         }
     }
 }
@@ -51,201 +78,95 @@ impl DtnPatternItem {
 impl std::fmt::Display for DtnPatternItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DtnPatternItem::None => write!(f, "none"),
+            DtnPatternItem::DtnNone => write!(f, "none"),
             DtnPatternItem::DtnSsp(s) => write!(f, "{s}"),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DtnSsp {
-    pub authority: DtnAuthPattern,
-    pub singles: Box<[DtnSinglePattern]>,
-    pub last: DtnLastPattern,
+    pub(crate) node_name: DtnNodeNamePattern,
+    pub(crate) demux: Box<[DtnSinglePattern]>,
+    pub(crate) last_wild: bool,
 }
 
 impl DtnSsp {
-    fn is_match(&self, eid: &Eid) -> bool {
-        let Eid::Dtn { node_name, demux } = eid else {
-            return false;
-        };
-
-        match self.authority.is_match(node_name) {
-            (false, _) => return false,
-            (true, false) => return true,
-            _ => {}
-        }
-
-        let mut demux = demux.iter();
-        for s in &self.singles {
-            let Some(next) = demux.next() else {
-                return false;
-            };
-
-            if !s.is_match(next) {
-                return false;
-            }
-        }
-
-        let Some(last) = demux.next() else {
-            return false;
-        };
-        match self.last.is_match(last) {
-            (true, true) => demux.next().is_none(),
-            (true, false) => true,
-            (false, _) => false,
+    pub(crate) fn new(node_name: Box<str>, demux: Box<[Box<str>]>, last_wild: bool) -> Self {
+        Self {
+            node_name: DtnNodeNamePattern::PatternMatch(PatternMatch::Exact(node_name)),
+            demux: demux
+                .into_iter()
+                .map(|s| DtnSinglePattern::PatternMatch(PatternMatch::Exact(s)))
+                .collect(),
+            last_wild,
         }
     }
 
-    fn is_exact(&self) -> Option<Eid> {
-        let node_name = self.authority.is_exact()?;
-        let mut demux = self.singles.iter().try_fold(Vec::new(), |mut v, s| {
-            let s = s.is_exact()?;
-            v.push(s);
-            Some(v)
-        })?;
-        demux.push(self.last.is_exact()?);
+    fn try_to_eid(&self) -> Option<Eid> {
+        if self.last_wild {
+            return None;
+        }
 
         Some(Eid::Dtn {
-            node_name,
-            demux: demux.into(),
-        })
-    }
-
-    /*
-    dtn-fullssp = "//" dtn-authority-pat "/" dtn-path-pat
-    dtn-authority-pat = exact / regexp / multi-wildcard
-    dtn-path-pat = *( dtn-single-pat "/" ) dtn-last-pat
-    dtn-single-pat = exact / regexp / wildcard
-    dtn-last-pat = dtn-single-pat / multi-wildcard
-    */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        let Some(s) = s.strip_prefix("//") else {
-            return Err(EidPatternError::Expecting(
-                "//".to_string(),
-                span.subset(s.chars().count().min(2)),
-            ));
-        };
-        span.offset(2);
-
-        let Some((s1, s2)) = s.split_once('/') else {
-            return Err(EidPatternError::Expecting(
-                "/".to_string(),
-                span.subset(s.chars().count()),
-            ));
-        };
-
-        let authority = DtnAuthPattern::parse(s1, span)?;
-
-        span.inc(1);
-
-        let mut parts = s2.split('/');
-        let Some(last) = parts.nth_back(0) else {
-            return Err(EidPatternError::Expecting(
-                "/".to_string(),
-                span.subset(s2.chars().count()),
-            ));
-        };
-
-        let singles = parts.try_fold(Vec::new(), |mut v, s| {
-            v.push(DtnSinglePattern::parse(s, span)?);
-            span.inc(1);
-            Ok::<_, EidPatternError>(v)
-        })?;
-
-        Ok(DtnSsp {
-            authority,
-            singles: singles.into(),
-            last: DtnLastPattern::parse(last, span)?,
+            node_name: self.node_name.try_to_str()?,
+            demux: self
+                .demux
+                .iter()
+                .try_fold(Vec::new(), |mut acc, s| {
+                    acc.push(s.try_to_str()?);
+                    Some(acc)
+                })?
+                .into(),
         })
     }
 }
 
 impl std::fmt::Display for DtnSsp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "//{}", self.authority)?;
-        for s in &self.singles {
+        write!(f, "//{}", self.node_name)?;
+        for s in &self.demux {
             write!(f, "/{s}")?;
         }
-        write!(f, "/{}", self.last)
+        write!(f, "/{}", self.last_wild)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DtnAuthPattern {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DtnNodeNamePattern {
     PatternMatch(PatternMatch),
     MultiWildcard,
 }
 
-impl DtnAuthPattern {
-    fn is_match(&self, s: &str) -> (bool, bool) {
+impl DtnNodeNamePattern {
+    fn try_to_str(&self) -> Option<Box<str>> {
         match self {
-            DtnAuthPattern::PatternMatch(p) => (p.is_match(s), true),
-            DtnAuthPattern::MultiWildcard => (true, false),
-        }
-    }
-
-    fn is_exact(&self) -> Option<Box<str>> {
-        match self {
-            DtnAuthPattern::PatternMatch(p) => p.is_exact(),
-            DtnAuthPattern::MultiWildcard => None,
-        }
-    }
-
-    /*
-    dtn-authority-pat = exact / regexp / multi-wildcard
-    */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if s == "**" {
-            span.inc(2);
-            Ok(DtnAuthPattern::MultiWildcard)
-        } else {
-            Ok(DtnAuthPattern::PatternMatch(PatternMatch::parse(s, span)?))
+            DtnNodeNamePattern::PatternMatch(p) => p.try_to_str(),
+            DtnNodeNamePattern::MultiWildcard => None,
         }
     }
 }
 
-impl std::fmt::Display for DtnAuthPattern {
+impl std::fmt::Display for DtnNodeNamePattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DtnAuthPattern::PatternMatch(p) => write!(f, "{p}"),
-            DtnAuthPattern::MultiWildcard => write!(f, "**"),
+            DtnNodeNamePattern::PatternMatch(p) => write!(f, "{p}"),
+            DtnNodeNamePattern::MultiWildcard => write!(f, "**"),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnSinglePattern {
     PatternMatch(PatternMatch),
     Wildcard,
 }
 
 impl DtnSinglePattern {
-    fn is_match(&self, s: &str) -> bool {
+    fn try_to_str(&self) -> Option<Box<str>> {
         match self {
-            DtnSinglePattern::PatternMatch(p) => p.is_match(s),
-            DtnSinglePattern::Wildcard => true,
-        }
-    }
-
-    fn is_exact(&self) -> Option<Box<str>> {
-        match self {
-            DtnSinglePattern::PatternMatch(p) => p.is_exact(),
+            DtnSinglePattern::PatternMatch(p) => p.try_to_str(),
             DtnSinglePattern::Wildcard => None,
-        }
-    }
-
-    /*
-    dtn-single-pat = exact / regexp / wildcard
-    */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if s == "*" {
-            span.inc(1);
-            Ok(DtnSinglePattern::Wildcard)
-        } else {
-            Ok(DtnSinglePattern::PatternMatch(PatternMatch::parse(
-                s, span,
-            )?))
         }
     }
 }
@@ -259,58 +180,17 @@ impl std::fmt::Display for DtnSinglePattern {
     }
 }
 
-fn url_decode(s: &str, span: &mut Span) -> Result<Box<str>, EidPatternError> {
-    urlencoding::decode(s)
-        .map_err(|e| EidPatternError::InvalidUtf8(e, span.subset(s.chars().count())))
-        .map(|s2| {
-            span.inc(s.chars().count());
-            s2.into()
-        })
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PatternMatch {
     Exact(Box<str>),
-    Regex(regex::Regex),
+    Regex(HashableRegEx),
 }
 
 impl PatternMatch {
-    fn is_match(&self, s: &str) -> bool {
-        match self {
-            PatternMatch::Exact(e) => **e == *s,
-            PatternMatch::Regex(r) => r.is_match(s),
-        }
-    }
-
-    fn is_exact(&self) -> Option<Box<str>> {
+    fn try_to_str(&self) -> Option<Box<str>> {
         match self {
             PatternMatch::Exact(s) => Some(s.clone()),
             PatternMatch::Regex(_) => None,
-        }
-    }
-
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if let Some(s) = s.strip_prefix('[') {
-            if let Some(s) = s.strip_suffix(']') {
-                if s.is_empty() {
-                    Err(EidPatternError::ExpectingRegEx(span.subset(2)))
-                } else {
-                    span.inc(1);
-                    span.subset(s.chars().count());
-
-                    regex::Regex::new(&url_decode(s, span)?)
-                        .map_err(|e| EidPatternError::InvalidRegEx(e, span.clone()))
-                        .map(|r| {
-                            span.inc(1);
-                            PatternMatch::Regex(r)
-                        })
-                }
-            } else {
-                span.offset(s.chars().count());
-                Err(EidPatternError::Expecting("]".to_string(), span.subset(1)))
-            }
-        } else {
-            Ok(PatternMatch::Exact(url_decode(s, span)?))
         }
     }
 }
@@ -319,77 +199,207 @@ impl std::fmt::Display for PatternMatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PatternMatch::Exact(s) => write!(f, "{s}"),
-            PatternMatch::Regex(r) => write!(f, "[{}]", r.as_str()),
+            PatternMatch::Regex(r) => write!(f, "[{r}]"),
         }
     }
 }
 
-impl std::cmp::PartialEq for PatternMatch {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Exact(l), Self::Exact(r)) => l == r,
-            (Self::Regex(l), Self::Regex(r)) => l.as_str() == r.as_str(),
-            _ => false,
-        }
+// dtn-pat-item = "dtn:" dtn-ssp
+pub(super) fn parse_dtn_pat_item(input: &mut &[u8]) -> ModalResult<EidPatternItem> {
+    preceded(
+        "dtn:",
+        alt((
+            "**".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())),
+            parse_dtn_ssp,
+        )),
+    )
+    .parse_next(input)
+}
+
+// dtn-ssp = dtn-wkssp-exact / dtn-fullssp
+// dtn-wkssp-exact = "none"
+fn parse_dtn_ssp(input: &mut &[u8]) -> ModalResult<EidPatternItem> {
+    alt((
+        "none".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::DtnNone)),
+        parse_dtn_fullssp.map(|v| EidPatternItem::DtnPatternItem(DtnPatternItem::DtnSsp(v))),
+    ))
+    .parse_next(input)
+}
+
+// dtn-fullssp = "//" dtn-authority-pat "/" dtn-path-pat
+fn parse_dtn_fullssp(input: &mut &[u8]) -> ModalResult<DtnSsp> {
+    preceded(
+        "//",
+        (parse_dtn_authority_pat, preceded("/", parse_dtn_path_pat)).map(
+            |(authority, (singles, last_wild))| DtnSsp {
+                node_name: authority,
+                demux: singles.into(),
+                last_wild,
+            },
+        ),
+    )
+    .parse_next(input)
+}
+
+// dtn-authority-pat = exact / regexp / multi-wildcard
+fn parse_dtn_authority_pat(input: &mut &[u8]) -> ModalResult<DtnNodeNamePattern> {
+    alt((
+        "**".map(|_| DtnNodeNamePattern::MultiWildcard),
+        parse_regex.map(DtnNodeNamePattern::PatternMatch),
+        parse_exact.map(DtnNodeNamePattern::PatternMatch),
+    ))
+    .parse_next(input)
+}
+
+// dtn-path-pat = *( dtn-single-pat "/" ) dtn-last-pat
+fn parse_dtn_path_pat(input: &mut &[u8]) -> ModalResult<(Vec<DtnSinglePattern>, bool)> {
+    (
+        repeat(0.., terminated(parse_dtn_single_pat, "/")),
+        parse_dtn_last_pat,
+    )
+        .map(
+            |(mut a, b): (Vec<DtnSinglePattern>, Option<DtnSinglePattern>)| {
+                if let Some(b) = b {
+                    a.push(b);
+                    (a, false)
+                } else {
+                    (a, true)
+                }
+            },
+        )
+        .parse_next(input)
+}
+
+// dtn-single-pat = exact / regexp / wildcard
+fn parse_dtn_single_pat(input: &mut &[u8]) -> ModalResult<DtnSinglePattern> {
+    alt((
+        "*".map(|_| DtnSinglePattern::Wildcard),
+        parse_regex.map(DtnSinglePattern::PatternMatch),
+        parse_exact.map(DtnSinglePattern::PatternMatch),
+    ))
+    .parse_next(input)
+}
+
+// dtn-last-pat = dtn-single-pat / multi-wildcard
+fn parse_dtn_last_pat(input: &mut &[u8]) -> ModalResult<Option<DtnSinglePattern>> {
+    alt(("**".map(|_| None), parse_dtn_single_pat.map(Some))).parse_next(input)
+}
+
+fn from_hex_digit(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => digit - b'a' + 10,
     }
 }
 
-impl std::cmp::Eq for PatternMatch {}
-
-impl std::hash::Hash for PatternMatch {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-        match self {
-            PatternMatch::Exact(s) => s.hash(state),
-            PatternMatch::Regex(r) => r.as_str().hash(state),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DtnLastPattern {
-    Single(DtnSinglePattern),
-    MultiWildcard,
-}
-
-impl DtnLastPattern {
-    fn is_match(&self, s: &str) -> (bool, bool) {
-        if let DtnLastPattern::Single(p) = self {
-            (p.is_match(s), true)
+// exact = *pchar
+fn parse_exact(input: &mut &[u8]) -> ModalResult<PatternMatch> {
+    repeat(
+        0..,
+        alt((
+            take_while(
+                1..,
+                (
+                    AsChar::is_alphanum,
+                    '!',
+                    '$',
+                    '&'..='.',
+                    ':',
+                    ';',
+                    '=',
+                    '@',
+                    '_',
+                    '~',
+                ),
+            )
+            .map(|v| Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) })),
+            preceded(
+                '%',
+                (one_of(AsChar::is_hex_digit), one_of(AsChar::is_hex_digit)),
+            )
+            .map(|(first, second)| {
+                /* This is a more cautious UTF8 url decode expansion */
+                let first = from_hex_digit(first);
+                let second = from_hex_digit(second);
+                if first <= 7 {
+                    let val = [(first << 4) | second];
+                    Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+                } else {
+                    let val = [0xC0u8 | (first >> 2), 0x80u8 | ((first & 3) << 4) | second];
+                    Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+                }
+            }),
+        )),
+    )
+    .fold(String::new, |mut acc, v| {
+        if acc.is_empty() {
+            acc = v.into()
         } else {
-            (true, false)
+            acc.push_str(&v)
         }
-    }
-
-    fn is_exact(&self) -> Option<Box<str>> {
-        match self {
-            DtnLastPattern::Single(p) => p.is_exact(),
-            DtnLastPattern::MultiWildcard => None,
-        }
-    }
-
-    /*
-    dtn-last-pat = dtn-single-pat / multi-wildcard
-    */
-    fn parse(s: &str, span: &mut Span) -> Result<Self, EidPatternError> {
-        if s.is_empty() {
-            Ok(DtnLastPattern::Single(DtnSinglePattern::PatternMatch(
-                PatternMatch::Exact("".into()),
-            )))
-        } else if s == "**" {
-            span.inc(2);
-            Ok(DtnLastPattern::MultiWildcard)
-        } else {
-            Ok(DtnLastPattern::Single(DtnSinglePattern::parse(s, span)?))
-        }
-    }
+        acc
+    })
+    .map(|v| PatternMatch::Exact(v.into()))
+    .parse_next(input)
 }
 
-impl std::fmt::Display for DtnLastPattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DtnLastPattern::Single(p) => write!(f, "{p}"),
-            DtnLastPattern::MultiWildcard => write!(f, "**"),
-        }
-    }
+/*
+; Regular expression for the whole SSP within the gen-delims brackets
+; with an allowance for more regexp characters
+regexp = "[" *( pchar / "^" ) "]"
+*/
+fn parse_regex(input: &mut &[u8]) -> ModalResult<PatternMatch> {
+    delimited(
+        "[",
+        repeat(
+            0..,
+            alt((
+                take_while(
+                    1..,
+                    (
+                        AsChar::is_alphanum,
+                        '!',
+                        '$',
+                        '&'..='.',
+                        ':',
+                        ';',
+                        '=',
+                        '@',
+                        '^',
+                        '_',
+                        '~',
+                    ),
+                )
+                .map(|v| Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) })),
+                preceded(
+                    '%',
+                    (one_of(AsChar::is_hex_digit), one_of(AsChar::is_hex_digit)),
+                )
+                .map(|(first, second)| {
+                    /* This is a more cautious UTF8 url decode expansion */
+                    let first = from_hex_digit(first);
+                    let second = from_hex_digit(second);
+                    if first <= 7 {
+                        let val = [(first << 4) | second];
+                        Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+                    } else {
+                        let val = [0xC0u8 | (first >> 2), 0x80u8 | ((first & 3) << 4) | second];
+                        Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+                    }
+                }),
+            )),
+        )
+        .fold(String::new, |mut acc, v| {
+            if acc.is_empty() {
+                acc = v.into()
+            } else {
+                acc.push_str(&v)
+            }
+            acc
+        })
+        .try_map(|v| Ok::<_, regex::Error>(PatternMatch::Regex(HashableRegEx::try_new(&v)?))),
+        "]",
+    )
+    .parse_next(input)
 }

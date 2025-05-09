@@ -96,8 +96,12 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
             } else {
                 match (block.parse(), block.parse()) {
                     (Ok((offset, s1)), Ok((total_len, s2))) => {
-                        shortest = shortest && s1 && s2;
-                        Ok(Some(FragmentInfo { offset, total_len }))
+                        if offset >= total_len {
+                            Err(Error::InvalidFragmentInfo(offset, total_len))
+                        } else {
+                            shortest = shortest && s1 && s2;
+                            Ok(Some(FragmentInfo { offset, total_len }))
+                        }
                     }
                     (Err(e), _) => Err(e.into()),
                     (_, Err(e)) => Err(e.into()),

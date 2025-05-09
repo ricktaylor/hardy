@@ -1,248 +1,158 @@
 use super::*;
 
-pub(super) enum DispatchResult {
-    Done,
-    Drop(Option<bpv7::StatusReportReasonCode>),
-    Continue,
-}
-
 impl Dispatcher {
-    #[inline]
-    pub async fn dispatch_bundle(&self, bundle: bundle::Bundle) -> Result<(), Error> {
-        // Put bundle into channel, ignoring errors as the only ones are intentional
-        _ = self.tx.send(bundle).await;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn process_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
-        /* This is a classic looped state machine */
+    pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) -> Result<(), Error> {
+        let mut next_hop = bundle.bundle.destination.clone();
+        let mut previous = false;
         loop {
-            let result = match &bundle.metadata.status {
-                BundleStatus::ForwardPending | BundleStatus::Tombstone(_) => {
-                    unreachable!()
+            // Perform RIB lookup
+            let (clas, until) = match self.rib.find(&next_hop).await {
+                Err(reason) => {
+                    trace!("Bundle is black-holed");
+                    return self.drop_bundle(bundle, reason).await;
                 }
-                BundleStatus::DispatchPending => {
-                    // Check if we are the final destination
-                    if self
-                        .admin_endpoints
-                        .is_local_service(&bundle.bundle.destination)
-                    {
-                        if bundle.bundle.id.fragment_info.is_some() {
-                            self.reassemble(&mut bundle).await?
-                        } else if self.admin_endpoints.contains(&bundle.bundle.destination) {
-                            // The bundle is for the Administrative Endpoint
-                            self.administrative_bundle(&mut bundle).await?
-                        } else {
-                            // The bundle is ready for collection
-                            trace!("Bundle is ready for local delivery");
-                            self.store
-                                .set_status(&mut bundle, BundleStatus::CollectionPending)
-                                .await
-                                .map(|_| DispatchResult::Continue)?
-                        }
-                    } else {
-                        // Forward to another BPA
-                        self.forward_bundle(&mut bundle).await?
+                Ok(rib::FindResult::AdminEndpoint) => {
+                    if bundle.bundle.id.fragment_info.is_some() {
+                        return self.reassemble(bundle).await;
                     }
+
+                    // The bundle is for the Administrative Endpoint
+                    return self.administrative_bundle(bundle).await;
                 }
-                BundleStatus::ReassemblyPending => {
-                    // Wait for other fragments to arrive
-                    DispatchResult::Done
-                }
-                BundleStatus::CollectionPending => {
-                    // Check if we have a local service registered
-                    if let Some(service) =
-                        self.service_registry.find(&bundle.bundle.destination).await
-                    {
-                        // Notify that the bundle is ready for collection
-                        trace!("Notifying application that bundle is ready for collection");
-                        service
-                            .on_received(&bundle.bundle.id, bundle.expiry())
-                            .await;
+                Ok(rib::FindResult::Deliver(service)) => {
+                    if bundle.bundle.id.fragment_info.is_some() {
+                        return self.reassemble(bundle).await;
                     }
-                    DispatchResult::Done
+
+                    // Bundle is for a local service
+                    return self.deliver_bundle(service, bundle).await;
                 }
-                BundleStatus::ForwardAckPending(_, until) => {
-                    self.on_bundle_forward_ack(*until, &mut bundle).await?
-                }
-                BundleStatus::Waiting(until) => {
-                    // Check to see if waiting is even worth it
-                    self.on_bundle_wait(*until, &mut bundle).await?
-                }
+                Ok(rib::FindResult::Forward(clas, until)) => (clas, until),
             };
 
-            match result {
-                DispatchResult::Done => return Ok(()),
-                DispatchResult::Drop(reason) => return self.drop_bundle(bundle, reason).await,
-                DispatchResult::Continue => {}
-            }
-        }
-    }
+            if !clas.is_empty() {
+                // Get bundle data from store, now we know we need it!
+                let Some(data) = self.load_data(&bundle).await? else {
+                    // Bundle data was deleted sometime during processing
+                    return Ok(());
+                };
 
-    pub(super) async fn bundle_wait(
-        &self,
-        bundle: &mut bundle::Bundle,
-        until: time::OffsetDateTime,
-    ) -> Result<DispatchResult, Error> {
-        // Check to see if waiting is even worth it
-        if until > bundle.expiry() {
-            trace!(
-                "Bundle lifetime {} is less than wait deadline {until}",
-                bundle.expiry()
-            );
-            return Ok(DispatchResult::Drop(Some(
-                bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-            )));
-        }
+                // TODO: Pluggable Egress filters!
 
-        let wait = until - time::OffsetDateTime::now_utc();
-        if wait > self.wait_sample_interval {
-            // Nothing to do now, it will be picked up later
-            trace!("Bundle will wait offline until {until}");
-            return self
-                .store
-                .set_status(bundle, BundleStatus::Waiting(until))
-                .await
-                .map(|_| DispatchResult::Done);
-        }
+                // Increment Hop Count, etc...
+                let data = self.update_extension_blocks(&bundle, data);
 
-        trace!("Bundle will wait inline until: {until}");
+                // Track fragmentation status
+                let mut fragment_mtu = None;
 
-        // Wait a bit
-        if !utils::cancellable_sleep(wait, &self.cancel_token).await {
-            // Cancelled
-            Ok(DispatchResult::Done)
-        } else {
-            // Keep dispatching
-            Ok(DispatchResult::Continue)
-        }
-    }
+                // For each CLA
+                for cla in clas {
+                    match cla.cla.forward(&next_hop, &data).await {
+                        Err(e) => warn!("CLA failed to forward: {e}"),
+                        Ok(cla::ForwardBundleResult::Sent) => {
+                            // We have successfully forwarded!
+                            self.report_bundle_forwarded(&bundle).await?;
 
-    async fn on_bundle_wait(
-        &self,
-        until: time::OffsetDateTime,
-        bundle: &mut bundle::Bundle,
-    ) -> Result<DispatchResult, Error> {
-        if until > bundle.expiry() {
-            trace!(
-                "Bundle lifetime {} is less than wait deadline {until}",
-                bundle.expiry()
-            );
-            return Ok(DispatchResult::Drop(Some(
-                bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute,
-            )));
-        }
-        let wait = until - time::OffsetDateTime::now_utc();
-        if wait > self.wait_sample_interval {
-            // Nothing to do now, it will be picked up later
-            return Ok(DispatchResult::Done);
-        }
-
-        trace!("Bundle will wait inline until: {until}");
-
-        // Wait a bit
-        if !utils::cancellable_sleep(wait, &self.cancel_token).await {
-            // Cancelled
-            Ok(DispatchResult::Done)
-        } else {
-            // Clear the wait state, and keep dispatching
-            self.store
-                .set_status(bundle, BundleStatus::DispatchPending)
-                .await
-                .map(|_| DispatchResult::Continue)
-        }
-    }
-
-    async fn on_bundle_forward_ack(
-        &self,
-        until: time::OffsetDateTime,
-        bundle: &mut bundle::Bundle,
-    ) -> Result<DispatchResult, Error> {
-        // Check if it's worth us waiting inline
-        let wait = until - time::OffsetDateTime::now_utc();
-        if wait > self.wait_sample_interval {
-            // Nothing to do now, it will be picked up later
-            trace!("Bundle will wait offline until: {until}");
-            return Ok(DispatchResult::Done);
-        }
-
-        trace!("Bundle will wait inline until: {until}");
-
-        // Wait a bit
-        if !utils::cancellable_sleep(wait, &self.cancel_token).await {
-            // Cancelled
-            return Ok(DispatchResult::Done);
-        }
-
-        // Reload bundle after we slept
-        match self.store.check_status(&bundle.bundle.id).await? {
-            None | Some(BundleStatus::Tombstone(_)) => {
-                // It's gone while we slept
-                Ok(DispatchResult::Done)
-            }
-            Some(status) => {
-                if status == bundle.metadata.status {
-                    // Clear the wait state
-                    self.store
-                        .set_status(bundle, BundleStatus::DispatchPending)
-                        .await?;
-                } else {
-                    bundle.metadata.status = status;
-                }
-                Ok(DispatchResult::Continue)
-            }
-        }
-    }
-
-    #[instrument(skip_all)]
-    pub async fn run(self: Arc<Dispatcher>, mut rx: tokio::sync::mpsc::Receiver<bundle::Bundle>) {
-        // We're going to spawn a bunch of tasks
-        let mut task_set = tokio::task::JoinSet::new();
-
-        // Start the store - this can take a while as the store is walked
-        self.store
-            .start(self.clone(), &mut task_set, self.cancel_token.clone())
-            .await;
-
-        // Give some feedback
-        const SECS: u64 = 5;
-        let timer = tokio::time::sleep(tokio::time::Duration::from_secs(SECS));
-        tokio::pin!(timer);
-        let mut bundles_processed = 0u64;
-
-        loop {
-            tokio::select! {
-                () = &mut timer => {
-                    if bundles_processed != 0 {
-                        info!("{bundles_processed} bundles processed, {} bundles/s",bundles_processed / SECS);
-                        bundles_processed = 0;
+                            // Should we drop now?  This is where Custody Transfer comes in
+                            todo!();
+                        }
+                        Ok(cla::ForwardBundleResult::NoNeighbour) => {
+                            trace!("CLA has no neighbour for {next_hop}");
+                        }
+                        Ok(cla::ForwardBundleResult::TooBig(mtu)) => {
+                            // Need to fragment to fit, track the largest MTU possible to minimize number of fragments
+                            fragment_mtu = fragment_mtu.max(Some(mtu));
+                        }
                     }
-                    timer.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(SECS));
-                },
-                bundle = rx.recv() => match bundle {
-                    Some(bundle) => {
-                        let dispatcher = self.clone();
-                        task_set.spawn(async move {
-                            dispatcher.process_bundle(bundle).await.trace_expect("Failed to dispatch bundle");
-                        });
-                    },
-                    None => break
-                },
-                Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                    r.trace_expect("Task terminated unexpectedly");
-                    bundles_processed = bundles_processed.saturating_add(1);
-                },
-                _ = self.cancel_token.cancelled() => {
-                    // Close the queue, we're done
-                    rx.close();
+                }
+
+                if let Some(mtu) = fragment_mtu {
+                    // Fragmentation required
+                    return self.fragment(mtu, bundle, data).await;
+                }
+            }
+
+            // See if we should wait
+            if let Some(until) = until {
+                return self.bundle_wait(next_hop, bundle, until).await;
+            }
+
+            // By the time we get here, we have tried every CLA
+            trace!("Failed to forward bundle to {next_hop}, no route to node");
+
+            if previous {
+                trace!("Failed to return bundle to previous node, no route to node");
+
+                return self
+                    .drop_bundle(
+                        bundle,
+                        Some(bpv7::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
+                    )
+                    .await;
+            }
+
+            // Return the bundle to the source via the 'previous_node' or 'bundle.source'
+            previous = true;
+            next_hop = bundle
+                .bundle
+                .previous_node
+                .as_ref()
+                .unwrap_or(&bundle.bundle.id.source)
+                .clone();
+
+            trace!("Returning bundle to previous node {next_hop}");
+        }
+    }
+
+    fn update_extension_blocks(
+        &self,
+        bundle: &bundle::Bundle,
+        source_data: storage::DataRef,
+    ) -> Vec<u8> {
+        let mut editor = bpv7::Editor::new(&bundle.bundle, source_data.as_ref().as_ref());
+
+        // Remove unrecognized blocks we are supposed to
+        for (block_number, block) in &bundle.bundle.blocks {
+            if let bpv7::BlockType::Unrecognised(_) = &block.block_type {
+                if block.flags.delete_block_on_failure {
+                    editor.remove_extension_block(*block_number);
                 }
             }
         }
 
-        // Wait for all sub-tasks to complete
-        while let Some(r) = task_set.join_next().await {
-            r.trace_expect("Task terminated unexpectedly")
+        // Previous Node Block
+        editor
+            .replace_extension_block(bpv7::BlockType::PreviousNode)
+            .data(cbor::encode::emit(
+                &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
+            ))
+            .build();
+
+        // Increment Hop Count
+        if let Some(hop_count) = &bundle.bundle.hop_count {
+            editor
+                .replace_extension_block(bpv7::BlockType::HopCount)
+                .data(cbor::encode::emit(&bpv7::HopInfo {
+                    limit: hop_count.limit,
+                    count: hop_count.count + 1,
+                }))
+                .build();
         }
+
+        // Update Bundle Age, if required
+        if bundle.bundle.age.is_some() || bundle.bundle.id.timestamp.creation_time.is_none() {
+            // We have a bundle age block already, or no valid clock at bundle source
+            // So we must add an updated bundle age block
+            let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
+                .whole_milliseconds()
+                .clamp(0, u64::MAX as i128) as u64;
+
+            editor
+                .replace_extension_block(bpv7::BlockType::BundleAge)
+                .data(cbor::encode::emit(bundle_age))
+                .build();
+        }
+
+        editor.build()
     }
 }

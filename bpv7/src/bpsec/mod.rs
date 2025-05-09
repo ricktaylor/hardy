@@ -23,16 +23,6 @@ pub enum Context {
     Unrecognised(u64),
 }
 
-impl std::fmt::Display for Context {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Context::BIB_HMAC_SHA2 => write!(f, "RFC9173 BIB-HMAC-SHA2"),
-            Context::BCB_AES_GCM => write!(f, "RFC9173 BCB-AES-GCM"),
-            Context::Unrecognised(v) => write!(f, "Unrecognised {v}"),
-        }
-    }
-}
-
 impl cbor::encode::ToCbor for Context {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {

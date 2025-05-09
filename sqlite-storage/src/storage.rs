@@ -33,10 +33,8 @@ enum StatusCodes {
     DispatchPending = 1,
     ReassemblyPending = 2,
     CollectionPending = 3,
-    ForwardPending = 4,
-    ForwardAckPending = 5,
-    Waiting = 6,
-    Tombstone = 7,
+    Waiting = 4,
+    Tombstone = 5,
 }
 
 impl From<i64> for StatusCodes {
@@ -45,10 +43,8 @@ impl From<i64> for StatusCodes {
             1 => Self::DispatchPending,
             2 => Self::ReassemblyPending,
             3 => Self::CollectionPending,
-            4 => Self::ForwardPending,
-            5 => Self::ForwardAckPending,
-            6 => Self::Waiting,
-            7 => Self::Tombstone,
+            4 => Self::Waiting,
+            5 => Self::Tombstone,
             _ => panic!("Invalid BundleStatus value {value}"),
         }
     }
@@ -60,21 +56,11 @@ impl From<StatusCodes> for i64 {
     }
 }
 
-fn bundle_status_to_parts(
-    value: &BundleStatus,
-) -> (i64, Option<i64>, Option<time::OffsetDateTime>) {
+fn bundle_status_to_parts(value: &BundleStatus) -> (i64, Option<time::OffsetDateTime>) {
     match value {
-        BundleStatus::DispatchPending => (StatusCodes::DispatchPending.into(), None, None),
-        BundleStatus::ReassemblyPending => (StatusCodes::ReassemblyPending.into(), None, None),
-        BundleStatus::CollectionPending => (StatusCodes::CollectionPending.into(), None, None),
-        BundleStatus::ForwardPending => (StatusCodes::ForwardPending.into(), None, None),
-        BundleStatus::ForwardAckPending(handle, until) => (
-            StatusCodes::ForwardAckPending.into(),
-            Some(*handle as i64),
-            Some(*until),
-        ),
-        BundleStatus::Waiting(until) => (StatusCodes::Waiting.into(), None, Some(*until)),
-        BundleStatus::Tombstone(from) => (StatusCodes::Tombstone.into(), None, Some(*from)),
+        BundleStatus::DispatchPending => (StatusCodes::DispatchPending.into(), None),
+        BundleStatus::ReassemblyPending => (StatusCodes::ReassemblyPending.into(), None),
+        BundleStatus::Tombstone(from) => (StatusCodes::Tombstone.into(), Some(*from)),
     }
 }
 
@@ -82,23 +68,15 @@ fn columns_to_bundle_status(
     row: &rusqlite::Row,
     idx1: usize,
     idx2: usize,
-    idx3: usize,
 ) -> rusqlite::Result<BundleStatus> {
     match (
         row.get::<_, i64>(idx1)?.into(),
-        row.get::<_, Option<i64>>(idx2)?,
-        row.get::<_, Option<time::OffsetDateTime>>(idx3)?,
+        row.get::<_, Option<time::OffsetDateTime>>(idx2)?,
     ) {
-        (StatusCodes::DispatchPending, None, None) => Ok(BundleStatus::DispatchPending),
-        (StatusCodes::ReassemblyPending, None, None) => Ok(BundleStatus::ReassemblyPending),
-        (StatusCodes::CollectionPending, None, None) => Ok(BundleStatus::CollectionPending),
-        (StatusCodes::ForwardPending, None, None) => Ok(BundleStatus::ForwardPending),
-        (StatusCodes::ForwardAckPending, Some(handle), Some(until)) => {
-            Ok(BundleStatus::ForwardAckPending(handle as u32, until))
-        }
-        (StatusCodes::Waiting, None, Some(until)) => Ok(BundleStatus::Waiting(until)),
-        (StatusCodes::Tombstone, None, Some(from)) => Ok(BundleStatus::Tombstone(from)),
-        (v, t, d) => panic!("Invalid BundleStatus value combination {v:?}/{t:?}/{d:?}"),
+        (StatusCodes::DispatchPending, None) => Ok(BundleStatus::DispatchPending),
+        (StatusCodes::ReassemblyPending, None) => Ok(BundleStatus::ReassemblyPending),
+        (StatusCodes::Tombstone, Some(from)) => Ok(BundleStatus::Tombstone(from)),
+        (v, d) => panic!("Invalid BundleStatus value combination {v:?}/{d:?}"),
     }
 }
 
@@ -285,22 +263,21 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
            17: bundles.hop_count,
            18: bundles.hop_limit,
            19: bundles.wait_until,
-           20: bundles.ack_handle,
-           21: bundle_blocks.block_num,
-           22: bundle_blocks.block_type,
-           23: bundle_blocks.block_flags,
-           24: bundle_blocks.block_crc_type,
-           25: bundle_blocks.data_start,
-           26: bundle_blocks.data_len,
-           27: bundle_blocks.payload_offset,
-           28: bundle_blocks.payload_len,
-           29: bundle_blocks.bcb,
+           20: bundle_blocks.block_num,
+           21: bundle_blocks.block_type,
+           22: bundle_blocks.block_flags,
+           23: bundle_blocks.block_crc_type,
+           24: bundle_blocks.data_start,
+           25: bundle_blocks.data_len,
+           26: bundle_blocks.payload_offset,
+           27: bundle_blocks.payload_len,
+           28: bundle_blocks.bcb,
     */
 
     while let Some(mut row) = rows.next()? {
         let bundle_id: i64 = row.get(0)?;
         let metadata = BundleMetadata {
-            status: columns_to_bundle_status(row, 1, 20, 19)?,
+            status: columns_to_bundle_status(row, 1, 19)?,
             storage_name: row.get(2)?,
             hash: decode_hash(row, 3)?,
             received_at: row.get(4)?,
@@ -351,16 +328,16 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
         };
 
         loop {
-            let block_number = as_u64(row.get(21)?);
+            let block_number = as_u64(row.get(20)?);
             let block = bpv7::Block {
-                block_type: as_u64(row.get(22)?).into(),
-                flags: as_u64(row.get(23)?).into(),
-                crc_type: as_u64(row.get(24)?).into(),
-                data_start: as_u64(row.get(25)?) as usize,
-                data_len: as_u64(row.get(26)?) as usize,
-                payload_offset: as_u64(row.get(27)?) as usize,
-                payload_len: as_u64(row.get(28)?) as usize,
-                bcb: row.get::<_, Option<i64>>(29)?.map(as_u64),
+                block_type: as_u64(row.get(21)?).into(),
+                flags: as_u64(row.get(22)?).into(),
+                crc_type: as_u64(row.get(23)?).into(),
+                data_start: as_u64(row.get(24)?) as usize,
+                data_len: as_u64(row.get(25)?) as usize,
+                payload_offset: as_u64(row.get(26)?) as usize,
+                payload_len: as_u64(row.get(27)?) as usize,
+                bcb: row.get::<_, Option<i64>>(28)?.map(as_u64),
             };
 
             if bundle.blocks.insert(block_number, block).is_some() {
@@ -415,7 +392,6 @@ impl storage::MetadataStorage for Storage {
                     hop_count,
                     hop_limit,
                     wait_until,
-                    ack_handle,
                     block_num,
                     block_type,
                     block_flags,
@@ -456,7 +432,7 @@ impl storage::MetadataStorage for Storage {
 
             let bundle_id: i64 = row.get(0)?;
             let metadata = BundleMetadata {
-                status: columns_to_bundle_status(row, 1, 20, 19)?,
+                status: columns_to_bundle_status(row, 1, 19)?,
                 storage_name: row.get(2)?,
                 hash: decode_hash(row, 3)?,
                 received_at: row.get(4)?,
@@ -507,16 +483,16 @@ impl storage::MetadataStorage for Storage {
             };
 
             loop {
-                let block_number = as_u64(row.get(21)?);
+                let block_number = as_u64(row.get(20)?);
                 let block = bpv7::Block {
-                    block_type: as_u64(row.get(22)?).into(),
-                    flags: as_u64(row.get(23)?).into(),
-                    crc_type: as_u64(row.get(24)?).into(),
-                    data_start: as_u64(row.get(25)?) as usize,
-                    data_len: as_u64(row.get(26)?) as usize,
-                    payload_offset: as_u64(row.get(27)?) as usize,
-                    payload_len: as_u64(row.get(28)?) as usize,
-                    bcb: row.get::<_, Option<i64>>(29)?.map(as_u64),
+                    block_type: as_u64(row.get(21)?).into(),
+                    flags: as_u64(row.get(22)?).into(),
+                    crc_type: as_u64(row.get(23)?).into(),
+                    data_start: as_u64(row.get(24)?) as usize,
+                    data_len: as_u64(row.get(25)?) as usize,
+                    payload_offset: as_u64(row.get(26)?) as usize,
+                    payload_len: as_u64(row.get(27)?) as usize,
+                    bcb: row.get::<_, Option<i64>>(28)?.map(as_u64),
                 };
 
                 if bundle.blocks.insert(block_number, block).is_some() {
@@ -547,7 +523,7 @@ impl storage::MetadataStorage for Storage {
         let bundle = bundle.clone();
         self.pooled_connection(move |conn| {
             let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let (status, ack_handle, until) = bundle_status_to_parts(&metadata.status);
+            let (status, until) = bundle_status_to_parts(&metadata.status);
 
             // Insert bundle
             let bundle_id = trans
@@ -572,9 +548,8 @@ impl storage::MetadataStorage for Storage {
                     hop_count,
                     hop_limit,
                     wait_until,
-                    ack_handle
                     )
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                 RETURNING id;"#,
                 )?
                 .query_row(
@@ -605,7 +580,6 @@ impl storage::MetadataStorage for Storage {
                         bundle.hop_count.as_ref().map(|h| as_i64(h.count)),
                         bundle.hop_count.as_ref().map(|h| as_i64(h.limit)),
                         until,
-                        ack_handle
                     ),
                     |row| Ok(as_u64(row.get(0)?)),
                 );
@@ -708,7 +682,6 @@ impl storage::MetadataStorage for Storage {
                     r#"SELECT 
                             id,
                             status,
-                            ack_handle,
                             wait_until,
                             storage_name,
                             hash,
@@ -740,10 +713,10 @@ impl storage::MetadataStorage for Storage {
                         Ok((
                             row.get::<_, i64>(0)?,
                             BundleMetadata {
-                                status: columns_to_bundle_status(row, 1, 2, 3)?,
-                                storage_name: row.get(4)?,
-                                hash: decode_hash(row, 5)?,
-                                received_at: row.get(6)?,
+                                status: columns_to_bundle_status(row, 1, 2)?,
+                                storage_name: row.get(3)?,
+                                hash: decode_hash(row, 4)?,
+                                received_at: row.get(5)?,
                             },
                         ))
                     },
@@ -775,7 +748,7 @@ impl storage::MetadataStorage for Storage {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
             conn.prepare_cached(
-                r#"SELECT status,ack_handle,wait_until 
+                r#"SELECT status,wait_until 
                 FROM bundles 
                 WHERE 
                     source = ?1 AND
@@ -799,7 +772,7 @@ impl storage::MetadataStorage for Storage {
                         .as_ref()
                         .map_or(-1, |f| as_i64(f.total_len)),
                 ),
-                |row| columns_to_bundle_status(row, 0, 1, 2),
+                |row| columns_to_bundle_status(row, 0, 1),
             )
             .optional()
             .map_err(Into::into)
@@ -816,52 +789,60 @@ impl storage::MetadataStorage for Storage {
         let bundle_id = bundle_id.clone();
         let status = status.clone();
         self.pooled_connection(move |conn| {
-            let (status_code, ack_handle, until) = bundle_status_to_parts(&status);
+            let (status_code, until) = bundle_status_to_parts(&status);
 
             let r = if let BundleStatus::Tombstone(_) = status {
-                conn
-                    .prepare_cached(
-                        r#"UPDATE bundles 
-                    SET status = ?1, ack_handle = ?2, wait_until = ?3, storage_name = NULL, hash = NULL 
+                conn.prepare_cached(
+                    r#"UPDATE bundles 
+                    SET status = ?1, wait_until = ?2, storage_name = NULL, hash = NULL 
                     WHERE 
-                        source = ?4 AND
-                        creation_time = ?5 AND
-                        creation_seq_num = ?6 AND
-                        fragment_offset = ?7 AND 
-                        fragment_total_len = ?8;"#,
-                    )?
-                    .execute((
-                        status_code,
-                        ack_handle,
-                        until,
-                        encode_eid(&bundle_id.source),
-                        encode_creation_time(bundle_id.timestamp.creation_time),
-                        as_i64(bundle_id.timestamp.sequence_number),
-                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.offset)),
-                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.total_len)),
-                    ))
+                        source = ?3 AND
+                        creation_time = ?4 AND
+                        creation_seq_num = ?5 AND
+                        fragment_offset = ?6 AND 
+                        fragment_total_len = ?7;"#,
+                )?
+                .execute((
+                    status_code,
+                    until,
+                    encode_eid(&bundle_id.source),
+                    encode_creation_time(bundle_id.timestamp.creation_time),
+                    as_i64(bundle_id.timestamp.sequence_number),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.offset)),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.total_len)),
+                ))
             } else {
-                conn
-                    .prepare_cached(
-                        r#"UPDATE bundles 
-                    SET status = ?1, ack_handle = ?2, wait_until = ?3 
+                conn.prepare_cached(
+                    r#"UPDATE bundles 
+                    SET status = ?1, wait_until = ?2 
                     WHERE 
-                        source = ?4 AND
-                        creation_time = ?5 AND
-                        creation_seq_num = ?6 AND
-                        fragment_offset = ?7 AND 
-                        fragment_total_len = ?8;"#,
-                    )?
-                    .execute((
-                        status_code,
-                        ack_handle,
-                        until,
-                        encode_eid(&bundle_id.source),
-                        encode_creation_time(bundle_id.timestamp.creation_time),
-                        as_i64(bundle_id.timestamp.sequence_number),
-                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.offset)),
-                        bundle_id.fragment_info.as_ref().map_or(-1, |f| as_i64(f.total_len)),
-                    ))
+                        source = ?3 AND
+                        creation_time = ?4 AND
+                        creation_seq_num = ?5 AND
+                        fragment_offset = ?6 AND 
+                        fragment_total_len = ?7;"#,
+                )?
+                .execute((
+                    status_code,
+                    until,
+                    encode_eid(&bundle_id.source),
+                    encode_creation_time(bundle_id.timestamp.creation_time),
+                    as_i64(bundle_id.timestamp.sequence_number),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.offset)),
+                    bundle_id
+                        .fragment_info
+                        .as_ref()
+                        .map_or(-1, |f| as_i64(f.total_len)),
+                ))
             };
 
             if !r.map(|count| count != 0)? {
@@ -869,60 +850,6 @@ impl storage::MetadataStorage for Storage {
             } else {
                 Ok(())
             }
-        }).await
-    }
-
-    #[instrument(skip(self, tx))]
-    async fn get_waiting_bundles(
-        &self,
-        limit: time::OffsetDateTime,
-        tx: storage::Sender,
-    ) -> storage::Result<()> {
-        self.pooled_connection(move |conn| {
-            unpack_bundles(
-                conn.prepare_cached(
-                    r#"SELECT 
-                        bundles.id,
-                        status,
-                        storage_name,
-                        hash,
-                        received_at,
-                        flags,
-                        crc_type,
-                        source,
-                        destination,
-                        report_to,
-                        creation_time,
-                        creation_seq_num,
-                        lifetime,                    
-                        fragment_offset,
-                        fragment_total_len,
-                        previous_node,
-                        age,
-                        hop_count,
-                        hop_limit,
-                        wait_until,
-                        ack_handle,
-                        block_num,
-                        block_type,
-                        block_flags,
-                        block_crc_type,
-                        data_start,
-                        data_len,
-                        payload_offset,
-                        payload_len,
-                        bcb
-                    FROM bundles
-                    JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
-                    WHERE status IN (?1,?2) AND unixepoch(wait_until) <= unixepoch(?3);"#,
-                )?
-                .query((
-                    StatusCodes::ForwardAckPending as i64,
-                    StatusCodes::Waiting as i64,
-                    limit,
-                ))?,
-                &tx,
-            )
         })
         .await
     }
@@ -954,7 +881,6 @@ impl storage::MetadataStorage for Storage {
                                 hop_count,
                                 hop_limit,
                                 wait_until,
-                                ack_handle
                             FROM unconfirmed_bundles
                             JOIN bundles ON id = unconfirmed_bundles.bundle_id
                             LIMIT 16
@@ -974,61 +900,6 @@ impl storage::MetadataStorage for Storage {
                         JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
                 )?
                 .query(())?,
-                &tx,
-            )
-        })
-        .await
-    }
-
-    #[instrument(skip(self, tx))]
-    async fn poll_for_collection(
-        &self,
-        destination: &bpv7::Eid,
-        tx: storage::Sender,
-    ) -> storage::Result<()> {
-        let destination = destination.clone();
-        self.pooled_connection(move |conn| {
-            unpack_bundles(
-                conn.prepare_cached(
-                    r#"SELECT 
-                        bundles.id,
-                        status,
-                        storage_name,
-                        hash,
-                        received_at,
-                        flags,
-                        crc_type,
-                        source,
-                        destination,
-                        report_to,
-                        creation_time,
-                        creation_seq_num,
-                        lifetime,                    
-                        fragment_offset,
-                        fragment_total_len,
-                        previous_node,
-                        age,
-                        hop_count,
-                        hop_limit,
-                        wait_until,
-                        ack_handle,
-                        block_num,
-                        block_type,
-                        block_flags,
-                        block_crc_type,
-                        data_start,
-                        data_len,
-                        payload_offset,
-                        payload_len,
-                        bcb
-                    FROM bundles
-                    JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
-                    WHERE status = ?1 AND destination = ?2;"#,
-                )?
-                .query((
-                    StatusCodes::CollectionPending as i64,
-                    encode_eid(&destination),
-                ))?,
                 &tx,
             )
         })

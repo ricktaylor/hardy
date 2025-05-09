@@ -8,14 +8,15 @@ pub struct Bundle {
 
 impl Bundle {
     pub fn creation_time(&self) -> time::OffsetDateTime {
-        if let Some(creation_time) = self.bundle.id.timestamp.creation_time {
-            creation_time.into()
-        } else {
-            self.metadata
-                .received_at
-                .unwrap_or_else(time::OffsetDateTime::now_utc)
-                .saturating_sub(self.bundle.age.unwrap_or_default())
-        }
+        self.bundle.id.timestamp.creation_time.map_or_else(
+            || {
+                self.metadata
+                    .received_at
+                    .unwrap_or_else(time::OffsetDateTime::now_utc)
+                    .saturating_sub(self.bundle.age.unwrap_or_default())
+            },
+            |creation_time| creation_time.into(),
+        )
     }
 
     pub fn expiry(&self) -> time::OffsetDateTime {

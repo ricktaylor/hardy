@@ -193,15 +193,15 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
 
 fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(&[u8], bool, usize), Error> {
     let (data_len, shortest, len) = parse_uint_minor(minor, data)?;
-    if let Some(sum) = (len as u64).checked_add(data_len) {
-        if sum > data.len() as u64 {
-            Err(Error::NotEnoughData)
-        } else {
-            let end = ((len as u64) + data_len) as usize;
-            Ok((&data[len..end], shortest, end))
-        }
-    } else {
+    if (len as u64)
+        .checked_add(data_len)
+        .ok_or(Error::NotEnoughData)?
+        > data.len() as u64
+    {
         Err(Error::NotEnoughData)
+    } else {
+        let end = ((len as u64) + data_len) as usize;
+        Ok((&data[len..end], shortest, end))
     }
 }
 

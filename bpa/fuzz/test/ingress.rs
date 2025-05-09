@@ -1,11 +1,11 @@
-#![no_main]
+#![cfg(test)]
 
 use hardy_bpa::async_trait;
 use hardy_bpv7::prelude as bpv7;
-use libfuzzer_sys::fuzz_target;
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
 
-static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+use crate::get_runtime;
+
 static SINK: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>> = std::sync::OnceLock::new();
 
 struct NullCla {}
@@ -31,18 +31,8 @@ impl hardy_bpa::cla::Cla for NullCla {
     }
 }
 
-fn setup() -> tokio::runtime::Runtime {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
-        .with_target(true)
-        .init();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.spawn(async {
+fn start() {
+    get_runtime().spawn(async {
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
             node_ids: [bpv7::Eid::Ipn {
@@ -75,12 +65,13 @@ fn setup() -> tokio::runtime::Runtime {
         let cla = Arc::new(NullCla {});
         bpa.register_cla("test", cla).await;
     });
-
-    rt
 }
 
-fuzz_target!(|data: &[u8]| {
-    RT.get_or_init(setup).block_on(async {
+#[test]
+fn test() {
+    start();
+
+    get_runtime().block_on(async {
         let sink = loop {
             if let Some(sink) = SINK.get() {
                 break sink;
@@ -88,9 +79,54 @@ fuzz_target!(|data: &[u8]| {
             tokio::task::yield_now().await;
         };
 
-        _ = sink.dispatch(data).await;
-    })
-});
+        _ = sink
+            .dispatch(include_bytes!(
+                "../artifacts/ingress/oom-e00b48801c97d3e554583d3c26fb742f9e6557ba"
+            ))
+            .await;
+    });
+}
 
-// cargo cov -- show --format=html  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -o ./fuzz/coverage/ingress/ -ignore-filename-regex='/.cargo/|rustc/|/target/'
-// cargo cov -- export --format=lcov  -instr-profile ./fuzz/coverage/ingress/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ingress -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/ingress/lcov.info
+#[test]
+fn test_all() {
+    start();
+
+    let sink = get_runtime().block_on(async {
+        loop {
+            if let Some(sink) = SINK.get() {
+                break sink;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+
+    match std::fs::read_dir("./corpus/ingress") {
+        Err(e) => {
+            eprintln!(
+                "Failed to open dir: {e}, curr dir: {}",
+                std::env::current_dir().unwrap().to_string_lossy()
+            );
+        }
+        Ok(dir) => {
+            get_runtime().block_on(async {
+                for entry in dir {
+                    if let Ok(path) = entry {
+                        let path = path.path();
+                        if path.is_file() {
+                            if let Ok(mut file) = std::fs::File::open(&path) {
+                                let mut buffer = Vec::new();
+                                if file.read_to_end(&mut buffer).is_ok() {
+                                    _ = get_runtime()
+                                        .spawn(async move {
+                                            _ = sink.dispatch(&buffer).await;
+                                        })
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
