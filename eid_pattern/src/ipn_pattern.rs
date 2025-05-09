@@ -148,12 +148,18 @@ impl IpnInterval {
 
 // ipn-pat-item = "ipn:" (ipn-ssp3 / ipn-ssp2)
 // ipn-ssp3 = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
-// ipn-ssp2 = ipn-part-pat nbr-delim ipn-part-pat
+// OLD: ipn-ssp2 = ipn-part-pat nbr-delim ipn-part-pat
+// ipn-ssp2 = ("!" / ipn-part-pat) nbr-delim ipn-part-pat
 pub(crate) fn parse_ipn_pat_item(input: &mut &[u8]) -> ModalResult<EidPatternItem> {
     preceded(
         "ipn:",
         alt((
             "**".map(|_| IpnPatternItem::new_any()),
+            preceded("!.", parse_ipn_part_pat).map(|c| IpnPatternItem {
+                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+                node_number: IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)]),
+                service_number: c,
+            }),
             (
                 parse_ipn_part_pat,
                 preceded(".", parse_ipn_part_pat),
@@ -233,11 +239,11 @@ fn parse_ipn_range(input: &mut &[u8]) -> ModalResult<IpnPattern> {
         .parse_next(input)
 }
 
-// ipn-interval = ipn-decimal [ "-" (ipn-decimal / "max") ]
+// ipn-interval = ipn-decimal [ ("-" ipn-decimal) / "+" ]
 fn parse_ipn_interval(input: &mut &[u8]) -> ModalResult<IpnInterval> {
     (
         dec_uint,
-        opt(preceded("-", alt((dec_uint, "max".map(|_| u32::MAX))))),
+        opt(alt(("+".map(|_| u32::MAX), preceded("-", dec_uint)))),
     )
         .map(|(start, end)| {
             end.map_or_else(

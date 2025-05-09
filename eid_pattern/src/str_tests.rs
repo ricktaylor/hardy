@@ -85,9 +85,34 @@ fn tests() {
             service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
         },
     );
+    ipn_match(
+        "ipn:0.3.[10-max]",
+        IpnPatternItem {
+            allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+            node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(10..=u32::MAX)]),
+        },
+    );
+    ipn_match(
+        "ipn:0.3.[10+]",
+        IpnPatternItem {
+            allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+            node_number: IpnPattern::Range(vec![IpnInterval::Number(3)]),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(10..=u32::MAX)]),
+        },
+    );
     assert_eq!(
         "*:**".parse::<EidPattern>().expect("Failed to parse"),
         EidPattern::Any
+    );
+
+    ipn_match(
+        "ipn:!.*",
+        IpnPatternItem {
+            allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
+            node_number: IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)]),
+            service_number: IpnPattern::Wildcard,
+        },
     );
 
     ipn_match("ipn:**", IpnPatternItem::new_any());
