@@ -115,7 +115,7 @@ impl Dispatcher {
                 Ok(true) => Ok(()),
                 Ok(false) => {
                     // Bundle with matching id already exists in the metadata store
-                    trace!("Bundle with matching id already exists in the metadata store");
+                    //trace!("Bundle with matching id already exists in the metadata store");
 
                     // Drop the stored data if it was valid, and do not process further
                     if let Some(storage_name) = &bundle.metadata.storage_name {

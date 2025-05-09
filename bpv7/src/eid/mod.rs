@@ -68,7 +68,7 @@ impl cbor::encode::ToCbor for &Eid {
             } => {
                 a.emit(2);
                 a.emit_array(Some(2), |a| {
-                    a.emit((*allocator_id as u64) << 32 | *node_number as u64);
+                    a.emit(((*allocator_id as u64) << 32) | *node_number as u64);
                     a.emit(*service_number);
                 });
             }

@@ -9,7 +9,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 thiserror = "2.0.12"
-half = { version = "2.4.1", features = ["std", "num-traits"] }
+half = { version = "2.6.0", features = ["std", "num-traits"] }
 num-traits = "0.2.19"
 
 [dev-dependencies]

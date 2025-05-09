@@ -114,11 +114,7 @@ impl ClaRegistry {
 
     #[instrument(skip(self))]
     pub async fn exists(&self, handle: u32) -> Result<(), tonic::Status> {
-        if !self.clas.read().await.contains_key(&handle) {
-            Err(tonic::Status::not_found("No such CLA registered"))
-        } else {
-            Ok(())
-        }
+        self.clas.read().await.contains_key(&handle).ok_or(tonic::Status::not_found("No such CLA registered"))
     }
 
     #[instrument(skip(self))]
