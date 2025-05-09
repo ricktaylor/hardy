@@ -98,6 +98,9 @@ impl Dispatcher {
                 .on_receive(&bundle.bundle, data.as_ref().as_ref(), bundle.expiry())
                 .await;
         }
+
+        self.report_bundle_delivery(&bundle).await?;
+
         // And we are done with the bundle
         self.drop_bundle(bundle, None).await
     }

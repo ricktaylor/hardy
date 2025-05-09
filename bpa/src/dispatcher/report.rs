@@ -7,6 +7,8 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         reason: bpv7::StatusReportReasonCode,
     ) -> Result<(), Error> {
+        trace!("Bundle {:?} received", &bundle.bundle.id);
+
         // Check if a report is requested
         if !bundle.bundle.flags.receipt_report_requested {
             return Ok(());
@@ -43,6 +45,8 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
     ) -> Result<(), Error> {
+        trace!("Bundle {:?} forwarded", &bundle.bundle.id);
+
         // Check if a report is requested
         if !bundle.bundle.flags.forward_report_requested {
             return Ok(());
@@ -77,6 +81,8 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
     ) -> Result<(), Error> {
+        trace!("Bundle {:?} delivered", &bundle.bundle.id);
+
         // Check if a report is requested
         if !bundle.bundle.flags.delivery_report_requested {
             return Ok(());
@@ -110,6 +116,8 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         reason: bpv7::StatusReportReasonCode,
     ) -> Result<(), Error> {
+        trace!("Bundle {:?} deleted", &bundle.bundle.id);
+
         // Check if a report is requested
         if !bundle.bundle.flags.delete_report_requested {
             return Ok(());
