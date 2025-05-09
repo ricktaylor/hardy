@@ -19,7 +19,7 @@ hardy-bpa = { path = "../bpa" }
 hardy-eid-pattern = { path = "../eid_pattern" }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", optional = true }
-tokio = { version = "1.44.0", features = [
+tokio = { version = "1.45.0", features = [
     "macros",
     "rt-multi-thread",
     "signal",

@@ -23,7 +23,7 @@ packaged-installation = []
 hardy-bpv7 = { path = "../bpv7" }
 hardy-proto = { path = "../proto" }
 fuzz-macros = { path = "../fuzz-macros" }
-tokio = { version = "1.44.0", features = [
+tokio = { version = "1.45.0", features = [
     "macros",
     "rt-multi-thread",
     "signal",

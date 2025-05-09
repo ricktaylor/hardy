@@ -14,7 +14,7 @@ hardy-eid-pattern = { path = "../eid_pattern" }
 fuzz-macros = { path = "../fuzz-macros" }
 time = { version = "0.3.39", features = ["serde-human-readable"] }
 async-trait = "0.1.88"
-tokio = { version = "1.44.0", features = ["rt", "macros", "time"] }
+tokio = { version = "1.45.0", features = ["rt", "macros", "time"] }
 tokio-util = "0.7.13"
 tracing = "0.1.41"
 tracing-log = "0.2.0"
