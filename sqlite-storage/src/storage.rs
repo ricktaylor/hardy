@@ -32,9 +32,7 @@ pub enum Error {
 enum StatusCodes {
     DispatchPending = 1,
     ReassemblyPending = 2,
-    CollectionPending = 3,
-    Waiting = 4,
-    Tombstone = 5,
+    Tombstone = 3,
 }
 
 impl From<i64> for StatusCodes {
@@ -42,9 +40,7 @@ impl From<i64> for StatusCodes {
         match value {
             1 => Self::DispatchPending,
             2 => Self::ReassemblyPending,
-            3 => Self::CollectionPending,
-            4 => Self::Waiting,
-            5 => Self::Tombstone,
+            3 => Self::Tombstone,
             _ => panic!("Invalid BundleStatus value {value}"),
         }
     }
@@ -271,7 +267,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
            25: bundle_blocks.data_len,
            26: bundle_blocks.payload_offset,
            27: bundle_blocks.payload_len,
-           28: bundle_blocks.bcb,
+           28: bundle_blocks.bcb
     */
 
     while let Some(mut row) = rows.next()? {
@@ -547,7 +543,7 @@ impl storage::MetadataStorage for Storage {
                     age,
                     hop_count,
                     hop_limit,
-                    wait_until,
+                    wait_until
                     )
                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                 RETURNING id;"#,
@@ -880,7 +876,7 @@ impl storage::MetadataStorage for Storage {
                                 age,
                                 hop_count,
                                 hop_limit,
-                                wait_until,
+                                wait_until
                             FROM unconfirmed_bundles
                             JOIN bundles ON id = unconfirmed_bundles.bundle_id
                             LIMIT 16
