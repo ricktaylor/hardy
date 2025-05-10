@@ -13,7 +13,7 @@
 #grpc_address="[::1]:50051"
 
 [bpa]
-# Node Ids are text EIDs, but any service components are automatically stripped
+# Node Ids are the text EIDs of the administrative endpoints
 # No Node Ids means use a random ipn Fully Qualified Node Number
 #node_ids = "ipn:[A.]N.0"
 #node_ids = "dtn://node-name/"
