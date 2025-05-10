@@ -13,11 +13,11 @@
 #grpc_address="[::1]:50051"
 
 [bpa]
-# Administrative endpoints are text EIDs, but any service components are automatically stripped
-# No administrative endpoints means use a random ipn Fully Qualified Node Number
-#admin_endpoints = "ipn:[A.]N.0"
-#admin_endpoints = "dtn://node-name/"
-#admin_endpoints = [ "ipn:[A.]N.0", "dtn://node-name/"]
+# Node Ids are text EIDs, but any service components are automatically stripped
+# No Node Ids means use a random ipn Fully Qualified Node Number
+#node_ids = "ipn:[A.]N.0"
+#node_ids = "dtn://node-name/"
+#node_ids = [ "ipn:[A.]N.0", "dtn://node-name/"]
 
 # Should we generate Status Reports?
 #status_reports = false

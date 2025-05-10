@@ -17,10 +17,10 @@ fn tests() {
     null_check("ipn:0.0.0");
     null_check("dtn:none");
 
-    dtn_check("dtn://somewhere/", "somewhere", &[""]);
+    dtn_check("dtn://somewhere/", "somewhere", &[]);
     dtn_check("dtn://somewhere/else", "somewhere", &["else"]);
     dtn_check("dtn://somewhere/else/", "somewhere", &["else", ""]);
-    dtn_check("dtn://somewhere%2Felse/", "somewhere/else", &[""]);
+    dtn_check("dtn://somewhere%2Felse/", "somewhere/else", &[]);
     dtn_check(
         "dtn://somewhere/over/the/rainbow",
         "somewhere",

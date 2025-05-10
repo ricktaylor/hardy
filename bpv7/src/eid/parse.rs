@@ -123,9 +123,20 @@ fn parse_dtn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
             "/",
         ),
     )
-        .map(|(node_name, demux): (Box<str>, Vec<Box<str>>)| Eid::Dtn {
-            node_name,
-            demux: demux.into(),
+        .map(|(node_name, mut demux): (Box<str>, Vec<Box<str>>)| {
+            // [[]] => []
+            if demux.len() == 1
+                && demux
+                    .first()
+                    .and_then(|s| (s.is_empty()).then_some(()))
+                    .is_some()
+            {
+                demux = Vec::new();
+            }
+            Eid::Dtn {
+                node_name,
+                demux: demux.into(),
+            }
         })
         .parse_next(input)
 }
