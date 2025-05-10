@@ -15,6 +15,10 @@ impl Bpa {
     pub async fn start(config: &config::Config) -> Self {
         trace!("Starting new BPA");
 
+        if config.status_reports {
+            warn!("Bundle status reports are enabled");
+        }
+
         // New store
         let store = Arc::new(store::Store::new(config));
 
