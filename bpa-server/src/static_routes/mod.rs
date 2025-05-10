@@ -9,14 +9,12 @@ use notify_debouncer_full::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio::sync::mpsc::*;
 
 mod parse;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(default)]
 pub struct Config {
     pub routes_file: PathBuf,

@@ -11,15 +11,11 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(default)]
 pub struct Config {
     pub db_dir: std::path::PathBuf,
     pub timeout: std::time::Duration,
-}
-
-impl Config {
-    pub const KEY: &str = "sqlite";
 }
 
 impl Default for Config {

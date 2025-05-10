@@ -10,14 +10,10 @@ mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(default)]
 pub struct Config {
     pub store_dir: std::path::PathBuf,
-}
-
-impl Config {
-    pub const KEY: &str = "localdisk";
 }
 
 impl Default for Config {

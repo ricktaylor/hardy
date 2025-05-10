@@ -45,6 +45,7 @@ async fn main() {
         return;
     };
 
+    // Start the BPA
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::start(&config.bpa).await);
 
     // Prepare for graceful shutdown

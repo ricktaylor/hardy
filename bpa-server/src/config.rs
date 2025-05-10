@@ -1,20 +1,105 @@
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-#[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Config {
-    pub bpa: hardy_bpa::config::Config,
-    pub static_routes: Option<static_routes::Config>,
-}
+use std::path::{Path, PathBuf};
 
 mod built_info {
     // The file has been placed there by the build script.
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type", content = "config")]
+pub enum MetadataStorage {
+    #[cfg(feature = "sqlite-storage")]
+    #[serde(rename = "sqlite")]
+    Sqlite(hardy_sqlite_storage::Config),
+
+    #[cfg(feature = "postgres-storage")]
+    #[serde(rename = "postgres")]
+    Postgres(PostgresConfig),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type", content = "config")]
+pub enum BundleStorage {
+    #[cfg(feature = "localdisk-storage")]
+    #[serde(rename = "localdisk")]
+    LocalDisk(hardy_localdisk_storage::Config),
+
+    #[cfg(feature = "s3-storage")]
+    #[serde(rename = "s3")]
+    S3(S3Config),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Cla {
+    pub name: String,
+    #[serde(flatten)]
+    pub cla: ClaConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "config")]
+pub enum ClaConfig {
+    TcpClv4(TcpclConfig),
+    //UdpCl(UdpclConfig),
+    //Btpu-Ethernet(BtpuEthernetConfig),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TcpclConfig {}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct Config {
+    // Logging level
+    pub log_level: String,
+
+    // Static Routes Configuration
+    pub static_routes: Option<static_routes::Config>,
+
+    // Flattened BPA settings
+    #[serde(flatten, default)]
+    pub bpa: hardy_bpa::config::Config,
+
+    // Metadata Storage Configuration
+    #[serde(default)]
+    pub metadata_storage: Option<MetadataStorage>,
+
+    // Bundle Storage Configuration
+    #[serde(default)]
+    pub bundle_storage: Option<BundleStorage>,
+
+    // Convergence Layer Adaptors (CLAs)
+    #[serde(default)]
+    pub clas: Vec<Cla>,
+}
+
+impl Config {
+    fn set_bpa_storage(&mut self, upgrade: bool) {
+        if let Some(config) = self.metadata_storage.take() {
+            self.bpa.metadata_storage = match config {
+                #[cfg(feature = "sqlite-storage")]
+                MetadataStorage::Sqlite(config) => {
+                    Some(hardy_sqlite_storage::Storage::init(config, upgrade))
+                }
+
+                #[cfg(feature = "postgres-storage")]
+                MetadataStorage::Postgres(config) => todo!(),
+            };
+        }
+
+        if let Some(config) = self.bundle_storage.take() {
+            self.bpa.bundle_storage = match config {
+                #[cfg(feature = "localdisk-storage")]
+                BundleStorage::LocalDisk(config) => {
+                    Some(hardy_localdisk_storage::Storage::init(config, upgrade))
+                }
+
+                #[cfg(feature = "s3-storage")]
+                BundleStorage::S3(config) => todo!(),
+            };
+        }
+    }
 }
 
 fn options() -> getopts::Options {
@@ -95,27 +180,27 @@ pub fn init() -> Option<Config> {
         );
         b = b.add_source(::config::File::with_name(&source))
     } else {
-        let path = config_dir().join(format!("{}.toml", built_info::PKG_NAME));
+        let path = config_dir().join(format!("{}.yaml", built_info::PKG_NAME));
         config_source = format!(
             "Using optional base configuration file '{}'",
             path.display()
         );
-        b = b.add_source(
-            ::config::File::from(path)
-                .required(false)
-                .format(::config::FileFormat::Toml),
-        )
+        b = b.add_source(::config::File::from(path).required(false))
     }
 
     // Pull in environment vars
     b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
 
     // And parse...
-    let config_table = b.build().expect("Failed to read configuration");
+    let mut config: Config = b
+        .build()
+        .expect("Failed to read configuration")
+        .try_deserialize()
+        .expect("Failed to parse configuration");
 
-    let log_level = get(&config_table, "log_level")
-        .expect("Invalid 'log_level' value in configuration")
-        .unwrap_or("info".to_string())
+    // Start the logging
+    let log_level = config
+        .log_level
         .parse::<tracing_subscriber::filter::LevelFilter>()
         .expect("Invalid 'log_level' value in configuration");
 
@@ -133,88 +218,8 @@ pub fn init() -> Option<Config> {
     );
     info!("{config_source}");
 
-    let upgrade = flags.opt_present("u");
-
-    let metadata_storage = init_metadata_storage(&config_table, upgrade);
-    let bundle_storage = init_bundle_storage(&config_table, upgrade);
-
-    let mut config: Config = config_table
-        .try_deserialize()
-        .expect("Failed to parse configuration");
-
-    config.bpa.metadata_storage = metadata_storage;
-    config.bpa.bundle_storage = bundle_storage;
-
-    if config.bpa.status_reports {
-        info!("Bundle status reports are enabled");
-    }
+    // Initialize storage drivers
+    config.set_bpa_storage(flags.opt_present("u"));
 
     Some(config)
-}
-
-fn get<'de, T: serde::Deserialize<'de>>(
-    config: &::config::Config,
-    key: &str,
-) -> Result<Option<T>, ::config::ConfigError> {
-    match config.get::<T>(key) {
-        Ok(v) => Ok(Some(v)),
-        Err(::config::ConfigError::NotFound(_)) => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-fn init_metadata_storage(
-    config: &::config::Config,
-    upgrade: bool,
-) -> Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "sqlite-storage")] {
-            const DEFAULT: &str = hardy_sqlite_storage::Config::KEY;
-        } else {
-            const DEFAULT: &str = "";
-        }
-    }
-
-    let engine = get(config, "metadata_storage")
-        .trace_expect("Invalid 'metadata_storage' value in configuration")
-        .unwrap_or(DEFAULT);
-    info!("Using '{engine}' metadata storage engine");
-
-    match engine {
-        #[cfg(feature = "sqlite-storage")]
-        hardy_sqlite_storage::Config::KEY => Some(hardy_sqlite_storage::Storage::init(
-            config.get(engine).unwrap_or_default(),
-            upgrade,
-        )),
-        "" => None,
-        _ => panic!("Unknown metadata storage engine: {engine}"),
-    }
-}
-
-fn init_bundle_storage(
-    config: &::config::Config,
-    upgrade: bool,
-) -> Option<Arc<dyn hardy_bpa::storage::BundleStorage>> {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "localdisk-storage")] {
-            const DEFAULT: &str = hardy_localdisk_storage::Config::KEY;
-        } else {
-            const DEFAULT: &str = "";
-        }
-    }
-
-    let engine = get(config, "bundle_storage")
-        .trace_expect("Invalid 'bundle_storage' value in configuration")
-        .unwrap_or(DEFAULT);
-    info!("Using '{engine}' bundle storage engine");
-
-    match engine {
-        #[cfg(feature = "localdisk-storage")]
-        hardy_localdisk_storage::Config::KEY => Some(hardy_localdisk_storage::Storage::init(
-            config.get(engine).unwrap_or_default(),
-            upgrade,
-        )),
-        "" => None,
-        _ => panic!("Unknown bundle storage engine: {engine}"),
-    }
 }

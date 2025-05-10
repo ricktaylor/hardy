@@ -83,7 +83,6 @@ Please note that the specific configuration options and their meanings may vary 
 You can provide the following arguments on the command line:
 
 - `--config <file>`: Specifies the path to the configuration file for `hardy-bpa-server`.
-- `--log-level <level>`: Sets the logging level for `hardy`. Valid levels are `trace`, `debug`, `info`, `warn`, `error`, and `off`.
 - `--help`: Displays the help message for `hardy-bpa-server`, showing all available command line options.
 
 Example usage:
