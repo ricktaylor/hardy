@@ -2,11 +2,6 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
 pub enum MetadataStorage {
@@ -72,34 +67,9 @@ pub struct Config {
     // Convergence Layer Adaptors (CLAs)
     #[serde(default)]
     pub clas: Vec<Cla>,
-}
 
-impl Config {
-    fn set_bpa_storage(&mut self, upgrade: bool) {
-        if let Some(config) = self.metadata_storage.take() {
-            self.bpa.metadata_storage = match config {
-                #[cfg(feature = "sqlite-storage")]
-                MetadataStorage::Sqlite(config) => {
-                    Some(hardy_sqlite_storage::Storage::init(config, upgrade))
-                }
-
-                #[cfg(feature = "postgres-storage")]
-                MetadataStorage::Postgres(config) => todo!(),
-            };
-        }
-
-        if let Some(config) = self.bundle_storage.take() {
-            self.bpa.bundle_storage = match config {
-                #[cfg(feature = "localdisk-storage")]
-                BundleStorage::LocalDisk(config) => {
-                    Some(hardy_localdisk_storage::Storage::init(config, upgrade))
-                }
-
-                #[cfg(feature = "s3-storage")]
-                BundleStorage::S3(config) => todo!(),
-            };
-        }
-    }
+    #[serde(skip)]
+    pub upgrade_storage: bool,
 }
 
 fn options() -> getopts::Options {
@@ -142,7 +112,7 @@ pub fn config_dir() -> PathBuf {
     )
 }
 
-pub fn init() -> Option<Config> {
+pub fn init() -> Option<(Config, String)> {
     // Parse cmdline
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
@@ -171,20 +141,16 @@ pub fn init() -> Option<Config> {
     // Add config file
     let config_source: String;
     if let Some(source) = flags.opt_str("config") {
-        config_source =
-            format!("Using base configuration file '{source}' specified on command line");
+        config_source = format!("Using configuration file '{source}' specified on command line");
         b = b.add_source(::config::File::with_name(&source))
     } else if let Ok(source) = std::env::var("HARDY_BPA_SERVER_CONFIG_FILE") {
         config_source = format!(
-            "Using base configuration file '{source}' specified by HARDY_BPA_SERVER_CONFIG_FILE environment variable"
+            "Using configuration file '{source}' specified by HARDY_BPA_SERVER_CONFIG_FILE environment variable"
         );
         b = b.add_source(::config::File::with_name(&source))
     } else {
         let path = config_dir().join(format!("{}.yaml", built_info::PKG_NAME));
-        config_source = format!(
-            "Using optional base configuration file '{}'",
-            path.display()
-        );
+        config_source = format!("Using configuration file '{}'", path.display());
         b = b.add_source(::config::File::from(path).required(false))
     }
 
@@ -192,34 +158,11 @@ pub fn init() -> Option<Config> {
     b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
 
     // And parse...
-    let mut config: Config = b
-        .build()
-        .expect("Failed to read configuration")
-        .try_deserialize()
-        .expect("Failed to parse configuration");
-
-    // Start the logging
-    let log_level = config
-        .log_level
-        .parse::<tracing_subscriber::filter::LevelFilter>()
-        .expect("Invalid 'log_level' value in configuration");
-
-    tracing_subscriber::fmt()
-        .with_max_level(log_level)
-        .with_target(
-            log_level > tracing_subscriber::filter::LevelFilter::from_level(tracing::Level::INFO),
-        )
-        .init();
-
-    info!(
-        "{} version {} starting...",
-        built_info::PKG_NAME,
-        built_info::PKG_VERSION
-    );
-    info!("{config_source}");
-
-    // Initialize storage drivers
-    config.set_bpa_storage(flags.opt_present("u"));
-
-    Some(config)
+    Some((
+        b.build()
+            .expect("Failed to read configuration")
+            .try_deserialize()
+            .expect("Failed to parse configuration"),
+        config_source,
+    ))
 }
