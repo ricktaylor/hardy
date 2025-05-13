@@ -43,7 +43,7 @@ impl Dispatcher {
                 let data = self.update_extension_blocks(&bundle, data);
 
                 // Track fragmentation status
-                let mut fragment_mtu = None;
+                let mut max_bundle_size = None;
 
                 // For each CLA
                 for cla in clas {
@@ -59,16 +59,16 @@ impl Dispatcher {
                         Ok(cla::ForwardBundleResult::NoNeighbour) => {
                             trace!("CLA has no neighbour for {next_hop}");
                         }
-                        Ok(cla::ForwardBundleResult::TooBig(mtu)) => {
+                        Ok(cla::ForwardBundleResult::TooBig(mbs)) => {
                             // Need to fragment to fit, track the largest MTU possible to minimize number of fragments
-                            fragment_mtu = fragment_mtu.max(Some(mtu));
+                            max_bundle_size = max_bundle_size.max(Some(mbs));
                         }
                     }
                 }
 
-                if let Some(mtu) = fragment_mtu {
+                if let Some(max_bundle_size) = max_bundle_size {
                     // Fragmentation required
-                    return self.fragment(mtu, bundle, data).await;
+                    return self.fragment(max_bundle_size, bundle, data).await;
                 }
             }
 

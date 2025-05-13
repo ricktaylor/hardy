@@ -18,7 +18,7 @@ pub enum Error {
 pub enum ForwardBundleResult {
     Sent,
     NoNeighbour,
-    TooBig(usize),
+    TooBig(u64),
 }
 
 #[async_trait]

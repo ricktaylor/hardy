@@ -3,7 +3,7 @@ use super::*;
 impl Dispatcher {
     pub(super) async fn fragment(
         &self,
-        _mtu: usize,
+        _max_bundle_size: u64,
         _bundle: bundle::Bundle,
         _data: Vec<u8>,
     ) -> Result<(), Error> {
