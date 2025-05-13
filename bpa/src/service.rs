@@ -43,9 +43,9 @@ pub enum StatusNotify {
 
 #[async_trait]
 pub trait Service: Send + Sync {
-    async fn on_connect(&self, sink: Box<dyn Sink>, source: &bpv7::Eid);
+    async fn on_register(&self, sink: Box<dyn Sink>, source: &bpv7::Eid);
 
-    async fn on_disconnect(&self);
+    async fn on_unregister(&self);
 
     async fn on_receive(&self, bundle: &bpv7::Bundle, data: &[u8], expiry: time::OffsetDateTime);
 
@@ -79,7 +79,7 @@ pub struct Bundle {
 
 #[async_trait]
 pub trait Sink: Send + Sync {
-    async fn disconnect(&self);
+    async fn unregister(&self);
 
     async fn send(
         &self,

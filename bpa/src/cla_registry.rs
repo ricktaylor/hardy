@@ -54,7 +54,7 @@ struct Sink {
 
 #[async_trait]
 impl cla::Sink for Sink {
-    async fn disconnect(&self) {
+    async fn unregister(&self) {
         if let Some(cla) = self.cla.upgrade() {
             self.registry.unregister(cla).await
         }
@@ -117,7 +117,7 @@ impl ClaRegistry {
             .map(|(_, v)| v)
             .collect::<Vec<_>>()
         {
-            self.disconnect_cla(cla).await;
+            self.unregister_cla(cla).await;
         }
     }
 
@@ -154,8 +154,8 @@ impl ClaRegistry {
         info!("Registered new CLA: {ident}");
 
         cla.cla
-            .on_connect(
-                &ident,
+            .on_register(
+                ident.clone(),
                 Box::new(Sink {
                     cla: Arc::downgrade(&cla),
                     registry: self.clone(),
@@ -169,12 +169,12 @@ impl ClaRegistry {
 
     async fn unregister(&self, cla: Arc<Cla>) {
         if let Some(cla) = self.inner.write().await.clas.remove(&cla.ident) {
-            self.disconnect_cla(cla).await;
+            self.unregister_cla(cla).await;
         }
     }
 
-    async fn disconnect_cla(&self, cla: Arc<Cla>) {
-        cla.cla.on_disconnect().await;
+    async fn unregister_cla(&self, cla: Arc<Cla>) {
+        cla.cla.on_unregister().await;
 
         for pattern in cla.subnets.lock().await.drain().collect::<Vec<_>>() {
             self.rib.remove_forward(&pattern, &cla.ident).await;

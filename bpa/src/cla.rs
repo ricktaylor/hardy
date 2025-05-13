@@ -23,20 +23,19 @@ pub enum ForwardBundleResult {
 
 #[async_trait]
 pub trait Cla: Send + Sync {
-    async fn on_connect(&self, ident: &str, sink: Box<dyn Sink>);
+    async fn on_register(&self, ident: String, sink: Box<dyn Sink>);
 
-    async fn on_disconnect(&self);
+    async fn on_unregister(&self);
 
     async fn forward(&self, next_hop: &bpv7::Eid, data: &[u8]) -> Result<ForwardBundleResult>;
 }
 
 #[async_trait]
 pub trait Sink: Send + Sync {
-    async fn disconnect(&self);
+    async fn unregister(&self);
 
     async fn dispatch(&self, data: &[u8]) -> Result<()>;
 
     async fn add_subnet(&self, pattern: eid_pattern::EidPattern) -> cla::Result<()>;
-
     async fn remove_subnet(&self, pattern: &eid_pattern::EidPattern) -> cla::Result<bool>;
 }

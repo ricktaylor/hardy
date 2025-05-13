@@ -12,13 +12,13 @@ struct NullCla {}
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_connect(&self, _ident: &str, sink: Box<dyn hardy_bpa::cla::Sink>) {
+    async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
         if SINK.set(sink).is_err() {
             panic!("Double connect()");
         }
     }
 
-    async fn on_disconnect(&self) {
+    async fn on_unregister(&self) {
         todo!()
     }
 

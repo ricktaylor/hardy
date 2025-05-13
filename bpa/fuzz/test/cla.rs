@@ -35,21 +35,21 @@ impl NullCla {
         _ = sink.dispatch(data).await;
     }
 
-    async fn disconnect(&self) {
+    async fn unregister(&self) {
         let sink = self.sink.lock().await.take();
         if let Some(sink) = sink {
-            _ = sink.disconnect().await;
+            _ = sink.unregister().await;
         }
     }
 }
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_connect(&self, _ident: &str, sink: Box<dyn hardy_bpa::cla::Sink>) {
+    async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
         self.sink.lock().await.replace(sink);
     }
 
-    async fn on_disconnect(&self) {
+    async fn on_unregister(&self) {
         *self.sink.lock().await = None;
     }
 
@@ -100,7 +100,7 @@ fn test_cla(data: &[u8]) {
 
         cla.dispatch(data).await;
 
-        cla.disconnect().await;
+        cla.unregister().await;
 
         bpa.shutdown().await;
     });

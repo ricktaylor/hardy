@@ -53,7 +53,7 @@ struct Sink {
 
 #[async_trait]
 impl service::Sink for Sink {
-    async fn disconnect(&self) {
+    async fn unregister(&self) {
         if let Some(service) = self.service.upgrade() {
             self.registry.unregister(service).await
         }
@@ -118,7 +118,7 @@ impl ServiceRegistry {
             .map(|(_, v)| v)
             .collect::<Vec<_>>()
         {
-            self.disconnect_service(service).await
+            self.unregister_service(service).await
         }
     }
 
@@ -237,7 +237,7 @@ impl ServiceRegistry {
 
         service
             .service
-            .on_connect(
+            .on_register(
                 Box::new(Sink {
                     service: Arc::downgrade(&service),
                     registry: self.clone(),
@@ -255,17 +255,17 @@ impl ServiceRegistry {
 
     async fn unregister(&self, service: Arc<Service>) {
         if let Some(service) = self.services.write().await.remove(&service.service_id) {
-            self.disconnect_service(service).await
+            self.unregister_service(service).await
         }
     }
 
-    async fn disconnect_service(&self, service: Arc<Service>) {
+    async fn unregister_service(&self, service: Arc<Service>) {
         // Remove local service from RIB
         self.rib
             .remove_local(&service.service_id.clone().into(), &service)
             .await;
 
-        service.service.on_disconnect().await;
+        service.service.on_unregister().await;
 
         info!("Unregistered service: {}", service.service_id);
     }
