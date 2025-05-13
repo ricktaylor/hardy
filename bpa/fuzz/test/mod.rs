@@ -11,7 +11,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
             .with_target(true)
             .init();
 
-        tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap()
