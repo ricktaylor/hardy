@@ -60,8 +60,8 @@ impl cla::Sink for Sink {
         }
     }
 
-    async fn dispatch(&self, data: &[u8]) -> cla::Result<()> {
-        self.dispatcher.receive_bundle(data).await
+    async fn dispatch(&self, bundle: &[u8]) -> cla::Result<()> {
+        self.dispatcher.receive_bundle(bundle).await
     }
 
     async fn add_subnet(&self, pattern: eid_pattern::EidPattern) -> cla::Result<()> {

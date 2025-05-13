@@ -11,8 +11,8 @@ struct NullCla {
 }
 
 impl NullCla {
-    async fn dispatch(&self, data: &[u8]) -> hardy_bpa::cla::Result<()> {
-        self.sink.get().unwrap().dispatch(data).await
+    async fn dispatch(&self, bundle: &[u8]) -> hardy_bpa::cla::Result<()> {
+        self.sink.get().unwrap().dispatch(bundle).await
     }
 }
 
@@ -31,7 +31,7 @@ impl hardy_bpa::cla::Cla for NullCla {
     async fn forward(
         &self,
         _destination: &bpv7::Eid,
-        _data: &[u8],
+        _bundle: &[u8],
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         todo!()
     }
