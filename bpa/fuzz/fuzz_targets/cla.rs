@@ -7,52 +7,30 @@ use std::sync::Arc;
 
 static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
 
+#[derive(Default)]
 struct NullCla {
-    sink: tokio::sync::Mutex<Option<Box<dyn hardy_bpa::cla::Sink>>>,
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
 }
 
 impl NullCla {
-    fn new() -> Self {
-        Self {
-            sink: tokio::sync::Mutex::new(None),
-        }
-    }
-
-    async fn dispatch(&self, data: &[u8]) {
-        let mut guard = self.sink.lock().await;
-
-        let sink = loop {
-            if let Some(sink) = guard.as_ref() {
-                break sink;
-            }
-
-            drop(guard);
-
-            tokio::task::yield_now().await;
-
-            guard = self.sink.lock().await;
-        };
-
-        _ = sink.dispatch(data).await;
+    async fn dispatch(&self, data: &[u8]) -> hardy_bpa::cla::Result<()> {
+        self.sink.get().unwrap().dispatch(data).await
     }
 
     async fn unregister(&self) {
-        let sink = self.sink.lock().await.take();
-        if let Some(sink) = sink {
-            _ = sink.unregister().await;
-        }
+        self.sink.get().unwrap().unregister().await
     }
 }
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
     async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
-        self.sink.lock().await.replace(sink);
+        if self.sink.set(sink).is_err() {
+            panic!("Double connect()");
+        }
     }
 
-    async fn on_unregister(&self) {
-        *self.sink.lock().await = None;
-    }
+    async fn on_unregister(&self) {}
 
     async fn forward(
         &self,
@@ -108,12 +86,14 @@ fuzz_target!(|data: &[u8]| {
         )
         .await;
 
-        let cla = Arc::new(NullCla::new());
-        bpa.register_cla("fuzz", cla.clone()).await;
+        {
+            let cla = Arc::new(NullCla::default());
+            bpa.register_cla("fuzz", cla.clone()).await;
 
-        cla.dispatch(data).await;
+            _ = cla.dispatch(data).await;
 
-        cla.unregister().await;
+            cla.unregister().await;
+        }
 
         bpa.shutdown().await;
     });

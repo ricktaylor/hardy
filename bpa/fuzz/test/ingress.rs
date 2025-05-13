@@ -1,19 +1,25 @@
 #![cfg(test)]
 
+use crate::get_runtime;
 use hardy_bpa::async_trait;
 use hardy_bpv7::prelude as bpv7;
 use std::{io::Read, sync::Arc};
 
-use crate::get_runtime;
+#[derive(Default)]
+struct NullCla {
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
+}
 
-static SINK: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>> = std::sync::OnceLock::new();
-
-struct NullCla {}
+impl NullCla {
+    async fn dispatch(&self, data: &[u8]) -> hardy_bpa::cla::Result<()> {
+        self.sink.get().unwrap().dispatch(data).await
+    }
+}
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
     async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
-        if SINK.set(sink).is_err() {
+        if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }
     }
@@ -31,8 +37,10 @@ impl hardy_bpa::cla::Cla for NullCla {
     }
 }
 
-fn start() {
-    get_runtime().spawn(async {
+fn start() -> Arc<NullCla> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    get_runtime().spawn(async move {
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
             node_ids: [bpv7::Eid::Ipn {
@@ -62,23 +70,20 @@ fn start() {
         )
         .await;
 
-        let cla = Arc::new(NullCla {});
-        bpa.register_cla("test", cla).await;
+        let cla = Arc::new(NullCla::default());
+        bpa.register_cla("test", cla.clone()).await;
+
+        tx.send(cla)
     });
+
+    get_runtime().block_on(async move { rx.await.unwrap() })
 }
 
 #[test]
 fn test() {
-    start();
+    let cla = start();
 
-    get_runtime().block_on(async {
-        let sink = loop {
-            if let Some(sink) = SINK.get() {
-                break sink;
-            }
-            tokio::task::yield_now().await;
-        };
-
+    get_runtime().block_on(async move {
         if let Ok(mut file) =
             std::fs::File::open("./artifacts/ingress/oom-e00b48801c97d3e554583d3c26fb742f9e6557ba")
         {
@@ -86,7 +91,7 @@ fn test() {
             if file.read_to_end(&mut buffer).is_ok() {
                 _ = get_runtime()
                     .spawn(async move {
-                        _ = sink.dispatch(&buffer).await;
+                        _ = cla.dispatch(&buffer).await;
                     })
                     .await;
             }
@@ -96,16 +101,7 @@ fn test() {
 
 #[test]
 fn test_all() {
-    start();
-
-    let sink = get_runtime().block_on(async {
-        loop {
-            if let Some(sink) = SINK.get() {
-                break sink;
-            }
-            tokio::task::yield_now().await;
-        }
-    });
+    let cla = start();
 
     match std::fs::read_dir("./corpus/ingress") {
         Err(e) => {
@@ -123,9 +119,10 @@ fn test_all() {
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = Vec::new();
                                 if file.read_to_end(&mut buffer).is_ok() {
+                                    let cla = cla.clone();
                                     _ = get_runtime()
                                         .spawn(async move {
-                                            _ = sink.dispatch(&buffer).await;
+                                            _ = cla.dispatch(&buffer).await;
                                         })
                                         .await;
                                 }

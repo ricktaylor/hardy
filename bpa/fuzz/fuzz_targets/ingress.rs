@@ -5,15 +5,21 @@ use hardy_bpv7::prelude as bpv7;
 use libfuzzer_sys::fuzz_target;
 use std::sync::Arc;
 
-static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-static SINK: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>> = std::sync::OnceLock::new();
+#[derive(Default)]
+struct NullCla {
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
+}
 
-struct NullCla {}
+impl NullCla {
+    async fn dispatch(&self, data: &[u8]) -> hardy_bpa::cla::Result<()> {
+        self.sink.get().unwrap().dispatch(data).await
+    }
+}
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
     async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
-        if SINK.set(sink).is_err() {
+        if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }
     }
@@ -31,18 +37,25 @@ impl hardy_bpa::cla::Cla for NullCla {
     }
 }
 
-fn setup() -> tokio::runtime::Runtime {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
-        .with_target(true)
-        .init();
+fn get_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+            .with_target(true)
+            .init();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    })
+}
 
-    rt.spawn(async {
+fn setup_cla() -> Arc<NullCla> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    get_runtime().spawn(async move {
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
             node_ids: [bpv7::Eid::Ipn {
@@ -72,23 +85,21 @@ fn setup() -> tokio::runtime::Runtime {
         )
         .await;
 
-        let cla = Arc::new(NullCla {});
-        bpa.register_cla("test", cla).await;
+        let cla = Arc::new(NullCla::default());
+        bpa.register_cla("test", cla.clone()).await;
+
+        tx.send(cla)
     });
 
-    rt
+    get_runtime().block_on(async move { rx.await.unwrap() })
 }
 
 fuzz_target!(|data: &[u8]| {
-    RT.get_or_init(setup).block_on(async {
-        let sink = loop {
-            if let Some(sink) = SINK.get() {
-                break sink;
-            }
-            tokio::task::yield_now().await;
-        };
+    static CLA: std::sync::OnceLock<Arc<NullCla>> = std::sync::OnceLock::new();
+    let cla = CLA.get_or_init(setup_cla);
 
-        _ = sink.dispatch(data).await;
+    get_runtime().block_on(async {
+        _ = cla.dispatch(data).await;
     })
 });
 
