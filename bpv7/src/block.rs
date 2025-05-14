@@ -56,11 +56,11 @@ impl Block {
         array.emit_raw(block_data)
     }
 
-    pub fn emit(&mut self, block_number: u64, data: &[u8], array: &mut cbor::encode::Array) {
+    pub(crate) fn emit(&mut self, block_number: u64, data: &[u8], array: &mut cbor::encode::Array) {
         self.emit_inner(block_number, array, |a| a.emit(data));
     }
 
-    pub fn rewrite(
+    pub(crate) fn rewrite(
         &mut self,
         block_number: u64,
         array: &mut cbor::encode::Array,
@@ -90,13 +90,13 @@ impl Block {
         .unwrap();
     }
 
-    pub fn write(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
+    pub(crate) fn write(&mut self, source_data: &[u8], array: &mut cbor::encode::Array) {
         let offset = array.offset();
         self.copy(source_data, array);
         self.data_start = offset;
     }
 
-    pub fn copy(&self, source_data: &[u8], array: &mut cbor::encode::Array) {
+    pub(crate) fn copy(&self, source_data: &[u8], array: &mut cbor::encode::Array) {
         array.emit_raw_slice(&source_data[self.data_start..self.data_start + self.data_len]);
     }
 }

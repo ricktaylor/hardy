@@ -65,7 +65,7 @@ pub struct Bundle {
 }
 
 impl Bundle {
-    pub fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
+    pub(crate) fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
         let data_start = array.offset();
         let data = primary_block::PrimaryBlock::emit(self);
         let payload_len = data.len();
@@ -224,11 +224,8 @@ impl Bundle {
         }
 
         // Rewrite primary block if required
-        let primary_block = if !canonical_primary_block {
-            Some(primary_block::PrimaryBlock::emit(self))
-        } else {
-            None
-        };
+        let primary_block =
+            (!canonical_primary_block).then_some(primary_block::PrimaryBlock::emit(self));
 
         // Decrypt all BCB targets first
         let mut decrypted_data = HashMap::new();
