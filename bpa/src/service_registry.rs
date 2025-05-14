@@ -238,12 +238,12 @@ impl ServiceRegistry {
         service
             .service
             .on_register(
+                &service_id,
                 Box::new(Sink {
                     service: Arc::downgrade(&service),
                     registry: self.clone(),
                     dispatcher: dispatcher.clone(),
                 }),
-                &service_id,
             )
             .await;
 

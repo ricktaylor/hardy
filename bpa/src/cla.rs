@@ -27,7 +27,7 @@ pub trait Cla: Send + Sync {
 
     async fn on_unregister(&self);
 
-    async fn forward(&self, next_hop: &bpv7::Eid, bundle: &[u8]) -> Result<ForwardBundleResult>;
+    async fn on_forward(&self, next_hop: &bpv7::Eid, bundle: &[u8]) -> Result<ForwardBundleResult>;
 }
 
 #[async_trait]
@@ -37,5 +37,6 @@ pub trait Sink: Send + Sync {
     async fn dispatch(&self, bundle: &[u8]) -> Result<()>;
 
     async fn add_subnet(&self, pattern: eid_pattern::EidPattern) -> cla::Result<()>;
+
     async fn remove_subnet(&self, pattern: &eid_pattern::EidPattern) -> cla::Result<bool>;
 }

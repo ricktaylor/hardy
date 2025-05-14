@@ -47,7 +47,7 @@ impl Dispatcher {
 
                 // For each CLA
                 for cla in clas {
-                    match cla.cla.forward(&next_hop, &data).await {
+                    match cla.cla.on_forward(&next_hop, &data).await {
                         Err(e) => warn!("CLA failed to forward: {e}"),
                         Ok(cla::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!

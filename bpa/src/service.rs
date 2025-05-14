@@ -43,11 +43,11 @@ pub enum StatusNotify {
 
 #[async_trait]
 pub trait Service: Send + Sync {
-    async fn on_register(&self, sink: Box<dyn Sink>, source: &bpv7::Eid);
+    async fn on_register(&self, source: &bpv7::Eid, sink: Box<dyn Sink>);
 
     async fn on_unregister(&self);
 
-    async fn on_receive(&self, bundle: &bpv7::Bundle, data: &[u8], expiry: time::OffsetDateTime);
+    async fn on_receive(&self, bundle: &bundle::Bundle, data: &[u8], expiry: time::OffsetDateTime);
 
     async fn on_status_notify(
         &self,
@@ -67,14 +67,6 @@ pub struct SendFlags {
     pub notify_forwarding: bool,
     pub notify_delivery: bool,
     pub notify_deletion: bool,
-}
-
-#[derive(Debug)]
-pub struct Bundle {
-    pub id: bpv7::BundleId,
-    pub expiry: time::OffsetDateTime,
-    pub ack_requested: bool,
-    pub payload: Box<[u8]>,
 }
 
 #[async_trait]

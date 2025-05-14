@@ -30,7 +30,7 @@ impl hardy_bpa::cla::Cla for NullCla {
 
     async fn on_unregister(&self) {}
 
-    async fn forward(
+    async fn on_forward(
         &self,
         _destination: &bpv7::Eid,
         _bundle: &[u8],
