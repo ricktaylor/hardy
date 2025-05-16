@@ -17,7 +17,7 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn init(config: config::Config, _upgrade: bool) -> Arc<dyn BundleStorage> {
+    pub fn new(config: Config, _upgrade: bool) -> Arc<dyn BundleStorage> {
         info!(
             "Using bundle store directory: {}",
             config.store_dir.display()

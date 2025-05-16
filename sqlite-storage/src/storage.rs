@@ -77,7 +77,7 @@ fn columns_to_bundle_status(
 }
 
 impl Storage {
-    pub fn init(config: Config, mut upgrade: bool) -> Arc<dyn storage::MetadataStorage> {
+    pub fn new(config: Config, mut upgrade: bool) -> Arc<dyn storage::MetadataStorage> {
         // Compose DB name
         let file_path = config.db_dir.join("metadata.db");
 

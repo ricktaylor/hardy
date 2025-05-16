@@ -53,7 +53,7 @@ fn start_storage(config: &mut config::Config) {
         config.bpa.metadata_storage = match metadata_storage {
             #[cfg(feature = "sqlite-storage")]
             config::MetadataStorage::Sqlite(metadata_storage) => Some(
-                hardy_sqlite_storage::Storage::init(metadata_storage, config.upgrade_storage),
+                hardy_sqlite_storage::Storage::new(metadata_storage, config.upgrade_storage),
             ),
 
             #[cfg(feature = "postgres-storage")]
@@ -65,7 +65,7 @@ fn start_storage(config: &mut config::Config) {
         config.bpa.bundle_storage = match bundle_storage {
             #[cfg(feature = "localdisk-storage")]
             config::BundleStorage::LocalDisk(bundle_storage) => Some(
-                hardy_localdisk_storage::Storage::init(bundle_storage, config.upgrade_storage),
+                hardy_localdisk_storage::Storage::new(bundle_storage, config.upgrade_storage),
             ),
 
             #[cfg(feature = "s3-storage")]
