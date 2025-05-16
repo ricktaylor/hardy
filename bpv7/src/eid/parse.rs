@@ -105,7 +105,7 @@ fn parse_dtn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
                     }
                     acc
                 })
-                .map(Into::<Box<str>>::into),
+                .map(|s| s.into_boxed_str()),
             "/",
         ),
         separated(
@@ -119,7 +119,7 @@ fn parse_dtn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
                     }
                     acc
                 })
-                .map(Into::<Box<str>>::into),
+                .map(|s| s.into_boxed_str()),
             "/",
         ),
     )
