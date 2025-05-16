@@ -83,10 +83,10 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
 
             // Parse lifetime
             let lifetime = block
-                .parse()
+                .parse::<(u64, bool)>()
                 .map(|(v, s)| {
                     shortest = shortest && s;
-                    time::Duration::milliseconds(v)
+                    time::Duration::new((v / 1000) as i64, (v % 1000 * 1_000_000) as i32)
                 })
                 .map_err(Into::into);
 
@@ -192,7 +192,7 @@ impl PrimaryBlock {
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
                     a.emit(&bundle.id.timestamp);
-                    a.emit(bundle.lifetime.whole_microseconds() as u64);
+                    a.emit(bundle.lifetime.whole_milliseconds() as u64);
 
                     // Fragment info
                     if let Some(fragment_info) = &bundle.id.fragment_info {

@@ -922,6 +922,7 @@ version = "0.0.0"
 dependencies = [
  "hardy-bpv7",
  "hardy-cbor",
+ "hardy-eid-pattern",
  "hex-literal",
  "libfuzzer-sys",
 ]

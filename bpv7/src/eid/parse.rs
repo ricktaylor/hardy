@@ -195,7 +195,7 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid
             Eid::LocalNode {
                 service_number: s as u32,
             },
-            false,
+            shortest,
         )),
         (0, n, Some(s)) => Ok((
             Eid::Ipn {

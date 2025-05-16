@@ -381,9 +381,11 @@ impl Bundle {
                             decrypted_data.get(&block_number),
                             source_data,
                         )
-                        .map(|(b, a, s)| (b, time::Duration::milliseconds(a as i64), s))
                         .map_field_err("Bundle Age Block")?;
-                    self.age = Some(v);
+                    self.age = Some(time::Duration::new(
+                        (v / 1000) as i64,
+                        (v % 1000 * 1_000_000) as i32,
+                    ));
                     s
                 }
                 BlockType::HopCount => {

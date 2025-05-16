@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 hardy-bpv7 = { path = ".." }
 hardy-cbor = { path = "../../cbor" }
+hardy-eid-pattern = { path = "../../eid_pattern" }
 hex-literal = "1.0.0"
 
 [[bin]]
