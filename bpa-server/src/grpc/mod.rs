@@ -41,10 +41,10 @@ pub fn init(
     for service in &config.services {
         match service.as_str() {
             "application" => {
-                routes.add_service(application::new_service(bpa.clone()));
+                routes.add_service(application::new_service(bpa));
             }
             "cla" => {
-                routes.add_service(cla::new_service(bpa.clone()));
+                routes.add_service(cla::new_service(bpa));
             }
             s => {
                 warn!("Ignoring unknown gRPC service {s}");

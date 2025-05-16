@@ -311,8 +311,8 @@ pub struct Service {
 }
 
 impl Service {
-    fn new(bpa: Arc<hardy_bpa::bpa::Bpa>) -> Self {
-        Self { bpa }
+    fn new(bpa: &Arc<hardy_bpa::bpa::Bpa>) -> Self {
+        Self { bpa: bpa.clone() }
     }
 }
 
@@ -334,7 +334,7 @@ impl application_server::Application for Service {
 }
 
 pub fn new_service(
-    bpa: Arc<hardy_bpa::bpa::Bpa>,
+    bpa: &Arc<hardy_bpa::bpa::Bpa>,
 ) -> application_server::ApplicationServer<Service> {
     application_server::ApplicationServer::new(Service::new(bpa))
 }
