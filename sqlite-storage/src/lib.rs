@@ -20,7 +20,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { 
+        Self {
             db_dir:  directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME)
             .map_or_else(
                 || {
