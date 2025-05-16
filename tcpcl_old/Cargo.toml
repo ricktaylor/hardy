@@ -1,11 +1,11 @@
 [package]
-name = "hardy-tcpcl"
+name = "hardy-tcpclv4"
 description = "A TCPCLv4 DTN convergence layer"
 version = "0.1.0"
 edition.workspace = true
 
 [[bin]]
-name = "hardy-tcpcl"
+name = "hardy-tcpclv4"
 path = "src/main.rs"
 
 # For fuzzing only!

@@ -13,8 +13,6 @@ members = [
     "localdisk-storage",
     "proto",
     "sqlite-storage",
-    "tcpcl",
-    "tcpcl/fuzz",
     "fuzz-macros",
 ]
 

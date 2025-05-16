@@ -130,7 +130,7 @@ impl BpaEndpoint {
         self.channel
             .lock()
             .await
-            .receive_bundle(ReceiveBundleRequest {
+            .receive_bundle(DispatchBundleRequest {
                 handle: self.handle,
                 source: Bytes::new(),
                 bundle,
