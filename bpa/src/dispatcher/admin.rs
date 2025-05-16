@@ -24,7 +24,7 @@ impl Dispatcher {
             return Ok(());
         };
 
-        match cbor::decode::parse(data.as_ref().as_ref()) {
+        match cbor::decode::parse(&data) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
                 self.drop_bundle(

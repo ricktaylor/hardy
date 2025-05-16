@@ -236,13 +236,10 @@ impl Store {
 
         // Parse the bundle
         let (bundle, reason, hash, report_unsupported) =
-            match bpv7::ValidBundle::parse(data.as_ref().as_ref(), |_, _| Ok(None)) {
-                Ok(bpv7::ValidBundle::Valid(bundle, report_unsupported)) => (
-                    bundle,
-                    None,
-                    Some(hash(data.as_ref().as_ref())),
-                    report_unsupported,
-                ),
+            match bpv7::ValidBundle::parse(&data, dispatcher.key_closure()) {
+                Ok(bpv7::ValidBundle::Valid(bundle, report_unsupported)) => {
+                    (bundle, None, Some(hash(&data)), report_unsupported)
+                }
                 Ok(bpv7::ValidBundle::Rewritten(bundle, data, report_unsupported)) => {
                     warn!("Bundle in non-canonical format found: {storage_name}");
 
@@ -264,12 +261,7 @@ impl Store {
                 }
                 Ok(bpv7::ValidBundle::Invalid(bundle, reason, e)) => {
                     warn!("Invalid bundle found: {storage_name}, {e}");
-                    (
-                        bundle,
-                        Some(reason),
-                        Some(hash(data.as_ref().as_ref())),
-                        false,
-                    )
+                    (bundle, Some(reason), Some(hash(&data)), false)
                 }
                 Err(e) => {
                     // Parse failed badly, no idea who to report to

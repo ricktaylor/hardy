@@ -12,11 +12,11 @@ pub struct Config {
     pub services: Vec<String>,
 }
 
-fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, Error> {
+/*fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, Error> {
     Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)
         .map_err(time::error::ComponentRange::from)?
         + time::Duration::nanoseconds(t.nanos.into()))
-}
+}*/
 
 fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
     let t = t - time::OffsetDateTime::UNIX_EPOCH;

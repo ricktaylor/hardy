@@ -267,7 +267,7 @@ impl Dispatcher {
         }
     }
 
-    fn key_closure(
+    pub fn key_closure(
         &self,
     ) -> impl FnMut(
         &bpv7::Eid,

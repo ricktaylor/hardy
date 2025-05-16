@@ -81,9 +81,11 @@ impl Cla {
                 Ok(Some(ClaToBpa { msg_id, msg })) => match msg {
                     Some(cla_to_bpa::Msg::Register(msg)) => {
                         info!("CLA sent duplicate registration message: {:?}", msg);
-                        tx.send(Err(tonic::Status::failed_precondition(
-                            "Already registered",
-                        )));
+                        _ = tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "Already registered",
+                            )))
+                            .await;
                         break;
                     }
                     Some(cla_to_bpa::Msg::Dispatch(msg)) => Some(cla.dispatch(&msg.bundle).await),
@@ -123,7 +125,6 @@ impl Cla {
                         msg_id,
                         msg: Some(v),
                     })
-                    .map_err(Into::into)
                 }),
                 Ok(None) => {
                     trace!("CLA disconnected");
@@ -190,7 +191,7 @@ impl Cla {
         response: Result<forward_bundle_response::Result, tonic::Status>,
     ) -> Option<Result<bpa_to_cla::Msg, tonic::Status>> {
         if let Some(entry) = self.forward_acks.lock().await.remove(&msg_id) {
-            entry.send(response.map_err(|s| hardy_bpa::cla::Error::Internal(s.into())));
+            _ = entry.send(response.map_err(|s| hardy_bpa::cla::Error::Internal(s.into())));
         }
         None
     }
@@ -224,7 +225,7 @@ impl hardy_bpa::cla::Cla for Cla {
         forward_acks.insert(msg_id, tx);
         drop(forward_acks);
 
-        if let Err(_) = self
+        if self
             .tx
             .send(Ok(BpaToCla {
                 msg: Some(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
@@ -234,6 +235,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 msg_id,
             }))
             .await
+            .is_err()
         {
             // Remove ack waiter
             self.forward_acks.lock().await.remove(&msg_id);

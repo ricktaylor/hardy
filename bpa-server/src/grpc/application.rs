@@ -67,7 +67,7 @@ impl Application {
                                         },
                                     )),
                                 })
-                                .map_err(|e| tonic::Status::from_error(e.into()).into()),
+                                .map_err(|e| tonic::Status::from_error(e.into())),
                         )
                         .await
                         .is_err()
@@ -101,9 +101,11 @@ impl Application {
                 Ok(Some(AppToBpa { msg_id, msg })) => match msg {
                     Some(app_to_bpa::Msg::Register(msg)) => {
                         info!("Service sent duplicate registration message: {:?}", msg);
-                        tx.send(Err(tonic::Status::failed_precondition(
-                            "Already registered",
-                        )));
+                        _ = tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "Already registered",
+                            )))
+                            .await;
                         break;
                     }
                     Some(app_to_bpa::Msg::Send(msg)) => Some(app.send(msg).await),
@@ -129,7 +131,6 @@ impl Application {
                         msg_id,
                         msg: Some(v),
                     })
-                    .map_err(Into::into)
                 }),
                 Ok(None) => {
                     trace!("Service disconnected");
@@ -202,7 +203,7 @@ impl Application {
         response: Result<(), tonic::Status>,
     ) -> Option<Result<bpa_to_app::Msg, tonic::Status>> {
         if let Some(entry) = self.acks.lock().await.remove(&msg_id) {
-            entry.send(response.map_err(|s| hardy_bpa::service::Error::Internal(s.into())));
+            _ = entry.send(response.map_err(|s| hardy_bpa::service::Error::Internal(s.into())));
         }
         None
     }

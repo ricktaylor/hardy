@@ -729,7 +729,7 @@ impl Bundle {
         else {
             return Err(bpsec::Error::DecryptionFailed.into());
         };
-        Ok(Payload::Owned(data.into()))
+        Ok(Payload::Owned(data))
     }
 }
 
