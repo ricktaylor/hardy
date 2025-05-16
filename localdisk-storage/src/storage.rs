@@ -9,29 +9,15 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
-use trace_err::*;
-use tracing::*;
-
 pub struct Storage {
     store_root: PathBuf,
 }
 
 impl Storage {
-    pub fn new(config: Config, _upgrade: bool) -> Arc<dyn BundleStorage> {
-        info!(
-            "Using bundle store directory: {}",
-            config.store_dir.display()
-        );
-
-        // Ensure directory exists
-        std::fs::create_dir_all(&config.store_dir).trace_expect(&format!(
-            "Failed to create bundle store directory {}",
-            config.store_dir.display()
-        ));
-
-        Arc::new(Storage {
-            store_root: config.store_dir,
-        })
+    pub fn new(config: &Config, _upgrade: bool) -> Self {
+        Self {
+            store_root: config.store_dir.clone(),
+        }
     }
 }
 

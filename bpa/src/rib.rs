@@ -168,10 +168,10 @@ impl Rib {
     pub async fn add_forward(
         &self,
         pattern: eid_pattern::EidPattern,
-        cla_ident: &str,
+        cla_name: &str,
         cla: Arc<cla_registry::Cla>,
     ) {
-        self.add(pattern, cla_ident.to_string(), RibAction::Forward(cla), 0)
+        self.add(pattern, cla_name.to_string(), RibAction::Forward(cla), 0)
             .await
     }
 
@@ -226,11 +226,11 @@ impl Rib {
         }
     }
 
-    pub async fn remove_forward(&self, pattern: &eid_pattern::EidPattern, cla_ident: &str) -> bool {
+    pub async fn remove_forward(&self, pattern: &eid_pattern::EidPattern, cla_name: &str) -> bool {
         let v = {
             self.routes.write().await.remove_if(pattern, |e| {
                 &e.pattern == pattern
-                    && e.source == cla_ident
+                    && e.source == cla_name
                     && e.priority == 0
                     && matches!(&e.action, RibAction::Forward(..))
             })
@@ -238,7 +238,7 @@ impl Rib {
 
         for v in &v {
             info!(
-                "Removed route {pattern} => {:?}, priority 0, source '{cla_ident}'",
+                "Removed route {pattern} => {:?}, priority 0, source '{cla_name}'",
                 v.action
             )
         }

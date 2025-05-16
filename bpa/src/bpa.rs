@@ -71,9 +71,9 @@ impl Bpa {
     }
 
     #[instrument(skip(self, cla))]
-    pub async fn register_cla(&self, ident_prefix: &str, cla: Arc<dyn cla::Cla>) -> String {
+    pub async fn register_cla(&self, name: String, cla: Arc<dyn cla::Cla>) -> cla::Result<()> {
         self.cla_registry
-            .register(ident_prefix, cla, &self.dispatcher)
+            .register(name, cla, &self.dispatcher)
             .await
     }
 

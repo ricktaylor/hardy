@@ -18,7 +18,7 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>) {
         if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }
@@ -86,7 +86,9 @@ fn setup_cla() -> Arc<NullCla> {
         .await;
 
         let cla = Arc::new(NullCla::default());
-        bpa.register_cla("test", cla.clone()).await;
+        bpa.register_cla("test".to_string(), cla.clone())
+            .await
+            .unwrap();
 
         tx.send(cla)
     });

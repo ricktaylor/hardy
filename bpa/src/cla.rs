@@ -5,11 +5,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(transparent)]
-    InvalidBundle(#[from] bpv7::Error),
+    #[error("Attemp to register duplicate CLA name {0}")]
+    AlreadyExists(String),
 
     #[error("The sink is disconnected")]
     Disconnected,
+
+    #[error(transparent)]
+    InvalidBundle(#[from] bpv7::Error),
 
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -23,7 +26,7 @@ pub enum ForwardBundleResult {
 
 #[async_trait]
 pub trait Cla: Send + Sync {
-    async fn on_register(&self, ident: String, sink: Box<dyn Sink>);
+    async fn on_register(&self, sink: Box<dyn Sink>);
 
     async fn on_unregister(&self);
 

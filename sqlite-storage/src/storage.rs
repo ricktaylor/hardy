@@ -9,8 +9,6 @@ use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
-use trace_err::*;
-use tracing::*;
 
 thread_local! {
     static CONNECTION: RefCell<Option<rusqlite::Connection>> = const { RefCell::new(None) };
@@ -77,19 +75,11 @@ fn columns_to_bundle_status(
 }
 
 impl Storage {
-    pub fn new(config: Config, mut upgrade: bool) -> Arc<dyn storage::MetadataStorage> {
+    pub fn new(config: &Config, mut upgrade: bool) -> Self {
         // Compose DB name
         let file_path = config.db_dir.join("metadata.db");
 
         info!("Using database: {}", file_path.display());
-
-        // Ensure directory exists
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent).trace_expect(&format!(
-                "Failed to create metadata store directory {}",
-                parent.display()
-            ));
-        }
 
         // Attempt to open existing database first
         let mut connection = match rusqlite::Connection::open_with_flags(
@@ -135,10 +125,10 @@ impl Storage {
             )
             .trace_expect("Failed to prepare metadata store database");
 
-        Arc::new(Storage {
+        Self {
             path: file_path,
             timeout: config.timeout,
-        })
+        }
     }
 
     async fn pooled_connection<F, R>(&self, f: F) -> storage::Result<R>

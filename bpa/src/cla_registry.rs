@@ -8,12 +8,12 @@ use tokio::sync::{Mutex, RwLock};
 pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
     subnets: Mutex<HashSet<eid_pattern::EidPattern>>,
-    ident: String,
+    name: String,
 }
 
 impl PartialEq for Cla {
     fn eq(&self, other: &Self) -> bool {
-        self.ident == other.ident
+        self.name == other.name
     }
 }
 
@@ -27,20 +27,20 @@ impl PartialOrd for Cla {
 
 impl Ord for Cla {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.ident.cmp(&other.ident)
+        self.name.cmp(&other.name)
     }
 }
 
 impl std::hash::Hash for Cla {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.ident.hash(state);
+        self.name.hash(state);
     }
 }
 
 impl std::fmt::Debug for Cla {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cla")
-            .field("ident", &self.ident)
+            .field("name", &self.name)
             .field("subnets", &self.subnets)
             .finish()
     }
@@ -88,31 +88,24 @@ impl Drop for Sink {
     }
 }
 
-#[derive(Default)]
-struct ClaRegistryInner {
-    clas: HashMap<String, Arc<Cla>>,
-    next_ids: HashMap<String, usize>,
-}
-
 pub struct ClaRegistry {
-    inner: RwLock<ClaRegistryInner>,
+    clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
 }
 
 impl ClaRegistry {
     pub fn new(rib: Arc<rib::Rib>) -> Self {
         Self {
-            inner: Default::default(),
+            clas: Default::default(),
             rib,
         }
     }
 
     pub async fn shutdown(&self) {
         for cla in self
-            .inner
+            .clas
             .write()
             .await
-            .clas
             .drain()
             .map(|(_, v)| v)
             .collect::<Vec<_>>()
@@ -123,52 +116,43 @@ impl ClaRegistry {
 
     pub async fn register(
         self: &Arc<Self>,
-        ident_prefix: &str,
+        name: String,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> String {
+    ) -> cla::Result<()> {
         // Scope lock
-        let (cla, ident) = {
-            let mut inner = self.inner.write().await;
+        let cla = {
+            let mut clas = self.clas.write().await;
 
-            let next = if let Some(next) = inner.next_ids.get_mut(ident_prefix) {
-                *next += 1;
-                *next
-            } else {
-                inner.next_ids.insert(ident_prefix.into(), 0);
-                0
-            };
-
-            let ident = format!("{ident_prefix}/{next}");
+            if clas.contains_key(&name) {
+                return Err(cla::Error::AlreadyExists(name));
+            }
 
             let cla = Arc::new(Cla {
                 cla,
                 subnets: Default::default(),
-                ident: ident.clone(),
+                name: name.clone(),
             });
 
-            inner.clas.insert(ident.clone(), cla.clone());
-            (cla, ident)
+            info!("Registered new CLA: {name}");
+
+            clas.insert(name, cla.clone());
+            cla
         };
 
-        info!("Registered new CLA: {ident}");
-
         cla.cla
-            .on_register(
-                ident.clone(),
-                Box::new(Sink {
-                    cla: Arc::downgrade(&cla),
-                    registry: self.clone(),
-                    dispatcher: dispatcher.clone(),
-                }),
-            )
+            .on_register(Box::new(Sink {
+                cla: Arc::downgrade(&cla),
+                registry: self.clone(),
+                dispatcher: dispatcher.clone(),
+            }))
             .await;
 
-        ident
+        Ok(())
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {
-        if let Some(cla) = self.inner.write().await.clas.remove(&cla.ident) {
+        if let Some(cla) = self.clas.write().await.remove(&cla.name) {
             self.unregister_cla(cla).await;
         }
     }
@@ -177,22 +161,22 @@ impl ClaRegistry {
         cla.cla.on_unregister().await;
 
         for pattern in cla.subnets.lock().await.drain().collect::<Vec<_>>() {
-            self.rib.remove_forward(&pattern, &cla.ident).await;
+            self.rib.remove_forward(&pattern, &cla.name).await;
         }
 
-        info!("Unregistered CLA: {}", cla.ident);
+        info!("Unregistered CLA: {}", cla.name);
     }
 
     async fn add_subnet(&self, cla: &Arc<Cla>, pattern: eid_pattern::EidPattern) {
         if cla.subnets.lock().await.insert(pattern.clone()) {
             return;
         }
-        self.rib.add_forward(pattern, &cla.ident, cla.clone()).await
+        self.rib.add_forward(pattern, &cla.name, cla.clone()).await
     }
 
     async fn remove_subnet(&self, cla: &Cla, pattern: &eid_pattern::EidPattern) -> bool {
         if cla.subnets.lock().await.remove(pattern) {
-            self.rib.remove_forward(pattern, &cla.ident).await
+            self.rib.remove_forward(pattern, &cla.name).await
         } else {
             false
         }

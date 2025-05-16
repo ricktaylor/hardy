@@ -35,9 +35,9 @@ message BpaToCla {
   }
 }
 
-message RegisterClaRequest { string ident_prefix = 1; }
+message RegisterClaRequest { string name = 1; }
 
-message RegisterClaResponse { string ident = 1; }
+message RegisterClaResponse {}
 
 message DispatchBundleRequest { bytes bundle = 1; }
 

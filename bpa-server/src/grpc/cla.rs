@@ -43,12 +43,16 @@ impl Cla {
                         msg_id: 0.into(),
                         forward_acks: Mutex::new(HashMap::new()),
                     });
-                    let ident = bpa.register_cla(&msg.ident_prefix, cla.clone()).await;
                     if tx
-                        .send(Ok(BpaToCla {
-                            msg_id,
-                            msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse { ident })),
-                        }))
+                        .send(
+                            bpa.register_cla(msg.name, cla.clone())
+                                .await
+                                .map(|_| BpaToCla {
+                                    msg_id,
+                                    msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {})),
+                                })
+                                .map_err(|e| tonic::Status::from_error(e.into())),
+                        )
                         .await
                         .is_err()
                     {
@@ -199,7 +203,7 @@ impl Cla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, _ident: String, sink: Box<dyn hardy_bpa::cla::Sink>) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>) {
         if self.sink.set(sink).is_err() {
             panic!("CLA on_register called twice!");
         }
