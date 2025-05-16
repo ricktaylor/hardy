@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::{async_trait, storage, storage::BundleStorage, storage::DataRef};
+use hardy_bpa::{Bytes, async_trait, storage, storage::BundleStorage};
 use rand::prelude::*;
 use std::{io::Write, path::PathBuf, str::FromStr, sync::Arc};
 
@@ -196,7 +196,7 @@ impl BundleStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn load(&self, storage_name: &str) -> storage::Result<Option<DataRef>> {
+    async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
 
         cfg_if::cfg_if! {
@@ -212,19 +212,18 @@ impl BundleStorage for Storage {
                     Ok(file) => file,
                 };
                 let data = unsafe { memmap2::Mmap::map(&file) };
-                Ok(Some(Arc::new(data?)))
+                Ok(Some(Bytes::from_owner(data?)))
             } else {
-                let data = match tokio::fs::read(storage_name).await {
+                match tokio::fs::read(storage_name).await {
                     Err(e) => {
                         if let std::io::ErrorKind::NotFound = e.kind() {
-                            return Ok(None)
+                            Ok(None)
                         } else {
-                            return Err(e.into())
+                            Err(e.into())
                         }
                     }
-                    Ok(data) => data,
-                };
-                Ok(Arc::new(data))
+                    Ok(data) => Ok(Bytes::from_owner(data))
+                }
             }
         }
     }
