@@ -45,6 +45,9 @@ pub enum Error {
     #[error("Block {0} is not in canonical form")]
     NonCanonical(u64),
 
+    #[error("Bundle has been altered since parsing")]
+    Altered,
+
     #[error(transparent)]
     InvalidBPSec(#[from] bpsec::Error),
 

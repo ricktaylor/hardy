@@ -45,6 +45,20 @@ where
     }
 }
 
+pub enum Payload {
+    Borrowed(std::ops::Range<usize>),
+    Owned(zeroize::Zeroizing<Box<[u8]>>),
+}
+
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Borrowed(arg0) => write!(f, "Payload {} bytes", arg0.len()),
+            Self::Owned(arg0) => write!(f, "Payload {} bytes", arg0.len()),
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Bundle {
     // From Primary Block
@@ -94,7 +108,7 @@ impl Bundle {
     fn parse_payload<T>(
         &self,
         block_number: &u64,
-        decrypted_data: Option<&(Box<[u8]>, bool)>,
+        decrypted_data: Option<&(zeroize::Zeroizing<Box<[u8]>>, bool)>,
         source_data: &[u8],
     ) -> Result<(&Block, T, bool), Error>
     where
@@ -666,6 +680,56 @@ impl Bundle {
             self.blocks.insert(1, payload_block);
         });
         Ok((Some(new_data.into()), report_unsupported))
+    }
+
+    pub fn payload(
+        &self,
+        data: &[u8],
+        mut f: impl FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+    ) -> Result<Payload, Error> {
+        let Some(payload_block) = self.blocks.get(&1) else {
+            return Err(Error::Altered);
+        };
+
+        // Check for BCB
+        let Some(bcb_block_number) = payload_block.bcb else {
+            return Ok(Payload::Borrowed(payload_block.payload_range()));
+        };
+
+        let (bcb_block, bcb, _) = self
+            .parse_payload::<bpsec::bcb::OperationSet>(&bcb_block_number, None, data)
+            .map_err(|_| Error::Altered)?;
+
+        let Some(op) = bcb.operations.get(&1) else {
+            // If the operation doesn't exist, someone has fiddled with the data
+            return Err(Error::Altered);
+        };
+
+        let Some(key) = f(&bcb.source, op.context_id())? else {
+            return Err(bpsec::Error::NoKey(bcb.source).into());
+        };
+
+        // Confirm we can decrypt if we have keys
+        let Some(data) = op
+            .decrypt(
+                Some(&key),
+                bpsec::bcb::OperationArgs {
+                    bpsec_source: &bcb.source,
+                    target: payload_block,
+                    target_number: 1,
+                    source: bcb_block,
+                    source_number: bcb_block_number,
+                    bundle: self,
+                    primary_block: None,
+                    bundle_data: data,
+                },
+                None,
+            )?
+            .plaintext
+        else {
+            return Err(bpsec::Error::DecryptionFailed.into());
+        };
+        Ok(Payload::Owned(data.into()))
     }
 }
 

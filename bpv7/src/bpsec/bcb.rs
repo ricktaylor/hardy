@@ -20,7 +20,7 @@ pub struct OperationArgs<'a> {
 }
 
 pub struct OperationResult {
-    pub plaintext: Option<Box<[u8]>>,
+    pub plaintext: Option<Zeroizing<Box<[u8]>>>,
     pub protects_primary_block: bool,
     pub can_encrypt: bool,
 }

@@ -14,9 +14,15 @@ pub struct Block {
 }
 
 impl Block {
+    pub fn payload_range(&self) -> std::ops::Range<usize> {
+        std::ops::Range {
+            start: self.data_start + self.payload_offset,
+            end: self.data_start + self.payload_offset + self.payload_len,
+        }
+    }
+
     pub fn payload<'a>(&self, data: &'a [u8]) -> &'a [u8] {
-        &data[self.data_start + self.payload_offset
-            ..self.data_start + self.payload_offset + self.payload_len]
+        &data[self.payload_range()]
     }
 
     fn emit_inner(
