@@ -15,7 +15,7 @@ use tracing::{error, info, trace};
 
 fn listen_for_cancel(
     task_set: &mut tokio::task::JoinSet<()>,
-    cancel_token: tokio_util::sync::CancellationToken,
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
@@ -26,6 +26,8 @@ fn listen_for_cancel(
             let mut term_handler = std::future::pending();
         }
     }
+
+    let cancel_token = cancel_token.clone();
     task_set.spawn(async move {
         tokio::select! {
             _ = term_handler.recv() => {
@@ -112,11 +114,11 @@ async fn main() {
 
     // Load static routes
     if let Some(config) = config.static_routes {
-        static_routes::init(config, bpa.clone(), &mut task_set, cancel_token.clone()).await;
+        static_routes::init(config, &bpa, &mut task_set, &cancel_token).await;
     }
 
     // And wait for shutdown signal
-    listen_for_cancel(&mut task_set, cancel_token.clone());
+    listen_for_cancel(&mut task_set, &cancel_token);
 
     info!("Started successfully");
 

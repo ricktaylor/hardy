@@ -51,7 +51,7 @@ impl StaticRoutes {
     async fn init(
         mut self,
         task_set: &mut tokio::task::JoinSet<()>,
-        cancel_token: tokio_util::sync::CancellationToken,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) {
         info!(
             "Loading static routes from '{}'",
@@ -118,7 +118,7 @@ impl StaticRoutes {
     fn watch(
         &self,
         task_set: &mut tokio::task::JoinSet<()>,
-        cancel_token: tokio_util::sync::CancellationToken,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) {
         let routes_dir = self
             .config
@@ -129,6 +129,7 @@ impl StaticRoutes {
         let routes_file = self.config.routes_file.clone();
 
         let mut self_cloned = self.clone();
+        let cancel_token = cancel_token.clone();
         task_set.spawn(async move {
             let (tx, mut rx) = channel(1);
 
@@ -179,9 +180,9 @@ impl StaticRoutes {
 
 pub async fn init(
     mut config: Config,
-    bpa: Arc<hardy_bpa::bpa::Bpa>,
+    bpa: &Arc<hardy_bpa::bpa::Bpa>,
     task_set: &mut tokio::task::JoinSet<()>,
-    cancel_token: tokio_util::sync::CancellationToken,
+    cancel_token: &tokio_util::sync::CancellationToken,
 ) {
     // Try to create canonical file path
     if let Ok(r) = config.routes_file.canonicalize() {
@@ -197,7 +198,7 @@ pub async fn init(
 
     StaticRoutes {
         config,
-        bpa,
+        bpa: bpa.clone(),
         routes: HashMap::new(),
     }
     .init(task_set, cancel_token)
