@@ -56,6 +56,11 @@ pub struct Config {
     #[serde(flatten, default)]
     pub bpa: hardy_bpa::config::Config,
 
+    // gRPC options
+    #[cfg(feature = "grpc")]
+    #[serde(default)]
+    pub grpc: Option<grpc::Config>,
+
     // Metadata Storage Configuration
     #[serde(default)]
     pub metadata_storage: Option<MetadataStorage>,

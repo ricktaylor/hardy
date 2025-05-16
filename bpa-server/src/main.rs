@@ -1,6 +1,9 @@
 mod config;
 mod static_routes;
 
+#[cfg(feature = "grpc")]
+mod grpc;
+
 mod built_info {
     // The file has been placed there by the build script.
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
@@ -11,7 +14,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 fn listen_for_cancel(
     task_set: &mut tokio::task::JoinSet<()>,
@@ -111,6 +114,12 @@ async fn main() {
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let mut task_set = tokio::task::JoinSet::new();
+
+    // Start gRPC server
+    #[cfg(feature = "grpc")]
+    if let Some(config) = &config.grpc {
+        grpc::init(config, &bpa, &mut task_set, &cancel_token);
+    }
 
     // Load static routes
     if let Some(config) = config.static_routes {

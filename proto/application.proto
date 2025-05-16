@@ -1,107 +1,87 @@
 syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
 
 package application;
 
-service application_sink {
-    rpc RegisterApplication(RegisterApplicationRequest) returns (RegisterApplicationResponse);
-    rpc UnregisterApplication(UnregisterApplicationRequest) returns (UnregisterApplicationResponse);
-    rpc Send(SendRequest) returns (SendResponse);
-    rpc Collect(CollectRequest) returns (CollectResponse);
-    rpc Poll(PollRequest) returns (stream PollResponse);
+service application {
+  // Connect to the BPA, and setup a bidirectional stream
+  rpc Register(stream AppToBpa) returns (stream BpaToApp);
+}
+
+message AppToBpa {
+  int32 msg_id = 1;
+  oneof Msg {
+    google.rpc.Status status = 2;
+    RegisterApplicationRequest register = 3;
+    SendRequest send = 4;
+    ReceiveBundleResponse receive = 5;
+    StatusNotifyResponse status_notify = 6;
+  }
+}
+
+message BpaToApp {
+  int32 msg_id = 1;
+  oneof msg {
+    google.rpc.Status status = 2;
+    RegisterApplicationResponse register = 3;
+    SendResponse send = 4;
+    ReceiveBundleRequest receive = 5;
+    StatusNotifyRequest status_notify = 6;
+  }
 }
 
 message RegisterApplicationRequest {
-    oneof Endpoint {
-        string DtnService = 1;  /* dtn scheme service name */
-        uint32 IpnServiceNumber = 2;  /* ipn service number to be registered under node number of BPA node-id */
-    }
-    string Ident = 3;
-    optional string GrpcAddress = 4;
+  oneof service_id {
+    string dtn = 1; /* dtn scheme service name */
+    uint32 ipn = 2; /* ipn service number to be registered under
+                                    node number of BPA node-id */
+  }
 }
 
-message RegisterApplicationResponse {
-    string Token = 1;
-    string EndpointId = 2;
-}
-
-message UnregisterApplicationRequest {
-    string Token = 1;
-}
-
-message UnregisterApplicationResponse {
-}
+message RegisterApplicationResponse { string EndpointId = 1; }
 
 message SendRequest {
-    enum SendFlags {
-        _Unused = 0;
-        DoNotFragment = 4;
-        RequestAck = 0x20;
-        ReportStatusTime = 0x40;
-        NotifyReception = 0x4000;
-        NotifyForwarding = 0x10000;
-        NotifyDelivery = 0x20000;
-        NotifyDeletion = 0x40000;
-    }
-    string Token = 1;
-    string Destination = 2;
-    bytes Data = 3;
-    optional uint64 Lifetime = 4;
-    optional uint32 Flags = 5;
+  enum SendFlags {
+    _unused = 0;
+    DoNotFragment = 4;
+    RequestAck = 0x20;
+    ReportStatusTime = 0x40;
+    NotifyReception = 0x4000;
+    NotifyForwarding = 0x10000;
+    NotifyDelivery = 0x20000;
+    NotifyDeletion = 0x40000;
+  }
+  string destination = 1;
+  bytes payload = 2;
+  uint64 lifetime = 3;
+  optional uint32 flags = 4;
 }
 
-message SendResponse {
+message SendResponse { string bundle_id = 1; }
+
+message ReceiveBundleRequest {
+  string bundle_id = 1;
+  bool ack_requested = 2;
+  google.protobuf.Timestamp expiry = 3;
+  bytes payload = 4;
 }
 
-message CollectRequest {
-    string Token = 1;
-    string BundleId = 2;
-}
-
-message CollectResponse {
-    string BundleId = 1;
-    google.protobuf.Timestamp expiry = 2;
-    bool AckRequested = 3;
-    bytes Data = 4;
-}
-
-message PollRequest {
-    string Token = 1;
-}
-
-message PollResponse {
-    string BundleId = 1;
-    google.protobuf.Timestamp expiry = 2;
-}
-
-service application {
-    rpc CollectionNotify(CollectionNotifyRequest) returns (CollectionNotifyResponse);  // Bundle is ready for collection
-    rpc StatusNotify(StatusNotifyRequest) returns (StatusNotifyResponse); // Something has happened to the bundle
-}
-
-message CollectionNotifyRequest {
-    string Token = 1;
-    string BundleId = 2;
-}
-
-message CollectionNotifyResponse {
-}
+message ReceiveBundleResponse {}
 
 message StatusNotifyRequest {
-    enum StatusKind {
-        _Unknown = 0;
-        Received = 1;
-        Forwarded = 2;
-        Delivered = 3;
-        Deleted = 4;
-    }
-    string Token = 1;
-    string BundleId = 2;
-    StatusKind Kind = 3;
-    uint64 Reason = 4;
-    optional google.protobuf.Timestamp Timestamp = 5;
+  enum StatusKind {
+    _unused = 0;
+    received = 1;
+    forwarded = 2;
+    delivered = 3;
+    deleted = 4;
+  }
+  string bundle_id = 1;
+  StatusKind kind = 2;
+  uint64 reason = 3;
+  optional google.protobuf.Timestamp timestamp = 4;
 }
 
-message StatusNotifyResponse {
-}
+message StatusNotifyResponse {}

@@ -9,16 +9,19 @@ name = "hardy-bpa-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite-storage", "localdisk-storage"]
+default = ["sqlite-storage", "localdisk-storage", "grpc"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = []
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = []
 packaged-installation = []
+grpc = ["dep:tonic", "dep:hardy-proto", "dep:tokio-stream", "dep:prost","dep:prost-types"]
 
 [dependencies]
+hardy-bpv7 = { path = "../bpv7" }
 hardy-bpa = { path = "../bpa" }
 hardy-eid-pattern = { path = "../eid_pattern" }
+hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", optional = true }
 tokio = { version = "1.45.0", features = [
@@ -27,6 +30,10 @@ tokio = { version = "1.45.0", features = [
     "signal",
 ] }
 tokio-util = "0.7.15"
+tonic = { version = "0.13.0", optional = true }
+tokio-stream = { version = "0.1.15", optional = true }
+prost = { version = "0.13", optional = true }
+prost-types = { version = "0.13", optional = true }
 config = { version = "0.15.11", features = ["toml"] }
 serde = { version = "1.0.219", features = ["derive"] }
 getopts = "0.2.21"
