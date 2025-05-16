@@ -349,7 +349,7 @@ impl Store {
     }
 
     #[inline]
-    pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
+    pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         self.bundle_storage.load(storage_name).await
     }
 

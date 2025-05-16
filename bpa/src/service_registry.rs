@@ -65,7 +65,7 @@ impl service::Sink for Sink {
         data: &[u8],
         lifetime: time::Duration,
         flags: Option<service::SendFlags>,
-    ) -> service::Result<bpv7::BundleId> {
+    ) -> service::Result<Box<str>> {
         let Some(service) = self.service.upgrade() else {
             return Err(service::Error::Disconnected);
         };
@@ -84,6 +84,7 @@ impl service::Sink for Sink {
                 flags,
             )
             .await
+            .map(|bundle_id| bundle_id.to_key().into())
             .map_err(Into::into)
     }
 }

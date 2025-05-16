@@ -96,7 +96,7 @@ impl Dispatcher {
         }
     }
 
-    async fn load_data(&self, bundle: &bundle::Bundle) -> Result<Option<storage::DataRef>, Error> {
+    async fn load_data(&self, bundle: &mut bundle::Bundle) -> Result<Option<Bytes>, Error> {
         // Try to load the data, but treat errors as 'Storage Depleted'
         let storage_name = bundle.metadata.storage_name.as_ref().unwrap();
         if let Some(data) = self.store.load_data(storage_name).await? {
@@ -107,6 +107,14 @@ impl Dispatcher {
 
         // Report the bundle has gone
         self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+            .await?;
+
+        // Leave a tombstone in the metadata, so we can ignore duplicates
+        self.store
+            .set_status(
+                bundle,
+                BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
+            )
             .await
             .map(|_| None)
     }
@@ -122,16 +130,12 @@ impl Dispatcher {
         }
 
         // Leave a tombstone in the metadata, so we can ignore duplicates
-        if let BundleStatus::Tombstone(_) = bundle.metadata.status {
-            // Don't update Tombstone timestamp
-        } else {
-            self.store
-                .set_status(
-                    &mut bundle,
-                    BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
-                )
-                .await?;
-        }
+        self.store
+            .set_status(
+                &mut bundle,
+                BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
+            )
+            .await?;
 
         // Delete the bundle from the bundle store
         if let Some(storage_name) = bundle.metadata.storage_name {
@@ -261,5 +265,14 @@ impl Dispatcher {
         while let Some(r) = task_set.join_next().await {
             r.trace_expect("Task terminated unexpectedly")
         }
+    }
+
+    fn key_closure(
+        &self,
+    ) -> impl FnMut(
+        &bpv7::Eid,
+        bpv7::bpsec::Context,
+    ) -> Result<Option<bpv7::bpsec::KeyMaterial>, bpv7::bpsec::Error> {
+        |_, _| Ok(None)
     }
 }

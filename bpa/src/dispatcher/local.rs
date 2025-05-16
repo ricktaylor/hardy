@@ -88,16 +88,26 @@ impl Dispatcher {
     pub async fn deliver_bundle(
         &self,
         service: Arc<service_registry::Service>,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
     ) -> Result<(), Error> {
-        // Get the data!
-        if let Some(data) = self.load_data(&bundle).await? {
-            // Pass the bundle and data to the service
-            service
-                .service
-                .on_receive(&bundle.bundle, data.as_ref().as_ref(), bundle.expiry())
-                .await;
-        }
+        let Some(data) = self.load_data(&mut bundle).await? else {
+            // Bundle data was deleted sometime during processing - this is benign
+            return Ok(());
+        };
+
+        // Pass the bundle and data to the service
+        service
+            .service
+            .on_receive(service::Bundle {
+                id: bundle.bundle.id.to_key(),
+                expiry: bundle.expiry(),
+                ack_requested: bundle.bundle.flags.app_ack_requested,
+                payload: match bundle.bundle.payload(&data, self.key_closure())? {
+                    bpv7::Payload::Borrowed(range) => data.slice(range),
+                    bpv7::Payload::Owned(data) => Bytes::from_owner(data),
+                },
+            })
+            .await;
 
         self.report_bundle_delivery(&bundle).await?;
 

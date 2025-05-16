@@ -41,17 +41,25 @@ pub enum StatusNotify {
     Deleted,
 }
 
+#[derive(Debug)]
+pub struct Bundle {
+    pub id: String,
+    pub expiry: time::OffsetDateTime,
+    pub ack_requested: bool,
+    pub payload: Bytes,
+}
+
 #[async_trait]
 pub trait Service: Send + Sync {
     async fn on_register(&self, source: &bpv7::Eid, sink: Box<dyn Sink>);
 
     async fn on_unregister(&self);
 
-    async fn on_receive(&self, bundle: &bundle::Bundle, data: &[u8], expiry: time::OffsetDateTime);
+    async fn on_receive(&self, bundle: Bundle);
 
     async fn on_status_notify(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &str,
         kind: StatusNotify,
         reason: bpv7::StatusReportReasonCode,
         timestamp: Option<bpv7::DtnTime>,
@@ -79,5 +87,5 @@ pub trait Sink: Send + Sync {
         data: &[u8],
         lifetime: time::Duration,
         flags: Option<SendFlags>,
-    ) -> Result<bpv7::BundleId>;
+    ) -> Result<Box<str>>;
 }

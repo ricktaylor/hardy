@@ -6,15 +6,6 @@ use std::{
 };
 use tokio::sync::RwLock;
 
-struct DataRefWrapper(Arc<[u8]>);
-
-impl AsRef<[u8]> for DataRefWrapper {
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
 #[derive(Default)]
 pub struct Storage {
     bundles: RwLock<HashMap<String, Arc<[u8]>>>,
@@ -30,9 +21,9 @@ impl storage::BundleStorage for Storage {
         Ok(())
     }
 
-    async fn load(&self, storage_name: &str) -> storage::Result<Option<storage::DataRef>> {
+    async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         if let Some(v) = self.bundles.read().await.get(storage_name).cloned() {
-            Ok(Some(Arc::new(DataRefWrapper(v))))
+            Ok(Some(Bytes::from_owner(v.clone())))
         } else {
             Ok(None)
         }

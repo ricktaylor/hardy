@@ -29,14 +29,13 @@ pub trait MetadataStorage: Send + Sync {
     async fn get_unconfirmed_bundles(&self, tx: Sender) -> Result<()>;
 }
 
-pub type DataRef = std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>;
 pub type ListResponse = (std::sync::Arc<str>, Option<time::OffsetDateTime>);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
     async fn list(&self, tx: tokio::sync::mpsc::Sender<ListResponse>) -> Result<()>;
 
-    async fn load(&self, storage_name: &str) -> Result<Option<DataRef>>;
+    async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
 
     async fn store(&self, data: &[u8]) -> Result<std::sync::Arc<str>>;
 

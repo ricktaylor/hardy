@@ -2,7 +2,10 @@ use super::*;
 
 impl Dispatcher {
     #[instrument(skip(self))]
-    pub(super) async fn administrative_bundle(&self, bundle: bundle::Bundle) -> Result<(), Error> {
+    pub(super) async fn administrative_bundle(
+        &self,
+        mut bundle: bundle::Bundle,
+    ) -> Result<(), Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             trace!(
@@ -16,7 +19,7 @@ impl Dispatcher {
                 .await;
         }
 
-        let Some(data) = self.load_data(&bundle).await? else {
+        let Some(data) = self.load_data(&mut bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
             return Ok(());
         };
@@ -34,16 +37,13 @@ impl Dispatcher {
                 // Find a live service to notify
                 if let Some(service) = self.service_registry.find(&report.bundle_id.source).await {
                     // Notify the service
+                    let bundle_id = bundle.bundle.id.to_key();
+
                     let on_status_notify = |assertion: Option<bpv7::StatusAssertion>, code| async {
                         if let Some(assertion) = assertion {
                             service
                                 .service
-                                .on_status_notify(
-                                    &report.bundle_id,
-                                    code,
-                                    report.reason,
-                                    assertion.0,
-                                )
+                                .on_status_notify(&bundle_id, code, report.reason, assertion.0)
                                 .await
                         }
                     };

@@ -1,7 +1,7 @@
 use super::*;
 
 impl Dispatcher {
-    pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) -> Result<(), Error> {
+    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
         let mut next_hop = bundle.bundle.destination.clone();
         let mut previous = false;
         loop {
@@ -32,7 +32,7 @@ impl Dispatcher {
 
             if !clas.is_empty() {
                 // Get bundle data from store, now we know we need it!
-                let Some(data) = self.load_data(&bundle).await? else {
+                let Some(data) = self.load_data(&mut bundle).await? else {
                     // Bundle data was deleted sometime during processing
                     return Ok(());
                 };
@@ -104,12 +104,8 @@ impl Dispatcher {
         }
     }
 
-    fn update_extension_blocks(
-        &self,
-        bundle: &bundle::Bundle,
-        source_data: storage::DataRef,
-    ) -> Vec<u8> {
-        let mut editor = bpv7::Editor::new(&bundle.bundle, source_data.as_ref().as_ref());
+    fn update_extension_blocks(&self, bundle: &bundle::Bundle, source_data: Bytes) -> Vec<u8> {
+        let mut editor = bpv7::Editor::new(&bundle.bundle, &source_data);
 
         // Remove unrecognized blocks we are supposed to
         for (block_number, block) in &bundle.bundle.blocks {
