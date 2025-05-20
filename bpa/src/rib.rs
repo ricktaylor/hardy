@@ -3,42 +3,21 @@ use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{Mutex, RwLock};
 
-static LOCAL_SOURCE: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| "system".to_string());
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RibAction {
-    AdminEndpoint,                              // Deliver to the admin endpoint
-    Local(Arc<service_registry::Service>),      // Deliver to local service
-    Forward(Arc<cla_registry::Cla>),            // Forward to CLA
-    Via(bpv7::Eid),                             // Recursive lookup
-    Store(time::OffsetDateTime),                // Wait for later availability
-    Drop(Option<bpv7::StatusReportReasonCode>), // Drop the bundle
-}
-
-impl From<routes::Action> for RibAction {
-    fn from(action: routes::Action) -> Self {
-        match action {
-            routes::Action::Drop(reason) => Self::Drop(reason),
-            routes::Action::Via(eid) => Self::Via(eid),
-            routes::Action::Store(until) => Self::Store(until),
-        }
-    }
+pub enum LocalAction {
+    AdminEndpoint,                         // Deliver to the admin endpoint
+    Local(Arc<service_registry::Service>), // Deliver to local service
+    Forward(cla::ClaAddress, Option<Arc<cla_registry::Cla>>), // Forward to CLA
+                                           //    Drop(Option<bpv7::StatusReportReasonCode>), // Drop the bundle
 }
 
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Arc<service_registry::Service>), // Deliver to local service
     Forward(
-        Vec<Arc<cla_registry::Cla>>,  // Available endpoints for forwarding
-        Option<time::OffsetDateTime>, // Timestamp of next forwarding opportunity
+        Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>, // Available endpoints for forwarding
+        Option<time::OffsetDateTime>,                   // Timestamp of next forwarding opportunity
     ),
-}
-
-impl Default for FindResult {
-    fn default() -> Self {
-        Self::Forward(Vec::new(), None)
-    }
 }
 
 pub enum WaitResult {
@@ -48,94 +27,79 @@ pub enum WaitResult {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct Entry {
+struct RouteEntry {
     pattern: eid_pattern::EidPattern,
     priority: u32,
-    action: RibAction,
+    action: routes::Action,
     source: String,
 }
 
 #[derive(Debug)]
+struct RibInner {
+    locals: HashMap<bpv7::Eid, Vec<LocalAction>>,
+    routes: eid_pattern::EidPatternMap<RouteEntry>,
+    finals: eid_pattern::EidPatternSet,
+    address_types: HashMap<cla::ClaAddressType, Arc<cla_registry::Cla>>,
+}
+
+#[derive(Debug)]
 pub struct Rib {
-    routes: RwLock<eid_pattern::EidPatternMap<Entry>>,
+    inner: RwLock<RibInner>,
     cancellable_waits: Mutex<HashMap<bpv7::Eid, tokio_util::sync::CancellationToken>>,
 }
 
 impl Rib {
     pub fn new(config: &config::Config) -> Arc<Self> {
-        let mut routes = eid_pattern::EidPatternMap::new();
-        let mut add_pattern = |pattern: hardy_eid_pattern::EidPattern, action: RibAction| {
-            routes.insert(
-                pattern.clone(),
-                Entry {
-                    pattern,
-                    source: LOCAL_SOURCE.clone(),
-                    action,
-                    priority: 0,
-                },
-            );
-        };
-
-        // Drop Eid::Null silently to cull spam
-        add_pattern(bpv7::Eid::Null.into(), RibAction::Drop(None));
-
-        // Drop LocalNode services
-        add_pattern(
-            "ipn:!.*".parse().unwrap(),
-            RibAction::Drop(Some(
-                bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-            )),
-        );
+        let mut locals = HashMap::new();
+        let mut finals = eid_pattern::EidPatternSet::new();
 
         // Add localnode admin endpoint
-        add_pattern(
-            bpv7::Eid::LocalNode { service_number: 0 }.into(),
-            RibAction::AdminEndpoint,
+        locals.insert(
+            bpv7::Eid::LocalNode { service_number: 0 },
+            vec![LocalAction::AdminEndpoint],
         );
+
+        // Drop LocalNode services
+        finals.insert("ipn:!.*".parse().unwrap());
 
         if let Some((allocator_id, node_number)) = config.node_ids.ipn {
             // Add the Admin Endpoint EID itself
-            add_pattern(
+            locals.insert(
                 bpv7::Eid::Ipn {
                     allocator_id,
                     node_number,
                     service_number: 0,
-                }
-                .into(),
-                RibAction::AdminEndpoint,
+                },
+                vec![LocalAction::AdminEndpoint],
             );
 
-            add_pattern(
+            finals.insert(
                 format!("ipn:{allocator_id}.{node_number}.*")
                     .parse()
                     .unwrap(),
-                RibAction::Drop(Some(
-                    bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-                )),
             );
         }
 
         if let Some(node_name) = &config.node_ids.dtn {
             // Add the Admin Endpoint EID itself
-            add_pattern(
+            locals.insert(
                 bpv7::Eid::Dtn {
                     node_name: node_name.clone(),
                     demux: [].into(),
-                }
-                .into(),
-                RibAction::AdminEndpoint,
+                },
+                vec![LocalAction::AdminEndpoint],
             );
 
-            add_pattern(
-                format!("dtn://{node_name}/**").parse().unwrap(),
-                RibAction::Drop(Some(
-                    bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-                )),
-            );
+            finals.insert(format!("dtn://{node_name}/**").parse().unwrap());
         }
 
         Arc::new(Self {
-            routes: RwLock::new(routes),
+            inner: RwLock::new(RibInner {
+                locals,
+                finals,
+                routes: eid_pattern::EidPatternMap::new(),
+                address_types: HashMap::new(),
+            }),
             cancellable_waits: Mutex::default(),
         })
     }
@@ -144,15 +108,15 @@ impl Rib {
         &self,
         pattern: eid_pattern::EidPattern,
         source: String,
-        action: RibAction,
+        action: routes::Action,
         priority: u32,
     ) {
         info!("Adding route {pattern} => {action:?}, priority {priority}, source '{source}'");
 
         {
-            self.routes.write().await.insert(
+            self.inner.write().await.routes.insert(
                 pattern.clone(),
-                Entry {
+                RouteEntry {
                     pattern: pattern.clone(),
                     source,
                     action,
@@ -165,23 +129,38 @@ impl Rib {
         self.wake(pattern.into()).await
     }
 
+    async fn add_local(&self, eid: bpv7::Eid, action: LocalAction) {
+        info!("Adding local route {eid} => {action:?}");
+
+        match self.inner.write().await.locals.entry(eid.clone()) {
+            std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                let entry = occupied_entry.get_mut();
+                entry.push(action);
+                entry.sort();
+            }
+            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(vec![action]);
+            }
+        }
+
+        // Wake all waiters
+        if let Some(token) = self.cancellable_waits.lock().await.remove(&eid) {
+            token.cancel();
+        }
+    }
+
     pub async fn add_forward(
         &self,
-        pattern: eid_pattern::EidPattern,
-        cla_name: &str,
-        cla: Arc<cla_registry::Cla>,
+        eid: bpv7::Eid,
+        cla_addr: cla::ClaAddress,
+        cla: Option<Arc<cla_registry::Cla>>,
     ) {
-        self.add(pattern, cla_name.to_string(), RibAction::Forward(cla), 0)
+        self.add_local(eid, LocalAction::Forward(cla_addr, cla))
             .await
     }
 
-    pub async fn add_local(
-        &self,
-        pattern: eid_pattern::EidPattern,
-        service: Arc<service_registry::Service>,
-    ) {
-        self.add(pattern, LOCAL_SOURCE.clone(), RibAction::Local(service), 0)
-            .await
+    pub async fn add_service(&self, eid: bpv7::Eid, service: Arc<service_registry::Service>) {
+        self.add_local(eid, LocalAction::Local(service)).await
     }
 
     pub async fn remove(
@@ -192,19 +171,11 @@ impl Rib {
         priority: u32,
     ) -> bool {
         let v = {
-            self.routes.write().await.remove_if(pattern, |e| {
-                if &e.pattern == pattern && e.source == source && e.priority == priority {
-                    match (action, &e.action) {
-                        (routes::Action::Drop(r1), RibAction::Drop(r2)) => r1 == r2,
-                        (routes::Action::Via(eid1), RibAction::Via(eid2)) => eid1 == eid2,
-                        (routes::Action::Store(until1), RibAction::Store(until2)) => {
-                            until1 == until2
-                        }
-                        _ => false,
-                    }
-                } else {
-                    false
-                }
+            self.inner.write().await.routes.remove_if(pattern, |e| {
+                &e.pattern == pattern
+                    && e.source == source
+                    && e.priority == priority
+                    && &e.action == action
             })
         };
 
@@ -226,61 +197,76 @@ impl Rib {
         }
     }
 
-    pub async fn remove_forward(&self, pattern: &eid_pattern::EidPattern, cla_name: &str) -> bool {
-        let v = {
-            self.routes.write().await.remove_if(pattern, |e| {
-                &e.pattern == pattern
-                    && e.source == cla_name
-                    && e.priority == 0
-                    && matches!(&e.action, RibAction::Forward(..))
-            })
-        };
+    async fn remove_local(&self, eid: &bpv7::Eid, f: impl FnMut(&mut LocalAction) -> bool) -> bool {
+        let v = self
+            .inner
+            .write()
+            .await
+            .locals
+            .get_mut(eid)
+            .map(|v| v.extract_if(.., f).collect::<Vec<_>>())
+            .unwrap_or_default();
 
         for v in &v {
-            info!(
-                "Removed route {pattern} => {:?}, priority 0, source '{cla_name}'",
-                v.action
-            )
+            info!("Removed route {eid} => {v:?}")
         }
         !v.is_empty()
     }
 
-    pub async fn remove_local(
+    pub async fn remove_forward(
         &self,
-        pattern: &eid_pattern::EidPattern,
+        eid: &bpv7::Eid,
+        cla_addr: &cla::ClaAddress,
+        cla: Option<&Arc<cla_registry::Cla>>,
+    ) -> bool {
+        self.remove_local(eid, |action| match action {
+            LocalAction::Forward(addr, c) => addr == cla_addr && c.as_ref() == cla,
+            _ => false,
+        })
+        .await
+    }
+
+    pub async fn remove_service(
+        &self,
+        eid: &bpv7::Eid,
         service: &service_registry::Service,
     ) -> bool {
-        let v = self.routes.write().await.remove_if(pattern, |e| {
-            if &e.pattern == pattern && e.source == *LOCAL_SOURCE && e.priority == 0 {
-                if let RibAction::Local(e_service) = &e.action {
-                    e_service.as_ref() == service
-                } else {
-                    false
-                }
+        self.remove_local(eid, |action| {
+            if let LocalAction::Local(svc) = action {
+                svc.as_ref() == service
             } else {
                 false
             }
-        });
+        })
+        .await
+    }
 
-        for v in &v {
-            info!(
-                "Removed route {pattern} => {:?}, priority 0, source '{}'",
-                v.action, *LOCAL_SOURCE
-            )
-        }
-        !v.is_empty()
+    pub async fn add_address_type(
+        &self,
+        address_type: cla::ClaAddressType,
+        cla: Arc<cla_registry::Cla>,
+    ) {
+        self.inner
+            .write()
+            .await
+            .address_types
+            .insert(address_type, cla);
+    }
+
+    pub async fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
+        self.inner.write().await.address_types.remove(address_type);
     }
 
     pub async fn find(
         &self,
         to: &bpv7::Eid,
-    ) -> Result<FindResult, Option<bpv7::StatusReportReasonCode>> {
+    ) -> Result<Option<FindResult>, Option<bpv7::StatusReportReasonCode>> {
         let mut result = {
-            let routes = self.routes.read().await;
-            find_recurse(&routes, to, &mut HashSet::new())?
+            let inner = self.inner.read().await;
+            find_recurse(&inner, to, &mut HashSet::new())?
         };
 
-        if let FindResult::Forward(clas, _) = &mut result {
+        if let Some(FindResult::Forward(clas, _)) = &mut result {
             if clas.len() > 1 {
                 // For ECMP, we need a random order
                 clas.shuffle(&mut rand::rng());
@@ -334,14 +320,42 @@ impl Rib {
     }
 }
 
-#[instrument(skip(routes, trail))]
+fn find_local<'a>(inner: &'a RibInner, to: &'a bpv7::Eid) -> Option<FindResult> {
+    let mut clas: Option<Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>> = None;
+    for action in inner.locals.get(to).into_iter().flatten() {
+        match action {
+            LocalAction::AdminEndpoint => {
+                return Some(FindResult::AdminEndpoint);
+            }
+            LocalAction::Local(service) => {
+                return Some(FindResult::Deliver(service.clone()));
+            }
+            LocalAction::Forward(cla_addr, cla) => {
+                let f = if let Some(cla) = cla {
+                    Some(cla.clone())
+                } else {
+                    inner.address_types.get(&cla_addr.address_type()).cloned()
+                }
+                .map(|cla| (cla, cla_addr.clone()));
+                if let Some(f) = f {
+                    if let Some(clas) = &mut clas {
+                        clas.push(f);
+                    } else {
+                        clas = Some(vec![f]);
+                    }
+                }
+            }
+        }
+    }
+    clas.map(|clas| FindResult::Forward(clas, None))
+}
+
+#[instrument(skip(inner, trail))]
 fn find_recurse<'a>(
-    routes: &'a eid_pattern::EidPatternMap<Entry>,
+    inner: &'a RibInner,
     to: &'a bpv7::Eid,
     trail: &mut HashSet<&'a bpv7::Eid>,
-) -> Result<FindResult, Option<bpv7::StatusReportReasonCode>> {
-    let mut result = FindResult::default();
-
+) -> Result<Option<FindResult>, Option<bpv7::StatusReportReasonCode>> {
     // Recursion check
     if !trail.insert(to) {
         warn!("Recursive route {to} found!");
@@ -350,7 +364,14 @@ fn find_recurse<'a>(
         ));
     }
 
-    let mut entries = routes.find(to);
+    // Always check locals first
+    let mut result = find_local(inner, to);
+    if result.is_some() {
+        return Ok(result);
+    }
+
+    // Now check routes (this is where route table switching can occur)
+    let mut entries = inner.routes.find(to);
 
     // Sort the entries
     entries.sort();
@@ -366,66 +387,64 @@ fn find_recurse<'a>(
             priority = Some(entry.priority);
         }
 
-        match entry.action {
-            RibAction::AdminEndpoint => {
-                result = FindResult::AdminEndpoint;
-                break;
-            }
-            RibAction::Local(ref service) => {
-                result = FindResult::Deliver(service.clone());
-                break;
-            }
-            RibAction::Forward(ref cla) => {
-                let FindResult::Forward(clas, _) = &mut result else {
-                    panic!("Mismatch in FindResult");
-                };
-                clas.push(cla.clone());
-            }
-            RibAction::Via(ref via) => {
-                let sub_result = find_recurse(routes, via, trail)?;
-                let FindResult::Forward(sub_clas, sub_until) = sub_result else {
-                    result = sub_result;
-                    break;
-                };
+        match &entry.action {
+            routes::Action::Via(via) => {
+                // Recusive lookup
+                if let Some(sub_result) = find_recurse(inner, via, trail)? {
+                    let FindResult::Forward(sub_clas, sub_until) = sub_result else {
+                        // If we find a non-forward, then break
+                        result = Some(sub_result);
+                        break;
+                    };
 
-                let FindResult::Forward(clas, until) = &mut result else {
-                    panic!("Mismatch in FindResult");
-                };
+                    if let Some(FindResult::Forward(clas, until)) = &mut result {
+                        clas.extend(sub_clas);
 
-                clas.extend(sub_clas);
-
-                if let Some(sub_until) = sub_until {
-                    if let Some(until) = until {
-                        if sub_until < *until {
-                            *until = sub_until
+                        if let Some(sub_until) = sub_until {
+                            if let Some(until) = until {
+                                if sub_until < *until {
+                                    *until = sub_until
+                                }
+                            } else {
+                                *until = Some(sub_until);
+                            }
                         }
                     } else {
-                        *until = Some(sub_until)
+                        result = Some(FindResult::Forward(sub_clas, sub_until));
                     }
                 }
             }
-            RibAction::Store(sub_until) => {
-                let FindResult::Forward(_, until) = &mut result else {
-                    panic!("Mismatch in FindResult");
-                };
-
-                if sub_until >= time::OffsetDateTime::now_utc() {
-                    // Don't override a Store found with Via
-                    if until.is_none() {
-                        *until = Some(sub_until);
+            routes::Action::Store(sub_until) => {
+                if *sub_until >= time::OffsetDateTime::now_utc() {
+                    if let Some(FindResult::Forward(_, until)) = &mut result {
+                        if let Some(until) = until {
+                            if sub_until < until {
+                                *until = *sub_until
+                            }
+                        } else {
+                            *until = Some(*sub_until);
+                        }
+                    } else {
+                        result = Some(FindResult::Forward(Vec::new(), Some(*sub_until)));
                     }
-
-                    // The sort ensures that this is the shortest wait and have processed everything else relevant already
-                    break;
                 }
+
+                // The sort ensures that this is the shortest wait and have processed everything else relevant already
+                break;
             }
-            RibAction::Drop(reason) => {
+            routes::Action::Drop(reason) => {
                 // Drop trumps everything else
-                return Err(reason);
+                return Err(*reason);
             }
         }
 
         trail.remove(to);
+    }
+
+    if result.is_none() && inner.finals.contains(to) {
+        return Err(Some(
+            bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
+        ));
     }
     Ok(result)
 }

@@ -1,14 +1,12 @@
 use super::*;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Weak,
-};
+use std::{collections::HashMap, sync::Weak};
 use tokio::sync::{Mutex, RwLock};
 
 pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
-    subnets: Mutex<HashSet<eid_pattern::EidPattern>>,
     name: String,
+    peers: Mutex<HashMap<bpv7::Eid, cla::ClaAddress>>,
+    address_type: Option<cla::ClaAddressType>,
 }
 
 impl PartialEq for Cla {
@@ -41,7 +39,8 @@ impl std::fmt::Debug for Cla {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cla")
             .field("name", &self.name)
-            .field("subnets", &self.subnets)
+            .field("address_type", &self.address_type)
+            .field("peers", &self.peers)
             .finish()
     }
 }
@@ -64,19 +63,19 @@ impl cla::Sink for Sink {
         self.dispatcher.receive_bundle(bundle).await
     }
 
-    async fn add_subnet(&self, pattern: eid_pattern::EidPattern) -> cla::Result<()> {
+    async fn add_peer(&self, eid: bpv7::Eid, addr: cla::ClaAddress) -> cla::Result<()> {
         let Some(cla) = self.cla.upgrade() else {
             return Err(cla::Error::Disconnected);
         };
-        self.registry.add_subnet(&cla, pattern).await;
+        self.registry.add_peer(&cla, eid, addr).await;
         Ok(())
     }
 
-    async fn remove_subnet(&self, pattern: &eid_pattern::EidPattern) -> cla::Result<bool> {
+    async fn remove_peer(&self, eid: &bpv7::Eid) -> cla::Result<bool> {
         let Some(cla) = self.cla.upgrade() else {
             return Err(cla::Error::Disconnected);
         };
-        Ok(self.registry.remove_subnet(&cla, pattern).await)
+        Ok(self.registry.remove_peer(&cla, eid).await)
     }
 }
 
@@ -117,6 +116,7 @@ impl ClaRegistry {
     pub async fn register(
         self: &Arc<Self>,
         name: String,
+        address_type: Option<cla::ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> cla::Result<()> {
@@ -130,8 +130,9 @@ impl ClaRegistry {
 
             let cla = Arc::new(Cla {
                 cla,
-                subnets: Default::default(),
+                peers: Default::default(),
                 name: name.clone(),
+                address_type,
             });
 
             info!("Registered new CLA: {name}");
@@ -148,6 +149,11 @@ impl ClaRegistry {
             }))
             .await;
 
+        // Register that the CLA is a handler for the address type
+        if let Some(address_type) = address_type {
+            self.rib.add_address_type(address_type, cla.clone()).await;
+        }
+
         Ok(())
     }
 
@@ -160,23 +166,33 @@ impl ClaRegistry {
     async fn unregister_cla(&self, cla: Arc<Cla>) {
         cla.cla.on_unregister().await;
 
-        for pattern in cla.subnets.lock().await.drain().collect::<Vec<_>>() {
-            self.rib.remove_forward(&pattern, &cla.name).await;
+        if let Some(address_type) = &cla.address_type {
+            self.rib.remove_address_type(address_type).await;
+        }
+
+        for (eid, cla_addr) in cla.peers.lock().await.drain().collect::<Vec<_>>() {
+            self.rib.remove_forward(&eid, &cla_addr, Some(&cla)).await;
         }
 
         info!("Unregistered CLA: {}", cla.name);
     }
 
-    async fn add_subnet(&self, cla: &Arc<Cla>, pattern: eid_pattern::EidPattern) {
-        if cla.subnets.lock().await.insert(pattern.clone()) {
+    async fn add_peer(&self, cla: &Arc<Cla>, eid: bpv7::Eid, addr: cla::ClaAddress) {
+        if cla
+            .peers
+            .lock()
+            .await
+            .insert(eid.clone(), addr.clone())
+            .is_some()
+        {
             return;
         }
-        self.rib.add_forward(pattern, &cla.name, cla.clone()).await
+        self.rib.add_forward(eid, addr, Some(cla.clone())).await
     }
 
-    async fn remove_subnet(&self, cla: &Cla, pattern: &eid_pattern::EidPattern) -> bool {
-        if cla.subnets.lock().await.remove(pattern) {
-            self.rib.remove_forward(pattern, &cla.name).await
+    async fn remove_peer(&self, cla: &Arc<Cla>, eid: &bpv7::Eid) -> bool {
+        if let Some(cla_addr) = cla.peers.lock().await.remove(eid) {
+            self.rib.remove_forward(eid, &cla_addr, Some(cla)).await
         } else {
             false
         }

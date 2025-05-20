@@ -5,7 +5,7 @@ import "google/rpc/status.proto";
 
 package application;
 
-service application {
+service Application {
   // Connect to the BPA, and setup a bidirectional stream
   rpc Register(stream AppToBpa) returns (stream BpaToApp);
 }
@@ -44,14 +44,14 @@ message RegisterApplicationResponse { string EndpointId = 1; }
 
 message SendRequest {
   enum SendFlags {
-    _unused = 0;
-    DoNotFragment = 4;
-    RequestAck = 0x20;
-    ReportStatusTime = 0x40;
-    NotifyReception = 0x4000;
-    NotifyForwarding = 0x10000;
-    NotifyDelivery = 0x20000;
-    NotifyDeletion = 0x40000;
+    SEND_FLAGS_UNUSED = 0;
+    SEND_FLAGS_DO_NOT_FRAGMENT = 4;
+    SEND_FLAGS_REQUEST_ACK = 0x20;
+    SEND_FLAGS_REPORT_STATUS_TIME = 0x40;
+    SEND_FLAGS_NOTIFY_RECEPTION = 0x4000;
+    SEND_FLAGS_NOTIFY_FORWARDING = 0x10000;
+    SEND_FLAGS_NOTIFY_DELIVERY = 0x20000;
+    SEND_FLAGS_NOTIFY_DELETION = 0x40000;
   }
   string destination = 1;
   bytes payload = 2;
@@ -72,11 +72,11 @@ message ReceiveBundleResponse {}
 
 message StatusNotifyRequest {
   enum StatusKind {
-    _unused = 0;
-    received = 1;
-    forwarded = 2;
-    delivered = 3;
-    deleted = 4;
+    STATUS_KIND_UNUSED = 0;
+    STATUS_KIND_RECEIVED = 1;
+    STATUS_KIND_FORWARDED = 2;
+    STATUS_KIND_DELIVERED = 3;
+    STATUS_KIND_DELETED = 4;
   }
   string bundle_id = 1;
   StatusKind kind = 2;

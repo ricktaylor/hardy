@@ -5,7 +5,6 @@ impl Dispatcher {
         &self,
         _max_bundle_size: u64,
         _bundle: bundle::Bundle,
-        _data: Vec<u8>,
     ) -> Result<(), Error> {
         warn!("Bundle requires fragmentation");
         todo!()

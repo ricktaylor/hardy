@@ -2,6 +2,11 @@ use super::*;
 
 impl Dispatcher {
     pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
+        // Drop Eid::Null silently to cull spam
+        if bundle.bundle.destination == bpv7::Eid::Null {
+            return self.drop_bundle(bundle, None).await;
+        }
+
         let mut next_hop = bundle.bundle.destination.clone();
         let mut previous = false;
         loop {
@@ -11,7 +16,7 @@ impl Dispatcher {
                     trace!("Bundle is black-holed");
                     return self.drop_bundle(bundle, reason).await;
                 }
-                Ok(rib::FindResult::AdminEndpoint) => {
+                Ok(Some(rib::FindResult::AdminEndpoint)) => {
                     if bundle.bundle.id.fragment_info.is_some() {
                         return self.reassemble(bundle).await;
                     }
@@ -19,7 +24,7 @@ impl Dispatcher {
                     // The bundle is for the Administrative Endpoint
                     return self.administrative_bundle(bundle).await;
                 }
-                Ok(rib::FindResult::Deliver(service)) => {
+                Ok(Some(rib::FindResult::Deliver(service))) => {
                     if bundle.bundle.id.fragment_info.is_some() {
                         return self.reassemble(bundle).await;
                     }
@@ -27,7 +32,8 @@ impl Dispatcher {
                     // Bundle is for a local service
                     return self.deliver_bundle(service, bundle).await;
                 }
-                Ok(rib::FindResult::Forward(clas, until)) => (clas, until),
+                Ok(Some(rib::FindResult::Forward(clas, until))) => (clas, until),
+                Ok(None) => (Vec::new(), None),
             };
 
             if !clas.is_empty() {
@@ -39,22 +45,23 @@ impl Dispatcher {
 
                 // TODO: Pluggable Egress filters!
 
-                // Increment Hop Count, etc...
-                let data = self.update_extension_blocks(&bundle, data);
-
                 // Track fragmentation status
                 let mut max_bundle_size = None;
 
                 // For each CLA
-                for cla in clas {
-                    match cla.cla.on_forward(&next_hop, &data).await {
+                for (cla, cla_addr) in clas {
+                    // Increment Hop Count, etc...
+                    let data = self.update_extension_blocks(&bundle, &data);
+
+                    match cla.cla.on_forward(cla_addr, &data).await {
                         Err(e) => warn!("CLA failed to forward: {e}"),
                         Ok(cla::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
                             self.report_bundle_forwarded(&bundle).await?;
 
-                            // Should we drop now?  This is where Custody Transfer comes in
-                            todo!();
+                            // TODO: Should we drop now?  This is where Custody Transfer comes in
+
+                            return self.drop_bundle(bundle, None).await;
                         }
                         Ok(cla::ForwardBundleResult::NoNeighbour) => {
                             trace!("CLA has no neighbour for {next_hop}");
@@ -68,7 +75,7 @@ impl Dispatcher {
 
                 if let Some(max_bundle_size) = max_bundle_size {
                     // Fragmentation required
-                    return self.fragment(max_bundle_size, bundle, data).await;
+                    return self.fragment(max_bundle_size, bundle).await;
                 }
             }
 
@@ -104,8 +111,8 @@ impl Dispatcher {
         }
     }
 
-    fn update_extension_blocks(&self, bundle: &bundle::Bundle, source_data: Bytes) -> Vec<u8> {
-        let mut editor = bpv7::Editor::new(&bundle.bundle, &source_data);
+    fn update_extension_blocks(&self, bundle: &bundle::Bundle, source_data: &[u8]) -> Vec<u8> {
+        let mut editor = bpv7::Editor::new(&bundle.bundle, source_data);
 
         // Remove unrecognized blocks we are supposed to
         for (block_number, block) in &bundle.bundle.blocks {

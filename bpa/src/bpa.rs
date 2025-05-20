@@ -71,9 +71,14 @@ impl Bpa {
     }
 
     #[instrument(skip(self, cla))]
-    pub async fn register_cla(&self, name: String, cla: Arc<dyn cla::Cla>) -> cla::Result<()> {
+    pub async fn register_cla(
+        &self,
+        name: String,
+        address_type: Option<cla::ClaAddressType>,
+        cla: Arc<dyn cla::Cla>,
+    ) -> cla::Result<()> {
         self.cla_registry
-            .register(name, cla, &self.dispatcher)
+            .register(name, address_type, cla, &self.dispatcher)
             .await
     }
 
@@ -85,7 +90,7 @@ impl Bpa {
         action: routes::Action,
         priority: u32,
     ) {
-        self.rib.add(pattern, source, action.into(), priority).await
+        self.rib.add(pattern, source, action, priority).await
     }
 
     #[instrument(skip(self))]

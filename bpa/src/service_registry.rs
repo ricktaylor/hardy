@@ -249,7 +249,7 @@ impl ServiceRegistry {
             .await;
 
         // Add local service to RIB
-        self.rib.add_local(service_id.clone().into(), service).await;
+        self.rib.add_service(service_id.clone(), service).await;
 
         Ok(service_id)
     }
@@ -262,9 +262,7 @@ impl ServiceRegistry {
 
     async fn unregister_service(&self, service: Arc<Service>) {
         // Remove local service from RIB
-        self.rib
-            .remove_local(&service.service_id.clone().into(), &service)
-            .await;
+        self.rib.remove_service(&service.service_id, &service).await;
 
         service.service.on_unregister().await;
 

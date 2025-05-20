@@ -34,7 +34,7 @@ impl hardy_bpa::cla::Cla for NullCla {
 
     async fn on_forward(
         &self,
-        _destination: &bpv7::Eid,
+        _cla_addr: hardy_bpa::cla::ClaAddress,
         _bundle: &[u8],
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         todo!()
@@ -88,7 +88,7 @@ fuzz_target!(|data: &[u8]| {
 
         {
             let cla = Arc::new(NullCla::default());
-            bpa.register_cla("fuzz".to_string(), cla.clone())
+            bpa.register_cla("fuzz".to_string(), None, cla.clone())
                 .await
                 .unwrap();
 

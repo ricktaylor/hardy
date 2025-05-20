@@ -6,19 +6,19 @@ import "google/rpc/status.proto";
 
 package cla;
 
-service cla {
+service Cla {
   // Connect to the BPA, and setup a bidirectional stream
   rpc Register(stream ClaToBpa) returns (stream BpaToCla);
 }
 
 message ClaToBpa {
   int32 msg_id = 1;
-  oneof Msg {
+  oneof msg {
     google.rpc.Status status = 2;
     RegisterClaRequest register = 3;
     DispatchBundleRequest dispatch = 4;
-    AddSubnetRequest add_subnet = 5;
-    RemoveSubnetRequest remove_subnet = 6;
+    AddPeerRequest add_peer = 5;
+    RemovePeerRequest remove_peer = 6;
     ForwardBundleResponse forward = 7;
   }
 }
@@ -29,13 +29,26 @@ message BpaToCla {
     google.rpc.Status status = 2;
     RegisterClaResponse register = 3;
     DispatchBundleResponse dispatch = 4;
-    AddSubnetResponse add_subnet = 5;
-    RemoveSubnetResponse remove_subnet = 6;
+    AddPeerResponse add_peer = 5;
+    RemovePeerResponse remove_peer = 6;
     ForwardBundleRequest forward = 7;
   }
 }
 
-message RegisterClaRequest { string name = 1; }
+enum ClaAddressType {
+  CLA_ADDRESS_TYPE_UNKNOWN = 0;
+  CLA_ADDRESS_TYPE_TCP_CL_V4 = 1;
+}
+
+message ClaAddress {
+  ClaAddressType address_type = 1;
+  bytes address = 2;
+}
+
+message RegisterClaRequest {
+  string name = 1;
+  optional ClaAddressType address_type = 2;
+}
 
 message RegisterClaResponse {}
 
@@ -43,17 +56,20 @@ message DispatchBundleRequest { bytes bundle = 1; }
 
 message DispatchBundleResponse {}
 
-message AddSubnetRequest { string pattern = 1; }
+message AddPeerRequest {
+  string eid = 1;
+  ClaAddress address = 2;
+}
 
-message AddSubnetResponse {}
+message AddPeerResponse {}
 
-message RemoveSubnetRequest { string pattern = 1; }
+message RemovePeerRequest { string eid = 1; }
 
-message RemoveSubnetResponse {}
+message RemovePeerResponse {}
 
 message ForwardBundleRequest {
-  string destination = 1;
-  bytes bundle = 2;
+  bytes bundle = 1;
+  optional ClaAddress address = 2;
 }
 
 message ForwardBundleResponse {

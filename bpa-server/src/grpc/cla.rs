@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::prelude as bpv7;
 use hardy_proto::cla::*;
 use std::{
     collections::HashMap,
@@ -30,45 +29,55 @@ impl Cla {
     ) {
         // Expect Register message first
         let cla = match requests.message().await {
-            Ok(Some(ClaToBpa { msg_id, msg })) => match msg {
-                Some(cla_to_bpa::Msg::Status(status)) => {
-                    info!("CLA failed before registration started!: {:?}", status);
-                    return;
-                }
-                Some(cla_to_bpa::Msg::Register(msg)) => {
-                    // Register the CLA and respond
-                    let cla = Arc::new(Self {
-                        sink: OnceLock::default(),
-                        tx: tx.clone(),
-                        msg_id: 0.into(),
-                        forward_acks: Mutex::new(HashMap::new()),
-                    });
-                    if tx
+            Ok(Some(ClaToBpa { msg_id, msg })) => {
+                match msg {
+                    Some(cla_to_bpa::Msg::Status(status)) => {
+                        info!("CLA failed before registration started!: {:?}", status);
+                        return;
+                    }
+                    Some(cla_to_bpa::Msg::Register(msg)) => {
+                        // Register the CLA and respond
+                        let cla = Arc::new(Self {
+                            sink: OnceLock::default(),
+                            tx: tx.clone(),
+                            msg_id: 0.into(),
+                            forward_acks: Mutex::new(HashMap::new()),
+                        });
+
+                        if tx
                         .send(
-                            bpa.register_cla(msg.name, cla.clone())
-                                .await
-                                .map(|_| BpaToCla {
-                                    msg_id,
-                                    msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {})),
-                                })
-                                .map_err(|e| tonic::Status::from_error(e.into())),
+                            bpa.register_cla(
+                                msg.name,
+                                msg.address_type.map(|o| match <i32 as std::convert::TryInto<ClaAddressType>>::try_into(o) {
+                                    Ok(t) => t.into(),
+                                    Err(_) => hardy_bpa::cla::ClaAddressType::Unknown(o as u32),
+                                }),
+                                cla.clone(),
+                            )
+                            .await
+                            .map(|_| BpaToCla {
+                                msg_id,
+                                msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {})),
+                            })
+                            .map_err(|e| tonic::Status::from_error(e.into())),
                         )
                         .await
                         .is_err()
                     {
                         return;
                     }
-                    cla
+                        cla
+                    }
+                    Some(msg) => {
+                        info!("CLA sent incorrect message: {:?}", msg);
+                        return;
+                    }
+                    None => {
+                        info!("CLA sent unrecognized message");
+                        return;
+                    }
                 }
-                Some(msg) => {
-                    info!("CLA sent incorrect message: {:?}", msg);
-                    return;
-                }
-                None => {
-                    info!("CLA sent unrecognized message");
-                    return;
-                }
-            },
+            }
             Ok(None) => {
                 info!("CLA disconnected before registration completed");
                 return;
@@ -93,19 +102,21 @@ impl Cla {
                         break;
                     }
                     Some(cla_to_bpa::Msg::Dispatch(msg)) => Some(cla.dispatch(&msg.bundle).await),
-                    Some(cla_to_bpa::Msg::AddSubnet(msg)) => {
-                        Some(cla.add_subnet(msg.pattern).await)
+                    Some(cla_to_bpa::Msg::AddPeer(msg)) => {
+                        Some(if let Some(address) = msg.address {
+                            cla.add_peer(msg.eid, address).await
+                        } else {
+                            Err(tonic::Status::invalid_argument("Missing address"))
+                        })
                     }
-                    Some(cla_to_bpa::Msg::RemoveSubnet(msg)) => {
-                        Some(cla.remove_subnet(msg.pattern).await)
-                    }
+                    Some(cla_to_bpa::Msg::RemovePeer(msg)) => Some(cla.remove_peer(msg.eid).await),
                     Some(cla_to_bpa::Msg::Forward(msg)) => {
                         if let Some(result) = msg.result {
                             cla.forward_ack_response(msg_id, Ok(result))
                         } else {
                             cla.forward_ack_response(
                                 msg_id,
-                                Err(tonic::Status::invalid_argument("Unrecognized message")),
+                                Err(tonic::Status::invalid_argument("Unrecognized result")),
                             )
                         }
                         .await
@@ -163,29 +174,38 @@ impl Cla {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn add_subnet(&self, pattern: String) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let pattern = pattern
+    async fn add_peer(
+        &self,
+        eid: String,
+        addr: ClaAddress,
+    ) -> Result<bpa_to_cla::Msg, tonic::Status> {
+        let eid = eid
             .parse()
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid pattern: {e}")))?;
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
         self.sink
             .get()
             .expect("CLA registration not complete!")
-            .add_subnet(pattern)
+            .add_peer(
+                eid,
+                addr.try_into().map_err(|e| {
+                    tonic::Status::invalid_argument(format!("Invalid address: {e}"))
+                })?,
+            )
             .await
-            .map(|_| bpa_to_cla::Msg::AddSubnet(AddSubnetResponse {}))
+            .map(|_| bpa_to_cla::Msg::AddPeer(AddPeerResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn remove_subnet(&self, pattern: String) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let pattern = pattern
+    async fn remove_peer(&self, eid: String) -> Result<bpa_to_cla::Msg, tonic::Status> {
+        let eid = eid
             .parse()
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid pattern: {e}")))?;
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
         self.sink
             .get()
             .expect("CLA registration not complete!")
-            .remove_subnet(&pattern)
+            .remove_peer(&eid)
             .await
-            .map(|_| bpa_to_cla::Msg::RemoveSubnet(RemoveSubnetResponse {}))
+            .map(|_| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
@@ -215,7 +235,7 @@ impl hardy_bpa::cla::Cla for Cla {
 
     async fn on_forward(
         &self,
-        destination: &bpv7::Eid,
+        cla_addr: hardy_bpa::cla::ClaAddress,
         bundle: &[u8],
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let (tx, rx) = oneshot::channel();
@@ -229,12 +249,23 @@ impl hardy_bpa::cla::Cla for Cla {
         forward_acks.insert(msg_id, tx);
         drop(forward_acks);
 
+        // Convert CLA address
+        let cla_addr = if let Some(cla_addr) = cla_addr {
+            Some(
+                cla_addr
+                    .try_into()
+                    .map_err(|e: tonic::Status| hardy_bpa::cla::Error::Internal(e.into()))?,
+            )
+        } else {
+            None
+        };
+
         if self
             .tx
             .send(Ok(BpaToCla {
                 msg: Some(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
-                    destination: destination.to_string(),
                     bundle: bundle.to_vec().into(),
+                    address: cla_addr,
                 })),
                 msg_id,
             }))
@@ -246,18 +277,10 @@ impl hardy_bpa::cla::Cla for Cla {
             return Err(hardy_bpa::cla::Error::Disconnected);
         }
 
-        match rx.await.map_err(|_| hardy_bpa::cla::Error::Disconnected)? {
-            Ok(forward_bundle_response::Result::Sent(_)) => {
-                Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
-            }
-            Ok(forward_bundle_response::Result::NoNeighbour(_)) => {
-                Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
-            }
-            Ok(forward_bundle_response::Result::TooBig(max_bundle_size)) => {
-                Ok(hardy_bpa::cla::ForwardBundleResult::TooBig(max_bundle_size))
-            }
-            Err(s) => Err(hardy_bpa::cla::Error::Internal(s.into())),
-        }
+        rx.await
+            .map_err(|_| hardy_bpa::cla::Error::Disconnected)?
+            .map(Into::into)
+            .map_err(|e| hardy_bpa::cla::Error::Internal(e.into()))
     }
 }
 
