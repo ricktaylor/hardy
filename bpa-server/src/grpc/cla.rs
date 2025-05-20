@@ -249,23 +249,16 @@ impl hardy_bpa::cla::Cla for Cla {
         forward_acks.insert(msg_id, tx);
         drop(forward_acks);
 
-        // Convert CLA address
-        let cla_addr = if let Some(cla_addr) = cla_addr {
-            Some(
-                cla_addr
-                    .try_into()
-                    .map_err(|e: tonic::Status| hardy_bpa::cla::Error::Internal(e.into()))?,
-            )
-        } else {
-            None
-        };
-
         if self
             .tx
             .send(Ok(BpaToCla {
                 msg: Some(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                     bundle: bundle.to_vec().into(),
-                    address: cla_addr,
+                    address: Some(
+                        cla_addr.try_into().map_err(|e: tonic::Status| {
+                            hardy_bpa::cla::Error::Internal(e.into())
+                        })?,
+                    ),
                 })),
                 msg_id,
             }))

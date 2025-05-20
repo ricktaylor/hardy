@@ -69,7 +69,7 @@ message RemovePeerResponse {}
 
 message ForwardBundleRequest {
   bytes bundle = 1;
-  optional ClaAddress address = 2;
+  ClaAddress address = 2;
 }
 
 message ForwardBundleResponse {
