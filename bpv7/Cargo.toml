@@ -26,7 +26,7 @@ aes-kw = { version = "0.2.1", features = ["alloc","std"] }
 serde = { version = "1.0.219", features = ["derive"] }
 winnow = "0.7.10"
 #[mkbundle.dependencies]
-clap = { version = "4.5.37", features = ["derive","cargo"] }
+clap = { version = "4.5.38", features = ["derive","cargo"] }
 humantime = "2.2.0"
 
 [dev-dependencies]
