@@ -8,7 +8,7 @@ struct PartialPrimaryBlock {
     pub destination: Result<Eid, Error>,
     pub report_to: Eid,
     pub timestamp: Result<CreationTimestamp, Error>,
-    pub lifetime: Result<time::Duration, Error>,
+    pub lifetime: Result<std::time::Duration, Error>,
     pub fragment_info: Result<Option<FragmentInfo>, Error>,
     pub crc_result: Result<(), Error>,
 }
@@ -86,7 +86,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                 .parse::<(u64, bool)>()
                 .map(|(v, s)| {
                     shortest = shortest && s;
-                    time::Duration::new((v / 1000) as i64, (v % 1000 * 1_000_000) as i32)
+                    std::time::Duration::from_millis(v)
                 })
                 .map_err(Into::into);
 
@@ -144,7 +144,7 @@ pub struct PrimaryBlock {
     pub destination: Eid,
     pub report_to: Eid,
     pub timestamp: CreationTimestamp,
-    pub lifetime: time::Duration,
+    pub lifetime: std::time::Duration,
     pub fragment_info: Option<FragmentInfo>,
     pub error: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
@@ -192,7 +192,7 @@ impl PrimaryBlock {
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
                     a.emit(&bundle.id.timestamp);
-                    a.emit(bundle.lifetime.whole_milliseconds() as u64);
+                    a.emit(bundle.lifetime.as_millis() as u64);
 
                     // Fragment info
                     if let Some(fragment_info) = &bundle.id.fragment_info {
@@ -344,7 +344,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     source,
                     destination,
                     timestamp,
-                    lifetime: time::Duration::default(),
+                    lifetime: std::time::Duration::default(),
                     fragment_info: fragment_info.unwrap_or_default(),
                     error: Some(
                         Error::InvalidField {

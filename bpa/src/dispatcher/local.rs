@@ -7,7 +7,7 @@ impl Dispatcher {
         mut source: bpv7::Eid,
         mut destination: bpv7::Eid,
         data: &[u8],
-        lifetime: time::Duration,
+        lifetime: std::time::Duration,
         flags: Option<service::SendFlags>,
     ) -> Result<bpv7::BundleId, Error> {
         // Check to see if we should use ipn 2-element encoding

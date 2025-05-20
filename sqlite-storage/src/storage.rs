@@ -7,7 +7,7 @@ use hardy_bpa::{
 use hardy_bpv7::prelude as bpv7;
 use hardy_cbor as cbor;
 use rusqlite::OptionalExtension;
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc};
 use thiserror::Error;
 
 thread_local! {
@@ -16,7 +16,7 @@ thread_local! {
 
 pub struct Storage {
     path: PathBuf,
-    timeout: Duration,
+    timeout: std::time::Duration,
 }
 
 #[derive(Error, Debug)]
@@ -217,8 +217,8 @@ fn as_u64(v: i64) -> u64 {
 
 // Quick helper for type conversion
 #[inline]
-fn as_duration(v: i64) -> time::Duration {
-    time::Duration::milliseconds(v)
+fn as_duration(v: i64) -> std::time::Duration {
+    std::time::Duration::from_millis(v as u64)
 }
 
 #[inline]
@@ -550,7 +550,7 @@ impl storage::MetadataStorage for Storage {
                         encode_eid(&bundle.report_to),
                         encode_creation_time(bundle.id.timestamp.creation_time),
                         as_i64(bundle.id.timestamp.sequence_number),
-                        as_i64(bundle.lifetime.whole_milliseconds() as u64),
+                        as_i64(bundle.lifetime.as_millis() as u64),
                         bundle
                             .id
                             .fragment_info
@@ -562,7 +562,7 @@ impl storage::MetadataStorage for Storage {
                             .as_ref()
                             .map_or(-1, |f| as_i64(f.total_len)),
                         bundle.previous_node.as_ref().map(encode_eid),
-                        bundle.age.map(|v| as_i64(v.whole_milliseconds() as u64)),
+                        bundle.age.map(|v| as_i64(v.as_millis() as u64)),
                         bundle.hop_count.as_ref().map(|h| as_i64(h.count)),
                         bundle.hop_count.as_ref().map(|h| as_i64(h.limit)),
                         until,

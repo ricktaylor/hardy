@@ -185,10 +185,7 @@ impl Application {
                     tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
                 })?,
                 &request.payload,
-                time::Duration::new(
-                    (request.lifetime / 1000) as i64,
-                    (request.lifetime % 1000 * 1_000_000) as i32,
-                ),
+                std::time::Duration::from_millis(request.lifetime),
                 flags,
             )
             .await

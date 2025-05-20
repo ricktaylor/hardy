@@ -59,7 +59,7 @@ fn main() {
         if lifetime.as_millis() > u64::MAX as u128 {
             panic!("Lifetime too long!")
         }
-        b.lifetime(time::Duration::milliseconds(lifetime.as_millis() as i64));
+        b.lifetime(lifetime.into());
     }
 
     b.add_payload_block(payload);

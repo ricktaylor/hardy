@@ -9,7 +9,7 @@ use notify_debouncer_full::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf};
 use tokio::sync::mpsc::*;
 
 mod parse;
@@ -133,7 +133,7 @@ impl StaticRoutes {
         task_set.spawn(async move {
             let (tx, mut rx) = channel(1);
 
-            let mut debouncer = new_debouncer(Duration::from_secs(1), None, move |res| {
+            let mut debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |res| {
                 tx.blocking_send(res)
                     .trace_expect("Failed to send notification")
             })

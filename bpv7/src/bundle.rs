@@ -67,11 +67,11 @@ pub struct Bundle {
     pub crc_type: CrcType,
     pub destination: Eid,
     pub report_to: Eid,
-    pub lifetime: time::Duration,
+    pub lifetime: std::time::Duration,
 
     // Unpacked from extension blocks
     pub previous_node: Option<Eid>,
-    pub age: Option<time::Duration>,
+    pub age: Option<std::time::Duration>,
     pub hop_count: Option<HopInfo>,
 
     // The extension blocks
@@ -382,10 +382,7 @@ impl Bundle {
                             source_data,
                         )
                         .map_field_err("Bundle Age Block")?;
-                    self.age = Some(time::Duration::new(
-                        (v / 1000) as i64,
-                        (v % 1000 * 1_000_000) as i32,
-                    ));
+                    self.age = Some(std::time::Duration::from_millis(v));
                     s
                 }
                 BlockType::HopCount => {
@@ -565,8 +562,7 @@ impl Bundle {
                     BlockType::BundleAge => {
                         new_payloads.insert(
                             *block_number,
-                            cbor::encode::emit(self.age.unwrap().whole_milliseconds() as u64)
-                                .into(),
+                            cbor::encode::emit(self.age.unwrap().as_millis() as u64).into(),
                         );
                         false
                     }

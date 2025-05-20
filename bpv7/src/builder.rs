@@ -1,16 +1,12 @@
 use super::*;
 
-// Default values
-const DEFAULT_CRC_TYPE: CrcType = CrcType::CRC32_CASTAGNOLI;
-const DEFAULT_LIFETIME: time::Duration = time::Duration::days(1);
-
 pub struct Builder {
     bundle_flags: BundleFlags,
     crc_type: CrcType,
     source: Eid,
     destination: Eid,
     report_to: Option<Eid>,
-    lifetime: time::Duration,
+    lifetime: std::time::Duration,
     payload: BlockTemplate,
     extensions: Vec<BlockTemplate>,
 }
@@ -19,15 +15,15 @@ impl Default for Builder {
     fn default() -> Self {
         Self {
             bundle_flags: BundleFlags::default(),
-            crc_type: DEFAULT_CRC_TYPE,
+            crc_type: CrcType::CRC32_CASTAGNOLI,
             source: Eid::default(),
             destination: Eid::default(),
             report_to: None,
-            lifetime: DEFAULT_LIFETIME,
+            lifetime: std::time::Duration::new(24 * 60 * 60 * 60, 0),
             payload: BlockTemplate::new(
                 BlockType::Payload,
                 BlockFlags::default(),
-                DEFAULT_CRC_TYPE,
+                CrcType::CRC32_CASTAGNOLI,
             ),
             extensions: Vec::new(),
         }
@@ -64,7 +60,7 @@ impl Builder {
         self
     }
 
-    pub fn lifetime(&mut self, lifetime: time::Duration) -> &mut Self {
+    pub fn lifetime(&mut self, lifetime: std::time::Duration) -> &mut Self {
         self.lifetime = lifetime;
         self
     }

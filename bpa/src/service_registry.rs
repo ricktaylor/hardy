@@ -63,7 +63,7 @@ impl service::Sink for Sink {
         &self,
         destination: bpv7::Eid,
         data: &[u8],
-        lifetime: time::Duration,
+        lifetime: std::time::Duration,
         flags: Option<service::SendFlags>,
     ) -> service::Result<Box<str>> {
         let Some(service) = self.service.upgrade() else {

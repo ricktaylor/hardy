@@ -85,7 +85,7 @@ pub trait Sink: Send + Sync {
         &self,
         destination: bpv7::Eid,
         data: &[u8],
-        lifetime: time::Duration,
+        lifetime: std::time::Duration,
         flags: Option<SendFlags>,
     ) -> Result<Box<str>>;
 }
