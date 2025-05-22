@@ -53,7 +53,7 @@ impl Dispatcher {
                     // Increment Hop Count, etc...
                     let data = self.update_extension_blocks(&bundle, &data);
 
-                    match cla.cla.on_forward(cla_addr, &data).await {
+                    match cla.cla.on_forward(cla_addr, data.into()).await {
                         Err(e) => warn!("CLA failed to forward: {e}"),
                         Ok(cla::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!

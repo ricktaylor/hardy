@@ -79,14 +79,14 @@ pub trait Cla: Send + Sync {
 
     async fn on_unregister(&self);
 
-    async fn on_forward(&self, cla_addr: ClaAddress, bundle: &[u8]) -> Result<ForwardBundleResult>;
+    async fn on_forward(&self, cla_addr: ClaAddress, bundle: Bytes) -> Result<ForwardBundleResult>;
 }
 
 #[async_trait]
 pub trait Sink: Send + Sync {
     async fn unregister(&self);
 
-    async fn dispatch(&self, bundle: &[u8]) -> Result<()>;
+    async fn dispatch(&self, bundle: Bytes) -> Result<()>;
 
     async fn add_peer(&self, eid: bpv7::Eid, addr: ClaAddress) -> cla::Result<()>;
 

@@ -243,9 +243,11 @@ impl Store {
                 Ok(bpv7::ValidBundle::Rewritten(bundle, data, report_unsupported)) => {
                     warn!("Bundle in non-canonical format found: {storage_name}");
 
+                    let hash = Some(hash(&data));
+
                     // Rewrite the bundle
                     let new_storage_name = bundle_storage
-                        .store(&data)
+                        .store(data.into())
                         .await
                         .trace_expect("Failed to store rewritten canonical bundle");
 
@@ -257,7 +259,7 @@ impl Store {
                         ));
 
                     storage_name = new_storage_name;
-                    (bundle, None, Some(hash(&data)), report_unsupported)
+                    (bundle, None, hash, report_unsupported)
                 }
                 Ok(bpv7::ValidBundle::Invalid(bundle, reason, e)) => {
                     warn!("Invalid bundle found: {storage_name}, {e}");
@@ -346,9 +348,9 @@ impl Store {
     }
 
     #[inline]
-    pub async fn store_data(&self, data: &[u8]) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
+    pub async fn store_data(&self, data: Bytes) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
         // Calculate hash
-        let hash = hash(data);
+        let hash = hash(&data);
 
         // Write to bundle storage
         self.bundle_storage
@@ -388,7 +390,7 @@ impl Store {
     pub async fn store(
         &self,
         bundle: &bpv7::Bundle,
-        data: &[u8],
+        data: Bytes,
         status: BundleStatus,
         received_at: Option<time::OffsetDateTime>,
     ) -> storage::Result<Option<BundleMetadata>> {

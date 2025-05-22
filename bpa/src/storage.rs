@@ -37,7 +37,7 @@ pub trait BundleStorage: Send + Sync {
 
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
 
-    async fn store(&self, data: &[u8]) -> Result<std::sync::Arc<str>>;
+    async fn store(&self, data: Bytes) -> Result<std::sync::Arc<str>>;
 
     async fn remove(&self, storage_name: &str) -> Result<()>;
 }

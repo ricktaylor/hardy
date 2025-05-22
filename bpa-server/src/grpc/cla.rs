@@ -236,7 +236,7 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_forward(
         &self,
         cla_addr: hardy_bpa::cla::ClaAddress,
-        bundle: &[u8],
+        bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let (tx, rx) = oneshot::channel();
 

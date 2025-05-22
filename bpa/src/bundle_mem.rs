@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 #[derive(Default)]
 pub struct Storage {
-    bundles: RwLock<HashMap<String, Arc<[u8]>>>,
+    bundles: RwLock<HashMap<String, Bytes>>,
 }
 
 #[async_trait]
@@ -29,14 +29,14 @@ impl storage::BundleStorage for Storage {
         }
     }
 
-    async fn store(&self, data: &[u8]) -> storage::Result<Arc<str>> {
+    async fn store(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let mut bundles = self.bundles.write().await;
         let mut rng = rand::rng();
         loop {
             let storage_name = Alphanumeric.sample_string(&mut rng, 64);
 
             if let hash_map::Entry::Vacant(e) = bundles.entry(storage_name.clone()) {
-                e.insert(Arc::from(data));
+                e.insert(data);
                 return Ok(storage_name.into());
             }
         }

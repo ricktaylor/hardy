@@ -11,7 +11,7 @@ struct NullCla {
 }
 
 impl NullCla {
-    async fn dispatch(&self, bundle: &[u8]) -> hardy_bpa::cla::Result<()> {
+    async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
         self.sink.get().unwrap().dispatch(bundle).await
     }
 }
@@ -31,7 +31,7 @@ impl hardy_bpa::cla::Cla for NullCla {
     async fn on_forward(
         &self,
         _cla_addr: hardy_bpa::cla::ClaAddress,
-        _bundle: &[u8],
+        _bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         todo!()
     }
@@ -93,7 +93,7 @@ fn test() {
             if file.read_to_end(&mut buffer).is_ok() {
                 _ = get_runtime()
                     .spawn(async move {
-                        _ = cla.dispatch(&buffer).await;
+                        _ = cla.dispatch(buffer.into()).await;
                     })
                     .await;
             }
@@ -124,7 +124,7 @@ fn test_all() {
                                     let cla = cla.clone();
                                     _ = get_runtime()
                                         .spawn(async move {
-                                            _ = cla.dispatch(&buffer).await;
+                                            _ = cla.dispatch(buffer.into()).await;
                                         })
                                         .await;
                                 }

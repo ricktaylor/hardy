@@ -2,7 +2,7 @@ use super::*;
 
 impl Dispatcher {
     #[instrument(skip(self, data))]
-    pub async fn receive_bundle(&self, data: &[u8]) -> cla::Result<()> {
+    pub async fn receive_bundle(&self, data: Bytes) -> cla::Result<()> {
         // Capture received_at as soon as possible
         let received_at = Some(time::OffsetDateTime::now_utc());
 
@@ -19,7 +19,7 @@ impl Dispatcher {
         }
 
         // Parse the bundle
-        match bpv7::ValidBundle::parse(data, self.key_closure())? {
+        match bpv7::ValidBundle::parse(&data, self.key_closure())? {
             bpv7::ValidBundle::Valid(bundle, report_unsupported) => {
                 // Write the bundle data to the store
                 let (storage_name, hash) = self.store.store_data(data).await?;
@@ -41,7 +41,7 @@ impl Dispatcher {
                 trace!("Received bundle has been rewritten");
 
                 // Write the bundle data to the store
-                let (storage_name, hash) = self.store.store_data(&data).await?;
+                let (storage_name, hash) = self.store.store_data(data.into()).await?;
                 self.ingress_bundle(
                     bundle::Bundle {
                         metadata: BundleMetadata {

@@ -59,7 +59,7 @@ impl cla::Sink for Sink {
         }
     }
 
-    async fn dispatch(&self, bundle: &[u8]) -> cla::Result<()> {
+    async fn dispatch(&self, bundle: Bytes) -> cla::Result<()> {
         self.dispatcher.receive_bundle(bundle).await
     }
 

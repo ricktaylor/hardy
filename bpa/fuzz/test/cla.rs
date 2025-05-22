@@ -11,7 +11,7 @@ struct NullCla {
 }
 
 impl NullCla {
-    async fn dispatch(&self, bundle: &[u8]) -> hardy_bpa::cla::Result<()> {
+    async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
         self.sink.get().unwrap().dispatch(bundle).await
     }
 
@@ -33,13 +33,13 @@ impl hardy_bpa::cla::Cla for NullCla {
     async fn on_forward(
         &self,
         _cla_addr: hardy_bpa::cla::ClaAddress,
-        _bundle: &[u8],
+        _bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         todo!()
     }
 }
 
-fn test_cla(data: &[u8]) {
+fn test_cla(data: Vec<u8>) {
     // Full lifecycle
     get_runtime().block_on(async {
         // New BPA
@@ -78,7 +78,7 @@ fn test_cla(data: &[u8]) {
                 .await
                 .unwrap();
 
-            _ = cla.dispatch(data).await;
+            _ = cla.dispatch(data.into()).await;
 
             cla.unregister().await;
         }
@@ -94,7 +94,7 @@ fn test() {
     {
         let mut buffer = Vec::new();
         if file.read_to_end(&mut buffer).is_ok() {
-            test_cla(&buffer);
+            test_cla(buffer);
         }
     }
 }
@@ -116,7 +116,7 @@ fn test_all() {
                         if let Ok(mut file) = std::fs::File::open(&path) {
                             let mut buffer = Vec::new();
                             if file.read_to_end(&mut buffer).is_ok() {
-                                test_cla(&buffer);
+                                test_cla(buffer);
                             }
                         }
                     }
