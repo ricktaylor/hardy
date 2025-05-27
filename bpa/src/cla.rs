@@ -88,7 +88,7 @@ pub trait Sink: Send + Sync {
 
     async fn dispatch(&self, bundle: Bytes) -> Result<()>;
 
-    async fn add_peer(&self, eid: bpv7::Eid, addr: ClaAddress) -> cla::Result<()>;
+    async fn add_peer(&self, eid: bpv7::Eid, addr: ClaAddress) -> Result<()>;
 
-    async fn remove_peer(&self, eid: &bpv7::Eid) -> cla::Result<bool>;
+    async fn remove_peer(&self, eid: &bpv7::Eid) -> Result<bool>;
 }
