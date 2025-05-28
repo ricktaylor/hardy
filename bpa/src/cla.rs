@@ -75,7 +75,7 @@ pub enum ForwardBundleResult {
 
 #[async_trait]
 pub trait Cla: Send + Sync {
-    async fn on_register(&self, sink: Box<dyn Sink>);
+    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[bpv7::Eid]);
 
     async fn on_unregister(&self);
 

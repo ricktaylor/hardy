@@ -96,6 +96,26 @@ impl Default for NodeIds {
     }
 }
 
+impl From<&NodeIds> for Vec<bpv7::Eid> {
+    fn from(value: &NodeIds) -> Self {
+        let mut v = Vec::new();
+        if let Some((allocator_id, node_number)) = value.ipn {
+            v.push(bpv7::Eid::Ipn {
+                allocator_id,
+                node_number,
+                service_number: 0,
+            });
+        }
+        if let Some(node_name) = &value.dtn {
+            v.push(bpv7::Eid::Dtn {
+                node_name: node_name.clone(),
+                demux: [].into(),
+            });
+        }
+        v
+    }
+}
+
 impl TryFrom<&[bpv7::Eid]> for NodeIds {
     type Error = Error;
 

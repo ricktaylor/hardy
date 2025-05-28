@@ -38,7 +38,7 @@ pub struct Dispatcher {
 
     // Config options
     status_reports: bool,
-    pub node_ids: node_ids::NodeIds,
+    node_ids: node_ids::NodeIds,
 
     // JoinHandles
     run_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,

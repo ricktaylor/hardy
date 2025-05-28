@@ -88,13 +88,15 @@ impl Drop for Sink {
 }
 
 pub struct ClaRegistry {
+    node_ids: Vec<bpv7::Eid>,
     clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
 }
 
 impl ClaRegistry {
-    pub fn new(rib: Arc<rib::Rib>) -> Self {
+    pub fn new(config: &config::Config, rib: Arc<rib::Rib>) -> Self {
         Self {
+            node_ids: (&config.node_ids).into(),
             clas: Default::default(),
             rib,
         }
@@ -142,11 +144,14 @@ impl ClaRegistry {
         };
 
         cla.cla
-            .on_register(Box::new(Sink {
-                cla: Arc::downgrade(&cla),
-                registry: self.clone(),
-                dispatcher: dispatcher.clone(),
-            }))
+            .on_register(
+                Box::new(Sink {
+                    cla: Arc::downgrade(&cla),
+                    registry: self.clone(),
+                    dispatcher: dispatcher.clone(),
+                }),
+                &self.node_ids,
+            )
             .await;
 
         // Register that the CLA is a handler for the address type

@@ -26,8 +26,9 @@ impl Bpa {
         let rib = rib::Rib::new(config);
 
         // New registries
-        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(rib.clone()));
-        let service_registry = Arc::new(service_registry::ServiceRegistry::new(rib.clone()));
+        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(config, rib.clone()));
+        let service_registry =
+            Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
 
         // Create a new dispatcher
         let dispatcher = dispatcher::Dispatcher::new(

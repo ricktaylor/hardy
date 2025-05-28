@@ -101,7 +101,7 @@ impl Cla {
                             .await;
                         break;
                     }
-                    Some(cla_to_bpa::Msg::Dispatch(msg)) => Some(cla.dispatch(&msg.bundle).await),
+                    Some(cla_to_bpa::Msg::Dispatch(msg)) => Some(cla.dispatch(msg.bundle).await),
                     Some(cla_to_bpa::Msg::AddPeer(msg)) => {
                         Some(if let Some(address) = msg.address {
                             cla.add_peer(msg.eid, address).await
@@ -164,7 +164,7 @@ impl Cla {
         }
     }
 
-    async fn dispatch(&self, bundle: &[u8]) -> Result<bpa_to_cla::Msg, tonic::Status> {
+    async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> Result<bpa_to_cla::Msg, tonic::Status> {
         self.sink
             .get()
             .expect("CLA registration not complete!")
@@ -223,7 +223,7 @@ impl Cla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[bpv7::Eid]) {
         if self.sink.set(sink).is_err() {
             panic!("CLA on_register called twice!");
         }

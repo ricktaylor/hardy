@@ -98,13 +98,15 @@ impl Drop for Sink {
 }
 
 pub struct ServiceRegistry {
+    node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
     services: RwLock<HashMap<bpv7::Eid, Arc<Service>>>,
 }
 
 impl ServiceRegistry {
-    pub fn new(rib: Arc<rib::Rib>) -> Self {
+    pub fn new(config: &config::Config, rib: Arc<rib::Rib>) -> Self {
         Self {
+            node_ids: config.node_ids.clone(),
             rib,
             services: Default::default(),
         }
@@ -168,7 +170,7 @@ impl ServiceRegistry {
             let service_id = if let Some(service_id) = service_id {
                 match &service_id {
                     service::ServiceId::DtnService(service_name) => {
-                        let Some(node_name) = &dispatcher.node_ids.dtn else {
+                        let Some(node_name) = &self.node_ids.dtn else {
                             return Err(service::Error::NoDtnNodeId);
                         };
 
@@ -199,7 +201,7 @@ impl ServiceRegistry {
                         }
                     }
                     service::ServiceId::IpnService(service_number) => {
-                        let Some((allocator_id, node_number)) = dispatcher.node_ids.ipn else {
+                        let Some((allocator_id, node_number)) = self.node_ids.ipn else {
                             unreachable!()
                         };
 
@@ -218,9 +220,9 @@ impl ServiceRegistry {
                         }
                     }
                 }
-            } else if let Some((allocator_id, node_number)) = dispatcher.node_ids.ipn {
+            } else if let Some((allocator_id, node_number)) = self.node_ids.ipn {
                 new_ipn_service(allocator_id, node_number)
-            } else if let Some(node_name) = &dispatcher.node_ids.dtn {
+            } else if let Some(node_name) = &self.node_ids.dtn {
                 new_dtn_service(node_name)
             } else {
                 return Err(service::Error::NoIpnNodeId);
