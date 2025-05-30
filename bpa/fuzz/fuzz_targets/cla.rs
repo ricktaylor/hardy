@@ -37,7 +37,7 @@ impl hardy_bpa::cla::Cla for NullCla {
         _cla_addr: hardy_bpa::cla::ClaAddress,
         _bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        todo!()
+        unimplemented!()
     }
 }
 
