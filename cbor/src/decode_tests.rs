@@ -15,6 +15,17 @@ where
     assert_eq!(v, expected);
 }
 
+fn test_simple_long<T>(expected: T, data: &[u8])
+where
+    T: FromCbor + PartialEq + core::fmt::Debug,
+    <T as FromCbor>::Error: From<Error> + core::fmt::Debug,
+{
+    let (v, s, len) = parse::<(T, bool, usize)>(data).unwrap();
+    assert!(!s);
+    assert_eq!(len, data.len());
+    assert_eq!(v, expected);
+}
+
 fn test_sub_simple<T, const D: usize>(expected: T, seq: &mut Series<D>)
 where
     T: FromCbor + PartialEq + core::fmt::Debug,
@@ -181,16 +192,16 @@ fn rfc_tests() {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
     test_simple(f32::NEG_INFINITY, &hex!("f9fc00"));
-    test_simple(f64::INFINITY, &hex!("fa7f800000"));
+    test_simple_long(f32::INFINITY, &hex!("fa7f800000"));
     test_value(&hex!("fa7fc00000"), &[], |v| {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
-    test_simple(f64::NEG_INFINITY, &hex!("faff800000"));
-    test_simple(f64::INFINITY, &hex!("fb7ff0000000000000"));
+    test_simple_long(f64::NEG_INFINITY, &hex!("faff800000"));
+    test_simple_long(f64::INFINITY, &hex!("fb7ff0000000000000"));
     test_value(&hex!("fb7ff8000000000000"), &[], |v| {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
-    test_simple(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));
+    test_simple_long(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));
     test_simple(false, &hex!("f4"));
     test_simple(true, &hex!("f5"));
 

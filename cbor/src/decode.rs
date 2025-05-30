@@ -4,7 +4,7 @@ use alloc::{
     vec::Vec,
 };
 use core::str::Utf8Error;
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -237,7 +237,7 @@ where
     F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
     E: From<Error>,
 {
-    let (tags, shortest, mut offset) = parse_tags(data)?;
+    let (tags, mut shortest, mut offset) = parse_tags(data)?;
     if offset >= data.len() {
         if !tags.is_empty() {
             return Err(Error::JustTags.into());
@@ -367,9 +367,6 @@ where
             /* FP16 */
             let v = half::f16::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 3;
-            if shortest {
-                // TODO: Check for shortest form
-            }
             f(Value::Float(v.into()), shortest, tags)
         }
         (7, 26) => {
@@ -377,7 +374,12 @@ where
             let v = f32::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 5;
             if shortest {
-                // TODO: Check for shortest form
+                // TODO: Fix for NANs etc
+                if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v) {
+                    if <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v) {
+                        shortest = false;
+                    }
+                }
             }
             f(Value::Float(v.into()), shortest, tags)
         }
@@ -386,7 +388,16 @@ where
             let v = f64::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 9;
             if shortest {
-                // TODO: Check for shortest form
+                // TODO: Fix for NANs etc
+                if let Some(v32) = f32::from_f64(v) {
+                    if v32.to_f64() == Some(v) {
+                        shortest = false;
+                    }
+                } else if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f64(v) {
+                    if <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v) {
+                        shortest = false;
+                    }
+                }
             }
             f(Value::Float(v), shortest, tags)
         }
