@@ -244,6 +244,7 @@ impl Application {
 impl hardy_bpa::service::Service for Application {
     async fn on_register(&self, _source: &bpv7::Eid, sink: Box<dyn hardy_bpa::service::Sink>) {
         if self.sink.set(sink).is_err() {
+            error!("Service on_register called twice!");
             panic!("Service on_register called twice!");
         }
     }
