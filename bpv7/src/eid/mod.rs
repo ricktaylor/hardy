@@ -164,7 +164,7 @@ impl std::fmt::Display for Eid {
                 match r {
                     Ok(_) => Ok(()),
                     Err(DebugError::Fmt(e)) => Err(e),
-                    Err(DebugError::Decode(e)) => panic!("Error: {e}"),
+                    Err(DebugError::Decode(e)) => write!(f, "unknown({scheme}):error: {e:?}"),
                 }
             }
         }
