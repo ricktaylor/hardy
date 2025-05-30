@@ -53,6 +53,23 @@ where
     );
 }
 
+fn test_value_long<F>(data: &[u8], expected_tags: &[u64], f: F)
+where
+    F: FnOnce(Value),
+{
+    assert_eq!(
+        parse_value(data, |value, shortest, tags| {
+            assert!(!shortest);
+            assert_eq!(tags, expected_tags);
+            f(value);
+            Ok::<_, Error>(())
+        })
+        .unwrap()
+        .1,
+        data.len()
+    );
+}
+
 fn test_sub_value<F, const D: usize>(expected_tags: &[u64], seq: &mut Series<D>, f: F)
 where
     F: FnOnce(Value),
@@ -187,18 +204,18 @@ fn rfc_tests() {
     test_simple(0.00006103515625, &hex!("f90400"));
     test_simple(-4.0, &hex!("f9c400"));
     test_simple(-4.1, &hex!("fbc010666666666666"));
-    test_simple(f32::INFINITY, &hex!("f97c00"));
+    test_simple(half::f16::INFINITY, &hex!("f97c00"));
     test_value(&hex!("f97e00"), &[], |v| {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
-    test_simple(f32::NEG_INFINITY, &hex!("f9fc00"));
+    test_simple(half::f16::NEG_INFINITY, &hex!("f9fc00"));
     test_simple_long(f32::INFINITY, &hex!("fa7f800000"));
-    test_value(&hex!("fa7fc00000"), &[], |v| {
+    test_value_long(&hex!("fa7fc00000"), &[], |v| {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
-    test_simple_long(f64::NEG_INFINITY, &hex!("faff800000"));
+    test_simple_long(f32::NEG_INFINITY, &hex!("faff800000"));
     test_simple_long(f64::INFINITY, &hex!("fb7ff0000000000000"));
-    test_value(&hex!("fb7ff8000000000000"), &[], |v| {
+    test_value_long(&hex!("fb7ff8000000000000"), &[], |v| {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
     test_simple_long(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));

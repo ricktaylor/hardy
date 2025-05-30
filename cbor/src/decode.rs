@@ -374,10 +374,19 @@ where
             let v = f32::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 5;
             if shortest {
-                // TODO: Fix for NANs etc
-                if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v) {
-                    if <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v) {
+                match v.classify() {
+                    core::num::FpCategory::Nan
+                    | core::num::FpCategory::Infinite
+                    | core::num::FpCategory::Zero => {
+                        // There is an FP16 representation that is shorter
                         shortest = false;
+                    }
+                    core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                        if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v) {
+                            if <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v) {
+                                shortest = false;
+                            }
+                        }
                     }
                 }
             }
@@ -388,14 +397,25 @@ where
             let v = f64::from_be_bytes(to_array(&data[offset + 1..])?);
             offset += 9;
             if shortest {
-                // TODO: Fix for NANs etc
-                if let Some(v32) = f32::from_f64(v) {
-                    if v32.to_f64() == Some(v) {
+                match v.classify() {
+                    core::num::FpCategory::Nan
+                    | core::num::FpCategory::Infinite
+                    | core::num::FpCategory::Zero => {
+                        // There is an FP16 representation that is shorter
                         shortest = false;
                     }
-                } else if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f64(v) {
-                    if <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v) {
-                        shortest = false;
+                    core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                        if let Some(v32) = f32::from_f64(v) {
+                            if v32.to_f64() == Some(v) {
+                                shortest = false;
+                            }
+                        } else if let Some(v16) =
+                            <half::f16 as num_traits::FromPrimitive>::from_f64(v)
+                        {
+                            if <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v) {
+                                shortest = false;
+                            }
+                        }
                     }
                 }
             }
@@ -624,6 +644,23 @@ impl FromCbor for i64 {
             )),
         })
         .map(|o| o.map(|((v, s), len)| (v, s, len)))
+    }
+}
+
+impl FromCbor for half::f16 {
+    type Error = self::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        if let Some((v, shortest, len)) = f64::try_from_cbor(data)? {
+            Ok(Some((
+                <half::f16 as num_traits::FromPrimitive>::from_f64(v)
+                    .ok_or(Error::PrecisionLoss)?,
+                shortest,
+                len,
+            )))
+        } else {
+            Ok(None)
+        }
     }
 }
 
