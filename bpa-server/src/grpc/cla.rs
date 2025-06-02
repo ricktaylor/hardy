@@ -231,7 +231,7 @@ impl hardy_bpa::cla::Cla for Cla {
     ) -> hardy_bpa::cla::Result<()> {
         if self.sink.set(sink).is_err() {
             error!("CLA on_register called twice!");
-            return Err(hardy_bpa::cla::AlreadyConnected);
+            return Err(hardy_bpa::cla::Error::AlreadyConnected);
         }
         Ok(())
     }
