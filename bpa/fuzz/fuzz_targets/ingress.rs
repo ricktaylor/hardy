@@ -18,10 +18,15 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[bpv7::Eid]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn hardy_bpa::cla::Sink>,
+        _node_ids: &[bpv7::Eid],
+    ) -> hardy_bpa::cla::Result<()> {
         if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }
+        Ok(())
     }
 
     async fn on_unregister(&self) {

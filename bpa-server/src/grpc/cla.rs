@@ -224,11 +224,16 @@ impl Cla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[bpv7::Eid]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn hardy_bpa::cla::Sink>,
+        _node_ids: &[bpv7::Eid],
+    ) -> hardy_bpa::cla::Result<()> {
         if self.sink.set(sink).is_err() {
             error!("CLA on_register called twice!");
-            panic!("CLA on_register called twice!");
+            return Err(hardy_bpa::cla::AlreadyConnected);
         }
+        Ok(())
     }
 
     async fn on_unregister(&self) {

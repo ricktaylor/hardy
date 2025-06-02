@@ -11,6 +11,9 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
+    #[error("The CLA is already connected")]
+    AlreadyConnected,
+
     #[error(transparent)]
     InvalidBundle(#[from] bpv7::Error),
 
@@ -75,7 +78,7 @@ pub enum ForwardBundleResult {
 
 #[async_trait]
 pub trait Cla: Send + Sync {
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[bpv7::Eid]);
+    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[bpv7::Eid]) -> Result<()>;
 
     async fn on_unregister(&self);
 

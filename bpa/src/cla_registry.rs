@@ -139,11 +139,12 @@ impl ClaRegistry {
 
             info!("Registered new CLA: {name}");
 
-            clas.insert(name, cla.clone());
+            clas.insert(name.clone(), cla.clone());
             cla
         };
 
-        cla.cla
+        if let Err(e) = cla
+            .cla
             .on_register(
                 Box::new(Sink {
                     cla: Arc::downgrade(&cla),
@@ -152,7 +153,12 @@ impl ClaRegistry {
                 }),
                 &self.node_ids,
             )
-            .await;
+            .await
+        {
+            // Remove the CLA
+            self.clas.write().await.remove(&name);
+            return Err(e);
+        }
 
         // Register that the CLA is a handler for the address type
         if let Some(address_type) = address_type {
