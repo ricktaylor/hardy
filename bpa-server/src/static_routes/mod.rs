@@ -66,7 +66,7 @@ impl StaticRoutes {
             info!("Monitoring static routes file for changes");
 
             // Set up file watcher
-            self.watch(task_tracker, cancel_token);
+            self.watch(cancel_token, task_tracker);
         }
     }
 

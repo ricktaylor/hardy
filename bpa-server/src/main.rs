@@ -122,16 +122,16 @@ async fn main() {
     // Start gRPC server
     #[cfg(feature = "grpc")]
     if let Some(config) = &config.grpc {
-        grpc::init(config, &bpa, &task_tracker, &cancel_token);
+        grpc::init(config, &bpa, &cancel_token, &task_tracker);
     }
 
     // Load static routes
     if let Some(config) = config.static_routes {
-        static_routes::init(config, &bpa, &task_tracker, &cancel_token).await;
+        static_routes::init(config, &bpa, &cancel_token, &task_tracker).await;
     }
 
     // And wait for shutdown signal
-    listen_for_cancel(&task_tracker, &cancel_token);
+    listen_for_cancel(&cancel_token, &task_tracker);
 
     info!("Started successfully");
 
