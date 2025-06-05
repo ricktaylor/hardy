@@ -48,7 +48,7 @@ impl hardy_bpa::cla::Cla for NullCla {
 
 fn setup() -> tokio::runtime::Runtime {
     tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
+        .with_max_level(tracing_subscriber::filter::LevelFilter::ERROR)
         .with_target(true)
         .init();
 

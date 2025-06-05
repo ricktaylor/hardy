@@ -1,7 +1,6 @@
 #![cfg(test)]
 
 mod cla;
-mod ingress;
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
