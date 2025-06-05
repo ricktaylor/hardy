@@ -29,6 +29,7 @@ pub enum BundleStorage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Cla {
     pub name: String,
+
     #[serde(flatten)]
     pub cla: ClaConfig,
 }
@@ -36,13 +37,12 @@ pub struct Cla {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "config")]
 pub enum ClaConfig {
-    TcpClv4(TcpclConfig),
+    #[cfg(feature = "tcpclv4")]
+    #[serde(rename = "tcpclv4")]
+    TcpClv4(hardy_tcpclv4::config::Config),
     //UdpCl(UdpclConfig),
     //Btpu-Ethernet(BtpuEthernetConfig),
 }
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TcpclConfig {}
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {

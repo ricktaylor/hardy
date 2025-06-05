@@ -843,7 +843,6 @@ dependencies = [
  "tokio-util",
  "trace-err",
  "tracing",
- "tracing-log",
 ]
 
 [[package]]
@@ -876,6 +875,7 @@ dependencies = [
  "hardy-localdisk-storage",
  "hardy-proto",
  "hardy-sqlite-storage",
+ "hardy-tcpclv4",
  "notify",
  "notify-debouncer-full",
  "prost",
@@ -1019,42 +1019,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-tcpcl"
+name = "hardy-tcpclv4"
 version = "0.1.0"
 dependencies = [
- "built",
- "cfg-if",
- "config",
- "directories",
  "futures",
- "fuzz-macros",
- "getopts",
+ "hardy-bpa",
  "hardy-bpv7",
- "hardy-proto",
- "prost-types",
+ "rand",
  "serde",
  "thiserror",
- "time",
  "tokio",
  "tokio-tower",
  "tokio-util",
- "tonic",
  "tower 0.5.2",
  "trace-err",
  "tracing",
- "tracing-log",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "hardy-tcpcl-fuzz"
-version = "0.0.0"
-dependencies = [
- "config",
- "hardy-tcpcl",
- "libfuzzer-sys",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -2204,6 +2183,8 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
+ "hashbrown 0.15.3",
  "pin-project-lite",
  "tokio",
 ]

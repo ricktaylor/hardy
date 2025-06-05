@@ -62,7 +62,7 @@ store_dir="<fully qualified directory path>"
 routes_file = "./static_routes"
 ```
 
-By default a configuration file named `hardy-bpa-server.config` is read from:
+By default a configuration file named `hardy-bpa-server.toml` is read from:
 
 - `/etc/opt/` on Linux
 - `/etc/` on other UNIX's
@@ -76,7 +76,7 @@ hardy-bpa-server --config /path/to/config.toml
 
 The router will then read the configuration file and apply the specified settings during its operation.
 
-Please note that the specific configuration options and their meanings may vary depending on the version of `hardy-bpa-server` you are using. It is recommended to consult the [example configuration file](./example.config) in the project for more detailed information on the available configuration options.
+Please note that the specific configuration options and their meanings may vary depending on the version of `hardy-bpa-server` you are using. It is recommended to consult the [example configuration file](./example_config.toml) in the project for more detailed information on the available configuration options.
 
 ### Command line arguments
 

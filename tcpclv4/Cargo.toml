@@ -1,0 +1,23 @@
+[package]
+name = "hardy-tcpclv4"
+description = "A TCPCLv4 DTN convergence layer"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+hardy-bpa = { path = "../bpa" }
+hardy-bpv7 = { path = "../bpv7" }
+serde = { version = "1.0.219", features = ["derive"] }
+tracing = "0.1.41"
+tokio = { version = "1.45.0", features = ["rt", "macros", "time"] }
+tokio-util = { version = "0.7.15", features = ["rt"] }
+tower = "0.5.2"
+tokio-tower = "0.6.0"
+trace-err = "0.1.3"
+thiserror = "2.0.12"
+futures = "0.3"
+rand = "0.9.1"
