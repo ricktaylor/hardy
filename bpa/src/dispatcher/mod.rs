@@ -30,6 +30,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct Dispatcher {
     cancel_token: tokio_util::sync::CancellationToken,
+    task_tracker: tokio_util::task::TaskTracker,
     store: Arc<store::Store>,
     tx: tokio::sync::mpsc::Sender<Task>,
     service_registry: Arc<service_registry::ServiceRegistry>,
@@ -39,9 +40,6 @@ pub struct Dispatcher {
     // Config options
     status_reports: bool,
     node_ids: node_ids::NodeIds,
-
-    // JoinHandles
-    run_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Dispatcher {
@@ -56,6 +54,7 @@ impl Dispatcher {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let dispatcher = Arc::new(Self {
             cancel_token: tokio_util::sync::CancellationToken::new(),
+            task_tracker: tokio_util::task::TaskTracker::new(),
             store,
             tx,
             service_registry,
@@ -69,31 +68,20 @@ impl Dispatcher {
             )),
             status_reports: config.status_reports,
             node_ids: config.node_ids.clone(),
-            run_handle: std::sync::Mutex::new(None),
         });
 
         // Spawn the dispatch task
-        *dispatcher
-            .run_handle
-            .lock()
-            .trace_expect("Lock issue in dispatcher new()") = Some(tokio::spawn(
-            dispatcher::Dispatcher::run(dispatcher.clone(), rx),
-        ));
+        dispatcher
+            .task_tracker
+            .spawn(dispatcher::Dispatcher::run(dispatcher.clone(), rx));
 
         dispatcher
     }
 
     pub async fn shutdown(&self) {
         self.cancel_token.cancel();
-
-        if let Some(j) = {
-            self.run_handle
-                .lock()
-                .trace_expect("Lock issue in dispatcher shutdown()")
-                .take()
-        } {
-            _ = j.await;
-        }
+        self.task_tracker.close();
+        self.task_tracker.wait().await;
     }
 
     async fn load_data(&self, bundle: &mut bundle::Bundle) -> Result<Option<Bytes>, Error> {
@@ -233,15 +221,13 @@ impl Dispatcher {
             .start(self.clone(), self.cancel_token.clone())
             .await;
 
-        // We're going to spawn a bunch of tasks
-        let mut task_set = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 task = rx.recv() => {
                     match task {
                         Some(task) => {
                             let self_cloned = self.clone();
-                            task_set.spawn(async {
+                            self.task_tracker.spawn(async {
                                 if let Err(e) = task.exec(self_cloned).await {
                                     error!("{e}");
                                 }
@@ -250,20 +236,11 @@ impl Dispatcher {
                         None => break
                     }
                 },
-                Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                    r.trace_expect("Task terminated unexpectedly");
-
-                },
                 _ = self.cancel_token.cancelled(), if !rx.is_closed() => {
                     // Close the queue, we're done
                     rx.close();
                 }
             }
-        }
-
-        // Wait for all tasks to finish
-        while let Some(r) = task_set.join_next().await {
-            r.trace_expect("Task terminated unexpectedly")
         }
     }
 

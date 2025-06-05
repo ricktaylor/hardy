@@ -29,8 +29,8 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
 pub fn init(
     config: &Config,
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
-    task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: &tokio_util::sync::CancellationToken,
+    task_tracker: &tokio_util::task::TaskTracker,
 ) {
     if config.services.is_empty() {
         return;
@@ -55,7 +55,7 @@ pub fn init(
     // Start serving
     let addr = config.address;
     let cancel_token = cancel_token.clone();
-    task_set.spawn(async move {
+    task_tracker.spawn(async move {
         tonic::transport::Server::builder()
             .add_routes(routes.routes())
             .serve_with_shutdown(addr, cancel_token.cancelled())

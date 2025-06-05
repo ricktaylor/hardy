@@ -50,8 +50,8 @@ pub struct StaticRoutes {
 impl StaticRoutes {
     async fn init(
         mut self,
-        task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: &tokio_util::sync::CancellationToken,
+        task_tracker: &tokio_util::task::TaskTracker,
     ) {
         info!(
             "Loading static routes from '{}'",
@@ -66,7 +66,7 @@ impl StaticRoutes {
             info!("Monitoring static routes file for changes");
 
             // Set up file watcher
-            self.watch(task_set, cancel_token);
+            self.watch(task_tracker, cancel_token);
         }
     }
 
@@ -117,8 +117,8 @@ impl StaticRoutes {
 
     fn watch(
         &self,
-        task_set: &mut tokio::task::JoinSet<()>,
         cancel_token: &tokio_util::sync::CancellationToken,
+        task_tracker: &tokio_util::task::TaskTracker,
     ) {
         let routes_dir = self
             .config
@@ -130,7 +130,7 @@ impl StaticRoutes {
 
         let mut self_cloned = self.clone();
         let cancel_token = cancel_token.clone();
-        task_set.spawn(async move {
+        task_tracker.spawn(async move {
             let (tx, mut rx) = channel(1);
 
             let mut debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |res| {
@@ -181,8 +181,8 @@ impl StaticRoutes {
 pub async fn init(
     mut config: Config,
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
-    task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: &tokio_util::sync::CancellationToken,
+    task_tracker: &tokio_util::task::TaskTracker,
 ) {
     // Try to create canonical file path
     if let Ok(r) = config.routes_file.canonicalize() {
@@ -201,6 +201,6 @@ pub async fn init(
         bpa: bpa.clone(),
         routes: HashMap::new(),
     }
-    .init(task_set, cancel_token)
+    .init(cancel_token, task_tracker)
     .await
 }

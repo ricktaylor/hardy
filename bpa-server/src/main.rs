@@ -17,8 +17,8 @@ use trace_err::*;
 use tracing::{error, info, trace, warn};
 
 fn listen_for_cancel(
-    task_set: &mut tokio::task::JoinSet<()>,
     cancel_token: &tokio_util::sync::CancellationToken,
+    task_tracker: &tokio_util::task::TaskTracker,
 ) {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
@@ -31,7 +31,8 @@ fn listen_for_cancel(
     }
 
     let cancel_token = cancel_token.clone();
-    task_set.spawn(async move {
+    let task_tracker_cloned = task_tracker.clone();
+    task_tracker.spawn(async move {
         tokio::select! {
             _ = term_handler.recv() => {
                 // Signal stop
@@ -45,6 +46,7 @@ fn listen_for_cancel(
 
         // Cancel everything
         cancel_token.cancel();
+        task_tracker_cloned.close();
     });
 }
 
@@ -115,21 +117,21 @@ async fn main() {
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let mut task_set = tokio::task::JoinSet::new();
+    let task_tracker = tokio_util::task::TaskTracker::new();
 
     // Start gRPC server
     #[cfg(feature = "grpc")]
     if let Some(config) = &config.grpc {
-        grpc::init(config, &bpa, &mut task_set, &cancel_token);
+        grpc::init(config, &bpa, &task_tracker, &cancel_token);
     }
 
     // Load static routes
     if let Some(config) = config.static_routes {
-        static_routes::init(config, &bpa, &mut task_set, &cancel_token).await;
+        static_routes::init(config, &bpa, &task_tracker, &cancel_token).await;
     }
 
     // And wait for shutdown signal
-    listen_for_cancel(&mut task_set, &cancel_token);
+    listen_for_cancel(&task_tracker, &cancel_token);
 
     info!("Started successfully");
 
@@ -140,9 +142,7 @@ async fn main() {
     bpa.shutdown().await;
 
     // Wait for all tasks to finish
-    while let Some(r) = task_set.join_next().await {
-        r.trace_expect("Task terminated unexpectedly")
-    }
+    task_tracker.wait().await;
 
     info!("Stopped");
 }
