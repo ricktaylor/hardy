@@ -48,6 +48,7 @@ impl Block {
                     // Payload
                     self.payload_offset = a.offset();
                     f(a);
+                    self.payload_len = a.offset() - self.payload_offset;
 
                     // CRC
                     if let CrcType::None = self.crc_type {
@@ -58,7 +59,7 @@ impl Block {
             ),
         );
         self.data_start = array.offset();
-        self.payload_len = block_data.len();
+        self.data_len = block_data.len();
         array.emit_raw(block_data)
     }
 
