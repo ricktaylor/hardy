@@ -61,11 +61,11 @@ impl hardy_bpa::cla::Cla for NullCla {
         _cla_addr: hardy_bpa::cla::ClaAddress,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        Ok(match bundle.get(0).unwrap() {
-            0 => hardy_bpa::cla::ForwardBundleResult::NoNeighbour,
-            1 => hardy_bpa::cla::ForwardBundleResult::TooBig(256),
-            _ => hardy_bpa::cla::ForwardBundleResult::Sent,
-        })
+        if bundle.len() > 1024 {
+            return Ok(hardy_bpa::cla::ForwardBundleResult::TooBig(1024));
+        }
+
+        Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
     }
 }
 
@@ -132,7 +132,7 @@ mod test {
     #[test]
     fn test() {
         if let Ok(mut file) =
-            std::fs::File::open("./artifacts/cla/crash-3e3e2eabe8886568b2c6971148e405320ec44355")
+            std::fs::File::open("./artifacts/cla/crash-19bbc54cc0df767008ca30335dbfdf7e040f7d4c")
         {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
