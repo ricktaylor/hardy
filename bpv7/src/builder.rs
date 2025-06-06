@@ -65,7 +65,7 @@ impl Builder {
         self
     }
 
-    pub fn add_extension_block(&mut self, block_type: BlockType) -> BlockBuilder {
+    pub fn add_extension_block(&mut self, block_type: BlockType) -> BlockBuilder<'_> {
         BlockBuilder::new(self, block_type)
     }
 
