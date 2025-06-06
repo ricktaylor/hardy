@@ -267,10 +267,8 @@ impl Rib {
         };
 
         if let Some(FindResult::Forward(clas, _)) = &mut result {
-            if clas.len() > 1 {
-                // For ECMP, we need a random order
-                clas.shuffle(&mut rand::rng());
-            }
+            // For ECMP, we need a random order
+            clas.shuffle(&mut rand::rng());
         }
 
         Ok(result)

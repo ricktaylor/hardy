@@ -9,7 +9,7 @@ enum Interval<'a> {
     Range(Cow<'a, RangeInclusive<u32>>),
 }
 
-fn unpack_intervals(pattern: &IpnPattern) -> Vec<Interval> {
+fn unpack_intervals(pattern: &IpnPattern) -> Vec<Interval<'_>> {
     match pattern {
         IpnPattern::Wildcard => vec![Interval::All],
         IpnPattern::Range(v) => v

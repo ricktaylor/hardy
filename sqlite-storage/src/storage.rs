@@ -300,7 +300,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
             previous_node: match row.get_ref(15)? {
                 rusqlite::types::ValueRef::Null => None,
                 rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
-                v => panic!("EID encoded as unusual sqlite type: {:?}", v),
+                v => panic!("EID encoded as unusual sqlite type: {v:?}"),
             },
             age: row.get::<_, Option<i64>>(16)?.map(as_duration),
             hop_count: match row.get_ref(17)? {
@@ -309,7 +309,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
                     count: as_u64(i),
                     limit: as_u64(row.get(18)?),
                 }),
-                v => panic!("EID encoded as unusual sqlite type: {:?}", v),
+                v => panic!("EID encoded as unusual sqlite type: {v:?}"),
             },
         };
 
@@ -455,7 +455,7 @@ impl storage::MetadataStorage for Storage {
                 previous_node: match row.get_ref(15)? {
                     rusqlite::types::ValueRef::Null => None,
                     rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
-                    v => panic!("EID encoded as unusual sqlite type: {:?}", v),
+                    v => panic!("EID encoded as unusual sqlite type: {v:?}"),
                 },
                 age: row.get::<_, Option<i64>>(16)?.map(as_duration),
                 hop_count: match row.get_ref(17)? {
@@ -464,7 +464,7 @@ impl storage::MetadataStorage for Storage {
                         count: as_u64(i),
                         limit: as_u64(row.get(18)?),
                     }),
-                    v => panic!("EID encoded as unusual sqlite type: {:?}", v),
+                    v => panic!("EID encoded as unusual sqlite type: {v:?}"),
                 },
             };
 

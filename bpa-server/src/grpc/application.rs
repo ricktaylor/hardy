@@ -142,10 +142,10 @@ impl Application {
                 }
             };
 
-            if let Some(response) = response {
-                if tx.send(response).await.is_err() {
-                    break;
-                }
+            if let Some(response) = response
+                && tx.send(response).await.is_err()
+            {
+                break;
             }
         }
 
