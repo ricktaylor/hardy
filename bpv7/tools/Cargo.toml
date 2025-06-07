@@ -1,0 +1,16 @@
+[package]
+name = "hardy-bpv7-tools"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "mkbundle"
+path = "mkbundle.rs"
+
+[dependencies]
+hardy-bpv7 = { path = ".." }
+clap = { version = "4.5.37", features = ["derive","cargo"] }
+humantime = "2.2.0"
+
+[dev-dependencies]
+hex-literal = "1.0.0"

@@ -5,6 +5,7 @@ members = [
     "bpa",
     "bpa/fuzz",
     "bpv7",
+    "bpv7/tools",
     "bpv7/fuzz",
     "cbor",
     "cbor/fuzz",

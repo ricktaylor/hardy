@@ -901,12 +901,10 @@ dependencies = [
  "aes-gcm",
  "aes-kw",
  "base64 0.22.1",
- "clap",
  "crc",
  "hardy-cbor",
  "hex-literal",
  "hmac",
- "humantime",
  "serde",
  "sha2",
  "thiserror",
@@ -925,6 +923,16 @@ dependencies = [
  "hardy-eid-pattern",
  "hex-literal",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "hardy-bpv7-tools"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hardy-bpv7",
+ "hex-literal",
+ "humantime",
 ]
 
 [[package]]
