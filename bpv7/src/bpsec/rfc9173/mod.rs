@@ -24,11 +24,11 @@ impl Default for ScopeFlags {
     }
 }
 
-impl cbor::decode::FromCbor for ScopeFlags {
-    type Error = cbor::decode::Error;
+impl hardy_cbor::decode::FromCbor for ScopeFlags {
+    type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
             o.map(|(value, shortest, len)| {
                 let mut flags = Self {
                     include_primary_block: false,
@@ -52,7 +52,7 @@ impl cbor::decode::FromCbor for ScopeFlags {
     }
 }
 
-impl cbor::encode::ToCbor for &ScopeFlags {
+impl hardy_cbor::encode::ToCbor for &ScopeFlags {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut flags = self.unrecognised;
         if self.include_primary_block {
@@ -69,7 +69,7 @@ impl cbor::encode::ToCbor for &ScopeFlags {
 }
 
 fn unwrap_key(
-    source: &Eid,
+    source: &eid::Eid,
     key: &KeyMaterial,
     wrapped_key: &Option<Box<[u8]>>,
 ) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
@@ -101,8 +101,8 @@ fn unwrap_key(
 mod test {
     use super::*;
 
-    fn do_test(data: &[u8], keys: &[(Eid, Context, Box<[u8]>)]) {
-        match ValidBundle::parse(data, |source, context| {
+    fn do_test(data: &[u8], keys: &[(eid::Eid, Context, Box<[u8]>)]) {
+        match bundle::ValidBundle::parse(data, |source, context| {
             for (eid, c2, key) in keys {
                 if &context == c2 && eid == source {
                     return Ok(Some(KeyMaterial::SymmetricKey(key.clone())));
@@ -112,9 +112,9 @@ mod test {
         })
         .expect("Failed to parse")
         {
-            ValidBundle::Valid(..) => {}
-            ValidBundle::Rewritten(..) => panic!("Non-canonical bundle"),
-            ValidBundle::Invalid(_, _, e) => panic!("Invalid bundle: {e}"),
+            bundle::ValidBundle::Valid(..) => {}
+            bundle::ValidBundle::Rewritten(..) => panic!("Non-canonical bundle"),
+            bundle::ValidBundle::Invalid(_, _, e) => panic!("Invalid bundle: {e}"),
         }
     }
 

@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::prelude as bpv7;
 use hardy_proto::cla::*;
 use std::{
     collections::HashMap,
@@ -227,7 +226,7 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[bpv7::Eid],
+        _node_ids: &[hardy_bpv7::eid::Eid],
     ) -> hardy_bpa::cla::Result<()> {
         if self.sink.set(sink).is_err() {
             error!("CLA on_register called twice!");

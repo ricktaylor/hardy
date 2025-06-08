@@ -1,4 +1,6 @@
 use super::*;
+use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_eid_pattern::{EidPattern, EidPatternMap, EidPatternSet};
 use rand::prelude::*;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{Mutex, RwLock};
@@ -8,7 +10,7 @@ pub enum LocalAction {
     AdminEndpoint,                         // Deliver to the admin endpoint
     Local(Arc<service_registry::Service>), // Deliver to local service
     Forward(cla::ClaAddress, Option<Arc<cla_registry::Cla>>), // Forward to CLA
-                                           //    Drop(Option<bpv7::StatusReportReasonCode>), // Drop the bundle
+                                           //    Drop(Option<hardy_bpv7::StatusReportReasonCode>), // Drop the bundle
 }
 
 pub enum FindResult {
@@ -28,7 +30,7 @@ pub enum WaitResult {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RouteEntry {
-    pattern: eid_pattern::EidPattern,
+    pattern: EidPattern,
     priority: u32,
     action: routes::Action,
     source: String,
@@ -36,26 +38,26 @@ struct RouteEntry {
 
 #[derive(Debug)]
 struct RibInner {
-    locals: HashMap<bpv7::Eid, Vec<LocalAction>>,
-    routes: eid_pattern::EidPatternMap<RouteEntry>,
-    finals: eid_pattern::EidPatternSet,
+    locals: HashMap<Eid, Vec<LocalAction>>,
+    routes: EidPatternMap<RouteEntry>,
+    finals: EidPatternSet,
     address_types: HashMap<cla::ClaAddressType, Arc<cla_registry::Cla>>,
 }
 
 #[derive(Debug)]
 pub struct Rib {
     inner: RwLock<RibInner>,
-    cancellable_waits: Mutex<HashMap<bpv7::Eid, tokio_util::sync::CancellationToken>>,
+    cancellable_waits: Mutex<HashMap<Eid, tokio_util::sync::CancellationToken>>,
 }
 
 impl Rib {
     pub fn new(config: &config::Config) -> Arc<Self> {
         let mut locals = HashMap::new();
-        let mut finals = eid_pattern::EidPatternSet::new();
+        let mut finals = EidPatternSet::new();
 
         // Add localnode admin endpoint
         locals.insert(
-            bpv7::Eid::LocalNode { service_number: 0 },
+            Eid::LocalNode { service_number: 0 },
             vec![LocalAction::AdminEndpoint],
         );
 
@@ -65,7 +67,7 @@ impl Rib {
         if let Some((allocator_id, node_number)) = config.node_ids.ipn {
             // Add the Admin Endpoint EID itself
             locals.insert(
-                bpv7::Eid::Ipn {
+                Eid::Ipn {
                     allocator_id,
                     node_number,
                     service_number: 0,
@@ -83,7 +85,7 @@ impl Rib {
         if let Some(node_name) = &config.node_ids.dtn {
             // Add the Admin Endpoint EID itself
             locals.insert(
-                bpv7::Eid::Dtn {
+                Eid::Dtn {
                     node_name: node_name.clone(),
                     demux: [].into(),
                 },
@@ -97,7 +99,7 @@ impl Rib {
             inner: RwLock::new(RibInner {
                 locals,
                 finals,
-                routes: eid_pattern::EidPatternMap::new(),
+                routes: EidPatternMap::new(),
                 address_types: HashMap::new(),
             }),
             cancellable_waits: Mutex::default(),
@@ -106,7 +108,7 @@ impl Rib {
 
     pub async fn add(
         &self,
-        pattern: eid_pattern::EidPattern,
+        pattern: EidPattern,
         source: String,
         action: routes::Action,
         priority: u32,
@@ -129,7 +131,7 @@ impl Rib {
         self.wake(pattern.into()).await
     }
 
-    async fn add_local(&self, eid: bpv7::Eid, action: LocalAction) {
+    async fn add_local(&self, eid: Eid, action: LocalAction) {
         info!("Adding local route {eid} => {action:?}");
 
         match self.inner.write().await.locals.entry(eid.clone()) {
@@ -151,7 +153,7 @@ impl Rib {
 
     pub async fn add_forward(
         &self,
-        eid: bpv7::Eid,
+        eid: Eid,
         cla_addr: cla::ClaAddress,
         cla: Option<Arc<cla_registry::Cla>>,
     ) {
@@ -159,13 +161,13 @@ impl Rib {
             .await
     }
 
-    pub async fn add_service(&self, eid: bpv7::Eid, service: Arc<service_registry::Service>) {
+    pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) {
         self.add_local(eid, LocalAction::Local(service)).await
     }
 
     pub async fn remove(
         &self,
-        pattern: &eid_pattern::EidPattern,
+        pattern: &EidPattern,
         source: &str,
         action: &routes::Action,
         priority: u32,
@@ -197,7 +199,7 @@ impl Rib {
         }
     }
 
-    async fn remove_local(&self, eid: &bpv7::Eid, f: impl FnMut(&mut LocalAction) -> bool) -> bool {
+    async fn remove_local(&self, eid: &Eid, f: impl FnMut(&mut LocalAction) -> bool) -> bool {
         let v = self
             .inner
             .write()
@@ -215,7 +217,7 @@ impl Rib {
 
     pub async fn remove_forward(
         &self,
-        eid: &bpv7::Eid,
+        eid: &Eid,
         cla_addr: &cla::ClaAddress,
         cla: Option<&Arc<cla_registry::Cla>>,
     ) -> bool {
@@ -226,11 +228,7 @@ impl Rib {
         .await
     }
 
-    pub async fn remove_service(
-        &self,
-        eid: &bpv7::Eid,
-        service: &service_registry::Service,
-    ) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: &service_registry::Service) -> bool {
         self.remove_local(eid, |action| {
             if let LocalAction::Local(svc) = action {
                 svc.as_ref() == service
@@ -257,10 +255,7 @@ impl Rib {
         self.inner.write().await.address_types.remove(address_type);
     }
 
-    pub async fn find(
-        &self,
-        to: &bpv7::Eid,
-    ) -> Result<Option<FindResult>, Option<bpv7::StatusReportReasonCode>> {
+    pub async fn find(&self, to: &Eid) -> Result<Option<FindResult>, Option<ReasonCode>> {
         let mut result = {
             let inner = self.inner.read().await;
             find_recurse(&inner, to, &mut HashSet::new())?
@@ -276,7 +271,7 @@ impl Rib {
 
     pub async fn wait_for_route(
         &self,
-        to: &bpv7::Eid,
+        to: &Eid,
         duration: std::time::Duration,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> WaitResult {
@@ -305,7 +300,7 @@ impl Rib {
         }
     }
 
-    async fn wake(&self, pattern: eid_pattern::EidPatternSet) {
+    async fn wake(&self, pattern: EidPatternSet) {
         for token in self
             .cancellable_waits
             .lock()
@@ -318,7 +313,7 @@ impl Rib {
     }
 }
 
-fn find_local<'a>(inner: &'a RibInner, to: &'a bpv7::Eid) -> Option<FindResult> {
+fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
     let mut clas: Option<Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>> = None;
     for action in inner.locals.get(to).into_iter().flatten() {
         match action {
@@ -351,15 +346,13 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a bpv7::Eid) -> Option<FindResult> 
 #[instrument(skip(inner, trail))]
 fn find_recurse<'a>(
     inner: &'a RibInner,
-    to: &'a bpv7::Eid,
-    trail: &mut HashSet<&'a bpv7::Eid>,
-) -> Result<Option<FindResult>, Option<bpv7::StatusReportReasonCode>> {
+    to: &'a Eid,
+    trail: &mut HashSet<&'a Eid>,
+) -> Result<Option<FindResult>, Option<ReasonCode>> {
     // Recursion check
     if !trail.insert(to) {
         warn!("Recursive route {to} found!");
-        return Err(Some(
-            bpv7::StatusReportReasonCode::NoKnownRouteToDestinationFromHere,
-        ));
+        return Err(Some(ReasonCode::NoKnownRouteToDestinationFromHere));
     }
 
     // Always check locals first
@@ -440,9 +433,7 @@ fn find_recurse<'a>(
     }
 
     if result.is_none() && inner.finals.contains(to) {
-        return Err(Some(
-            bpv7::StatusReportReasonCode::DestinationEndpointIDUnavailable,
-        ));
+        return Err(Some(ReasonCode::DestinationEndpointIDUnavailable));
     }
     Ok(result)
 }

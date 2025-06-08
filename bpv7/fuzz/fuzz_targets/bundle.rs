@@ -1,6 +1,6 @@
 #![no_main]
 
-use hardy_bpv7::prelude::*;
+use hardy_bpv7::{bpsec, bundle::ValidBundle, eid::Eid};
 use libfuzzer_sys::fuzz_target;
 
 fn get_keys(

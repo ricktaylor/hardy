@@ -10,7 +10,7 @@ pub enum Operation {
 }
 
 pub struct OperationArgs<'a> {
-    pub bpsec_source: &'a Eid,
+    pub bpsec_source: &'a eid::Eid,
     pub target: &'a block::Block,
     pub target_number: u64,
     pub target_payload: &'a [u8],
@@ -72,7 +72,7 @@ impl Operation {
         }
     }
 
-    fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
+    fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(o) => o.emit_context(encoder, source),
@@ -80,7 +80,7 @@ impl Operation {
         }
     }
 
-    fn emit_result(self, array: &mut cbor::encode::Array) {
+    fn emit_result(self, array: &mut hardy_cbor::encode::Array) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(o) => o.emit_result(array),
@@ -90,7 +90,7 @@ impl Operation {
 }
 
 pub struct OperationSet {
-    pub source: Eid,
+    pub source: eid::Eid,
     pub operations: HashMap<u64, Operation>,
 }
 
@@ -100,7 +100,7 @@ impl OperationSet {
     }
 }
 
-impl cbor::encode::ToCbor for OperationSet {
+impl hardy_cbor::encode::ToCbor for OperationSet {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         // Ensure we process operations in the same order
         let ops = self
@@ -127,12 +127,12 @@ impl cbor::encode::ToCbor for OperationSet {
     }
 }
 
-impl cbor::decode::FromCbor for OperationSet {
+impl hardy_cbor::decode::FromCbor for OperationSet {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         let Some((asb, shortest, len)) =
-            cbor::decode::try_parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?
+            hardy_cbor::decode::try_parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?
         else {
             return Ok(None);
         };

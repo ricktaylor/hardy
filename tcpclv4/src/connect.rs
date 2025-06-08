@@ -15,7 +15,7 @@ pub struct Connector {
     pub keepalive_interval: Option<u16>,
     pub segment_mru: u64,
     pub transfer_mru: u64,
-    pub node_ids: Arc<[bpv7::Eid]>,
+    pub node_ids: Arc<[Eid]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
 }

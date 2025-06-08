@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::prelude as bpv7;
 use hardy_proto::application::*;
 use std::{
     collections::HashMap,
@@ -181,9 +180,12 @@ impl Application {
             .get()
             .expect("Service registration not complete!")
             .send(
-                request.destination.parse().map_err(|e: bpv7::EidError| {
-                    tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
-                })?,
+                request
+                    .destination
+                    .parse()
+                    .map_err(|e: hardy_bpv7::eid::Error| {
+                        tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
+                    })?,
                 &request.payload,
                 std::time::Duration::from_millis(request.lifetime),
                 flags,
@@ -242,7 +244,11 @@ impl Application {
 
 #[async_trait]
 impl hardy_bpa::service::Service for Application {
-    async fn on_register(&self, _source: &bpv7::Eid, sink: Box<dyn hardy_bpa::service::Sink>) {
+    async fn on_register(
+        &self,
+        _source: &hardy_bpv7::eid::Eid,
+        sink: Box<dyn hardy_bpa::service::Sink>,
+    ) {
         if self.sink.set(sink).is_err() {
             error!("Service on_register called twice!");
             panic!("Service on_register called twice!");
@@ -271,8 +277,8 @@ impl hardy_bpa::service::Service for Application {
         &self,
         bundle_id: &str,
         kind: hardy_bpa::service::StatusNotify,
-        reason: bpv7::StatusReportReasonCode,
-        timestamp: Option<bpv7::DtnTime>,
+        reason: hardy_bpv7::status_report::ReasonCode,
+        timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
     ) {
         if let Err(e) = self
             .rpc(bpa_to_app::Msg::StatusNotify(StatusNotifyRequest {

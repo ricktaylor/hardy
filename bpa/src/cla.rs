@@ -15,7 +15,7 @@ pub enum Error {
     AlreadyConnected,
 
     #[error(transparent)]
-    InvalidBundle(#[from] bpv7::Error),
+    InvalidBundle(#[from] hardy_bpv7::Error),
 
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -78,7 +78,11 @@ pub enum ForwardBundleResult {
 
 #[async_trait]
 pub trait Cla: Send + Sync {
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[bpv7::Eid]) -> Result<()>;
+    async fn on_register(
+        &self,
+        sink: Box<dyn Sink>,
+        node_ids: &[hardy_bpv7::eid::Eid],
+    ) -> Result<()>;
 
     async fn on_unregister(&self);
 
@@ -91,7 +95,7 @@ pub trait Sink: Send + Sync {
 
     async fn dispatch(&self, bundle: Bytes) -> Result<()>;
 
-    async fn add_peer(&self, eid: bpv7::Eid, addr: ClaAddress) -> Result<()>;
+    async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, addr: ClaAddress) -> Result<()>;
 
-    async fn remove_peer(&self, eid: &bpv7::Eid) -> Result<bool>;
+    async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid) -> Result<bool>;
 }

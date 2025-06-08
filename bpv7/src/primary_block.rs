@@ -2,22 +2,22 @@ use super::*;
 use error::CaptureFieldErr;
 
 struct PartialPrimaryBlock {
-    pub flags: BundleFlags,
-    pub crc_type: Result<CrcType, Error>,
-    pub source: Result<Eid, Error>,
-    pub destination: Result<Eid, Error>,
-    pub report_to: Eid,
-    pub timestamp: Result<CreationTimestamp, Error>,
+    pub flags: bundle::Flags,
+    pub crc_type: Result<crc::CrcType, Error>,
+    pub source: Result<eid::Eid, Error>,
+    pub destination: Result<eid::Eid, Error>,
+    pub report_to: eid::Eid,
+    pub timestamp: Result<creation_timestamp::CreationTimestamp, Error>,
     pub lifetime: Result<std::time::Duration, Error>,
-    pub fragment_info: Result<Option<FragmentInfo>, Error>,
+    pub fragment_info: Result<Option<bundle::FragmentInfo>, Error>,
     pub crc_result: Result<(), Error>,
 }
 
-impl cbor::decode::FromCbor for PartialPrimaryBlock {
+impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |block, s, tags| {
+        hardy_cbor::decode::try_parse_array(data, |block, s, tags| {
             let mut shortest = s && tags.is_empty() && block.is_definite();
 
             // Check version
@@ -34,7 +34,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
 
             // Parse flags
             let flags = block
-                .parse::<(BundleFlags, bool)>()
+                .parse::<(bundle::Flags, bool)>()
                 .map(|(v, s)| {
                     shortest = shortest && s;
                     v
@@ -100,7 +100,7 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
                             Err(Error::InvalidFragmentInfo(offset, total_len))
                         } else {
                             shortest = shortest && s1 && s2;
-                            Ok(Some(FragmentInfo { offset, total_len }))
+                            Ok(Some(bundle::FragmentInfo { offset, total_len }))
                         }
                     }
                     (Err(e), _) => Err(e.into()),
@@ -138,22 +138,27 @@ impl cbor::decode::FromCbor for PartialPrimaryBlock {
 }
 
 pub struct PrimaryBlock {
-    pub flags: BundleFlags,
-    pub crc_type: CrcType,
-    pub source: Eid,
-    pub destination: Eid,
-    pub report_to: Eid,
-    pub timestamp: CreationTimestamp,
+    pub flags: bundle::Flags,
+    pub crc_type: crc::CrcType,
+    pub source: eid::Eid,
+    pub destination: eid::Eid,
+    pub report_to: eid::Eid,
+    pub timestamp: creation_timestamp::CreationTimestamp,
     pub lifetime: std::time::Duration,
-    pub fragment_info: Option<FragmentInfo>,
+    pub fragment_info: Option<bundle::FragmentInfo>,
     pub error: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl PrimaryBlock {
-    pub fn into_bundle(self) -> (Bundle, Option<Box<dyn std::error::Error + Send + Sync>>) {
+    pub fn into_bundle(
+        self,
+    ) -> (
+        bundle::Bundle,
+        Option<Box<dyn std::error::Error + Send + Sync>>,
+    ) {
         (
-            Bundle {
-                id: BundleId {
+            bundle::Bundle {
+                id: bundle::Id {
                     source: self.source,
                     timestamp: self.timestamp,
                     fragment_info: self.fragment_info,
@@ -169,12 +174,12 @@ impl PrimaryBlock {
         )
     }
 
-    pub fn emit(bundle: &Bundle) -> Vec<u8> {
+    pub fn emit(bundle: &bundle::Bundle) -> Vec<u8> {
         crc::append_crc_value(
             bundle.crc_type,
-            cbor::encode::emit_array(
+            hardy_cbor::encode::emit_array(
                 Some({
-                    let mut count = if let CrcType::None = bundle.crc_type {
+                    let mut count = if let crc::CrcType::None = bundle.crc_type {
                         8
                     } else {
                         9
@@ -201,7 +206,7 @@ impl PrimaryBlock {
                     }
 
                     // CRC
-                    if let CrcType::None = bundle.crc_type {
+                    if let crc::CrcType::None = bundle.crc_type {
                     } else {
                         a.skip_value();
                     }
@@ -211,12 +216,12 @@ impl PrimaryBlock {
     }
 }
 
-impl cbor::decode::FromCbor for PrimaryBlock {
+impl hardy_cbor::decode::FromCbor for PrimaryBlock {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         let Some((p, s, len)) =
-            cbor::decode::try_parse::<(PartialPrimaryBlock, bool, usize)>(data)?
+            hardy_cbor::decode::try_parse::<(PartialPrimaryBlock, bool, usize)>(data)?
         else {
             return Ok(None);
         };
@@ -254,7 +259,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     };
 
                     // Check flags
-                    if matches!(&block.source,&Eid::Null if block.flags.is_fragment
+                    if matches!(&block.source,&eid::Eid::Null if block.flags.is_fragment
                         || !block.flags.do_not_fragment
                         || block.flags.receipt_report_requested
                         || block.flags.forward_report_requested
@@ -279,7 +284,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                     report_to: p.report_to,
                     crc_type: crc_type.unwrap_or_default(),
                     source: source.unwrap_or_default(),
-                    destination: Eid::default(),
+                    destination: eid::Eid::default(),
                     timestamp: timestamp.unwrap_or_default(),
                     lifetime: lifetime.unwrap_or_default(),
                     fragment_info: fragment_info.unwrap_or_default(),
@@ -296,7 +301,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         flags: p.flags,
                         report_to: p.report_to,
                         crc_type: crc_type.unwrap_or_default(),
-                        source: Eid::default(),
+                        source: eid::Eid::default(),
                         destination,
                         timestamp: timestamp.unwrap_or_default(),
                         lifetime: lifetime.unwrap_or_default(),
@@ -317,7 +322,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                         crc_type: crc_type.unwrap_or_default(),
                         source,
                         destination,
-                        timestamp: CreationTimestamp::default(),
+                        timestamp: creation_timestamp::CreationTimestamp::default(),
                         lifetime: lifetime.unwrap_or_default(),
                         fragment_info: fragment_info.unwrap_or_default(),
                         error: Some(
@@ -384,7 +389,7 @@ impl cbor::decode::FromCbor for PrimaryBlock {
                 ) => PrimaryBlock {
                     flags: p.flags,
                     report_to: p.report_to,
-                    crc_type: CrcType::default(),
+                    crc_type: crc::CrcType::default(),
                     source,
                     destination,
                     timestamp,

@@ -50,8 +50,10 @@ impl Store {
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
-        let (tx, mut rx) =
-            tokio::sync::mpsc::channel::<(metadata::BundleMetadata, bpv7::Bundle)>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(
+            metadata::BundleMetadata,
+            hardy_bpv7::bundle::Bundle,
+        )>(16);
         let metadata_storage = self.metadata_storage.clone();
         let h = tokio::spawn(async move {
             // Give some feedback
@@ -78,7 +80,7 @@ impl Store {
                                         metadata: m,
                                         bundle: b,
                                     },
-                                    bpv7::StatusReportReasonCode::DepletedStorage,
+                                    hardy_bpv7::status_report::ReasonCode::DepletedStorage,
                                 )
                                 .await.trace_expect("Failed to report bundle deletion");
 
@@ -236,11 +238,15 @@ impl Store {
 
         // Parse the bundle
         let (bundle, reason, hash, report_unsupported) =
-            match bpv7::ValidBundle::parse(&data, dispatcher.key_closure()) {
-                Ok(bpv7::ValidBundle::Valid(bundle, report_unsupported)) => {
+            match hardy_bpv7::bundle::ValidBundle::parse(&data, dispatcher.key_closure()) {
+                Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
                     (bundle, None, Some(hash(&data)), report_unsupported)
                 }
-                Ok(bpv7::ValidBundle::Rewritten(bundle, data, report_unsupported)) => {
+                Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
+                    bundle,
+                    data,
+                    report_unsupported,
+                )) => {
                     warn!("Bundle in non-canonical format found: {storage_name}");
 
                     let hash = Some(hash(&data));
@@ -261,7 +267,7 @@ impl Store {
                     storage_name = new_storage_name;
                     (bundle, None, hash, report_unsupported)
                 }
-                Ok(bpv7::ValidBundle::Invalid(bundle, reason, e)) => {
+                Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
                     warn!("Invalid bundle found: {storage_name}, {e}");
                     (bundle, Some(reason), Some(hash(&data)), false)
                 }
@@ -363,7 +369,7 @@ impl Store {
     pub async fn store_metadata(
         &self,
         metadata: &BundleMetadata,
-        bundle: &bpv7::Bundle,
+        bundle: &hardy_bpv7::bundle::Bundle,
     ) -> storage::Result<bool> {
         // Write to metadata store
         Ok(self
@@ -376,7 +382,7 @@ impl Store {
     #[inline]
     pub async fn load(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
         self.metadata_storage.load(bundle_id).await.map(|v| {
             v.map(|(m, b)| bundle::Bundle {
@@ -389,7 +395,7 @@ impl Store {
     #[instrument(skip(self, data))]
     pub async fn store(
         &self,
-        bundle: &bpv7::Bundle,
+        bundle: &hardy_bpv7::bundle::Bundle,
         data: Bytes,
         status: BundleStatus,
         received_at: Option<time::OffsetDateTime>,
@@ -445,7 +451,7 @@ impl Store {
     }
 
     #[inline]
-    pub async fn delete_metadata(&self, bundle_id: &bpv7::BundleId) -> storage::Result<()> {
+    pub async fn delete_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         // Delete the bundle from the bundle store
         self.metadata_storage.remove(bundle_id).await
     }

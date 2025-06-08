@@ -2,13 +2,13 @@ use super::*;
 use std::collections::HashMap;
 
 pub struct Editor<'a> {
-    original: &'a Bundle,
+    original: &'a bundle::Bundle,
     source_data: &'a [u8],
     blocks: HashMap<u64, BlockTemplate>,
 }
 
 enum BlockTemplate {
-    Keep(BlockType),
+    Keep(block::Type),
     Add(builder::BlockTemplate),
 }
 
@@ -19,7 +19,7 @@ pub struct BlockBuilder<'a, 'b> {
 }
 
 impl<'a> Editor<'a> {
-    pub fn new(original: &'a Bundle, source_data: &'a [u8]) -> Self {
+    pub fn new(original: &'a bundle::Bundle, source_data: &'a [u8]) -> Self {
         Self {
             blocks: original
                 .blocks
@@ -31,8 +31,8 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn add_extension_block(&mut self, block_type: BlockType) -> BlockBuilder<'a, '_> {
-        if let BlockType::Primary | BlockType::Payload = block_type {
+    pub fn add_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
+        if let block::Type::Primary | block::Type::Payload = block_type {
             panic!("Don't add primary or payload blocks!");
         }
 
@@ -46,8 +46,8 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn replace_extension_block(&mut self, block_type: BlockType) -> BlockBuilder<'a, '_> {
-        if let BlockType::Primary = block_type {
+    pub fn replace_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
+        if let block::Type::Primary = block_type {
             panic!("Don't replace primary block!");
         }
 
@@ -86,7 +86,7 @@ impl<'a> Editor<'a> {
     }
 
     pub fn build(mut self) -> Vec<u8> {
-        cbor::encode::emit_array(None, |a| {
+        hardy_cbor::encode::emit_array(None, |a| {
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
@@ -107,7 +107,7 @@ impl<'a> Editor<'a> {
         &self,
         block_number: u64,
         template: BlockTemplate,
-        array: &mut cbor::encode::Array,
+        array: &mut hardy_cbor::encode::Array,
     ) {
         match template {
             BlockTemplate::Keep(_) => {
@@ -125,11 +125,11 @@ impl<'a> Editor<'a> {
 }
 
 impl<'a, 'b> BlockBuilder<'a, 'b> {
-    fn new(editor: &'b mut Editor<'a>, block_number: u64, block_type: BlockType) -> Self {
+    fn new(editor: &'b mut Editor<'a>, block_number: u64, block_type: block::Type) -> Self {
         Self {
             template: builder::BlockTemplate::new(
                 block_type,
-                BlockFlags::default(),
+                block::Flags::default(),
                 editor.original.crc_type,
             ),
             block_number,
@@ -171,7 +171,7 @@ impl<'a, 'b> BlockBuilder<'a, 'b> {
         self
     }
 
-    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
+    pub fn crc_type(mut self, crc_type: crc::CrcType) -> Self {
         self.template.crc_type(crc_type);
         self
     }

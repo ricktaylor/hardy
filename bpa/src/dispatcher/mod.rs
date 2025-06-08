@@ -6,13 +6,14 @@ mod local;
 mod report;
 
 use super::*;
+use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use metadata::*;
 
 // I can't make this work with closures
 #[allow(clippy::large_enum_variant)]
 enum Task {
     Dispatch(bundle::Bundle),
-    Wait(bpv7::Eid, bpv7::BundleId, time::OffsetDateTime),
+    Wait(Eid, hardy_bpv7::bundle::Id, time::OffsetDateTime),
 }
 
 impl Task {
@@ -35,7 +36,7 @@ pub struct Dispatcher {
     tx: tokio::sync::mpsc::Sender<Task>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     rib: Arc<rib::Rib>,
-    ipn_2_element: Arc<eid_pattern::EidPatternSet>,
+    ipn_2_element: Arc<hardy_eid_pattern::EidPatternSet>,
 
     // Config options
     status_reports: bool,
@@ -60,7 +61,7 @@ impl Dispatcher {
             service_registry,
             rib,
             ipn_2_element: Arc::new(config.ipn_2_element.iter().fold(
-                eid_pattern::EidPatternSet::new(),
+                hardy_eid_pattern::EidPatternSet::new(),
                 |mut acc, e| {
                     acc.insert(e.clone());
                     acc
@@ -94,7 +95,7 @@ impl Dispatcher {
         warn!("Bundle data {storage_name} has gone from storage");
 
         // Report the bundle has gone
-        self.report_bundle_deletion(bundle, bpv7::StatusReportReasonCode::DepletedStorage)
+        self.report_bundle_deletion(bundle, ReasonCode::DepletedStorage)
             .await?;
 
         // Leave a tombstone in the metadata, so we can ignore duplicates
@@ -111,7 +112,7 @@ impl Dispatcher {
     async fn drop_bundle(
         &self,
         mut bundle: bundle::Bundle,
-        reason: Option<bpv7::StatusReportReasonCode>,
+        reason: Option<ReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&bundle, reason).await?;
@@ -148,7 +149,7 @@ impl Dispatcher {
 
     pub(super) async fn bundle_wait(
         &self,
-        next_hop: bpv7::Eid,
+        next_hop: Eid,
         bundle: bundle::Bundle,
         mut until: time::OffsetDateTime,
     ) -> Result<(), Error> {
@@ -160,8 +161,8 @@ impl Dispatcher {
 
     async fn on_bundle_wait(
         &self,
-        next_hop: bpv7::Eid,
-        bundle_id: bpv7::BundleId,
+        next_hop: Eid,
+        bundle_id: hardy_bpv7::bundle::Id,
         until: time::OffsetDateTime,
     ) -> Result<(), Error> {
         // Check to see if we should wait at all!
@@ -172,10 +173,7 @@ impl Dispatcher {
                 return Ok(());
             };
             return self
-                .drop_bundle(
-                    bundle,
-                    Some(bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute),
-                )
+                .drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
                 .await;
         }
 
@@ -198,10 +196,7 @@ impl Dispatcher {
                     return Ok(());
                 };
                 return self
-                    .drop_bundle(
-                        bundle,
-                        Some(bpv7::StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute),
-                    )
+                    .drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
                     .await;
             }
             rib::WaitResult::RouteChange => {
@@ -247,9 +242,9 @@ impl Dispatcher {
     pub fn key_closure(
         &self,
     ) -> impl FnMut(
-        &bpv7::Eid,
-        bpv7::bpsec::Context,
-    ) -> Result<Option<bpv7::bpsec::KeyMaterial>, bpv7::bpsec::Error> {
+        &Eid,
+        hardy_bpv7::bpsec::Context,
+    ) -> Result<Option<hardy_bpv7::bpsec::KeyMaterial>, hardy_bpv7::bpsec::Error> {
         |_, _| Ok(None)
     }
 }

@@ -18,7 +18,7 @@ fn parse_ipn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
         .try_map(|(a, b, c)| match (a, b, c) {
             (0, 0, Some(0)) | (0, 0, None) => Ok(Eid::Null),
             (0, 0, Some(service_number)) | (0, service_number, None) => {
-                Err(EidError::IpnInvalidServiceNumber(service_number as u64))
+                Err(Error::IpnInvalidServiceNumber(service_number as u64))
             }
             (0, u32::MAX, Some(service_number)) | (u32::MAX, service_number, None) => {
                 Ok(Eid::LocalNode { service_number })
@@ -150,17 +150,17 @@ pub fn parse_eid(input: &mut &[u8]) -> ModalResult<Eid> {
 }
 
 impl std::str::FromStr for Eid {
-    type Err = EidError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_eid
             .parse(s.as_bytes())
-            .map_err(|e| EidError::ParseError(e.to_string()))
+            .map_err(|e| Error::ParseError(e.to_string()))
     }
 }
 
 impl TryFrom<&str> for Eid {
-    type Error = EidError;
+    type Error = Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         value.parse()
@@ -173,7 +173,7 @@ impl From<Eid> for String {
     }
 }
 
-fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid, bool), EidError> {
+fn ipn_from_cbor(value: &mut hardy_cbor::decode::Array, shortest: bool) -> Result<(Eid, bool), Error> {
     let (a, s1) = value.parse()?;
     let (b, s2) = value.parse()?;
     let (c, shortest) = if let Some((c, s3)) = value.try_parse()? {
@@ -187,10 +187,10 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid
     match (a, b, c) {
         (0, 0, Some(0)) => Ok((Eid::Null, false)),
         (0, 0, None) => Ok((Eid::Null, shortest)),
-        (0, 0, Some(s)) | (0, s, None) => Err(EidError::IpnInvalidServiceNumber(s)),
-        (a, _, Some(_)) if a > MAX => Err(EidError::IpnInvalidAllocatorId(a)),
-        (_, n, Some(_)) if n > MAX => Err(EidError::IpnInvalidNodeNumber(n)),
-        (_, _, Some(s)) | (_, s, None) if s > MAX => Err(EidError::IpnInvalidServiceNumber(s)),
+        (0, 0, Some(s)) | (0, s, None) => Err(Error::IpnInvalidServiceNumber(s)),
+        (a, _, Some(_)) if a > MAX => Err(Error::IpnInvalidAllocatorId(a)),
+        (_, n, Some(_)) if n > MAX => Err(Error::IpnInvalidNodeNumber(n)),
+        (_, _, Some(s)) | (_, s, None) if s > MAX => Err(Error::IpnInvalidServiceNumber(s)),
         (0, MAX, Some(s)) | (MAX, s, None) => Ok((
             Eid::LocalNode {
                 service_number: s as u32,
@@ -232,11 +232,11 @@ fn ipn_from_cbor(value: &mut cbor::decode::Array, shortest: bool) -> Result<(Eid
     }
 }
 
-impl cbor::decode::FromCbor for Eid {
-    type Error = error::EidError;
+impl hardy_cbor::decode::FromCbor for Eid {
+    type Error = error::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+        hardy_cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && a.is_definite();
 
             match a
@@ -247,18 +247,18 @@ impl cbor::decode::FromCbor for Eid {
                 })
                 .map_field_err("EID scheme")?
             {
-                0 => Err(EidError::UnsupportedScheme(0)),
+                0 => Err(Error::UnsupportedScheme(0)),
                 1 => a
                     .parse_value(|value, s, tags| {
                         shortest = shortest && s && tags.is_empty();
                         match value {
-                            cbor::decode::Value::UnsignedInteger(0)
-                            | cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
-                            cbor::decode::Value::Text(s) => parse_dtn
+                            hardy_cbor::decode::Value::UnsignedInteger(0)
+                            | hardy_cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
+                            hardy_cbor::decode::Value::Text(s) => parse_dtn
                                 .parse(s.as_bytes())
                                 .map(|e| (e, shortest))
-                                .map_err(|e| EidError::ParseError(e.to_string())),
-                            cbor::decode::Value::TextStream(s) => {
+                                .map_err(|e| Error::ParseError(e.to_string())),
+                            hardy_cbor::decode::Value::TextStream(s) => {
                                 let s = s.iter().fold(String::new(), |mut acc, s| {
                                     acc.push_str(s);
                                     acc
@@ -266,9 +266,9 @@ impl cbor::decode::FromCbor for Eid {
                                 parse_dtn
                                     .parse(s.as_bytes())
                                     .map(|e| (e, shortest))
-                                    .map_err(|e| EidError::ParseError(e.to_string()))
+                                    .map_err(|e| Error::ParseError(e.to_string()))
                             }
-                            value => Err(cbor::decode::Error::IncorrectType(
+                            value => Err(hardy_cbor::decode::Error::IncorrectType(
                                 "Untagged Text String or O".to_string(),
                                 value.type_name(!tags.is_empty()),
                             )
@@ -277,24 +277,24 @@ impl cbor::decode::FromCbor for Eid {
                     })
                     .map_field_err("'dtn' scheme-specific part"),
                 2 => match a.parse_value(|value, s, tags| match value {
-                    cbor::decode::Value::Array(a) => {
+                    hardy_cbor::decode::Value::Array(a) => {
                         ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
                     }
-                    value => Err(cbor::decode::Error::IncorrectType(
+                    value => Err(hardy_cbor::decode::Error::IncorrectType(
                         "Untagged Array".to_string(),
                         value.type_name(!tags.is_empty()),
                     )
                     .into()),
                 }) {
-                    Err(EidError::InvalidCBOR(e)) => {
+                    Err(Error::InvalidCBOR(e)) => {
                         Err(e).map_field_err("'ipn' scheme-specific part")
                     }
                     r => r,
                 },
                 scheme => {
                     let start = a.offset();
-                    if a.skip_value(16).map_err(Into::<EidError>::into)?.is_none() {
-                        Err(EidError::UnsupportedScheme(scheme))
+                    if a.skip_value(16).map_err(Into::<Error>::into)?.is_none() {
+                        Err(Error::UnsupportedScheme(scheme))
                     } else {
                         Ok((
                             Eid::Unknown {

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use hardy_bpv7::prelude::*;
+use hardy_bpv7::{bpsec, bundle::ValidBundle, eid::Eid};
 use std::io::Read;
 
 fn get_keys(

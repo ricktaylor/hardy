@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
 
 impl Dispatcher {
     #[instrument(skip(self))]
@@ -12,10 +13,7 @@ impl Dispatcher {
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
             return self
-                .drop_bundle(
-                    bundle,
-                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                )
+                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                 .await;
         }
 
@@ -24,22 +22,19 @@ impl Dispatcher {
             return Ok(());
         };
 
-        match cbor::decode::parse(&data) {
+        match hardy_cbor::decode::parse(&data) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
-                self.drop_bundle(
-                    bundle,
-                    Some(bpv7::StatusReportReasonCode::BlockUnintelligible),
-                )
-                .await
+                self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                    .await
             }
-            Ok(bpv7::AdministrativeRecord::BundleStatusReport(report)) => {
+            Ok(AdministrativeRecord::BundleStatusReport(report)) => {
                 // Find a live service to notify
                 if let Some(service) = self.service_registry.find(&report.bundle_id.source).await {
                     // Notify the service
                     let bundle_id = bundle.bundle.id.to_key();
 
-                    let on_status_notify = |assertion: Option<bpv7::StatusAssertion>, code| async {
+                    let on_status_notify = |assertion: Option<StatusAssertion>, code| async {
                         if let Some(assertion) = assertion {
                             service
                                 .service

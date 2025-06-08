@@ -18,7 +18,7 @@ pub enum Error {
     InvalidNodeIdUtf8(#[from] std::string::FromUtf8Error),
 
     #[error("Invalid Node Id: {0}")]
-    InvalidNodeId(#[from] bpv7::EidError),
+    InvalidNodeId(#[from] hardy_bpv7::eid::Error),
 }
 
 #[repr(u8)]
@@ -78,7 +78,7 @@ pub struct SessionInitMessage {
     pub keepalive_interval: u16,
     pub segment_mru: u64,
     pub transfer_mru: u64,
-    pub node_id: Option<bpv7::Eid>,
+    pub node_id: Option<Eid>,
     pub session_extensions: Vec<SessionInitExtension>,
 }
 

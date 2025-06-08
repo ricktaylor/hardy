@@ -1,4 +1,5 @@
 use super::*;
+use error::Error;
 use hex_literal::hex;
 
 #[test]
@@ -18,49 +19,49 @@ fn tests() {
     // Negative tests
     assert!(matches!(
         expect_error(&[]),
-        EidError::InvalidCBOR(cbor::decode::Error::NotEnoughData)
+        Error::InvalidCBOR(hardy_cbor::decode::Error::NotEnoughData)
     ));
     assert!(matches!(
         expect_error(&hex!(
             "82 02 83 1B 0000000800000001 1B 0000000800000001 1B 0000000800000001"
         )),
-        EidError::IpnInvalidAllocatorId(_)
+        Error::IpnInvalidAllocatorId(_)
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 83 01 1B 0000000800000001 1B 0000000800000001")),
-        EidError::IpnInvalidNodeNumber(_)
+        Error::IpnInvalidNodeNumber(_)
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 83 01 01 1B 0000000800000001")),
-        EidError::IpnInvalidServiceNumber(_)
+        Error::IpnInvalidServiceNumber(_)
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 81 00")),
-        EidError::InvalidField {
+        Error::InvalidField {
             field: "'ipn' scheme-specific part",
             ..
         }
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 84 00 00 00 00")),
-        EidError::InvalidField {
+        Error::InvalidField {
             field: "'ipn' scheme-specific part",
             ..
         }
     ));
     assert!(matches!(
         expect_error(&hex!("82 02 82 1B 000EE868 00000001 1B 0000000800000001")),
-        EidError::IpnInvalidServiceNumber(_)
+        Error::IpnInvalidServiceNumber(_)
     ));
 }
 
-fn expect_error(data: &[u8]) -> EidError {
-    cbor::decode::parse::<Eid>(data).expect_err("Parsed successfully!")
+fn expect_error(data: &[u8]) -> Error {
+    hardy_cbor::decode::parse::<Eid>(data).expect_err("Parsed successfully!")
 }
 
 fn null_check(data: &[u8]) {
     assert_eq!(
-        cbor::decode::parse::<Eid>(data).expect("Failed to parse"),
+        hardy_cbor::decode::parse::<Eid>(data).expect("Failed to parse"),
         Eid::Null
     );
 }
@@ -71,7 +72,7 @@ fn ipn_check_legacy(
     expected_node_number: u32,
     expected_service_number: u32,
 ) {
-    match cbor::decode::parse(data).expect("Failed to parse") {
+    match hardy_cbor::decode::parse(data).expect("Failed to parse") {
         Eid::LegacyIpn {
             allocator_id,
             node_number,
@@ -91,7 +92,7 @@ fn ipn_check(
     expected_node_number: u32,
     expected_service_number: u32,
 ) {
-    match cbor::decode::parse(data).expect("Failed to parse") {
+    match hardy_cbor::decode::parse(data).expect("Failed to parse") {
         Eid::Ipn {
             allocator_id,
             node_number,

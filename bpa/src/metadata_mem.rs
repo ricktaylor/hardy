@@ -12,22 +12,24 @@ pub enum Error {
 
 #[derive(Default)]
 pub struct Storage {
-    entries: RwLock<HashMap<bpv7::BundleId, (metadata::BundleMetadata, bpv7::Bundle)>>,
+    entries: RwLock<
+        HashMap<hardy_bpv7::bundle::Id, (metadata::BundleMetadata, hardy_bpv7::bundle::Bundle)>,
+    >,
 }
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     async fn load(
         &self,
-        _bundle_id: &bpv7::BundleId,
-    ) -> storage::Result<Option<(metadata::BundleMetadata, bpv7::Bundle)>> {
+        _bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> storage::Result<Option<(metadata::BundleMetadata, hardy_bpv7::bundle::Bundle)>> {
         todo!()
     }
 
     async fn store(
         &self,
         metadata: &BundleMetadata,
-        bundle: &bpv7::Bundle,
+        bundle: &hardy_bpv7::bundle::Bundle,
     ) -> storage::Result<bool> {
         if let hash_map::Entry::Vacant(e) = self.entries.write().await.entry(bundle.id.clone()) {
             e.insert((metadata.clone(), bundle.clone()));
@@ -39,7 +41,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn get_bundle_status(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<BundleStatus>> {
         Ok(self
             .entries
@@ -51,7 +53,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn set_bundle_status(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
         status: &BundleStatus,
     ) -> storage::Result<()> {
         self.entries
@@ -62,7 +64,7 @@ impl storage::MetadataStorage for Storage {
             .ok_or(Error::NotFound.into())
     }
 
-    async fn remove(&self, bundle_id: &bpv7::BundleId) -> storage::Result<()> {
+    async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         self.entries
             .write()
             .await
@@ -73,7 +75,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn confirm_exists(
         &self,
-        _bundle_id: &bpv7::BundleId,
+        _bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<BundleMetadata>> {
         Ok(None)
     }

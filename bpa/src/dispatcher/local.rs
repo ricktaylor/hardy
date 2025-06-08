@@ -4,34 +4,34 @@ impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn local_dispatch(
         &self,
-        mut source: bpv7::Eid,
-        mut destination: bpv7::Eid,
+        mut source: Eid,
+        mut destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
         flags: Option<service::SendFlags>,
-    ) -> Result<bpv7::BundleId, Error> {
+    ) -> Result<hardy_bpv7::bundle::Id, Error> {
         // Check to see if we should use ipn 2-element encoding
         if self.ipn_2_element.contains(&destination) {
-            if let bpv7::Eid::Ipn {
+            if let Eid::Ipn {
                 allocator_id: sa,
                 node_number: sn,
                 service_number: ss,
             } = source
             {
-                source = bpv7::Eid::LegacyIpn {
+                source = Eid::LegacyIpn {
                     allocator_id: sa,
                     node_number: sn,
                     service_number: ss,
                 };
             }
 
-            if let bpv7::Eid::Ipn {
+            if let Eid::Ipn {
                 allocator_id: da,
                 node_number: dn,
                 service_number: ds,
             } = destination
             {
-                destination = bpv7::Eid::LegacyIpn {
+                destination = Eid::LegacyIpn {
                     allocator_id: da,
                     node_number: dn,
                     service_number: ds,
@@ -40,11 +40,11 @@ impl Dispatcher {
         }
 
         // Build the bundle
-        let mut b = bpv7::Builder::new();
+        let mut b = hardy_bpv7::builder::Builder::new();
 
         // Set flags
         if let Some(flags) = flags {
-            b.flags(bpv7::BundleFlags {
+            b.flags(hardy_bpv7::bundle::Flags {
                 do_not_fragment: flags.do_not_fragment,
                 app_ack_requested: flags.request_ack,
                 report_status_time: flags.report_status_time,
@@ -103,8 +103,8 @@ impl Dispatcher {
                 expiry: bundle.expiry(),
                 ack_requested: bundle.bundle.flags.app_ack_requested,
                 payload: match bundle.bundle.payload(&data, self.key_closure())? {
-                    bpv7::Payload::Borrowed(range) => data.slice(range),
-                    bpv7::Payload::Owned(data) => Bytes::from_owner(data),
+                    hardy_bpv7::bundle::Payload::Borrowed(range) => data.slice(range),
+                    hardy_bpv7::bundle::Payload::Owned(data) => Bytes::from_owner(data),
                 },
             })
             .await;

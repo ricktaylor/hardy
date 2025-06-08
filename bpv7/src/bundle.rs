@@ -1,4 +1,5 @@
 use super::*;
+use base64::prelude::*;
 use error::CaptureFieldErr;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -6,22 +7,22 @@ use std::collections::{HashMap, HashSet};
 trait KeyCache {
     fn get<'a>(
         &'a mut self,
-        source: &Eid,
+        source: &eid::Eid,
         context: bpsec::Context,
     ) -> Result<Option<&'a bpsec::KeyMaterial>, bpsec::Error>;
 }
 
 struct KeyCacheImpl<F>
 where
-    F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+    F: FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
 {
-    keys: HashMap<Eid, HashMap<bpsec::Context, Option<bpsec::KeyMaterial>>>,
+    keys: HashMap<eid::Eid, HashMap<bpsec::Context, Option<bpsec::KeyMaterial>>>,
     f: F,
 }
 
 impl<F> KeyCacheImpl<F>
 where
-    F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+    F: FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
 {
     pub fn new(f: F) -> Self {
         Self {
@@ -33,11 +34,11 @@ where
 
 impl<F> KeyCache for KeyCacheImpl<F>
 where
-    F: FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+    F: FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
 {
     fn get<'a>(
         &'a mut self,
-        source: &Eid,
+        source: &eid::Eid,
         context: bpsec::Context,
     ) -> Result<Option<&'a bpsec::KeyMaterial>, bpsec::Error> {
         let inner = self.keys.entry(source.clone()).or_default();
@@ -60,27 +61,212 @@ impl std::fmt::Debug for Payload {
     }
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct FragmentInfo {
+    pub offset: u64,
+    pub total_len: u64,
+}
+
+pub mod id {
+    use thiserror::Error;
+
+    #[derive(Error, Debug)]
+    pub enum Error {
+        #[error("Bad bundle id key")]
+        BadKey,
+
+        #[error("Bad base64 encoding")]
+        BadBase64(#[from] base64::DecodeError),
+
+        #[error("Failed to decode {field}: {source}")]
+        InvalidField {
+            field: &'static str,
+            source: Box<dyn std::error::Error + Send + Sync>,
+        },
+
+        #[error(transparent)]
+        InvalidCBOR(#[from] hardy_cbor::decode::Error),
+    }
+}
+
+trait CaptureFieldIdErr<T> {
+    fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error>;
+}
+
+impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldIdErr<T>
+    for std::result::Result<T, E>
+{
+    fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error> {
+        self.map_err(|e| id::Error::InvalidField {
+            field,
+            source: e.into(),
+        })
+    }
+}
+
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Id {
+    pub source: eid::Eid,
+    pub timestamp: creation_timestamp::CreationTimestamp,
+    pub fragment_info: Option<FragmentInfo>,
+}
+
+impl Id {
+    pub fn from_key(k: &str) -> Result<Self, id::Error> {
+        hardy_cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _, _| {
+            let s = Self {
+                source: array.parse().map_field_id_err("source EID")?,
+                timestamp: array.parse().map_field_id_err("creation timestamp")?,
+                fragment_info: if let Some(4) = array.count() {
+                    Some(FragmentInfo {
+                        offset: array.parse().map_field_id_err("fragment offset")?,
+                        total_len: array
+                            .parse()
+                            .map_field_id_err("total application data unit Length")?,
+                    })
+                } else {
+                    None
+                },
+            };
+            if array.end()?.is_none() {
+                Err(id::Error::BadKey)
+            } else {
+                Ok(s)
+            }
+        })
+        .map(|v| v.0)
+    }
+
+    pub fn to_key(&self) -> String {
+        BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = &self.fragment_info {
+            hardy_cbor::encode::emit_array(Some(4), |array| {
+                array.emit(&self.source);
+                array.emit(&self.timestamp);
+                array.emit(fragment_info.offset);
+                array.emit(fragment_info.total_len);
+            })
+        } else {
+            hardy_cbor::encode::emit_array(Some(2), |array| {
+                array.emit(&self.source);
+                array.emit(&self.timestamp);
+            })
+        })
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct Flags {
+    pub is_fragment: bool,
+    pub is_admin_record: bool,
+    pub do_not_fragment: bool,
+    pub app_ack_requested: bool,
+    pub report_status_time: bool,
+    pub receipt_report_requested: bool,
+    pub forward_report_requested: bool,
+    pub delivery_report_requested: bool,
+    pub delete_report_requested: bool,
+    pub unrecognised: u64,
+}
+
+impl From<u64> for Flags {
+    fn from(value: u64) -> Self {
+        let mut flags = Self {
+            unrecognised: value & !((2 ^ 20) - 1),
+            ..Default::default()
+        };
+
+        for b in 0..=20 {
+            if value & (1 << b) != 0 {
+                match b {
+                    0 => flags.is_fragment = true,
+                    1 => flags.is_admin_record = true,
+                    2 => flags.do_not_fragment = true,
+                    5 => flags.app_ack_requested = true,
+                    6 => flags.report_status_time = true,
+                    14 => flags.receipt_report_requested = true,
+                    16 => flags.forward_report_requested = true,
+                    17 => flags.delivery_report_requested = true,
+                    18 => flags.delete_report_requested = true,
+                    b => {
+                        flags.unrecognised |= 1 << b;
+                    }
+                }
+            }
+        }
+        flags
+    }
+}
+
+impl From<&Flags> for u64 {
+    fn from(value: &Flags) -> Self {
+        let mut flags = value.unrecognised;
+        if value.is_fragment {
+            flags |= 1 << 0;
+        }
+        if value.is_admin_record {
+            flags |= 1 << 1;
+        }
+        if value.do_not_fragment {
+            flags |= 1 << 2;
+        }
+        if value.app_ack_requested {
+            flags |= 1 << 5;
+        }
+        if value.report_status_time {
+            flags |= 1 << 6;
+        }
+        if value.receipt_report_requested {
+            flags |= 1 << 14;
+        }
+        if value.forward_report_requested {
+            flags |= 1 << 16;
+        }
+        if value.delivery_report_requested {
+            flags |= 1 << 17;
+        }
+        if value.delete_report_requested {
+            flags |= 1 << 18;
+        }
+        flags
+    }
+}
+
+impl hardy_cbor::encode::ToCbor for &Flags {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(u64::from(self))
+    }
+}
+
+impl hardy_cbor::decode::FromCbor for Flags {
+    type Error = hardy_cbor::decode::Error;
+
+    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)
+            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Bundle {
     // From Primary Block
-    pub id: BundleId,
-    pub flags: BundleFlags,
-    pub crc_type: CrcType,
-    pub destination: Eid,
-    pub report_to: Eid,
+    pub id: Id,
+    pub flags: Flags,
+    pub crc_type: crc::CrcType,
+    pub destination: eid::Eid,
+    pub report_to: eid::Eid,
     pub lifetime: std::time::Duration,
 
     // Unpacked from extension blocks
-    pub previous_node: Option<Eid>,
+    pub previous_node: Option<eid::Eid>,
     pub age: Option<std::time::Duration>,
-    pub hop_count: Option<HopInfo>,
+    pub hop_count: Option<hop_info::HopInfo>,
 
     // The extension blocks
-    pub blocks: std::collections::HashMap<u64, Block>,
+    pub blocks: std::collections::HashMap<u64, block::Block>,
 }
 
 impl Bundle {
-    pub(crate) fn emit_primary_block(&mut self, array: &mut cbor::encode::Array) {
+    pub(crate) fn emit_primary_block(&mut self, array: &mut hardy_cbor::encode::Array) {
         let data_start = array.offset();
         let data = primary_block::PrimaryBlock::emit(self);
         let payload_len = data.len();
@@ -88,9 +274,9 @@ impl Bundle {
 
         self.blocks.insert(
             0,
-            Block {
-                block_type: BlockType::Primary,
-                flags: BlockFlags {
+            block::Block {
+                block_type: block::Type::Primary,
+                flags: block::Flags {
                     must_replicate: true,
                     report_on_failure: true,
                     delete_bundle_on_failure: true,
@@ -111,12 +297,12 @@ impl Bundle {
         block_number: &u64,
         decrypted_data: Option<&(zeroize::Zeroizing<Box<[u8]>>, bool)>,
         source_data: &[u8],
-    ) -> Result<(&Block, T, bool), Error>
+    ) -> Result<(&block::Block, T, bool), Error>
     where
-        T: cbor::decode::FromCbor<Error: From<cbor::decode::Error> + Into<Error>>,
+        T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
     {
         if let Some((block_data, can_encrypt)) = decrypted_data {
-            match cbor::decode::parse::<(T, bool, usize)>(block_data)
+            match hardy_cbor::decode::parse::<(T, bool, usize)>(block_data)
                 .map(|(v, s, len)| (v, s && len == block_data.len()))
             {
                 Ok((v, s)) => {
@@ -131,16 +317,21 @@ impl Bundle {
             }
         } else {
             let block = self.blocks.get(block_number).unwrap();
-            cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
-                cbor::decode::Value::Bytes(data) => cbor::decode::parse::<(T, bool, usize)>(data)
-                    .map(|(v, s, len)| (v, s && len == data.len())),
-                cbor::decode::Value::ByteStream(data) => cbor::decode::parse::<(T, bool, usize)>(
-                    &data.iter().fold(Vec::new(), |mut data, d| {
-                        data.extend(*d);
-                        data
-                    }),
-                )
-                .map(|(v, s, len)| (v, s && len == data.len())),
+            hardy_cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
+                hardy_cbor::decode::Value::Bytes(data) => {
+                    hardy_cbor::decode::parse::<(T, bool, usize)>(data)
+                        .map(|(v, s, len)| (v, s && len == data.len()))
+                }
+                hardy_cbor::decode::Value::ByteStream(data) => {
+                    hardy_cbor::decode::parse::<(T, bool, usize)>(&data.iter().fold(
+                        Vec::new(),
+                        |mut data, d| {
+                            data.extend(*d);
+                            data
+                        },
+                    ))
+                    .map(|(v, s, len)| (v, s && len == data.len()))
+                }
                 _ => unreachable!(),
             })
             .map(|((v, s), _)| (block, v, s))
@@ -155,7 +346,7 @@ impl Bundle {
         &mut self,
         canonical_bundle: bool,
         canonical_primary_block: bool,
-        blocks: &mut cbor::decode::Array,
+        blocks: &mut hardy_cbor::decode::Array,
         mut offset: usize,
         source_data: &[u8],
         keys: &mut impl KeyCache,
@@ -180,11 +371,11 @@ impl Bundle {
 
             // Check the block
             match block.block.block_type {
-                BlockType::Primary => unreachable!(),
-                BlockType::Payload
-                | BlockType::PreviousNode
-                | BlockType::BundleAge
-                | BlockType::HopCount => {
+                block::Type::Primary => unreachable!(),
+                block::Type::Payload
+                | block::Type::PreviousNode
+                | block::Type::BundleAge
+                | block::Type::HopCount => {
                     // Confirm no duplicates
                     if blocks_to_check
                         .insert(block.block.block_type, block.number)
@@ -193,13 +384,13 @@ impl Bundle {
                         return Err(Error::DuplicateBlocks(block.block.block_type));
                     }
                 }
-                BlockType::BlockIntegrity => {
+                block::Type::BlockIntegrity => {
                     bibs_to_check.insert(block.number);
                 }
-                BlockType::BlockSecurity => {
+                block::Type::BlockSecurity => {
                     bcbs_to_check.push(block.number);
                 }
-                BlockType::Unrecognised(_) => {
+                block::Type::Unrecognised(_) => {
                     if block.block.flags.delete_bundle_on_failure {
                         return Err(Error::Unsupported(block.number));
                     }
@@ -226,7 +417,7 @@ impl Bundle {
 
         // Check the last block is the payload
         if blocks_to_check
-            .remove(&BlockType::Payload)
+            .remove(&block::Type::Payload)
             .ok_or(Error::MissingPayload)?
             != last_block_number
         {
@@ -297,10 +488,10 @@ impl Bundle {
                 };
 
                 match target_block.block_type {
-                    BlockType::BlockSecurity | BlockType::Primary => {
+                    block::Type::BlockSecurity | block::Type::Primary => {
                         return Err(bpsec::Error::InvalidBCBTarget.into());
                     }
-                    BlockType::Payload => {
+                    block::Type::Payload => {
                         // Check flags
                         if !bcb_block.flags.must_replicate {
                             return Err(bpsec::Error::BCBMustReplicate.into());
@@ -326,7 +517,7 @@ impl Bundle {
 
                 if !blocks_to_remove.contains(target_number) {
                     match (target_block.block_type, r.plaintext) {
-                        (BlockType::PreviousNode | BlockType::HopCount, Some(block_data)) => {
+                        (block::Type::PreviousNode | block::Type::HopCount, Some(block_data)) => {
                             // We will always replace these blocks when forwarded
                             decrypted_data.insert(*target_number, (block_data, true));
 
@@ -336,7 +527,7 @@ impl Bundle {
                             // And not re-encrypt
                             targets_to_drop.insert(*target_number);
                         }
-                        (BlockType::BlockIntegrity, None) => {
+                        (block::Type::BlockIntegrity, None) => {
                             // We can't decrypt, therefore we cannot check the BIB
                             bibs_to_check.remove(target_number);
                         }
@@ -371,7 +562,7 @@ impl Bundle {
         // Now parse all the non-BIBs we need to check
         for (block_type, block_number) in blocks_to_check {
             if !match block_type {
-                BlockType::PreviousNode => {
+                block::Type::PreviousNode => {
                     let (_, v, s) = self
                         .parse_payload(
                             &block_number,
@@ -382,7 +573,7 @@ impl Bundle {
                     self.previous_node = Some(v);
                     s
                 }
-                BlockType::BundleAge => {
+                block::Type::BundleAge => {
                     let (_, v, s) = self
                         .parse_payload::<u64>(
                             &block_number,
@@ -393,7 +584,7 @@ impl Bundle {
                     self.age = Some(std::time::Duration::from_millis(v));
                     s
                 }
-                BlockType::HopCount => {
+                block::Type::HopCount => {
                     let (_, v, s) = self
                         .parse_payload(
                             &block_number,
@@ -456,7 +647,7 @@ impl Bundle {
                 };
 
                 // Verify BIB target
-                if let BlockType::BlockSecurity | BlockType::BlockIntegrity =
+                if let block::Type::BlockSecurity | block::Type::BlockIntegrity =
                     target_block.block_type
                 {
                     return Err(bpsec::Error::InvalidBIBTarget.into());
@@ -488,7 +679,9 @@ impl Bundle {
                 )?;
 
                 if !blocks_to_remove.contains(target_number) {
-                    if let BlockType::PreviousNode | BlockType::HopCount = target_block.block_type {
+                    if let block::Type::PreviousNode | block::Type::HopCount =
+                        target_block.block_type
+                    {
                         // Do not re-sign, we will rewrite when we forward
                         targets_to_drop.insert(*target_number);
                     } else {
@@ -539,7 +732,7 @@ impl Bundle {
         });
 
         // Check we have at least some primary block protection
-        if let CrcType::None = self.crc_type
+        if let crc::CrcType::None = self.crc_type
             && protects_primary_block.is_empty()
         {
             return Err(Error::MissingIntegrityCheck);
@@ -559,28 +752,28 @@ impl Bundle {
         noncanonical_blocks.retain(|block_number, is_payload_noncanonical| {
             if *is_payload_noncanonical {
                 match self.blocks.get(block_number).unwrap().block_type {
-                    BlockType::PreviousNode => {
+                    block::Type::PreviousNode => {
                         new_payloads.insert(
                             *block_number,
-                            cbor::encode::emit(self.previous_node.as_ref().unwrap()).into(),
+                            hardy_cbor::encode::emit(self.previous_node.as_ref().unwrap()).into(),
                         );
                         false
                     }
-                    BlockType::BundleAge => {
+                    block::Type::BundleAge => {
                         new_payloads.insert(
                             *block_number,
-                            cbor::encode::emit(self.age.unwrap().as_millis() as u64).into(),
+                            hardy_cbor::encode::emit(self.age.unwrap().as_millis() as u64).into(),
                         );
                         false
                     }
-                    BlockType::HopCount => {
+                    block::Type::HopCount => {
                         new_payloads.insert(
                             *block_number,
-                            cbor::encode::emit(self.hop_count.as_ref().unwrap()).into(),
+                            hardy_cbor::encode::emit(self.hop_count.as_ref().unwrap()).into(),
                         );
                         false
                     }
-                    BlockType::BlockIntegrity | BlockType::BlockSecurity => {
+                    block::Type::BlockIntegrity | block::Type::BlockSecurity => {
                         /* ignore for now  */
                         true
                     }
@@ -615,7 +808,7 @@ impl Bundle {
             }
 
             noncanonical_blocks.remove(&bib_block_number);
-            new_payloads.insert(bib_block_number, cbor::encode::emit(bib).into());
+            new_payloads.insert(bib_block_number, hardy_cbor::encode::emit(bib).into());
         }
 
         // Encrypt blocks and update BCBs
@@ -644,10 +837,10 @@ impl Bundle {
             }
 
             noncanonical_blocks.remove(&bcb_block_number);
-            new_payloads.insert(bcb_block_number, cbor::encode::emit(bcb).into());
+            new_payloads.insert(bcb_block_number, hardy_cbor::encode::emit(bcb).into());
         }
 
-        let new_data = cbor::encode::emit_array(None, |a| {
+        let new_data = hardy_cbor::encode::emit_array(None, |a| {
             // Emit primary
             let block = self.blocks.get_mut(&0).expect("Missing primary block!");
             block.data_start = a.offset();
@@ -692,7 +885,7 @@ impl Bundle {
     pub fn payload(
         &self,
         data: &[u8],
-        mut f: impl FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+        mut f: impl FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     ) -> Result<Payload, Error> {
         let Some(payload_block) = self.blocks.get(&1) else {
             return Err(Error::Altered);
@@ -750,7 +943,7 @@ pub enum ValidBundle {
     Rewritten(Bundle, Box<[u8]>, bool),
     Invalid(
         Bundle,
-        StatusReportReasonCode,
+        status_report::ReasonCode,
         Box<dyn std::error::Error + Send + Sync>,
     ),
 }
@@ -758,10 +951,10 @@ pub enum ValidBundle {
 impl ValidBundle {
     pub fn parse(
         data: &[u8],
-        f: impl FnMut(&Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+        f: impl FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
     ) -> Result<Self, Error> {
         let mut keys = KeyCacheImpl::new(f);
-        cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
+        hardy_cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
             // Check for shortest/correct form
             canonical = canonical && !blocks.is_definite();
             if canonical {
@@ -788,7 +981,7 @@ impl ValidBundle {
             if let Some(e) = e {
                 return Ok(Self::Invalid(
                     bundle,
-                    StatusReportReasonCode::BlockUnintelligible,
+                    status_report::ReasonCode::BlockUnintelligible,
                     e,
                 ));
             }
@@ -796,9 +989,9 @@ impl ValidBundle {
             // Add a block 0
             bundle.blocks.insert(
                 0,
-                Block {
-                    block_type: BlockType::Primary,
-                    flags: BlockFlags {
+                block::Block {
+                    block_type: block::Type::Primary,
+                    flags: block::Flags {
                         must_replicate: true,
                         report_on_failure: true,
                         delete_bundle_on_failure: true,
@@ -828,12 +1021,12 @@ impl ValidBundle {
                 }
                 Err(Error::Unsupported(n)) => Ok(Self::Invalid(
                     bundle,
-                    StatusReportReasonCode::BlockUnsupported,
+                    status_report::ReasonCode::BlockUnsupported,
                     Error::Unsupported(n).into(),
                 )),
                 Err(e) => Ok(Self::Invalid(
                     bundle,
-                    StatusReportReasonCode::BlockUnintelligible,
+                    status_report::ReasonCode::BlockUnintelligible,
                     e.into(),
                 )),
             }

@@ -1,17 +1,16 @@
-use super::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod error;
 mod parse;
 
+pub use error::Error;
+
 #[cfg(test)]
 mod str_tests;
 
 #[cfg(test)]
 mod cbor_tests;
-
-pub use error::EidError;
 
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(into = "String")]
@@ -42,8 +41,8 @@ pub enum Eid {
     },
 }
 
-impl cbor::encode::ToCbor for &Eid {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for &Eid {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| match self {
             Eid::Null => {
                 a.emit(1);
@@ -113,7 +112,7 @@ impl cbor::encode::ToCbor for &Eid {
 #[derive(Error, Debug)]
 enum DebugError {
     #[error(transparent)]
-    Decode(#[from] cbor::decode::Error),
+    Decode(#[from] hardy_cbor::decode::Error),
 
     #[error(transparent)]
     Fmt(#[from] std::fmt::Error),
@@ -157,7 +156,7 @@ impl std::fmt::Display for Eid {
                     .join("/")
             ),
             Eid::Unknown { scheme, data } => {
-                let r = cbor::decode::parse_value(data, |mut value, _, _| {
+                let r = hardy_cbor::decode::parse_value(data, |mut value, _, _| {
                     write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)?;
                     value.skip(16).map_err(Into::<DebugError>::into)
                 });

@@ -1,11 +1,12 @@
 use super::*;
+use hardy_bpv7::eid::Eid;
 use std::{collections::HashMap, sync::Weak};
 use tokio::sync::{Mutex, RwLock};
 
 pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
     name: String,
-    peers: Mutex<HashMap<bpv7::Eid, cla::ClaAddress>>,
+    peers: Mutex<HashMap<Eid, cla::ClaAddress>>,
     address_type: Option<cla::ClaAddressType>,
 }
 
@@ -63,7 +64,7 @@ impl cla::Sink for Sink {
         self.dispatcher.receive_bundle(bundle).await
     }
 
-    async fn add_peer(&self, eid: bpv7::Eid, addr: cla::ClaAddress) -> cla::Result<()> {
+    async fn add_peer(&self, eid: Eid, addr: cla::ClaAddress) -> cla::Result<()> {
         let Some(cla) = self.cla.upgrade() else {
             return Err(cla::Error::Disconnected);
         };
@@ -71,7 +72,7 @@ impl cla::Sink for Sink {
         Ok(())
     }
 
-    async fn remove_peer(&self, eid: &bpv7::Eid) -> cla::Result<bool> {
+    async fn remove_peer(&self, eid: &Eid) -> cla::Result<bool> {
         let Some(cla) = self.cla.upgrade() else {
             return Err(cla::Error::Disconnected);
         };
@@ -88,7 +89,7 @@ impl Drop for Sink {
 }
 
 pub struct ClaRegistry {
-    node_ids: Vec<bpv7::Eid>,
+    node_ids: Vec<Eid>,
     clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
 }
@@ -188,7 +189,7 @@ impl ClaRegistry {
         info!("Unregistered CLA: {}", cla.name);
     }
 
-    async fn add_peer(&self, cla: &Arc<Cla>, eid: bpv7::Eid, addr: cla::ClaAddress) {
+    async fn add_peer(&self, cla: &Arc<Cla>, eid: Eid, addr: cla::ClaAddress) {
         if cla
             .peers
             .lock()
@@ -201,7 +202,7 @@ impl ClaRegistry {
         self.rib.add_forward(eid, addr, Some(cla.clone())).await
     }
 
-    async fn remove_peer(&self, cla: &Arc<Cla>, eid: &bpv7::Eid) -> bool {
+    async fn remove_peer(&self, cla: &Arc<Cla>, eid: &Eid) -> bool {
         if let Some(cla_addr) = cla.peers.lock().await.remove(eid) {
             self.rib.remove_forward(eid, &cla_addr, Some(cla)).await
         } else {

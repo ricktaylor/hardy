@@ -1,5 +1,5 @@
 use clap::Parser;
-use hardy_bpv7::prelude::*;
+use hardy_bpv7::eid::Eid;
 use std::{
     io::{BufRead, BufWriter, Write},
     path::PathBuf,
@@ -47,7 +47,7 @@ fn main() {
         &mut BufWriter::new(std::io::stdout())
     };
 
-    let mut b = Builder::new();
+    let mut b = hardy_bpv7::builder::Builder::new();
 
     b.source(args.source).destination(args.destination);
 

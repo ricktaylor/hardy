@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone)]
 pub struct Bundle {
-    pub bundle: bpv7::Bundle,
+    pub bundle: hardy_bpv7::bundle::Bundle,
     pub metadata: metadata::BundleMetadata,
 }
 

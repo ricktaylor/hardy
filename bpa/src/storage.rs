@@ -3,28 +3,38 @@ use metadata::*;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
-pub type Sender = tokio::sync::mpsc::Sender<(metadata::BundleMetadata, bpv7::Bundle)>;
+pub type Sender = tokio::sync::mpsc::Sender<(metadata::BundleMetadata, hardy_bpv7::bundle::Bundle)>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
     async fn load(
         &self,
-        bundle_id: &bpv7::BundleId,
-    ) -> Result<Option<(metadata::BundleMetadata, bpv7::Bundle)>>;
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> Result<Option<(metadata::BundleMetadata, hardy_bpv7::bundle::Bundle)>>;
 
-    async fn store(&self, metadata: &BundleMetadata, bundle: &bpv7::Bundle) -> Result<bool>;
+    async fn store(
+        &self,
+        metadata: &BundleMetadata,
+        bundle: &hardy_bpv7::bundle::Bundle,
+    ) -> Result<bool>;
 
-    async fn get_bundle_status(&self, bundle_id: &bpv7::BundleId) -> Result<Option<BundleStatus>>;
+    async fn get_bundle_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> Result<Option<BundleStatus>>;
 
     async fn set_bundle_status(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
         status: &BundleStatus,
     ) -> Result<()>;
 
-    async fn remove(&self, bundle_id: &bpv7::BundleId) -> Result<()>;
+    async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<()>;
 
-    async fn confirm_exists(&self, bundle_id: &bpv7::BundleId) -> Result<Option<BundleMetadata>>;
+    async fn confirm_exists(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> Result<Option<BundleMetadata>>;
 
     async fn get_unconfirmed_bundles(&self, tx: Sender) -> Result<()>;
 }

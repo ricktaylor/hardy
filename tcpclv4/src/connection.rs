@@ -120,7 +120,7 @@ impl ConnectionPool {
 
 pub struct ConnectionRegistry {
     pools: Mutex<HashMap<SocketAddr, Arc<connection::ConnectionPool>>>,
-    peers: Mutex<HashMap<SocketAddr, bpv7::Eid>>,
+    peers: Mutex<HashMap<SocketAddr, Eid>>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     max_idle: usize,
 }
@@ -151,7 +151,7 @@ impl ConnectionRegistry {
         &self,
         conn: Connection,
         remote_addr: SocketAddr,
-        eid: Option<bpv7::Eid>,
+        eid: Option<Eid>,
     ) {
         match self.pools.lock().await.entry(remote_addr) {
             std::collections::hash_map::Entry::Occupied(mut e) => {

@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::eid::Eid;
 use rand::{
     Rng,
     distr::{Alphanumeric, SampleString},
@@ -8,7 +9,7 @@ use tokio::sync::RwLock;
 
 pub struct Service {
     pub service: Arc<dyn service::Service>,
-    pub service_id: bpv7::Eid,
+    pub service_id: Eid,
 }
 
 impl PartialEq for Service {
@@ -61,7 +62,7 @@ impl service::Sink for Sink {
 
     async fn send(
         &self,
-        destination: bpv7::Eid,
+        destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
         flags: Option<service::SendFlags>,
@@ -71,7 +72,7 @@ impl service::Sink for Sink {
         };
 
         // Sanity check
-        if let bpv7::Eid::Null = &destination {
+        if let Eid::Null = &destination {
             return Err(service::Error::InvalidDestination(destination));
         }
 
@@ -100,7 +101,7 @@ impl Drop for Sink {
 pub struct ServiceRegistry {
     node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
-    services: RwLock<HashMap<bpv7::Eid, Arc<Service>>>,
+    services: RwLock<HashMap<Eid, Arc<Service>>>,
 }
 
 impl ServiceRegistry {
@@ -131,7 +132,7 @@ impl ServiceRegistry {
         service_id: Option<service::ServiceId<'_>>,
         service: Arc<dyn service::Service>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> service::Result<bpv7::Eid> {
+    ) -> service::Result<Eid> {
         // Scope the lock
         let (service, service_id) = {
             let mut services = self.services.write().await;
@@ -139,7 +140,7 @@ impl ServiceRegistry {
             let new_ipn_service = |allocator_id, node_number| {
                 let mut rng = rand::rng();
                 loop {
-                    let service_id = bpv7::Eid::Ipn {
+                    let service_id = Eid::Ipn {
                         allocator_id,
                         node_number,
                         service_number: rng.random_range(0x10000..=u32::MAX),
@@ -152,7 +153,7 @@ impl ServiceRegistry {
             let new_dtn_service = |node_name: &str| {
                 let mut rng = rand::rng();
                 loop {
-                    let service_id = bpv7::Eid::Dtn {
+                    let service_id = Eid::Dtn {
                         node_name: node_name.into(),
                         demux: [
                             "auto".into(),
@@ -178,17 +179,17 @@ impl ServiceRegistry {
                             new_dtn_service(node_name)
                         } else {
                             // Round-trip via Eid for formatting sanity
-                            let bpv7::Eid::Dtn {
+                            let Eid::Dtn {
                                 node_name: _,
                                 demux,
                             } = format!("dtn://nowhere/{service_name}")
-                                .parse::<bpv7::Eid>()
+                                .parse::<Eid>()
                                 .map_err(|e| service::Error::Internal(e.into()))?
                             else {
                                 panic!("DTN scheme parsing is borked!");
                             };
 
-                            let service_id = bpv7::Eid::Dtn {
+                            let service_id = Eid::Dtn {
                                 node_name: node_name.clone(),
                                 demux,
                             };
@@ -208,7 +209,7 @@ impl ServiceRegistry {
                         if service_number == &0 {
                             new_ipn_service(allocator_id, node_number)
                         } else {
-                            let service_id = bpv7::Eid::Ipn {
+                            let service_id = Eid::Ipn {
                                 allocator_id,
                                 node_number,
                                 service_number: *service_number,
@@ -271,7 +272,7 @@ impl ServiceRegistry {
         info!("Unregistered service: {}", service.service_id);
     }
 
-    pub async fn find(&self, service_id: &bpv7::Eid) -> Option<Arc<Service>> {
+    pub async fn find(&self, service_id: &Eid) -> Option<Arc<Service>> {
         self.services.read().await.get(service_id).cloned()
     }
 }

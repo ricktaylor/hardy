@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
-    node_ids: Arc<[bpv7::Eid]>,
+    node_ids: Arc<[Eid]>,
     registry: Arc<connection::ConnectionRegistry>,
 }
 
@@ -57,7 +57,7 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        node_ids: &[bpv7::Eid],
+        node_ids: &[Eid],
     ) -> hardy_bpa::cla::Result<()> {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
         let inner = ClaInner {

@@ -68,7 +68,7 @@ fn tests() {
     expect_error("ipn:1.2.33333333333333333333333333333333333");
 }
 
-fn expect_error(s: &str) -> EidError {
+fn expect_error(s: &str) -> error::Error {
     s.parse::<Eid>().expect_err("Parsed successfully!")
 }
 

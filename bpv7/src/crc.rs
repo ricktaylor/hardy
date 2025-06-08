@@ -1,4 +1,3 @@
-use super::*;
 use thiserror::Error;
 
 const X25: ::crc::Crc<u16> = ::crc::Crc::<u16>::new(&::crc::CRC_16_IBM_SDLC);
@@ -22,7 +21,7 @@ pub enum Error {
     MissingCrc,
 
     #[error(transparent)]
-    InvalidCBOR(#[from] cbor::decode::Error),
+    InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
 
 #[allow(non_camel_case_types)]
@@ -57,17 +56,17 @@ impl From<CrcType> for u64 {
     }
 }
 
-impl cbor::encode::ToCbor for CrcType {
+impl hardy_cbor::encode::ToCbor for CrcType {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }
 
-impl cbor::decode::FromCbor for CrcType {
+impl hardy_cbor::decode::FromCbor for CrcType {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse::<(u64, bool, usize)>(data)
+        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)
             .map(|o| o.map(|(v, shortest, len)| (v.into(), shortest, len)))
             .map_err(Into::into)
     }
@@ -75,12 +74,12 @@ impl cbor::decode::FromCbor for CrcType {
 
 pub fn parse_crc_value(
     data: &[u8],
-    block: &mut cbor::decode::Array,
+    block: &mut hardy_cbor::decode::Array,
     crc_type: CrcType,
 ) -> Result<bool, Error> {
     // Parse CRC
     let crc_value = block.try_parse_value(|value, shortest, tags| match value {
-        cbor::decode::Value::Bytes(crc) => match crc_type {
+        hardy_cbor::decode::Value::Bytes(crc) => match crc_type {
             CrcType::None => Err(Error::UnexpectedCrcValue),
             CrcType::CRC16_X25 => {
                 if crc.len() != 2 {
@@ -104,7 +103,7 @@ pub fn parse_crc_value(
             }
             CrcType::Unrecognised(_) => Ok((0, true)),
         },
-        _ => Err(cbor::decode::Error::IncorrectType(
+        _ => Err(hardy_cbor::decode::Error::IncorrectType(
             "Definite-length Byte String".to_string(),
             value.type_name(!tags.is_empty()),
         )

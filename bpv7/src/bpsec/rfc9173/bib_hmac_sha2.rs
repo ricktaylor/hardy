@@ -12,7 +12,7 @@ enum ShaVariant {
     Unrecognised(u64),
 }
 
-impl cbor::encode::ToCbor for ShaVariant {
+impl hardy_cbor::encode::ToCbor for ShaVariant {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
             Self::HMAC_256_256 => 5,
@@ -23,11 +23,11 @@ impl cbor::encode::ToCbor for ShaVariant {
     }
 }
 
-impl cbor::decode::FromCbor for ShaVariant {
-    type Error = cbor::decode::Error;
+impl hardy_cbor::decode::FromCbor for ShaVariant {
+    type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
             o.map(|(value, shortest, len)| {
                 (
                     match value {
@@ -62,7 +62,7 @@ impl Parameters {
             match id {
                 1 => {
                     result.variant =
-                        cbor::decode::parse(&data[range.start..range.end]).map(|(v, s)| {
+                        hardy_cbor::decode::parse(&data[range.start..range.end]).map(|(v, s)| {
                             shortest = shortest && s;
                             v
                         })?;
@@ -75,7 +75,7 @@ impl Parameters {
                 }
                 3 => {
                     result.flags =
-                        cbor::decode::parse(&data[range.start..range.end]).map(|(v, s)| {
+                        hardy_cbor::decode::parse(&data[range.start..range.end]).map(|(v, s)| {
                             shortest = shortest && s;
                             v
                         })?;
@@ -87,7 +87,7 @@ impl Parameters {
     }
 }
 
-impl cbor::encode::ToCbor for &Parameters {
+impl hardy_cbor::encode::ToCbor for &Parameters {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut mask: u32 = 0;
         if self.variant != ShaVariant::default() {
@@ -146,7 +146,7 @@ impl Results {
     }
 }
 
-impl cbor::encode::ToCbor for &Results {
+impl hardy_cbor::encode::ToCbor for &Results {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(1), |a| {
             a.emit_array(Some(2), |a| {
@@ -158,7 +158,7 @@ impl cbor::encode::ToCbor for &Results {
 }
 
 fn emit_data(mac: &mut impl hmac::Mac, data: &[u8]) {
-    let mut header = cbor::encode::emit(data.len());
+    let mut header = hardy_cbor::encode::emit(data.len());
     if let Some(m) = header.first_mut() {
         *m |= 2 << 5;
     }
@@ -308,20 +308,20 @@ impl Operation {
         M: hmac::Mac,
     {
         // Build IPT
-        mac.update(&cbor::encode::emit(&ScopeFlags {
+        mac.update(&hardy_cbor::encode::emit(&ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
             include_target_header: self.parameters.flags.include_target_header,
             include_security_header: self.parameters.flags.include_security_header,
             ..Default::default()
         }));
 
-        if !matches!(args.target.block_type, BlockType::Primary) {
+        if !matches!(args.target.block_type, block::Type::Primary) {
             if self.parameters.flags.include_primary_block {
                 mac.update(args.primary_block);
             }
 
             if self.parameters.flags.include_target_header {
-                let mut encoder = cbor::encode::Encoder::new();
+                let mut encoder = hardy_cbor::encode::Encoder::new();
                 encoder.emit(args.target.block_type);
                 encoder.emit(args.target_number);
                 encoder.emit(&args.target.flags);
@@ -330,27 +330,27 @@ impl Operation {
         }
 
         if self.parameters.flags.include_security_header {
-            let mut encoder = cbor::encode::Encoder::new();
+            let mut encoder = hardy_cbor::encode::Encoder::new();
             encoder.emit(args.source.block_type);
             encoder.emit(args.source_number);
             encoder.emit(&args.source.flags);
             mac.update(&encoder.build());
         }
 
-        if matches!(args.target.block_type, BlockType::Primary) {
+        if matches!(args.target.block_type, block::Type::Primary) {
             emit_data(&mut mac, args.primary_block);
         } else if let Some(payload_data) = payload_data {
             emit_data(&mut mac, payload_data);
         } else {
-            cbor::decode::parse_value(args.target_payload, |value, s, tags| {
+            hardy_cbor::decode::parse_value(args.target_payload, |value, s, tags| {
                 match value {
-                    cbor::decode::Value::ByteStream(data) => {
+                    hardy_cbor::decode::Value::ByteStream(data) => {
                         // This is horrible, but removes a potentially large data copy
                         let len = data.iter().try_fold(0u64, |len, d| {
                             len.checked_add(d.len() as u64)
                                 .ok_or(bpsec::Error::InvalidBIBTarget)
                         })?;
-                        let mut header = cbor::encode::emit(len);
+                        let mut header = hardy_cbor::encode::emit(len);
                         if let Some(m) = header.first_mut() {
                             *m |= 2 << 5;
                         }
@@ -359,10 +359,10 @@ impl Operation {
                             mac.update(d);
                         }
                     }
-                    cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
+                    hardy_cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
                         mac.update(args.target_payload);
                     }
-                    cbor::decode::Value::Bytes(data) => {
+                    hardy_cbor::decode::Value::Bytes(data) => {
                         emit_data(&mut mac, data);
                     }
                     _ => unreachable!(),
@@ -374,7 +374,7 @@ impl Operation {
         Ok(mac.finalize())
     }
 
-    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
+    pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
         encoder.emit(Context::BIB_RFC9173_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
             encoder.emit(0);
@@ -386,7 +386,7 @@ impl Operation {
         }
     }
 
-    pub fn emit_result(self, array: &mut cbor::encode::Array) {
+    pub fn emit_result(self, array: &mut hardy_cbor::encode::Array) {
         array.emit(&self.results);
     }
 }
@@ -394,7 +394,7 @@ impl Operation {
 pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
-) -> Result<(Eid, HashMap<u64, bib::Operation>, bool), Error> {
+) -> Result<(eid::Eid, HashMap<u64, bib::Operation>, bool), Error> {
     let mut shortest = false;
     let parameters = Rc::from(
         Parameters::from_cbor(asb.parameters, data)

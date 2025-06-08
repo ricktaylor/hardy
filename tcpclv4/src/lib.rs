@@ -8,7 +8,7 @@ mod transport;
 
 pub mod config;
 
-use hardy_bpv7::prelude as bpv7;
+use hardy_bpv7::eid::Eid;
 use trace_err::*;
 use tracing::{error, info, trace, warn};
 

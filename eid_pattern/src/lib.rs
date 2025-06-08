@@ -1,4 +1,4 @@
-use hardy_bpv7::prelude::*;
+use hardy_bpv7::eid::Eid;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

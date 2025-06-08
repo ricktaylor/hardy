@@ -16,9 +16,6 @@ pub mod routes;
 pub mod service;
 pub mod storage;
 
-use hardy_bpv7::prelude as bpv7;
-use hardy_cbor as cbor;
-use hardy_eid_pattern as eid_pattern;
 use std::sync::Arc;
 use trace_err::*;
 use tracing::{error, info, trace, warn};

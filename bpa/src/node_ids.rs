@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::eid::Eid;
 use rand::Rng;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -22,7 +23,7 @@ pub enum Error {
     MultipleDtnNodeIds,
 
     #[error(transparent)]
-    InvalidEid(#[from] bpv7::EidError),
+    InvalidEid(#[from] hardy_bpv7::eid::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -32,22 +33,18 @@ pub struct NodeIds {
 }
 
 impl NodeIds {
-    pub(crate) fn get_admin_endpoint(&self, destination: &bpv7::Eid) -> bpv7::Eid {
+    pub(crate) fn get_admin_endpoint(&self, destination: &Eid) -> Eid {
         match (destination, &self.ipn, &self.dtn) {
-            (bpv7::Eid::LegacyIpn { .. }, Some((allocator_id, node_number)), _) => {
-                bpv7::Eid::LegacyIpn {
-                    allocator_id: *allocator_id,
-                    node_number: *node_number,
-                    service_number: 0,
-                }
-            }
-            (bpv7::Eid::Dtn { .. }, _, Some(node_name)) | (_, None, Some(node_name)) => {
-                bpv7::Eid::Dtn {
-                    node_name: node_name.clone(),
-                    demux: [].into(),
-                }
-            }
-            (_, Some((allocator_id, node_number)), _) => bpv7::Eid::Ipn {
+            (Eid::LegacyIpn { .. }, Some((allocator_id, node_number)), _) => Eid::LegacyIpn {
+                allocator_id: *allocator_id,
+                node_number: *node_number,
+                service_number: 0,
+            },
+            (Eid::Dtn { .. }, _, Some(node_name)) | (_, None, Some(node_name)) => Eid::Dtn {
+                node_name: node_name.clone(),
+                demux: [].into(),
+            },
+            (_, Some((allocator_id, node_number)), _) => Eid::Ipn {
                 allocator_id: *allocator_id,
                 node_number: *node_number,
                 service_number: 0,
@@ -56,11 +53,11 @@ impl NodeIds {
         }
     }
 
-    pub(crate) fn contains(&self, eid: &bpv7::Eid) -> bool {
+    pub(crate) fn contains(&self, eid: &Eid) -> bool {
         match (eid, &self.ipn, &self.dtn) {
-            (bpv7::Eid::LocalNode { service_number }, Some(_), _) => service_number == &0,
+            (Eid::LocalNode { service_number }, Some(_), _) => service_number == &0,
             (
-                bpv7::Eid::LegacyIpn {
+                Eid::LegacyIpn {
                     allocator_id,
                     node_number,
                     service_number,
@@ -69,7 +66,7 @@ impl NodeIds {
                 _,
             )
             | (
-                bpv7::Eid::Ipn {
+                Eid::Ipn {
                     allocator_id,
                     node_number,
                     service_number,
@@ -77,7 +74,7 @@ impl NodeIds {
                 Some((a, n)),
                 _,
             ) => allocator_id == a && node_number == n && service_number == &0,
-            (bpv7::Eid::Dtn { node_name, demux }, _, Some(n)) => node_name == n && demux.is_empty(),
+            (Eid::Dtn { node_name, demux }, _, Some(n)) => node_name == n && demux.is_empty(),
             _ => false,
         }
     }
@@ -96,18 +93,18 @@ impl Default for NodeIds {
     }
 }
 
-impl From<&NodeIds> for Vec<bpv7::Eid> {
+impl From<&NodeIds> for Vec<Eid> {
     fn from(value: &NodeIds) -> Self {
         let mut v = Vec::new();
         if let Some((allocator_id, node_number)) = value.ipn {
-            v.push(bpv7::Eid::Ipn {
+            v.push(Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number: 0,
             });
         }
         if let Some(node_name) = &value.dtn {
-            v.push(bpv7::Eid::Dtn {
+            v.push(Eid::Dtn {
                 node_name: node_name.clone(),
                 demux: [].into(),
             });
@@ -116,20 +113,20 @@ impl From<&NodeIds> for Vec<bpv7::Eid> {
     }
 }
 
-impl TryFrom<&[bpv7::Eid]> for NodeIds {
+impl TryFrom<&[Eid]> for NodeIds {
     type Error = Error;
 
-    fn try_from(eids: &[bpv7::Eid]) -> Result<Self, Self::Error> {
+    fn try_from(eids: &[Eid]) -> Result<Self, Self::Error> {
         let mut ipn = None;
         let mut dtn = None;
         for eid in eids {
             match eid {
-                bpv7::Eid::LegacyIpn {
+                Eid::LegacyIpn {
                     allocator_id,
                     node_number,
                     service_number: 0,
                 }
-                | bpv7::Eid::Ipn {
+                | Eid::Ipn {
                     allocator_id,
                     node_number,
                     service_number: 0,
@@ -142,7 +139,7 @@ impl TryFrom<&[bpv7::Eid]> for NodeIds {
                         ipn = Some((*allocator_id, *node_number));
                     }
                 }
-                bpv7::Eid::Dtn { node_name, demux } if demux.is_empty() => {
+                Eid::Dtn { node_name, demux } if demux.is_empty() => {
                     if let Some(n) = &dtn {
                         if n != node_name {
                             return Err(Error::MultipleDtnNodeIds);
@@ -151,27 +148,28 @@ impl TryFrom<&[bpv7::Eid]> for NodeIds {
                         dtn = Some(node_name.clone());
                     }
                 }
-                bpv7::Eid::LegacyIpn {
+                Eid::LegacyIpn {
                     allocator_id: _,
                     node_number: _,
                     service_number,
                 }
-                | bpv7::Eid::Ipn {
+                | Eid::Ipn {
                     allocator_id: _,
                     node_number: _,
                     service_number,
                 } => {
-                    return Err(
-                        bpv7::EidError::IpnInvalidServiceNumber(*service_number as u64).into(),
-                    );
+                    return Err(hardy_bpv7::eid::Error::IpnInvalidServiceNumber(
+                        *service_number as u64,
+                    )
+                    .into());
                 }
-                bpv7::Eid::Dtn { .. } => return Err(Error::DtnWithDemux),
-                bpv7::Eid::Null => return Err(Error::NullEndpoint),
-                bpv7::Eid::LocalNode { .. } => {
+                Eid::Dtn { .. } => return Err(Error::DtnWithDemux),
+                Eid::Null => return Err(Error::NullEndpoint),
+                Eid::LocalNode { .. } => {
                     return Err(Error::LocalNode);
                 }
-                bpv7::Eid::Unknown { scheme, .. } => {
-                    return Err(bpv7::EidError::UnsupportedScheme(*scheme).into());
+                Eid::Unknown { scheme, .. } => {
+                    return Err(hardy_bpv7::eid::Error::UnsupportedScheme(*scheme).into());
                 }
             }
         }
@@ -187,7 +185,7 @@ impl Serialize for NodeIds {
         match (&self.ipn, &self.dtn) {
             (None, None) => unreachable!(),
             (None, Some(node_name)) => serializer.serialize_str(
-                bpv7::Eid::Dtn {
+                Eid::Dtn {
                     node_name: node_name.clone(),
                     demux: [].into(),
                 }
@@ -195,7 +193,7 @@ impl Serialize for NodeIds {
                 .as_str(),
             ),
             (Some((allocator_id, node_number)), None) => serializer.serialize_str(
-                bpv7::Eid::Ipn {
+                Eid::Ipn {
                     allocator_id: *allocator_id,
                     node_number: *node_number,
                     service_number: 0,
@@ -204,13 +202,13 @@ impl Serialize for NodeIds {
                 .as_str(),
             ),
             (Some((allocator_id, node_number)), Some(node_name)) => serializer.collect_seq([
-                bpv7::Eid::Ipn {
+                Eid::Ipn {
                     allocator_id: *allocator_id,
                     node_number: *node_number,
                     service_number: 0,
                 }
                 .to_string(),
-                bpv7::Eid::Dtn {
+                Eid::Dtn {
                     node_name: node_name.clone(),
                     demux: [].into(),
                 }

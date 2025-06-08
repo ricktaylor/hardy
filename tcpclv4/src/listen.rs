@@ -51,7 +51,7 @@ pub struct Listener {
     pub keepalive_interval: Option<u16>,
     pub segment_mru: u64,
     pub transfer_mru: u64,
-    pub node_ids: Arc<[bpv7::Eid]>,
+    pub node_ids: Arc<[Eid]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
 }
@@ -241,8 +241,8 @@ impl Listener {
                     matches!(
                         (&peer_init.node_id, eid),
                         (None, _)
-                            | (Some(bpv7::Eid::Ipn { .. }), bpv7::Eid::Ipn { .. })
-                            | (Some(bpv7::Eid::Dtn { .. }), bpv7::Eid::Dtn { .. })
+                            | (Some(Eid::Ipn { .. }), Eid::Ipn { .. })
+                            | (Some(Eid::Dtn { .. }), Eid::Dtn { .. })
                     )
                 })
                 .or_else(|| self.node_ids.first())

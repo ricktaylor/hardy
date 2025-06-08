@@ -72,7 +72,7 @@ pub enum Error {
     IntegrityCheckFailed,
 
     #[error("No key material for security operation source {0}")]
-    NoKey(Eid),
+    NoKey(eid::Eid),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
@@ -81,7 +81,7 @@ pub enum Error {
     },
 
     #[error(transparent)]
-    InvalidCBOR(#[from] cbor::decode::Error),
+    InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
 
 pub trait CaptureFieldErr<T> {

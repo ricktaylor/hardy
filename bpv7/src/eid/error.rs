@@ -1,8 +1,7 @@
-use super::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum EidError {
+pub enum Error {
     #[error("Invalid ipn allocator id {0}")]
     IpnInvalidAllocatorId(u64),
 
@@ -25,18 +24,18 @@ pub enum EidError {
     },
 
     #[error(transparent)]
-    InvalidCBOR(#[from] cbor::decode::Error),
+    InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
 
 pub trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, EidError>;
+    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
 }
 
 impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     for std::result::Result<T, E>
 {
-    fn map_field_err(self, field: &'static str) -> Result<T, EidError> {
-        self.map_err(|e| EidError::InvalidField {
+    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
+        self.map_err(|e| Error::InvalidField {
             field,
             source: e.into(),
         })

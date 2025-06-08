@@ -1,11 +1,11 @@
 use super::*;
 
 pub struct Builder {
-    bundle_flags: BundleFlags,
-    crc_type: CrcType,
-    source: Eid,
-    destination: Eid,
-    report_to: Option<Eid>,
+    bundle_flags: bundle::Flags,
+    crc_type: crc::CrcType,
+    source: eid::Eid,
+    destination: eid::Eid,
+    report_to: Option<eid::Eid>,
     lifetime: std::time::Duration,
     payload: BlockTemplate,
     extensions: Vec<BlockTemplate>,
@@ -14,16 +14,16 @@ pub struct Builder {
 impl Default for Builder {
     fn default() -> Self {
         Self {
-            bundle_flags: BundleFlags::default(),
-            crc_type: CrcType::CRC32_CASTAGNOLI,
-            source: Eid::default(),
-            destination: Eid::default(),
+            bundle_flags: bundle::Flags::default(),
+            crc_type: crc::CrcType::CRC32_CASTAGNOLI,
+            source: eid::Eid::default(),
+            destination: eid::Eid::default(),
             report_to: None,
             lifetime: std::time::Duration::new(24 * 60 * 60 * 60, 0),
             payload: BlockTemplate::new(
-                BlockType::Payload,
-                BlockFlags::default(),
-                CrcType::CRC32_CASTAGNOLI,
+                block::Type::Payload,
+                block::Flags::default(),
+                crc::CrcType::CRC32_CASTAGNOLI,
             ),
             extensions: Vec::new(),
         }
@@ -35,27 +35,27 @@ impl Builder {
         Default::default()
     }
 
-    pub fn flags(&mut self, flags: BundleFlags) -> &mut Self {
+    pub fn flags(&mut self, flags: bundle::Flags) -> &mut Self {
         self.bundle_flags = flags;
         self
     }
 
-    pub fn crc_type(&mut self, crc_type: CrcType) -> &mut Self {
+    pub fn crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
         self.crc_type = crc_type;
         self
     }
 
-    pub fn source(&mut self, source: Eid) -> &mut Self {
+    pub fn source(&mut self, source: eid::Eid) -> &mut Self {
         self.source = source;
         self
     }
 
-    pub fn destination(&mut self, destination: Eid) -> &mut Self {
+    pub fn destination(&mut self, destination: eid::Eid) -> &mut Self {
         self.destination = destination;
         self
     }
 
-    pub fn report_to(&mut self, report_to: Eid) -> &mut Self {
+    pub fn report_to(&mut self, report_to: eid::Eid) -> &mut Self {
         self.report_to = Some(report_to);
         self
     }
@@ -65,26 +65,26 @@ impl Builder {
         self
     }
 
-    pub fn add_extension_block(&mut self, block_type: BlockType) -> BlockBuilder<'_> {
+    pub fn add_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'_> {
         BlockBuilder::new(self, block_type)
     }
 
     pub fn add_payload_block(&mut self, data: Vec<u8>) -> &mut Self {
-        self.add_extension_block(BlockType::Payload)
+        self.add_extension_block(block::Type::Payload)
             .data(data)
             .build()
     }
 
-    pub fn build(mut self) -> (Bundle, Vec<u8>) {
-        let mut bundle = Bundle {
+    pub fn build(mut self) -> (bundle::Bundle, Vec<u8>) {
+        let mut bundle = bundle::Bundle {
             report_to: if let Some(report_to) = &mut self.report_to {
                 std::mem::take(report_to)
             } else {
                 self.source.clone()
             },
-            id: BundleId {
+            id: bundle::Id {
                 source: std::mem::take(&mut self.source),
-                timestamp: CreationTimestamp::now(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
                 ..Default::default()
             },
             flags: self.bundle_flags.clone(),
@@ -94,7 +94,7 @@ impl Builder {
             ..Default::default()
         };
 
-        let data = cbor::encode::emit_array(None, |a| {
+        let data = hardy_cbor::encode::emit_array(None, |a| {
             // Emit primary block
             bundle.emit_primary_block(a);
 
@@ -119,9 +119,9 @@ pub struct BlockBuilder<'a> {
 }
 
 impl<'a> BlockBuilder<'a> {
-    fn new(builder: &'a mut Builder, block_type: BlockType) -> Self {
+    fn new(builder: &'a mut Builder, block_type: block::Type) -> Self {
         Self {
-            template: BlockTemplate::new(block_type, BlockFlags::default(), builder.crc_type),
+            template: BlockTemplate::new(block_type, block::Flags::default(), builder.crc_type),
             builder,
         }
     }
@@ -148,7 +148,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn crc_type(mut self, crc_type: CrcType) -> Self {
+    pub fn crc_type(mut self, crc_type: crc::CrcType) -> Self {
         self.template.crc_type(crc_type);
         self
     }
@@ -159,7 +159,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     pub fn build(self) -> &'a mut Builder {
-        if let BlockType::Payload = self.template.block_type {
+        if let block::Type::Payload = self.template.block_type {
             self.builder.payload = self.template;
         } else {
             self.builder.extensions.push(self.template);
@@ -170,14 +170,14 @@ impl<'a> BlockBuilder<'a> {
 
 #[derive(Clone)]
 pub struct BlockTemplate {
-    block_type: BlockType,
-    flags: BlockFlags,
-    crc_type: CrcType,
+    block_type: block::Type,
+    flags: block::Flags,
+    crc_type: crc::CrcType,
     data: Vec<u8>,
 }
 
 impl BlockTemplate {
-    pub fn new(block_type: BlockType, flags: BlockFlags, crc_type: CrcType) -> Self {
+    pub fn new(block_type: block::Type, flags: block::Flags, crc_type: crc::CrcType) -> Self {
         Self {
             block_type,
             flags,
@@ -186,7 +186,7 @@ impl BlockTemplate {
         }
     }
 
-    pub fn block_type(&self) -> BlockType {
+    pub fn block_type(&self) -> block::Type {
         self.block_type
     }
 
@@ -206,7 +206,7 @@ impl BlockTemplate {
         self.flags.delete_block_on_failure = delete_block_on_failure;
     }
 
-    pub fn crc_type(&mut self, crc_type: CrcType) {
+    pub fn crc_type(&mut self, crc_type: crc::CrcType) {
         self.crc_type = crc_type;
     }
 
@@ -215,8 +215,8 @@ impl BlockTemplate {
         self.data = data;
     }
 
-    pub fn build(self, block_number: u64, array: &mut cbor::encode::Array) -> Block {
-        let mut block = Block {
+    pub fn build(self, block_number: u64, array: &mut hardy_cbor::encode::Array) -> block::Block {
+        let mut block = block::Block {
             block_type: self.block_type,
             flags: self.flags,
             crc_type: self.crc_type,

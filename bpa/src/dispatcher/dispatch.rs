@@ -3,7 +3,7 @@ use super::*;
 impl Dispatcher {
     pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
         // Drop Eid::Null silently to cull spam
-        if bundle.bundle.destination == bpv7::Eid::Null {
+        if bundle.bundle.destination == Eid::Null {
             return self.drop_bundle(bundle, None).await;
         }
 
@@ -93,7 +93,7 @@ impl Dispatcher {
                 return self
                     .drop_bundle(
                         bundle,
-                        Some(bpv7::StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
+                        Some(hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere),
                     )
                     .await;
             }
@@ -112,11 +112,11 @@ impl Dispatcher {
     }
 
     fn update_extension_blocks(&self, bundle: &bundle::Bundle, source_data: &[u8]) -> Vec<u8> {
-        let mut editor = bpv7::Editor::new(&bundle.bundle, source_data);
+        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data);
 
         // Remove unrecognized blocks we are supposed to
         for (block_number, block) in &bundle.bundle.blocks {
-            if let bpv7::BlockType::Unrecognised(_) = &block.block_type
+            if let hardy_bpv7::block::Type::Unrecognised(_) = &block.block_type
                 && block.flags.delete_block_on_failure
             {
                 editor.remove_extension_block(*block_number);
@@ -125,8 +125,8 @@ impl Dispatcher {
 
         // Previous Node Block
         editor
-            .replace_extension_block(bpv7::BlockType::PreviousNode)
-            .data(cbor::encode::emit(
+            .replace_extension_block(hardy_bpv7::block::Type::PreviousNode)
+            .data(hardy_cbor::encode::emit(
                 &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
             ))
             .build();
@@ -134,8 +134,8 @@ impl Dispatcher {
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
             editor
-                .replace_extension_block(bpv7::BlockType::HopCount)
-                .data(cbor::encode::emit(&bpv7::HopInfo {
+                .replace_extension_block(hardy_bpv7::block::Type::HopCount)
+                .data(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
                     limit: hop_count.limit,
                     count: hop_count.count + 1,
                 }))
@@ -151,8 +151,8 @@ impl Dispatcher {
                 .clamp(0, u64::MAX as i128) as u64;
 
             editor
-                .replace_extension_block(bpv7::BlockType::BundleAge)
-                .data(cbor::encode::emit(bundle_age))
+                .replace_extension_block(hardy_bpv7::block::Type::BundleAge)
+                .data(hardy_cbor::encode::emit(bundle_age))
                 .build();
         }
 

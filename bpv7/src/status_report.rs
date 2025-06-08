@@ -2,7 +2,7 @@ use super::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum StatusReportError {
+pub enum Error {
     #[error("Unknown administrative record type {0}")]
     UnknownAdminRecordType(u64),
 
@@ -16,18 +16,18 @@ pub enum StatusReportError {
     },
 
     #[error(transparent)]
-    InvalidCBOR(#[from] cbor::decode::Error),
+    InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
 
 trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, StatusReportError>;
+    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
 }
 
 impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
     for std::result::Result<T, E>
 {
-    fn map_field_err(self, field: &'static str) -> Result<T, StatusReportError> {
-        self.map_err(|e| StatusReportError::InvalidField {
+    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
+        self.map_err(|e| Error::InvalidField {
             field,
             source: e.into(),
         })
@@ -35,7 +35,7 @@ impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StatusReportReasonCode {
+pub enum ReasonCode {
     #[default]
     NoAdditionalInformation,
     LifetimeExpired,
@@ -57,70 +57,71 @@ pub enum StatusReportReasonCode {
     Unassigned(u64),
 }
 
-impl From<StatusReportReasonCode> for u64 {
-    fn from(value: StatusReportReasonCode) -> Self {
+impl From<ReasonCode> for u64 {
+    fn from(value: ReasonCode) -> Self {
         match value {
-            StatusReportReasonCode::NoAdditionalInformation => 0,
-            StatusReportReasonCode::LifetimeExpired => 1,
-            StatusReportReasonCode::ForwardedOverUnidirectionalLink => 2,
-            StatusReportReasonCode::TransmissionCanceled => 3,
-            StatusReportReasonCode::DepletedStorage => 4,
-            StatusReportReasonCode::DestinationEndpointIDUnavailable => 5,
-            StatusReportReasonCode::NoKnownRouteToDestinationFromHere => 6,
-            StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute => 7,
-            StatusReportReasonCode::BlockUnintelligible => 8,
-            StatusReportReasonCode::HopLimitExceeded => 9,
-            StatusReportReasonCode::TrafficPared => 10,
-            StatusReportReasonCode::BlockUnsupported => 11,
-            StatusReportReasonCode::MissingSecurityOperation => 12,
-            StatusReportReasonCode::UnknownSecurityOperation => 13,
-            StatusReportReasonCode::UnexpectedSecurityOperation => 14,
-            StatusReportReasonCode::FailedSecurityOperation => 15,
-            StatusReportReasonCode::ConflictingSecurityOperation => 16,
-            StatusReportReasonCode::Unassigned(v) => v,
+            ReasonCode::NoAdditionalInformation => 0,
+            ReasonCode::LifetimeExpired => 1,
+            ReasonCode::ForwardedOverUnidirectionalLink => 2,
+            ReasonCode::TransmissionCanceled => 3,
+            ReasonCode::DepletedStorage => 4,
+            ReasonCode::DestinationEndpointIDUnavailable => 5,
+            ReasonCode::NoKnownRouteToDestinationFromHere => 6,
+            ReasonCode::NoTimelyContactWithNextNodeOnRoute => 7,
+            ReasonCode::BlockUnintelligible => 8,
+            ReasonCode::HopLimitExceeded => 9,
+            ReasonCode::TrafficPared => 10,
+            ReasonCode::BlockUnsupported => 11,
+            ReasonCode::MissingSecurityOperation => 12,
+            ReasonCode::UnknownSecurityOperation => 13,
+            ReasonCode::UnexpectedSecurityOperation => 14,
+            ReasonCode::FailedSecurityOperation => 15,
+            ReasonCode::ConflictingSecurityOperation => 16,
+            ReasonCode::Unassigned(v) => v,
         }
     }
 }
 
-impl TryFrom<u64> for StatusReportReasonCode {
-    type Error = self::StatusReportError;
+impl TryFrom<u64> for ReasonCode {
+    type Error = Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(StatusReportReasonCode::NoAdditionalInformation),
-            1 => Ok(StatusReportReasonCode::LifetimeExpired),
-            2 => Ok(StatusReportReasonCode::ForwardedOverUnidirectionalLink),
-            3 => Ok(StatusReportReasonCode::TransmissionCanceled),
-            4 => Ok(StatusReportReasonCode::DepletedStorage),
-            5 => Ok(StatusReportReasonCode::DestinationEndpointIDUnavailable),
-            6 => Ok(StatusReportReasonCode::NoKnownRouteToDestinationFromHere),
-            7 => Ok(StatusReportReasonCode::NoTimelyContactWithNextNodeOnRoute),
-            8 => Ok(StatusReportReasonCode::BlockUnintelligible),
-            9 => Ok(StatusReportReasonCode::HopLimitExceeded),
-            10 => Ok(StatusReportReasonCode::TrafficPared),
-            11 => Ok(StatusReportReasonCode::BlockUnsupported),
-            12 => Ok(StatusReportReasonCode::MissingSecurityOperation),
-            13 => Ok(StatusReportReasonCode::UnknownSecurityOperation),
-            14 => Ok(StatusReportReasonCode::UnexpectedSecurityOperation),
-            15 => Ok(StatusReportReasonCode::FailedSecurityOperation),
-            16 => Ok(StatusReportReasonCode::ConflictingSecurityOperation),
-            255 => Err(StatusReportError::ReservedStatusReportReason),
-            v => Ok(StatusReportReasonCode::Unassigned(v)),
+            0 => Ok(ReasonCode::NoAdditionalInformation),
+            1 => Ok(ReasonCode::LifetimeExpired),
+            2 => Ok(ReasonCode::ForwardedOverUnidirectionalLink),
+            3 => Ok(ReasonCode::TransmissionCanceled),
+            4 => Ok(ReasonCode::DepletedStorage),
+            5 => Ok(ReasonCode::DestinationEndpointIDUnavailable),
+            6 => Ok(ReasonCode::NoKnownRouteToDestinationFromHere),
+            7 => Ok(ReasonCode::NoTimelyContactWithNextNodeOnRoute),
+            8 => Ok(ReasonCode::BlockUnintelligible),
+            9 => Ok(ReasonCode::HopLimitExceeded),
+            10 => Ok(ReasonCode::TrafficPared),
+            11 => Ok(ReasonCode::BlockUnsupported),
+            12 => Ok(ReasonCode::MissingSecurityOperation),
+            13 => Ok(ReasonCode::UnknownSecurityOperation),
+            14 => Ok(ReasonCode::UnexpectedSecurityOperation),
+            15 => Ok(ReasonCode::FailedSecurityOperation),
+            16 => Ok(ReasonCode::ConflictingSecurityOperation),
+            255 => Err(Error::ReservedStatusReportReason),
+            v => Ok(ReasonCode::Unassigned(v)),
         }
     }
 }
 
-impl cbor::encode::ToCbor for StatusReportReasonCode {
+impl hardy_cbor::encode::ToCbor for ReasonCode {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(u64::from(self))
     }
 }
 
-impl cbor::decode::FromCbor for StatusReportReasonCode {
-    type Error = StatusReportError;
+impl hardy_cbor::decode::FromCbor for ReasonCode {
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = cbor::decode::try_parse::<(u64, bool, usize)>(data)? {
+        if let Some((v, shortest, len)) = hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)?
+        {
             Ok(Some((v.try_into()?, shortest, len)))
         } else {
             Ok(None)
@@ -129,9 +130,9 @@ impl cbor::decode::FromCbor for StatusReportReasonCode {
 }
 
 #[derive(Debug, Clone)]
-pub struct StatusAssertion(pub Option<DtnTime>);
+pub struct StatusAssertion(pub Option<dtn_time::DtnTime>);
 
-fn emit_status_assertion(a: &mut cbor::encode::Array, sa: &Option<StatusAssertion>) {
+fn emit_status_assertion(a: &mut hardy_cbor::encode::Array, sa: &Option<StatusAssertion>) {
     // This is a horrible format!
     match sa {
         None => a.emit_array(Some(1), |a| {
@@ -148,9 +149,9 @@ fn emit_status_assertion(a: &mut cbor::encode::Array, sa: &Option<StatusAssertio
 }
 
 fn parse_status_assertion(
-    a: &mut cbor::decode::Array,
+    a: &mut hardy_cbor::decode::Array,
     shortest: &mut bool,
-) -> Result<Option<StatusAssertion>, StatusReportError> {
+) -> Result<Option<StatusAssertion>, Error> {
     a.parse_array(|a, s, tags| {
         *shortest = *shortest && s && tags.is_empty() && a.is_definite();
 
@@ -164,7 +165,7 @@ fn parse_status_assertion(
 
         if status {
             if let Some(timestamp) = a
-                .try_parse::<(DtnTime, bool)>()
+                .try_parse::<(dtn_time::DtnTime, bool)>()
                 .map(|o| {
                     o.map(|(v, s)| {
                         *shortest = *shortest && s;
@@ -174,7 +175,7 @@ fn parse_status_assertion(
                 .map_field_err("timestamp")?
             {
                 if timestamp.millisecs() == 0 {
-                    Ok::<_, StatusReportError>(Some(StatusAssertion(None)))
+                    Ok::<_, Error>(Some(StatusAssertion(None)))
                 } else {
                     Ok(Some(StatusAssertion(Some(timestamp))))
                 }
@@ -189,16 +190,16 @@ fn parse_status_assertion(
 
 #[derive(Default, Debug, Clone)]
 pub struct BundleStatusReport {
-    pub bundle_id: BundleId,
+    pub bundle_id: bundle::Id,
     pub received: Option<StatusAssertion>,
     pub forwarded: Option<StatusAssertion>,
     pub delivered: Option<StatusAssertion>,
     pub deleted: Option<StatusAssertion>,
-    pub reason: StatusReportReasonCode,
+    pub reason: ReasonCode,
 }
 
-impl cbor::encode::ToCbor for &BundleStatusReport {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for &BundleStatusReport {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(
             Some(self.bundle_id.fragment_info.as_ref().map_or(4, |_| 6)),
             |a| {
@@ -227,11 +228,11 @@ impl cbor::encode::ToCbor for &BundleStatusReport {
     }
 }
 
-impl cbor::decode::FromCbor for BundleStatusReport {
-    type Error = StatusReportError;
+impl hardy_cbor::decode::FromCbor for BundleStatusReport {
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+        hardy_cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && a.is_definite();
 
             let mut report = Self::default();
@@ -275,14 +276,14 @@ impl cbor::decode::FromCbor for BundleStatusReport {
                 })
                 .map_field_err("timestamp")?;
 
-            report.bundle_id = BundleId {
+            report.bundle_id = bundle::Id {
                 source,
                 timestamp,
                 fragment_info: None,
             };
 
             if let Some(offset) = a.try_parse().map_field_err("fragment offset")? {
-                report.bundle_id.fragment_info = Some(FragmentInfo {
+                report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
                     offset,
                     total_len: a.parse().map_field_err("fragment length")?,
                 });
@@ -298,8 +299,8 @@ pub enum AdministrativeRecord {
     BundleStatusReport(BundleStatusReport),
 }
 
-impl cbor::encode::ToCbor for &AdministrativeRecord {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for &AdministrativeRecord {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| match self {
             AdministrativeRecord::BundleStatusReport(report) => {
                 a.emit(1);
@@ -309,11 +310,11 @@ impl cbor::encode::ToCbor for &AdministrativeRecord {
     }
 }
 
-impl cbor::decode::FromCbor for AdministrativeRecord {
-    type Error = self::StatusReportError;
+impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
+    type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+        hardy_cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
             shortest = shortest && !tags.is_empty() && a.is_definite();
 
             match a
@@ -328,7 +329,7 @@ impl cbor::decode::FromCbor for AdministrativeRecord {
                     let (r, s) = a.parse().map_field_err("bundle status report")?;
                     Ok((Self::BundleStatusReport(r), shortest && s))
                 }
-                v => Err(StatusReportError::UnknownAdminRecordType(v)),
+                v => Err(Error::UnknownAdminRecordType(v)),
             }
         })
         .map(|o| o.map(|((v, s), len)| (v, s, len)))

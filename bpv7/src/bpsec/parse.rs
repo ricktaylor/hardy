@@ -2,7 +2,7 @@ use super::*;
 use std::{collections::HashMap, ops::Range};
 
 fn parse_ranges<const D: usize>(
-    seq: &mut cbor::decode::Series<D>,
+    seq: &mut hardy_cbor::decode::Series<D>,
     shortest: &mut bool,
     mut offset: usize,
 ) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
@@ -25,7 +25,7 @@ fn parse_ranges<const D: usize>(
 
             let data_start = offset + outer_offset + a.offset();
             if a.skip_value(16).map_field_err("value")?.is_none() {
-                return Err(cbor::decode::Error::NotEnoughData.into());
+                return Err(hardy_cbor::decode::Error::NotEnoughData.into());
             };
             Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
         })? {
@@ -46,7 +46,7 @@ impl UnknownOperation {
     pub fn parse(
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
-    ) -> Result<(Eid, HashMap<u64, Self>), Error> {
+    ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
         let parameters = Rc::from(asb.parameters.into_iter().fold(
             HashMap::new(),
             |mut map, (id, range)| {
@@ -74,7 +74,7 @@ impl UnknownOperation {
         Ok((asb.source, operations))
     }
 
-    pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid, id: u64) {
+    pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid, id: u64) {
         encoder.emit(id);
         if self.parameters.is_empty() {
             encoder.emit(0);
@@ -93,7 +93,7 @@ impl UnknownOperation {
         }
     }
 
-    pub fn emit_result(&self, array: &mut cbor::encode::Array) {
+    pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
         array.emit_array(Some(self.results.len()), |a| {
             for (id, result) in &self.results {
                 a.emit_array(Some(2), |a| {
@@ -107,16 +107,16 @@ impl UnknownOperation {
 
 pub struct AbstractSyntaxBlock {
     pub context: Context,
-    pub source: Eid,
+    pub source: eid::Eid,
     pub parameters: HashMap<u64, Range<usize>>,
     pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
 }
 
-impl cbor::decode::FromCbor for AbstractSyntaxBlock {
+impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_sequence(data, |seq| {
+        hardy_cbor::decode::try_parse_sequence(data, |seq| {
             let mut shortest = true;
 
             // Targets
@@ -166,7 +166,7 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
                     v
                 })
                 .map_field_err("security source")?;
-            if let Eid::Null | Eid::LocalNode { .. } = source {
+            if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);
             }
 
@@ -220,10 +220,10 @@ impl cbor::decode::FromCbor for AbstractSyntaxBlock {
 pub fn decode_box(
     range: Range<usize>,
     data: &[u8],
-) -> Result<(Box<[u8]>, bool), cbor::decode::Error> {
-    cbor::decode::parse_value(&data[range.start..range.end], |v, s, tags| match v {
-        cbor::decode::Value::Bytes(data) => Ok((data.into(), s && tags.is_empty())),
-        cbor::decode::Value::ByteStream(data) => Ok((
+) -> Result<(Box<[u8]>, bool), hardy_cbor::decode::Error> {
+    hardy_cbor::decode::parse_value(&data[range.start..range.end], |v, s, tags| match v {
+        hardy_cbor::decode::Value::Bytes(data) => Ok((data.into(), s && tags.is_empty())),
+        hardy_cbor::decode::Value::ByteStream(data) => Ok((
             data.iter()
                 .fold(Vec::new(), |mut data, d| {
                     data.extend(*d);
@@ -232,7 +232,7 @@ pub fn decode_box(
                 .into(),
             false,
         )),
-        value => Err(cbor::decode::Error::IncorrectType(
+        value => Err(hardy_cbor::decode::Error::IncorrectType(
             "Untagged definite-length byte string".to_string(),
             value.type_name(!tags.is_empty()),
         )),

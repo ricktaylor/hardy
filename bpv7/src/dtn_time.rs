@@ -1,5 +1,3 @@
-use super::*;
-
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
 #[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq)]
@@ -23,17 +21,17 @@ impl DtnTime {
     }
 }
 
-impl cbor::encode::ToCbor for DtnTime {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for DtnTime {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(self.millisecs)
     }
 }
 
-impl cbor::decode::FromCbor for DtnTime {
-    type Error = cbor::decode::Error;
+impl hardy_cbor::decode::FromCbor for DtnTime {
+    type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse(data)
+        hardy_cbor::decode::try_parse(data)
             .map(|o| o.map(|(millisecs, shortest, len)| (Self { millisecs }, shortest, len)))
     }
 }

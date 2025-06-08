@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
     #[instrument(skip(self, data))]
@@ -8,19 +9,21 @@ impl Dispatcher {
 
         // Do a fast pre-check
         if data.is_empty() {
-            return Err(bpv7::Error::InvalidCBOR(cbor::decode::Error::NotEnoughData).into());
+            return Err(hardy_bpv7::Error::InvalidCBOR(hardy_cbor::decode::Error::NotEnoughData).into());
         } else if data[0] == 0x06 {
             trace!("Data looks like a BPv6 bundle");
-            return Err(bpv7::Error::InvalidCBOR(cbor::decode::Error::IncorrectType(
-                "BPv7 bundle".to_string(),
-                "Possible BPv6 bundle".to_string(),
-            ))
-            .into());
+            return Err(
+                hardy_bpv7::Error::InvalidCBOR(hardy_cbor::decode::Error::IncorrectType(
+                    "BPv7 bundle".to_string(),
+                    "Possible BPv6 bundle".to_string(),
+                ))
+                .into(),
+            );
         }
 
         // Parse the bundle
-        match bpv7::ValidBundle::parse(&data, self.key_closure())? {
-            bpv7::ValidBundle::Valid(bundle, report_unsupported) => {
+        match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_closure())? {
+            hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => {
                 // Write the bundle data to the store
                 let (storage_name, hash) = self.store.store_data(data).await?;
                 self.ingress_bundle(
@@ -37,7 +40,7 @@ impl Dispatcher {
                     report_unsupported,
                 )
             }
-            bpv7::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
+            hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
                 trace!("Received bundle has been rewritten");
 
                 // Write the bundle data to the store
@@ -56,7 +59,7 @@ impl Dispatcher {
                     report_unsupported,
                 )
             }
-            bpv7::ValidBundle::Invalid(bundle, reason, e) => {
+            hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e) => {
                 trace!("Invalid bundle received: {e}");
 
                 // Don't bother saving the bundle data, it's garbage
@@ -82,21 +85,18 @@ impl Dispatcher {
     pub async fn ingress_bundle(
         &self,
         bundle: bundle::Bundle,
-        reason: Option<bpv7::StatusReportReasonCode>,
+        reason: Option<ReasonCode>,
         report_unsupported: bool,
     ) -> Result<(), Error> {
         // Report we have received the bundle
         let mut r = self
-            .report_bundle_reception(
-                &bundle,
-                bpv7::StatusReportReasonCode::NoAdditionalInformation,
-            )
+            .report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
             .await;
 
         // Report anything unsupported
         if r.is_ok() && report_unsupported {
             r = self
-                .report_bundle_reception(&bundle, bpv7::StatusReportReasonCode::BlockUnsupported)
+                .report_bundle_reception(&bundle, ReasonCode::BlockUnsupported)
                 .await;
         }
 
@@ -146,7 +146,7 @@ impl Dispatcher {
     pub async fn check_bundle(
         &self,
         bundle: bundle::Bundle,
-        mut reason: Option<bpv7::StatusReportReasonCode>,
+        mut reason: Option<ReasonCode>,
     ) -> Result<(), Error> {
         /* Always check bundles, no matter the state, as after restarting
          * the configured filters or code may have changed, and reprocessing is desired.
@@ -163,12 +163,12 @@ impl Dispatcher {
             // Check some basic semantic validity, lifetime first
             if bundle.has_expired() {
                 trace!("Bundle lifetime has expired");
-                reason = Some(bpv7::StatusReportReasonCode::LifetimeExpired);
+                reason = Some(ReasonCode::LifetimeExpired);
             } else if let Some(hop_info) = bundle.bundle.hop_count.as_ref() {
                 // Check hop count exceeded
                 if hop_info.count >= hop_info.limit {
                     trace!("Bundle hop-limit {} exceeded", hop_info.limit);
-                    reason = Some(bpv7::StatusReportReasonCode::HopLimitExceeded);
+                    reason = Some(ReasonCode::HopLimitExceeded);
                 }
             }
         }

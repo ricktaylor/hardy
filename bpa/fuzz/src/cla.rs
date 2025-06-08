@@ -1,5 +1,5 @@
 use hardy_bpa::async_trait;
-use hardy_bpv7::prelude as bpv7;
+use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -22,10 +22,10 @@ impl hardy_bpa::cla::Cla for NullCla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[bpv7::Eid],
+        _node_ids: &[Eid],
     ) -> hardy_bpa::cla::Result<()> {
         sink.add_peer(
-            bpv7::Eid::Ipn {
+            Eid::Ipn {
                 allocator_id: 0,
                 node_number: 2,
                 service_number: 0,
@@ -47,7 +47,7 @@ impl hardy_bpa::cla::Cla for NullCla {
             panic!("Extra unregister!");
         };
 
-        sink.remove_peer(&bpv7::Eid::Ipn {
+        sink.remove_peer(&Eid::Ipn {
             allocator_id: 0,
             node_number: 2,
             service_number: 0,
@@ -75,7 +75,7 @@ pub fn test_cla(data: Vec<u8>) {
         // New BPA
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
-            node_ids: [bpv7::Eid::Ipn {
+            node_ids: [Eid::Ipn {
                 allocator_id: 0,
                 node_number: 1,
                 service_number: 0,
@@ -132,7 +132,7 @@ mod test {
     #[test]
     fn test() {
         if let Ok(mut file) =
-            std::fs::File::open("./artifacts/cla/crash-19bbc54cc0df767008ca30335dbfdf7e040f7d4c")
+            std::fs::File::open("./artifacts/cla/crash-4172e046d6370086ed8cd40e39103a772cc5b6be")
         {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {

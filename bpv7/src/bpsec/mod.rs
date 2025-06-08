@@ -24,7 +24,7 @@ pub enum Context {
     Unrecognised(u64),
 }
 
-impl cbor::encode::ToCbor for Context {
+impl hardy_cbor::encode::ToCbor for Context {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
             Self::BIB_RFC9173_HMAC_SHA2 => 1,
@@ -34,11 +34,11 @@ impl cbor::encode::ToCbor for Context {
     }
 }
 
-impl cbor::decode::FromCbor for Context {
-    type Error = cbor::decode::Error;
+impl hardy_cbor::decode::FromCbor for Context {
+    type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
+        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
             o.map(|(value, shortest, len)| {
                 (
                     match value {

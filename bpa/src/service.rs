@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::eid::Eid;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -21,7 +22,7 @@ pub enum Error {
     Disconnected,
 
     #[error("Invalid bundle destination {0}")]
-    InvalidDestination(bpv7::Eid),
+    InvalidDestination(Eid),
 
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -51,7 +52,7 @@ pub struct Bundle {
 
 #[async_trait]
 pub trait Service: Send + Sync {
-    async fn on_register(&self, source: &bpv7::Eid, sink: Box<dyn Sink>);
+    async fn on_register(&self, source: &Eid, sink: Box<dyn Sink>);
 
     async fn on_unregister(&self);
 
@@ -61,8 +62,8 @@ pub trait Service: Send + Sync {
         &self,
         bundle_id: &str,
         kind: StatusNotify,
-        reason: bpv7::StatusReportReasonCode,
-        timestamp: Option<bpv7::DtnTime>,
+        reason: hardy_bpv7::status_report::ReasonCode,
+        timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
     );
 }
 
@@ -83,7 +84,7 @@ pub trait Sink: Send + Sync {
 
     async fn send(
         &self,
-        destination: bpv7::Eid,
+        destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
         flags: Option<SendFlags>,

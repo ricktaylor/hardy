@@ -7,8 +7,8 @@ pub struct HopInfo {
     pub count: u64,
 }
 
-impl cbor::encode::ToCbor for &HopInfo {
-    fn to_cbor(self, encoder: &mut cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for &HopInfo {
+    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| {
             a.emit(self.limit);
             a.emit(self.count);
@@ -16,11 +16,11 @@ impl cbor::encode::ToCbor for &HopInfo {
     }
 }
 
-impl cbor::decode::FromCbor for HopInfo {
+impl hardy_cbor::decode::FromCbor for HopInfo {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        cbor::decode::try_parse_array(data, |a, shortest, tags| {
+        hardy_cbor::decode::try_parse_array(data, |a, shortest, tags| {
             let (limit, s1) = a.parse().map_field_err("hop limit")?;
             let (count, s2) = a.parse().map_field_err("hop count")?;
 

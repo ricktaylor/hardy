@@ -4,8 +4,7 @@ use hardy_bpa::{
     metadata::{BundleMetadata, BundleStatus},
     storage,
 };
-use hardy_bpv7::prelude as bpv7;
-use hardy_cbor as cbor;
+use hardy_bpv7::{dtn_time::DtnTime, eid::Eid};
 use rusqlite::OptionalExtension;
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc};
 use thiserror::Error;
@@ -157,18 +156,18 @@ impl Storage {
     }
 }
 
-fn encode_eid(eid: &bpv7::Eid) -> rusqlite::types::Value {
-    rusqlite::types::Value::Blob(cbor::encode::emit(eid))
+fn encode_eid(eid: &Eid) -> rusqlite::types::Value {
+    rusqlite::types::Value::Blob(hardy_cbor::encode::emit(eid))
 }
 
 fn decode_eid(
     row: &rusqlite::Row,
     idx: impl rusqlite::RowIndex,
-) -> Result<bpv7::Eid, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Eid, Box<dyn std::error::Error + Send + Sync>> {
     let rusqlite::types::ValueRef::Blob(b) = row.get_ref(idx)? else {
         panic!("EID encoded as unusual sqlite type")
     };
-    cbor::decode::parse(b).map_err(Into::into)
+    hardy_cbor::decode::parse(b).map_err(Into::into)
 }
 
 fn encode_hash(hash: &Option<Arc<[u8]>>) -> rusqlite::types::Value {
@@ -189,7 +188,7 @@ fn decode_hash(
     }
 }
 
-fn encode_creation_time(timestamp: Option<bpv7::DtnTime>) -> i64 {
+fn encode_creation_time(timestamp: Option<DtnTime>) -> i64 {
     if let Some(timestamp) = timestamp {
         as_i64(timestamp.millisecs())
     } else {
@@ -200,12 +199,12 @@ fn encode_creation_time(timestamp: Option<bpv7::DtnTime>) -> i64 {
 fn decode_creation_time(
     row: &rusqlite::Row,
     idx: impl rusqlite::RowIndex,
-) -> rusqlite::Result<Option<bpv7::DtnTime>> {
+) -> rusqlite::Result<Option<DtnTime>> {
     let timestamp = row.get(idx)?;
     if timestamp == 0 {
         Ok(None)
     } else {
-        Ok(Some(bpv7::DtnTime::new(as_u64(timestamp))))
+        Ok(Some(DtnTime::new(as_u64(timestamp))))
     }
 }
 
@@ -275,17 +274,17 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
             if offset == -1 && total_len == -1 {
                 None
             } else {
-                Some(bpv7::FragmentInfo {
+                Some(hardy_bpv7::bundle::FragmentInfo {
                     offset: as_u64(offset),
                     total_len: as_u64(total_len),
                 })
             }
         };
 
-        let mut bundle = bpv7::Bundle {
-            id: bpv7::BundleId {
+        let mut bundle = hardy_bpv7::bundle::Bundle {
+            id: hardy_bpv7::bundle::Id {
                 source: decode_eid(row, 7)?,
-                timestamp: bpv7::CreationTimestamp {
+                timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp {
                     creation_time: decode_creation_time(row, 10)?,
                     sequence_number: as_u64(row.get(11)?),
                 },
@@ -299,13 +298,13 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
             blocks: HashMap::new(),
             previous_node: match row.get_ref(15)? {
                 rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
+                rusqlite::types::ValueRef::Blob(b) => Some(hardy_cbor::decode::parse(b)?),
                 v => panic!("EID encoded as unusual sqlite type: {v:?}"),
             },
             age: row.get::<_, Option<i64>>(16)?.map(as_duration),
             hop_count: match row.get_ref(17)? {
                 rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Integer(i) => Some(bpv7::HopInfo {
+                rusqlite::types::ValueRef::Integer(i) => Some(hardy_bpv7::hop_info::HopInfo {
                     count: as_u64(i),
                     limit: as_u64(row.get(18)?),
                 }),
@@ -315,7 +314,7 @@ fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage
 
         loop {
             let block_number = as_u64(row.get(20)?);
-            let block = bpv7::Block {
+            let block = hardy_bpv7::block::Block {
                 block_type: as_u64(row.get(21)?).into(),
                 flags: as_u64(row.get(22)?).into(),
                 crc_type: as_u64(row.get(23)?).into(),
@@ -352,8 +351,8 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn load(
         &self,
-        bundle_id: &bpv7::BundleId,
-    ) -> storage::Result<Option<(BundleMetadata, bpv7::Bundle)>> {
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> storage::Result<Option<(BundleMetadata, hardy_bpv7::bundle::Bundle)>> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
             let mut stmt = conn.prepare_cached(
@@ -430,17 +429,17 @@ impl storage::MetadataStorage for Storage {
                 if offset == -1 && total_len == -1 {
                     None
                 } else {
-                    Some(bpv7::FragmentInfo {
+                    Some(hardy_bpv7::bundle::FragmentInfo {
                         offset: as_u64(offset),
                         total_len: as_u64(total_len),
                     })
                 }
             };
 
-            let mut bundle = bpv7::Bundle {
-                id: bpv7::BundleId {
+            let mut bundle = hardy_bpv7::bundle::Bundle {
+                id: hardy_bpv7::bundle::Id {
                     source: decode_eid(row, 7)?,
-                    timestamp: bpv7::CreationTimestamp {
+                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp {
                         creation_time: decode_creation_time(row, 10)?,
                         sequence_number: as_u64(row.get(11)?),
                     },
@@ -454,13 +453,13 @@ impl storage::MetadataStorage for Storage {
                 blocks: HashMap::new(),
                 previous_node: match row.get_ref(15)? {
                     rusqlite::types::ValueRef::Null => None,
-                    rusqlite::types::ValueRef::Blob(b) => Some(cbor::decode::parse(b)?),
+                    rusqlite::types::ValueRef::Blob(b) => Some(hardy_cbor::decode::parse(b)?),
                     v => panic!("EID encoded as unusual sqlite type: {v:?}"),
                 },
                 age: row.get::<_, Option<i64>>(16)?.map(as_duration),
                 hop_count: match row.get_ref(17)? {
                     rusqlite::types::ValueRef::Null => None,
-                    rusqlite::types::ValueRef::Integer(i) => Some(bpv7::HopInfo {
+                    rusqlite::types::ValueRef::Integer(i) => Some(hardy_bpv7::hop_info::HopInfo {
                         count: as_u64(i),
                         limit: as_u64(row.get(18)?),
                     }),
@@ -470,7 +469,7 @@ impl storage::MetadataStorage for Storage {
 
             loop {
                 let block_number = as_u64(row.get(20)?);
-                let block = bpv7::Block {
+                let block = hardy_bpv7::block::Block {
                     block_type: as_u64(row.get(21)?).into(),
                     flags: as_u64(row.get(22)?).into(),
                     crc_type: as_u64(row.get(23)?).into(),
@@ -503,7 +502,7 @@ impl storage::MetadataStorage for Storage {
     async fn store(
         &self,
         metadata: &BundleMetadata,
-        bundle: &bpv7::Bundle,
+        bundle: &hardy_bpv7::bundle::Bundle,
     ) -> storage::Result<bool> {
         let metadata = metadata.clone();
         let bundle = bundle.clone();
@@ -617,7 +616,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn remove(&self, bundle_id: &bpv7::BundleId) -> storage::Result<()> {
+    async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
             if !conn
@@ -656,7 +655,7 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn confirm_exists(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<BundleMetadata>> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
@@ -729,7 +728,7 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn get_bundle_status(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<BundleStatus>> {
         let bundle_id = bundle_id.clone();
         self.pooled_connection(move |conn| {
@@ -769,7 +768,7 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn set_bundle_status(
         &self,
-        bundle_id: &bpv7::BundleId,
+        bundle_id: &hardy_bpv7::bundle::Id,
         status: &BundleStatus,
     ) -> storage::Result<()> {
         let bundle_id = bundle_id.clone();

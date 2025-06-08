@@ -25,13 +25,13 @@ pub enum Error {
     DuplicateBlockNumber(u64),
 
     #[error("{1:?} block cannot be block number {0}")]
-    InvalidBlockNumber(u64, BlockType),
+    InvalidBlockNumber(u64, block::Type),
 
     #[error("Invalid fragment information: offset {0}, total length {1}")]
     InvalidFragmentInfo(u64, u64),
 
     #[error("Bundle has multiple {0:?} blocks")]
-    DuplicateBlocks(BlockType),
+    DuplicateBlocks(block::Type),
 
     #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
     MissingBundleAge,
@@ -55,10 +55,10 @@ pub enum Error {
     InvalidCrc(#[from] crc::Error),
 
     #[error(transparent)]
-    InvalidEid(#[from] eid::EidError),
+    InvalidEid(#[from] eid::Error),
 
     #[error(transparent)]
-    InvalidCBOR(#[from] cbor::decode::Error),
+    InvalidCBOR(#[from] hardy_cbor::decode::Error),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {

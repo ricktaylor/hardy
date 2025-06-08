@@ -65,7 +65,7 @@ impl Bpa {
         &self,
         service_id: Option<service::ServiceId<'_>>,
         service: Arc<dyn service::Service>,
-    ) -> service::Result<bpv7::Eid> {
+    ) -> service::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
             .register(service_id, service, &self.dispatcher)
             .await
@@ -87,7 +87,7 @@ impl Bpa {
     pub async fn add_route(
         &self,
         source: String,
-        pattern: eid_pattern::EidPattern,
+        pattern: hardy_eid_pattern::EidPattern,
         action: routes::Action,
         priority: u32,
     ) {
@@ -98,7 +98,7 @@ impl Bpa {
     pub async fn remove_route(
         &self,
         source: &str,
-        pattern: &eid_pattern::EidPattern,
+        pattern: &hardy_eid_pattern::EidPattern,
         action: &routes::Action,
         priority: u32,
     ) -> bool {
