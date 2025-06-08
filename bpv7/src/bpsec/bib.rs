@@ -12,11 +12,10 @@ pub struct OperationArgs<'a> {
     pub bpsec_source: &'a Eid,
     pub target: &'a block::Block,
     pub target_number: u64,
+    pub target_payload: &'a [u8],
     pub source: &'a block::Block,
     pub source_number: u64,
-    pub bundle: &'a Bundle,
-    pub primary_block: Option<&'a [u8]>,
-    pub bundle_data: &'a [u8],
+    pub primary_block: &'a [u8],
 }
 
 pub struct OperationResult {

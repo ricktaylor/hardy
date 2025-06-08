@@ -1,5 +1,6 @@
 use super::*;
 use error::CaptureFieldErr;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 trait KeyCache {
@@ -238,8 +239,16 @@ impl Bundle {
         }
 
         // Rewrite primary block if required
-        let primary_block =
-            (!canonical_primary_block).then_some(primary_block::PrimaryBlock::emit(self));
+        let primary_block_data = if canonical_primary_block {
+            Cow::Borrowed(
+                self.blocks
+                    .get(&0)
+                    .expect("Missing primary block!")
+                    .payload(source_data),
+            )
+        } else {
+            Cow::Owned(primary_block::PrimaryBlock::emit(self))
+        };
 
         // Decrypt all BCB targets first
         let mut decrypted_data = HashMap::new();
@@ -307,11 +316,10 @@ impl Bundle {
                         bpsec_source: &bcb.source,
                         target: target_block,
                         target_number: *target_number,
+                        target_payload: target_block.payload(source_data),
                         source: bcb_block,
                         source_number: bcb_block_number,
-                        bundle: self,
-                        primary_block: primary_block.as_deref(),
-                        bundle_data: source_data,
+                        primary_block: &primary_block_data,
                     },
                     None,
                 )?;
@@ -471,11 +479,10 @@ impl Bundle {
                         bpsec_source: &bib.source,
                         target: target_block,
                         target_number: *target_number,
+                        target_payload: target_block.payload(source_data),
                         source: bib_block,
                         source_number: bib_block_number,
-                        bundle: self,
-                        primary_block: primary_block.as_deref(),
-                        bundle_data: source_data,
+                        primary_block: &primary_block_data,
                     },
                     payload_data,
                 )?;
@@ -595,11 +602,12 @@ impl Bundle {
                             bpsec_source: &bib.source,
                             target: target_block,
                             target_number: *target_number,
+                            target_payload: new_payloads
+                                .get(target_number)
+                                .map_or(target_block.payload(source_data), |d| d),
                             source: bib_block,
                             source_number: bib_block_number,
-                            bundle: self,
-                            primary_block: primary_block.as_deref(),
-                            bundle_data: source_data,
+                            primary_block: &primary_block_data,
                         },
                         Some(payload_data),
                     )?;
@@ -622,11 +630,12 @@ impl Bundle {
                             bpsec_source: &bcb.source,
                             target: target_block,
                             target_number: *target_number,
+                            target_payload: new_payloads
+                                .get(target_number)
+                                .map_or(target_block.payload(source_data), |d| d),
                             source: bcb_block,
                             source_number: bcb_block_number,
-                            bundle: self,
-                            primary_block: primary_block.as_deref(),
-                            bundle_data: source_data,
+                            primary_block: &primary_block_data,
                         },
                         Some(payload_data),
                     )?;
@@ -640,11 +649,11 @@ impl Bundle {
 
         let new_data = cbor::encode::emit_array(None, |a| {
             // Emit primary
-            if let Some(p) = primary_block {
-                a.emit_raw(p);
-            } else {
-                self.blocks.get_mut(&0).unwrap().copy(source_data, a);
-            }
+            let block = self.blocks.get_mut(&0).expect("Missing primary block!");
+            block.data_start = a.offset();
+            block.data_len = primary_block_data.len();
+            block.payload_len = block.data_len;
+            a.emit_raw_slice(&primary_block_data);
 
             // Stash payload block for last
             let mut payload_block = self.blocks.remove(&1).unwrap();
@@ -715,11 +724,14 @@ impl Bundle {
                     bpsec_source: &bcb.source,
                     target: payload_block,
                     target_number: 1,
+                    target_payload: payload_block.payload(data),
                     source: bcb_block,
                     source_number: bcb_block_number,
-                    bundle: self,
-                    primary_block: None,
-                    bundle_data: data,
+                    primary_block: self
+                        .blocks
+                        .get(&0)
+                        .expect("Missing primary block!")
+                        .payload(data),
                 },
                 None,
             )?

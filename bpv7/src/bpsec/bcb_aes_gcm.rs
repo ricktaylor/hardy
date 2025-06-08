@@ -266,17 +266,7 @@ impl Operation {
         });
 
         if self.parameters.flags.include_primary_block {
-            if let Some(p) = args.primary_block {
-                encoder.emit_raw_slice(p);
-            } else {
-                encoder.emit_raw_slice(
-                    args.bundle
-                        .blocks
-                        .get(&0)
-                        .expect("Missing primary block!")
-                        .payload(args.bundle_data),
-                );
-            }
+            encoder.emit_raw_slice(args.primary_block);
         }
 
         if self.parameters.flags.include_target_header {
@@ -295,7 +285,7 @@ impl Operation {
         let mut data = if let Some(payload_data) = payload_data {
             payload_data.into()
         } else {
-            cbor::decode::parse_value(args.target.payload(args.bundle_data), |value, _, _| {
+            cbor::decode::parse_value(args.target_payload, |value, _, _| {
                 match value {
                     cbor::decode::Value::ByteStream(data) => {
                         // Concatenate all the bytes

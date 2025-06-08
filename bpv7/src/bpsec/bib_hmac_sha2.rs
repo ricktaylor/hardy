@@ -317,17 +317,7 @@ impl Operation {
 
         if !matches!(args.target.block_type, BlockType::Primary) {
             if self.parameters.flags.include_primary_block {
-                if let Some(p) = args.primary_block {
-                    mac.update(p);
-                } else {
-                    mac.update(
-                        args.bundle
-                            .blocks
-                            .get(&0)
-                            .expect("Missing primary block!")
-                            .payload(args.bundle_data),
-                    );
-                }
+                mac.update(args.primary_block);
             }
 
             if self.parameters.flags.include_target_header {
@@ -348,23 +338,11 @@ impl Operation {
         }
 
         if matches!(args.target.block_type, BlockType::Primary) {
-            if let Some(p) = args.primary_block {
-                emit_data(&mut mac, p);
-            } else {
-                emit_data(
-                    &mut mac,
-                    args.bundle
-                        .blocks
-                        .get(&0)
-                        .expect("Missing primary block!")
-                        .payload(args.bundle_data),
-                );
-            }
+            emit_data(&mut mac, args.primary_block);
         } else if let Some(payload_data) = payload_data {
             emit_data(&mut mac, payload_data);
         } else {
-            let payload_data = args.target.payload(args.bundle_data);
-            cbor::decode::parse_value(payload_data, |value, s, tags| {
+            cbor::decode::parse_value(args.target_payload, |value, s, tags| {
                 match value {
                     cbor::decode::Value::ByteStream(data) => {
                         // This is horrible, but removes a potentially large data copy
@@ -382,7 +360,7 @@ impl Operation {
                         }
                     }
                     cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
-                        mac.update(payload_data);
+                        mac.update(args.target_payload);
                     }
                     cbor::decode::Value::Bytes(data) => {
                         emit_data(&mut mac, data);
