@@ -3,7 +3,6 @@ use hardy_cbor as cbor;
 mod block;
 mod block_flags;
 mod block_type;
-mod bpsec;
 mod builder;
 mod bundle;
 mod bundle_flags;
@@ -17,6 +16,8 @@ mod error;
 mod hop_info;
 mod primary_block;
 mod status_report;
+
+pub mod bpsec;
 
 pub mod prelude {
     pub use super::block::Block;
@@ -38,9 +39,7 @@ pub mod prelude {
         StatusReportReasonCode,
     };
 
-    pub mod bpsec {
-        pub use crate::bpsec::{Context, Error, KeyMaterial};
-    }
+    pub use super::bpsec;
 }
 
 // Use prelude types internally

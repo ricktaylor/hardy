@@ -15,12 +15,12 @@ fn get_keys(
         let keys: &[(hardy_eid_pattern::EidPattern, bpsec::Context, &'static [u8])] = &[
             (
                 "ipn:3.0".parse().unwrap(),
-                bpsec::Context::BIB_HMAC_SHA2,
+                bpsec::Context::BIB_RFC9173_HMAC_SHA2,
                 &hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b"),
             ),
             (
                 "ipn:2.1".parse().unwrap(),
-                bpsec::Context::BCB_AES_GCM,
+                bpsec::Context::BCB_RFC9173_AES_GCM,
                 &hex_literal::hex!("71776572747975696f70617364666768"),
             ),
         ];

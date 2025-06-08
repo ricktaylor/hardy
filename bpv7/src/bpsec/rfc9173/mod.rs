@@ -1,12 +1,16 @@
 use super::*;
+use std::ops::Range;
+
+pub mod bcb_aes_gcm;
+pub mod bib_hmac_sha2;
 
 #[derive(Debug, PartialEq, Eq)]
 #[allow(dead_code)]
-pub struct ScopeFlags {
-    pub include_primary_block: bool,
-    pub include_target_header: bool,
-    pub include_security_header: bool,
-    pub unrecognised: u64,
+struct ScopeFlags {
+    include_primary_block: bool,
+    include_target_header: bool,
+    include_security_header: bool,
+    unrecognised: u64,
 }
 
 impl Default for ScopeFlags {
@@ -64,7 +68,7 @@ impl cbor::encode::ToCbor for &ScopeFlags {
     }
 }
 
-pub fn unwrap_key(
+fn unwrap_key(
     source: &Eid,
     key: &KeyMaterial,
     wrapped_key: &Option<Box<[u8]>>,
@@ -127,7 +131,7 @@ mod test {
             ),
             &[(
                 "ipn:2.1".parse().unwrap(),
-                Context::BIB_HMAC_SHA2,
+                Context::BIB_RFC9173_HMAC_SHA2,
                 hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
             )],
         )
@@ -146,7 +150,7 @@ mod test {
             ),
             &[(
                 "ipn:2.1".parse().unwrap(),
-                Context::BCB_AES_GCM,
+                Context::BCB_RFC9173_AES_GCM,
                 hex_literal::hex!("6162636465666768696a6b6c6d6e6f70").into(),
             )],
         )
@@ -168,12 +172,12 @@ mod test {
             &[
                 (
                     "ipn:3.0".parse().unwrap(),
-                    Context::BIB_HMAC_SHA2,
+                    Context::BIB_RFC9173_HMAC_SHA2,
                     hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
                 ),
                 (
                     "ipn:2.1".parse().unwrap(),
-                    Context::BCB_AES_GCM,
+                    Context::BCB_RFC9173_AES_GCM,
                     hex_literal::hex!("71776572747975696f70617364666768").into(),
                 ),
             ],
@@ -196,12 +200,12 @@ mod test {
             &[
                 (
                     "ipn:2.1".parse().unwrap(),
-                    Context::BIB_HMAC_SHA2,
+                    Context::BIB_RFC9173_HMAC_SHA2,
                     hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
                 ),
                 (
                     "ipn:2.1".parse().unwrap(),
-                    Context::BCB_AES_GCM,
+                    Context::BCB_RFC9173_AES_GCM,
                     hex_literal::hex!(
                         "71776572747975696f70617364666768
                       71776572747975696f70617364666768"

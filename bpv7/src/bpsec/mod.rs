@@ -1,13 +1,14 @@
 use super::*;
-use std::{collections::HashMap, ops::Range, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub mod bcb;
-mod bcb_aes_gcm;
 pub mod bib;
-mod bib_hmac_sha2;
+
 mod error;
 mod parse;
+
+#[cfg(feature = "rfc9173")]
 mod rfc9173;
 
 use error::CaptureFieldErr;
@@ -18,16 +19,16 @@ pub use error::Error;
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 pub enum Context {
-    BIB_HMAC_SHA2,
-    BCB_AES_GCM,
+    BIB_RFC9173_HMAC_SHA2,
+    BCB_RFC9173_AES_GCM,
     Unrecognised(u64),
 }
 
 impl cbor::encode::ToCbor for Context {
     fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
-            Self::BIB_HMAC_SHA2 => 1,
-            Self::BCB_AES_GCM => 2,
+            Self::BIB_RFC9173_HMAC_SHA2 => 1,
+            Self::BCB_RFC9173_AES_GCM => 2,
             Self::Unrecognised(v) => v,
         })
     }
@@ -41,8 +42,8 @@ impl cbor::decode::FromCbor for Context {
             o.map(|(value, shortest, len)| {
                 (
                     match value {
-                        1 => Self::BIB_HMAC_SHA2,
-                        2 => Self::BCB_AES_GCM,
+                        1 => Self::BIB_RFC9173_HMAC_SHA2,
+                        2 => Self::BCB_RFC9173_AES_GCM,
                         value => Self::Unrecognised(value),
                     },
                     shortest,

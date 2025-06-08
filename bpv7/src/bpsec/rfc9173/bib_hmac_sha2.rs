@@ -4,7 +4,7 @@ use hmac::Mac;
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ShaVariant {
+enum ShaVariant {
     HMAC_256_256,
     #[default]
     HMAC_384_384,
@@ -45,10 +45,10 @@ impl cbor::decode::FromCbor for ShaVariant {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Parameters {
-    pub variant: ShaVariant,
-    pub key: Option<Box<[u8]>>,
-    pub flags: rfc9173::ScopeFlags,
+struct Parameters {
+    variant: ShaVariant,
+    key: Option<Box<[u8]>>,
+    flags: ScopeFlags,
 }
 
 impl Parameters {
@@ -96,7 +96,7 @@ impl cbor::encode::ToCbor for &Parameters {
         if self.key.is_some() {
             mask |= 1 << 2;
         }
-        if self.flags != rfc9173::ScopeFlags::default() {
+        if self.flags != ScopeFlags::default() {
             mask |= 1 << 3;
         }
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
@@ -118,7 +118,7 @@ impl cbor::encode::ToCbor for &Parameters {
 }
 
 #[derive(Debug)]
-pub struct Results(Box<[u8]>);
+struct Results(Box<[u8]>);
 
 impl Results {
     fn from_cbor(
@@ -186,7 +186,7 @@ impl Operation {
         let Some(key) = key else {
             return Err(Error::NoKey(args.bpsec_source.clone()));
         };
-        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+        let key = unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
         self.results.0 = match self.parameters.variant {
             ShaVariant::HMAC_256_256 => self
@@ -237,7 +237,7 @@ impl Operation {
                 can_sign: false,
             });
         };
-        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+        let key = unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
 
         let can_sign = match self.parameters.variant {
             ShaVariant::HMAC_256_256 => {
@@ -298,7 +298,7 @@ impl Operation {
         })
     }
 
-    pub fn calculate_hmac<M>(
+    fn calculate_hmac<M>(
         &self,
         mut mac: M,
         args: &bib::OperationArgs,
@@ -308,7 +308,7 @@ impl Operation {
         M: hmac::Mac,
     {
         // Build IPT
-        mac.update(&cbor::encode::emit(&rfc9173::ScopeFlags {
+        mac.update(&cbor::encode::emit(&ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
             include_target_header: self.parameters.flags.include_target_header,
             include_security_header: self.parameters.flags.include_security_header,
@@ -375,7 +375,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
-        encoder.emit(Context::BIB_HMAC_SHA2);
+        encoder.emit(Context::BIB_RFC9173_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
             encoder.emit(0);
             encoder.emit(source);
@@ -394,12 +394,12 @@ impl Operation {
 pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
-    shortest: &mut bool,
-) -> Result<(Eid, HashMap<u64, bib::Operation>), Error> {
+) -> Result<(Eid, HashMap<u64, bib::Operation>, bool), Error> {
+    let mut shortest = false;
     let parameters = Rc::from(
         Parameters::from_cbor(asb.parameters, data)
             .map(|(p, s)| {
-                *shortest = *shortest && s;
+                shortest = s;
                 p
             })
             .map_field_err("RFC9173 HMAC-SHA2 parameters")?,
@@ -414,12 +414,12 @@ pub fn parse(
                 parameters: parameters.clone(),
                 results: Results::from_cbor(results, data)
                     .map(|(v, s)| {
-                        *shortest = *shortest && s;
+                        shortest = shortest && s;
                         v
                     })
                     .map_field_err("RFC9173 HMAC-SHA2 results")?,
             }),
         );
     }
-    Ok((asb.source, operations))
+    Ok((asb.source, operations, shortest))
 }

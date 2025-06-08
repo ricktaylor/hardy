@@ -4,7 +4,7 @@ use aes_gcm::KeyInit;
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AesVariant {
+enum AesVariant {
     A128GCM,
     #[default]
     A256GCM,
@@ -42,11 +42,11 @@ impl cbor::decode::FromCbor for AesVariant {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Parameters {
-    pub iv: Box<[u8]>,
-    pub variant: AesVariant,
-    pub key: Option<Box<[u8]>>,
-    pub flags: rfc9173::ScopeFlags,
+struct Parameters {
+    iv: Box<[u8]>,
+    variant: AesVariant,
+    key: Option<Box<[u8]>>,
+    flags: ScopeFlags,
 }
 
 impl Parameters {
@@ -117,7 +117,7 @@ impl cbor::encode::ToCbor for &Parameters {
         if self.key.is_some() {
             mask |= 1 << 3;
         }
-        if self.flags != rfc9173::ScopeFlags::default() {
+        if self.flags != ScopeFlags::default() {
             mask |= 1 << 4;
         }
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
@@ -140,7 +140,7 @@ impl cbor::encode::ToCbor for &Parameters {
 }
 
 #[derive(Debug)]
-pub struct Results(Box<[u8]>);
+struct Results(Box<[u8]>);
 
 impl Results {
     fn from_cbor(
@@ -199,7 +199,7 @@ impl Operation {
         let Some(key) = key else {
             return Err(Error::NoKey(args.bpsec_source.clone()));
         };
-        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+        let key = unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
         let (data, aad) = self.build_data(&args, payload_data)?;
 
         match self.parameters.variant {
@@ -230,7 +230,7 @@ impl Operation {
                 can_encrypt: false,
             });
         };
-        let key = rfc9173::unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
+        let key = unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
         let (data, aad) = self.build_data(&args, payload_data)?;
 
         match self.parameters.variant {
@@ -258,7 +258,7 @@ impl Operation {
         payload_data: Option<&[u8]>,
     ) -> Result<(Vec<u8>, Vec<u8>), Error> {
         let mut encoder = cbor::encode::Encoder::new();
-        encoder.emit(&rfc9173::ScopeFlags {
+        encoder.emit(&ScopeFlags {
             include_primary_block: self.parameters.flags.include_primary_block,
             include_target_header: self.parameters.flags.include_target_header,
             include_security_header: self.parameters.flags.include_security_header,
@@ -338,7 +338,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
-        encoder.emit(Context::BIB_HMAC_SHA2);
+        encoder.emit(Context::BIB_RFC9173_HMAC_SHA2);
         encoder.emit(1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());
@@ -352,12 +352,12 @@ impl Operation {
 pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
-    shortest: &mut bool,
-) -> Result<(Eid, HashMap<u64, bcb::Operation>), Error> {
+) -> Result<(Eid, HashMap<u64, bcb::Operation>, bool), Error> {
+    let mut shortest = false;
     let parameters = Rc::from(
         Parameters::from_cbor(asb.parameters, data)
             .map(|(p, s)| {
-                *shortest = *shortest && s;
+                shortest = s;
                 p
             })
             .map_field_err("RFC9173 AES-GCM parameters")?,
@@ -372,12 +372,12 @@ pub fn parse(
                 parameters: parameters.clone(),
                 results: Results::from_cbor(results, data)
                     .map(|(v, s)| {
-                        *shortest = *shortest && s;
+                        shortest = shortest && s;
                         v
                     })
                     .map_field_err("RFC9173 AES-GCM results")?,
             }),
         );
     }
-    Ok((asb.source, operations))
+    Ok((asb.source, operations, shortest))
 }

@@ -4,7 +4,8 @@ use super::*;
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
 pub enum Operation {
-    AES_GCM(bcb_aes_gcm::Operation),
+    #[cfg(feature = "rfc9173")]
+    AES_GCM(rfc9173::bcb_aes_gcm::Operation),
     Unrecognised(u64, parse::UnknownOperation),
 }
 
@@ -27,13 +28,15 @@ pub struct OperationResult {
 impl Operation {
     pub fn context_id(&self) -> Context {
         match self {
-            Self::AES_GCM(_) => Context::BCB_AES_GCM,
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(_) => Context::BCB_RFC9173_AES_GCM,
             Self::Unrecognised(id, _) => Context::Unrecognised(*id),
         }
     }
 
     pub fn is_unsupported(&self) -> bool {
         match self {
+            #[cfg(feature = "rfc9173")]
             Operation::AES_GCM(operation) => operation.is_unsupported(),
             Operation::Unrecognised(..) => true,
         }
@@ -46,6 +49,7 @@ impl Operation {
         payload_data: Option<&[u8]>,
     ) -> Result<Box<[u8]>, Error> {
         match self {
+            #[cfg(feature = "rfc9173")]
             Self::AES_GCM(op) => op.encrypt(key, args, payload_data),
             Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
@@ -58,6 +62,7 @@ impl Operation {
         payload_data: Option<&[u8]>,
     ) -> Result<OperationResult, Error> {
         match self {
+            #[cfg(feature = "rfc9173")]
             Self::AES_GCM(op) => op.decrypt(key, args, payload_data),
             Self::Unrecognised(..) => Ok(OperationResult {
                 plaintext: None,
@@ -69,6 +74,7 @@ impl Operation {
 
     fn emit_context(&self, encoder: &mut cbor::encode::Encoder, source: &Eid) {
         match self {
+            #[cfg(feature = "rfc9173")]
             Self::AES_GCM(o) => o.emit_context(encoder, source),
             Self::Unrecognised(id, o) => o.emit_context(encoder, source, *id),
         }
@@ -76,6 +82,7 @@ impl Operation {
 
     fn emit_result(self, array: &mut cbor::encode::Array) {
         match self {
+            #[cfg(feature = "rfc9173")]
             Self::AES_GCM(o) => o.emit_result(array),
             Self::Unrecognised(_, o) => o.emit_result(array),
         }
@@ -124,7 +131,7 @@ impl cbor::decode::FromCbor for OperationSet {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        let Some((asb, mut shortest, len)) =
+        let Some((asb, shortest, len)) =
             cbor::decode::try_parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?
         else {
             return Ok(None);
@@ -132,9 +139,10 @@ impl cbor::decode::FromCbor for OperationSet {
 
         // Unpack into strong types
         match asb.context {
-            Context::BCB_AES_GCM => {
-                bcb_aes_gcm::parse(asb, data, &mut shortest).map(|(source, operations)| {
-                    Some((OperationSet { source, operations }, shortest, len))
+            #[cfg(feature = "rfc9173")]
+            Context::BCB_RFC9173_AES_GCM => {
+                rfc9173::bcb_aes_gcm::parse(asb, data).map(|(source, operations, s)| {
+                    Some((OperationSet { source, operations }, shortest && s, len))
                 })
             }
             Context::Unrecognised(id) => {
