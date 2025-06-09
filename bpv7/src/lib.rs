@@ -13,4 +13,3 @@ pub mod status_report;
 pub use error::Error;
 
 mod crc;
-mod primary_block;
