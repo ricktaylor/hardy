@@ -71,12 +71,12 @@ fn walk_dirs(
                     remove = false;
                 } else if file_type.is_file() {
                     // Drop anything .tmp
-                    if let Some(extension) = entry.path().extension()
-                        && extension == "tmp"
-                    {
-                        std::fs::remove_file(entry.path())
-                            .trace_expect("Failed to remove tmp file");
-                        continue;
+                    if let Some(extension) = entry.path().extension() {
+                        if extension == "tmp" {
+                            std::fs::remove_file(entry.path())
+                                .trace_expect("Failed to remove tmp file");
+                            continue;
+                        }
                     }
 
                     // Drop 0-length files

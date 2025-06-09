@@ -382,10 +382,10 @@ where
                         shortest = false;
                     }
                     core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
-                        if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v)
-                            && <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v)
-                        {
-                            shortest = false;
+                        if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v) {
+                            if <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v) {
+                                shortest = false;
+                            }
                         }
                     }
                 }
@@ -411,9 +411,10 @@ where
                             }
                         } else if let Some(v16) =
                             <half::f16 as num_traits::FromPrimitive>::from_f64(v)
-                            && <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v)
                         {
-                            shortest = false;
+                            if <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v) {
+                                shortest = false;
+                            }
                         }
                     }
                 }

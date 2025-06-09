@@ -835,6 +835,7 @@ dependencies = [
  "hardy-cbor",
  "hardy-eid-pattern",
  "rand",
+ "rustversion",
  "serde",
  "sha2",
  "thiserror",

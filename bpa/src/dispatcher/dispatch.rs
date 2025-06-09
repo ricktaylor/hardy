@@ -116,10 +116,10 @@ impl Dispatcher {
 
         // Remove unrecognized blocks we are supposed to
         for (block_number, block) in &bundle.bundle.blocks {
-            if let hardy_bpv7::block::Type::Unrecognised(_) = &block.block_type
-                && block.flags.delete_block_on_failure
-            {
-                editor.remove_extension_block(*block_number);
+            if let hardy_bpv7::block::Type::Unrecognised(_) = &block.block_type {
+                if block.flags.delete_block_on_failure {
+                    editor.remove_extension_block(*block_number);
+                }
             }
         }
 

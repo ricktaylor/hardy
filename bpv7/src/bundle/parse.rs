@@ -440,10 +440,10 @@ impl Bundle {
         });
 
         // Check we have at least some primary block protection
-        if let crc::CrcType::None = self.crc_type
-            && protects_primary_block.is_empty()
-        {
-            return Err(Error::MissingIntegrityCheck);
+        if let crc::CrcType::None = self.crc_type {
+            if protects_primary_block.is_empty() {
+                return Err(Error::MissingIntegrityCheck);
+            }
         }
 
         // If we have nothing to rewrite, get out now

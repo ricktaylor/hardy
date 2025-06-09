@@ -165,34 +165,37 @@ impl ConnectionRegistry {
             }
         }
 
-        if let Some(eid) = eid
-            && self
+        if let Some(eid) = eid {
+            if self
                 .peers
                 .lock()
                 .await
                 .insert(remote_addr, eid.clone())
                 .is_none()
-            && let Err(e) = self
-                .sink
-                .add_peer(eid, hardy_bpa::cla::ClaAddress::TcpClv4Address(remote_addr))
-                .await
-        {
-            error!("add_peer failed: {e:?}");
+            {
+                if let Err(e) = self
+                    .sink
+                    .add_peer(eid, hardy_bpa::cla::ClaAddress::TcpClv4Address(remote_addr))
+                    .await
+                {
+                    error!("add_peer failed: {e:?}");
+                }
+            }
         }
     }
 
     pub async fn unregister_session(&self, local_addr: &SocketAddr, remote_addr: &SocketAddr) {
         let mut pools = self.pools.lock().await;
-        if let Some(e) = pools.get_mut(remote_addr)
-            && e.remove(local_addr).await
-        {
-            pools.remove(remote_addr);
-            drop(pools);
+        if let Some(e) = pools.get_mut(remote_addr) {
+            if e.remove(local_addr).await {
+                pools.remove(remote_addr);
+                drop(pools);
 
-            if let Some(eid) = self.peers.lock().await.remove(remote_addr)
-                && let Err(e) = self.sink.remove_peer(&eid).await
-            {
-                error!("Failed to unregister peer: {e:?}");
+                if let Some(eid) = self.peers.lock().await.remove(remote_addr) {
+                    if let Err(e) = self.sink.remove_peer(&eid).await {
+                        error!("Failed to unregister peer: {e:?}");
+                    }
+                }
             }
         }
     }
