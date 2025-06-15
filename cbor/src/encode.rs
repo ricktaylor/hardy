@@ -1,4 +1,4 @@
-use alloc::{string::String, vec::Vec};
+use super::*;
 
 pub trait ToCbor {
     fn to_cbor(self, encoder: &mut Encoder);

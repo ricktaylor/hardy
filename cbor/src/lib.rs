@@ -1,6 +1,12 @@
 #![no_std]
 extern crate alloc;
 
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+
 pub mod decode;
 pub mod encode;
 
