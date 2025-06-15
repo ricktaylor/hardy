@@ -1,4 +1,4 @@
-use super::decode::*;
+use super::{decode::*, *};
 use hex_literal::hex;
 
 fn test_simple<T>(expected: T, data: &[u8])
