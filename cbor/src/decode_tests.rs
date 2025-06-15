@@ -1,6 +1,3 @@
-extern crate std;
-use std::prelude::rust_2024::*;
-
 use super::decode::*;
 use hex_literal::hex;
 
