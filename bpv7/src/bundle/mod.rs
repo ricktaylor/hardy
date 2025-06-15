@@ -296,10 +296,10 @@ impl Bundle {
         }
     }
 
-    pub fn payload(
+    pub fn payload<'a>(
         &self,
         data: &[u8],
-        mut f: impl FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
     ) -> Result<Payload, Error> {
         let Some(payload_block) = self.blocks.get(&1) else {
             return Err(Error::Altered);
@@ -319,14 +319,10 @@ impl Bundle {
             return Err(Error::Altered);
         };
 
-        let Some(key) = f(&bcb.source, op.context_id())? else {
-            return Err(bpsec::Error::NoKey(bcb.source).into());
-        };
-
         // Confirm we can decrypt if we have keys
         let Some(data) = op
             .decrypt(
-                Some(&key),
+                key_f,
                 bpsec::bcb::OperationArgs {
                     bpsec_source: &bcb.source,
                     target: payload_block,

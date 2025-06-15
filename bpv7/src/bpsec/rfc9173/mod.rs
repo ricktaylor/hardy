@@ -68,47 +68,57 @@ impl hardy_cbor::encode::ToCbor for &ScopeFlags {
     }
 }
 
-fn unwrap_key(
+fn unwrap_key<'a>(
     source: &eid::Eid,
-    key: &KeyMaterial,
-    wrapped_key: &Option<Box<[u8]>>,
+    key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+    cek: &[u8],
 ) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
-    // We only care about symmetric keys
-    let KeyMaterial::SymmetricKey(key_material) = key else {
+    let Some(jwk) = key_f(source, key::Operation::UnwrapKey)? else {
+        return Err(Error::NoKey(source.clone()));
+    };
+
+    let Some(algorithm) = &jwk.key_algorithm else {
         return Err(bpsec::Error::NoKey(source.clone()));
     };
 
-    let Some(wrapped_key) = wrapped_key else {
-        return Ok(Zeroizing::new(key_material.clone()));
+    let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
+        return Err(bpsec::Error::NoKey(source.clone()));
     };
 
-    // KeyWrap!
-    match key_material.len() {
-        16 => aes_kw::KekAes128::new(key_material.as_ref().into())
-            .unwrap_vec(wrapped_key)
-            .map(|v| Zeroizing::from(Box::from(v))),
-        24 => aes_kw::KekAes192::new(key_material.as_ref().into())
-            .unwrap_vec(wrapped_key)
-            .map(|v| Zeroizing::from(Box::from(v))),
-        _ => aes_kw::KekAes256::new(key_material.as_ref().into())
-            .unwrap_vec(wrapped_key)
-            .map(|v| Zeroizing::from(Box::from(v))),
+    match algorithm {
+        key::KeyAlgorithm::A128KW => aes_kw::KekAes128::try_from(kek.as_ref())
+            .and_then(|kek| kek.unwrap_vec(cek))
+            .map(|v| Zeroizing::from(Box::from(v)))
+            .map_field_err("wrapped key"),
+        key::KeyAlgorithm::A192KW => aes_kw::KekAes192::try_from(kek.as_ref())
+            .and_then(|kek| kek.unwrap_vec(cek))
+            .map(|v| Zeroizing::from(Box::from(v)))
+            .map_field_err("wrapped key"),
+        key::KeyAlgorithm::A256KW => aes_kw::KekAes256::try_from(kek.as_ref())
+            .and_then(|kek| kek.unwrap_vec(cek))
+            .map(|v| Zeroizing::from(Box::from(v)))
+            .map_field_err("wrapped key"),
+        _ => Err(bpsec::Error::NoKey(source.clone())),
     }
-    .map_field_err("wrapped key")
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use serde_json::json;
 
-    fn do_test(data: &[u8], keys: &[(eid::Eid, Context, Box<[u8]>)]) {
-        match bundle::ValidBundle::parse(data, |source, context| {
-            for (eid, c2, key) in keys {
-                if &context == c2 && eid == source {
-                    return Ok(Some(KeyMaterial::SymmetricKey(key.clone())));
+    fn do_test(data: &[u8], keys: Vec<bpsec::key::Key>) {
+        match bundle::ValidBundle::parse(data, |source, op| {
+            for k in &keys {
+                if let (Some(kid), Some(ops)) = (&k.id, &k.operations) {
+                    if let Ok(eid) = kid.parse::<eid::Eid>() {
+                        if &eid == source && ops.contains(&op) {
+                            return Ok(Some(k));
+                        }
+                    }
                 }
             }
-            Ok(None)
+            panic!("Missing test key!")
         })
         .expect("Failed to parse")
         {
@@ -129,11 +139,16 @@ mod test {
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
             ),
-            &[(
-                "ipn:2.1".parse().unwrap(),
-                Context::BIB_RFC9173_HMAC_SHA2,
-                hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
-            )],
+            serde_json::from_value(json!([
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "HS512",
+                    "key_ops": ["verify"],
+                    "kty": "oct",
+                    "k": "GisaKxorGisaKxorGisaKw",
+                }
+            ]))
+            .unwrap(),
         )
     }
 
@@ -148,11 +163,16 @@ mod test {
                 a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
             ),
-            &[(
-                "ipn:2.1".parse().unwrap(),
-                Context::BCB_RFC9173_AES_GCM,
-                hex_literal::hex!("6162636465666768696a6b6c6d6e6f70").into(),
-            )],
+            serde_json::from_value(json!([
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "A128KW",
+                    "key_ops": ["unwrapKey"],
+                    "kty": "oct",
+                    "k": "YWJjZGVmZ2hpamtsbW5vcA",
+                }
+            ]))
+            .unwrap(),
         )
     }
 
@@ -169,18 +189,24 @@ mod test {
                 3a09c1e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e
                 9aff"
             ),
-            &[
-                (
-                    "ipn:3.0".parse().unwrap(),
-                    Context::BIB_RFC9173_HMAC_SHA2,
-                    hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
-                ),
-                (
-                    "ipn:2.1".parse().unwrap(),
-                    Context::BCB_RFC9173_AES_GCM,
-                    hex_literal::hex!("71776572747975696f70617364666768").into(),
-                ),
-            ],
+            serde_json::from_value(json!([
+                {
+                    "kid": "ipn:3.0",
+                    "alg": "HS256",
+                    "key_ops": ["verify"],
+                    "kty": "oct",
+                    "k": "GisaKxorGisaKxorGisaKw",
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "dir",
+                    "enc": "A128GCM",
+                    "key_ops": ["decrypt"],
+                    "kty": "oct",
+                    "k": "cXdlcnR5dWlvcGFzZGZnaA",
+                }
+            ]))
+            .unwrap(),
         )
     }
 
@@ -197,22 +223,23 @@ mod test {
                 50d2c51cb2481792dae8b21d848cede99b850704000041018501010000582390eab6
                 457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
             ),
-            &[
-                (
-                    "ipn:2.1".parse().unwrap(),
-                    Context::BIB_RFC9173_HMAC_SHA2,
-                    hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
-                ),
-                (
-                    "ipn:2.1".parse().unwrap(),
-                    Context::BCB_RFC9173_AES_GCM,
-                    hex_literal::hex!(
-                        "71776572747975696f70617364666768
-                      71776572747975696f70617364666768"
-                    )
-                    .into(),
-                ),
-            ],
+            serde_json::from_value(json!([
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "HS384",
+                    "key_ops": ["verify"],
+                    "kty": "oct",
+                    "k": "GisaKxorGisaKxorGisaKw",
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "enc": "A256GCM",
+                    "key_ops": ["decrypt"],
+                    "kty": "oct",
+                    "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g",
+                }
+            ]))
+            .unwrap(),
         )
     }
 }

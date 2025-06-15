@@ -3,61 +3,18 @@ use error::CaptureFieldErr;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-trait KeyCache {
-    fn get<'a>(
-        &'a mut self,
-        source: &eid::Eid,
-        context: bpsec::Context,
-    ) -> Result<Option<&'a bpsec::KeyMaterial>, bpsec::Error>;
-}
-
-struct KeyCacheImpl<F>
-where
-    F: FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
-{
-    keys: HashMap<eid::Eid, HashMap<bpsec::Context, Option<bpsec::KeyMaterial>>>,
-    f: F,
-}
-
-impl<F> KeyCacheImpl<F>
-where
-    F: FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
-{
-    pub fn new(f: F) -> Self {
-        Self {
-            keys: HashMap::new(),
-            f,
-        }
-    }
-}
-
-impl<F> KeyCache for KeyCacheImpl<F>
-where
-    F: FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
-{
-    fn get<'a>(
-        &'a mut self,
-        source: &eid::Eid,
-        context: bpsec::Context,
-    ) -> Result<Option<&'a bpsec::KeyMaterial>, bpsec::Error> {
-        let inner = self.keys.entry(source.clone()).or_default();
-        let v = inner.entry(context).or_insert((self.f)(source, context)?);
-        Ok(v.as_ref())
-    }
-}
-
 impl Bundle {
     /* Refactoring this huge function into parts doesn't really help readability,
      * and seems to drive the borrow checker insane */
     #[allow(clippy::type_complexity)]
-    fn parse_blocks(
+    fn parse_blocks<'a>(
         &mut self,
         canonical_bundle: bool,
         canonical_primary_block: bool,
         blocks: &mut hardy_cbor::decode::Array,
         mut offset: usize,
         source_data: &[u8],
-        keys: &mut impl KeyCache,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
     ) -> Result<(Option<Box<[u8]>>, bool), Error> {
         let mut last_block_number = 0;
         let mut noncanonical_blocks: HashMap<u64, bool> = HashMap::new();
@@ -210,7 +167,7 @@ impl Bundle {
 
                 // Confirm we can decrypt if we have keys
                 let r = op.decrypt(
-                    keys.get(&bcb.source, op.context_id())?,
+                    &key_f,
                     bpsec::bcb::OperationArgs {
                         bpsec_source: &bcb.source,
                         target: target_block,
@@ -373,7 +330,7 @@ impl Bundle {
                     .map_or((None, true), |(v, c)| (Some(v.as_ref()), *c));
 
                 let r = op.verify(
-                    keys.get(&bib.source, op.context_id())?,
+                    &key_f,
                     bpsec::bib::OperationArgs {
                         bpsec_source: &bib.source,
                         target: target_block,
@@ -498,7 +455,7 @@ impl Bundle {
                 if let Some(payload_data) = new_payloads.get(target_number) {
                     let target_block = self.blocks.get(target_number).unwrap();
                     op.sign(
-                        keys.get(&bib.source, op.context_id())?,
+                        &key_f,
                         bpsec::bib::OperationArgs {
                             bpsec_source: &bib.source,
                             target: target_block,
@@ -526,7 +483,7 @@ impl Bundle {
                 if let Some(payload_data) = new_payloads.get(target_number) {
                     let target_block = self.blocks.get(target_number).unwrap();
                     let new_data = op.encrypt(
-                        keys.get(&bcb.source, op.context_id())?,
+                        &key_f,
                         bpsec::bcb::OperationArgs {
                             bpsec_source: &bcb.source,
                             target: target_block,
@@ -592,11 +549,10 @@ impl Bundle {
 }
 
 impl ValidBundle {
-    pub fn parse(
+    pub fn parse<'a>(
         data: &[u8],
-        f: impl FnMut(&eid::Eid, bpsec::Context) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error>,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
     ) -> Result<Self, Error> {
-        let mut keys = KeyCacheImpl::new(f);
         hardy_cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
             // Check for shortest/correct form
             canonical = canonical && !blocks.is_definite();
@@ -656,7 +612,7 @@ impl ValidBundle {
                 blocks,
                 block_start + block_len,
                 data,
-                &mut keys,
+                key_f,
             ) {
                 Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
                 Ok((Some(new_data), report_unsupported)) => {

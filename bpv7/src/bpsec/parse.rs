@@ -74,7 +74,12 @@ impl UnknownOperation {
         Ok((asb.source, operations))
     }
 
-    pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid, id: u64) {
+    pub fn emit_context(
+        &self,
+        encoder: &mut hardy_cbor::encode::Encoder,
+        source: &eid::Eid,
+        id: u64,
+    ) {
         encoder.emit(id);
         if self.parameters.is_empty() {
             encoder.emit(0);

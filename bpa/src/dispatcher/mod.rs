@@ -239,12 +239,12 @@ impl Dispatcher {
         }
     }
 
-    pub fn key_closure(
+    pub fn key_closure<'a>(
         &self,
-    ) -> impl FnMut(
+    ) -> impl Fn(
         &Eid,
-        hardy_bpv7::bpsec::Context,
-    ) -> Result<Option<hardy_bpv7::bpsec::KeyMaterial>, hardy_bpv7::bpsec::Error> {
+        hardy_bpv7::bpsec::key::Operation,
+    ) -> Result<Option<&'a hardy_bpv7::bpsec::Key>, hardy_bpv7::bpsec::Error> {
         |_, _| Ok(None)
     }
 }

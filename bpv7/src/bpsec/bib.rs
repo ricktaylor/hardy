@@ -25,14 +25,6 @@ pub struct OperationResult {
 }
 
 impl Operation {
-    pub fn context_id(&self) -> Context {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(_) => Context::BIB_RFC9173_HMAC_SHA2,
-            Self::Unrecognised(id, _) => Context::Unrecognised(*id),
-        }
-    }
-
     pub fn is_unsupported(&self) -> bool {
         match self {
             #[cfg(feature = "rfc9173")]
@@ -41,28 +33,28 @@ impl Operation {
         }
     }
 
-    pub fn sign(
+    pub fn sign<'a>(
         &mut self,
-        key: Option<&KeyMaterial>,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<(), Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.sign(key, args, payload_data),
+            Self::HMAC_SHA2(o) => o.sign(key_f, args, payload_data),
             Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
     }
 
-    pub fn verify(
+    pub fn verify<'a>(
         &self,
-        key: Option<&KeyMaterial>,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<OperationResult, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(key, args, payload_data),
+            Self::HMAC_SHA2(o) => o.verify(key_f, args, payload_data),
             Self::Unrecognised(..) => Ok(OperationResult {
                 protects_primary_block: args.target_number == 0,
                 can_sign: false,
@@ -138,7 +130,7 @@ impl hardy_cbor::decode::FromCbor for OperationSet {
         // Unpack into strong types
         match asb.context {
             #[cfg(feature = "rfc9173")]
-            Context::BIB_RFC9173_HMAC_SHA2 => {
+            Context::BIB_HMAC_SHA2 => {
                 rfc9173::bib_hmac_sha2::parse(asb, data).map(|(source, operations, s)| {
                     Some((OperationSet { source, operations }, shortest && s, len))
                 })

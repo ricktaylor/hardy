@@ -68,12 +68,14 @@ impl Parameters {
                     })?);
                 }
                 2 => {
-                    variant = Some(hardy_cbor::decode::parse(&data[range.start..range.end]).map(
-                        |(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        },
-                    )?);
+                    variant = Some(
+                        hardy_cbor::decode::parse(&data[range.start..range.end]).map(
+                            |(v, s)| {
+                                shortest = shortest && s;
+                                v
+                            },
+                        )?,
+                    );
                 }
                 3 => {
                     key = Some(parse::decode_box(range, data).map(|(v, s)| {
@@ -82,12 +84,14 @@ impl Parameters {
                     })?);
                 }
                 4 => {
-                    flags = Some(hardy_cbor::decode::parse(&data[range.start..range.end]).map(
-                        |(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        },
-                    )?);
+                    flags = Some(
+                        hardy_cbor::decode::parse(&data[range.start..range.end]).map(
+                            |(v, s)| {
+                                shortest = shortest && s;
+                                v
+                            },
+                        )?,
+                    );
                 }
                 _ => return Err(bpsec::Error::InvalidContextParameter(id)),
             }
@@ -190,65 +194,169 @@ impl Operation {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
-    pub fn encrypt(
+    pub fn encrypt<'a>(
         &mut self,
-        key: Option<&KeyMaterial>,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
         args: bcb::OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<Box<[u8]>, Error> {
-        let Some(key) = key else {
-            return Err(Error::NoKey(args.bpsec_source.clone()));
-        };
-        let key = unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
-        let (data, aad) = self.build_data(&args, payload_data)?;
+        if let Some(cek) = &self.parameters.key {
+            let cek = unwrap_key(args.bpsec_source, key_f, cek)?;
+            let (data, aad) = self.build_data(&args, payload_data)?;
 
-        match self.parameters.variant {
-            AesVariant::A128GCM => self.encrypt_inner(
-                &mut aes_gcm::Aes128Gcm::new_from_slice(&key).map_field_err("AES-128 key")?,
-                aad,
-                data,
-            ),
-            AesVariant::A256GCM => self.encrypt_inner(
-                &mut aes_gcm::Aes256Gcm::new_from_slice(&key).map_field_err("AES-256 key")?,
-                aad,
-                data,
-            ),
-            AesVariant::Unrecognised(_) => unreachable!(),
+            match self.parameters.variant {
+                AesVariant::A128GCM => self.encrypt_inner(
+                    &mut aes_gcm::Aes128Gcm::new_from_slice(&cek).map_field_err("AES-128 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::A256GCM => self.encrypt_inner(
+                    &mut aes_gcm::Aes256Gcm::new_from_slice(&cek).map_field_err("AES-256 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::Unrecognised(_) => unreachable!(),
+            }
+        } else {
+            let Some(jwk) = key_f(args.bpsec_source, key::Operation::Encrypt)? else {
+                return Err(Error::NoKey(args.bpsec_source.clone()));
+            };
+
+            if let Some(algorithm) = &jwk.key_algorithm {
+                if !matches!(algorithm, key::KeyAlgorithm::Direct) {
+                    return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+                }
+            };
+            let Some(algorithm) = &jwk.enc_algorithm else {
+                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+            };
+
+            if self.parameters.variant
+                != match algorithm {
+                    key::EncAlgorithm::A128GCM => AesVariant::A128GCM,
+                    key::EncAlgorithm::A256GCM => AesVariant::A256GCM,
+                    _ => AesVariant::Unrecognised(0),
+                }
+            {
+                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+            }
+
+            if let Some(ops) = &jwk.operations {
+                if ops.iter().any(|v| matches!(v, key::Operation::Encrypt)) {
+                    return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+                }
+            }
+
+            let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
+                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+            };
+
+            let (data, aad) = self.build_data(&args, payload_data)?;
+
+            match self.parameters.variant {
+                AesVariant::A128GCM => self.encrypt_inner(
+                    &mut aes_gcm::Aes128Gcm::new_from_slice(cek).map_field_err("AES-128 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::A256GCM => self.encrypt_inner(
+                    &mut aes_gcm::Aes256Gcm::new_from_slice(cek).map_field_err("AES-256 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::Unrecognised(_) => unreachable!(),
+            }
         }
     }
 
-    pub fn decrypt(
+    pub fn decrypt<'a>(
         &self,
-        key: Option<&KeyMaterial>,
+        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
         args: bcb::OperationArgs,
         payload_data: Option<&[u8]>,
     ) -> Result<bcb::OperationResult, Error> {
-        let Some(key) = key else {
-            return Ok(bcb::OperationResult {
-                plaintext: None,
-                protects_primary_block: self.parameters.flags.include_primary_block,
-                can_encrypt: false,
-            });
-        };
-        let key = unwrap_key(args.bpsec_source, key, &self.parameters.key)?;
-        let (data, aad) = self.build_data(&args, payload_data)?;
+        if let Some(cek) = &self.parameters.key {
+            let cek = match unwrap_key(args.bpsec_source, key_f, cek) {
+                Ok(cek) => cek,
+                Err(Error::NoKey(..)) => {
+                    return Ok(bcb::OperationResult {
+                        plaintext: None,
+                        protects_primary_block: self.parameters.flags.include_primary_block,
+                        can_encrypt: false,
+                    });
+                }
+                Err(e) => return Err(e),
+            };
+            let (data, aad) = self.build_data(&args, payload_data)?;
 
-        match self.parameters.variant {
-            AesVariant::A128GCM => self.decrypt_inner(
-                &mut aes_gcm::Aes128Gcm::new_from_slice(&key).map_field_err("AES-128 key")?,
-                aad,
-                data,
-            ),
-            AesVariant::A256GCM => self.decrypt_inner(
-                &mut aes_gcm::Aes256Gcm::new_from_slice(&key).map_field_err("AES-256 key")?,
-                aad,
-                data,
-            ),
-            AesVariant::Unrecognised(_) => Ok(bcb::OperationResult {
-                plaintext: None,
-                protects_primary_block: self.parameters.flags.include_primary_block,
-                can_encrypt: false,
-            }),
+            match self.parameters.variant {
+                AesVariant::A128GCM => self.decrypt_inner(
+                    &mut aes_gcm::Aes128Gcm::new_from_slice(&cek).map_field_err("AES-128 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::A256GCM => self.decrypt_inner(
+                    &mut aes_gcm::Aes256Gcm::new_from_slice(&cek).map_field_err("AES-256 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::Unrecognised(_) => Ok(bcb::OperationResult {
+                    plaintext: None,
+                    protects_primary_block: self.parameters.flags.include_primary_block,
+                    can_encrypt: false,
+                }),
+            }
+        } else {
+            let Some(jwk) = key_f(args.bpsec_source, key::Operation::Decrypt)? else {
+                return Ok(bcb::OperationResult {
+                    plaintext: None,
+                    protects_primary_block: self.parameters.flags.include_primary_block,
+                    can_encrypt: false,
+                });
+            };
+
+            if let Some(algorithm) = &jwk.key_algorithm {
+                if !matches!(algorithm, key::KeyAlgorithm::Direct) {
+                    return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+                }
+            };
+            let Some(algorithm) = &jwk.enc_algorithm else {
+                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+            };
+
+            if self.parameters.variant
+                != match algorithm {
+                    key::EncAlgorithm::A128GCM => AesVariant::A128GCM,
+                    key::EncAlgorithm::A256GCM => AesVariant::A256GCM,
+                    _ => AesVariant::Unrecognised(0),
+                }
+            {
+                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+            }
+
+            let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
+                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+            };
+
+            let (data, aad) = self.build_data(&args, payload_data)?;
+
+            match self.parameters.variant {
+                AesVariant::A128GCM => self.decrypt_inner(
+                    &mut aes_gcm::Aes128Gcm::new_from_slice(cek).map_field_err("AES-128 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::A256GCM => self.decrypt_inner(
+                    &mut aes_gcm::Aes256Gcm::new_from_slice(cek).map_field_err("AES-256 key")?,
+                    aad,
+                    data,
+                ),
+                AesVariant::Unrecognised(_) => Ok(bcb::OperationResult {
+                    plaintext: None,
+                    protects_primary_block: self.parameters.flags.include_primary_block,
+                    can_encrypt: false,
+                }),
+            }
         }
     }
 
@@ -338,7 +446,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
-        encoder.emit(Context::BIB_RFC9173_HMAC_SHA2);
+        encoder.emit(Context::BIB_HMAC_SHA2);
         encoder.emit(1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());

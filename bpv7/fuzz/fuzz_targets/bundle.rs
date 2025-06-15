@@ -1,39 +1,9 @@
 #![no_main]
 
-use hardy_bpv7::{bpsec, bundle::ValidBundle, eid::Eid};
 use libfuzzer_sys::fuzz_target;
 
-fn get_keys(
-    source: &Eid,
-    context: bpsec::Context,
-) -> Result<Option<bpsec::KeyMaterial>, bpsec::Error> {
-    let keys: &[(Eid, bpsec::Context, &'static [u8])] = &[
-        (
-            "ipn:3.0".parse().unwrap(),
-            bpsec::Context::BIB_RFC9173_HMAC_SHA2,
-            &hex_literal::hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b"),
-        ),
-        (
-            "ipn:2.1".parse().unwrap(),
-            bpsec::Context::BCB_RFC9173_AES_GCM,
-            &hex_literal::hex!("71776572747975696f70617364666768"),
-        ),
-    ];
-
-    for (eid, c2, key) in keys {
-        if &context == c2 && eid == source {
-            return Ok(Some(bpsec::KeyMaterial::SymmetricKey(Box::from(*key))));
-        }
-    }
-    Ok(None)
-}
-
 fuzz_target!(|data: &[u8]| {
-    if let Ok(ValidBundle::Rewritten(_, data, _)) = ValidBundle::parse(data, get_keys) {
-        let Ok(ValidBundle::Valid(..)) = ValidBundle::parse(&data, get_keys) else {
-            panic!("Rewrite borked");
-        };
-    }
+    common::bundle::test_bundle(data);
 });
 
 // cargo cov -- export --format=lcov  -instr-profile ./fuzz/coverage/bundle/coverage.profdata ./target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/bundle -ignore-filename-regex='/.cargo/|rustc/|/target/' > ./fuzz/coverage/bundle/lcov.info
