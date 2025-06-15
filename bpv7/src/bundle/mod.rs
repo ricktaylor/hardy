@@ -5,12 +5,12 @@ mod parse;
 mod primary_block;
 
 pub enum Payload {
-    Borrowed(std::ops::Range<usize>),
+    Borrowed(core::ops::Range<usize>),
     Owned(zeroize::Zeroizing<Box<[u8]>>),
 }
 
-impl std::fmt::Debug for Payload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Borrowed(arg0) => write!(f, "Payload {} bytes", arg0.len()),
             Self::Owned(arg0) => write!(f, "Payload {} bytes", arg0.len()),
@@ -25,6 +25,7 @@ pub struct FragmentInfo {
 }
 
 pub mod id {
+    use super::*;
     use thiserror::Error;
 
     #[derive(Error, Debug)]
@@ -38,7 +39,7 @@ pub mod id {
         #[error("Failed to decode {field}: {source}")]
         InvalidField {
             field: &'static str,
-            source: Box<dyn std::error::Error + Send + Sync>,
+            source: Box<dyn core::error::Error + Send + Sync>,
         },
 
         #[error(transparent)]
@@ -50,8 +51,8 @@ trait CaptureFieldIdErr<T> {
     fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error>;
 }
 
-impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldIdErr<T>
-    for std::result::Result<T, E>
+impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldIdErr<T>
+    for core::result::Result<T, E>
 {
     fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error> {
         self.map_err(|e| id::Error::InvalidField {
@@ -211,15 +212,15 @@ pub struct Bundle {
     pub crc_type: crc::CrcType,
     pub destination: eid::Eid,
     pub report_to: eid::Eid,
-    pub lifetime: std::time::Duration,
+    pub lifetime: core::time::Duration,
 
     // Unpacked from extension blocks
     pub previous_node: Option<eid::Eid>,
-    pub age: Option<std::time::Duration>,
+    pub age: Option<core::time::Duration>,
     pub hop_count: Option<hop_info::HopInfo>,
 
     // The extension blocks
-    pub blocks: std::collections::HashMap<u64, block::Block>,
+    pub blocks: HashMap<u64, block::Block>,
 }
 
 impl Bundle {
@@ -354,6 +355,6 @@ pub enum ValidBundle {
     Invalid(
         Bundle,
         status_report::ReasonCode,
-        Box<dyn std::error::Error + Send + Sync>,
+        Box<dyn core::error::Error + Send + Sync>,
     ),
 }

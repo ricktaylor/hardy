@@ -9,7 +9,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
-hardy-bpv7 = { path = "../bpv7" }
+hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.36.0", features = ["bundled", "time"] }
 tokio = { version = "1.45.0", features = ["rt-multi-thread"] }

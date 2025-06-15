@@ -1,5 +1,6 @@
 use super::*;
-use std::{collections::HashMap, ops::Range};
+use alloc::rc::Rc;
+use core::ops::Range;
 
 fn parse_ranges<const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,

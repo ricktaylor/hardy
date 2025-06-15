@@ -138,8 +138,8 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn payload_range(&self) -> std::ops::Range<usize> {
-        std::ops::Range {
+    pub fn payload_range(&self) -> core::ops::Range<usize> {
+        core::ops::Range {
             start: self.data_start + self.payload_offset,
             end: self.data_start + self.payload_offset + self.payload_len,
         }
@@ -187,7 +187,12 @@ impl Block {
         array.emit_raw(block_data)
     }
 
-    pub(crate) fn emit(&mut self, block_number: u64, data: &[u8], array: &mut hardy_cbor::encode::Array) {
+    pub(crate) fn emit(
+        &mut self,
+        block_number: u64,
+        data: &[u8],
+        array: &mut hardy_cbor::encode::Array,
+    ) {
         self.emit_inner(block_number, array, |a| a.emit(data));
     }
 

@@ -1,5 +1,6 @@
 use super::*;
 use aes_gcm::KeyInit;
+use alloc::rc::Rc;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -425,7 +426,7 @@ impl Operation {
         cipher
             .decrypt_in_place(self.parameters.iv.as_ref().into(), &aad, &mut data)
             .map(|_| bcb::OperationResult {
-                plaintext: Some(Zeroizing::new(data.into())),
+                plaintext: Some(zeroize::Zeroizing::new(data.into())),
                 protects_primary_block: self.parameters.flags.include_primary_block,
                 can_encrypt: true,
             })

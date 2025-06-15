@@ -6,7 +6,7 @@ pub struct Builder {
     source: eid::Eid,
     destination: eid::Eid,
     report_to: Option<eid::Eid>,
-    lifetime: std::time::Duration,
+    lifetime: core::time::Duration,
     payload: BlockTemplate,
     extensions: Vec<BlockTemplate>,
 }
@@ -19,7 +19,7 @@ impl Default for Builder {
             source: eid::Eid::default(),
             destination: eid::Eid::default(),
             report_to: None,
-            lifetime: std::time::Duration::new(24 * 60 * 60 * 60, 0),
+            lifetime: core::time::Duration::new(24 * 60 * 60 * 60, 0),
             payload: BlockTemplate::new(
                 block::Type::Payload,
                 block::Flags::default(),
@@ -60,7 +60,7 @@ impl Builder {
         self
     }
 
-    pub fn lifetime(&mut self, lifetime: std::time::Duration) -> &mut Self {
+    pub fn lifetime(&mut self, lifetime: core::time::Duration) -> &mut Self {
         self.lifetime = lifetime;
         self
     }
@@ -78,18 +78,18 @@ impl Builder {
     pub fn build(mut self) -> (bundle::Bundle, Vec<u8>) {
         let mut bundle = bundle::Bundle {
             report_to: if let Some(report_to) = &mut self.report_to {
-                std::mem::take(report_to)
+                core::mem::take(report_to)
             } else {
                 self.source.clone()
             },
             id: bundle::Id {
-                source: std::mem::take(&mut self.source),
+                source: core::mem::take(&mut self.source),
                 timestamp: creation_timestamp::CreationTimestamp::now(),
                 ..Default::default()
             },
             flags: self.bundle_flags.clone(),
             crc_type: self.crc_type,
-            destination: std::mem::take(&mut self.destination),
+            destination: core::mem::take(&mut self.destination),
             lifetime: self.lifetime,
             ..Default::default()
         };

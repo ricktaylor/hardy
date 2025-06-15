@@ -1,5 +1,10 @@
 use super::*;
+
+#[cfg(feature = "std")]
 use std::collections::HashMap;
+
+#[cfg(not(feature = "std"))]
+use hashbrown::HashMap;
 
 pub struct Editor<'a> {
     original: &'a bundle::Bundle,
@@ -94,7 +99,7 @@ impl<'a> Editor<'a> {
             self.build_block(0, primary_block, a);
 
             // Emit extension blocks
-            for (block_number, block) in std::mem::take(&mut self.blocks) {
+            for (block_number, block) in core::mem::take(&mut self.blocks) {
                 self.build_block(block_number, block, a);
             }
 

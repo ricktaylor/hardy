@@ -63,7 +63,7 @@ pub enum Error {
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Box<dyn core::error::Error + Send + Sync>,
     },
 }
 
@@ -71,8 +71,8 @@ pub trait CaptureFieldErr<T> {
     fn map_field_err(self, field: &'static str) -> Result<T, Error>;
 }
 
-impl<T, E: Into<Box<dyn std::error::Error + Send + Sync>>> CaptureFieldErr<T>
-    for std::result::Result<T, E>
+impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T>
+    for core::result::Result<T, E>
 {
     fn map_field_err(self, field: &'static str) -> Result<T, Error> {
         self.map_err(|e| Error::InvalidField {

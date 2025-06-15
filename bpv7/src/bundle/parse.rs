@@ -1,7 +1,6 @@
 use super::*;
+use alloc::borrow::Cow;
 use error::CaptureFieldErr;
-use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 
 impl Bundle {
     /* Refactoring this huge function into parts doesn't really help readability,
@@ -246,7 +245,7 @@ impl Bundle {
                             source_data,
                         )
                         .map_field_err("Bundle Age Block")?;
-                    self.age = Some(std::time::Duration::from_millis(v));
+                    self.age = Some(core::time::Duration::from_millis(v));
                     s
                 }
                 block::Type::HopCount => {

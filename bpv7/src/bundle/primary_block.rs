@@ -8,7 +8,7 @@ struct PartialPrimaryBlock {
     pub destination: Result<eid::Eid, Error>,
     pub report_to: eid::Eid,
     pub timestamp: Result<creation_timestamp::CreationTimestamp, Error>,
-    pub lifetime: Result<std::time::Duration, Error>,
+    pub lifetime: Result<core::time::Duration, Error>,
     pub fragment_info: Result<Option<bundle::FragmentInfo>, Error>,
     pub crc_result: Result<(), Error>,
 }
@@ -86,7 +86,7 @@ impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
                 .parse::<(u64, bool)>()
                 .map(|(v, s)| {
                     shortest = shortest && s;
-                    std::time::Duration::from_millis(v)
+                    core::time::Duration::from_millis(v)
                 })
                 .map_err(Into::into);
 
@@ -144,9 +144,9 @@ pub struct PrimaryBlock {
     pub destination: eid::Eid,
     pub report_to: eid::Eid,
     pub timestamp: creation_timestamp::CreationTimestamp,
-    pub lifetime: std::time::Duration,
+    pub lifetime: core::time::Duration,
     pub fragment_info: Option<bundle::FragmentInfo>,
-    pub error: Option<Box<dyn std::error::Error + Send + Sync>>,
+    pub error: Option<Box<dyn core::error::Error + Send + Sync>>,
 }
 
 impl PrimaryBlock {
@@ -154,7 +154,7 @@ impl PrimaryBlock {
         self,
     ) -> (
         bundle::Bundle,
-        Option<Box<dyn std::error::Error + Send + Sync>>,
+        Option<Box<dyn core::error::Error + Send + Sync>>,
     ) {
         (
             bundle::Bundle {
@@ -349,7 +349,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                     source,
                     destination,
                     timestamp,
-                    lifetime: std::time::Duration::default(),
+                    lifetime: core::time::Duration::default(),
                     fragment_info: fragment_info.unwrap_or_default(),
                     error: Some(
                         Error::InvalidField {

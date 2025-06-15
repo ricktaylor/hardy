@@ -1,6 +1,6 @@
 use super::*;
+use alloc::borrow::Cow;
 use error::CaptureFieldErr;
-use std::borrow::Cow;
 use winnow::{
     ModalResult, Parser,
     ascii::dec_uint,
@@ -72,7 +72,7 @@ fn parse_pchar<'a>(input: &mut &'a [u8]) -> ModalResult<Cow<'a, str>> {
                 '~',
             ),
         )
-        .map(|v| Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) })),
+        .map(|v| Cow::Borrowed(unsafe { str::from_utf8_unchecked(v) })),
         preceded(
             '%',
             (one_of(AsChar::is_hex_digit), one_of(AsChar::is_hex_digit)),
@@ -83,10 +83,10 @@ fn parse_pchar<'a>(input: &mut &'a [u8]) -> ModalResult<Cow<'a, str>> {
             let second = from_hex_digit(second);
             if first <= 7 {
                 let val = [(first << 4) | second];
-                Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+                Cow::Owned(unsafe { str::from_utf8_unchecked(&val) }.into())
             } else {
                 let val = [0xC0u8 | (first >> 2), 0x80u8 | ((first & 3) << 4) | second];
-                Cow::Owned(unsafe { std::str::from_utf8_unchecked(&val) }.into())
+                Cow::Owned(unsafe { str::from_utf8_unchecked(&val) }.into())
             }
         }),
     ))
@@ -149,7 +149,7 @@ pub fn parse_eid(input: &mut &[u8]) -> ModalResult<Eid> {
     alt((preceded("dtn:", parse_dtn), preceded("ipn:", parse_ipn))).parse_next(input)
 }
 
-impl std::str::FromStr for Eid {
+impl core::str::FromStr for Eid {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -173,7 +173,10 @@ impl From<Eid> for String {
     }
 }
 
-fn ipn_from_cbor(value: &mut hardy_cbor::decode::Array, shortest: bool) -> Result<(Eid, bool), Error> {
+fn ipn_from_cbor(
+    value: &mut hardy_cbor::decode::Array,
+    shortest: bool,
+) -> Result<(Eid, bool), Error> {
     let (a, s1) = value.parse()?;
     let (b, s2) = value.parse()?;
     let (c, shortest) = if let Some((c, s3)) = value.try_parse()? {

@@ -1,5 +1,6 @@
 use super::*;
 use aes_gcm::aes::cipher::BlockSizeUser;
+use alloc::rc::Rc;
 use hmac::{
     Mac,
     digest::{

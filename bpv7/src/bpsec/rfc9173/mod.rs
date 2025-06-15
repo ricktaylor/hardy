@@ -1,5 +1,5 @@
 use super::*;
-use std::ops::Range;
+use core::ops::Range;
 
 pub mod bcb_aes_gcm;
 pub mod bib_hmac_sha2;
@@ -72,7 +72,7 @@ fn unwrap_key<'a>(
     source: &eid::Eid,
     key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
     cek: &[u8],
-) -> Result<Zeroizing<Box<[u8]>>, bpsec::Error> {
+) -> Result<zeroize::Zeroizing<Box<[u8]>>, bpsec::Error> {
     let Some(jwk) = key_f(source, key::Operation::UnwrapKey)? else {
         return Err(Error::NoKey(source.clone()));
     };
@@ -88,15 +88,15 @@ fn unwrap_key<'a>(
     match algorithm {
         key::KeyAlgorithm::A128KW => aes_kw::KekAes128::try_from(kek.as_ref())
             .and_then(|kek| kek.unwrap_vec(cek))
-            .map(|v| Zeroizing::from(Box::from(v)))
+            .map(|v| zeroize::Zeroizing::from(Box::from(v)))
             .map_field_err("wrapped key"),
         key::KeyAlgorithm::A192KW => aes_kw::KekAes192::try_from(kek.as_ref())
             .and_then(|kek| kek.unwrap_vec(cek))
-            .map(|v| Zeroizing::from(Box::from(v)))
+            .map(|v| zeroize::Zeroizing::from(Box::from(v)))
             .map_field_err("wrapped key"),
         key::KeyAlgorithm::A256KW => aes_kw::KekAes256::try_from(kek.as_ref())
             .and_then(|kek| kek.unwrap_vec(cek))
-            .map(|v| Zeroizing::from(Box::from(v)))
+            .map(|v| zeroize::Zeroizing::from(Box::from(v)))
             .map_field_err("wrapped key"),
         _ => Err(bpsec::Error::NoKey(source.clone())),
     }

@@ -1,3 +1,4 @@
+use super::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -56,7 +57,7 @@ impl hardy_cbor::encode::ToCbor for &Eid {
                     demux
                         .iter()
                         .map(|s| urlencoding::encode(s))
-                        .collect::<Vec<std::borrow::Cow<str>>>()
+                        .collect::<Vec<alloc::borrow::Cow<str>>>()
                         .join("/")
                 ));
             }
@@ -115,11 +116,11 @@ enum DebugError {
     Decode(#[from] hardy_cbor::decode::Error),
 
     #[error(transparent)]
-    Fmt(#[from] std::fmt::Error),
+    Fmt(#[from] core::fmt::Error),
 }
 
-impl std::fmt::Display for Eid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Eid {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Eid::Null => f.write_str("dtn:none"),
             Eid::LocalNode { service_number } => {
@@ -152,7 +153,7 @@ impl std::fmt::Display for Eid {
                 demux
                     .iter()
                     .map(|s| urlencoding::encode(s))
-                    .collect::<Vec<std::borrow::Cow<str>>>()
+                    .collect::<Vec<alloc::borrow::Cow<str>>>()
                     .join("/")
             ),
             Eid::Unknown { scheme, data } => {
