@@ -44,37 +44,6 @@ struct RibInner {
     address_types: HashMap<cla::ClaAddressType, Arc<cla_registry::Cla>>,
 }
 
-#[rustversion::before(1.88)]
-trait HashExtractIf<K, V> {
-    fn extract_if<T: FnMut(&K, &mut V) -> bool>(&mut self, f: T) -> impl Iterator<Item = (K, V)>;
-}
-
-#[rustversion::before(1.88)]
-impl<K, V, S> HashExtractIf<K, V> for HashMap<K, V, S>
-where
-    K: std::cmp::Eq + std::hash::Hash + Clone,
-    S: std::hash::BuildHasher,
-{
-    fn extract_if<T: FnMut(&K, &mut V) -> bool>(
-        &mut self,
-        mut f: T,
-    ) -> impl Iterator<Item = (K, V)> {
-        let mut keys = Vec::new();
-        for (k, v) in self.iter_mut() {
-            if (f)(k, v) {
-                keys.push(k.clone());
-            }
-        }
-        let mut results = Vec::new();
-        for k in keys {
-            if let Some(v) = self.remove_entry(&k) {
-                results.push(v);
-            }
-        }
-        results.into_iter()
-    }
-}
-
 #[derive(Debug)]
 pub struct Rib {
     inner: RwLock<RibInner>,
@@ -331,7 +300,6 @@ impl Rib {
         }
     }
 
-    #[rustversion::attr(before(1.88), allow(unstable_name_collisions))]
     async fn wake(&self, pattern: EidPatternSet) {
         for token in self
             .cancellable_waits
