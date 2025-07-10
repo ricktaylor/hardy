@@ -81,17 +81,17 @@ impl UnknownOperation {
         source: &eid::Eid,
         id: u64,
     ) {
-        encoder.emit(id);
+        encoder.emit(&id);
         if self.parameters.is_empty() {
-            encoder.emit(0);
+            encoder.emit(&0);
             encoder.emit(source);
         } else {
-            encoder.emit(1);
+            encoder.emit(&1);
             encoder.emit(source);
             encoder.emit_array(Some(self.parameters.len()), |a| {
                 for (id, result) in self.parameters.iter() {
                     a.emit_array(Some(2), |a| {
-                        a.emit(*id);
+                        a.emit(id);
                         a.emit_raw_slice(result);
                     });
                 }
@@ -103,7 +103,7 @@ impl UnknownOperation {
         array.emit_array(Some(self.results.len()), |a| {
             for (id, result) in &self.results {
                 a.emit_array(Some(2), |a| {
-                    a.emit(*id);
+                    a.emit(id);
                     a.emit_raw_slice(result);
                 });
             }

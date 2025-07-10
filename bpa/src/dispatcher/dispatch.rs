@@ -152,7 +152,7 @@ impl Dispatcher {
 
             editor
                 .replace_extension_block(hardy_bpv7::block::Type::BundleAge)
-                .data(hardy_cbor::encode::emit(bundle_age))
+                .data(hardy_cbor::encode::emit(&bundle_age))
                 .build();
         }
 

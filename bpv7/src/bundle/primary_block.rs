@@ -190,19 +190,19 @@ impl PrimaryBlock {
                     count
                 }),
                 |a| {
-                    a.emit(7);
+                    a.emit(&7);
                     a.emit(&bundle.flags);
-                    a.emit(bundle.crc_type);
+                    a.emit(&bundle.crc_type);
                     a.emit(&bundle.destination);
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
                     a.emit(&bundle.id.timestamp);
-                    a.emit(bundle.lifetime.as_millis() as u64);
+                    a.emit(&(bundle.lifetime.as_millis() as u64));
 
                     // Fragment info
                     if let Some(fragment_info) = &bundle.id.fragment_info {
-                        a.emit(fragment_info.offset);
-                        a.emit(fragment_info.total_len);
+                        a.emit(&fragment_info.offset);
+                        a.emit(&fragment_info.total_len);
                     }
 
                     // CRC

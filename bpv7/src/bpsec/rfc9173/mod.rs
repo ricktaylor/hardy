@@ -53,8 +53,8 @@ impl hardy_cbor::decode::FromCbor for ScopeFlags {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &ScopeFlags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for ScopeFlags {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut flags = self.unrecognised;
         if self.include_primary_block {
             flags |= 1 << 0;
@@ -65,7 +65,7 @@ impl hardy_cbor::encode::ToCbor for &ScopeFlags {
         if self.include_security_header {
             flags |= 1 << 2;
         }
-        encoder.emit(flags)
+        encoder.emit(&flags)
     }
 }
 

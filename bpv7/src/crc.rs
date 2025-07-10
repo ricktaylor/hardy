@@ -58,8 +58,8 @@ impl From<CrcType> for u64 {
 }
 
 impl hardy_cbor::encode::ToCbor for CrcType {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(u64::from(self))
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(&u64::from(*self))
     }
 }
 

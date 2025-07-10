@@ -7,11 +7,11 @@ pub struct HopInfo {
     pub count: u64,
 }
 
-impl hardy_cbor::encode::ToCbor for &HopInfo {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for HopInfo {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| {
-            a.emit(self.limit);
-            a.emit(self.count);
+            a.emit(&self.limit);
+            a.emit(&self.count);
         })
     }
 }

@@ -92,7 +92,7 @@ impl Operation {
         }
     }
 
-    fn emit_result(self, array: &mut hardy_cbor::encode::Array) {
+    fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.emit_result(array),
@@ -113,12 +113,9 @@ impl OperationSet {
 }
 
 impl hardy_cbor::encode::ToCbor for OperationSet {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         // Ensure we process operations in the same order
-        let ops = self
-            .operations
-            .into_iter()
-            .collect::<Vec<(u64, Operation)>>();
+        let ops = self.operations.iter().collect::<Vec<(&u64, &Operation)>>();
 
         // Targets
         encoder.emit_array(Some(ops.len()), |a| {

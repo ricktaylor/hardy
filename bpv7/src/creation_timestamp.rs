@@ -17,15 +17,15 @@ impl CreationTimestamp {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &CreationTimestamp {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for CreationTimestamp {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| {
-            if let Some(timestamp) = self.creation_time {
+            if let Some(timestamp) = &self.creation_time {
                 a.emit(timestamp);
             } else {
-                a.emit(0);
+                a.emit(&0);
             }
-            a.emit(self.sequence_number);
+            a.emit(&self.sequence_number);
         })
     }
 }

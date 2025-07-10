@@ -111,8 +111,8 @@ impl TryFrom<u64> for ReasonCode {
 }
 
 impl hardy_cbor::encode::ToCbor for ReasonCode {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(u64::from(self))
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(&u64::from(*self))
     }
 }
 
@@ -136,14 +136,14 @@ fn emit_status_assertion(a: &mut hardy_cbor::encode::Array, sa: &Option<StatusAs
     // This is a horrible format!
     match sa {
         None => a.emit_array(Some(1), |a| {
-            a.emit(false);
+            a.emit(&false);
         }),
         Some(StatusAssertion(None)) => a.emit_array(Some(1), |a| {
-            a.emit(true);
+            a.emit(&true);
         }),
         Some(StatusAssertion(Some(timestamp))) => a.emit_array(Some(2), |a| {
-            a.emit(true);
-            a.emit(*timestamp);
+            a.emit(&true);
+            a.emit(timestamp);
         }),
     }
 }
@@ -198,8 +198,8 @@ pub struct BundleStatusReport {
     pub reason: ReasonCode,
 }
 
-impl hardy_cbor::encode::ToCbor for &BundleStatusReport {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for BundleStatusReport {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(
             Some(self.bundle_id.fragment_info.as_ref().map_or(4, |_| 6)),
             |a| {
@@ -212,7 +212,7 @@ impl hardy_cbor::encode::ToCbor for &BundleStatusReport {
                 });
 
                 // Reason code
-                a.emit(self.reason);
+                a.emit(&self.reason);
                 // Source EID
                 a.emit(&self.bundle_id.source);
                 // Creation Timestamp
@@ -220,8 +220,8 @@ impl hardy_cbor::encode::ToCbor for &BundleStatusReport {
 
                 if let Some(fragment_info) = &self.bundle_id.fragment_info {
                     // Add fragment info
-                    a.emit(fragment_info.offset);
-                    a.emit(fragment_info.total_len);
+                    a.emit(&fragment_info.offset);
+                    a.emit(&fragment_info.total_len);
                 }
             },
         )
@@ -299,11 +299,11 @@ pub enum AdministrativeRecord {
     BundleStatusReport(BundleStatusReport),
 }
 
-impl hardy_cbor::encode::ToCbor for &AdministrativeRecord {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(2), |a| match self {
             AdministrativeRecord::BundleStatusReport(report) => {
-                a.emit(1);
+                a.emit(&1);
                 a.emit(report);
             }
         })

@@ -100,8 +100,8 @@ impl Id {
             hardy_cbor::encode::emit_array(Some(4), |array| {
                 array.emit(&self.source);
                 array.emit(&self.timestamp);
-                array.emit(fragment_info.offset);
-                array.emit(fragment_info.total_len);
+                array.emit(&fragment_info.offset);
+                array.emit(&fragment_info.total_len);
             })
         } else {
             hardy_cbor::encode::emit_array(Some(2), |array| {
@@ -189,9 +189,9 @@ impl From<&Flags> for u64 {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &Flags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(u64::from(self))
+impl hardy_cbor::encode::ToCbor for Flags {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(&u64::from(self))
     }
 }
 

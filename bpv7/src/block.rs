@@ -53,9 +53,9 @@ impl From<u64> for Flags {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &Flags {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(u64::from(self))
+impl hardy_cbor::encode::ToCbor for Flags {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(&u64::from(self))
     }
 }
 
@@ -111,8 +111,8 @@ impl From<u64> for Type {
 }
 
 impl hardy_cbor::encode::ToCbor for Type {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(u64::from(self))
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(&u64::from(*self))
     }
 }
 
@@ -164,10 +164,10 @@ impl Block {
                     6
                 }),
                 |a| {
-                    a.emit(self.block_type);
-                    a.emit(block_number);
+                    a.emit(&self.block_type);
+                    a.emit(&block_number);
                     a.emit(&self.flags);
-                    a.emit(self.crc_type);
+                    a.emit(&self.crc_type);
 
                     // Payload
                     self.payload_offset = a.offset();
@@ -208,7 +208,7 @@ impl Block {
                 hardy_cbor::decode::Value::ByteStream(data) => {
                     // This is horrible, but removes a potentially large data copy
                     let len = data.iter().fold(0u64, |len, d| len + d.len() as u64);
-                    let mut header = hardy_cbor::encode::emit(len);
+                    let mut header = hardy_cbor::encode::emit(&len);
                     if let Some(m) = header.first_mut() {
                         *m |= 2 << 5;
                     }

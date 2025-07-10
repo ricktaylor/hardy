@@ -22,8 +22,8 @@ impl DtnTime {
 }
 
 impl hardy_cbor::encode::ToCbor for DtnTime {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(self.millisecs)
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+        encoder.emit(&self.millisecs)
     }
 }
 

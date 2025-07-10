@@ -23,11 +23,11 @@ enum ShaVariant {
 }
 
 impl hardy_cbor::encode::ToCbor for ShaVariant {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
-            Self::HMAC_256_256 => 5,
-            Self::HMAC_384_384 => 6,
-            Self::HMAC_512_512 => 7,
+            Self::HMAC_256_256 => &5,
+            Self::HMAC_384_384 => &6,
+            Self::HMAC_512_512 => &7,
             Self::Unrecognised(v) => v,
         })
     }
@@ -99,8 +99,8 @@ impl Parameters {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &Parameters {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for Parameters {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut mask: u32 = 0;
         if self.variant != ShaVariant::default() {
             mask |= 1 << 1;
@@ -115,9 +115,9 @@ impl hardy_cbor::encode::ToCbor for &Parameters {
             for b in 1..=3 {
                 if mask & (1 << b) != 0 {
                     a.emit_array(Some(2), |a| {
-                        a.emit(b);
+                        a.emit(&b);
                         match b {
-                            1 => a.emit(self.variant),
+                            1 => a.emit(&self.variant),
                             2 => a.emit(self.key.as_ref().unwrap().as_ref()),
                             3 => a.emit(&self.flags),
                             _ => unreachable!(),
@@ -152,11 +152,11 @@ impl Results {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &Results {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for Results {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit_array(Some(1), |a| {
             a.emit_array(Some(2), |a| {
-                a.emit(1);
+                a.emit(&1);
                 a.emit(self.0.as_ref());
             });
         })
@@ -164,7 +164,7 @@ impl hardy_cbor::encode::ToCbor for &Results {
 }
 
 fn emit_data(mac: &mut impl hmac::Mac, data: &[u8]) {
-    let mut header = hardy_cbor::encode::emit(data.len());
+    let mut header = hardy_cbor::encode::emit(&data.len());
     if let Some(m) = header.first_mut() {
         *m |= 2 << 5;
     }
@@ -206,8 +206,8 @@ where
 
         if flags.include_target_header {
             let mut encoder = hardy_cbor::encode::Encoder::new();
-            encoder.emit(args.target.block_type);
-            encoder.emit(args.target_number);
+            encoder.emit(&args.target.block_type);
+            encoder.emit(&args.target_number);
             encoder.emit(&args.target.flags);
             mac.update(&encoder.build());
         }
@@ -215,8 +215,8 @@ where
 
     if flags.include_security_header {
         let mut encoder = hardy_cbor::encode::Encoder::new();
-        encoder.emit(args.source.block_type);
-        encoder.emit(args.source_number);
+        encoder.emit(&args.source.block_type);
+        encoder.emit(&args.source_number);
         encoder.emit(&args.source.flags);
         mac.update(&encoder.build());
     }
@@ -234,7 +234,7 @@ where
                         len.checked_add(d.len() as u64)
                             .ok_or(Error::InvalidBIBTarget)
                     })?;
-                    let mut header = hardy_cbor::encode::emit(len);
+                    let mut header = hardy_cbor::encode::emit(&len);
                     if let Some(m) = header.first_mut() {
                         *m |= 2 << 5;
                     }
@@ -716,18 +716,18 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
-        encoder.emit(Context::BIB_HMAC_SHA2);
+        encoder.emit(&Context::BIB_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
-            encoder.emit(0);
+            encoder.emit(&0);
             encoder.emit(source);
         } else {
-            encoder.emit(1);
+            encoder.emit(&1);
             encoder.emit(source);
             encoder.emit(self.parameters.as_ref());
         }
     }
 
-    pub fn emit_result(self, array: &mut hardy_cbor::encode::Array) {
+    pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
         array.emit(&self.results);
     }
 }

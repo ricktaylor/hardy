@@ -385,7 +385,8 @@ impl Bundle {
                     block::Type::BundleAge => {
                         new_payloads.insert(
                             *block_number,
-                            hardy_cbor::encode::emit(self.age.unwrap().as_millis() as u64).into(),
+                            hardy_cbor::encode::emit(&(self.age.unwrap().as_millis() as u64))
+                                .into(),
                         );
                         false
                     }
@@ -410,13 +411,13 @@ impl Bundle {
         // Update BIBs
         for (bib_block_number, bib) in bibs {
             noncanonical_blocks.remove(&bib_block_number);
-            new_payloads.insert(bib_block_number, hardy_cbor::encode::emit(bib).into());
+            new_payloads.insert(bib_block_number, hardy_cbor::encode::emit(&bib).into());
         }
 
         // Update BCBs
         for (bcb_block_number, bcb) in bcbs {
             noncanonical_blocks.remove(&bcb_block_number);
-            new_payloads.insert(bcb_block_number, hardy_cbor::encode::emit(bcb).into());
+            new_payloads.insert(bcb_block_number, hardy_cbor::encode::emit(&bcb).into());
         }
 
         let new_data = hardy_cbor::encode::emit_array(None, |a| {

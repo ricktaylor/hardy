@@ -13,10 +13,10 @@ enum AesVariant {
 }
 
 impl hardy_cbor::encode::ToCbor for AesVariant {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         encoder.emit(match self {
-            Self::A128GCM => 1,
-            Self::A256GCM => 3,
+            Self::A128GCM => &1,
+            Self::A256GCM => &3,
             Self::Unrecognised(v) => v,
         })
     }
@@ -113,8 +113,8 @@ impl Parameters {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &Parameters {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for Parameters {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         let mut mask: u32 = 1 << 1;
         if self.variant != AesVariant::default() {
             mask |= 1 << 2;
@@ -129,10 +129,10 @@ impl hardy_cbor::encode::ToCbor for &Parameters {
             for b in 1..=4 {
                 if mask & (1 << b) != 0 {
                     a.emit_array(Some(2), |a| {
-                        a.emit(b);
+                        a.emit(&b);
                         match b {
                             1 => a.emit(self.iv.as_ref()),
-                            2 => a.emit(self.variant),
+                            2 => a.emit(&self.variant),
                             3 => a.emit(self.key.as_ref().unwrap().as_ref()),
                             4 => a.emit(&self.flags),
                             _ => unreachable!(),
@@ -167,12 +167,12 @@ impl Results {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for &Results {
-    fn to_cbor(self, encoder: &mut hardy_cbor::encode::Encoder) {
+impl hardy_cbor::encode::ToCbor for Results {
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         if let Some(r) = self.0.as_ref() {
             encoder.emit_array(Some(1), |a| {
                 a.emit_array(Some(2), |a| {
-                    a.emit(1);
+                    a.emit(&1);
                     a.emit(r.as_ref());
                 });
             })
@@ -200,14 +200,14 @@ fn build_data(
     }
 
     if flags.include_target_header {
-        encoder.emit(args.target.block_type);
-        encoder.emit(args.target_number);
+        encoder.emit(&args.target.block_type);
+        encoder.emit(&args.target_number);
         encoder.emit(&args.target.flags);
     }
 
     if flags.include_security_header {
-        encoder.emit(args.source.block_type);
-        encoder.emit(args.source_number);
+        encoder.emit(&args.source.block_type);
+        encoder.emit(&args.source_number);
         encoder.emit(&args.source.flags);
     }
     let aad = encoder.build();
@@ -569,13 +569,13 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
-        encoder.emit(Context::BIB_HMAC_SHA2);
-        encoder.emit(1);
+        encoder.emit(&Context::BIB_HMAC_SHA2);
+        encoder.emit(&1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());
     }
 
-    pub fn emit_result(self, array: &mut hardy_cbor::encode::Array) {
+    pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
         array.emit(&self.results);
     }
 }
