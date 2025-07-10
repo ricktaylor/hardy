@@ -253,26 +253,20 @@ impl Bundle {
     fn parse_payload<T>(
         &self,
         block_number: &u64,
-        decrypted_data: Option<&(zeroize::Zeroizing<Box<[u8]>>, bool)>,
+        decrypted_data: Option<&zeroize::Zeroizing<Box<[u8]>>>,
         source_data: &[u8],
     ) -> Result<(&block::Block, T, bool), Error>
     where
         T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
     {
-        if let Some((block_data, can_encrypt)) = decrypted_data {
-            match hardy_cbor::decode::parse::<(T, bool, usize)>(block_data)
-                .map(|(v, s, len)| (v, s && len == block_data.len()))
-            {
-                Ok((v, s)) => {
-                    // If we can't re-encrypt, we can't rewrite
-                    if !s && !can_encrypt {
-                        Err(Error::NonCanonical(*block_number))
-                    } else {
-                        Ok((self.blocks.get(block_number).unwrap(), v, s))
-                    }
-                }
-                Err(e) => Err(e.into()),
-            }
+        if let Some(block_data) = decrypted_data {
+            hardy_cbor::decode::parse::<(T, bool, usize)>(block_data).map(|(v, s, len)| {
+                (
+                    self.blocks.get(block_number).unwrap(),
+                    v,
+                    s && len == block_data.len(),
+                )
+            })
         } else {
             let block = self.blocks.get(block_number).unwrap();
             hardy_cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
@@ -293,14 +287,14 @@ impl Bundle {
                 _ => unreachable!(),
             })
             .map(|((v, s), _)| (block, v, s))
-            .map_err(Into::into)
         }
+        .map_err(Into::into)
     }
 
-    pub fn payload<'a>(
+    pub fn payload(
         &self,
         data: &[u8],
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+        key_f: &impl bpsec::key::KeyStore,
     ) -> Result<Payload, Error> {
         let Some(payload_block) = self.blocks.get(&1) else {
             return Err(Error::Altered);
@@ -321,29 +315,26 @@ impl Bundle {
         };
 
         // Confirm we can decrypt if we have keys
-        let Some(data) = op
-            .decrypt(
-                key_f,
-                bpsec::bcb::OperationArgs {
-                    bpsec_source: &bcb.source,
-                    target: payload_block,
-                    target_number: 1,
-                    target_payload: payload_block.payload(data),
-                    source: bcb_block,
-                    source_number: bcb_block_number,
-                    primary_block: self
-                        .blocks
-                        .get(&0)
-                        .expect("Missing primary block!")
-                        .payload(data),
-                },
-                None,
-            )?
-            .plaintext
-        else {
-            return Err(bpsec::Error::DecryptionFailed.into());
-        };
-        Ok(Payload::Owned(data))
+        op.decrypt_any(
+            key_f,
+            bpsec::bcb::OperationArgs {
+                bpsec_source: &bcb.source,
+                target: payload_block,
+                target_number: 1,
+                target_payload: payload_block.payload(data),
+                source: bcb_block,
+                source_number: bcb_block_number,
+                primary_block: self
+                    .blocks
+                    .get(&0)
+                    .expect("Missing primary block!")
+                    .payload(data),
+            },
+            None,
+        )?
+        .plaintext
+        .ok_or(bpsec::Error::DecryptionFailed.into())
+        .map(Payload::Owned)
     }
 }
 

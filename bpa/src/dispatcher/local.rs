@@ -102,7 +102,7 @@ impl Dispatcher {
                 id: bundle.bundle.id.to_key(),
                 expiry: bundle.expiry(),
                 ack_requested: bundle.bundle.flags.app_ack_requested,
-                payload: match bundle.bundle.payload(&data, self.key_closure())? {
+                payload: match bundle.bundle.payload(&data, self)? {
                     hardy_bpv7::bundle::Payload::Borrowed(range) => data.slice(range),
                     hardy_bpv7::bundle::Payload::Owned(data) => Bytes::from_owner(data),
                 },

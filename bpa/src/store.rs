@@ -238,7 +238,7 @@ impl Store {
 
         // Parse the bundle
         let (bundle, reason, hash, report_unsupported) =
-            match hardy_bpv7::bundle::ValidBundle::parse(&data, dispatcher.key_closure()) {
+            match hardy_bpv7::bundle::ValidBundle::parse(&data, dispatcher.as_ref()) {
                 Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
                     (bundle, None, Some(hash(&data)), report_unsupported)
                 }

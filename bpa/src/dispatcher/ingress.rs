@@ -9,7 +9,9 @@ impl Dispatcher {
 
         // Do a fast pre-check
         if data.is_empty() {
-            return Err(hardy_bpv7::Error::InvalidCBOR(hardy_cbor::decode::Error::NotEnoughData).into());
+            return Err(
+                hardy_bpv7::Error::InvalidCBOR(hardy_cbor::decode::Error::NotEnoughData).into(),
+            );
         } else if data[0] == 0x06 {
             trace!("Data looks like a BPv6 bundle");
             return Err(
@@ -22,7 +24,7 @@ impl Dispatcher {
         }
 
         // Parse the bundle
-        match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_closure())? {
+        match hardy_bpv7::bundle::ValidBundle::parse(&data, self)? {
             hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => {
                 // Write the bundle data to the store
                 let (storage_name, hash) = self.store.store_data(data).await?;

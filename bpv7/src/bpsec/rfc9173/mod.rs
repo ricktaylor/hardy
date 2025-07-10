@@ -1,5 +1,6 @@
 use super::*;
 use core::ops::Range;
+use rand::{TryRngCore, rngs::OsRng};
 
 pub mod bcb_aes_gcm;
 pub mod bib_hmac_sha2;
@@ -68,38 +69,11 @@ impl hardy_cbor::encode::ToCbor for &ScopeFlags {
     }
 }
 
-fn unwrap_key<'a>(
-    source: &eid::Eid,
-    key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
-    cek: &[u8],
-) -> Result<zeroize::Zeroizing<Box<[u8]>>, bpsec::Error> {
-    let Some(jwk) = key_f(source, key::Operation::UnwrapKey)? else {
-        return Err(Error::NoKey(source.clone()));
-    };
-
-    let Some(algorithm) = &jwk.key_algorithm else {
-        return Err(bpsec::Error::NoKey(source.clone()));
-    };
-
-    let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-        return Err(bpsec::Error::NoKey(source.clone()));
-    };
-
-    match algorithm {
-        key::KeyAlgorithm::A128KW => aes_kw::KekAes128::try_from(kek.as_ref())
-            .and_then(|kek| kek.unwrap_vec(cek))
-            .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-            .map_field_err("wrapped key"),
-        key::KeyAlgorithm::A192KW => aes_kw::KekAes192::try_from(kek.as_ref())
-            .and_then(|kek| kek.unwrap_vec(cek))
-            .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-            .map_field_err("wrapped key"),
-        key::KeyAlgorithm::A256KW => aes_kw::KekAes256::try_from(kek.as_ref())
-            .and_then(|kek| kek.unwrap_vec(cek))
-            .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-            .map_field_err("wrapped key"),
-        _ => Err(bpsec::Error::NoKey(source.clone())),
-    }
+fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+    OsRng
+        .try_fill_bytes(&mut cek)
+        .map_err(|e| Error::Algorithm(e.into()))?;
+    Ok(zeroize::Zeroizing::from(cek))
 }
 
 #[cfg(test)]
@@ -107,21 +81,34 @@ mod test {
     use super::*;
     use serde_json::json;
 
-    fn do_test(data: &[u8], keys: Vec<bpsec::key::Key>) {
-        match bundle::ValidBundle::parse(data, |source, op| {
-            for k in &keys {
+    struct Keys(Vec<bpsec::key::Key>);
+
+    impl key::KeyStore for Keys {
+        fn decrypt_keys<'a>(
+            &'a self,
+            source: &eid::Eid,
+            operation: &[key::Operation],
+        ) -> impl Iterator<Item = &'a key::Key> {
+            self.0.iter().filter(move |k| {
                 if let (Some(kid), Some(ops)) = (&k.id, &k.operations) {
                     if let Ok(eid) = kid.parse::<eid::Eid>() {
-                        if &eid == source && ops.contains(&op) {
-                            return Ok(Some(k));
+                        if &eid == source {
+                            for op in operation {
+                                if !ops.contains(op) {
+                                    return false;
+                                }
+                            }
+                            return true;
                         }
                     }
                 }
-            }
-            panic!("Missing test key!")
-        })
-        .expect("Failed to parse")
-        {
+                false
+            })
+        }
+    }
+
+    fn do_test(data: &[u8], keys: Vec<bpsec::key::Key>) {
+        match bundle::ValidBundle::parse(data, &Keys(keys)).expect("Failed to parse") {
             bundle::ValidBundle::Valid(..) => {}
             bundle::ValidBundle::Rewritten(..) => panic!("Non-canonical bundle"),
             bundle::ValidBundle::Invalid(_, _, e) => panic!("Invalid bundle: {e}"),
@@ -167,7 +154,7 @@ mod test {
                 {
                     "kid": "ipn:2.1",
                     "alg": "A128KW",
-                    "key_ops": ["unwrapKey"],
+                    "key_ops": ["unwrapKey","decrypt"],
                     "kty": "oct",
                     "k": "YWJjZGVmZ2hpamtsbW5vcA",
                 }

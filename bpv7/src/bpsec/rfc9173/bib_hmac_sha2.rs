@@ -65,7 +65,7 @@ impl Parameters {
     fn from_cbor(
         parameters: HashMap<u64, Range<usize>>,
         data: &[u8],
-    ) -> Result<(Self, bool), bpsec::Error> {
+    ) -> Result<(Self, bool), Error> {
         let mut shortest = true;
         let mut result = Self::default();
         for (id, range) in parameters {
@@ -92,7 +92,7 @@ impl Parameters {
                         },
                     )?;
                 }
-                _ => return Err(bpsec::Error::InvalidContextParameter(id)),
+                _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
         Ok((result, shortest))
@@ -133,10 +133,7 @@ impl hardy_cbor::encode::ToCbor for &Parameters {
 struct Results(Box<[u8]>);
 
 impl Results {
-    fn from_cbor(
-        results: HashMap<u64, Range<usize>>,
-        data: &[u8],
-    ) -> Result<(Self, bool), bpsec::Error> {
+    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<(Self, bool), Error> {
         let mut shortest = true;
         let mut r = None;
         for (id, range) in results {
@@ -147,14 +144,11 @@ impl Results {
                         v
                     })?);
                 }
-                _ => return Err(bpsec::Error::InvalidContextResult(id)),
+                _ => return Err(Error::InvalidContextResult(id)),
             }
         }
 
-        Ok((
-            Self(r.ok_or(bpsec::Error::InvalidContextResult(1))?),
-            shortest,
-        ))
+        Ok((Self(r.ok_or(Error::InvalidContextResult(1))?), shortest))
     }
 }
 
@@ -178,6 +172,92 @@ fn emit_data(mac: &mut impl hmac::Mac, data: &[u8]) {
     mac.update(data);
 }
 
+fn calculate_hmac<A>(
+    flags: &ScopeFlags,
+    key: &[u8],
+    args: &bib::OperationArgs,
+    payload_data: Option<&[u8]>,
+) -> Result<hmac::digest::Output<hmac::Hmac<A>>, Error>
+where
+    A: CoreProxy,
+    <A as CoreProxy>::Core: HashMarker
+        + UpdateCore
+        + FixedOutputCore
+        + BufferKindUser<BufferKind = block_buffer::Eager>
+        + Default
+        + Clone,
+    <<A as CoreProxy>::Core as BlockSizeUser>::BlockSize: typenum::IsLess<U256>,
+    typenum::Le<<<A as CoreProxy>::Core as BlockSizeUser>::BlockSize, U256>: typenum::NonZero,
+{
+    let mut mac = hmac::Hmac::<A>::new_from_slice(key).map_err(|e| Error::Algorithm(e.into()))?;
+
+    // Build IPT
+    mac.update(&hardy_cbor::encode::emit(&ScopeFlags {
+        include_primary_block: flags.include_primary_block,
+        include_target_header: flags.include_target_header,
+        include_security_header: flags.include_security_header,
+        ..Default::default()
+    }));
+
+    if !matches!(args.target.block_type, block::Type::Primary) {
+        if flags.include_primary_block {
+            mac.update(args.primary_block);
+        }
+
+        if flags.include_target_header {
+            let mut encoder = hardy_cbor::encode::Encoder::new();
+            encoder.emit(args.target.block_type);
+            encoder.emit(args.target_number);
+            encoder.emit(&args.target.flags);
+            mac.update(&encoder.build());
+        }
+    }
+
+    if flags.include_security_header {
+        let mut encoder = hardy_cbor::encode::Encoder::new();
+        encoder.emit(args.source.block_type);
+        encoder.emit(args.source_number);
+        encoder.emit(&args.source.flags);
+        mac.update(&encoder.build());
+    }
+
+    if matches!(args.target.block_type, block::Type::Primary) {
+        emit_data(&mut mac, args.primary_block);
+    } else if let Some(payload_data) = payload_data {
+        emit_data(&mut mac, payload_data);
+    } else {
+        hardy_cbor::decode::parse_value(args.target_payload, |value, s, tags| {
+            match value {
+                hardy_cbor::decode::Value::ByteStream(data) => {
+                    // This is horrible, but removes a potentially large data copy
+                    let len = data.iter().try_fold(0u64, |len, d| {
+                        len.checked_add(d.len() as u64)
+                            .ok_or(Error::InvalidBIBTarget)
+                    })?;
+                    let mut header = hardy_cbor::encode::emit(len);
+                    if let Some(m) = header.first_mut() {
+                        *m |= 2 << 5;
+                    }
+                    mac.update(&header);
+                    for d in data {
+                        mac.update(d);
+                    }
+                }
+                hardy_cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
+                    mac.update(args.target_payload);
+                }
+                hardy_cbor::decode::Value::Bytes(data) => {
+                    emit_data(&mut mac, data);
+                }
+                _ => unreachable!(),
+            }
+            Ok::<_, Error>(())
+        })?;
+    }
+
+    Ok(mac.finalize().into_bytes())
+}
+
 #[derive(Debug)]
 pub struct Operation {
     parameters: Rc<Parameters>,
@@ -189,277 +269,450 @@ impl Operation {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
-    pub fn sign<'a>(
-        &mut self,
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+    pub fn sign(
+        jwk: &Key,
         args: bib::OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        self.results.0 = if let Some(cek) = &self.parameters.key {
-            let cek = unwrap_key(args.bpsec_source, key_f, cek)?;
-            match self.parameters.variant {
-                ShaVariant::HMAC_256_256 => self
-                    .calculate_hmac::<sha2::Sha256>(&cek, &args, payload_data)?
-                    .as_slice()
-                    .into(),
-                ShaVariant::HMAC_384_384 => self
-                    .calculate_hmac::<sha2::Sha384>(&cek, &args, payload_data)?
-                    .as_slice()
-                    .into(),
-                ShaVariant::HMAC_512_512 => self
-                    .calculate_hmac::<sha2::Sha512>(&cek, &args, payload_data)?
-                    .as_slice()
-                    .into(),
-                ShaVariant::Unrecognised(_) => unreachable!(),
+    ) -> Result<Option<Self>, Error> {
+        if let Some(ops) = &jwk.operations {
+            if !ops.contains(&key::Operation::Sign) {
+                return Ok(None);
             }
-        } else {
-            let Some(jwk) = key_f(args.bpsec_source, key::Operation::Sign)? else {
-                return Err(Error::NoKey(args.bpsec_source.clone()));
-            };
+        }
 
-            let Some(algorithm) = &jwk.key_algorithm else {
-                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
-            };
-
-            if self.parameters.variant
-                != match algorithm {
-                    key::KeyAlgorithm::HS256 => ShaVariant::HMAC_256_256,
-                    key::KeyAlgorithm::HS384 => ShaVariant::HMAC_384_384,
-                    key::KeyAlgorithm::HS512 => ShaVariant::HMAC_512_512,
-                    _ => ShaVariant::Unrecognised(0),
+        let (cek, variant) = match &jwk.key_algorithm {
+            Some(key::KeyAlgorithm::HS256_A128KW) => {
+                if let Some(ops) = &jwk.operations {
+                    if !ops.contains(&key::Operation::WrapKey) {
+                        return Ok(None);
+                    }
                 }
-            {
-                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+                (
+                    Some(rand_key(Box::from([0u8; 32]))?),
+                    ShaVariant::HMAC_256_256,
+                )
             }
-
-            let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
-                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
-            };
-
-            match self.parameters.variant {
-                ShaVariant::HMAC_256_256 => self
-                    .calculate_hmac::<sha2::Sha256>(cek, &args, payload_data)?
-                    .as_slice()
-                    .into(),
-                ShaVariant::HMAC_384_384 => self
-                    .calculate_hmac::<sha2::Sha384>(cek, &args, payload_data)?
-                    .as_slice()
-                    .into(),
-                ShaVariant::HMAC_512_512 => self
-                    .calculate_hmac::<sha2::Sha512>(cek, &args, payload_data)?
-                    .as_slice()
-                    .into(),
-                ShaVariant::Unrecognised(_) => unreachable!(),
+            Some(key::KeyAlgorithm::A128KW)
+            | Some(key::KeyAlgorithm::A192KW)
+            | Some(key::KeyAlgorithm::A256KW)
+            | Some(key::KeyAlgorithm::HS384_A192KW) => {
+                if let Some(ops) = &jwk.operations {
+                    if !ops.contains(&key::Operation::WrapKey) {
+                        return Ok(None);
+                    }
+                }
+                (
+                    Some(rand_key(Box::from([0u8; 48]))?),
+                    ShaVariant::HMAC_384_384,
+                )
+            }
+            Some(key::KeyAlgorithm::HS512_A256KW) => {
+                if let Some(ops) = &jwk.operations {
+                    if !ops.contains(&key::Operation::WrapKey) {
+                        return Ok(None);
+                    }
+                }
+                (
+                    Some(rand_key(Box::from([0u8; 64]))?),
+                    ShaVariant::HMAC_512_512,
+                )
+            }
+            Some(key::KeyAlgorithm::HS256) => (None, ShaVariant::HMAC_256_256),
+            Some(key::KeyAlgorithm::HS384) => (None, ShaVariant::HMAC_384_384),
+            Some(key::KeyAlgorithm::HS512) => (None, ShaVariant::HMAC_512_512),
+            _ => {
+                return Ok(None);
             }
         };
-        Ok(())
+
+        let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
+            return Ok(None);
+        };
+
+        let flags = ScopeFlags::default();
+        let (results, key) = if let Some(cek) = cek {
+            let key = match &jwk.key_algorithm {
+                Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
+                    aes_kw::KekAes128::try_from(kek.as_ref())
+                        .and_then(|kek| kek.wrap_vec(&cek))
+                        .map_err(|e| Error::Algorithm(e.into()))
+                }
+                Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
+                    aes_kw::KekAes192::try_from(kek.as_ref())
+                        .and_then(|kek| kek.wrap_vec(&cek))
+                        .map_err(|e| Error::Algorithm(e.into()))
+                }
+                Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
+                    aes_kw::KekAes256::try_from(kek.as_ref())
+                        .and_then(|kek| kek.wrap_vec(&cek))
+                        .map_err(|e| Error::Algorithm(e.into()))
+                }
+                _ => return Ok(None),
+            }?;
+
+            (
+                Results(match variant {
+                    ShaVariant::HMAC_256_256 => {
+                        calculate_hmac::<sha2::Sha256>(&flags, &cek, &args, payload_data)?
+                            .as_slice()
+                            .into()
+                    }
+                    ShaVariant::HMAC_384_384 => {
+                        calculate_hmac::<sha2::Sha384>(&flags, &cek, &args, payload_data)?
+                            .as_slice()
+                            .into()
+                    }
+                    ShaVariant::HMAC_512_512 => {
+                        calculate_hmac::<sha2::Sha512>(&flags, &cek, &args, payload_data)?
+                            .as_slice()
+                            .into()
+                    }
+                    ShaVariant::Unrecognised(_) => unreachable!(),
+                }),
+                Some(key.into()),
+            )
+        } else {
+            (
+                Results(match variant {
+                    ShaVariant::HMAC_256_256 => {
+                        calculate_hmac::<sha2::Sha256>(&flags, kek, &args, payload_data)?
+                            .as_slice()
+                            .into()
+                    }
+                    ShaVariant::HMAC_384_384 => {
+                        calculate_hmac::<sha2::Sha384>(&flags, kek, &args, payload_data)?
+                            .as_slice()
+                            .into()
+                    }
+                    ShaVariant::HMAC_512_512 => {
+                        calculate_hmac::<sha2::Sha512>(&flags, kek, &args, payload_data)?
+                            .as_slice()
+                            .into()
+                    }
+                    ShaVariant::Unrecognised(_) => unreachable!(),
+                }),
+                None,
+            )
+        };
+
+        Ok(Some(Self {
+            parameters: Rc::new(Parameters {
+                variant,
+                key,
+                flags,
+            }),
+            results,
+        }))
     }
 
-    pub fn verify<'a>(
+    pub fn verify_any(
         &self,
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+        key_f: &impl key::KeyStore,
         args: bib::OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<bib::OperationResult, Error> {
-        let can_sign = if let Some(cek) = &self.parameters.key {
-            let cek = match unwrap_key(args.bpsec_source, key_f, cek) {
-                Ok(cek) => cek,
-                Err(Error::NoKey(..)) => {
-                    return Ok(bib::OperationResult {
-                        protects_primary_block: args.target_number == 0
-                            || self.parameters.flags.include_primary_block,
-                        can_sign: false,
-                    });
-                }
-                Err(e) => return Err(e),
-            };
-            match self.parameters.variant {
-                ShaVariant::HMAC_256_256 => {
-                    if self
-                        .calculate_hmac::<sha2::Sha256>(&cek, &args, payload_data)?
-                        .as_slice()
-                        != self.results.0.as_ref()
-                    {
-                        return Err(bpsec::Error::IntegrityCheckFailed);
+    ) -> Result<(Option<bool>, bib::VerifyResult), Error> {
+        let result = self.results.0.as_ref();
+
+        if let Some(cek) = &self.parameters.key {
+            for jwk in key_f.decrypt_keys(
+                args.bpsec_source,
+                &[key::Operation::UnwrapKey, key::Operation::Verify],
+            ) {
+                if let key::Type::OctetSequence { key: kek } = &jwk.key_type {
+                    match &jwk.key_algorithm {
+                        Some(key::KeyAlgorithm::HS256_A128KW)
+                            if self.parameters.variant != ShaVariant::HMAC_256_256 =>
+                        {
+                            continue;
+                        }
+                        Some(key::KeyAlgorithm::HS384_A192KW)
+                            if self.parameters.variant != ShaVariant::HMAC_384_384 =>
+                        {
+                            continue;
+                        }
+                        Some(key::KeyAlgorithm::HS512_A256KW)
+                            if self.parameters.variant != ShaVariant::HMAC_512_512 =>
+                        {
+                            continue;
+                        }
+                        _ => {}
                     }
-                    true
-                }
-                ShaVariant::HMAC_384_384 => {
-                    if self
-                        .calculate_hmac::<sha2::Sha384>(&cek, &args, payload_data)?
-                        .as_slice()
-                        != self.results.0.as_ref()
-                    {
-                        return Err(bpsec::Error::IntegrityCheckFailed);
+
+                    if let Some(cek) = match &jwk.key_algorithm {
+                        Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
+                            aes_kw::KekAes128::try_from(kek.as_ref())
+                                .and_then(|kek| kek.unwrap_vec(cek))
+                                .ok()
+                        }
+                        Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
+                            aes_kw::KekAes192::try_from(kek.as_ref())
+                                .and_then(|kek| kek.unwrap_vec(cek))
+                                .ok()
+                        }
+                        Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
+                            aes_kw::KekAes256::try_from(kek.as_ref())
+                                .and_then(|kek| kek.unwrap_vec(cek))
+                                .ok()
+                        }
+                        _ => None,
                     }
-                    true
-                }
-                ShaVariant::HMAC_512_512 => {
-                    if self
-                        .calculate_hmac::<sha2::Sha512>(&cek, &args, payload_data)?
-                        .as_slice()
-                        != self.results.0.as_ref()
+                    .map(|v| zeroize::Zeroizing::from(Box::from(v)))
                     {
-                        return Err(bpsec::Error::IntegrityCheckFailed);
+                        if match self.parameters.variant {
+                            ShaVariant::HMAC_256_256 => calculate_hmac::<sha2::Sha256>(
+                                &self.parameters.flags,
+                                &cek,
+                                &args,
+                                payload_data,
+                            )
+                            .ok()
+                            .map(|mac| mac.as_slice() == result),
+                            ShaVariant::HMAC_384_384 => calculate_hmac::<sha2::Sha384>(
+                                &self.parameters.flags,
+                                &cek,
+                                &args,
+                                payload_data,
+                            )
+                            .ok()
+                            .map(|mac| mac.as_slice() == result),
+                            ShaVariant::HMAC_512_512 => calculate_hmac::<sha2::Sha512>(
+                                &self.parameters.flags,
+                                &cek,
+                                &args,
+                                payload_data,
+                            )
+                            .ok()
+                            .map(|mac| mac.as_slice() == result),
+                            ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
+                        } == Some(true)
+                        {
+                            return Ok((
+                                Some(true),
+                                bib::VerifyResult {
+                                    protects_primary_block: args.target_number == 0
+                                        || self.parameters.flags.include_primary_block,
+                                },
+                            ));
+                        }
                     }
-                    true
                 }
-                ShaVariant::Unrecognised(_) => false,
             }
         } else {
-            let Some(jwk) = key_f(args.bpsec_source, key::Operation::Verify)? else {
-                return Ok(bib::OperationResult {
+            for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Verify]) {
+                if let key::Type::OctetSequence { key: cek } = &jwk.key_type {
+                    if match (self.parameters.variant, &jwk.key_algorithm) {
+                        (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
+                            calculate_hmac::<sha2::Sha256>(
+                                &self.parameters.flags,
+                                cek,
+                                &args,
+                                payload_data,
+                            )
+                            .ok()
+                            .map(|mac| mac.as_slice() == result)
+                        }
+                        (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
+                            calculate_hmac::<sha2::Sha384>(
+                                &self.parameters.flags,
+                                cek,
+                                &args,
+                                payload_data,
+                            )
+                            .ok()
+                            .map(|mac| mac.as_slice() == result)
+                        }
+                        (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
+                            calculate_hmac::<sha2::Sha512>(
+                                &self.parameters.flags,
+                                cek,
+                                &args,
+                                payload_data,
+                            )
+                            .ok()
+                            .map(|mac| mac.as_slice() == result)
+                        }
+                        (ShaVariant::Unrecognised(_), _) => {
+                            return Err(Error::UnsupportedOperation);
+                        }
+                        _ => None,
+                    } == Some(true)
+                    {
+                        return Ok((
+                            Some(true),
+                            bib::VerifyResult {
+                                protects_primary_block: args.target_number == 0
+                                    || self.parameters.flags.include_primary_block,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok((
+            None,
+            bib::VerifyResult {
+                protects_primary_block: args.target_number == 0
+                    || self.parameters.flags.include_primary_block,
+            },
+        ))
+    }
+
+    /// Will succeed if there is a valid key AND the verification passes
+    pub fn verify(
+        &self,
+        jwk: &Key,
+        args: bib::OperationArgs,
+        payload_data: Option<&[u8]>,
+    ) -> Result<(bool, bib::VerifyResult), Error> {
+        let result = self.results.0.as_ref();
+
+        if let Some(cek) = &self.parameters.key {
+            let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
+                return Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone()));
+            };
+
+            match &jwk.key_algorithm {
+                Some(key::KeyAlgorithm::HS256_A128KW)
+                    if self.parameters.variant != ShaVariant::HMAC_256_256 =>
+                {
+                    return Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone()));
+                }
+                Some(key::KeyAlgorithm::HS384_A192KW)
+                    if self.parameters.variant != ShaVariant::HMAC_384_384 =>
+                {
+                    return Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone()));
+                }
+                Some(key::KeyAlgorithm::HS512_A256KW)
+                    if self.parameters.variant != ShaVariant::HMAC_512_512 =>
+                {
+                    return Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone()));
+                }
+                _ => {}
+            }
+
+            // Unwrap the key
+            let cek = match &jwk.key_algorithm {
+                Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
+                    aes_kw::KekAes128::try_from(kek.as_ref())
+                        .and_then(|kek| kek.unwrap_vec(cek))
+                        .map_err(|e| Error::Algorithm(e.into()))
+                }
+                Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
+                    aes_kw::KekAes192::try_from(kek.as_ref())
+                        .and_then(|kek| kek.unwrap_vec(cek))
+                        .map_err(|e| Error::Algorithm(e.into()))
+                }
+                Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
+                    aes_kw::KekAes256::try_from(kek.as_ref())
+                        .and_then(|kek| kek.unwrap_vec(cek))
+                        .map_err(|e| Error::Algorithm(e.into()))
+                }
+                _ => Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone())),
+            }
+            .map(|v| zeroize::Zeroizing::from(Box::from(v)))?;
+
+            // And then HMAC
+            if !match self.parameters.variant {
+                ShaVariant::HMAC_256_256 => {
+                    calculate_hmac::<sha2::Sha256>(
+                        &self.parameters.flags,
+                        &cek,
+                        &args,
+                        payload_data,
+                    )?
+                    .as_slice()
+                        == result
+                }
+                ShaVariant::HMAC_384_384 => {
+                    calculate_hmac::<sha2::Sha384>(
+                        &self.parameters.flags,
+                        &cek,
+                        &args,
+                        payload_data,
+                    )?
+                    .as_slice()
+                        == result
+                }
+                ShaVariant::HMAC_512_512 => {
+                    calculate_hmac::<sha2::Sha512>(
+                        &self.parameters.flags,
+                        &cek,
+                        &args,
+                        payload_data,
+                    )?
+                    .as_slice()
+                        == result
+                }
+                ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
+            } {
+                return Err(bpsec::Error::VerificationFailed);
+            }
+
+            Ok((
+                true,
+                bib::VerifyResult {
                     protects_primary_block: args.target_number == 0
                         || self.parameters.flags.include_primary_block,
-                    can_sign: false,
-                });
-            };
-
-            let Some(algorithm) = &jwk.key_algorithm else {
-                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
-            };
-
-            if self.parameters.variant
-                != match algorithm {
-                    key::KeyAlgorithm::HS256 => ShaVariant::HMAC_256_256,
-                    key::KeyAlgorithm::HS384 => ShaVariant::HMAC_384_384,
-                    key::KeyAlgorithm::HS512 => ShaVariant::HMAC_512_512,
-                    _ => ShaVariant::Unrecognised(0),
-                }
-            {
-                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
-            }
-
+                },
+            ))
+        } else {
             let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
-                return Err(bpsec::Error::NoKey(args.bpsec_source.clone()));
+                return Err(Error::InvalidKey(key::Operation::Verify, jwk.clone()));
             };
 
-            match self.parameters.variant {
-                ShaVariant::HMAC_256_256 => {
-                    if self
-                        .calculate_hmac::<sha2::Sha256>(cek, &args, payload_data)?
-                        .as_slice()
-                        != self.results.0.as_ref()
-                    {
-                        return Err(bpsec::Error::IntegrityCheckFailed);
-                    }
-                    true
+            if !match (self.parameters.variant, &jwk.key_algorithm) {
+                (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
+                    calculate_hmac::<sha2::Sha256>(
+                        &self.parameters.flags,
+                        cek,
+                        &args,
+                        payload_data,
+                    )?
+                    .as_slice()
+                        == result
                 }
-                ShaVariant::HMAC_384_384 => {
-                    if self
-                        .calculate_hmac::<sha2::Sha384>(cek, &args, payload_data)?
-                        .as_slice()
-                        != self.results.0.as_ref()
-                    {
-                        return Err(bpsec::Error::IntegrityCheckFailed);
-                    }
-                    true
+                (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
+                    calculate_hmac::<sha2::Sha384>(
+                        &self.parameters.flags,
+                        cek,
+                        &args,
+                        payload_data,
+                    )?
+                    .as_slice()
+                        == result
                 }
-                ShaVariant::HMAC_512_512 => {
-                    if self
-                        .calculate_hmac::<sha2::Sha512>(cek, &args, payload_data)?
-                        .as_slice()
-                        != self.results.0.as_ref()
-                    {
-                        return Err(bpsec::Error::IntegrityCheckFailed);
-                    }
-                    true
+                (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
+                    calculate_hmac::<sha2::Sha512>(
+                        &self.parameters.flags,
+                        cek,
+                        &args,
+                        payload_data,
+                    )?
+                    .as_slice()
+                        == result
                 }
-                ShaVariant::Unrecognised(_) => false,
+                (ShaVariant::Unrecognised(_), _) => return Err(Error::UnsupportedOperation),
+                _ => return Err(Error::InvalidKey(key::Operation::Verify, jwk.clone())),
+            } {
+                return Err(bpsec::Error::VerificationFailed);
             }
-        };
 
-        Ok(bib::OperationResult {
-            protects_primary_block: args.target_number == 0
-                || self.parameters.flags.include_primary_block,
-            can_sign,
-        })
+            Ok((
+                true,
+                bib::VerifyResult {
+                    protects_primary_block: args.target_number == 0
+                        || self.parameters.flags.include_primary_block,
+                },
+            ))
+        }
     }
 
-    fn calculate_hmac<A>(
-        &self,
-        key: &[u8],
-        args: &bib::OperationArgs,
-        payload_data: Option<&[u8]>,
-    ) -> Result<hmac::digest::Output<hmac::Hmac<A>>, Error>
-    where
-        A: CoreProxy,
-        <A as CoreProxy>::Core: HashMarker
-            + UpdateCore
-            + FixedOutputCore
-            + BufferKindUser<BufferKind = block_buffer::Eager>
-            + Default
-            + Clone,
-        <<A as CoreProxy>::Core as BlockSizeUser>::BlockSize: typenum::IsLess<U256>,
-        typenum::Le<<<A as CoreProxy>::Core as BlockSizeUser>::BlockSize, U256>: typenum::NonZero,
-    {
-        let mut mac = hmac::Hmac::<A>::new_from_slice(key).map_field_err("Invalid key length")?;
-
-        // Build IPT
-        mac.update(&hardy_cbor::encode::emit(&ScopeFlags {
-            include_primary_block: self.parameters.flags.include_primary_block,
-            include_target_header: self.parameters.flags.include_target_header,
-            include_security_header: self.parameters.flags.include_security_header,
-            ..Default::default()
-        }));
-
-        if !matches!(args.target.block_type, block::Type::Primary) {
-            if self.parameters.flags.include_primary_block {
-                mac.update(args.primary_block);
-            }
-
-            if self.parameters.flags.include_target_header {
-                let mut encoder = hardy_cbor::encode::Encoder::new();
-                encoder.emit(args.target.block_type);
-                encoder.emit(args.target_number);
-                encoder.emit(&args.target.flags);
-                mac.update(&encoder.build());
-            }
-        }
-
-        if self.parameters.flags.include_security_header {
-            let mut encoder = hardy_cbor::encode::Encoder::new();
-            encoder.emit(args.source.block_type);
-            encoder.emit(args.source_number);
-            encoder.emit(&args.source.flags);
-            mac.update(&encoder.build());
-        }
-
-        if matches!(args.target.block_type, block::Type::Primary) {
-            emit_data(&mut mac, args.primary_block);
-        } else if let Some(payload_data) = payload_data {
-            emit_data(&mut mac, payload_data);
-        } else {
-            hardy_cbor::decode::parse_value(args.target_payload, |value, s, tags| {
-                match value {
-                    hardy_cbor::decode::Value::ByteStream(data) => {
-                        // This is horrible, but removes a potentially large data copy
-                        let len = data.iter().try_fold(0u64, |len, d| {
-                            len.checked_add(d.len() as u64)
-                                .ok_or(bpsec::Error::InvalidBIBTarget)
-                        })?;
-                        let mut header = hardy_cbor::encode::emit(len);
-                        if let Some(m) = header.first_mut() {
-                            *m |= 2 << 5;
-                        }
-                        mac.update(&header);
-                        for d in data {
-                            mac.update(d);
-                        }
-                    }
-                    hardy_cbor::decode::Value::Bytes(_) if s && tags.is_empty() => {
-                        mac.update(args.target_payload);
-                    }
-                    hardy_cbor::decode::Value::Bytes(data) => {
-                        emit_data(&mut mac, data);
-                    }
-                    _ => unreachable!(),
-                }
-                Ok::<_, bpsec::Error>(())
-            })?;
-        }
-
-        Ok(mac.finalize().into_bytes())
+    pub fn validate(&self, args: bib::OperationArgs) -> Result<bib::VerifyResult, Error> {
+        Ok(bib::VerifyResult {
+            protects_primary_block: args.target_number == 0
+                || self.parameters.flags.include_primary_block,
+        })
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {

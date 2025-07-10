@@ -68,11 +68,11 @@ pub enum Error {
     #[error("Encryption failed")]
     EncryptionFailed,
 
-    #[error("Integrity check failed")]
-    IntegrityCheckFailed,
+    #[error("Verification failed")]
+    VerificationFailed,
 
-    #[error("No key material for security operation source {0}")]
-    NoKey(eid::Eid),
+    #[error("Invalid key material {1:?} for operation {0:?}")]
+    InvalidKey(key::Operation, Key),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
@@ -80,8 +80,14 @@ pub enum Error {
         source: Box<dyn core::error::Error + Send + Sync>,
     },
 
+    #[error("Unsupported operation")]
+    UnsupportedOperation,
+
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
+
+    #[error("Underlying cryptographic operation failed: {0}")]
+    Algorithm(Box<dyn core::error::Error + Send + Sync>),
 }
 
 pub trait CaptureFieldErr<T> {

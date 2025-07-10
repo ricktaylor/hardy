@@ -19,46 +19,68 @@ pub struct OperationArgs<'a> {
     pub primary_block: &'a [u8],
 }
 
-pub struct OperationResult {
+pub struct VerifyResult {
     pub protects_primary_block: bool,
-    pub can_sign: bool,
 }
 
 impl Operation {
     pub fn is_unsupported(&self) -> bool {
         match self {
             #[cfg(feature = "rfc9173")]
-            Operation::HMAC_SHA2(operation) => operation.is_unsupported(),
-            Operation::Unrecognised(..) => true,
+            Self::HMAC_SHA2(operation) => operation.is_unsupported(),
+            Self::Unrecognised(..) => true,
         }
     }
 
-    pub fn sign<'a>(
-        &mut self,
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+    pub fn sign(
+        jwk: &Key,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<(), Error> {
+    ) -> Result<Operation, Error> {
+        #[cfg(feature = "rfc9173")]
+        if let Some(op) = rfc9173::bib_hmac_sha2::Operation::sign(jwk, args, payload_data)? {
+            return Ok(Self::HMAC_SHA2(op));
+        }
+
+        Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()))
+    }
+
+    pub fn verify_any(
+        &self,
+        key_f: &impl key::KeyStore,
+        args: OperationArgs,
+        payload_data: Option<&[u8]>,
+    ) -> Result<(Option<bool>, VerifyResult), Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.sign(key_f, args, payload_data),
+            Self::HMAC_SHA2(o) => o.verify_any(key_f, args, payload_data),
+            Self::Unrecognised(..) => Ok((
+                None,
+                VerifyResult {
+                    protects_primary_block: args.target_number == 0,
+                },
+            )),
+        }
+    }
+
+    pub fn verify(
+        &self,
+        jwk: &Key,
+        args: OperationArgs,
+        payload_data: Option<&[u8]>,
+    ) -> Result<(bool, VerifyResult), Error> {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(o) => o.verify(jwk, args, payload_data),
             Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
     }
 
-    pub fn verify<'a>(
-        &self,
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
-        args: OperationArgs,
-        payload_data: Option<&[u8]>,
-    ) -> Result<OperationResult, Error> {
+    pub fn validate(&self, args: OperationArgs) -> Result<VerifyResult, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(key_f, args, payload_data),
-            Self::Unrecognised(..) => Ok(OperationResult {
-                protects_primary_block: args.target_number == 0,
-                can_sign: false,
-            }),
+            Self::HMAC_SHA2(o) => o.validate(args),
+            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
     }
 

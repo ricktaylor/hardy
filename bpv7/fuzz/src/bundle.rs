@@ -1,80 +1,88 @@
 use hardy_bpv7::{bpsec, bundle::ValidBundle, eid::Eid};
 use serde_json::json;
 
-fn get_keys() -> impl Fn(
-    &Eid,
-    hardy_bpv7::bpsec::key::Operation,
-) -> Result<Option<&'static hardy_bpv7::bpsec::Key>, hardy_bpv7::bpsec::Error> {
-    static KEYS: std::sync::OnceLock<Vec<bpsec::key::Key>> = std::sync::OnceLock::new();
+struct Keys(Vec<bpsec::key::Key>);
 
-    let keys = KEYS.get_or_init(|| {
-        serde_json::from_value(json!([
-            {
-                "kid": "ipn:2.1",
-                "alg": "HS512",
-                "key_ops": ["verify"],
-                "kty": "oct",
-                "k": "GisaKxorGisaKxorGisaKw",
-            },
-            {
-                "kid": "ipn:2.1",
-                "alg": "A128KW",
-                "key_ops": ["unwrapKey"],
-                "kty": "oct",
-                "k": "YWJjZGVmZ2hpamtsbW5vcA",
-            },
-            {
-                "kid": "ipn:3.0",
-                "alg": "HS256",
-                "key_ops": ["verify"],
-                "kty": "oct",
-                "k": "GisaKxorGisaKxorGisaKw",
-            },
-            {
-                "kid": "ipn:2.1",
-                "alg": "dir",
-                "enc": "A128GCM",
-                "key_ops": ["decrypt"],
-                "kty": "oct",
-                "k": "cXdlcnR5dWlvcGFzZGZnaA",
-            },
-            {
-                "kid": "ipn:2.1",
-                "alg": "HS384",
-                "key_ops": ["verify"],
-                "kty": "oct",
-                "k": "GisaKxorGisaKxorGisaKw",
-            },
-            {
-                "kid": "ipn:3.1",
-                "enc": "A256GCM",
-                "key_ops": ["decrypt"],
-                "kty": "oct",
-                "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g",
-            }
-        ]))
-        .unwrap()
-    });
-
-    move |source, op| {
-        for k in keys {
+impl bpsec::key::KeyStore for Keys {
+    fn decrypt_keys<'a>(
+        &'a self,
+        source: &Eid,
+        operation: &[bpsec::key::Operation],
+    ) -> impl Iterator<Item = &'a bpsec::key::Key> {
+        self.0.iter().filter(move |k| {
             if let (Some(kid), Some(ops)) = (&k.id, &k.operations) {
                 if let Ok(eid) = kid.parse::<Eid>() {
-                    if &eid == source && ops.contains(&op) {
-                        return Ok(Some(k));
+                    if &eid == source {
+                        for op in operation {
+                            if !ops.contains(op) {
+                                return false;
+                            }
+                        }
+                        return true;
                     }
                 }
             }
-        }
-        Ok(None)
+            false
+        })
     }
 }
 
 pub fn test_bundle(orig_data: &[u8]) {
-    if let Ok(ValidBundle::Rewritten(_, rewritten_data, _)) =
-        ValidBundle::parse(orig_data, get_keys())
-    {
-        match ValidBundle::parse(&rewritten_data, get_keys()) {
+    static KEYS: std::sync::OnceLock<Keys> = std::sync::OnceLock::new();
+
+    let keys = KEYS.get_or_init(|| {
+        Keys(
+            serde_json::from_value(json!([
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "HS512",
+                    "key_ops": ["verify"],
+                    "kty": "oct",
+                    "k": "GisaKxorGisaKxorGisaKw",
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "A128KW",
+                    "key_ops": ["unwrapKey","decrypt"],
+                    "kty": "oct",
+                    "k": "YWJjZGVmZ2hpamtsbW5vcA",
+                },
+                {
+                    "kid": "ipn:3.0",
+                    "alg": "HS256",
+                    "key_ops": ["verify"],
+                    "kty": "oct",
+                    "k": "GisaKxorGisaKxorGisaKw",
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "dir",
+                    "enc": "A128GCM",
+                    "key_ops": ["decrypt"],
+                    "kty": "oct",
+                    "k": "cXdlcnR5dWlvcGFzZGZnaA",
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "alg": "HS384",
+                    "key_ops": ["verify"],
+                    "kty": "oct",
+                    "k": "GisaKxorGisaKxorGisaKw",
+                },
+                {
+                    "kid": "ipn:3.1",
+                    "enc": "A256GCM",
+                    "key_ops": ["decrypt"],
+                    "kty": "oct",
+                    "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g",
+                }
+            ]))
+            .unwrap(),
+        )
+    });
+
+    if let Ok(ValidBundle::Rewritten(_, rewritten_data, _)) = ValidBundle::parse(orig_data, keys) {
+        match ValidBundle::parse(&rewritten_data, keys) {
             Ok(ValidBundle::Valid(..)) => {}
             Ok(ValidBundle::Rewritten(..)) => {
                 eprintln!("Original: {orig_data:02x?}");

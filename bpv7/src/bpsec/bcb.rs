@@ -19,48 +19,59 @@ pub struct OperationArgs<'a> {
     pub primary_block: &'a [u8],
 }
 
-pub struct OperationResult {
+pub struct DecryptResult {
     pub plaintext: Option<zeroize::Zeroizing<Box<[u8]>>>,
     pub protects_primary_block: bool,
-    pub can_encrypt: bool,
 }
 
 impl Operation {
     pub fn is_unsupported(&self) -> bool {
         match self {
             #[cfg(feature = "rfc9173")]
-            Operation::AES_GCM(operation) => operation.is_unsupported(),
-            Operation::Unrecognised(..) => true,
+            Self::AES_GCM(operation) => operation.is_unsupported(),
+            Self::Unrecognised(..) => true,
         }
     }
 
-    pub fn encrypt<'a>(
-        &mut self,
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+    pub fn encrypt(
+        jwk: &Key,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<Box<[u8]>, Error> {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.encrypt(key_f, args, payload_data),
-            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
+    ) -> Result<(Operation, Box<[u8]>), Error> {
+        #[cfg(feature = "rfc9173")]
+        if let Some((op, r)) = rfc9173::bcb_aes_gcm::Operation::encrypt(jwk, args, payload_data)? {
+            return Ok((Self::AES_GCM(op), r));
         }
+
+        Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()))
     }
 
-    pub fn decrypt<'a>(
+    pub fn decrypt_any(
         &self,
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+        key_f: &impl key::KeyStore,
         args: OperationArgs,
         payload_data: Option<&[u8]>,
-    ) -> Result<OperationResult, Error> {
+    ) -> Result<DecryptResult, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt(key_f, args, payload_data),
-            Self::Unrecognised(..) => Ok(OperationResult {
+            Self::AES_GCM(op) => op.decrypt_any(key_f, args, payload_data),
+            Self::Unrecognised(..) => Ok(DecryptResult {
                 plaintext: None,
                 protects_primary_block: args.target_number == 0,
-                can_encrypt: false,
             }),
+        }
+    }
+
+    pub fn decrypt(
+        &self,
+        jwk: &Key,
+        args: OperationArgs,
+        payload_data: Option<&[u8]>,
+    ) -> Result<DecryptResult, Error> {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(op) => op.decrypt(jwk, args, payload_data),
+            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
     }
 

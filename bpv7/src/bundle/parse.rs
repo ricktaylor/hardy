@@ -6,14 +6,14 @@ impl Bundle {
     /* Refactoring this huge function into parts doesn't really help readability,
      * and seems to drive the borrow checker insane */
     #[allow(clippy::type_complexity)]
-    fn parse_blocks<'a>(
+    fn parse_blocks(
         &mut self,
         canonical_bundle: bool,
         canonical_primary_block: bool,
         blocks: &mut hardy_cbor::decode::Array,
         mut offset: usize,
         source_data: &[u8],
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
+        key_f: &impl bpsec::key::KeyStore,
     ) -> Result<(Option<Box<[u8]>>, bool), Error> {
         let mut last_block_number = 0;
         let mut noncanonical_blocks: HashMap<u64, bool> = HashMap::new();
@@ -112,7 +112,7 @@ impl Bundle {
         let mut bcbs = HashMap::new();
         for bcb_block_number in bcbs_to_check {
             // Parse the BCB
-            let (bcb_block, mut bcb, s) = self
+            let (bcb_block, bcb, s) = self
                 .parse_payload::<bpsec::bcb::OperationSet>(&bcb_block_number, None, source_data)
                 .map_field_err("BPSec confidentiality extension block")?;
 
@@ -138,8 +138,7 @@ impl Bundle {
                 }
             }
 
-            // Decrypt targets
-            let mut targets_to_drop = HashSet::new();
+            // Check targets
             for (target_number, op) in &bcb.operations {
                 if bcb_targets
                     .insert(*target_number, bcb_block_number)
@@ -164,55 +163,34 @@ impl Bundle {
                     _ => {}
                 }
 
-                // Confirm we can decrypt if we have keys
-                let r = op.decrypt(
-                    &key_f,
-                    bpsec::bcb::OperationArgs {
-                        bpsec_source: &bcb.source,
-                        target: target_block,
-                        target_number: *target_number,
-                        target_payload: target_block.payload(source_data),
-                        source: bcb_block,
-                        source_number: bcb_block_number,
-                        primary_block: &primary_block_data,
-                    },
-                    None,
-                )?;
-
                 if !blocks_to_remove.contains(target_number) {
-                    match (target_block.block_type, r.plaintext) {
-                        (block::Type::PreviousNode | block::Type::HopCount, Some(block_data)) => {
-                            // We will always replace these blocks when forwarded
-                            decrypted_data.insert(*target_number, (block_data, true));
+                    // Confirm we can decrypt if we have keys
+                    let decrypt = op.decrypt_any(
+                        key_f,
+                        bpsec::bcb::OperationArgs {
+                            bpsec_source: &bcb.source,
+                            target: target_block,
+                            target_number: *target_number,
+                            target_payload: target_block.payload(source_data),
+                            source: bcb_block,
+                            source_number: bcb_block_number,
+                            primary_block: &primary_block_data,
+                        },
+                        None,
+                    )?;
 
-                            // We will rewrite the block unencrypted for now
-                            noncanonical_blocks.insert(*target_number, true);
+                    if decrypt.protects_primary_block {
+                        protects_primary_block.insert(bcb_block_number);
+                    }
 
-                            // And not re-encrypt
-                            targets_to_drop.insert(*target_number);
-                        }
-                        (block::Type::BlockIntegrity, None) => {
-                            // We can't decrypt, therefore we cannot check the BIB
-                            bibs_to_check.remove(target_number);
-                        }
-                        (_, Some(block_data)) => {
-                            decrypted_data.insert(*target_number, (block_data, r.can_encrypt));
-
-                            if r.protects_primary_block {
-                                protects_primary_block.insert(bcb_block_number);
-                            }
-                        }
-                        _ => {}
+                    // Stash the decrypted data
+                    if let Some(block_data) = decrypt.plaintext {
+                        decrypted_data.insert(*target_number, block_data);
+                    } else if let block::Type::BlockIntegrity = target_block.block_type {
+                        // We can't decrypt the BIB, therefore we cannot check the BIB
+                        bibs_to_check.remove(target_number);
                     }
                 }
-            }
-
-            // Remove any operations we need to rewrite
-            if !targets_to_drop.is_empty() {
-                bcb.operations.retain(|k, _| !targets_to_drop.contains(k));
-
-                // Ensure we rewrite the BCB
-                noncanonical_blocks.insert(bcb_block_number, true);
             }
 
             bcbs.insert(bcb_block_number, bcb);
@@ -298,7 +276,6 @@ impl Bundle {
                 }
             }
 
-            let mut targets_to_drop = HashSet::new();
             let bcb = bib_block.bcb.and_then(|b| bcbs.get(&b));
 
             // Check targets
@@ -324,13 +301,13 @@ impl Bundle {
                     }
                 }
 
-                let (payload_data, can_encrypt) = decrypted_data
-                    .get(target_number)
-                    .map_or((None, true), |(v, c)| (Some(v.as_ref()), *c));
+                if noncanonical_blocks.get(target_number) == Some(&true) {
+                    // Non-canonical block with signature is unrecoverable
+                    return Err(Error::NonCanonical(*target_number));
+                }
 
-                let r = op.verify(
-                    &key_f,
-                    bpsec::bib::OperationArgs {
+                if !blocks_to_remove.contains(target_number) {
+                    let r = op.validate(bpsec::bib::OperationArgs {
                         bpsec_source: &bib.source,
                         target: target_block,
                         target_number: *target_number,
@@ -338,35 +315,17 @@ impl Bundle {
                         source: bib_block,
                         source_number: bib_block_number,
                         primary_block: &primary_block_data,
-                    },
-                    payload_data,
-                )?;
+                    })?;
 
-                if !blocks_to_remove.contains(target_number) {
-                    if let block::Type::PreviousNode | block::Type::HopCount =
-                        target_block.block_type
-                    {
-                        // Do not re-sign, we will rewrite when we forward
-                        targets_to_drop.insert(*target_number);
-                    } else {
-                        if let Some(true) = noncanonical_blocks.get(target_number) {
-                            // If we can't re-encrypt or re-sign, we can't rewrite
-                            if !can_encrypt || !r.can_sign {
-                                return Err(Error::NonCanonical(*target_number));
-                            }
-                        }
-
-                        if r.protects_primary_block {
-                            protects_primary_block.insert(bib_block_number);
-                        }
+                    if r.protects_primary_block {
+                        protects_primary_block.insert(bib_block_number);
                     }
                 }
             }
 
             // Remove targets scheduled for removal
             let old_len = bib.operations.len();
-            bib.operations
-                .retain(|k, _| !blocks_to_remove.contains(k) && !targets_to_drop.contains(k));
+            bib.operations.retain(|k, _| !blocks_to_remove.contains(k));
             if bib.operations.is_empty() {
                 noncanonical_blocks.remove(&bib_block_number);
                 protects_primary_block.remove(&bib_block_number);
@@ -374,7 +333,7 @@ impl Bundle {
                 continue;
             } else if !canonical || bib.operations.len() != old_len {
                 noncanonical_blocks.insert(bib_block_number, true);
-                bibs.insert(bib_block_number, (bib_block, bib));
+                bibs.insert(bib_block_number, bib);
             }
         }
 
@@ -449,57 +408,13 @@ impl Bundle {
         });
 
         // Update BIBs
-        for (bib_block_number, (bib_block, mut bib)) in bibs {
-            for (target_number, op) in bib.operations.iter_mut() {
-                if let Some(payload_data) = new_payloads.get(target_number) {
-                    let target_block = self.blocks.get(target_number).unwrap();
-                    op.sign(
-                        &key_f,
-                        bpsec::bib::OperationArgs {
-                            bpsec_source: &bib.source,
-                            target: target_block,
-                            target_number: *target_number,
-                            target_payload: new_payloads
-                                .get(target_number)
-                                .map_or(target_block.payload(source_data), |d| d),
-                            source: bib_block,
-                            source_number: bib_block_number,
-                            primary_block: &primary_block_data,
-                        },
-                        Some(payload_data),
-                    )?;
-                }
-            }
-
+        for (bib_block_number, bib) in bibs {
             noncanonical_blocks.remove(&bib_block_number);
             new_payloads.insert(bib_block_number, hardy_cbor::encode::emit(bib).into());
         }
 
-        // Encrypt blocks and update BCBs
-        for (bcb_block_number, mut bcb) in bcbs {
-            let bcb_block = self.blocks.get(&bcb_block_number).unwrap();
-            for (target_number, op) in bcb.operations.iter_mut() {
-                if let Some(payload_data) = new_payloads.get(target_number) {
-                    let target_block = self.blocks.get(target_number).unwrap();
-                    let new_data = op.encrypt(
-                        &key_f,
-                        bpsec::bcb::OperationArgs {
-                            bpsec_source: &bcb.source,
-                            target: target_block,
-                            target_number: *target_number,
-                            target_payload: new_payloads
-                                .get(target_number)
-                                .map_or(target_block.payload(source_data), |d| d),
-                            source: bcb_block,
-                            source_number: bcb_block_number,
-                            primary_block: &primary_block_data,
-                        },
-                        Some(payload_data),
-                    )?;
-                    new_payloads.insert(*target_number, new_data);
-                }
-            }
-
+        // Update BCBs
+        for (bcb_block_number, bcb) in bcbs {
             noncanonical_blocks.remove(&bcb_block_number);
             new_payloads.insert(bcb_block_number, hardy_cbor::encode::emit(bcb).into());
         }
@@ -548,10 +463,7 @@ impl Bundle {
 }
 
 impl ValidBundle {
-    pub fn parse<'a>(
-        data: &[u8],
-        key_f: impl Fn(&eid::Eid, bpsec::key::Operation) -> Result<Option<&'a bpsec::Key>, bpsec::Error>,
-    ) -> Result<Self, Error> {
+    pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
         hardy_cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
             // Check for shortest/correct form
             canonical = canonical && !blocks.is_definite();

@@ -238,13 +238,14 @@ impl Dispatcher {
             }
         }
     }
+}
 
-    pub fn key_closure<'a>(
-        &self,
-    ) -> impl Fn(
-        &Eid,
-        hardy_bpv7::bpsec::key::Operation,
-    ) -> Result<Option<&'a hardy_bpv7::bpsec::Key>, hardy_bpv7::bpsec::Error> {
-        |_, _| Ok(None)
+impl hardy_bpv7::bpsec::key::KeyStore for Dispatcher {
+    fn decrypt_keys<'a>(
+        &'a self,
+        _source: &Eid,
+        _operation: &[hardy_bpv7::bpsec::key::Operation],
+    ) -> impl Iterator<Item = &'a hardy_bpv7::bpsec::key::Key> {
+        std::iter::empty()
     }
 }

@@ -7,6 +7,15 @@ use serde_with::{
     serde_as,
 };
 
+pub trait KeyStore {
+    /// Get an iterator for keys suitable for decryption, verification, or unwrapping
+    fn decrypt_keys<'a>(
+        &'a self,
+        source: &eid::Eid,
+        operations: &[Operation],
+    ) -> impl Iterator<Item = &'a Key>;
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Key {
@@ -19,17 +28,17 @@ pub struct Key {
     #[serde(flatten)]
     pub enc_algorithm: Option<EncAlgorithm>,
 
+    #[serde(rename = "key_ops")]
+    pub operations: Option<HashSet<Operation>>,
+
     /* The following members are standard, but unused in the implementation
-     * but here for use by implementations */
+     * but here for use by crate users */
     #[serde(rename = "kid")]
     #[serde_as(as = "NoneAsEmptyString")]
     pub id: Option<String>,
 
     #[serde(rename = "use")]
     pub key_use: Option<Use>,
-
-    #[serde(rename = "key_ops")]
-    pub operations: Option<HashSet<Operation>>,
 }
 
 #[serde_as]
@@ -49,7 +58,7 @@ pub enum Type {
     Unknown,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
 pub enum Use {
     #[serde(rename = "sig")]
     Signature,
@@ -81,6 +90,7 @@ pub enum Operation {
     Unknown,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "alg")]
 pub enum KeyAlgorithm {
@@ -92,6 +102,12 @@ pub enum KeyAlgorithm {
     HS256,
     HS384,
     HS512,
+    #[serde(rename = "HS256+A128KW")]
+    HS256_A128KW,
+    #[serde(rename = "HS384+A192KW")]
+    HS384_A192KW,
+    #[serde(rename = "HS512+A256KW")]
+    HS512_A256KW,
     #[serde(other)]
     Unknown,
 }
