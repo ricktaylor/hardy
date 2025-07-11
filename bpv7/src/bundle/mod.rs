@@ -330,7 +330,6 @@ impl Bundle {
                     .expect("Missing primary block!")
                     .payload(data),
             },
-            None,
         )?
         .plaintext
         .ok_or(bpsec::Error::DecryptionFailed.into())

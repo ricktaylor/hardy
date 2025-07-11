@@ -49,11 +49,10 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<(Option<bool>, VerifyResult), Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify_any(key_f, args, payload_data),
+            Self::HMAC_SHA2(o) => o.verify_any(key_f, args),
             Self::Unrecognised(..) => Ok((
                 None,
                 VerifyResult {
@@ -63,23 +62,10 @@ impl Operation {
         }
     }
 
-    pub fn verify(
-        &self,
-        jwk: &Key,
-        args: OperationArgs,
-        payload_data: Option<&[u8]>,
-    ) -> Result<(bool, VerifyResult), Error> {
+    pub fn verify(&self, jwk: &Key, args: OperationArgs) -> Result<(bool, VerifyResult), Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(jwk, args, payload_data),
-            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
-        }
-    }
-
-    pub fn validate(&self, args: OperationArgs) -> Result<VerifyResult, Error> {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.validate(args),
+            Self::HMAC_SHA2(o) => o.verify(jwk, args),
             Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
     }

@@ -409,7 +409,6 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: bib::OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<(Option<bool>, bib::VerifyResult), Error> {
         let result = self.results.0.as_ref();
 
@@ -463,7 +462,7 @@ impl Operation {
                                 &self.parameters.flags,
                                 &cek,
                                 &args,
-                                payload_data,
+                                None,
                             )
                             .ok()
                             .map(|mac| mac.as_slice() == result),
@@ -471,7 +470,7 @@ impl Operation {
                                 &self.parameters.flags,
                                 &cek,
                                 &args,
-                                payload_data,
+                                None,
                             )
                             .ok()
                             .map(|mac| mac.as_slice() == result),
@@ -479,7 +478,7 @@ impl Operation {
                                 &self.parameters.flags,
                                 &cek,
                                 &args,
-                                payload_data,
+                                None,
                             )
                             .ok()
                             .map(|mac| mac.as_slice() == result),
@@ -502,34 +501,19 @@ impl Operation {
                 if let key::Type::OctetSequence { key: cek } = &jwk.key_type {
                     if match (self.parameters.variant, &jwk.key_algorithm) {
                         (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
-                            calculate_hmac::<sha2::Sha256>(
-                                &self.parameters.flags,
-                                cek,
-                                &args,
-                                payload_data,
-                            )
-                            .ok()
-                            .map(|mac| mac.as_slice() == result)
+                            calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, &args, None)
+                                .ok()
+                                .map(|mac| mac.as_slice() == result)
                         }
                         (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
-                            calculate_hmac::<sha2::Sha384>(
-                                &self.parameters.flags,
-                                cek,
-                                &args,
-                                payload_data,
-                            )
-                            .ok()
-                            .map(|mac| mac.as_slice() == result)
+                            calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, &args, None)
+                                .ok()
+                                .map(|mac| mac.as_slice() == result)
                         }
                         (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
-                            calculate_hmac::<sha2::Sha512>(
-                                &self.parameters.flags,
-                                cek,
-                                &args,
-                                payload_data,
-                            )
-                            .ok()
-                            .map(|mac| mac.as_slice() == result)
+                            calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, &args, None)
+                                .ok()
+                                .map(|mac| mac.as_slice() == result)
                         }
                         (ShaVariant::Unrecognised(_), _) => {
                             return Err(Error::UnsupportedOperation);
@@ -563,7 +547,6 @@ impl Operation {
         &self,
         jwk: &Key,
         args: bib::OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<(bool, bib::VerifyResult), Error> {
         let result = self.results.0.as_ref();
 
@@ -615,33 +598,18 @@ impl Operation {
             // And then HMAC
             if !match self.parameters.variant {
                 ShaVariant::HMAC_256_256 => {
-                    calculate_hmac::<sha2::Sha256>(
-                        &self.parameters.flags,
-                        &cek,
-                        &args,
-                        payload_data,
-                    )?
-                    .as_slice()
+                    calculate_hmac::<sha2::Sha256>(&self.parameters.flags, &cek, &args, None)?
+                        .as_slice()
                         == result
                 }
                 ShaVariant::HMAC_384_384 => {
-                    calculate_hmac::<sha2::Sha384>(
-                        &self.parameters.flags,
-                        &cek,
-                        &args,
-                        payload_data,
-                    )?
-                    .as_slice()
+                    calculate_hmac::<sha2::Sha384>(&self.parameters.flags, &cek, &args, None)?
+                        .as_slice()
                         == result
                 }
                 ShaVariant::HMAC_512_512 => {
-                    calculate_hmac::<sha2::Sha512>(
-                        &self.parameters.flags,
-                        &cek,
-                        &args,
-                        payload_data,
-                    )?
-                    .as_slice()
+                    calculate_hmac::<sha2::Sha512>(&self.parameters.flags, &cek, &args, None)?
+                        .as_slice()
                         == result
                 }
                 ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
@@ -663,33 +631,18 @@ impl Operation {
 
             if !match (self.parameters.variant, &jwk.key_algorithm) {
                 (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
-                    calculate_hmac::<sha2::Sha256>(
-                        &self.parameters.flags,
-                        cek,
-                        &args,
-                        payload_data,
-                    )?
-                    .as_slice()
+                    calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, &args, None)?
+                        .as_slice()
                         == result
                 }
                 (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
-                    calculate_hmac::<sha2::Sha384>(
-                        &self.parameters.flags,
-                        cek,
-                        &args,
-                        payload_data,
-                    )?
-                    .as_slice()
+                    calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, &args, None)?
+                        .as_slice()
                         == result
                 }
                 (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
-                    calculate_hmac::<sha2::Sha512>(
-                        &self.parameters.flags,
-                        cek,
-                        &args,
-                        payload_data,
-                    )?
-                    .as_slice()
+                    calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, &args, None)?
+                        .as_slice()
                         == result
                 }
                 (ShaVariant::Unrecognised(_), _) => return Err(Error::UnsupportedOperation),
@@ -706,13 +659,6 @@ impl Operation {
                 },
             ))
         }
-    }
-
-    pub fn validate(&self, args: bib::OperationArgs) -> Result<bib::VerifyResult, Error> {
-        Ok(bib::VerifyResult {
-            protects_primary_block: args.target_number == 0
-                || self.parameters.flags.include_primary_block,
-        })
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {

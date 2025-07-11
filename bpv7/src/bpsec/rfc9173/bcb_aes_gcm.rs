@@ -380,7 +380,6 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<bcb::DecryptResult, Error> {
         if let Some(cek) = &self.parameters.key {
             for jwk in key_f.decrypt_keys(
@@ -411,15 +410,13 @@ impl Operation {
                         if let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm)
                         {
                             (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                                let (data, aad) =
-                                    build_data(&self.parameters.flags, &args, payload_data)?;
+                                let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                                 aes_gcm::Aes128Gcm::new_from_slice(&cek)
                                     .ok()
                                     .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
                             }
                             (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                                let (data, aad) =
-                                    build_data(&self.parameters.flags, &args, payload_data)?;
+                                let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                                 aes_gcm::Aes256Gcm::new_from_slice(&cek)
                                     .ok()
                                     .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
@@ -448,15 +445,13 @@ impl Operation {
                 if let key::Type::OctetSequence { key: cek } = &jwk.key_type {
                     if let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm) {
                         (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                            let (data, aad) =
-                                build_data(&self.parameters.flags, &args, payload_data)?;
+                            let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                             aes_gcm::Aes128Gcm::new_from_slice(cek)
                                 .ok()
                                 .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
                         }
                         (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                            let (data, aad) =
-                                build_data(&self.parameters.flags, &args, payload_data)?;
+                            let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                             aes_gcm::Aes256Gcm::new_from_slice(cek)
                                 .ok()
                                 .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
@@ -485,9 +480,8 @@ impl Operation {
         &self,
         jwk: &Key,
         args: bcb::OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<bcb::DecryptResult, Error> {
-        let (data, aad) = build_data(&self.parameters.flags, &args, payload_data)?;
+        let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
 
         if let Some(cek) = &self.parameters.key {
             let key::Type::OctetSequence { key: kek } = &jwk.key_type else {

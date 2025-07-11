@@ -50,11 +50,10 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<DecryptResult, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt_any(key_f, args, payload_data),
+            Self::AES_GCM(op) => op.decrypt_any(key_f, args),
             Self::Unrecognised(..) => Ok(DecryptResult {
                 plaintext: None,
                 protects_primary_block: args.target_number == 0,
@@ -62,15 +61,10 @@ impl Operation {
         }
     }
 
-    pub fn decrypt(
-        &self,
-        jwk: &Key,
-        args: OperationArgs,
-        payload_data: Option<&[u8]>,
-    ) -> Result<DecryptResult, Error> {
+    pub fn decrypt(&self, jwk: &Key, args: OperationArgs) -> Result<DecryptResult, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt(jwk, args, payload_data),
+            Self::AES_GCM(op) => op.decrypt(jwk, args),
             Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
         }
     }

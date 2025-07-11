@@ -176,7 +176,6 @@ impl Bundle {
                             source_number: bcb_block_number,
                             primary_block: &primary_block_data,
                         },
-                        None,
                     )?;
 
                     if decrypt.protects_primary_block {
@@ -307,17 +306,20 @@ impl Bundle {
                 }
 
                 if !blocks_to_remove.contains(target_number) {
-                    let r = op.validate(bpsec::bib::OperationArgs {
-                        bpsec_source: &bib.source,
-                        target: target_block,
-                        target_number: *target_number,
-                        target_payload: target_block.payload(source_data),
-                        source: bib_block,
-                        source_number: bib_block_number,
-                        primary_block: &primary_block_data,
-                    })?;
+                    let r = op.verify_any(
+                        key_f,
+                        bpsec::bib::OperationArgs {
+                            bpsec_source: &bib.source,
+                            target: target_block,
+                            target_number: *target_number,
+                            target_payload: target_block.payload(source_data),
+                            source: bib_block,
+                            source_number: bib_block_number,
+                            primary_block: &primary_block_data,
+                        },
+                    )?;
 
-                    if r.protects_primary_block {
+                    if r.1.protects_primary_block {
                         protects_primary_block.insert(bib_block_number);
                     }
                 }
