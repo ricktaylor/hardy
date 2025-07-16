@@ -114,15 +114,6 @@ impl Dispatcher {
     fn update_extension_blocks(&self, bundle: &bundle::Bundle, source_data: &[u8]) -> Vec<u8> {
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data);
 
-        // Remove unrecognized blocks we are supposed to
-        for (block_number, block) in &bundle.bundle.blocks {
-            if let hardy_bpv7::block::Type::Unrecognised(_) = &block.block_type {
-                if block.flags.delete_block_on_failure {
-                    editor.remove_extension_block(*block_number);
-                }
-            }
-        }
-
         // Previous Node Block
         editor
             .replace_extension_block(hardy_bpv7::block::Type::PreviousNode)
