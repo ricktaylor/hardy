@@ -1,5 +1,5 @@
 use super::*;
-use core::str::Utf8Error;
+use core::{ops::Range, str::Utf8Error};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
@@ -56,8 +56,8 @@ pub use super::decode_seq::Series;
 pub enum Value<'a, 'b: 'a> {
     UnsignedInteger(u64),
     NegativeInteger(u64),
-    Bytes(&'b [u8]),
-    ByteStream(&'a [&'b [u8]]),
+    Bytes(Range<usize>),
+    ByteStream(Vec<Range<usize>>),
     Text(&'b str),
     TextStream(&'a [&'b str]),
     Array(&'a mut Array<'b>),
@@ -187,7 +187,7 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
     }
 }
 
-fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(&[u8], bool, usize), Error> {
+fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(Range<usize>, bool, usize), Error> {
     let (data_len, shortest, len) = parse_uint_minor(minor, data)?;
     if (len as u64)
         .checked_add(data_len)
@@ -197,11 +197,11 @@ fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(&[u8], bool, usize), Erro
         Err(Error::NotEnoughData)
     } else {
         let end = ((len as u64) + data_len) as usize;
-        Ok((&data[len..end], shortest, end))
+        Ok((len..end, shortest, end))
     }
 }
 
-fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, bool, usize), Error> {
+fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool, usize), Error> {
     let mut chunks = Vec::new();
     let mut offset = 0;
     let mut shortest = true;
@@ -222,7 +222,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<&[u8]>, bool, usize
         }
 
         let (chunk, s, chunk_len) = parse_data_minor(v & 0x1F, &data[offset..])?;
-        chunks.push(chunk);
+        chunks.push(chunk.start + offset..chunk.end + offset);
         shortest = shortest && s;
         offset += chunk_len;
     }
@@ -255,32 +255,39 @@ where
         }
         (2, 31) => {
             /* Indefinite length byte string */
-            let (v, s, len) = parse_data_chunked(2, &data[offset + 1..])?;
+            let (mut v, s, len) = parse_data_chunked(2, &data[offset + 1..])?;
+            for t in v.iter_mut() {
+                t.start += offset + 1;
+                t.end += offset + 1;
+            }
             offset += len + 1;
-            f(Value::ByteStream(&v), shortest && s, tags)
+            f(Value::ByteStream(v), shortest && s, tags)
         }
         (2, minor) => {
             /* Known length byte string */
             let (t, s, len) = parse_data_minor(minor, &data[offset + 1..])?;
+            let t = t.start + offset + 1..t.end + offset + 1;
             offset += len + 1;
             f(Value::Bytes(t), shortest && s, tags)
         }
         (3, 31) => {
             /* Indefinite length text string */
-            let (v, s, len) = parse_data_chunked(3, &data[offset + 1..])?;
+            let data = &data[offset + 1..];
+            let (v, s, len) = parse_data_chunked(3, data)?;
             offset += len + 1;
             let mut t = Vec::new();
             for b in v {
-                t.push(core::str::from_utf8(b).map_err(Into::into)?);
+                t.push(core::str::from_utf8(&data[b]).map_err(Into::into)?);
             }
             f(Value::TextStream(&t), shortest && s, tags)
         }
         (3, minor) => {
             /* Known length text string */
-            let (t, s, len) = parse_data_minor(minor, &data[offset + 1..])?;
+            let data = &data[offset + 1..];
+            let (t, s, len) = parse_data_minor(minor, data)?;
             offset += len + 1;
             f(
-                Value::Text(core::str::from_utf8(t).map_err(Into::into)?),
+                Value::Text(core::str::from_utf8(&data[t]).map_err(Into::into)?),
                 shortest && s,
                 tags,
             )

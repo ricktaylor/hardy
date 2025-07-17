@@ -4,7 +4,7 @@ use hex_literal::hex;
 fn test_simple<T>(expected: T, data: &[u8])
 where
     T: FromCbor + PartialEq + core::fmt::Debug,
-    <T as FromCbor>::Error: From<Error> + core::fmt::Debug,
+    T::Error: From<Error> + core::fmt::Debug,
 {
     let (v, s, len) = parse::<(T, bool, usize)>(data).unwrap();
     assert!(s);
@@ -15,7 +15,7 @@ where
 fn test_simple_long<T>(expected: T, data: &[u8])
 where
     T: FromCbor + PartialEq + core::fmt::Debug,
-    <T as FromCbor>::Error: From<Error> + core::fmt::Debug,
+    T::Error: From<Error> + core::fmt::Debug,
 {
     let (v, s, len) = parse::<(T, bool, usize)>(data).unwrap();
     assert!(!s);
@@ -26,7 +26,7 @@ where
 fn test_sub_simple<T, const D: usize>(expected: T, seq: &mut Series<D>)
 where
     T: FromCbor + PartialEq + core::fmt::Debug,
-    <T as FromCbor>::Error: From<Error> + core::fmt::Debug,
+    T::Error: From<Error> + core::fmt::Debug,
 {
     let (v, s) = seq.parse::<(T, bool)>().unwrap();
     assert!(s);
@@ -239,10 +239,10 @@ fn rfc_tests() {
         assert!(matches!(v, Value::Float(1363896240.5)))
     });
     test_value(&hex!("d74401020304"), &[23], |v| {
-        assert!(matches!(v, Value::Bytes(v) if v == hex!("01020304")))
+        assert!(matches!(v, Value::Bytes(v) if v == (2..6)))
     });
     test_value(&hex!("d818456449455446"), &[24], |v| {
-        assert!(matches!(v, Value::Bytes(v) if v == hex!("6449455446")))
+        assert!(matches!(v, Value::Bytes(v) if v == (3..8)))
     });
     test_value(
         &hex!("d82076687474703a2f2f7777772e6578616d706c652e636f6d"),
@@ -253,7 +253,7 @@ fn rfc_tests() {
         assert!(matches!(v, Value::Bytes(v) if v.is_empty()))
     });
     test_value(&hex!("4401020304"), &[], |v| {
-        assert!(matches!(v, Value::Bytes(v) if v == &hex!("01020304")))
+        assert!(matches!(v, Value::Bytes(v) if v == (1..5)))
     });
     test_string("", &hex!("60"));
     test_string("a", &hex!("6161"));
@@ -324,20 +324,23 @@ fn rfc_tests() {
             }
         },
     );
-    test_value(&hex!("5f42010243030405ff"), &[], |v| match v {
-        Value::ByteStream(v) => {
-            assert_eq!(
-                hex!("0102030405"),
-                v.into_iter()
-                    .fold(Vec::new(), |mut v, b| {
-                        v.extend_from_slice(b);
-                        v
-                    })
-                    .as_ref()
-            )
-        }
-        _ => panic!("Expected indefinite byte string"),
-    });
+    {
+        let test_data = &hex!("5f42010243030405ff");
+        test_value(test_data, &[], |v| match v {
+            Value::ByteStream(v) => {
+                assert_eq!(
+                    hex!("0102030405"),
+                    v.into_iter()
+                        .fold(Vec::new(), |mut v, b| {
+                            v.extend_from_slice(&test_data[b]);
+                            v
+                        })
+                        .as_ref()
+                )
+            }
+            _ => panic!("Expected indefinite byte string"),
+        });
+    }
     test_value(&hex!("7f657374726561646d696e67ff"), &[], |v| match v {
         Value::TextStream(v) => {
             assert_eq!(
