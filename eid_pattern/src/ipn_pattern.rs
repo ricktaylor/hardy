@@ -1,5 +1,5 @@
 use super::*;
-use std::ops::RangeInclusive;
+use core::ops::RangeInclusive;
 use winnow::{
     ModalResult, Parser,
     ascii::dec_uint,
