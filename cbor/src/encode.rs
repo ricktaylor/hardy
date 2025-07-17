@@ -1,16 +1,12 @@
 use super::*;
+use core::ops::Range;
 
 pub trait ToCbor {
     fn to_cbor(&self, encoder: &mut Encoder);
+}
 
-    fn to_cbor_tagged<I, U>(&self, encoder: &mut Encoder, tags: I)
-    where
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        encoder.emit_tags(tags);
-        self.to_cbor(encoder)
-    }
+pub trait ToCborMeasured {
+    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize>;
 }
 
 pub struct Encoder {
@@ -34,6 +30,12 @@ impl Encoder {
 
     pub fn offset(&self) -> usize {
         self.data.len()
+    }
+
+    fn emit_extend(&mut self, b: &[u8]) -> Range<usize> {
+        let start = self.data.len();
+        self.data.extend_from_slice(b);
+        start..self.data.len()
     }
 
     fn emit_uint_minor(&mut self, major: u8, val: u64) {
@@ -90,6 +92,23 @@ impl Encoder {
     {
         self.emit_tags(tags);
         self.emit(value)
+    }
+
+    pub fn emit_measured<T>(&mut self, value: &T) -> Range<usize>
+    where
+        T: ToCborMeasured + ?Sized,
+    {
+        value.to_cbor_measured(self)
+    }
+
+    pub fn emit_tagged_measured<T, I, U>(&mut self, value: &T, tags: I) -> Range<usize>
+    where
+        T: ToCborMeasured + ?Sized,
+        I: IntoIterator<Item = U>,
+        U: num_traits::ToPrimitive,
+    {
+        self.emit_tags(tags);
+        self.emit_measured(value)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -183,7 +202,7 @@ impl<'a> ByteStream<'a> {
     where
         V: AsRef<[u8]> + ?Sized,
     {
-        <[u8] as ToCbor>::to_cbor(value.as_ref(), self.encoder);
+        value.as_ref().to_cbor(self.encoder);
     }
 
     fn end(self) {
@@ -205,7 +224,7 @@ impl<'a> TextStream<'a> {
     where
         V: AsRef<str> + ?Sized,
     {
-        <str as ToCbor>::to_cbor(value.as_ref(), self.encoder)
+        value.as_ref().to_cbor(self.encoder);
     }
 
     fn end(self) {
@@ -227,7 +246,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     fn new(encoder: &'a mut Encoder, count: Option<usize>) -> Self {
         let start = encoder.offset();
         if let Some(count) = count {
-            encoder.emit_uint_minor(if D == 1 { 4 } else { 5 }, count as u64)
+            encoder.emit_uint_minor(if D == 1 { 4 } else { 5 }, count as u64);
         } else {
             encoder.data.push((if D == 1 { 4 } else { 5 } << 5) | 31);
         }
@@ -278,12 +297,12 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     pub fn emit_raw_slice(&mut self, data: &[u8]) {
-        self.next_field().emit_raw_slice(data);
+        self.next_field().emit_raw_slice(data)
     }
 
     /// Append an additional slice of data, without incrementing the field count
     pub fn append_raw_slice(&mut self, data: &[u8]) {
-        self.encoder.emit_raw_slice(data);
+        self.encoder.emit_raw_slice(data)
     }
 
     pub fn emit<T>(&mut self, value: &T)
@@ -300,6 +319,22 @@ impl<'a, const D: usize> Sequence<'a, D> {
         U: num_traits::ToPrimitive,
     {
         self.next_field().emit_tagged(value, tags)
+    }
+
+    pub fn emit_measured<T>(&mut self, value: &T) -> Range<usize>
+    where
+        T: ToCborMeasured + ?Sized,
+    {
+        self.next_field().emit_measured(value)
+    }
+
+    pub fn emit_tagged_measured<T, I, U>(&mut self, value: &T, tags: I) -> Range<usize>
+    where
+        T: ToCborMeasured + ?Sized,
+        I: IntoIterator<Item = U>,
+        U: num_traits::ToPrimitive,
+    {
+        self.next_field().emit_tagged_measured(value, tags)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -485,36 +520,66 @@ impl ToCbor for bool {
     }
 }
 
+impl ToCborMeasured for str {
+    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
+        encoder.emit_uint_minor(3, self.len() as u64);
+        encoder.emit_extend(self.as_bytes())
+    }
+}
+
 impl ToCbor for str {
     fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(3, self.len() as u64);
-        encoder.data.extend(self.as_bytes())
+        self.to_cbor_measured(encoder);
+    }
+}
+
+impl ToCborMeasured for String {
+    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
+        self.as_str().to_cbor_measured(encoder)
     }
 }
 
 impl ToCbor for String {
     fn to_cbor(&self, encoder: &mut Encoder) {
-        self.as_str().to_cbor(encoder)
+        self.to_cbor_measured(encoder);
+    }
+}
+
+impl ToCborMeasured for [u8] {
+    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
+        encoder.emit_uint_minor(2, self.len() as u64);
+        encoder.emit_extend(self)
     }
 }
 
 impl ToCbor for [u8] {
     fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(2, self.len() as u64);
-        encoder.data.extend(self)
+        self.to_cbor_measured(encoder);
+    }
+}
+
+impl ToCborMeasured for Vec<u8> {
+    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
+        self.as_slice().to_cbor_measured(encoder)
     }
 }
 
 impl ToCbor for Vec<u8> {
     fn to_cbor(&self, encoder: &mut Encoder) {
-        self.as_slice().to_cbor(encoder)
+        self.to_cbor_measured(encoder);
+    }
+}
+
+impl<const N: usize> ToCborMeasured for [u8; N] {
+    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
+        encoder.emit_uint_minor(2, N as u64);
+        encoder.emit_extend(self)
     }
 }
 
 impl<const N: usize> ToCbor for [u8; N] {
     fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(2, N as u64);
-        encoder.data.extend(self)
+        self.to_cbor_measured(encoder);
     }
 }
 
