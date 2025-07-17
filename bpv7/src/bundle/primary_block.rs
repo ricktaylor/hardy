@@ -1,7 +1,7 @@
 use super::*;
 use error::CaptureFieldErr;
 
-struct PartialPrimaryBlock {
+pub struct PrimaryBlock {
     pub flags: bundle::Flags,
     pub crc_type: Result<crc::CrcType, Error>,
     pub source: Result<eid::Eid, Error>,
@@ -13,7 +13,7 @@ struct PartialPrimaryBlock {
     pub crc_result: Result<(), Error>,
 }
 
-impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
+impl hardy_cbor::decode::FromCbor for PrimaryBlock {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -32,7 +32,7 @@ impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
                 return Err(Error::InvalidVersion(version));
             }
 
-            // Parse flags
+            // Parse flags - we must have some readable flags
             let flags = block
                 .parse::<(bundle::Flags, bool)>()
                 .map(|(v, s)| {
@@ -67,6 +67,7 @@ impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
                 })
                 .map_err(Into::into);
 
+            // We must have a valid report_to
             let report_to = block
                 .parse()
                 .map(|(v, s)| {
@@ -103,8 +104,7 @@ impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
                             Ok(Some(bundle::FragmentInfo { offset, total_len }))
                         }
                     }
-                    (Err(e), _) => Err(e.into()),
-                    (_, Err(e)) => Err(e.into()),
+                    (Err(e), _) | (_, Err(e)) => Err(e.into()),
                 }
             };
 
@@ -137,41 +137,95 @@ impl hardy_cbor::decode::FromCbor for PartialPrimaryBlock {
     }
 }
 
-pub struct PrimaryBlock {
-    pub flags: bundle::Flags,
-    pub crc_type: crc::CrcType,
-    pub source: eid::Eid,
-    pub destination: eid::Eid,
-    pub report_to: eid::Eid,
-    pub timestamp: creation_timestamp::CreationTimestamp,
-    pub lifetime: core::time::Duration,
-    pub fragment_info: Option<bundle::FragmentInfo>,
-    pub error: Option<Box<dyn core::error::Error + Send + Sync>>,
-}
-
 impl PrimaryBlock {
-    pub fn into_bundle(
-        self,
-    ) -> (
-        bundle::Bundle,
-        Option<Box<dyn core::error::Error + Send + Sync>>,
-    ) {
-        (
-            bundle::Bundle {
-                id: bundle::Id {
-                    source: self.source,
-                    timestamp: self.timestamp,
-                    fragment_info: self.fragment_info,
-                },
-                flags: self.flags,
-                crc_type: self.crc_type,
-                destination: self.destination,
-                report_to: self.report_to,
-                lifetime: self.lifetime,
-                ..Default::default()
+    pub fn into_bundle(self, extent: core::ops::Range<usize>) -> (bundle::Bundle, Option<Error>) {
+        // Unpack the value or default
+        fn unpack<T: core::default::Default>(
+            r: Result<T, Error>,
+            e: &mut Option<Error>,
+            field: &'static str,
+        ) -> T {
+            match r {
+                Ok(t) => t,
+                Err(e2) => {
+                    if e.is_none() {
+                        *e = Some(Error::InvalidField {
+                            field,
+                            source: e2.into(),
+                        });
+                    }
+                    T::default()
+                }
+            }
+        }
+
+        // Compose something out of what we have!
+        let mut e = None;
+        let mut bundle = bundle::Bundle {
+            flags: self.flags,
+            report_to: self.report_to,
+            destination: unpack(self.destination, &mut e, "Destination EID"),
+            id: bundle::Id {
+                source: unpack(self.source, &mut e, "Source EID"),
+                timestamp: unpack(self.timestamp, &mut e, "Creation Timestamp"),
+                fragment_info: unpack(self.fragment_info, &mut e, "Fragment Info"),
             },
-            self.error,
-        )
+            lifetime: unpack(self.lifetime, &mut e, "Lifetime"),
+            crc_type: unpack(self.crc_type, &mut e, "Crc Type"),
+            ..Default::default()
+        };
+
+        if e.is_none() {
+            if let Err(e2) = self.crc_result {
+                e = Some(Error::InvalidField {
+                    field: "Crc Value",
+                    source: e2.into(),
+                });
+            }
+        }
+
+        // Add a block 0
+        bundle.blocks.insert(
+            0,
+            block::Block {
+                block_type: block::Type::Primary,
+                flags: block::Flags {
+                    must_replicate: true,
+                    report_on_failure: true,
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                },
+                crc_type: bundle.crc_type,
+                data: extent.clone(),
+                extent,
+                bib: None,
+                bcb: None,
+            },
+        );
+
+        if e.is_none() {
+            // Check flags
+            if matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
+                            || !bundle.flags.do_not_fragment
+                            || bundle.flags.receipt_report_requested
+                            || bundle.flags.forward_report_requested
+                            || bundle.flags.delivery_report_requested
+                            || bundle.flags.delete_report_requested)
+            {
+                // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
+                e = Some(Error::InvalidFlags);
+            } else if bundle.flags.is_admin_record
+                && (bundle.flags.receipt_report_requested
+                    || bundle.flags.forward_report_requested
+                    || bundle.flags.delivery_report_requested
+                    || bundle.flags.delete_report_requested)
+            {
+                // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
+                e = Some(Error::InvalidFlags);
+            }
+        }
+
+        (bundle, e)
     }
 
     pub fn emit(bundle: &bundle::Bundle) -> Vec<u8> {
@@ -213,224 +267,5 @@ impl PrimaryBlock {
                 },
             ),
         )
-    }
-}
-
-impl hardy_cbor::decode::FromCbor for PrimaryBlock {
-    type Error = Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        let Some((p, s, len)) =
-            hardy_cbor::decode::try_parse::<(PartialPrimaryBlock, bool, usize)>(data)?
-        else {
-            return Ok(None);
-        };
-
-        // Compose something out of what we have!
-        Ok(Some((
-            match (
-                p.destination,
-                p.source,
-                p.timestamp,
-                p.lifetime,
-                p.fragment_info,
-                p.crc_type,
-                p.crc_result,
-            ) {
-                (
-                    Ok(destination),
-                    Ok(source),
-                    Ok(timestamp),
-                    Ok(lifetime),
-                    Ok(fragment_info),
-                    Ok(crc_type),
-                    Ok(()),
-                ) => {
-                    let mut block = Self {
-                        flags: p.flags,
-                        report_to: p.report_to,
-                        crc_type,
-                        source,
-                        destination,
-                        timestamp,
-                        lifetime,
-                        fragment_info,
-                        error: None,
-                    };
-
-                    // Check flags
-                    if matches!(&block.source,&eid::Eid::Null if block.flags.is_fragment
-                        || !block.flags.do_not_fragment
-                        || block.flags.receipt_report_requested
-                        || block.flags.forward_report_requested
-                        || block.flags.delivery_report_requested
-                        || block.flags.delete_report_requested)
-                    {
-                        // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                        block.error = Some(Error::InvalidFlags.into());
-                    } else if block.flags.is_admin_record
-                        && (block.flags.receipt_report_requested
-                            || block.flags.forward_report_requested
-                            || block.flags.delivery_report_requested
-                            || block.flags.delete_report_requested)
-                    {
-                        // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                        block.error = Some(Error::InvalidFlags.into());
-                    }
-                    block
-                }
-                (Err(e), source, timestamp, lifetime, fragment_info, crc_type, _) => PrimaryBlock {
-                    flags: p.flags,
-                    report_to: p.report_to,
-                    crc_type: crc_type.unwrap_or_default(),
-                    source: source.unwrap_or_default(),
-                    destination: eid::Eid::default(),
-                    timestamp: timestamp.unwrap_or_default(),
-                    lifetime: lifetime.unwrap_or_default(),
-                    fragment_info: fragment_info.unwrap_or_default(),
-                    error: Some(
-                        Error::InvalidField {
-                            field: "Destination EID",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ),
-                },
-                (Ok(destination), Err(e), timestamp, lifetime, fragment_info, crc_type, _) => {
-                    PrimaryBlock {
-                        flags: p.flags,
-                        report_to: p.report_to,
-                        crc_type: crc_type.unwrap_or_default(),
-                        source: eid::Eid::default(),
-                        destination,
-                        timestamp: timestamp.unwrap_or_default(),
-                        lifetime: lifetime.unwrap_or_default(),
-                        fragment_info: fragment_info.unwrap_or_default(),
-                        error: Some(
-                            Error::InvalidField {
-                                field: "Source EID",
-                                source: e.into(),
-                            }
-                            .into(),
-                        ),
-                    }
-                }
-                (Ok(destination), Ok(source), Err(e), lifetime, fragment_info, crc_type, _) => {
-                    PrimaryBlock {
-                        flags: p.flags,
-                        report_to: p.report_to,
-                        crc_type: crc_type.unwrap_or_default(),
-                        source,
-                        destination,
-                        timestamp: creation_timestamp::CreationTimestamp::default(),
-                        lifetime: lifetime.unwrap_or_default(),
-                        fragment_info: fragment_info.unwrap_or_default(),
-                        error: Some(
-                            Error::InvalidField {
-                                field: "Creation Timestamp",
-                                source: e.into(),
-                            }
-                            .into(),
-                        ),
-                    }
-                }
-                (
-                    Ok(destination),
-                    Ok(source),
-                    Ok(timestamp),
-                    Err(e),
-                    fragment_info,
-                    crc_type,
-                    _,
-                ) => PrimaryBlock {
-                    flags: p.flags,
-                    report_to: p.report_to,
-                    crc_type: crc_type.unwrap_or_default(),
-                    source,
-                    destination,
-                    timestamp,
-                    lifetime: core::time::Duration::default(),
-                    fragment_info: fragment_info.unwrap_or_default(),
-                    error: Some(
-                        Error::InvalidField {
-                            field: "Lifetime",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ),
-                },
-                (Ok(destination), Ok(source), Ok(timestamp), Ok(lifetime), Err(e), crc_type, _) => {
-                    PrimaryBlock {
-                        flags: p.flags,
-                        report_to: p.report_to,
-                        crc_type: crc_type.unwrap_or_default(),
-                        source,
-                        destination,
-                        timestamp,
-                        lifetime,
-                        fragment_info: None,
-                        error: Some(
-                            Error::InvalidField {
-                                field: "Fragment Info",
-                                source: e.into(),
-                            }
-                            .into(),
-                        ),
-                    }
-                }
-                (
-                    Ok(destination),
-                    Ok(source),
-                    Ok(timestamp),
-                    Ok(lifetime),
-                    Ok(fragment_info),
-                    Err(e),
-                    _,
-                ) => PrimaryBlock {
-                    flags: p.flags,
-                    report_to: p.report_to,
-                    crc_type: crc::CrcType::default(),
-                    source,
-                    destination,
-                    timestamp,
-                    lifetime,
-                    fragment_info,
-                    error: Some(
-                        Error::InvalidField {
-                            field: "CRC Type",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ),
-                },
-                (
-                    Ok(destination),
-                    Ok(source),
-                    Ok(timestamp),
-                    Ok(lifetime),
-                    Ok(fragment_info),
-                    Ok(crc_type),
-                    Err(e),
-                ) => PrimaryBlock {
-                    flags: p.flags,
-                    report_to: p.report_to,
-                    crc_type,
-                    source,
-                    destination,
-                    timestamp,
-                    lifetime,
-                    fragment_info,
-                    error: Some(
-                        Error::InvalidField {
-                            field: "CRC Value",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ),
-                },
-            },
-            s,
-            len,
-        )))
     }
 }

@@ -97,13 +97,10 @@ impl Parameters {
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
-        let Some(iv) = iv else {
-            return Err(Error::MissingContextParameter(1));
-        };
 
         Ok((
             Self {
-                iv,
+                iv: iv.ok_or(Error::MissingContextParameter(1))?,
                 variant: variant.unwrap_or_default(),
                 key,
                 flags: flags.unwrap_or_default(),
@@ -182,11 +179,15 @@ impl hardy_cbor::encode::ToCbor for Results {
     }
 }
 
-fn build_data(
+fn build_data<'a>(
     flags: &ScopeFlags,
-    args: &bcb::OperationArgs,
-    payload_data: Option<&[u8]>,
-) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    args: &'a bcb::OperationArgs,
+) -> Result<(Vec<u8>, &'a [u8]), Error> {
+    let data = args
+        .blocks
+        .block_payload(args.target)
+        .ok_or(Error::MissingSecurityTarget)?;
+
     let mut encoder = hardy_cbor::encode::Encoder::new();
     encoder.emit(&ScopeFlags {
         include_primary_block: flags.include_primary_block,
@@ -196,49 +197,43 @@ fn build_data(
     });
 
     if flags.include_primary_block {
-        encoder.emit_raw_slice(args.primary_block);
+        encoder.emit_raw_slice(
+            args.blocks
+                .block_payload(args.target)
+                .expect("Missing primary block!"),
+        );
     }
 
     if flags.include_target_header {
-        encoder.emit(&args.target.block_type);
-        encoder.emit(&args.target_number);
-        encoder.emit(&args.target.flags);
+        let target_block = args
+            .blocks
+            .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+
+        encoder.emit(&target_block.block_type);
+        encoder.emit(&args.target);
+        encoder.emit(&target_block.flags);
     }
 
     if flags.include_security_header {
-        encoder.emit(&args.source.block_type);
-        encoder.emit(&args.source_number);
-        encoder.emit(&args.source.flags);
+        let source_block = args
+            .blocks
+            .block(args.source)
+            .ok_or(Error::MissingSecurityTarget)?;
+
+        encoder.emit(&source_block.block_type);
+        encoder.emit(&args.source);
+        encoder.emit(&source_block.flags);
     }
-    let aad = encoder.build();
 
-    let data = if let Some(payload_data) = payload_data {
-        payload_data.into()
-    } else {
-        hardy_cbor::decode::parse_value(args.target_payload, |value, _, _| {
-            match value {
-                hardy_cbor::decode::Value::ByteStream(data) => {
-                    // Concatenate all the bytes
-                    Ok::<_, Error>(data.iter().fold(Vec::new(), |mut data, d| {
-                        data.extend(*d);
-                        data
-                    }))
-                }
-                hardy_cbor::decode::Value::Bytes(data) => Ok(data.into()),
-                _ => unreachable!(),
-            }
-        })
-        .map(|v| v.0)?
-    };
-
-    Ok((data, aad))
+    Ok((encoder.build(), data))
 }
 
 #[allow(clippy::type_complexity)]
 fn encrypt_inner(
-    cipher: impl aes_gcm::aead::AeadInPlace,
-    aad: Vec<u8>,
-    mut data: Vec<u8>,
+    cipher: impl aes_gcm::aead::Aead,
+    aad: &[u8],
+    msg: &[u8],
 ) -> Result<(Box<[u8]>, Box<[u8]>), Error> {
     // Generate IV
     let mut iv = [0u8; 12];
@@ -246,10 +241,9 @@ fn encrypt_inner(
         .try_fill_bytes(&mut iv)
         .map_err(|e| Error::Algorithm(e.into()))?;
 
-    // Encrypt in-place, this results in a single data copy
     cipher
-        .encrypt_in_place(iv.as_ref().into(), &aad, &mut data)
-        .map(|_| (data.into(), iv.into()))
+        .encrypt(iv.as_ref().into(), aes_gcm::aead::Payload { msg, aad })
+        .map(|r| (r.into(), iv.into()))
         .map_err(|_| Error::EncryptionFailed)
 }
 
@@ -264,11 +258,14 @@ impl Operation {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
+    pub fn protects_primary_block(&self) -> bool {
+        self.parameters.flags.include_primary_block
+    }
+
     #[allow(clippy::type_complexity)]
     pub fn encrypt(
         jwk: &Key,
         args: bcb::OperationArgs,
-        payload_data: Option<&[u8]>,
     ) -> Result<Option<(Self, Box<[u8]>)>, Error> {
         if let Some(ops) = &jwk.operations {
             if !ops.contains(&key::Operation::Encrypt) {
@@ -313,7 +310,8 @@ impl Operation {
         };
 
         let flags = ScopeFlags::default();
-        let (data, aad) = build_data(&flags, &args, payload_data)?;
+        let (aad, data) = build_data(&flags, &args)?;
+
         if let Some(cek) = cek {
             let cek = match &jwk.key_algorithm {
                 Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
@@ -331,10 +329,10 @@ impl Operation {
             let (ciphertext, iv) = match variant {
                 AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(&cek)
                     .map_err(|e| Error::Algorithm(e.into()))
-                    .and_then(|cipher| encrypt_inner(cipher, aad, data)),
+                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
                 AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(&cek)
                     .map_err(|e| Error::Algorithm(e.into()))
-                    .and_then(|cipher| encrypt_inner(cipher, aad, data)),
+                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
                 AesVariant::Unrecognised(_) => unreachable!(),
             }?;
 
@@ -354,10 +352,10 @@ impl Operation {
             let (ciphertext, iv) = match variant {
                 AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(kek)
                     .map_err(|e| Error::Algorithm(e.into()))
-                    .and_then(|cipher| encrypt_inner(cipher, aad, data)),
+                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
                 AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(kek)
                     .map_err(|e| Error::Algorithm(e.into()))
-                    .and_then(|cipher| encrypt_inner(cipher, aad, data)),
+                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
                 AesVariant::Unrecognised(_) => unreachable!(),
             }?;
 
@@ -380,7 +378,9 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
-    ) -> Result<bcb::DecryptResult, Error> {
+    ) -> Result<Option<zeroize::Zeroizing<Box<[u8]>>>, Error> {
+        let (aad, data) = build_data(&self.parameters.flags, &args)?;
+
         if let Some(cek) = &self.parameters.key {
             for jwk in key_f.decrypt_keys(
                 args.bpsec_source,
@@ -410,13 +410,11 @@ impl Operation {
                         if let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm)
                         {
                             (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                                let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                                 aes_gcm::Aes128Gcm::new_from_slice(&cek)
                                     .ok()
                                     .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
                             }
                             (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                                let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                                 aes_gcm::Aes256Gcm::new_from_slice(&cek)
                                     .ok()
                                     .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
@@ -426,10 +424,7 @@ impl Operation {
                             }
                             _ => None,
                         } {
-                            return Ok(bcb::DecryptResult {
-                                plaintext: Some(plaintext),
-                                protects_primary_block: self.parameters.flags.include_primary_block,
-                            });
+                            return Ok(Some(plaintext));
                         }
                     }
                 }
@@ -445,13 +440,11 @@ impl Operation {
                 if let key::Type::OctetSequence { key: cek } = &jwk.key_type {
                     if let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm) {
                         (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                            let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                             aes_gcm::Aes128Gcm::new_from_slice(cek)
                                 .ok()
                                 .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
                         }
                         (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                            let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
                             aes_gcm::Aes256Gcm::new_from_slice(cek)
                                 .ok()
                                 .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
@@ -461,27 +454,21 @@ impl Operation {
                         }
                         _ => None,
                     } {
-                        return Ok(bcb::DecryptResult {
-                            plaintext: Some(plaintext),
-                            protects_primary_block: self.parameters.flags.include_primary_block,
-                        });
+                        return Ok(Some(plaintext));
                     }
                 }
             }
         }
 
-        Ok(bcb::DecryptResult {
-            plaintext: None,
-            protects_primary_block: self.parameters.flags.include_primary_block,
-        })
+        Ok(None)
     }
 
     pub fn decrypt(
         &self,
         jwk: &Key,
         args: bcb::OperationArgs,
-    ) -> Result<bcb::DecryptResult, Error> {
-        let (data, aad) = build_data(&self.parameters.flags, &args, None)?;
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+        let (aad, data) = build_data(&self.parameters.flags, &args)?;
 
         if let Some(cek) = &self.parameters.key {
             let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
@@ -535,31 +522,34 @@ impl Operation {
                 _ => Err(Error::InvalidKey(key::Operation::Decrypt, jwk.clone())),
             }
         }
-        .map(|plaintext| bcb::DecryptResult {
-            plaintext: Some(plaintext),
-            protects_primary_block: self.parameters.flags.include_primary_block,
-        })
     }
 
-    fn decrypt_inner(
+    fn decrypt_inner<C: aes_gcm::aead::Aead + aes_gcm::aead::AeadInPlace>(
         &self,
-        cipher: impl aes_gcm::aead::AeadInPlace,
+        cipher: C,
         aad: &[u8],
-        mut data: Vec<u8>,
+        msg: &[u8],
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-        // Decrypt in-place, this results in a single data copy
         if let Some(tag) = self.results.0.as_ref() {
-            cipher.decrypt_in_place_detached(
-                self.parameters.iv.as_ref().into(),
-                aad,
-                &mut data,
-                tag.as_ref().into(),
-            )
+            let mut msg = Vec::from(msg);
+            cipher
+                .decrypt_in_place_detached(
+                    self.parameters.iv.as_ref().into(),
+                    aad,
+                    &mut msg,
+                    tag.as_ref().into(),
+                )
+                .map_err(|_| Error::DecryptionFailed)?;
+            Ok(msg)
         } else {
-            cipher.decrypt_in_place(self.parameters.iv.as_ref().into(), aad, &mut data)
+            cipher
+                .decrypt(
+                    self.parameters.iv.as_ref().into(),
+                    aes_gcm::aead::Payload { aad, msg },
+                )
+                .map_err(|_| Error::DecryptionFailed)
         }
-        .map(|()| zeroize::Zeroizing::new(data.into()))
-        .map_err(|_| Error::DecryptionFailed)
+        .map(|r| zeroize::Zeroizing::new(r.into()))
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {

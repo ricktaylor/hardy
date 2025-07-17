@@ -11,16 +11,9 @@ pub enum Operation {
 
 pub struct OperationArgs<'a> {
     pub bpsec_source: &'a eid::Eid,
-    pub target: &'a block::Block,
-    pub target_number: u64,
-    pub target_payload: &'a [u8],
-    pub source: &'a block::Block,
-    pub source_number: u64,
-    pub primary_block: &'a [u8],
-}
-
-pub struct VerifyResult {
-    pub protects_primary_block: bool,
+    pub target: u64,
+    pub source: u64,
+    pub blocks: &'a dyn BlockSet<'a>,
 }
 
 impl Operation {
@@ -32,13 +25,17 @@ impl Operation {
         }
     }
 
-    pub fn sign(
-        jwk: &Key,
-        args: OperationArgs,
-        payload_data: Option<&[u8]>,
-    ) -> Result<Operation, Error> {
+    pub fn protects_primary_block(&self) -> bool {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(operation) => operation.protects_primary_block(),
+            Self::Unrecognised(..) => false,
+        }
+    }
+
+    pub fn sign(jwk: &Key, args: OperationArgs) -> Result<Operation, Error> {
         #[cfg(feature = "rfc9173")]
-        if let Some(op) = rfc9173::bib_hmac_sha2::Operation::sign(jwk, args, payload_data)? {
+        if let Some(op) = rfc9173::bib_hmac_sha2::Operation::sign(jwk, args)? {
             return Ok(Self::HMAC_SHA2(op));
         }
 
@@ -49,20 +46,15 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: OperationArgs,
-    ) -> Result<(Option<bool>, VerifyResult), Error> {
+    ) -> Result<Option<bool>, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.verify_any(key_f, args),
-            Self::Unrecognised(..) => Ok((
-                None,
-                VerifyResult {
-                    protects_primary_block: args.target_number == 0,
-                },
-            )),
+            Self::Unrecognised(..) => Ok(None),
         }
     }
 
-    pub fn verify(&self, jwk: &Key, args: OperationArgs) -> Result<(bool, VerifyResult), Error> {
+    pub fn verify(&self, jwk: &Key, args: OperationArgs) -> Result<bool, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.verify(jwk, args),

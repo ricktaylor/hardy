@@ -1,4 +1,5 @@
 use super::*;
+use core::ops::Range;
 use error::CaptureFieldErr;
 
 #[derive(Default, Debug, Clone)]
@@ -130,30 +131,22 @@ pub struct Block {
     pub block_type: Type,
     pub flags: Flags,
     pub crc_type: crc::CrcType,
-    pub data_start: usize,
-    pub data_len: usize,
-    pub payload_offset: usize,
-    pub payload_len: usize,
+    pub extent: Range<usize>,
+    pub data: Range<usize>,
+    pub bib: Option<u64>,
     pub bcb: Option<u64>,
 }
 
 impl Block {
-    pub fn payload_range(&self) -> core::ops::Range<usize> {
-        core::ops::Range {
-            start: self.data_start + self.payload_offset,
-            end: self.data_start + self.payload_offset + self.payload_len,
-        }
+    pub fn payload(&self) -> Range<usize> {
+        self.extent.start + self.data.start..self.extent.start + self.data.end
     }
 
-    pub fn payload<'a>(&self, data: &'a [u8]) -> &'a [u8] {
-        &data[self.payload_range()]
-    }
-
-    fn emit_inner(
+    pub(crate) fn emit(
         &mut self,
         block_number: u64,
+        data: &[u8],
         array: &mut hardy_cbor::encode::Array,
-        f: impl FnOnce(&mut hardy_cbor::encode::Array),
     ) {
         let block_data = crc::append_crc_value(
             self.crc_type,
@@ -169,10 +162,7 @@ impl Block {
                     a.emit(&self.flags);
                     a.emit(&self.crc_type);
 
-                    // Payload
-                    self.payload_offset = a.offset();
-                    f(a);
-                    self.payload_len = a.offset() - self.payload_offset;
+                    self.data = a.emit_measured(data);
 
                     // CRC
                     if let crc::CrcType::None = self.crc_type {
@@ -182,58 +172,15 @@ impl Block {
                 },
             ),
         );
-        self.data_start = array.offset();
-        self.data_len = block_data.len();
-        array.emit_raw(block_data)
+        let block_start = array.offset();
+        array.emit_raw(block_data);
+        self.extent = block_start..array.offset();
     }
 
-    pub(crate) fn emit(
-        &mut self,
-        block_number: u64,
-        data: &[u8],
-        array: &mut hardy_cbor::encode::Array,
-    ) {
-        self.emit_inner(block_number, array, |a| a.emit(data));
-    }
-
-    pub(crate) fn rewrite(
-        &mut self,
-        block_number: u64,
-        array: &mut hardy_cbor::encode::Array,
-        source_data: &[u8],
-    ) {
-        hardy_cbor::decode::parse_value(self.payload(source_data), |value, _, _| {
-            match value {
-                hardy_cbor::decode::Value::Bytes(data) => self.emit(block_number, data, array),
-                hardy_cbor::decode::Value::ByteStream(data) => {
-                    // This is horrible, but removes a potentially large data copy
-                    let len = data.iter().fold(0u64, |len, d| len + d.len() as u64);
-                    let mut header = hardy_cbor::encode::emit(&len);
-                    if let Some(m) = header.first_mut() {
-                        *m |= 2 << 5;
-                    }
-                    self.emit_inner(block_number, array, |a| {
-                        a.emit_raw(header);
-                        for d in data {
-                            a.append_raw_slice(d);
-                        }
-                    })
-                }
-                _ => unreachable!(),
-            };
-            Ok::<(), hardy_cbor::decode::Error>(())
-        })
-        .unwrap();
-    }
-
-    pub(crate) fn write(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
-        let offset = array.offset();
-        self.copy(source_data, array);
-        self.data_start = offset;
-    }
-
-    pub(crate) fn copy(&self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
-        array.emit_raw_slice(&source_data[self.data_start..self.data_start + self.data_len]);
+    pub(crate) fn r#move(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
+        let block_start = array.offset();
+        array.emit_raw_slice(&source_data[self.extent.clone()]);
+        self.extent = block_start..array.offset();
     }
 }
 
@@ -241,16 +188,17 @@ impl Block {
 pub(crate) struct BlockWithNumber {
     pub number: u64,
     pub block: Block,
+    pub payload: Option<Box<[u8]>>,
 }
 
 impl hardy_cbor::decode::FromCbor for BlockWithNumber {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |block, mut shortest, tags| {
-            shortest = shortest && tags.is_empty() && block.is_definite();
+        hardy_cbor::decode::try_parse_array(data, |arr, mut shortest, tags| {
+            shortest = shortest && tags.is_empty() && arr.is_definite();
 
-            let block_type = block
+            let block_type = arr
                 .parse()
                 .map(|(v, s)| {
                     shortest = shortest && s;
@@ -258,7 +206,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 })
                 .map_field_err("block type code")?;
 
-            let block_number = block.parse().map_field_err("block number").map(|(v, s)| {
+            let block_number = arr.parse().map_field_err("block number").map(|(v, s)| {
                 shortest = shortest && s;
                 v
             })?;
@@ -270,7 +218,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 _ => {}
             }
 
-            let flags = block
+            let flags = arr
                 .parse()
                 .map(|(v, s)| {
                     shortest = shortest && s;
@@ -278,7 +226,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 })
                 .map_field_err("block processing control flags")?;
 
-            let crc_type = block
+            let crc_type = arr
                 .parse()
                 .map(|(v, s)| {
                     shortest = shortest && s;
@@ -287,8 +235,8 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 .map_field_err("CRC type")?;
 
             // Stash start of data
-            let payload_offset = block.offset();
-            block.parse_value(|value, s, tags| {
+            let payload_start = arr.offset();
+            let (payload, payload_range) = arr.parse_value(|value, s, tags| {
                 shortest = shortest && s;
                 if shortest {
                     // Appendix B of RFC9171
@@ -305,10 +253,23 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 }
 
                 match value {
-                    hardy_cbor::decode::Value::Bytes(_) => Ok(()),
-                    hardy_cbor::decode::Value::ByteStream(_) => {
+                    hardy_cbor::decode::Value::Bytes(r) => {
+                        Ok((None, payload_start + r.start..payload_start + r.end))
+                    }
+                    hardy_cbor::decode::Value::ByteStream(ranges) => {
                         shortest = false;
-                        Ok(())
+                        Ok((
+                            Some(
+                                ranges
+                                    .into_iter()
+                                    .fold(Vec::new(), |mut acc, r| {
+                                        acc.extend_from_slice(&data[r]);
+                                        acc
+                                    })
+                                    .into(),
+                            ),
+                            0..0,
+                        ))
                     }
                     value => Err(hardy_cbor::decode::Error::IncorrectType(
                         "Byte String".to_string(),
@@ -316,10 +277,9 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                     )),
                 }
             })?;
-            let payload_len = block.offset() - payload_offset;
 
             // Check CRC
-            shortest = crc::parse_crc_value(data, block, crc_type)? && shortest;
+            shortest = crc::parse_crc_value(data, arr, crc_type)? && shortest;
 
             Ok((
                 BlockWithNumber {
@@ -328,19 +288,19 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                         block_type,
                         flags,
                         crc_type,
-                        data_start: 0,
-                        data_len: 0,
-                        payload_offset,
-                        payload_len,
+                        extent: 0..0,
+                        data: payload_range,
+                        bib: None,
                         bcb: None,
                     },
+                    payload,
                 },
                 shortest,
             ))
         })
         .map(|o| {
             o.map(|((mut block, shortest), len)| {
-                block.block.data_len = len;
+                block.block.extent.end = len;
                 (block, shortest, len)
             })
         })

@@ -42,9 +42,6 @@ pub enum Error {
     #[error("Invalid bundle flag combination")]
     InvalidFlags,
 
-    #[error("Block {0} is not in canonical form")]
-    NonCanonical(u64),
-
     #[error("Bundle has been altered since parsing")]
     Altered,
 

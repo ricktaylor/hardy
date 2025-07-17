@@ -65,11 +65,10 @@ pub enum Error {
     #[error("Decryption failed")]
     DecryptionFailed,
 
+    /// This type is deliberately opaque as to avoid potential side-channel
+    /// leakage (e.g. padding oracle).
     #[error("Encryption failed")]
     EncryptionFailed,
-
-    #[error("Verification failed")]
-    VerificationFailed,
 
     #[error("Invalid key material {1:?} for operation {0:?}")]
     InvalidKey(key::Operation, Key),

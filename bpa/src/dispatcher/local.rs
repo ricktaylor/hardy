@@ -95,6 +95,15 @@ impl Dispatcher {
             return Ok(());
         };
 
+        let payload = match bundle.bundle.block_payload(1, &data, self)? {
+            None => {
+                // TODO: We are unable to decrypt the payload, what do we do?
+                todo!();
+            }
+            Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
+            Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
+        };
+
         // Pass the bundle and data to the service
         service
             .service
@@ -102,10 +111,7 @@ impl Dispatcher {
                 id: bundle.bundle.id.to_key(),
                 expiry: bundle.expiry(),
                 ack_requested: bundle.bundle.flags.app_ack_requested,
-                payload: match bundle.bundle.payload(&data, self)? {
-                    hardy_bpv7::bundle::Payload::Borrowed(range) => data.slice(range),
-                    hardy_bpv7::bundle::Payload::Owned(data) => Bytes::from_owner(data),
-                },
+                payload,
             })
             .await;
 

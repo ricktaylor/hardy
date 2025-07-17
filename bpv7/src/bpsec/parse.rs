@@ -195,14 +195,13 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                 while let Some(target_results) =
                     parse_ranges(a, &mut shortest, offset).map_field_err("security results")?
                 {
-                    let Some(target) = targets.get(idx) else {
-                        return Err(Error::MismatchedTargetResult);
-                    };
-
-                    results.insert(*target, target_results);
+                    results.insert(
+                        *targets.get(idx).ok_or(Error::MismatchedTargetResult)?,
+                        target_results,
+                    );
                     idx += 1;
                 }
-                Ok(results)
+                Ok::<_, Error>(results)
             })?;
 
             if targets.len() != results.len() {
@@ -227,13 +226,15 @@ pub fn decode_box(
     range: Range<usize>,
     data: &[u8],
 ) -> Result<(Box<[u8]>, bool), hardy_cbor::decode::Error> {
-    hardy_cbor::decode::parse_value(&data[range.start..range.end], |v, s, tags| match v {
-        hardy_cbor::decode::Value::Bytes(data) => Ok((data.into(), s && tags.is_empty())),
-        hardy_cbor::decode::Value::ByteStream(data) => Ok((
-            data.iter()
-                .fold(Vec::new(), |mut data, d| {
-                    data.extend(*d);
-                    data
+    let data = &data[range.start..range.end];
+    hardy_cbor::decode::parse_value(data, |v, s, tags| match v {
+        hardy_cbor::decode::Value::Bytes(r) => Ok((data[r].into(), s && tags.is_empty())),
+        hardy_cbor::decode::Value::ByteStream(ranges) => Ok((
+            ranges
+                .into_iter()
+                .fold(Vec::new(), |mut acc, r| {
+                    acc.extend_from_slice(&data[r]);
+                    acc
                 })
                 .into(),
             false,

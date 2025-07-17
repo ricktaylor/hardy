@@ -36,7 +36,8 @@ impl Dispatcher {
                     reason,
                     ..Default::default()
                 },
-            )),
+            ))
+            .into(),
             &bundle.bundle.report_to,
         )
         .await
@@ -68,7 +69,8 @@ impl Dispatcher {
                     )),
                     ..Default::default()
                 },
-            )),
+            ))
+            .into(),
             &bundle.bundle.report_to,
         )
         .await
@@ -98,7 +100,8 @@ impl Dispatcher {
                     )),
                     ..Default::default()
                 },
-            )),
+            ))
+            .into(),
             &bundle.bundle.report_to,
         )
         .await
@@ -130,7 +133,8 @@ impl Dispatcher {
                     reason,
                     ..Default::default()
                 },
-            )),
+            ))
+            .into(),
             &bundle.bundle.report_to,
         )
         .await
@@ -139,7 +143,7 @@ impl Dispatcher {
     #[instrument(skip_all)]
     pub(super) async fn dispatch_status_report(
         &self,
-        payload: Vec<u8>,
+        payload: Box<[u8]>,
         report_to: &Eid,
     ) -> Result<(), Error> {
         // Check reports are enabled

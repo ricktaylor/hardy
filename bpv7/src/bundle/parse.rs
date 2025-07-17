@@ -1,39 +1,69 @@
 use super::*;
-use alloc::borrow::Cow;
 use error::CaptureFieldErr;
 
-impl Bundle {
-    /* Refactoring this huge function into parts doesn't really help readability,
-     * and seems to drive the borrow checker insane */
-    #[allow(clippy::type_complexity)]
-    fn parse_blocks(
-        &mut self,
-        canonical_bundle: bool,
-        canonical_primary_block: bool,
-        blocks: &mut hardy_cbor::decode::Array,
-        mut offset: usize,
-        source_data: &[u8],
-        key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<(Option<Box<[u8]>>, bool), Error> {
+#[derive(Debug, Default)]
+struct BlockParse<'a> {
+    source_data: &'a [u8],
+    blocks: HashMap<u64, block::Block>,
+    decrypted_data: HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
+    noncanonical_blocks: HashMap<u64, Option<Box<[u8]>>>,
+    blocks_to_check: HashMap<block::Type, u64>,
+    bibs_to_check: HashSet<u64>,
+    blocks_to_remove: HashSet<u64>,
+    bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
+    protects_primary_block: HashSet<u64>,
+}
+
+impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
+    fn block(&'a self, block_number: u64) -> Option<&'a block::Block> {
+        self.blocks.get(&block_number)
+    }
+
+    fn block_payload(&self, block_number: u64) -> Option<&[u8]> {
+        if let Some(b) = self.decrypted_data.get(&block_number) {
+            Some(b.as_ref())
+        } else if let Some(Some(b)) = self.noncanonical_blocks.get(&block_number) {
+            Some(b.as_ref())
+        } else {
+            Some(&self.source_data[self.block(block_number)?.payload()])
+        }
+    }
+}
+
+impl<'a> BlockParse<'a> {
+    fn new(source_data: &'a [u8]) -> Self {
+        Self {
+            source_data,
+            ..Default::default()
+        }
+    }
+
+    fn parse_payload<T>(&'a self, block_number: u64) -> Result<(T, bool), Error>
+    where
+        T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
+    {
+        let payload = <Self as bpsec::BlockSet>::block_payload(self, block_number)
+            .expect("Missing block payload!");
+
+        hardy_cbor::decode::parse::<(T, bool, usize)>(payload)
+            .map(|(v, s, len)| (v, s && len == payload.len()))
+            .map_err(Into::into)
+    }
+
+    fn parse_blocks(&mut self, block_array: &mut hardy_cbor::decode::Array) -> Result<bool, Error> {
         let mut last_block_number = 0;
-        let mut noncanonical_blocks: HashMap<u64, bool> = HashMap::new();
-        let mut blocks_to_check = HashMap::new();
-        let mut blocks_to_remove = HashSet::new();
         let mut report_unsupported = false;
-        let mut bcbs_to_check = Vec::new();
-        let mut bibs_to_check = HashSet::new();
+        let mut offset = block_array.offset();
 
-        // Parse the blocks and build a map
-        while let Some((mut block, canonical, block_len)) =
-            blocks.try_parse::<(block::BlockWithNumber, bool, usize)>()?
+        while let Some((mut block, canonical)) =
+            block_array.try_parse::<(block::BlockWithNumber, bool)>()?
         {
-            block.block.data_start += offset;
-
-            if !canonical {
-                noncanonical_blocks.insert(block.number, false);
-            }
+            // Adjust block extent to be relative to source_data
+            block.block.extent = block.block.extent.start + offset..block.block.extent.end + offset;
+            offset = block_array.offset();
 
             // Check the block
+            let mut remove = false;
             match block.block.block_type {
                 block::Type::Primary => unreachable!(),
                 block::Type::Payload
@@ -41,7 +71,8 @@ impl Bundle {
                 | block::Type::BundleAge
                 | block::Type::HopCount => {
                     // Confirm no duplicates
-                    if blocks_to_check
+                    if self
+                        .blocks_to_check
                         .insert(block.block.block_type, block.number)
                         .is_some()
                     {
@@ -49,10 +80,49 @@ impl Bundle {
                     }
                 }
                 block::Type::BlockIntegrity => {
-                    bibs_to_check.insert(block.number);
+                    // We defer BIB checking till after BCB unpacking
+                    self.bibs_to_check.insert(block.number);
                 }
                 block::Type::BlockSecurity => {
-                    bcbs_to_check.push(block.number);
+                    if block.block.flags.delete_block_on_failure {
+                        return Err(bpsec::Error::BCBDeleteFlag.into());
+                    }
+
+                    // Get the block data (not in the maps yet)
+                    let block_data = if let Some(payload) = &block.payload {
+                        payload.as_ref()
+                    } else {
+                        &self.source_data[block.block.payload()]
+                    };
+
+                    // Parse the BCB
+                    let (bcb, canonical) =
+                        hardy_cbor::decode::parse::<(bpsec::bcb::OperationSet, bool, usize)>(
+                            block_data,
+                        )
+                        .map(|(v, s, len)| (v, s && len == block_data.len()))
+                        .map_field_err("BPSec confidentiality extension block")?;
+
+                    if bcb.is_unsupported() {
+                        if block.block.flags.delete_bundle_on_failure {
+                            return Err(Error::Unsupported(block.number));
+                        }
+
+                        if block.block.flags.delete_block_on_failure {
+                            return Err(bpsec::Error::BCBDeleteFlag.into());
+                        }
+
+                        if block.block.flags.report_on_failure {
+                            report_unsupported = true;
+                        }
+                    }
+
+                    if !canonical {
+                        // Rewrite the BCB canonically
+                        block.payload = Some(hardy_cbor::encode::emit(&bcb).into());
+                    }
+
+                    self.bcbs.insert(block.number, bcb);
                 }
                 block::Type::Unrecognised(_) => {
                     if block.block.flags.delete_bundle_on_failure {
@@ -64,23 +134,27 @@ impl Bundle {
                     }
 
                     if block.block.flags.delete_block_on_failure {
-                        noncanonical_blocks.remove(&block.number);
-                        blocks_to_remove.insert(block.number);
+                        remove = true;
                     }
                 }
             }
 
-            // Add block
             if self.blocks.insert(block.number, block.block).is_some() {
                 return Err(Error::DuplicateBlockNumber(block.number));
             }
 
+            if remove {
+                self.blocks_to_remove.insert(block.number);
+            } else if block.payload.is_some() || !canonical {
+                self.noncanonical_blocks.insert(block.number, block.payload);
+            }
+
             last_block_number = block.number;
-            offset += block_len;
         }
 
         // Check the last block is the payload
-        if blocks_to_check
+        if self
+            .blocks_to_check
             .remove(&block::Type::Payload)
             .ok_or(Error::MissingPayload)?
             != last_block_number
@@ -89,54 +163,21 @@ impl Bundle {
         }
 
         // Check for spurious extra data
-        if blocks.offset() != source_data.len() {
+        if block_array.offset() != self.source_data.len() {
             return Err(Error::AdditionalData);
         }
 
-        // Rewrite primary block if required
-        let primary_block_data = if canonical_primary_block {
-            Cow::Borrowed(
-                self.blocks
-                    .get(&0)
-                    .expect("Missing primary block!")
-                    .payload(source_data),
-            )
-        } else {
-            Cow::Owned(primary_block::PrimaryBlock::emit(self))
-        };
+        Ok(report_unsupported)
+    }
 
-        // Decrypt all BCB targets first
+    fn parse_bcbs(&mut self, key_f: &impl bpsec::key::KeyStore) -> Result<(), Error> {
         let mut decrypted_data = HashMap::new();
-        let mut protects_primary_block = HashSet::new();
         let mut bcb_targets = HashMap::new();
-        let mut bcbs = HashMap::new();
-        for bcb_block_number in bcbs_to_check {
-            // Parse the BCB
-            let (bcb_block, bcb, s) = self
-                .parse_payload::<bpsec::bcb::OperationSet>(&bcb_block_number, None, source_data)
-                .map_field_err("BPSec confidentiality extension block")?;
-
-            if !s {
-                noncanonical_blocks.insert(bcb_block_number, true);
-            }
-
-            if bcb_block.flags.delete_block_on_failure {
-                return Err(bpsec::Error::BCBDeleteFlag.into());
-            }
-
-            if bcb.is_unsupported() {
-                if bcb_block.flags.delete_bundle_on_failure {
-                    return Err(Error::Unsupported(bcb_block_number));
-                }
-
-                if bcb_block.flags.delete_block_on_failure {
-                    return Err(bpsec::Error::BCBDeleteFlag.into());
-                }
-
-                if bcb_block.flags.report_on_failure {
-                    report_unsupported = true;
-                }
-            }
+        for (bcb_block_number, bcb) in &self.bcbs {
+            let bcb_block = self
+                .blocks
+                .get(bcb_block_number)
+                .expect("Missing BCB block!");
 
             // Check targets
             for (target_number, op) in &bcb.operations {
@@ -146,11 +187,13 @@ impl Bundle {
                 {
                     return Err(bpsec::Error::DuplicateOpTarget.into());
                 }
-                let Some(target_block) = self.blocks.get(target_number) else {
-                    return Err(bpsec::Error::MissingSecurityTarget.into());
-                };
 
-                match target_block.block_type {
+                let target_block = &self
+                    .blocks
+                    .get(target_number)
+                    .ok_or(bpsec::Error::MissingSecurityTarget)?;
+
+                if match target_block.block_type {
                     block::Type::BlockSecurity | block::Type::Primary => {
                         return Err(bpsec::Error::InvalidBCBTarget.into());
                     }
@@ -159,104 +202,109 @@ impl Bundle {
                         if !bcb_block.flags.must_replicate {
                             return Err(bpsec::Error::BCBMustReplicate.into());
                         }
+                        if op.protects_primary_block() {
+                            self.protects_primary_block.insert(*bcb_block_number);
+                        }
+                        false
                     }
-                    _ => {}
-                }
-
-                if !blocks_to_remove.contains(target_number) {
-                    // Confirm we can decrypt if we have keys
-                    let decrypt = op.decrypt_any(
+                    block::Type::PreviousNode
+                    | block::Type::BundleAge
+                    | block::Type::HopCount
+                    | block::Type::BlockIntegrity => {
+                        if self.blocks_to_remove.contains(target_number) {
+                            false
+                        } else {
+                            if op.protects_primary_block() {
+                                self.protects_primary_block.insert(*bcb_block_number);
+                            }
+                            true
+                        }
+                    }
+                    _ => {
+                        if !self.blocks_to_remove.contains(target_number)
+                            && op.protects_primary_block()
+                        {
+                            self.protects_primary_block.insert(*bcb_block_number);
+                        }
+                        false
+                    }
+                } {
+                    // Try to decrypt if we have keys
+                    if let Some(plaintext) = op.decrypt_any(
                         key_f,
                         bpsec::bcb::OperationArgs {
                             bpsec_source: &bcb.source,
-                            target: target_block,
-                            target_number: *target_number,
-                            target_payload: target_block.payload(source_data),
-                            source: bcb_block,
-                            source_number: bcb_block_number,
-                            primary_block: &primary_block_data,
+                            target: *target_number,
+                            source: *bcb_block_number,
+                            blocks: self,
                         },
-                    )?;
-
-                    if decrypt.protects_primary_block {
-                        protects_primary_block.insert(bcb_block_number);
-                    }
-
-                    // Stash the decrypted data
-                    if let Some(block_data) = decrypt.plaintext {
-                        decrypted_data.insert(*target_number, block_data);
-                    } else if let block::Type::BlockIntegrity = target_block.block_type {
+                    )? {
+                        decrypted_data.insert(*target_number, plaintext);
+                    } else if target_block.block_type == block::Type::BlockIntegrity {
                         // We can't decrypt the BIB, therefore we cannot check the BIB
-                        bibs_to_check.remove(target_number);
+                        self.bibs_to_check.remove(target_number);
+                    } else {
+                        // We can't decrypt the block, therefore we cannot check it
+                        self.blocks_to_check.remove(&target_block.block_type);
                     }
                 }
             }
-
-            bcbs.insert(bcb_block_number, bcb);
         }
 
-        // Mark all blocks that are BCB targets
-        for (target, bcb) in bcb_targets {
-            self.blocks.get_mut(&target).unwrap().bcb = Some(bcb);
+        // Mark all blocks that are BCB targets (we have to delay this because of borrow rules)
+        for (target_block, bcb_block_number) in bcb_targets {
+            self.blocks
+                .get_mut(&target_block)
+                .expect("Missing BCB target!")
+                .bcb = Some(*bcb_block_number);
         }
 
-        // Now parse all the non-BIBs we need to check
-        for (block_type, block_number) in blocks_to_check {
-            if !match block_type {
+        Ok(())
+    }
+
+    fn check_blocks(&mut self, bundle: &mut Bundle) -> Result<(), Error> {
+        for (block_type, block_number) in core::mem::take(&mut self.blocks_to_check) {
+            if let Some(payload) = match block_type {
                 block::Type::PreviousNode => {
-                    let (_, v, s) = self
-                        .parse_payload(
-                            &block_number,
-                            decrypted_data.get(&block_number),
-                            source_data,
-                        )
+                    let (v, s) = self
+                        .parse_payload(block_number)
                         .map_field_err("Previous Node Block")?;
-                    self.previous_node = Some(v);
-                    s
+                    let r = (!s).then(|| hardy_cbor::encode::emit(&v).into());
+                    bundle.previous_node = Some(v);
+                    r
                 }
                 block::Type::BundleAge => {
-                    let (_, v, s) = self
-                        .parse_payload::<u64>(
-                            &block_number,
-                            decrypted_data.get(&block_number),
-                            source_data,
-                        )
+                    let (v, s) = self
+                        .parse_payload(block_number)
                         .map_field_err("Bundle Age Block")?;
-                    self.age = Some(core::time::Duration::from_millis(v));
-                    s
+                    bundle.age = Some(core::time::Duration::from_millis(v));
+                    (!s).then(|| hardy_cbor::encode::emit(&v).into())
                 }
                 block::Type::HopCount => {
-                    let (_, v, s) = self
-                        .parse_payload(
-                            &block_number,
-                            decrypted_data.get(&block_number),
-                            source_data,
-                        )
+                    let (v, s) = self
+                        .parse_payload(block_number)
                         .map_field_err("Hop Count Block")?;
-                    self.hop_count = Some(v);
-                    s
+                    let r = (!s).then(|| hardy_cbor::encode::emit(&v).into());
+                    bundle.hop_count = Some(v);
+                    r
                 }
-                _ => true,
+                _ => unreachable!(),
             } {
-                noncanonical_blocks.insert(block_number, true);
+                self.noncanonical_blocks.insert(block_number, Some(payload));
             }
         }
 
-        // Check bundle age exists if needed
-        if self.age.is_none() && self.id.timestamp.creation_time.is_none() {
-            return Err(Error::MissingBundleAge);
-        }
+        Ok(())
+    }
 
-        // Now parse all BIBs
-        let mut bibs = HashMap::new();
-        let mut bib_targets = HashSet::new();
-        for bib_block_number in bibs_to_check {
-            let (bib_block, mut bib, canonical) = self
-                .parse_payload::<bpsec::bib::OperationSet>(
-                    &bib_block_number,
-                    decrypted_data.get(&bib_block_number),
-                    source_data,
-                )
+    fn parse_bibs(&mut self) -> Result<bool, Error> {
+        let mut report_unsupported = false;
+        let mut bib_targets = HashMap::new();
+        for bib_block_number in core::mem::take(&mut self.bibs_to_check) {
+            let bib_block = self.blocks.get(&bib_block_number).expect("Missing BIB!");
+
+            let (mut bib, canonical) = self
+                .parse_payload::<bpsec::bib::OperationSet>(bib_block_number)
                 .map_field_err("BPSec integrity extension block")?;
 
             if bib.is_unsupported() {
@@ -269,27 +317,33 @@ impl Bundle {
                 }
 
                 if bib_block.flags.delete_block_on_failure {
-                    noncanonical_blocks.remove(&bib_block_number);
-                    blocks_to_remove.insert(bib_block_number);
+                    self.noncanonical_blocks.remove(&bib_block_number);
+                    self.blocks_to_remove.insert(bib_block_number);
                     continue;
                 }
             }
 
-            let bcb = bib_block.bcb.and_then(|b| bcbs.get(&b));
+            let bcb = bib_block.bcb.and_then(|b| self.bcbs.get(&b));
 
             // Check targets
             for (target_number, op) in &bib.operations {
-                if !bib_targets.insert(*target_number) {
+                if bib_targets
+                    .insert(*target_number, bib_block_number)
+                    .is_some()
+                {
                     return Err(bpsec::Error::DuplicateOpTarget.into());
                 }
-                let Some(target_block) = self.blocks.get(target_number) else {
-                    return Err(bpsec::Error::MissingSecurityTarget.into());
-                };
+
+                let target_block = &self
+                    .blocks
+                    .get(target_number)
+                    .ok_or(bpsec::Error::MissingSecurityTarget)?;
 
                 // Verify BIB target
-                if let block::Type::BlockSecurity | block::Type::BlockIntegrity =
-                    target_block.block_type
-                {
+                if matches!(
+                    target_block.block_type,
+                    block::Type::BlockSecurity | block::Type::BlockIntegrity
+                ) {
                     return Err(bpsec::Error::InvalidBIBTarget.into());
                 }
 
@@ -300,177 +354,179 @@ impl Bundle {
                     }
                 }
 
-                if noncanonical_blocks.get(target_number) == Some(&true) {
-                    // Non-canonical block with signature is unrecoverable
-                    return Err(Error::NonCanonical(*target_number));
-                }
-
-                if !blocks_to_remove.contains(target_number) {
-                    let r = op.verify_any(
-                        key_f,
-                        bpsec::bib::OperationArgs {
-                            bpsec_source: &bib.source,
-                            target: target_block,
-                            target_number: *target_number,
-                            target_payload: target_block.payload(source_data),
-                            source: bib_block,
-                            source_number: bib_block_number,
-                            primary_block: &primary_block_data,
-                        },
-                    )?;
-
-                    if r.1.protects_primary_block {
-                        protects_primary_block.insert(bib_block_number);
-                    }
+                if target_number == &0
+                    || (!self.blocks_to_remove.contains(target_number)
+                        && op.protects_primary_block())
+                {
+                    self.protects_primary_block.insert(bib_block_number);
                 }
             }
 
             // Remove targets scheduled for removal
             let old_len = bib.operations.len();
-            bib.operations.retain(|k, _| !blocks_to_remove.contains(k));
+            bib.operations
+                .retain(|k, _| !self.blocks_to_remove.contains(k));
             if bib.operations.is_empty() {
-                noncanonical_blocks.remove(&bib_block_number);
-                protects_primary_block.remove(&bib_block_number);
-                blocks_to_remove.insert(bib_block_number);
-                continue;
+                self.noncanonical_blocks.remove(&bib_block_number);
+                self.protects_primary_block.remove(&bib_block_number);
+                self.blocks_to_remove.insert(bib_block_number);
             } else if !canonical || bib.operations.len() != old_len {
-                noncanonical_blocks.insert(bib_block_number, true);
-                bibs.insert(bib_block_number, bib);
+                self.noncanonical_blocks.insert(
+                    bib_block_number,
+                    Some(hardy_cbor::encode::emit(&bib).into()),
+                );
             }
         }
 
-        // Reduce BCB targets scheduled for removal
-        bcbs.retain(|bcb_block_number, bcb| {
-            let old_len = bcb.operations.len();
-            bcb.operations.retain(|k, _| !blocks_to_remove.contains(k));
-            if bcb.operations.is_empty() {
-                noncanonical_blocks.remove(bcb_block_number);
-                protects_primary_block.remove(bcb_block_number);
-                blocks_to_remove.insert(*bcb_block_number);
-                false
-            } else if bcb.operations.len() != old_len {
-                noncanonical_blocks.insert(*bcb_block_number, true);
-                true
-            } else {
-                false
-            }
-        });
-
-        // Check we have at least some primary block protection
-        if let crc::CrcType::None = self.crc_type {
-            if protects_primary_block.is_empty() {
-                return Err(Error::MissingIntegrityCheck);
-            }
+        // Mark all blocks that are BIB targets (we have to delay this because of borrow rules)
+        for (target_block, bib_block_number) in bib_targets {
+            self.blocks
+                .get_mut(&target_block)
+                .expect("Missing BIB target!")
+                .bib = Some(bib_block_number);
         }
 
-        // If we have nothing to rewrite, get out now
-        if canonical_bundle
-            && canonical_primary_block
-            && noncanonical_blocks.is_empty()
-            && blocks_to_remove.is_empty()
-        {
-            return Ok((None, report_unsupported));
-        }
-
-        // Now start rewriting blocks
-        let mut new_payloads: HashMap<u64, Box<[u8]>> = HashMap::new();
-        noncanonical_blocks.retain(|block_number, is_payload_noncanonical| {
-            if *is_payload_noncanonical {
-                match self.blocks.get(block_number).unwrap().block_type {
-                    block::Type::PreviousNode => {
-                        new_payloads.insert(
-                            *block_number,
-                            hardy_cbor::encode::emit(self.previous_node.as_ref().unwrap()).into(),
-                        );
-                        false
-                    }
-                    block::Type::BundleAge => {
-                        new_payloads.insert(
-                            *block_number,
-                            hardy_cbor::encode::emit(&(self.age.unwrap().as_millis() as u64))
-                                .into(),
-                        );
-                        false
-                    }
-                    block::Type::HopCount => {
-                        new_payloads.insert(
-                            *block_number,
-                            hardy_cbor::encode::emit(self.hop_count.as_ref().unwrap()).into(),
-                        );
-                        false
-                    }
-                    block::Type::BlockIntegrity | block::Type::BlockSecurity => {
-                        /* ignore for now  */
-                        true
-                    }
-                    _ => unreachable!(),
-                }
-            } else {
-                true
-            }
-        });
-
-        // Update BIBs
-        for (bib_block_number, bib) in bibs {
-            noncanonical_blocks.remove(&bib_block_number);
-            new_payloads.insert(bib_block_number, hardy_cbor::encode::emit(&bib).into());
-        }
-
-        // Update BCBs
-        for (bcb_block_number, bcb) in bcbs {
-            noncanonical_blocks.remove(&bcb_block_number);
-            new_payloads.insert(bcb_block_number, hardy_cbor::encode::emit(&bcb).into());
-        }
-
-        let new_data = hardy_cbor::encode::emit_array(None, |a| {
-            // Emit primary
-            let block = self.blocks.get_mut(&0).expect("Missing primary block!");
-            block.data_start = a.offset();
-            block.data_len = primary_block_data.len();
-            block.payload_len = block.data_len;
-            a.emit_raw_slice(&primary_block_data);
-
-            // Stash payload block for last
-            let mut payload_block = self.blocks.remove(&1).unwrap();
-
-            // Emit blocks
-            self.blocks.retain(|block_number, block| {
-                if *block_number == 0 {
-                    return true;
-                }
-                if blocks_to_remove.contains(block_number) {
-                    return false;
-                }
-
-                if let Some(data) = new_payloads.remove(block_number) {
-                    block.emit(*block_number, &data, a);
-                } else if noncanonical_blocks.remove(block_number).is_some() {
-                    block.rewrite(*block_number, a, source_data);
-                } else {
-                    // Copy canonical blocks verbatim
-                    block.write(source_data, a);
-                }
-                true
-            });
-
-            // Emit payload block
-            if noncanonical_blocks.remove(&1).is_some() {
-                payload_block.rewrite(1, a, source_data);
-            } else {
-                payload_block.write(source_data, a);
-            }
-            self.blocks.insert(1, payload_block);
-        });
-        Ok((Some(new_data.into()), report_unsupported))
+        Ok(report_unsupported)
     }
+
+    fn reduce_bcbs(&mut self) {
+        // Remove BCB targets scheduled for removal
+        for (bcb_block_number, mut bcb) in core::mem::take(&mut self.bcbs) {
+            let old_len = bcb.operations.len();
+            bcb.operations
+                .retain(|k, _| !self.blocks_to_remove.contains(k));
+            if bcb.operations.is_empty() {
+                self.noncanonical_blocks.remove(&bcb_block_number);
+                self.protects_primary_block.remove(&bcb_block_number);
+                self.blocks_to_remove.insert(bcb_block_number);
+            } else if bcb.operations.len() != old_len {
+                self.noncanonical_blocks.insert(
+                    bcb_block_number,
+                    Some(hardy_cbor::encode::emit(&bcb).into()),
+                );
+            }
+        }
+    }
+
+    fn emit_block(
+        &mut self,
+        block: &mut block::Block,
+        block_number: u64,
+        array: &mut hardy_cbor::encode::Array,
+    ) {
+        match self.noncanonical_blocks.remove(&block_number) {
+            Some(Some(payload)) => block.emit(block_number, &payload, array),
+            Some(None) => block.emit(block_number, &self.source_data[block.payload()], array),
+            None => block.r#move(self.source_data, array),
+        }
+    }
+
+    fn rewrite(mut self, bundle: &mut Bundle) -> Option<Box<[u8]>> {
+        // If we have nothing to rewrite, get out now
+        if self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty() {
+            return None;
+        }
+
+        // Drop any blocks marked for removal
+        self.blocks
+            .retain(|block_number, _| !self.blocks_to_remove.contains(block_number));
+
+        // Write out the new bundle
+        Some(
+            hardy_cbor::encode::emit_array(None, |block_array| {
+                // Primary block first
+                let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
+                let block_start = block_array.offset();
+                if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
+                    block_array.emit_raw(payload);
+                } else {
+                    block_array.emit_raw_slice(&self.source_data[primary_block.extent]);
+                }
+                primary_block.extent = block_start..block_array.offset();
+                primary_block.data = primary_block.extent.clone();
+                bundle.blocks.insert(0, primary_block);
+
+                // Stash payload block
+                let mut payload_block = self.blocks.remove(&1).expect("Missing payload block!");
+
+                // Emit all blocks
+                for (block_number, mut block) in core::mem::take(&mut self.blocks) {
+                    self.emit_block(&mut block, block_number, block_array);
+                    bundle.blocks.insert(block_number, block);
+                }
+
+                // And final payload block
+                self.emit_block(&mut payload_block, 1, block_array);
+                bundle.blocks.insert(1, payload_block);
+            })
+            .into(),
+        )
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn parse_blocks(
+    bundle: &mut Bundle,
+    canonical_bundle: bool,
+    block_array: &mut hardy_cbor::decode::Array,
+    source_data: &[u8],
+    key_f: &impl bpsec::key::KeyStore,
+) -> Result<(Option<Box<[u8]>>, bool), Error> {
+    let mut parser = BlockParse::new(source_data);
+
+    // Steal the primary block, we put it back later
+    parser
+        .blocks
+        .insert(0, bundle.blocks.remove(&0).expect("No primary block?!"));
+
+    // Rewrite primary block if the bundle or primary block aren't canonical
+    if !canonical_bundle {
+        parser
+            .noncanonical_blocks
+            .insert(0, Some(primary_block::PrimaryBlock::emit(bundle).into()));
+    }
+
+    // Parse the blocks
+    let mut report_unsupported = parser.parse_blocks(block_array)?;
+
+    // Decrypt all relevant BCB targets first
+    parser.parse_bcbs(key_f)?;
+
+    // Now parse all the non-BIBs we need to check
+    parser.check_blocks(bundle)?;
+
+    // Check bundle age exists if needed
+    if bundle.age.is_none() && bundle.id.timestamp.creation_time.is_none() {
+        return Err(Error::MissingBundleAge);
+    }
+
+    // Now parse all BIBs
+    report_unsupported = parser.parse_bibs()? && report_unsupported;
+
+    // We are done with all decrypted content
+    parser.decrypted_data.clear();
+
+    // Reduce BCB targets scheduled for removal
+    parser.reduce_bcbs();
+
+    // Check we have at least some primary block protection
+    if let crc::CrcType::None = bundle.crc_type {
+        if parser.protects_primary_block.is_empty() {
+            return Err(Error::MissingIntegrityCheck);
+        }
+    }
+
+    // Now rewrite blocks (if required)
+    Ok((parser.rewrite(bundle), report_unsupported))
 }
 
 impl ValidBundle {
     pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
-        hardy_cbor::decode::parse_array(data, |blocks, mut canonical, tags| {
+        hardy_cbor::decode::parse_array(data, |block_array, mut canonical, tags| {
             // Check for shortest/correct form
-            canonical = canonical && !blocks.is_definite();
+            canonical = canonical && !block_array.is_definite();
             if canonical {
+                // TODO: POLICY CHECK
                 // Appendix B of RFC9171
                 let mut seen_55799 = false;
                 for tag in &tags {
@@ -485,49 +541,30 @@ impl ValidBundle {
             }
 
             // Parse Primary block
-            let block_start = blocks.offset();
-            let (primary_block, canonical_primary_block, block_len) = blocks
-                .parse::<(primary_block::PrimaryBlock, bool, usize)>()
+            let block_start = block_array.offset();
+            let primary_block = block_array
+                .parse::<(primary_block::PrimaryBlock, bool)>()
+                .map(|(v, s)| {
+                    canonical = canonical && s;
+                    v
+                })
                 .map_field_err("Primary Block")?;
 
-            let (mut bundle, e) = primary_block.into_bundle();
+            let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
             if let Some(e) = e {
+                block_array.skip_to_end(16)?;
                 return Ok(Self::Invalid(
                     bundle,
                     status_report::ReasonCode::BlockUnintelligible,
-                    e,
+                    Error::InvalidField {
+                        field: "Primary Block",
+                        source: e.into(),
+                    },
                 ));
             }
 
-            // Add a block 0
-            bundle.blocks.insert(
-                0,
-                block::Block {
-                    block_type: block::Type::Primary,
-                    flags: block::Flags {
-                        must_replicate: true,
-                        report_on_failure: true,
-                        delete_bundle_on_failure: true,
-                        ..Default::default()
-                    },
-                    crc_type: bundle.crc_type,
-                    data_start: block_start,
-                    data_len: block_len,
-                    payload_offset: 0,
-                    payload_len: block_len,
-                    bcb: None,
-                },
-            );
-
             // And now parse the blocks
-            match bundle.parse_blocks(
-                canonical,
-                canonical_primary_block,
-                blocks,
-                block_start + block_len,
-                data,
-                key_f,
-            ) {
+            match parse_blocks(&mut bundle, canonical, block_array, data, key_f) {
                 Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
                 Ok((Some(new_data), report_unsupported)) => {
                     Ok(Self::Rewritten(bundle, new_data, report_unsupported))
@@ -535,15 +572,26 @@ impl ValidBundle {
                 Err(Error::Unsupported(n)) => Ok(Self::Invalid(
                     bundle,
                     status_report::ReasonCode::BlockUnsupported,
-                    Error::Unsupported(n).into(),
+                    Error::Unsupported(n),
                 )),
                 Err(e) => Ok(Self::Invalid(
                     bundle,
                     status_report::ReasonCode::BlockUnintelligible,
-                    e.into(),
+                    e,
                 )),
             }
         })
-        .map(|v| v.0)
+        .map(|(bundle, len)| match bundle {
+            ValidBundle::Valid(bundle, _) | ValidBundle::Rewritten(bundle, _, _)
+                if len != data.len() =>
+            {
+                Self::Invalid(
+                    bundle,
+                    status_report::ReasonCode::BlockUnintelligible,
+                    Error::AdditionalData,
+                )
+            }
+            bundle => bundle,
+        })
     }
 }

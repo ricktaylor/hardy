@@ -90,22 +90,45 @@ impl<'a> Editor<'a> {
         self.blocks.remove(&block_number);
     }
 
-    pub fn build(mut self) -> Vec<u8> {
-        hardy_cbor::encode::emit_array(None, |a| {
+    pub fn build(mut self) -> (bundle::Bundle, Box<[u8]>) {
+        let mut bundle = bundle::Bundle {
+            id: self.original.id.clone(),
+            flags: self.original.flags.clone(),
+            crc_type: self.original.crc_type,
+            destination: self.original.destination.clone(),
+            report_to: self.original.report_to.clone(),
+            lifetime: self.original.lifetime,
+            previous_node: self.original.previous_node.clone(),
+            age: self.original.age,
+            hop_count: self.original.hop_count.clone(),
+            blocks: HashMap::new(),
+        };
+
+        let data = hardy_cbor::encode::emit_array(None, |a| {
+            // Emit primary block
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
+            bundle
+                .blocks
+                .insert(0, self.build_block(0, primary_block, a));
+
+            // Stash payload block
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
-            // Emit primary block
-            self.build_block(0, primary_block, a);
-
             // Emit extension blocks
-            for (block_number, block) in core::mem::take(&mut self.blocks) {
-                self.build_block(block_number, block, a);
+            for (block_number, block_template) in core::mem::take(&mut self.blocks) {
+                bundle.blocks.insert(
+                    block_number,
+                    self.build_block(block_number, block_template, a),
+                );
             }
 
             // Emit payload block
-            self.build_block(1, payload_block, a);
-        })
+            bundle
+                .blocks
+                .insert(1, self.build_block(1, payload_block, a));
+        });
+
+        (bundle, data.into())
     }
 
     fn build_block(
@@ -113,18 +136,19 @@ impl<'a> Editor<'a> {
         block_number: u64,
         template: BlockTemplate,
         array: &mut hardy_cbor::encode::Array,
-    ) {
+    ) -> block::Block {
         match template {
             BlockTemplate::Keep(_) => {
-                self.original
+                let mut block = self
+                    .original
                     .blocks
                     .get(&block_number)
                     .expect("Mismatched block in bundle!")
-                    .copy(self.source_data, array);
+                    .clone();
+                block.r#move(self.source_data, array);
+                block
             }
-            BlockTemplate::Add(template) => {
-                template.build(block_number, array);
-            }
+            BlockTemplate::Add(template) => template.build(block_number, array),
         }
     }
 }
@@ -181,7 +205,7 @@ impl<'a, 'b> BlockBuilder<'a, 'b> {
         self
     }
 
-    pub fn data(mut self, data: Vec<u8>) -> Self {
+    pub fn data(mut self, data: Box<[u8]>) -> Self {
         self.template.data(data);
         self
     }

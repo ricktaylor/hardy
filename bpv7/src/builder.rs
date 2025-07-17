@@ -69,13 +69,13 @@ impl Builder {
         BlockBuilder::new(self, block_type)
     }
 
-    pub fn add_payload_block(&mut self, data: Vec<u8>) -> &mut Self {
+    pub fn add_payload_block(&mut self, data: Box<[u8]>) -> &mut Self {
         self.add_extension_block(block::Type::Payload)
             .data(data)
             .build()
     }
 
-    pub fn build(mut self) -> (bundle::Bundle, Vec<u8>) {
+    pub fn build(mut self) -> (bundle::Bundle, Box<[u8]>) {
         let mut bundle = bundle::Bundle {
             report_to: if let Some(report_to) = &mut self.report_to {
                 core::mem::take(report_to)
@@ -109,7 +109,7 @@ impl Builder {
             bundle.blocks.insert(1, self.payload.build(1, a));
         });
 
-        (bundle, data)
+        (bundle, data.into())
     }
 }
 
@@ -153,7 +153,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn data(mut self, data: Vec<u8>) -> Self {
+    pub fn data(mut self, data: Box<[u8]>) -> Self {
         self.template.data(data);
         self
     }
@@ -173,7 +173,7 @@ pub struct BlockTemplate {
     block_type: block::Type,
     flags: block::Flags,
     crc_type: crc::CrcType,
-    data: Vec<u8>,
+    data: Option<Box<[u8]>>,
 }
 
 impl BlockTemplate {
@@ -182,7 +182,7 @@ impl BlockTemplate {
             block_type,
             flags,
             crc_type,
-            data: Vec::new(),
+            data: None,
         }
     }
 
@@ -210,9 +210,9 @@ impl BlockTemplate {
         self.crc_type = crc_type;
     }
 
-    pub fn data(&mut self, data: Vec<u8>) {
+    pub fn data(&mut self, data: Box<[u8]>) {
         // Just copy the data for now
-        self.data = data;
+        self.data = Some(data);
     }
 
     pub fn build(self, block_number: u64, array: &mut hardy_cbor::encode::Array) -> block::Block {
@@ -220,13 +220,16 @@ impl BlockTemplate {
             block_type: self.block_type,
             flags: self.flags,
             crc_type: self.crc_type,
-            data_start: array.offset(),
-            data_len: 0,
-            payload_offset: 0,
-            payload_len: 0,
+            extent: 0..0,
+            data: 0..0,
+            bib: None,
             bcb: None,
         };
-        block.emit(block_number, &self.data, array);
+        block.emit(
+            block_number,
+            &self.data.expect("No block specific data set"),
+            array,
+        );
         block
     }
 }

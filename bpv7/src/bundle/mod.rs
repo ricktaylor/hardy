@@ -5,14 +5,14 @@ mod parse;
 mod primary_block;
 
 pub enum Payload {
-    Borrowed(core::ops::Range<usize>),
+    Range(core::ops::Range<usize>),
     Owned(zeroize::Zeroizing<Box<[u8]>>),
 }
 
 impl core::fmt::Debug for Payload {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Borrowed(arg0) => write!(f, "Payload {} bytes", arg0.len()),
+            Self::Range(arg0) => write!(f, "Payload {} bytes", arg0.len()),
             Self::Owned(arg0) => write!(f, "Payload {} bytes", arg0.len()),
         }
     }
@@ -75,7 +75,7 @@ impl Id {
             let s = Self {
                 source: array.parse().map_field_id_err("source EID")?,
                 timestamp: array.parse().map_field_id_err("creation timestamp")?,
-                fragment_info: if let Some(4) = array.count() {
+                fragment_info: if array.count() == Some(4) {
                     Some(FragmentInfo {
                         offset: array.parse().map_field_id_err("fragment offset")?,
                         total_len: array
@@ -204,6 +204,21 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
+struct BlockSet<'a> {
+    bundle: &'a Bundle,
+    source_data: &'a [u8],
+}
+
+impl<'a> bpsec::BlockSet<'a> for BlockSet<'a> {
+    fn block(&self, block_number: u64) -> Option<&block::Block> {
+        self.bundle.blocks.get(&block_number)
+    }
+
+    fn block_payload(&self, block_number: u64) -> Option<&[u8]> {
+        Some(&self.source_data[self.block(block_number)?.payload()])
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Bundle {
     // From Primary Block
@@ -225,11 +240,10 @@ pub struct Bundle {
 
 impl Bundle {
     pub(crate) fn emit_primary_block(&mut self, array: &mut hardy_cbor::encode::Array) {
-        let data_start = array.offset();
-        let data = primary_block::PrimaryBlock::emit(self);
-        let payload_len = data.len();
-        array.emit_raw(data);
+        let start = array.offset();
+        array.emit_raw(primary_block::PrimaryBlock::emit(self));
 
+        // Replace existing block record
         self.blocks.insert(
             0,
             block::Block {
@@ -241,99 +255,68 @@ impl Bundle {
                     ..Default::default()
                 },
                 crc_type: self.crc_type,
-                data_start,
-                data_len: payload_len,
-                payload_offset: 0,
-                payload_len,
+                extent: start..array.offset(),
+                data: start..array.offset(),
+                bib: None,
                 bcb: None,
             },
         );
     }
 
-    fn parse_payload<T>(
+    pub fn block_payload(
         &self,
-        block_number: &u64,
-        decrypted_data: Option<&zeroize::Zeroizing<Box<[u8]>>>,
+        block_number: u64,
         source_data: &[u8],
-    ) -> Result<(&block::Block, T, bool), Error>
-    where
-        T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
-    {
-        if let Some(block_data) = decrypted_data {
-            hardy_cbor::decode::parse::<(T, bool, usize)>(block_data).map(|(v, s, len)| {
-                (
-                    self.blocks.get(block_number).unwrap(),
-                    v,
-                    s && len == block_data.len(),
-                )
-            })
-        } else {
-            let block = self.blocks.get(block_number).unwrap();
-            hardy_cbor::decode::parse_value(block.payload(source_data), |v, _, _| match v {
-                hardy_cbor::decode::Value::Bytes(data) => {
-                    hardy_cbor::decode::parse::<(T, bool, usize)>(data)
-                        .map(|(v, s, len)| (v, s && len == data.len()))
-                }
-                hardy_cbor::decode::Value::ByteStream(data) => {
-                    hardy_cbor::decode::parse::<(T, bool, usize)>(&data.iter().fold(
-                        Vec::new(),
-                        |mut data, d| {
-                            data.extend(*d);
-                            data
-                        },
-                    ))
-                    .map(|(v, s, len)| (v, s && len == data.len()))
-                }
-                _ => unreachable!(),
-            })
-            .map(|((v, s), _)| (block, v, s))
-        }
-        .map_err(Into::into)
-    }
-
-    pub fn payload(
-        &self,
-        data: &[u8],
         key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<Payload, Error> {
-        let Some(payload_block) = self.blocks.get(&1) else {
-            return Err(Error::Altered);
-        };
+    ) -> Result<Option<Payload>, Error> {
+        let payload_block = self.blocks.get(&block_number).ok_or(Error::Altered)?;
 
         // Check for BCB
-        let Some(bcb_block_number) = payload_block.bcb else {
-            return Ok(Payload::Borrowed(payload_block.payload_range()));
+        let Some(bcb_block_number) = &payload_block.bcb else {
+            // Check we won't panic
+            _ = source_data
+                .get(payload_block.payload())
+                .ok_or(Error::Altered)?;
+
+            return Ok(Some(Payload::Range(payload_block.payload())));
         };
 
-        let (bcb_block, bcb, _) = self
-            .parse_payload::<bpsec::bcb::OperationSet>(&bcb_block_number, None, data)
-            .map_err(|_| Error::Altered)?;
-
-        let Some(op) = bcb.operations.get(&1) else {
-            // If the operation doesn't exist, someone has fiddled with the data
-            return Err(Error::Altered);
-        };
+        let bcb = self
+            .blocks
+            .get(bcb_block_number)
+            .ok_or(Error::Altered)
+            .and_then(|bcb_block| {
+                source_data
+                    .get(bcb_block.payload())
+                    .ok_or(Error::Altered)
+                    .and_then(|data| {
+                        hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data)
+                            .map_err(|_| Error::Altered)
+                    })
+            })?;
 
         // Confirm we can decrypt if we have keys
-        op.decrypt_any(
-            key_f,
-            bpsec::bcb::OperationArgs {
-                bpsec_source: &bcb.source,
-                target: payload_block,
-                target_number: 1,
-                target_payload: payload_block.payload(data),
-                source: bcb_block,
-                source_number: bcb_block_number,
-                primary_block: self
-                    .blocks
-                    .get(&0)
-                    .expect("Missing primary block!")
-                    .payload(data),
-            },
-        )?
-        .plaintext
-        .ok_or(bpsec::Error::DecryptionFailed.into())
-        .map(Payload::Owned)
+        if let Some(plaintext) = bcb
+            .operations
+            .get(&block_number)
+            .ok_or(Error::Altered)?
+            .decrypt_any(
+                key_f,
+                bpsec::bcb::OperationArgs {
+                    bpsec_source: &bcb.source,
+                    target: block_number,
+                    source: *bcb_block_number,
+                    blocks: &BlockSet {
+                        bundle: self,
+                        source_data,
+                    },
+                },
+            )?
+        {
+            Ok(Some(Payload::Owned(plaintext)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -342,9 +325,5 @@ impl Bundle {
 pub enum ValidBundle {
     Valid(Bundle, bool),
     Rewritten(Bundle, Box<[u8]>, bool),
-    Invalid(
-        Bundle,
-        status_report::ReasonCode,
-        Box<dyn core::error::Error + Send + Sync>,
-    ),
+    Invalid(Bundle, status_report::ReasonCode, Error),
 }

@@ -51,7 +51,8 @@ impl Dispatcher {
                 // For each CLA
                 for (cla, cla_addr) in clas {
                     // Increment Hop Count, etc...
-                    let data = self.update_extension_blocks(&bundle, &data);
+                    // We ignore the fact that a new bundle has been created, as it makes no difference below
+                    let (_, data) = self.update_extension_blocks(&bundle, &data);
 
                     match cla.cla.on_forward(cla_addr, data.into()).await {
                         Err(e) => warn!("CLA failed to forward: {e}"),
@@ -111,25 +112,35 @@ impl Dispatcher {
         }
     }
 
-    fn update_extension_blocks(&self, bundle: &bundle::Bundle, source_data: &[u8]) -> Vec<u8> {
+    fn update_extension_blocks(
+        &self,
+        bundle: &bundle::Bundle,
+        source_data: &[u8],
+    ) -> (hardy_bpv7::bundle::Bundle, Box<[u8]>) {
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data);
 
         // Previous Node Block
         editor
             .replace_extension_block(hardy_bpv7::block::Type::PreviousNode)
-            .data(hardy_cbor::encode::emit(
-                &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
-            ))
+            .data(
+                hardy_cbor::encode::emit(
+                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
+                )
+                .into(),
+            )
             .build();
 
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
             editor
                 .replace_extension_block(hardy_bpv7::block::Type::HopCount)
-                .data(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                    limit: hop_count.limit,
-                    count: hop_count.count + 1,
-                }))
+                .data(
+                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                        limit: hop_count.limit,
+                        count: hop_count.count + 1,
+                    })
+                    .into(),
+                )
                 .build();
         }
 
@@ -143,7 +154,7 @@ impl Dispatcher {
 
             editor
                 .replace_extension_block(hardy_bpv7::block::Type::BundleAge)
-                .data(hardy_cbor::encode::emit(&bundle_age))
+                .data(hardy_cbor::encode::emit(&bundle_age).into())
                 .build();
         }
 

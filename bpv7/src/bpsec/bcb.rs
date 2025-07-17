@@ -11,17 +11,9 @@ pub enum Operation {
 
 pub struct OperationArgs<'a> {
     pub bpsec_source: &'a eid::Eid,
-    pub target: &'a block::Block,
-    pub target_number: u64,
-    pub target_payload: &'a [u8],
-    pub source: &'a block::Block,
-    pub source_number: u64,
-    pub primary_block: &'a [u8],
-}
-
-pub struct DecryptResult {
-    pub plaintext: Option<zeroize::Zeroizing<Box<[u8]>>>,
-    pub protects_primary_block: bool,
+    pub target: u64,
+    pub source: u64,
+    pub blocks: &'a dyn BlockSet<'a>,
 }
 
 impl Operation {
@@ -33,13 +25,17 @@ impl Operation {
         }
     }
 
-    pub fn encrypt(
-        jwk: &Key,
-        args: OperationArgs,
-        payload_data: Option<&[u8]>,
-    ) -> Result<(Operation, Box<[u8]>), Error> {
+    pub fn protects_primary_block(&self) -> bool {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(operation) => operation.protects_primary_block(),
+            Self::Unrecognised(..) => false,
+        }
+    }
+
+    pub fn encrypt(jwk: &Key, args: OperationArgs) -> Result<(Operation, Box<[u8]>), Error> {
         #[cfg(feature = "rfc9173")]
-        if let Some((op, r)) = rfc9173::bcb_aes_gcm::Operation::encrypt(jwk, args, payload_data)? {
+        if let Some((op, r)) = rfc9173::bcb_aes_gcm::Operation::encrypt(jwk, args)? {
             return Ok((Self::AES_GCM(op), r));
         }
 
@@ -50,18 +46,19 @@ impl Operation {
         &self,
         key_f: &impl key::KeyStore,
         args: OperationArgs,
-    ) -> Result<DecryptResult, Error> {
+    ) -> Result<Option<zeroize::Zeroizing<Box<[u8]>>>, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(op) => op.decrypt_any(key_f, args),
-            Self::Unrecognised(..) => Ok(DecryptResult {
-                plaintext: None,
-                protects_primary_block: args.target_number == 0,
-            }),
+            Self::Unrecognised(..) => Ok(None),
         }
     }
 
-    pub fn decrypt(&self, jwk: &Key, args: OperationArgs) -> Result<DecryptResult, Error> {
+    pub fn decrypt(
+        &self,
+        jwk: &Key,
+        args: OperationArgs,
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(op) => op.decrypt(jwk, args),
@@ -86,6 +83,7 @@ impl Operation {
     }
 }
 
+#[derive(Debug)]
 pub struct OperationSet {
     pub source: eid::Eid,
     pub operations: HashMap<u64, Operation>,
