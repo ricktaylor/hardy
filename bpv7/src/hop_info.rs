@@ -1,7 +1,8 @@
 use super::*;
 use error::CaptureFieldErr;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HopInfo {
     pub limit: u64,
     pub count: u64,

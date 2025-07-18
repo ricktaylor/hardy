@@ -1,4 +1,5 @@
 use super::*;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const X25: ::crc::Crc<u16> = ::crc::Crc::<u16>::new(&::crc::CRC_16_IBM_SDLC);
@@ -26,12 +27,14 @@ pub enum Error {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum CrcType {
     #[default]
     None,
     CRC16_X25,
     CRC32_CASTAGNOLI,
+
+    #[serde(skip)]
     Unrecognised(u64),
 }
 

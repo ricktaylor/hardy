@@ -1,7 +1,10 @@
+use serde::{Deserialize, Serialize};
+
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DtnTime {
+    #[serde(flatten)]
     millisecs: u64,
 }
 

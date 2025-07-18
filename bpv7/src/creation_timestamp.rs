@@ -1,7 +1,8 @@
 use super::*;
 use error::CaptureFieldErr;
+use serde::{Deserialize, Serialize};
 
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreationTimestamp {
     pub creation_time: Option<dtn_time::DtnTime>,
     pub sequence_number: u64,

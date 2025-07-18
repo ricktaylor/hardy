@@ -1,13 +1,16 @@
 use super::*;
 use core::ops::Range;
 use error::CaptureFieldErr;
+use serde::{Deserialize, Serialize};
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Flags {
     pub must_replicate: bool,
     pub report_on_failure: bool,
     pub delete_bundle_on_failure: bool,
     pub delete_block_on_failure: bool,
+
+    #[serde(skip)]
     pub unrecognised: u64,
 }
 
@@ -69,7 +72,7 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Type {
     Primary,
     Payload,
@@ -78,6 +81,8 @@ pub enum Type {
     HopCount,
     BlockIntegrity,
     BlockSecurity,
+
+    #[serde(skip)]
     Unrecognised(u64),
 }
 
@@ -126,7 +131,7 @@ impl hardy_cbor::decode::FromCbor for Type {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     pub block_type: Type,
     pub flags: Flags,
