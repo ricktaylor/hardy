@@ -33,8 +33,6 @@ pub enum CrcType {
     None,
     CRC16_X25,
     CRC32_CASTAGNOLI,
-
-    #[serde(skip)]
     Unrecognised(u64),
 }
 

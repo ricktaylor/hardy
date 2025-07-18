@@ -125,14 +125,17 @@ pub struct Flags {
     pub delivery_report_requested: bool,
     pub delete_report_requested: bool,
 
-    #[serde(skip)]
-    pub unrecognised: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unrecognised: Option<u64>,
 }
 
 impl From<u64> for Flags {
     fn from(value: u64) -> Self {
         let mut flags = Self {
-            unrecognised: value & !((2 ^ 20) - 1),
+            unrecognised: {
+                let u = value & !((2 ^ 20) - 1);
+                if u == 0 { None } else { Some(u) }
+            },
             ..Default::default()
         };
 
@@ -149,7 +152,7 @@ impl From<u64> for Flags {
                     17 => flags.delivery_report_requested = true,
                     18 => flags.delete_report_requested = true,
                     b => {
-                        flags.unrecognised |= 1 << b;
+                        flags.unrecognised = Some(flags.unrecognised.unwrap_or_default() | 1 << b);
                     }
                 }
             }
@@ -160,7 +163,7 @@ impl From<u64> for Flags {
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised;
+        let mut flags = value.unrecognised.unwrap_or_default();
         if value.is_fragment {
             flags |= 1 << 0;
         }

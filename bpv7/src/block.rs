@@ -10,13 +10,13 @@ pub struct Flags {
     pub delete_bundle_on_failure: bool,
     pub delete_block_on_failure: bool,
 
-    #[serde(skip)]
-    pub unrecognised: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unrecognised: Option<u64>,
 }
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised;
+        let mut flags = value.unrecognised.unwrap_or_default();
         if value.must_replicate {
             flags |= 1 << 0;
         }
@@ -36,7 +36,10 @@ impl From<&Flags> for u64 {
 impl From<u64> for Flags {
     fn from(value: u64) -> Self {
         let mut flags = Self {
-            unrecognised: value & !((2 ^ 6) - 1),
+            unrecognised: {
+                let u = value & !((2 ^ 6) - 1);
+                if u == 0 { None } else { Some(u) }
+            },
             ..Default::default()
         };
 
@@ -48,7 +51,7 @@ impl From<u64> for Flags {
                     2 => flags.delete_bundle_on_failure = true,
                     4 => flags.delete_block_on_failure = true,
                     b => {
-                        flags.unrecognised |= 1 << b;
+                        flags.unrecognised = Some(flags.unrecognised.unwrap_or_default() | 1 << b);
                     }
                 }
             }
@@ -81,8 +84,6 @@ pub enum Type {
     HopCount,
     BlockIntegrity,
     BlockSecurity,
-
-    #[serde(skip)]
     Unrecognised(u64),
 }
 
