@@ -92,15 +92,15 @@ impl Dispatcher {
     ) -> Result<(), Error> {
         // Report we have received the bundle
         let mut r = self
-            .report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
+            .report_bundle_reception(
+                &bundle,
+                if report_unsupported {
+                    ReasonCode::BlockUnsupported
+                } else {
+                    ReasonCode::NoAdditionalInformation
+                },
+            )
             .await;
-
-        // Report anything unsupported
-        if r.is_ok() && report_unsupported {
-            r = self
-                .report_bundle_reception(&bundle, ReasonCode::BlockUnsupported)
-                .await;
-        }
 
         /* RACE: If there is a crash between the report creation(above) and the metadata store (below)
          *  then we may send more than one "Received" Status Report when restarting,
