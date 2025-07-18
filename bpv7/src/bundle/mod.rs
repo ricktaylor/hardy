@@ -225,7 +225,9 @@ impl<'a> bpsec::BlockSet<'a> for BlockSet<'a> {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Bundle {
     // From Primary Block
+    #[serde(flatten)]
     pub id: Id,
+
     pub flags: Flags,
     pub crc_type: crc::CrcType,
     pub destination: eid::Eid,
