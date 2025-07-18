@@ -20,7 +20,9 @@ tracing = "0.1.41"
 trace-err = "0.1.3"
 rand = "0.9.1"
 sha2 = "0.10.9"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive","rc"] }
+serde_with = { version = "3.13.0", features = ["base64"] }
+
 thiserror = "2.0.12"
 rustversion = "1.0"
 
