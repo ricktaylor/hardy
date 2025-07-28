@@ -1113,6 +1113,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde",
+ "serde_json",
  "sha1",
  "thiserror",
  "time",

@@ -1,12 +1,7 @@
 use super::*;
-use hardy_bpa::{
-    async_trait,
-    metadata::{BundleMetadata, BundleStatus},
-    storage,
-};
-use hardy_bpv7::{dtn_time::DtnTime, eid::Eid};
+use hardy_bpa::{async_trait, storage};
 use rusqlite::OptionalExtension;
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc};
+use std::{cell::RefCell, path::PathBuf};
 use thiserror::Error;
 
 thread_local! {
@@ -24,59 +19,16 @@ pub enum Error {
     NotFound,
 }
 
-#[derive(Debug)]
-#[repr(i64)]
-enum StatusCodes {
-    DispatchPending = 1,
-    ReassemblyPending = 2,
-    Tombstone = 3,
-}
-
-impl From<i64> for StatusCodes {
-    fn from(value: i64) -> Self {
-        match value {
-            1 => Self::DispatchPending,
-            2 => Self::ReassemblyPending,
-            3 => Self::Tombstone,
-            _ => panic!("Invalid BundleStatus value {value}"),
-        }
-    }
-}
-
-impl From<StatusCodes> for i64 {
-    fn from(value: StatusCodes) -> Self {
-        value as i64
-    }
-}
-
-fn bundle_status_to_parts(value: &BundleStatus) -> (i64, Option<time::OffsetDateTime>) {
-    match value {
-        BundleStatus::DispatchPending => (StatusCodes::DispatchPending.into(), None),
-        BundleStatus::ReassemblyPending => (StatusCodes::ReassemblyPending.into(), None),
-        BundleStatus::Tombstone(from) => (StatusCodes::Tombstone.into(), Some(*from)),
-    }
-}
-
-fn columns_to_bundle_status(
-    row: &rusqlite::Row,
-    idx1: usize,
-    idx2: usize,
-) -> rusqlite::Result<BundleStatus> {
-    match (
-        row.get::<_, i64>(idx1)?.into(),
-        row.get::<_, Option<time::OffsetDateTime>>(idx2)?,
-    ) {
-        (StatusCodes::DispatchPending, None) => Ok(BundleStatus::DispatchPending),
-        (StatusCodes::ReassemblyPending, None) => Ok(BundleStatus::ReassemblyPending),
-        (StatusCodes::Tombstone, Some(from)) => Ok(BundleStatus::Tombstone(from)),
-        (v, d) => panic!("Invalid BundleStatus value combination {v:?}/{d:?}"),
-    }
-}
-
 impl Storage {
     pub fn new(config: &Config, mut upgrade: bool) -> Self {
+        // Ensure directory exists
+        std::fs::create_dir_all(&config.db_dir).trace_expect(&format!(
+            "Failed to create metadata store directory {}",
+            config.db_dir.display()
+        ));
+
         // Compose DB name
-        let file_path = config.db_dir.join("metadata.db");
+        let file_path = config.db_dir.join(&config.db_name);
 
         info!("Using database: {}", file_path.display());
 
@@ -109,18 +61,11 @@ impl Storage {
         migrate::migrate(&mut connection, upgrade)
             .trace_expect("Failed to migrate metadata store database");
 
-        // Do an optimize check
-        connection
-            .execute_batch(r#"PRAGMA optimize=0x10002;"#)
-            .trace_expect("Failed to set up metadata store database");
-
         // Mark all existing non-Tombstone bundles as unconfirmed
         connection
-            .execute(
-                r#"
-            INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id)
-            SELECT id FROM bundles WHERE status != ?1;"#,
-                [StatusCodes::Tombstone as i64],
+            .execute_batch(
+            "PRAGMA optimize=0x10002;
+                INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id) SELECT id FROM bundles WHERE bundle IS NOT NULL;",
             )
             .trace_expect("Failed to prepare metadata store database");
 
@@ -156,498 +101,57 @@ impl Storage {
     }
 }
 
-fn encode_eid(eid: &Eid) -> rusqlite::types::Value {
-    rusqlite::types::Value::Blob(hardy_cbor::encode::emit(eid))
-}
-
-fn decode_eid(
-    row: &rusqlite::Row,
-    idx: impl rusqlite::RowIndex,
-) -> Result<Eid, Box<dyn std::error::Error + Send + Sync>> {
-    let rusqlite::types::ValueRef::Blob(b) = row.get_ref(idx)? else {
-        panic!("EID encoded as unusual sqlite type")
-    };
-    hardy_cbor::decode::parse(b).map_err(Into::into)
-}
-
-fn encode_hash(hash: &Option<Arc<[u8]>>) -> rusqlite::types::Value {
-    match hash {
-        Some(hash) => rusqlite::types::Value::Blob(hash.to_vec()),
-        None => rusqlite::types::Value::Null,
-    }
-}
-
-fn decode_hash(
-    row: &rusqlite::Row,
-    idx: impl rusqlite::RowIndex,
-) -> rusqlite::Result<Option<Arc<[u8]>>> {
-    match row.get_ref(idx)? {
-        rusqlite::types::ValueRef::Blob(hash) => Ok(Some(hash.into())),
-        rusqlite::types::ValueRef::Null => Ok(None),
-        _ => panic!("hash encoded as unusual sqlite type"),
-    }
-}
-
-fn encode_creation_time(timestamp: Option<DtnTime>) -> i64 {
-    if let Some(timestamp) = timestamp {
-        as_i64(timestamp.millisecs())
-    } else {
-        0
-    }
-}
-
-fn decode_creation_time(
-    row: &rusqlite::Row,
-    idx: impl rusqlite::RowIndex,
-) -> rusqlite::Result<Option<DtnTime>> {
-    let timestamp = row.get(idx)?;
-    if timestamp == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(DtnTime::new(as_u64(timestamp))))
-    }
-}
-
-// Quick helper for type conversion
-#[inline]
-fn as_u64(v: i64) -> u64 {
-    v as u64
-}
-
-// Quick helper for type conversion
-#[inline]
-fn as_duration(v: i64) -> std::time::Duration {
-    std::time::Duration::from_millis(v as u64)
-}
-
-#[inline]
-fn as_i64<T: Into<u64>>(v: T) -> i64 {
-    let v: u64 = v.into();
-    v as i64
-}
-
-fn unpack_bundles(mut rows: rusqlite::Rows<'_>, tx: &storage::Sender) -> storage::Result<()> {
-    /* Expected query MUST look like:
-           0:  bundles.id,
-           1:  bundles.status,
-           2:  bundles.storage_name,
-           3:  bundles.hash,
-           4:  bundles.received_at,
-           5:  bundles.flags,
-           6:  bundles.crc_type,
-           7:  bundles.source,
-           8:  bundles.destination,
-           9:  bundles.report_to,
-           10: bundles.creation_time,
-           11: bundles.creation_seq_num,
-           12: bundles.lifetime,
-           13: bundles.fragment_offset,
-           14: bundles.fragment_total_len,
-           15: bundles.previous_node,
-           16: bundles.age,
-           17: bundles.hop_count,
-           18: bundles.hop_limit,
-           19: bundles.wait_until,
-           20: bundle_blocks.block_num,
-           21: bundle_blocks.block_type,
-           22: bundle_blocks.block_flags,
-           23: bundle_blocks.block_crc_type,
-           24: bundle_blocks.data_start,
-           25: bundle_blocks.data_len,
-           26: bundle_blocks.payload_offset,
-           27: bundle_blocks.payload_len,
-           28: bundle_blocks.bcb
-    */
-
-    while let Some(mut row) = rows.next()? {
-        let bundle_id: i64 = row.get(0)?;
-        let metadata = BundleMetadata {
-            status: columns_to_bundle_status(row, 1, 19)?,
-            storage_name: row.get(2)?,
-            hash: decode_hash(row, 3)?,
-            received_at: row.get(4)?,
-        };
-
-        let fragment_info = {
-            let offset: i64 = row.get(13)?;
-            let total_len: i64 = row.get(14)?;
-            if offset == -1 && total_len == -1 {
-                None
-            } else {
-                Some(hardy_bpv7::bundle::FragmentInfo {
-                    offset: as_u64(offset),
-                    total_len: as_u64(total_len),
-                })
-            }
-        };
-
-        let mut bundle = hardy_bpv7::bundle::Bundle {
-            id: hardy_bpv7::bundle::Id {
-                source: decode_eid(row, 7)?,
-                timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp {
-                    creation_time: decode_creation_time(row, 10)?,
-                    sequence_number: as_u64(row.get(11)?),
-                },
-                fragment_info,
-            },
-            flags: as_u64(row.get(5)?).into(),
-            crc_type: as_u64(row.get(6)?).into(),
-            destination: decode_eid(row, 8)?,
-            report_to: decode_eid(row, 9)?,
-            lifetime: as_duration(row.get(12)?),
-            blocks: HashMap::new(),
-            previous_node: match row.get_ref(15)? {
-                rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Blob(b) => Some(hardy_cbor::decode::parse(b)?),
-                v => panic!("EID encoded as unusual sqlite type: {v:?}"),
-            },
-            age: row.get::<_, Option<i64>>(16)?.map(as_duration),
-            hop_count: match row.get_ref(17)? {
-                rusqlite::types::ValueRef::Null => None,
-                rusqlite::types::ValueRef::Integer(i) => Some(hardy_bpv7::hop_info::HopInfo {
-                    count: as_u64(i),
-                    limit: as_u64(row.get(18)?),
-                }),
-                v => panic!("EID encoded as unusual sqlite type: {v:?}"),
-            },
-        };
-
-        loop {
-            let block_number = as_u64(row.get(20)?);
-            let block = hardy_bpv7::block::Block {
-                block_type: as_u64(row.get(21)?).into(),
-                flags: as_u64(row.get(22)?).into(),
-                crc_type: as_u64(row.get(23)?).into(),
-                data_start: as_u64(row.get(24)?) as usize,
-                data_len: as_u64(row.get(25)?) as usize,
-                payload_offset: as_u64(row.get(26)?) as usize,
-                payload_len: as_u64(row.get(27)?) as usize,
-                bcb: row.get::<_, Option<i64>>(28)?.map(as_u64),
-            };
-
-            if bundle.blocks.insert(block_number, block).is_some() {
-                panic!("Duplicate block number {block_number} in DB!");
-            }
-
-            row = match rows.next()? {
-                None => break,
-                Some(row) => row,
-            };
-
-            if row.get::<_, i64>(0)? != bundle_id {
-                break;
-            }
-        }
-
-        if tx.blocking_send((metadata, bundle)).is_err() {
-            break;
-        }
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn load(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<(BundleMetadata, hardy_bpv7::bundle::Bundle)>> {
-        let bundle_id = bundle_id.clone();
+    ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
+        let id = serde_json::to_string(bundle_id)?;
         self.pooled_connection(move |conn| {
-            let mut stmt = conn.prepare_cached(
-                r#"SELECT 
-                    bundles.id,
-                    status,
-                    storage_name,
-                    hash,
-                    received_at,
-                    flags,
-                    crc_type,
-                    source,
-                    destination,
-                    report_to,
-                    creation_time,
-                    creation_seq_num,
-                    lifetime,                    
-                    fragment_offset,
-                    fragment_total_len,
-                    previous_node,
-                    age,
-                    hop_count,
-                    hop_limit,
-                    wait_until,
-                    block_num,
-                    block_type,
-                    block_flags,
-                    block_crc_type,
-                    data_start,
-                    data_len,
-                    payload_offset,
-                    payload_len,
-                    bcb
-                FROM bundles
-                JOIN bundle_blocks ON bundle_blocks.bundle_id = bundles.id
-                WHERE 
-                    source = ?1 AND
-                    creation_time = ?2 AND
-                    creation_seq_num = ?3 AND
-                    fragment_offset = ?4 AND 
-                    fragment_total_len = ?5
-                LIMIT 1;"#,
-            )?;
-
-            let mut rows = stmt.query((
-                encode_eid(&bundle_id.source),
-                encode_creation_time(bundle_id.timestamp.creation_time),
-                as_i64(bundle_id.timestamp.sequence_number),
-                bundle_id
-                    .fragment_info
-                    .as_ref()
-                    .map_or(-1, |f| as_i64(f.offset)),
-                bundle_id
-                    .fragment_info
-                    .as_ref()
-                    .map_or(-1, |f| as_i64(f.total_len)),
-            ))?;
-
-            let Some(mut row) = rows.next()? else {
-                return Ok(None);
-            };
-
-            let bundle_id: i64 = row.get(0)?;
-            let metadata = BundleMetadata {
-                status: columns_to_bundle_status(row, 1, 19)?,
-                storage_name: row.get(2)?,
-                hash: decode_hash(row, 3)?,
-                received_at: row.get(4)?,
-            };
-
-            let fragment_info = {
-                let offset: i64 = row.get(13)?;
-                let total_len: i64 = row.get(14)?;
-                if offset == -1 && total_len == -1 {
-                    None
-                } else {
-                    Some(hardy_bpv7::bundle::FragmentInfo {
-                        offset: as_u64(offset),
-                        total_len: as_u64(total_len),
-                    })
-                }
-            };
-
-            let mut bundle = hardy_bpv7::bundle::Bundle {
-                id: hardy_bpv7::bundle::Id {
-                    source: decode_eid(row, 7)?,
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp {
-                        creation_time: decode_creation_time(row, 10)?,
-                        sequence_number: as_u64(row.get(11)?),
-                    },
-                    fragment_info,
-                },
-                flags: as_u64(row.get(5)?).into(),
-                crc_type: as_u64(row.get(6)?).into(),
-                destination: decode_eid(row, 8)?,
-                report_to: decode_eid(row, 9)?,
-                lifetime: as_duration(row.get(12)?),
-                blocks: HashMap::new(),
-                previous_node: match row.get_ref(15)? {
-                    rusqlite::types::ValueRef::Null => None,
-                    rusqlite::types::ValueRef::Blob(b) => Some(hardy_cbor::decode::parse(b)?),
-                    v => panic!("EID encoded as unusual sqlite type: {v:?}"),
-                },
-                age: row.get::<_, Option<i64>>(16)?.map(as_duration),
-                hop_count: match row.get_ref(17)? {
-                    rusqlite::types::ValueRef::Null => None,
-                    rusqlite::types::ValueRef::Integer(i) => Some(hardy_bpv7::hop_info::HopInfo {
-                        count: as_u64(i),
-                        limit: as_u64(row.get(18)?),
-                    }),
-                    v => panic!("EID encoded as unusual sqlite type: {v:?}"),
-                },
-            };
-
-            loop {
-                let block_number = as_u64(row.get(20)?);
-                let block = hardy_bpv7::block::Block {
-                    block_type: as_u64(row.get(21)?).into(),
-                    flags: as_u64(row.get(22)?).into(),
-                    crc_type: as_u64(row.get(23)?).into(),
-                    data_start: as_u64(row.get(24)?) as usize,
-                    data_len: as_u64(row.get(25)?) as usize,
-                    payload_offset: as_u64(row.get(26)?) as usize,
-                    payload_len: as_u64(row.get(27)?) as usize,
-                    bcb: row.get::<_, Option<i64>>(28)?.map(as_u64),
-                };
-
-                if bundle.blocks.insert(block_number, block).is_some() {
-                    panic!("Duplicate block number {block_number} in DB!");
-                }
-
-                row = match rows.next()? {
-                    None => break,
-                    Some(row) => row,
-                };
-
-                if row.get::<_, i64>(0)? != bundle_id {
-                    panic!("More than one bundle in query!");
-                }
+            if let Some(s) = conn
+                .prepare_cached(
+                    "SELECT bundle FROM bundles WHERE id = ?1 AND bundle IS NOT NULL LIMIT 1",
+                )?
+                .query_row((id,), |row| row.get::<_, String>(0))
+                .optional()?
+            {
+                serde_json::from_str(&s).map_err(Into::into)
+            } else {
+                Ok(None)
             }
-            Ok(Some((metadata, bundle)))
         })
         .await
     }
 
     #[instrument(skip(self))]
-    async fn store(
-        &self,
-        metadata: &BundleMetadata,
-        bundle: &hardy_bpv7::bundle::Bundle,
-    ) -> storage::Result<bool> {
-        let metadata = metadata.clone();
-        let bundle = bundle.clone();
+    async fn store(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
+        let expiry = bundle.expiry();
+        let id = serde_json::to_string(&bundle.bundle.id)?;
+        let bundle = serde_json::to_string(bundle)?;
+
         self.pooled_connection(move |conn| {
-            let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let (status, until) = bundle_status_to_parts(&metadata.status);
-
             // Insert bundle
-            let bundle_id = trans
-                .prepare_cached(
-                    r#"
-                INSERT INTO bundles (
-                    status,
-                    storage_name,
-                    hash,
-                    flags,
-                    crc_type,
-                    source,
-                    destination,
-                    report_to,
-                    creation_time,
-                    creation_seq_num,
-                    lifetime,
-                    fragment_offset,
-                    fragment_total_len,
-                    previous_node,
-                    age,
-                    hop_count,
-                    hop_limit,
-                    wait_until
-                    )
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
-                RETURNING id;"#,
-                )?
-                .query_row(
-                    rusqlite::params!(
-                        status,
-                        &metadata.storage_name,
-                        encode_hash(&metadata.hash),
-                        as_i64(&bundle.flags),
-                        as_i64(bundle.crc_type),
-                        encode_eid(&bundle.id.source),
-                        encode_eid(&bundle.destination),
-                        encode_eid(&bundle.report_to),
-                        encode_creation_time(bundle.id.timestamp.creation_time),
-                        as_i64(bundle.id.timestamp.sequence_number),
-                        as_i64(bundle.lifetime.as_millis() as u64),
-                        bundle
-                            .id
-                            .fragment_info
-                            .as_ref()
-                            .map_or(-1, |f| as_i64(f.offset)),
-                        bundle
-                            .id
-                            .fragment_info
-                            .as_ref()
-                            .map_or(-1, |f| as_i64(f.total_len)),
-                        bundle.previous_node.as_ref().map(encode_eid),
-                        bundle.age.map(|v| as_i64(v.as_millis() as u64)),
-                        bundle.hop_count.as_ref().map(|h| as_i64(h.count)),
-                        bundle.hop_count.as_ref().map(|h| as_i64(h.limit)),
-                        until,
-                    ),
-                    |row| Ok(as_u64(row.get(0)?)),
-                );
-
-            let bundle_id = match bundle_id {
-                Err(rusqlite::Error::SqliteFailure(e, _)) if e.extended_code == 2067 => {
-                    return Ok(false);
-                }
-                bundle_id => bundle_id.trace_expect("Failed to load bundle metadata"),
-            };
-
-            {
-                // Insert extension blocks
-                let mut block_stmt = trans.prepare_cached(
-                    r#"
-                        INSERT INTO bundle_blocks (
-                            bundle_id,
-                            block_type,
-                            block_num,
-                            block_flags,
-                            block_crc_type,
-                            data_start,
-                            data_len,
-                            payload_offset,
-                            payload_len,
-                            bcb)
-                        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10);"#,
-                )?;
-                for (block_num, block) in &bundle.blocks {
-                    block_stmt.execute((
-                        bundle_id,
-                        as_i64(block.block_type),
-                        as_i64(*block_num),
-                        as_i64(&block.flags),
-                        as_i64(block.crc_type),
-                        as_i64(block.data_start as u64),
-                        as_i64(block.data_len as u64),
-                        as_i64(block.payload_offset as u64),
-                        as_i64(block.payload_len as u64),
-                        block.bcb.map(as_i64),
-                    ))?;
-                }
-            }
-
-            // Commit transaction
-            trans.commit().map(|_| true).map_err(Into::into)
+            conn.prepare_cached(
+                "INSERT OR IGNORE INTO bundles (id,bundle,expiry) VALUES (?1,?2,?3)",
+            )?
+            .execute((id, bundle, expiry))
+            .map(|c| c == 1)
+            .map_err(Into::into)
         })
         .await
     }
 
     #[instrument(skip(self))]
     async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        let bundle_id = bundle_id.clone();
+        let id = serde_json::to_string(bundle_id)?;
         self.pooled_connection(move |conn| {
-            if !conn
-                .prepare_cached(
-                    r#"DELETE FROM bundles 
-                    WHERE 
-                        source = ?1 AND
-                        creation_time = ?2 AND
-                        creation_seq_num = ?3 AND
-                        fragment_offset = ?4 AND 
-                        fragment_total_len = ?5;"#,
-                )?
-                .execute((
-                    encode_eid(&bundle_id.source),
-                    encode_creation_time(bundle_id.timestamp.creation_time),
-                    as_i64(bundle_id.timestamp.sequence_number),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.offset)),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.total_len)),
-                ))
+            conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE id = ?1")?
+                .execute((id,))
                 .map(|count| count != 0)?
-            {
-                Err(Error::NotFound.into())
-            } else {
-                Ok(())
-            }
+                .then_some(())
+                .ok_or(Error::NotFound.into())
         })
         .await
     }
@@ -656,56 +160,18 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<BundleMetadata>> {
-        let bundle_id = bundle_id.clone();
+    ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
+        let id = serde_json::to_string(bundle_id)?;
+
         self.pooled_connection(move |conn| {
             let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
             // Check if bundle exists
-            let Some((bundle_id, metadata)) = trans
+            let Some(s) = trans
                 .prepare_cached(
-                    r#"SELECT 
-                            id,
-                            status,
-                            wait_until,
-                            storage_name,
-                            hash,
-                            received_at
-                        FROM bundles
-                        WHERE 
-                            source = ?1 AND
-                            creation_time = ?2 AND
-                            creation_seq_num = ?3 AND
-                            fragment_offset = ?4 AND 
-                            fragment_total_len = ?5
-                        LIMIT 1;"#,
+                    "SELECT bundle FROM bundles WHERE id = ?1 AND bundle IS NOT NULL LIMIT 1",
                 )?
-                .query_row(
-                    (
-                        encode_eid(&bundle_id.source),
-                        encode_creation_time(bundle_id.timestamp.creation_time),
-                        as_i64(bundle_id.timestamp.sequence_number),
-                        bundle_id
-                            .fragment_info
-                            .as_ref()
-                            .map_or(-1, |f| as_i64(f.offset)),
-                        bundle_id
-                            .fragment_info
-                            .as_ref()
-                            .map_or(-1, |f| as_i64(f.total_len)),
-                    ),
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            BundleMetadata {
-                                status: columns_to_bundle_status(row, 1, 2)?,
-                                storage_name: row.get(3)?,
-                                hash: decode_hash(row, 4)?,
-                                received_at: row.get(5)?,
-                            },
-                        ))
-                    },
-                )
+                .query_row((&id,), |row| row.get::<_, String>(0))
                 .optional()?
             else {
                 return Ok(None);
@@ -713,181 +179,70 @@ impl storage::MetadataStorage for Storage {
 
             // Remove from unconfirmed set
             if trans
-                .prepare_cached(r#"DELETE FROM unconfirmed_bundles WHERE bundle_id = ?1;"#)?
-                .execute([bundle_id])?
+                .prepare_cached("DELETE FROM unconfirmed_bundles WHERE bundle_id = ?1")?
+                .execute((id,))?
                 != 0
             {
                 trans.commit()?;
             }
 
-            Ok(Some(metadata))
-        })
-        .await
-    }
-
-    #[instrument(skip(self))]
-    async fn get_bundle_status(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<BundleStatus>> {
-        let bundle_id = bundle_id.clone();
-        self.pooled_connection(move |conn| {
-            conn.prepare_cached(
-                r#"SELECT status,wait_until 
-                FROM bundles 
-                WHERE 
-                    source = ?1 AND
-                    creation_time = ?2 AND
-                    creation_seq_num = ?3 AND
-                    fragment_offset = ?4 AND 
-                    fragment_total_len = ?5
-                LIMIT 1;"#,
-            )?
-            .query_row(
-                (
-                    encode_eid(&bundle_id.source),
-                    encode_creation_time(bundle_id.timestamp.creation_time),
-                    as_i64(bundle_id.timestamp.sequence_number),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.offset)),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.total_len)),
-                ),
-                |row| columns_to_bundle_status(row, 0, 1),
-            )
-            .optional()
-            .map_err(Into::into)
-        })
-        .await
-    }
-
-    #[instrument(skip(self))]
-    async fn set_bundle_status(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        status: &BundleStatus,
-    ) -> storage::Result<()> {
-        let bundle_id = bundle_id.clone();
-        let status = status.clone();
-        self.pooled_connection(move |conn| {
-            let (status_code, until) = bundle_status_to_parts(&status);
-
-            let r = if let BundleStatus::Tombstone(_) = status {
-                conn.prepare_cached(
-                    r#"UPDATE bundles 
-                    SET status = ?1, wait_until = ?2, storage_name = NULL, hash = NULL 
-                    WHERE 
-                        source = ?3 AND
-                        creation_time = ?4 AND
-                        creation_seq_num = ?5 AND
-                        fragment_offset = ?6 AND 
-                        fragment_total_len = ?7;"#,
-                )?
-                .execute((
-                    status_code,
-                    until,
-                    encode_eid(&bundle_id.source),
-                    encode_creation_time(bundle_id.timestamp.creation_time),
-                    as_i64(bundle_id.timestamp.sequence_number),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.offset)),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.total_len)),
-                ))
-            } else {
-                conn.prepare_cached(
-                    r#"UPDATE bundles 
-                    SET status = ?1, wait_until = ?2 
-                    WHERE 
-                        source = ?3 AND
-                        creation_time = ?4 AND
-                        creation_seq_num = ?5 AND
-                        fragment_offset = ?6 AND 
-                        fragment_total_len = ?7;"#,
-                )?
-                .execute((
-                    status_code,
-                    until,
-                    encode_eid(&bundle_id.source),
-                    encode_creation_time(bundle_id.timestamp.creation_time),
-                    as_i64(bundle_id.timestamp.sequence_number),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.offset)),
-                    bundle_id
-                        .fragment_info
-                        .as_ref()
-                        .map_or(-1, |f| as_i64(f.total_len)),
-                ))
-            };
-
-            if !r.map(|count| count != 0)? {
-                Err(Error::NotFound.into())
-            } else {
-                Ok(())
-            }
+            // Unpack the bundle
+            serde_json::from_str(&s).map(Some).map_err(Into::into)
         })
         .await
     }
 
     #[instrument(skip_all)]
-    async fn get_unconfirmed_bundles(&self, tx: storage::Sender) -> storage::Result<()> {
-        self.pooled_connection(move |conn| {
-            unpack_bundles(
-                conn.prepare_cached(
-                    r#"WITH subset AS (
-                            SELECT 
-                                id,
-                                status,
-                                storage_name,
-                                hash,
-                                received_at,
-                                flags,
-                                crc_type,
-                                source,
-                                destination,
-                                report_to,
-                                creation_time,
-                                creation_seq_num,
-                                lifetime,                    
-                                fragment_offset,
-                                fragment_total_len,
-                                previous_node,
-                                age,
-                                hop_count,
-                                hop_limit,
-                                wait_until
-                            FROM unconfirmed_bundles
-                            JOIN bundles ON id = unconfirmed_bundles.bundle_id
-                            LIMIT 16
-                        )
-                        SELECT 
-                            subset.*,
-                            block_num,
-                            block_type,
-                            block_flags,
-                            block_crc_type,
-                            data_start,
-                            data_len,
-                            payload_offset,
-                            payload_len,
-                            bcb
-                        FROM subset
-                        JOIN bundle_blocks ON bundle_blocks.bundle_id = subset.id;"#,
-                )?
-                .query(())?,
-                &tx,
-            )
-        })
-        .await
+    async fn remove_unconfirmed_bundles(&self, tx: storage::Sender) -> storage::Result<()> {
+        while let Some(bundles) = self
+            .pooled_connection(move |conn| {
+                let trans =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+                let mut ids = Vec::new();
+                let mut bundles = Vec::new();
+                for r in trans
+                    .prepare_cached(
+                        "SELECT quote(id),bundle FROM bundles 
+                            JOIN unconfirmed_bundles ON id = bundle_id
+                            LIMIT 32",
+                    )?
+                    .query_map((), |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    })?
+                {
+                    let (id, bundle) = r?;
+                    ids.push(id);
+                    if let Some(bundle) = bundle {
+                        let bundle = serde_json::from_str::<hardy_bpa::bundle::Bundle>(&bundle)?;
+                        bundles.push(bundle);
+                    }
+                }
+                if ids.is_empty() {
+                    return Ok(None);
+                }
+                let ids = ids.join(",");
+
+                trans
+                    .prepare_cached("UPDATE bundles SET bundle = NULL WHERE id IN (?1)")?
+                    .execute((&ids,))?;
+
+                trans
+                    .prepare_cached("DELETE FROM unconfirmed_bundles WHERE bundle_id IN (?1)")?
+                    .execute((&ids,))?;
+
+                trans.commit()?;
+
+                Ok(Some(bundles))
+            })
+            .await?
+        {
+            for bundle in bundles {
+                if tx.send(bundle).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 }

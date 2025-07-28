@@ -11,6 +11,7 @@ mod built_info {
 pub struct Config {
     pub db_dir: std::path::PathBuf,
     pub timeout: std::time::Duration,
+    pub db_name: String,
 }
 
 impl Default for Config {
@@ -37,6 +38,7 @@ impl Default for Config {
                 },
             ),
             timeout: std::time::Duration::from_secs(5),
-         }
+            db_name: String::from("metadata.db"),
+        }
     }
 }
