@@ -3,30 +3,25 @@ use serde::{Deserialize, Serialize};
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
 #[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DtnTime {
-    #[serde(flatten)]
-    millisecs: u64,
-}
+pub struct DtnTime(u64);
 
 impl DtnTime {
     pub fn now() -> Self {
-        Self {
-            millisecs: ((time::OffsetDateTime::now_utc() - DTN_EPOCH).whole_milliseconds()) as u64,
-        }
+        Self(((time::OffsetDateTime::now_utc() - DTN_EPOCH).whole_milliseconds()) as u64)
     }
 
     pub fn new(millisecs: u64) -> Self {
-        Self { millisecs }
+        Self(millisecs)
     }
 
     pub fn millisecs(&self) -> u64 {
-        self.millisecs
+        self.0
     }
 }
 
 impl hardy_cbor::encode::ToCbor for DtnTime {
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(&self.millisecs)
+        encoder.emit(&self.0)
     }
 }
 
@@ -35,7 +30,7 @@ impl hardy_cbor::decode::FromCbor for DtnTime {
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
         hardy_cbor::decode::try_parse(data)
-            .map(|o| o.map(|(millisecs, shortest, len)| (Self { millisecs }, shortest, len)))
+            .map(|o| o.map(|(millisecs, shortest, len)| (Self(millisecs), shortest, len)))
     }
 }
 
@@ -47,9 +42,7 @@ impl TryFrom<time::OffsetDateTime> for DtnTime {
         if millisecs < 0 || millisecs > u64::MAX as i128 {
             Err(time::error::ConversionRange)
         } else {
-            Ok(Self {
-                millisecs: millisecs as u64,
-            })
+            Ok(Self(millisecs as u64))
         }
     }
 }
@@ -57,8 +50,8 @@ impl TryFrom<time::OffsetDateTime> for DtnTime {
 impl From<DtnTime> for time::OffsetDateTime {
     fn from(dtn_time: DtnTime) -> Self {
         DTN_EPOCH.saturating_add(time::Duration::new(
-            (dtn_time.millisecs / 1000) as i64,
-            (dtn_time.millisecs % 1000 * 1_000_000) as i32,
+            (dtn_time.0 / 1000) as i64,
+            (dtn_time.0 % 1000 * 1_000_000) as i32,
         ))
     }
 }

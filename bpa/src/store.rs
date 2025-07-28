@@ -342,11 +342,7 @@ impl Store {
     #[inline]
     pub async fn store_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         // Write to metadata store
-        Ok(self
-            .metadata_storage
-            .store(bundle)
-            .await
-            .trace_expect("Failed to store metadata"))
+        self.metadata_storage.store(bundle).await
     }
 
     #[inline]
