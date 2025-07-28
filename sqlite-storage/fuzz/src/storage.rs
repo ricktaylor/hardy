@@ -29,7 +29,7 @@ fn send(msg: Msg) {
                 .unwrap(),
                 metadata_storage: Some(hardy_sqlite_storage::new(
                     &hardy_sqlite_storage::Config {
-                        db_dir: ".".into(),
+                        db_dir: "fuzz".into(),
                         db_name: "storage.db".into(),
                         ..Default::default()
                     },
