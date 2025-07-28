@@ -1,4 +1,5 @@
 pub mod cla;
+pub mod null_cla;
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();

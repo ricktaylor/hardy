@@ -1,81 +1,12 @@
-use hardy_bpa::async_trait;
-use hardy_bpv7::eid::Eid;
-use std::sync::Arc;
+use super::*;
 
-#[derive(Default)]
-struct NullCla {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
-}
-
-impl NullCla {
-    async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
-        self.sink.get().unwrap().dispatch(bundle).await
-    }
-
-    async fn unregister(&self) {
-        self.sink.get().unwrap().unregister().await
-    }
-}
-
-#[async_trait]
-impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[Eid],
-    ) -> hardy_bpa::cla::Result<()> {
-        sink.add_peer(
-            Eid::Ipn {
-                allocator_id: 0,
-                node_number: 2,
-                service_number: 0,
-            },
-            hardy_bpa::cla::ClaAddress::Unknown(1, "fuzz".as_bytes().into()),
-        )
-        .await
-        .expect("add_peer failed");
-
-        if self.sink.set(sink).is_err() {
-            panic!("Double connect()");
-        }
-
-        Ok(())
-    }
-
-    async fn on_unregister(&self) {
-        let Some(sink) = self.sink.get() else {
-            panic!("Extra unregister!");
-        };
-
-        sink.remove_peer(&Eid::Ipn {
-            allocator_id: 0,
-            node_number: 2,
-            service_number: 0,
-        })
-        .await
-        .expect("remove_peer failed");
-    }
-
-    async fn on_forward(
-        &self,
-        _cla_addr: hardy_bpa::cla::ClaAddress,
-        bundle: hardy_bpa::Bytes,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        if bundle.len() > 1024 {
-            return Ok(hardy_bpa::cla::ForwardBundleResult::TooBig(1024));
-        }
-
-        Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
-    }
-}
-
-pub fn test_cla(data: Vec<u8>) {
+pub fn test_cla(data: hardy_bpa::Bytes) {
     // Full lifecycle
-    super::get_runtime().block_on(async {
+    get_runtime().block_on(async {
         // New BPA
         let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
             status_reports: true,
-            node_ids: [Eid::Ipn {
+            node_ids: [hardy_bpv7::eid::Eid::Ipn {
                 allocator_id: 0,
                 node_number: 1,
                 service_number: 0,
@@ -111,12 +42,12 @@ pub fn test_cla(data: Vec<u8>) {
         .await;
 
         {
-            let cla = Arc::new(NullCla::default());
+            let cla = std::sync::Arc::new(null_cla::NullCla::default());
             bpa.register_cla("fuzz".to_string(), None, cla.clone())
                 .await
-                .unwrap();
+                .expect("Failed to register CLA");
 
-            _ = cla.dispatch(data.into()).await;
+            _ = cla.dispatch(data).await;
 
             cla.unregister().await;
         }
@@ -136,7 +67,7 @@ mod test {
         {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
-                super::test_cla(buffer);
+                super::test_cla(buffer.into());
             }
         }
     }
@@ -158,7 +89,7 @@ mod test {
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = Vec::new();
                                 if file.read_to_end(&mut buffer).is_ok() {
-                                    super::test_cla(buffer);
+                                    super::test_cla(buffer.into());
                                 }
                             }
                         }
