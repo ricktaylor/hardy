@@ -50,11 +50,7 @@ impl Store {
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(
-            metadata::BundleMetadata,
-            hardy_bpv7::bundle::Bundle,
-        )>(16);
-        let metadata_storage = self.metadata_storage.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<bundle::Bundle>(16);
         let h = tokio::spawn(async move {
             // Give some feedback
             let mut bundles = 0u64;
@@ -67,28 +63,15 @@ impl Store {
                     },
                     bundle = rx.recv() => match bundle {
                         None => break,
-                        Some((m,b)) => {
-                            if let BundleStatus::Tombstone(_) = &m.status {
-                                // Ignore Tombstones
-                            } else {
+                        Some(bundle) => {
                                 bundles = bundles.saturating_add(1);
-                                let bundle_id = b.id.clone();
 
                                 // The data associated with `bundle` has gone!
                                 dispatcher.report_bundle_deletion(
-                                    &bundle::Bundle{
-                                        metadata: m,
-                                        bundle: b,
-                                    },
+                                    &bundle,
                                     hardy_bpv7::status_report::ReasonCode::DepletedStorage,
                                 )
                                 .await.trace_expect("Failed to report bundle deletion");
-
-                                // Delete it
-                                metadata_storage
-                                    .remove(&bundle_id)
-                                    .await.trace_expect("Failed to remove orphan bundle")
-                            }
                         }
                     },
                     _ = cancel_token.cancelled() => {
@@ -100,7 +83,7 @@ impl Store {
         });
 
         self.metadata_storage
-            .get_unconfirmed_bundles(tx)
+            .remove_unconfirmed_bundles(tx)
             .await
             .trace_expect("Failed to get unconfirmed bundles");
 
@@ -285,27 +268,21 @@ impl Store {
                     return (0, 1);
                 }
             };
+
+        // We're done with the data now
         drop(data);
 
         // Check if the metadata_storage knows about this bundle
-        let metadata = metadata_storage
+        if let Some(bundle) = metadata_storage
             .confirm_exists(&bundle.id)
             .await
-            .trace_expect("Failed to confirm bundle existence");
-        if let Some(metadata) = metadata {
-            let drop = if let BundleStatus::Tombstone(_) = metadata.status {
-                // Tombstone, ignore
-                warn!("Tombstone bundle data found: {storage_name}");
-                true
-            } else if metadata.storage_name.as_ref() == Some(&storage_name) && metadata.hash == hash
+            .trace_expect("Failed to confirm bundle existence")
+        {
+            if bundle.metadata.storage_name.as_ref() != Some(&storage_name)
+                || bundle.metadata.hash != hash
             {
-                false
-            } else {
                 warn!("Duplicate bundle data found: {storage_name}");
-                true
-            };
 
-            if drop {
                 // Remove spurious duplicate
                 bundle_storage
                     .remove(&storage_name)
@@ -313,39 +290,36 @@ impl Store {
                     .trace_expect(&format!(
                         "Failed to remove duplicate bundle: {storage_name}"
                     ));
-                return (0, 1);
+
+                (0, 1)
+            } else {
+                dispatcher
+                    .check_bundle(bundle, reason)
+                    .await
+                    .trace_expect(&format!("Bundle validation failed for: {storage_name}"));
+
+                (0, 0)
             }
-
+        } else {
+            // Send to the dispatcher ingress as it is effectively a new bundle
             dispatcher
-                .check_bundle(bundle::Bundle { metadata, bundle }, reason)
+                .ingress_bundle(
+                    bundle::Bundle {
+                        metadata: BundleMetadata {
+                            storage_name: Some(storage_name),
+                            hash,
+                            received_at: file_time,
+                        },
+                        bundle,
+                    },
+                    reason,
+                    report_unsupported,
+                )
                 .await
-                .trace_expect(&format!("Bundle validation failed for: {storage_name}"));
+                .trace_expect("Failed to restart bundle");
 
-            return (0, 0);
+            (1, 0)
         }
-
-        let mut bundle = bundle::Bundle {
-            metadata: BundleMetadata {
-                storage_name: Some(storage_name),
-                hash,
-                received_at: file_time,
-                ..Default::default()
-            },
-            bundle,
-        };
-
-        // If the bundle isn't valid, it must always be a Tombstone
-        if reason.is_some() {
-            bundle.metadata.status = BundleStatus::Tombstone(time::OffsetDateTime::now_utc())
-        }
-
-        // Send to the dispatcher ingress as it is effectively a new bundle
-        dispatcher
-            .ingress_bundle(bundle, reason, report_unsupported)
-            .await
-            .trace_expect("Failed to restart bundle");
-
-        (1, 0)
     }
 
     #[inline]
@@ -366,15 +340,11 @@ impl Store {
     }
 
     #[inline]
-    pub async fn store_metadata(
-        &self,
-        metadata: &BundleMetadata,
-        bundle: &hardy_bpv7::bundle::Bundle,
-    ) -> storage::Result<bool> {
+    pub async fn store_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         // Write to metadata store
         Ok(self
             .metadata_storage
-            .store(metadata, bundle)
+            .store(bundle)
             .await
             .trace_expect("Failed to store metadata"))
     }
@@ -384,36 +354,32 @@ impl Store {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
-        self.metadata_storage.load(bundle_id).await.map(|v| {
-            v.map(|(m, b)| bundle::Bundle {
-                metadata: m,
-                bundle: b,
-            })
-        })
+        self.metadata_storage.load(bundle_id).await
     }
 
     #[instrument(skip(self, data))]
     pub async fn store(
         &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
+        bundle: hardy_bpv7::bundle::Bundle,
         data: Bytes,
-        status: BundleStatus,
         received_at: Option<time::OffsetDateTime>,
-    ) -> storage::Result<Option<BundleMetadata>> {
+    ) -> storage::Result<Option<bundle::Bundle>> {
         // Write to bundle storage
         let (storage_name, hash) = self.store_data(data).await?;
 
         // Compose metadata
-        let metadata = BundleMetadata {
-            status,
-            storage_name: Some(storage_name.clone()),
-            hash: Some(hash),
-            received_at,
+        let bundle = bundle::Bundle {
+            metadata: BundleMetadata {
+                storage_name: Some(storage_name.clone()),
+                hash: Some(hash),
+                received_at,
+            },
+            bundle,
         };
 
         // Write to metadata store
-        match self.store_metadata(&metadata, bundle).await {
-            Ok(true) => Ok(Some(metadata)),
+        match self.store_metadata(&bundle).await {
+            Ok(true) => Ok(Some(bundle)),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
                 _ = self.bundle_storage.remove(&storage_name).await;
@@ -428,22 +394,6 @@ impl Store {
         }
     }
 
-    #[instrument(skip(self))]
-    pub async fn set_status(
-        &self,
-        bundle: &mut bundle::Bundle,
-        status: BundleStatus,
-    ) -> storage::Result<()> {
-        if bundle.metadata.status == status {
-            Ok(())
-        } else {
-            bundle.metadata.status = status;
-            self.metadata_storage
-                .set_bundle_status(&bundle.bundle.id, &bundle.metadata.status)
-                .await
-        }
-    }
-
     #[inline]
     pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
         // Delete the bundle from the bundle store
@@ -451,7 +401,7 @@ impl Store {
     }
 
     #[inline]
-    pub async fn delete_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
+    pub async fn remove_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         // Delete the bundle from the bundle store
         self.metadata_storage.remove(bundle_id).await
     }

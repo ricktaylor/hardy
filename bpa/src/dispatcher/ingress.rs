@@ -8,79 +8,85 @@ impl Dispatcher {
         let received_at = Some(time::OffsetDateTime::now_utc());
 
         // Do a fast pre-check
-        if data.is_empty() {
-            return Err(
-                hardy_bpv7::Error::InvalidCBOR(hardy_cbor::decode::Error::NotEnoughData).into(),
-            );
-        } else if data[0] == 0x06 {
-            trace!("Data looks like a BPv6 bundle");
-            return Err(
-                hardy_bpv7::Error::InvalidCBOR(hardy_cbor::decode::Error::IncorrectType(
-                    "BPv7 bundle".to_string(),
-                    "Possible BPv6 bundle".to_string(),
-                ))
-                .into(),
-            );
+        match data.first() {
+            None => {
+                return Err(hardy_bpv7::Error::InvalidCBOR(
+                    hardy_cbor::decode::Error::NotEnoughData,
+                )
+                .into());
+            }
+            Some(0x06) => {
+                trace!("Data looks like a BPv6 bundle");
+                return Err(hardy_bpv7::Error::InvalidCBOR(
+                    hardy_cbor::decode::Error::IncorrectType(
+                        "BPv7 bundle".to_string(),
+                        "Possible BPv6 bundle".to_string(),
+                    ),
+                )
+                .into());
+            }
+            _ => {}
         }
 
         // Parse the bundle
-        match hardy_bpv7::bundle::ValidBundle::parse(&data, self)? {
-            hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => {
-                // Write the bundle data to the store
-                let (storage_name, hash) = self.store.store_data(data).await?;
-                self.ingress_bundle(
-                    bundle::Bundle {
-                        metadata: BundleMetadata {
-                            storage_name: Some(storage_name),
-                            hash: Some(hash),
-                            received_at,
-                            ..Default::default()
+        let (bundle, reason, report_unsupported) =
+            match hardy_bpv7::bundle::ValidBundle::parse(&data, self)? {
+                hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => {
+                    // Write the bundle data to the store
+                    let (storage_name, hash) = self.store.store_data(data).await?;
+                    (
+                        bundle::Bundle {
+                            metadata: BundleMetadata {
+                                storage_name: Some(storage_name),
+                                hash: Some(hash),
+                                received_at,
+                            },
+                            bundle,
                         },
-                        bundle,
-                    },
-                    None,
-                    report_unsupported,
-                )
-            }
-            hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
-                trace!("Received bundle has been rewritten");
+                        None,
+                        report_unsupported,
+                    )
+                }
+                hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
+                    trace!("Received bundle has been rewritten");
 
-                // Write the bundle data to the store
-                let (storage_name, hash) = self.store.store_data(data.into()).await?;
-                self.ingress_bundle(
-                    bundle::Bundle {
-                        metadata: BundleMetadata {
-                            storage_name: Some(storage_name),
-                            hash: Some(hash),
-                            received_at,
-                            ..Default::default()
+                    // Write the bundle data to the store
+                    let (storage_name, hash) = self.store.store_data(data.into()).await?;
+                    (
+                        bundle::Bundle {
+                            metadata: BundleMetadata {
+                                storage_name: Some(storage_name),
+                                hash: Some(hash),
+                                received_at,
+                            },
+                            bundle,
                         },
-                        bundle,
-                    },
-                    None,
-                    report_unsupported,
-                )
-            }
-            hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e) => {
-                trace!("Invalid bundle received: {e}");
+                        None,
+                        report_unsupported,
+                    )
+                }
+                hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e) => {
+                    trace!("Invalid bundle received: {e}");
 
-                // Don't bother saving the bundle data, it's garbage
-                self.ingress_bundle(
-                    bundle::Bundle {
-                        metadata: BundleMetadata {
-                            status: BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
-                            received_at,
-                            ..Default::default()
+                    // Don't bother saving the bundle data, it's garbage
+                    (
+                        bundle::Bundle {
+                            metadata: BundleMetadata {
+                                storage_name: None,
+                                hash: None,
+                                received_at,
+                            },
+                            bundle,
                         },
-                        bundle,
-                    },
-                    Some(reason),
-                    false,
-                )
-            }
-        }
-        .await
-        .map_err(Into::into)
+                        Some(reason),
+                        false,
+                    )
+                }
+            };
+
+        self.ingress_bundle(bundle, reason, report_unsupported)
+            .await
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -109,11 +115,7 @@ impl Dispatcher {
          */
 
         if r.is_ok() {
-            r = match self
-                .store
-                .store_metadata(&bundle.metadata, &bundle.bundle)
-                .await
-            {
+            r = match self.store.store_metadata(&bundle).await {
                 Ok(true) => Ok(()),
                 Ok(false) => {
                     // Bundle with matching id already exists in the metadata store
@@ -154,11 +156,8 @@ impl Dispatcher {
          * the configured filters or code may have changed, and reprocessing is desired.
          */
 
-        if bundle.bundle.flags.unrecognised != 0 {
-            trace!(
-                "Bundle primary block has unrecognised flag bits set: {:#x}",
-                bundle.bundle.flags.unrecognised
-            );
+        if let Some(u) = bundle.bundle.flags.unrecognised {
+            trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
         }
 
         if reason.is_none() {

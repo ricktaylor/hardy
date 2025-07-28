@@ -1,6 +1,7 @@
 use super::*;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bundle {
     pub bundle: hardy_bpv7::bundle::Bundle,
     pub metadata: metadata::BundleMetadata,

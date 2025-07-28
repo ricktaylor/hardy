@@ -1,4 +1,3 @@
-mod bundle;
 mod bundle_mem;
 mod cla_registry;
 mod dispatcher;
@@ -8,6 +7,7 @@ mod service_registry;
 mod store;
 
 pub mod bpa;
+pub mod bundle;
 pub mod cla;
 pub mod config;
 pub mod metadata;

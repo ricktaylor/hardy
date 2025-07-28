@@ -53,7 +53,7 @@ impl NodeIds {
         }
     }
 
-    pub(crate) fn contains(&self, eid: &Eid) -> bool {
+    /*pub(crate) fn contains(&self, eid: &Eid) -> bool {
         match (eid, &self.ipn, &self.dtn) {
             (Eid::LocalNode { service_number }, Some(_), _) => service_number == &0,
             (
@@ -77,7 +77,7 @@ impl NodeIds {
             (Eid::Dtn { node_name, demux }, _, Some(n)) => node_name == n && demux.is_empty(),
             _ => false,
         }
-    }
+    }*/
 }
 
 impl Default for NodeIds {

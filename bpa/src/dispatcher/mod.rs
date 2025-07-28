@@ -96,14 +96,6 @@ impl Dispatcher {
 
         // Report the bundle has gone
         self.report_bundle_deletion(bundle, ReasonCode::DepletedStorage)
-            .await?;
-
-        // Leave a tombstone in the metadata, so we can ignore duplicates
-        self.store
-            .set_status(
-                bundle,
-                BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
-            )
             .await
             .map(|_| None)
     }
@@ -111,34 +103,19 @@ impl Dispatcher {
     #[instrument(skip(self))]
     async fn drop_bundle(
         &self,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
         reason: Option<ReasonCode>,
     ) -> Result<(), Error> {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&bundle, reason).await?;
         }
 
-        // Leave a tombstone in the metadata, so we can ignore duplicates
-        self.store
-            .set_status(
-                &mut bundle,
-                BundleStatus::Tombstone(time::OffsetDateTime::now_utc()),
-            )
-            .await?;
-
         // Delete the bundle from the bundle store
         if let Some(storage_name) = bundle.metadata.storage_name {
             self.store.delete_data(&storage_name).await?;
         }
 
-        /* Do not keep Tombstones for our own bundles
-         * This is done even after we have set a Tombstone
-         * status above to avoid a race
-         */
-        if self.node_ids.contains(&bundle.bundle.id.source) {
-            self.store.delete_metadata(&bundle.bundle.id).await?;
-        }
-        Ok(())
+        self.store.remove_metadata(&bundle.bundle.id).await
     }
 
     #[inline]
