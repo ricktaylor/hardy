@@ -15,9 +15,11 @@ pub struct Storage {
 impl storage::BundleStorage for Storage {
     async fn list(
         &self,
-        _tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
+        tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
     ) -> storage::Result<()> {
-        // We have no persistence, so therefore no bundles
+        for b in self.bundles.read().await.keys() {
+            tx.send((b.clone().into(), None)).await?;
+        }
         Ok(())
     }
 
