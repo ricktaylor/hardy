@@ -91,7 +91,7 @@ impl Store {
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Vec<storage::ListResponse> {
         /* This is done as a big Vec buffer, as we cannot start processing stored bundles
-         * until we have enumerated them all, as the processing can create more bundles
+         * until we have enumerated them all, as the processing can create more report bundles
          * which causes all kinds of double-processing issues */
 
         // TODO: We might want to use a tempfile here as the Vec<> could get really big!
