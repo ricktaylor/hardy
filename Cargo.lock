@@ -1517,6 +1517,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 
 [[package]]
+name = "localdisk-storage-fuzz"
+version = "0.0.0"
+dependencies = [
+ "hardy-bpa",
+ "hardy-bpv7",
+ "hardy-localdisk-storage",
+ "libfuzzer-sys",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "log"
 version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"

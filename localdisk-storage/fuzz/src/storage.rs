@@ -1,0 +1,147 @@
+use super::*;
+use hardy_bpv7::eid::Eid;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+struct Msg {
+    destination: Eid,
+    data: hardy_bpa::Bytes,
+    lifetime: std::time::Duration,
+    flags: Option<hardy_bpa::service::SendFlags>,
+}
+
+fn send(msg: Msg) {
+    static PIPE: std::sync::OnceLock<mpsc::Sender<Msg>> = std::sync::OnceLock::new();
+    PIPE.get_or_init(|| {
+        let (tx, mut rx) = mpsc::channel::<Msg>(16);
+
+        get_runtime().spawn(async move {
+            // New BPA
+            let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
+                status_reports: true,
+                node_ids: [Eid::Ipn {
+                    allocator_id: 0,
+                    node_number: 1,
+                    service_number: 0,
+                }]
+                .as_slice()
+                .try_into()
+                .unwrap(),
+                bundle_storage: Some(hardy_localdisk_storage::new(
+                    &hardy_localdisk_storage::Config {
+                        store_dir: "fuzz/store".into(),
+                        ..Default::default()
+                    },
+                    true,
+                )),
+                ..Default::default()
+            })
+            .await;
+
+            bpa.add_route(
+                "fuzz".to_string(),
+                "dtn://**/**".parse().unwrap(),
+                hardy_bpa::routes::Action::Store(
+                    time::OffsetDateTime::parse(
+                        "2035-01-02T11:12:13Z",
+                        &time::format_description::well_known::Rfc3339,
+                    )
+                    .unwrap(),
+                ),
+                100,
+            )
+            .await;
+
+            {
+                let service = Arc::new(pipe_service::PipeService::default());
+
+                bpa.register_service(None, service.clone())
+                    .await
+                    .expect("Failed to register service");
+
+                // Now pull from the channel
+                while let Some(msg) = rx.recv().await {
+                    service
+                        .send(msg.destination, &msg.data, msg.lifetime, msg.flags)
+                        .await
+                        .expect("Failed to send service message");
+                }
+
+                service.unregister().await;
+            }
+
+            bpa.shutdown().await;
+        });
+
+        tx
+    })
+    .blocking_send(msg)
+    .expect("Send failed")
+}
+
+pub fn test_storage(data: hardy_bpa::Bytes) {
+    // Full lifecycle
+    send(Msg {
+        destination: Eid::Ipn {
+            allocator_id: 0,
+            node_number: 99,
+            service_number: 1,
+        },
+        data,
+        lifetime: std::time::Duration::new(60, 0),
+        flags: Some(hardy_bpa::service::SendFlags {
+            do_not_fragment: true,
+            ..Default::default()
+        }),
+    })
+}
+
+#[cfg(test)]
+mod test {
+    use std::io::Read;
+
+    #[test]
+    fn test() {
+        if let Ok(mut file) = std::fs::File::open(
+            "./artifacts/storage/crash-4172e046d6370086ed8cd40e39103a772cc5b6be",
+        ) {
+            let mut buffer = Vec::new();
+            if file.read_to_end(&mut buffer).is_ok() {
+                super::test_storage(buffer.into());
+            }
+        }
+    }
+
+    #[test]
+    fn test_all() {
+        match std::fs::read_dir("./corpus/storage") {
+            Err(e) => {
+                eprintln!(
+                    "Failed to open dir: {e}, curr dir: {}",
+                    std::env::current_dir().unwrap().to_string_lossy()
+                );
+            }
+            Ok(dir) => {
+                let mut count = 0u64;
+                for entry in dir {
+                    if let Ok(path) = entry {
+                        let path = path.path();
+                        if path.is_file() {
+                            if let Ok(mut file) = std::fs::File::open(&path) {
+                                let mut buffer = Vec::new();
+                                if file.read_to_end(&mut buffer).is_ok() {
+                                    super::test_storage(buffer.into());
+
+                                    count = count.saturating_add(1);
+                                    if count % 100 == 0 {
+                                        tracing::info!("Processed {count} bundles");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

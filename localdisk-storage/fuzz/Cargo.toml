@@ -1,0 +1,30 @@
+[package]
+name = "localdisk-storage-fuzz"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hardy-bpv7 = { path = "../../bpv7" }
+hardy-bpa = { path = "../../bpa" }
+hardy-localdisk-storage = { path = ".." }
+tokio = { version = "1.45.0", features = ["rt-multi-thread", "time"] }
+time = { version = "0.3.41", features = ["parsing"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+tracing-log = "0.2.0"
+
+[lib]
+name = "common"
+path = "src/lib.rs"
+test = true
+
+[[bin]]
+name = "storage"
+path = "fuzz_targets/storage.rs"
+test = false
+bench = false
