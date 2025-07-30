@@ -18,9 +18,9 @@ pub struct Storage {
 impl storage::MetadataStorage for Storage {
     async fn load(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
-        todo!()
+        Ok(self.entries.read().await.get(bundle_id).cloned())
     }
 
     async fn store(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
