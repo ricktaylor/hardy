@@ -109,6 +109,7 @@ mod test {
                 );
             }
             Ok(dir) => {
+                let mut count = 0u64;
                 for entry in dir {
                     if let Ok(path) = entry {
                         let path = path.path();
@@ -117,6 +118,11 @@ mod test {
                                 let mut buffer = Vec::new();
                                 if file.read_to_end(&mut buffer).is_ok() {
                                     super::test_storage(buffer.into());
+
+                                    count = count.saturating_add(1);
+                                    if count % 100 == 0 {
+                                        tracing::info!("Processed {count} bundles");
+                                    }
                                 }
                             }
                         }
