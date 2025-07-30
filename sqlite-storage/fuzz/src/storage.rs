@@ -39,6 +39,20 @@ fn send(msg: Msg) {
             })
             .await;
 
+            bpa.add_route(
+                "fuzz".to_string(),
+                "dtn://**/**".parse().unwrap(),
+                hardy_bpa::routes::Action::Store(
+                    time::OffsetDateTime::parse(
+                        "2035-01-02T11:12:13Z",
+                        &time::format_description::well_known::Rfc3339,
+                    )
+                    .unwrap(),
+                ),
+                100,
+            )
+            .await;
+
             {
                 let service = Arc::new(pipe_service::PipeService::default());
 
