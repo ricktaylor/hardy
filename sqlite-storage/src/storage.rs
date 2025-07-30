@@ -27,6 +27,10 @@ impl ConnectionPool {
 
         conn.busy_timeout(self.timeout)
             .expect("Failed to set timeout");
+
+        conn.execute_batch("PRAGMA optimize=0x10002")
+            .trace_expect("Failed to optimize");
+
         conn
     }
 
@@ -94,7 +98,7 @@ impl Storage {
         connection
             .execute_batch(
             "PRAGMA optimize=0x10002;
-                INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id) SELECT id FROM bundles WHERE bundle IS NOT NULL;",
+                INSERT OR IGNORE INTO unconfirmed_bundles (bundle_id) SELECT id FROM bundles WHERE bundle IS NOT NULL",
             )
             .trace_expect("Failed to prepare metadata store database");
 
