@@ -69,7 +69,7 @@ impl Builder {
         BlockBuilder::new(self, block_type)
     }
 
-    pub fn add_payload_block(&mut self, data: Box<[u8]>) -> &mut Self {
+    pub fn add_payload_block<T: AsRef<[u8]>>(&mut self, data: T) -> &mut Self {
         self.add_extension_block(block::Type::Payload)
             .data(data)
             .build()
@@ -153,7 +153,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn data(mut self, data: Box<[u8]>) -> Self {
+    pub fn data<T: AsRef<[u8]>>(mut self, data: T) -> Self {
         self.template.data(data);
         self
     }
@@ -210,9 +210,9 @@ impl BlockTemplate {
         self.crc_type = crc_type;
     }
 
-    pub fn data(&mut self, data: Box<[u8]>) {
+    pub fn data<T: AsRef<[u8]>>(&mut self, data: T) {
         // Just copy the data for now
-        self.data = Some(data);
+        self.data = Some(data.as_ref().into());
     }
 
     pub fn build(self, block_number: u64, array: &mut hardy_cbor::encode::Array) -> block::Block {
@@ -240,7 +240,8 @@ fn test() {
 
     b.source("ipn:1.0".parse().unwrap())
         .destination("ipn:2.0".parse().unwrap())
-        .report_to("ipn:3.0".parse().unwrap());
+        .report_to("ipn:3.0".parse().unwrap())
+        .add_payload_block("Hello");
 
     b.build();
 }

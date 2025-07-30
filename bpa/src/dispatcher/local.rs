@@ -66,7 +66,7 @@ impl Dispatcher {
         b.source(source)
             .destination(destination)
             .lifetime(lifetime)
-            .add_payload_block(data.into());
+            .add_payload_block(data);
 
         let (bundle, data) = b.build();
         let bundle_id = bundle.id.clone();

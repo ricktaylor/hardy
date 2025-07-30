@@ -62,7 +62,7 @@ fn main() {
         b.lifetime(lifetime.into());
     }
 
-    b.add_payload_block(payload.into());
+    b.add_payload_block(&payload);
 
     output
         .write_all(&b.build().1)
