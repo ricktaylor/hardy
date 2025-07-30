@@ -85,7 +85,7 @@ impl Dispatcher {
     }
 
     #[instrument(skip(self, service))]
-    pub async fn deliver_bundle(
+    pub(super) async fn deliver_bundle(
         self: &Arc<Self>,
         service: Arc<service_registry::Service>,
         bundle: &bundle::Bundle,
