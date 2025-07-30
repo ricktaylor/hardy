@@ -5,7 +5,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
         tracing_subscriber::fmt()
-            .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+            .with_max_level(tracing_subscriber::filter::LevelFilter::ERROR)
             .with_target(true)
             .init();
 
