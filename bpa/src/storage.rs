@@ -15,7 +15,7 @@ pub trait MetadataStorage: Send + Sync {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Result<Option<bundle::Bundle>>;
+    ) -> Result<Option<metadata::BundleMetadata>>;
 
     async fn remove_unconfirmed_bundles(&self, tx: Sender) -> Result<()>;
 }

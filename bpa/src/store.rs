@@ -2,13 +2,17 @@ use super::*;
 use metadata::*;
 use sha2::Digest;
 
-fn hash(data: &[u8]) -> Arc<[u8]> {
+const LRU_CAPACITY: usize = 256;
+
+pub fn hash(data: &[u8]) -> Arc<[u8]> {
     sha2::Sha256::digest(data).to_vec().into()
 }
 
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
+    metadata_cache: std::sync::Mutex<lru::LruCache<hardy_bpv7::bundle::Id, ()>>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
+    bundle_cache: std::sync::Mutex<lru::LruCache<Arc<[u8]>, ()>>,
 }
 
 impl Store {
@@ -20,32 +24,22 @@ impl Store {
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(Arc::new(metadata_mem::Storage::default())),
+            metadata_cache: std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZero::new(LRU_CAPACITY).unwrap(),
+            )),
             bundle_storage: config
                 .bundle_storage
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(Arc::new(bundle_mem::Storage::default())),
+            bundle_cache: std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZero::new(LRU_CAPACITY).unwrap(),
+            )),
         }
     }
 
     #[instrument(skip_all)]
-    pub async fn start(
-        &self,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) {
-        info!("Starting store consistency check...");
-        self.bundle_storage_check(dispatcher.clone(), &cancel_token)
-            .await;
-
-        // Now check the metadata storage for old data
-        self.metadata_storage_check(dispatcher, cancel_token).await;
-
-        info!("Store restarted");
-    }
-
-    #[instrument(skip_all)]
-    async fn metadata_storage_check(
+    pub async fn metadata_storage_check(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: tokio_util::sync::CancellationToken,
@@ -64,14 +58,14 @@ impl Store {
                     bundle = rx.recv() => match bundle {
                         None => break,
                         Some(bundle) => {
-                                bundles = bundles.saturating_add(1);
+                            bundles = bundles.saturating_add(1);
 
-                                // The data associated with `bundle` has gone!
-                                dispatcher.report_bundle_deletion(
-                                    &bundle,
-                                    hardy_bpv7::status_report::ReasonCode::DepletedStorage,
-                                )
-                                .await.trace_expect("Failed to report bundle deletion");
+                            // The data associated with `bundle` has gone!
+                            dispatcher.report_bundle_deletion(
+                                &bundle,
+                                hardy_bpv7::status_report::ReasonCode::DepletedStorage,
+                            )
+                            .await
                         }
                     },
                     _ = cancel_token.cancelled() => {
@@ -102,7 +96,9 @@ impl Store {
 
         // TODO: We might want to use a tempfile here as the Vec<> could get really big!
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(16);
+        const CHUNK_SIZE: usize = 128;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(CHUNK_SIZE);
         let h = tokio::spawn(async move {
             let mut results = Vec::new();
 
@@ -115,12 +111,12 @@ impl Store {
                     _ = timer.tick() => {
                         info!("Bundle storage check in progress, {bundles} bundles found");
                     },
-                    r = rx.recv() => match r {
-                        None => break,
-                        Some(r) => {
-                            bundles = bundles.saturating_add(1);
-                            results.push(r);
-                        },
+                    r = rx.recv_many(&mut results,CHUNK_SIZE) => {
+                        if r == 0 {
+                            break;
+                        } else {
+                            bundles = bundles.saturating_add(r as u64);
+                        }
                     },
                     _ = cancel_token.cancelled() => {
                         rx.close()
@@ -139,17 +135,13 @@ impl Store {
     }
 
     #[instrument(skip_all)]
-    async fn bundle_storage_check(
-        &self,
+    pub async fn bundle_storage_check(
+        self: &Arc<Self>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: &tokio_util::sync::CancellationToken,
     ) {
         // We're going to spawn a bunch of tasks
-        let parallelism = std::thread::available_parallelism()
-            .map(Into::into)
-            .unwrap_or(1);
         let mut task_set = tokio::task::JoinSet::new();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
         // Give some feedback
         let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
@@ -163,30 +155,23 @@ impl Store {
 
             loop {
                 tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => break,
                     _ = timer.tick() => {
                         info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
                     },
-                    // Throttle the number of tasks
-                    permit = semaphore.clone().acquire_owned() => {
-                        // We have a permit to process a bundle
-                        let permit = permit.trace_expect("Failed to acquire permit");
-                        let metadata_storage = self.metadata_storage.clone();
-                        let bundle_storage = self.bundle_storage.clone();
-                        let dispatcher = dispatcher.clone();
-
-                        task_set.spawn(async move {
-                            let (o,b) = Self::restart_bundle(metadata_storage, bundle_storage, dispatcher, storage_name, file_time).await;
-                            drop(permit);
-                            (o,b)
-                        });
-                        break;
-                    }
                     Some(r) = task_set.join_next(), if !task_set.is_empty() => {
                         let (o,b) = r.trace_expect("Task terminated unexpectedly");
                         orphans = orphans.saturating_add(o);
                         bad = bad.saturating_add(b);
                     },
-                    _ = cancel_token.cancelled() => break
+                    _ = std::future::ready(()) => {
+                        let dispatcher = dispatcher.clone();
+                        let storage_name = storage_name.clone();
+                        task_set.spawn(async move {
+                            dispatcher.restart_bundle(storage_name, file_time).await
+                        });
+                    }
                 }
             }
         }
@@ -202,146 +187,42 @@ impl Store {
         );
     }
 
-    #[instrument(skip(metadata_storage, bundle_storage, dispatcher))]
-    async fn restart_bundle(
-        metadata_storage: Arc<dyn storage::MetadataStorage>,
-        bundle_storage: Arc<dyn storage::BundleStorage>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        mut storage_name: Arc<str>,
-        file_time: Option<time::OffsetDateTime>,
-    ) -> (u64, u64) {
-        let Some(data) = bundle_storage
-            .load(&storage_name)
-            .await
-            .trace_expect(&format!("Failed to load bundle data: {storage_name}"))
-        else {
-            // Data has gone while we were restarting
-            return (0, 0);
-        };
-
-        // Parse the bundle
-        let (bundle, reason, hash, report_unsupported) =
-            match hardy_bpv7::bundle::ValidBundle::parse(&data, dispatcher.as_ref()) {
-                Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
-                    (bundle, None, Some(hash(&data)), report_unsupported)
-                }
-                Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
-                    bundle,
-                    data,
-                    report_unsupported,
-                )) => {
-                    warn!("Bundle in non-canonical format found: {storage_name}");
-
-                    let hash = Some(hash(&data));
-
-                    // Rewrite the bundle
-                    let new_storage_name = bundle_storage
-                        .store(data.into())
-                        .await
-                        .trace_expect("Failed to store rewritten canonical bundle");
-
-                    bundle_storage
-                        .remove(&storage_name)
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove duplicate bundle: {storage_name}"
-                        ));
-
-                    storage_name = new_storage_name;
-                    (bundle, None, hash, report_unsupported)
-                }
-                Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
-                    warn!("Invalid bundle found: {storage_name}, {e}");
-                    (bundle, Some(reason), Some(hash(&data)), false)
-                }
-                Err(e) => {
-                    // Parse failed badly, no idea who to report to
-                    warn!("Junk data found: {storage_name}, {e}");
-
-                    // Drop the bundle
-                    bundle_storage
-                        .remove(&storage_name)
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove malformed bundle: {storage_name}"
-                        ));
-                    return (0, 1);
-                }
-            };
-
-        // We're done with the data now
-        drop(data);
-
-        // Check if the metadata_storage knows about this bundle
-        if let Some(bundle) = metadata_storage
-            .confirm_exists(&bundle.id)
-            .await
-            .trace_expect("Failed to confirm bundle existence")
-        {
-            if bundle.metadata.storage_name.as_ref() != Some(&storage_name)
-                || bundle.metadata.hash != hash
-            {
-                warn!("Duplicate bundle data found: {storage_name}");
-
-                // Remove spurious duplicate
-                bundle_storage
-                    .remove(&storage_name)
-                    .await
-                    .trace_expect(&format!(
-                        "Failed to remove duplicate bundle: {storage_name}"
-                    ));
-
-                (0, 1)
-            } else {
-                dispatcher
-                    .check_bundle(bundle, reason)
-                    .await
-                    .trace_expect(&format!("Bundle validation failed for: {storage_name}"));
-
-                (0, 0)
-            }
-        } else {
-            // Send to the dispatcher ingress as it is effectively a new bundle
-            dispatcher
-                .ingress_bundle(
-                    bundle::Bundle {
-                        metadata: BundleMetadata {
-                            storage_name: Some(storage_name),
-                            hash,
-                            received_at: file_time,
-                        },
-                        bundle,
-                    },
-                    reason,
-                    report_unsupported,
-                )
-                .await
-                .trace_expect("Failed to restart bundle");
-
-            (1, 0)
-        }
-    }
-
     #[inline]
     pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         self.bundle_storage.load(storage_name).await
     }
 
-    #[inline]
-    pub async fn store_data(&self, data: Bytes) -> storage::Result<(Arc<str>, Arc<[u8]>)> {
-        // Calculate hash
-        let hash = hash(&data);
+    pub async fn store_data(
+        &self,
+        data: Bytes,
+        hash: Arc<[u8]>,
+    ) -> storage::Result<Option<Arc<str>>> {
+        if self
+            .bundle_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .put(hash, ())
+            .is_some()
+        {
+            return Ok(None);
+        }
 
         // Write to bundle storage
-        self.bundle_storage
-            .store(data)
-            .await
-            .map(|storage_name| (storage_name, hash))
+        self.bundle_storage.store(data).await.map(Some)
     }
 
     #[inline]
     pub async fn store_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        // Write to metadata store
+        if self
+            .metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .put(bundle.bundle.id.clone(), ())
+            .is_some()
+        {
+            return Ok(false);
+        }
+
         self.metadata_storage.store(bundle).await
     }
 
@@ -361,7 +242,10 @@ impl Store {
         received_at: Option<time::OffsetDateTime>,
     ) -> storage::Result<Option<bundle::Bundle>> {
         // Write to bundle storage
-        let (storage_name, hash) = self.store_data(data).await?;
+        let hash = store::hash(&data);
+        let Some(storage_name) = self.store_data(data, hash.clone()).await? else {
+            return Ok(None);
+        };
 
         // Compose metadata
         let bundle = bundle::Bundle {
@@ -378,27 +262,45 @@ impl Store {
             Ok(true) => Ok(Some(bundle)),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
-                _ = self.bundle_storage.remove(&storage_name).await;
-                Ok(None)
+                self.remove_data(&bundle.metadata).await.map(|_| None)
             }
             Err(e) => {
                 // This is just bad, we can't really claim to have stored the bundle,
                 // so just cleanup and get out
-                _ = self.bundle_storage.remove(&storage_name).await;
-                Err(e)
+                self.remove_data(&bundle.metadata).await.and(Err(e))
             }
         }
     }
 
-    #[inline]
-    pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
-        // Delete the bundle from the bundle store
-        self.bundle_storage.remove(storage_name).await
+    pub async fn remove_data(&self, metadata: &BundleMetadata) -> storage::Result<()> {
+        if let Some(hash) = &metadata.hash {
+            self.bundle_cache
+                .lock()
+                .expect("LRU cache lock failure")
+                .pop(hash);
+        }
+
+        if let Some(storage_name) = &metadata.storage_name {
+            // Delete the bundle from the bundle store
+            self.bundle_storage.remove(storage_name).await
+        } else {
+            Ok(())
+        }
     }
 
-    #[inline]
     pub async fn remove_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        // Delete the bundle from the bundle store
+        self.metadata_cache
+            .lock()
+            .expect("LRU cache lock failure")
+            .pop(bundle_id);
+
         self.metadata_storage.remove(bundle_id).await
+    }
+
+    pub async fn confirm_exists(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> storage::Result<Option<metadata::BundleMetadata>> {
+        self.metadata_storage.confirm_exists(bundle_id).await
     }
 }

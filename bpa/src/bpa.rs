@@ -31,12 +31,14 @@ impl Bpa {
             Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
 
         // Create a new dispatcher
-        let dispatcher = dispatcher::Dispatcher::new(
+        let dispatcher = Arc::new(dispatcher::Dispatcher::new(
             config,
             store.clone(),
             service_registry.clone(),
             rib.clone(),
-        );
+        ));
+
+        dispatcher.start().await;
 
         trace!("BPA started");
 

@@ -1,9 +1,11 @@
+use std::ops::Deref;
+
 use super::*;
 
 impl Dispatcher {
     #[instrument(skip(self))]
     pub async fn local_dispatch(
-        &self,
+        self: &Arc<Self>,
         mut source: Eid,
         mut destination: Eid,
         data: &[u8],
@@ -84,19 +86,21 @@ impl Dispatcher {
 
     #[instrument(skip(self, service))]
     pub async fn deliver_bundle(
-        &self,
+        self: &Arc<Self>,
         service: Arc<service_registry::Service>,
-        mut bundle: bundle::Bundle,
-    ) -> Result<(), Error> {
-        let Some(data) = self.load_data(&mut bundle).await? else {
+        bundle: &bundle::Bundle,
+    ) -> Result<dispatch::DispatchResult, Error> {
+        let Some(data) = self.load_data(bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
-            return Ok(());
+            return Ok(dispatch::DispatchResult::Drop(Some(
+                ReasonCode::DepletedStorage,
+            )));
         };
 
-        let payload = match bundle.bundle.block_payload(1, &data, self)? {
+        let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {
             None => {
                 // TODO: We are unable to decrypt the payload, what do we do?
-                todo!();
+                return Ok(dispatch::DispatchResult::Keep);
             }
             Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
             Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
@@ -113,9 +117,7 @@ impl Dispatcher {
             })
             .await;
 
-        self.report_bundle_delivery(&bundle).await?;
-
         // And we are done with the bundle
-        self.drop_bundle(bundle, None).await
+        Ok(dispatch::DispatchResult::Delivered)
     }
 }

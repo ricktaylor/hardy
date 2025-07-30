@@ -4,29 +4,32 @@ use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
 impl Dispatcher {
     #[instrument(skip(self))]
     pub(super) async fn administrative_bundle(
-        &self,
-        mut bundle: bundle::Bundle,
-    ) -> Result<(), Error> {
+        self: &Arc<Self>,
+        bundle: &bundle::Bundle,
+    ) -> Result<dispatch::DispatchResult, Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             trace!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
-                .await;
+            return Ok(dispatch::DispatchResult::Drop(Some(
+                ReasonCode::BlockUnintelligible,
+            )));
         }
 
-        let Some(data) = self.load_data(&mut bundle).await? else {
+        let Some(data) = self.load_data(bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
-            return Ok(());
+            return Ok(dispatch::DispatchResult::Drop(Some(
+                ReasonCode::DepletedStorage,
+            )));
         };
 
         match hardy_cbor::decode::parse(&data) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
-                self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
-                    .await
+                Ok(dispatch::DispatchResult::Drop(Some(
+                    ReasonCode::BlockUnintelligible,
+                )))
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
                 // Find a live service to notify
@@ -48,7 +51,7 @@ impl Dispatcher {
                     on_status_notify(report.delivered, service::StatusNotify::Delivered).await;
                     on_status_notify(report.deleted, service::StatusNotify::Deleted).await;
                 }
-                self.drop_bundle(bundle, None).await
+                Ok(dispatch::DispatchResult::Drop(None))
             }
         }
     }

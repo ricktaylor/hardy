@@ -46,7 +46,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<bundle::Bundle>> {
+    ) -> storage::Result<Option<metadata::BundleMetadata>> {
         Ok(None)
     }
 

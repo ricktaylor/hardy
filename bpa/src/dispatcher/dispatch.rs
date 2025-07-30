@@ -1,10 +1,43 @@
 use super::*;
 
+pub(super) enum DispatchResult {
+    Drop(Option<ReasonCode>),
+    Keep,
+    Forwarded,
+    Delivered,
+}
+
 impl Dispatcher {
-    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
+    pub(super) async fn dispatch_bundle(
+        self: &Arc<Self>,
+        bundle: bundle::Bundle,
+    ) -> Result<(), Error> {
+        // Now process the bundle
+        let reason_code = match self.dispatch_bundle_inner(&bundle).await? {
+            DispatchResult::Drop(reason_code) => reason_code,
+            DispatchResult::Keep => {
+                return Ok(());
+            }
+            DispatchResult::Forwarded => {
+                self.report_bundle_forwarded(&bundle).await;
+                None
+            }
+            DispatchResult::Delivered => {
+                self.report_bundle_delivery(&bundle).await;
+                None
+            }
+        };
+
+        self.drop_bundle(bundle, reason_code).await
+    }
+
+    pub(super) async fn dispatch_bundle_inner(
+        self: &Arc<Self>,
+        bundle: &bundle::Bundle,
+    ) -> Result<DispatchResult, Error> {
         // Drop Eid::Null silently to cull spam
         if bundle.bundle.destination == Eid::Null {
-            return self.drop_bundle(bundle, None).await;
+            return Ok(DispatchResult::Drop(None));
         }
 
         let mut next_hop = bundle.bundle.destination.clone();
@@ -14,7 +47,7 @@ impl Dispatcher {
             let (clas, until) = match self.rib.find(&next_hop).await {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
-                    return self.drop_bundle(bundle, reason).await;
+                    return Ok(DispatchResult::Drop(reason));
                 }
                 Ok(Some(rib::FindResult::AdminEndpoint)) => {
                     if bundle.bundle.id.fragment_info.is_some() {
@@ -38,9 +71,9 @@ impl Dispatcher {
 
             if !clas.is_empty() {
                 // Get bundle data from store, now we know we need it!
-                let Some(data) = self.load_data(&mut bundle).await? else {
+                let Some(data) = self.load_data(bundle).await? else {
                     // Bundle data was deleted sometime during processing
-                    return Ok(());
+                    return Ok(DispatchResult::Drop(Some(ReasonCode::DepletedStorage)));
                 };
 
                 // TODO: Pluggable Egress filters!
@@ -52,17 +85,13 @@ impl Dispatcher {
                 for (cla, cla_addr) in clas {
                     // Increment Hop Count, etc...
                     // We ignore the fact that a new bundle has been created, as it makes no difference below
-                    let (_, data) = self.update_extension_blocks(&bundle, &data);
+                    let (_, data) = self.update_extension_blocks(bundle, &data);
 
                     match cla.cla.on_forward(cla_addr, data.into()).await {
                         Err(e) => warn!("CLA failed to forward: {e}"),
                         Ok(cla::ForwardBundleResult::Sent) => {
                             // We have successfully forwarded!
-                            self.report_bundle_forwarded(&bundle).await?;
-
-                            // TODO: Should we drop now?  This is where Custody Transfer comes in
-
-                            return self.drop_bundle(bundle, None).await;
+                            return Ok(DispatchResult::Forwarded);
                         }
                         Ok(cla::ForwardBundleResult::NoNeighbour) => {
                             trace!("CLA has no neighbour for {next_hop}");
@@ -82,7 +111,7 @@ impl Dispatcher {
 
             // See if we should wait
             if let Some(until) = until {
-                return self.bundle_wait(next_hop, bundle, until).await;
+                return self.bundle_wait(next_hop, bundle, until);
             }
 
             // By the time we get here, we have tried every CLA
@@ -91,12 +120,9 @@ impl Dispatcher {
             if previous {
                 trace!("Failed to return bundle to previous node, no route to node");
 
-                return self
-                    .drop_bundle(
-                        bundle,
-                        Some(hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere),
-                    )
-                    .await;
+                return Ok(DispatchResult::Drop(Some(
+                    hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
+                )));
             }
 
             // Return the bundle to the source via the 'previous_node' or 'bundle.source'
@@ -159,5 +185,69 @@ impl Dispatcher {
         }
 
         editor.build()
+    }
+
+    fn bundle_wait(
+        self: &Arc<Self>,
+        next_hop: Eid,
+        bundle: &bundle::Bundle,
+        until: time::OffsetDateTime,
+    ) -> Result<dispatch::DispatchResult, Error> {
+        let until = until.min(bundle.expiry());
+        let id = bundle.bundle.id.clone();
+        let dispatcher = self.clone();
+        self.task_tracker.spawn(async move {
+            dispatcher
+                .on_bundle_wait(next_hop, id, until)
+                .await
+                .expect("Failed to wait for bundle");
+        });
+        Ok(dispatch::DispatchResult::Keep)
+    }
+
+    async fn on_bundle_wait(
+        self: &Arc<Self>,
+        next_hop: Eid,
+        bundle_id: hardy_bpv7::bundle::Id,
+        until: time::OffsetDateTime,
+    ) -> Result<(), Error> {
+        // Check to see if we should wait at all!
+        let duration = until - time::OffsetDateTime::now_utc();
+        if !duration.is_positive() {
+            let Some(bundle) = self.store.load(&bundle_id).await? else {
+                // Bundle data was deleted sometime during processing
+                return Ok(());
+            };
+            return self
+                .drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
+                .await;
+        }
+
+        match self
+            .rib
+            .wait_for_route(
+                &next_hop,
+                tokio::time::Duration::new(
+                    duration.whole_seconds() as u64,
+                    duration.subsec_nanoseconds() as u32,
+                ),
+                &self.cancel_token,
+            )
+            .await
+        {
+            rib::WaitResult::Cancelled => {}
+            rib::WaitResult::Timeout => {
+                if let Some(bundle) = self.store.load(&bundle_id).await? {
+                    self.drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
+                        .await?;
+                }
+            }
+            rib::WaitResult::RouteChange => {
+                if let Some(bundle) = self.store.load(&bundle_id).await? {
+                    self.dispatch_bundle(bundle).await?;
+                }
+            }
+        }
+        Ok(())
     }
 }

@@ -186,7 +186,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
+    ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id = serde_json::to_string(bundle_id)?;
         self.pooled_connection(move |conn| {
             let trans = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
