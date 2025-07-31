@@ -1,16 +1,16 @@
-mod bundle_mem;
 mod cla_registry;
 mod dispatcher;
-mod metadata_mem;
 mod rib;
 mod service_registry;
 mod store;
 
 pub mod bpa;
 pub mod bundle;
+pub mod bundle_mem;
 pub mod cla;
 pub mod config;
 pub mod metadata;
+pub mod metadata_mem;
 pub mod node_ids;
 pub mod routes;
 pub mod service;

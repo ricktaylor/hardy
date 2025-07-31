@@ -23,7 +23,7 @@ impl Store {
                 .metadata_storage
                 .as_ref()
                 .map(|s| s.clone())
-                .unwrap_or(Arc::new(metadata_mem::Storage::default())),
+                .unwrap_or(metadata_mem::new(&metadata_mem::Config::default())),
             metadata_cache: std::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZero::new(LRU_CAPACITY).unwrap(),
             )),
@@ -31,7 +31,7 @@ impl Store {
                 .bundle_storage
                 .as_ref()
                 .map(|s| s.clone())
-                .unwrap_or(Arc::new(bundle_mem::Storage::default())),
+                .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
             bundle_cache: std::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZero::new(LRU_CAPACITY).unwrap(),
             )),
@@ -217,7 +217,7 @@ impl Store {
             .metadata_cache
             .lock()
             .trace_expect("LRU cache lock error")
-            .put(bundle.bundle.id.clone(), ())
+            .push(bundle.bundle.id.clone(), ())
             .is_some()
         {
             return Ok(false);

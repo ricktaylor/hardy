@@ -1,14 +1,24 @@
 use super::*;
 use rand::distr::{Alphanumeric, SampleString};
-use std::{
-    collections::{HashMap, hash_map},
-    sync::Arc,
-};
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
-#[derive(Default)]
-pub struct Storage {
-    bundles: RwLock<HashMap<String, Bytes>>,
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub struct Config {
+    pub capacity: std::num::NonZeroUsize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            capacity: std::num::NonZero::new(1_048_576).unwrap(),
+        }
+    }
+}
+
+struct Storage {
+    bundles: Mutex<lru::LruCache<String, Bytes>>,
 }
 
 #[async_trait]
@@ -17,14 +27,25 @@ impl storage::BundleStorage for Storage {
         &self,
         tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
     ) -> storage::Result<()> {
-        for b in self.bundles.read().await.keys() {
-            tx.send((b.clone().into(), None)).await?;
+        for (name, _) in self
+            .bundles
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .iter()
+        {
+            tx.blocking_send((name.clone().into(), None))?;
         }
         Ok(())
     }
 
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
-        if let Some(v) = self.bundles.read().await.get(storage_name).cloned() {
+        if let Some(v) = self
+            .bundles
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .get(storage_name)
+            .cloned()
+        {
             Ok(Some(Bytes::from_owner(v.clone())))
         } else {
             Ok(None)
@@ -32,20 +53,28 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn store(&self, data: Bytes) -> storage::Result<Arc<str>> {
-        let mut bundles = self.bundles.write().await;
         let mut rng = rand::rng();
+        let mut bundles = self.bundles.lock().trace_expect("Failed to lock mutex");
         loop {
             let storage_name = Alphanumeric.sample_string(&mut rng, 64);
-
-            if let hash_map::Entry::Vacant(e) = bundles.entry(storage_name.clone()) {
-                e.insert(data);
+            if !bundles.contains(&storage_name) {
+                bundles.put(storage_name.clone(), data);
                 return Ok(storage_name.into());
             }
         }
     }
 
     async fn remove(&self, storage_name: &str) -> storage::Result<()> {
-        self.bundles.write().await.remove(storage_name);
+        self.bundles
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .pop(storage_name);
         Ok(())
     }
+}
+
+pub fn new(config: &Config) -> Arc<dyn storage::BundleStorage> {
+    Arc::new(Storage {
+        bundles: Mutex::new(lru::LruCache::new(config.capacity)),
+    })
 }

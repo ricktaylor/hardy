@@ -1,17 +1,24 @@
 use super::*;
-use std::collections::{HashMap, hash_map};
-use thiserror::Error;
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("No such bundle")]
-    NotFound,
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub struct Config {
+    #[serde(rename = "max-bundles")]
+    pub max_bundles: std::num::NonZeroUsize,
 }
 
-#[derive(Default)]
-pub struct Storage {
-    entries: RwLock<HashMap<hardy_bpv7::bundle::Id, bundle::Bundle>>,
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_bundles: std::num::NonZero::new(1_048_576).unwrap(),
+        }
+    }
+}
+
+struct Storage {
+    entries: Mutex<lru::LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
 }
 
 #[async_trait]
@@ -20,27 +27,35 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
-        Ok(self.entries.read().await.get(bundle_id).cloned())
+        if let Some(bundle) = self
+            .entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .get(bundle_id)
+            .cloned()
+        {
+            Ok(bundle)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn store(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        if let hash_map::Entry::Vacant(e) =
-            self.entries.write().await.entry(bundle.bundle.id.clone())
-        {
-            e.insert(bundle.clone());
-            Ok(true)
-        } else {
+        let mut entries = self.entries.lock().trace_expect("Failed to lock mutex");
+        if entries.contains(&bundle.bundle.id) {
             Ok(false)
+        } else {
+            entries.put(bundle.bundle.id.clone(), Some(bundle.clone()));
+            Ok(true)
         }
     }
 
     async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         self.entries
-            .write()
-            .await
-            .remove(bundle_id)
-            .map(|_| ())
-            .ok_or(Error::NotFound.into())
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .put(bundle_id.clone(), None);
+        Ok(())
     }
 
     async fn confirm_exists(
@@ -51,7 +66,12 @@ impl storage::MetadataStorage for Storage {
     }
 
     async fn remove_unconfirmed_bundles(&self, _tx: storage::Sender) -> storage::Result<()> {
-        // We have no persistence, so therefore no orphans
         Ok(())
     }
+}
+
+pub fn new(config: &Config) -> Arc<dyn storage::MetadataStorage> {
+    Arc::new(Storage {
+        entries: Mutex::new(lru::LruCache::new(config.max_bundles)),
+    })
 }
