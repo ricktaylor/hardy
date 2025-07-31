@@ -218,7 +218,6 @@ impl BundleStorage for Storage {
         let root = self.store_root.clone();
 
         // Spawn a thread to try to maintain linearity
-        let data = Box::from(data);
         let storage_name = tokio::task::spawn_blocking(move || {
             // Create random filename
             let mut storage_name = random_file_path(&root)?;
