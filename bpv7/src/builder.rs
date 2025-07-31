@@ -75,21 +75,17 @@ impl Builder {
             .build()
     }
 
-    pub fn build(mut self) -> (bundle::Bundle, Box<[u8]>) {
+    pub fn build(self) -> (bundle::Bundle, Box<[u8]>) {
         let mut bundle = bundle::Bundle {
-            report_to: if let Some(report_to) = &mut self.report_to {
-                core::mem::take(report_to)
-            } else {
-                self.source.clone()
-            },
+            report_to: self.report_to.unwrap_or(self.source.clone()),
             id: bundle::Id {
-                source: core::mem::take(&mut self.source),
+                source: self.source,
                 timestamp: creation_timestamp::CreationTimestamp::now(),
                 ..Default::default()
             },
             flags: self.bundle_flags.clone(),
             crc_type: self.crc_type,
-            destination: core::mem::take(&mut self.destination),
+            destination: self.destination,
             lifetime: self.lifetime,
             ..Default::default()
         };
