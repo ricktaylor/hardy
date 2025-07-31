@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
 pub enum MetadataStorage {
+    #[serde(rename = "memory")]
+    Memory(hardy_bpa::metadata_mem::Config),
+
     #[cfg(feature = "sqlite-storage")]
     #[serde(rename = "sqlite")]
     Sqlite(hardy_sqlite_storage::Config),
@@ -17,6 +20,9 @@ pub enum MetadataStorage {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
 pub enum BundleStorage {
+    #[serde(rename = "memory")]
+    Memory(hardy_bpa::bundle_mem::Config),
+
     #[cfg(feature = "localdisk-storage")]
     #[serde(rename = "localdisk")]
     LocalDisk(hardy_localdisk_storage::Config),

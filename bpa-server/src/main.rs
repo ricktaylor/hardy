@@ -53,6 +53,10 @@ fn listen_for_cancel(
 fn start_storage(config: &mut config::Config) {
     if let Some(metadata_storage) = &config.metadata_storage {
         config.bpa.metadata_storage = match metadata_storage {
+            config::MetadataStorage::Memory(metadata_storage) => {
+                Some(hardy_bpa::metadata_mem::new(metadata_storage))
+            }
+
             #[cfg(feature = "sqlite-storage")]
             config::MetadataStorage::Sqlite(metadata_storage) => Some(hardy_sqlite_storage::new(
                 metadata_storage,
@@ -66,6 +70,10 @@ fn start_storage(config: &mut config::Config) {
 
     if let Some(bundle_storage) = &config.bundle_storage {
         config.bpa.bundle_storage = match bundle_storage {
+            config::BundleStorage::Memory(bundle_storage) => {
+                Some(hardy_bpa::bundle_mem::new(bundle_storage))
+            }
+
             #[cfg(feature = "localdisk-storage")]
             config::BundleStorage::LocalDisk(bundle_storage) => Some(hardy_localdisk_storage::new(
                 bundle_storage,
