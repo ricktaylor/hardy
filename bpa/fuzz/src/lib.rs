@@ -1,5 +1,5 @@
 pub mod cla;
-pub mod null_cla;
+pub mod service;
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -9,7 +9,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
             .with_target(true)
             .init();
 
-        tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap()

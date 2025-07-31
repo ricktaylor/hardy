@@ -1,5 +1,6 @@
 use super::*;
 use arbitrary::Arbitrary;
+use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -34,7 +35,60 @@ struct Msg {
     destination: Box<str>,
     lifetime: std::time::Duration,
     flags: Option<SendFlags>,
-    data: Box<[u8]>,
+}
+
+#[derive(Default)]
+struct PipeService {
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::service::Sink>>,
+}
+
+impl PipeService {
+    async fn send(
+        &self,
+        destination: Eid,
+        data: &[u8],
+        lifetime: std::time::Duration,
+        flags: Option<hardy_bpa::service::SendFlags>,
+    ) -> hardy_bpa::service::Result<Box<str>> {
+        self.sink
+            .get()
+            .unwrap()
+            .send(destination, data, lifetime, flags)
+            .await
+    }
+
+    async fn unregister(&self) {
+        self.sink.get().unwrap().unregister().await
+    }
+}
+
+#[async_trait]
+impl hardy_bpa::service::Service for PipeService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::service::Sink>) {
+        if self.sink.set(sink).is_err() {
+            panic!("Double connect()");
+        }
+    }
+
+    async fn on_unregister(&self) {
+        if self.sink.get().is_none() {
+            panic!("Extra unregister!");
+        }
+    }
+
+    async fn on_receive(&self, _bundle: hardy_bpa::service::Bundle) {
+        // Do nothing
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &str,
+        _kind: hardy_bpa::service::StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
+    ) {
+        // Do nothing
+    }
 }
 
 fn send(msg: Msg) {
@@ -54,14 +108,6 @@ fn send(msg: Msg) {
                 .as_slice()
                 .try_into()
                 .unwrap(),
-                metadata_storage: Some(hardy_sqlite_storage::new(
-                    &hardy_sqlite_storage::Config {
-                        db_dir: "fuzz".into(),
-                        db_name: "storage.db".into(),
-                        ..Default::default()
-                    },
-                    true,
-                )),
                 ..Default::default()
             })
             .await;
@@ -81,7 +127,7 @@ fn send(msg: Msg) {
             .await;
 
             {
-                let service = Arc::new(pipe_service::PipeService::default());
+                let service = Arc::new(PipeService::default());
 
                 bpa.register_service(None, service.clone())
                     .await
@@ -90,15 +136,14 @@ fn send(msg: Msg) {
                 // Now pull from the channel
                 while let Some(msg) = rx.recv().await {
                     if let Ok(destination) = msg.destination.as_ref().parse() {
-                        service
+                        _ = service
                             .send(
                                 destination,
-                                &msg.data,
+                                "This is just fuzz data".as_bytes(),
                                 msg.lifetime,
                                 msg.flags.map(Into::into),
                             )
-                            .await
-                            .expect("Failed to send service message");
+                            .await;
                     }
                 }
 
@@ -114,9 +159,18 @@ fn send(msg: Msg) {
     .expect("Send failed")
 }
 
-pub fn test_storage(data: &[u8]) {
+pub fn service_send(data: &[u8]) {
     if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
-        send(msg);
+        if msg.destination.as_ref().parse::<Eid>().is_ok() {
+            send(msg);
+        }
+    }
+}
+
+// Use this to build a corpus of valid messages as a minimum
+pub fn seed_msg(data: &[u8]) {
+    if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
+        _ = msg.destination.as_ref().parse::<Eid>();
     }
 }
 
@@ -127,18 +181,18 @@ mod test {
     #[test]
     fn test() {
         if let Ok(mut file) = std::fs::File::open(
-            "./artifacts/storage/crash-4172e046d6370086ed8cd40e39103a772cc5b6be",
+            "./artifacts/service/crash-4172e046d6370086ed8cd40e39103a772cc5b6be",
         ) {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
-                super::test_storage(&buffer);
+                super::service_send(&buffer);
             }
         }
     }
 
     #[test]
     fn test_all() {
-        match std::fs::read_dir("./corpus/storage") {
+        match std::fs::read_dir("./corpus/service") {
             Err(e) => {
                 eprintln!(
                     "Failed to open dir: {e}, curr dir: {}",
@@ -154,7 +208,7 @@ mod test {
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = Vec::new();
                                 if file.read_to_end(&mut buffer).is_ok() {
-                                    super::test_storage(&buffer);
+                                    super::service_send(&buffer);
 
                                     count = count.saturating_add(1);
                                     if count % 100 == 0 {

@@ -12,10 +12,8 @@ members = [
     "eid_pattern",
     "eid_pattern/fuzz",
     "localdisk-storage",
-    "localdisk-storage/fuzz",
     "proto",
     "sqlite-storage",
-    "sqlite-storage/fuzz",
     "tcpclv4",
     "fuzz-macros",
 ]

@@ -954,6 +954,7 @@ dependencies = [
 name = "hardy-bpa-fuzz"
 version = "0.0.0"
 dependencies = [
+ "arbitrary",
  "hardy-bpa",
  "hardy-bpv7",
  "libfuzzer-sys",
@@ -1529,22 +1530,6 @@ name = "linux-raw-sys"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
-
-[[package]]
-name = "localdisk-storage-fuzz"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "hardy-bpa",
- "hardy-bpv7",
- "hardy-localdisk-storage",
- "libfuzzer-sys",
- "time",
- "tokio",
- "tracing",
- "tracing-log",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "log"
@@ -2278,22 +2263,6 @@ checksum = "4f5fd57c80058a56cf5c777ab8a126398ece8e442983605d280a44ce79d0edef"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "sqlite-storage-fuzz"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "hardy-bpa",
- "hardy-bpv7",
- "hardy-sqlite-storage",
- "libfuzzer-sys",
- "time",
- "tokio",
- "tracing",
- "tracing-log",
- "tracing-subscriber",
 ]
 
 [[package]]

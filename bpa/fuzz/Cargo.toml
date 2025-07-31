@@ -16,6 +16,7 @@ time = { version = "0.3.41", features = ["parsing"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"
+arbitrary = { version = "1.4.1", features = ["derive"] }
 
 [lib]
 name = "common"
@@ -25,5 +26,11 @@ test = true
 [[bin]]
 name = "cla"
 path = "fuzz_targets/cla.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "service"
+path = "fuzz_targets/service.rs"
 test = false
 bench = false
