@@ -109,7 +109,7 @@ impl Store {
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
-                        info!("Bundle storage check in progress, {bundles} bundles found");
+                        info!("Bundle storage restart in progress, {bundles} bundles found");
                     },
                     r = rx.recv_many(&mut results,CHUNK_SIZE) => {
                         if r == 0 {
