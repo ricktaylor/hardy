@@ -5,7 +5,6 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use thiserror::Error;
 
 pub struct ConnectionPool {
     path: PathBuf,
@@ -44,12 +43,6 @@ impl ConnectionPool {
 
 pub struct Storage {
     pool: Arc<ConnectionPool>,
-}
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("No such bundle")]
-    NotFound,
 }
 
 impl Storage {
@@ -175,9 +168,8 @@ impl storage::MetadataStorage for Storage {
         self.pooled_connection(move |conn| {
             conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE id = ?1")?
                 .execute((id,))
-                .map(|count| count != 0)?
-                .then_some(())
-                .ok_or(Error::NotFound.into())
+                .map(|_| ())
+                .map_err(Into::into)
         })
         .await
     }

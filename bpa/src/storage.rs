@@ -10,6 +10,7 @@ pub trait MetadataStorage: Send + Sync {
 
     async fn store(&self, bundle: &bundle::Bundle) -> Result<bool>;
 
+    /// Remove any metadata for `bundle_id`.  Does not error if the bundle does not exist
     async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<()>;
 
     async fn confirm_exists(
