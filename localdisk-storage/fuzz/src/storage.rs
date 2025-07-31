@@ -1,13 +1,40 @@
 use super::*;
+use arbitrary::Arbitrary;
 use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+#[derive(Arbitrary)]
+struct SendFlags {
+    do_not_fragment: bool,
+    request_ack: bool,
+    report_status_time: bool,
+    notify_reception: bool,
+    notify_forwarding: bool,
+    notify_delivery: bool,
+    notify_deletion: bool,
+}
+
+impl Into<hardy_bpa::service::SendFlags> for SendFlags {
+    fn into(self) -> hardy_bpa::service::SendFlags {
+        hardy_bpa::service::SendFlags {
+            do_not_fragment: self.do_not_fragment,
+            request_ack: self.request_ack,
+            report_status_time: self.report_status_time,
+            notify_reception: self.notify_reception,
+            notify_forwarding: self.notify_forwarding,
+            notify_delivery: self.notify_delivery,
+            notify_deletion: self.notify_deletion,
+        }
+    }
+}
+
+#[derive(Arbitrary)]
 struct Msg {
-    destination: Eid,
-    data: hardy_bpa::Bytes,
+    destination: Box<str>,
     lifetime: std::time::Duration,
-    flags: Option<hardy_bpa::service::SendFlags>,
+    flags: Option<SendFlags>,
+    data: Box<[u8]>,
 }
 
 fn send(msg: Msg) {
@@ -61,10 +88,17 @@ fn send(msg: Msg) {
 
                 // Now pull from the channel
                 while let Some(msg) = rx.recv().await {
-                    service
-                        .send(msg.destination, &msg.data, msg.lifetime, msg.flags)
-                        .await
-                        .expect("Failed to send service message");
+                    if let Ok(destination) = msg.destination.as_ref().parse() {
+                        service
+                            .send(
+                                destination,
+                                &msg.data,
+                                msg.lifetime,
+                                msg.flags.map(Into::into),
+                            )
+                            .await
+                            .expect("Failed to send service message");
+                    }
                 }
 
                 service.unregister().await;
@@ -79,21 +113,10 @@ fn send(msg: Msg) {
     .expect("Send failed")
 }
 
-pub fn test_storage(data: hardy_bpa::Bytes) {
-    // Full lifecycle
-    send(Msg {
-        destination: Eid::Ipn {
-            allocator_id: 0,
-            node_number: 99,
-            service_number: 1,
-        },
-        data,
-        lifetime: std::time::Duration::new(60, 0),
-        flags: Some(hardy_bpa::service::SendFlags {
-            do_not_fragment: true,
-            ..Default::default()
-        }),
-    })
+pub fn test_storage(data: &[u8]) {
+    if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
+        send(msg);
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +130,7 @@ mod test {
         ) {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
-                super::test_storage(buffer.into());
+                super::test_storage(&buffer);
             }
         }
     }
@@ -130,7 +153,7 @@ mod test {
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = Vec::new();
                                 if file.read_to_end(&mut buffer).is_ok() {
-                                    super::test_storage(buffer.into());
+                                    super::test_storage(&buffer);
 
                                     count = count.saturating_add(1);
                                     if count % 100 == 0 {
