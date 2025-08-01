@@ -1,4 +1,5 @@
 use super::*;
+use core::cmp::Reverse;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_pattern::{EidPattern, EidPatternMap, EidPatternSet};
 use rand::prelude::*;
@@ -7,9 +8,9 @@ use tokio::sync::{Mutex, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LocalAction {
+    AdminEndpoint,                         // Deliver to the admin endpoint
+    Local(Arc<service_registry::Service>), // Deliver to local service
     Forward(cla::ClaAddress, Option<Arc<cla_registry::Cla>>), // Forward to CLA
-    Local(Arc<service_registry::Service>),                    // Deliver to local service
-    AdminEndpoint,                                            // Deliver to the admin endpoint
 }
 
 pub enum FindResult {
@@ -29,15 +30,15 @@ pub enum WaitResult {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RouteEntry {
-    source: String,
+    priority: u32,
     action: routes::Action,
-    priority: std::cmp::Reverse<u32>,
+    source: String,
 }
 
 #[derive(Debug)]
 struct RibInner {
-    locals: HashMap<Eid, BinaryHeap<LocalAction>>,
-    routes: EidPatternMap<RouteEntry>,
+    locals: HashMap<Eid, BinaryHeap<Reverse<LocalAction>>>,
+    routes: EidPatternMap<Reverse<RouteEntry>>,
     finals: EidPatternSet,
     address_types: HashMap<cla::ClaAddressType, Arc<cla_registry::Cla>>,
 }
@@ -56,7 +57,7 @@ impl Rib {
         // Add localnode admin endpoint
         locals.insert(
             Eid::LocalNode { service_number: 0 },
-            vec![LocalAction::AdminEndpoint].into(),
+            vec![Reverse(LocalAction::AdminEndpoint)].into(),
         );
 
         // Drop LocalNode services
@@ -70,7 +71,7 @@ impl Rib {
                     node_number,
                     service_number: 0,
                 },
-                vec![LocalAction::AdminEndpoint].into(),
+                vec![Reverse(LocalAction::AdminEndpoint)].into(),
             );
 
             finals.insert(
@@ -87,7 +88,7 @@ impl Rib {
                     node_name: node_name.clone(),
                     demux: [].into(),
                 },
-                vec![LocalAction::AdminEndpoint].into(),
+                vec![Reverse(LocalAction::AdminEndpoint)].into(),
             );
 
             finals.insert(format!("dtn://{node_name}/**").parse().unwrap());
@@ -116,11 +117,11 @@ impl Rib {
         {
             self.inner.write().await.routes.insert(
                 pattern.clone(),
-                RouteEntry {
+                Reverse(RouteEntry {
                     source,
                     action,
-                    priority: std::cmp::Reverse(priority),
-                },
+                    priority,
+                }),
             )
         }
 
@@ -133,10 +134,10 @@ impl Rib {
 
         match self.inner.write().await.locals.entry(eid.clone()) {
             std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                occupied_entry.get_mut().push(action);
+                occupied_entry.get_mut().push(Reverse(action));
             }
             std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                vacant_entry.insert(vec![action].into());
+                vacant_entry.insert(vec![Reverse(action)].into());
             }
         }
 
@@ -173,14 +174,14 @@ impl Rib {
                 .await
                 .routes
                 .remove_if::<Vec<_>, _>(pattern, |e| {
-                    e.source == source && e.priority.0 == priority && &e.action == action
+                    e.0.source == source && e.0.priority == priority && &e.0.action == action
                 })
         };
 
         for v in &v {
             info!(
                 "Removed route {pattern} => {:?}, priority {priority}, source '{source}'",
-                v.action
+                v.0.action
             )
         }
 
@@ -195,7 +196,7 @@ impl Rib {
         }
     }
 
-    async fn remove_local(&self, eid: &Eid, f: impl FnMut(&mut LocalAction) -> bool) -> bool {
+    async fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&mut LocalAction) -> bool) -> bool {
         let v = self
             .inner
             .write()
@@ -204,14 +205,14 @@ impl Rib {
             .get_mut(eid)
             .map(|h| {
                 let mut v = std::mem::take(h).into_vec();
-                let r = v.extract_if(.., f).collect::<Vec<_>>();
+                let r = v.extract_if(.., |a| f(&mut a.0)).collect::<Vec<_>>();
                 *h = v.into();
                 r
             })
             .unwrap_or_default();
 
         for v in &v {
-            info!("Removed route {eid} => {v:?}")
+            info!("Removed route {eid} => {:?}", v.0)
         }
         !v.is_empty()
     }
@@ -317,7 +318,7 @@ impl Rib {
 fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
     let mut clas: Option<Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>> = None;
     for action in inner.locals.get(to).into_iter().flatten() {
-        match action {
+        match &action.0 {
             LocalAction::AdminEndpoint => {
                 return Some(FindResult::AdminEndpoint);
             }
@@ -368,14 +369,14 @@ fn find_recurse<'a>(
     for entry in inner.routes.find::<std::collections::BinaryHeap<_>>(to) {
         // Ensure we only look at lowest priority values
         if let Some(priority) = priority {
-            if entry.priority > priority {
+            if entry.0.priority > priority {
                 break;
             }
         } else {
-            priority = Some(entry.priority);
+            priority = Some(entry.0.priority);
         }
 
-        match &entry.action {
+        match &entry.0.action {
             routes::Action::Via(via) => {
                 // Recusive lookup
                 if let Some(sub_result) = find_recurse(inner, via, trail)? {
