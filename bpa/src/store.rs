@@ -262,17 +262,17 @@ impl Store {
             Ok(true) => Ok(Some(bundle)),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
-                self.remove_data(&bundle.metadata).await.map(|_| None)
+                self.delete_data(&bundle.metadata).await.map(|_| None)
             }
             Err(e) => {
                 // This is just bad, we can't really claim to have stored the bundle,
                 // so just cleanup and get out
-                self.remove_data(&bundle.metadata).await.and(Err(e))
+                self.delete_data(&bundle.metadata).await.and(Err(e))
             }
         }
     }
 
-    pub async fn remove_data(&self, metadata: &BundleMetadata) -> storage::Result<()> {
+    pub async fn delete_data(&self, metadata: &BundleMetadata) -> storage::Result<()> {
         if let Some(hash) = &metadata.hash {
             self.bundle_cache
                 .lock()
@@ -282,7 +282,7 @@ impl Store {
 
         if let Some(storage_name) = &metadata.storage_name {
             // Delete the bundle from the bundle store
-            self.bundle_storage.remove(storage_name).await
+            self.bundle_storage.delete(storage_name).await
         } else {
             Ok(())
         }

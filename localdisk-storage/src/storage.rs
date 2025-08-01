@@ -278,7 +278,7 @@ impl BundleStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
+    async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         match tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?)).await
         {
             Ok(_) => Ok(()),

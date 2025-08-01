@@ -103,7 +103,7 @@ impl Dispatcher {
         }
 
         // Delete the bundle from the bundle store
-        self.store.remove_data(&bundle.metadata).await?;
+        self.store.delete_data(&bundle.metadata).await?;
 
         self.store.remove_metadata(&bundle.bundle.id).await
     }

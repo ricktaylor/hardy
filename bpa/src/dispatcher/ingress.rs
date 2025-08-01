@@ -114,14 +114,14 @@ impl Dispatcher {
                 // Drop the stored data if it was valid, and do not process further
                 return self
                     .store
-                    .remove_data(&bundle.metadata)
+                    .delete_data(&bundle.metadata)
                     .await
                     .map_err(Into::into);
             }
             Err(e) => {
                 return self
                     .store
-                    .remove_data(&bundle.metadata)
+                    .delete_data(&bundle.metadata)
                     .await
                     .and(Err(e))
                     .map_err(Into::into);
@@ -219,7 +219,7 @@ impl Dispatcher {
 
                             // Remove spurious duplicate
                             self.store
-                                .remove_data(&BundleMetadata {
+                                .delete_data(&BundleMetadata {
                                     storage_name: Some(storage_name.clone()),
                                     hash: Some(hash),
                                     received_at: file_time,
@@ -300,7 +300,7 @@ impl Dispatcher {
 
                     // Remove the previous from bundle_storage
                     self.store
-                        .remove_data(&BundleMetadata {
+                        .delete_data(&BundleMetadata {
                             storage_name: Some(storage_name.clone()),
                             hash: Some(hash),
                             received_at: file_time,
@@ -351,7 +351,7 @@ impl Dispatcher {
 
                     // Remove it from bundle_storage, it shouldn't be there
                     self.store
-                        .remove_data(&BundleMetadata {
+                        .delete_data(&BundleMetadata {
                             storage_name: Some(storage_name.clone()),
                             hash: Some(hash),
                             received_at: file_time,
@@ -411,7 +411,7 @@ impl Dispatcher {
 
                     // Drop the bundle
                     self.store
-                        .remove_data(&BundleMetadata {
+                        .delete_data(&BundleMetadata {
                             storage_name: Some(storage_name.clone()),
                             hash: Some(hash),
                             received_at: file_time,

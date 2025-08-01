@@ -31,5 +31,5 @@ pub trait BundleStorage: Send + Sync {
 
     async fn store(&self, data: Bytes) -> Result<Arc<str>>;
 
-    async fn remove(&self, storage_name: &str) -> Result<()>;
+    async fn delete(&self, storage_name: &str) -> Result<()>;
 }

@@ -39,17 +39,12 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
-        if let Some(v) = self
+        Ok(self
             .bundles
             .lock()
             .trace_expect("Failed to lock mutex")
             .get(storage_name)
-            .cloned()
-        {
-            Ok(Some(Bytes::from_owner(v.clone())))
-        } else {
-            Ok(None)
-        }
+            .cloned())
     }
 
     async fn store(&self, data: Bytes) -> storage::Result<Arc<str>> {
@@ -64,7 +59,7 @@ impl storage::BundleStorage for Storage {
         }
     }
 
-    async fn remove(&self, storage_name: &str) -> storage::Result<()> {
+    async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         self.bundles
             .lock()
             .trace_expect("Failed to lock mutex")
