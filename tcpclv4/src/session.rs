@@ -1,7 +1,6 @@
 use super::*;
 use std::{collections::VecDeque, sync::Arc};
 use thiserror::Error;
-use tokio::sync::mpsc::*;
 use tokio_util::bytes::{Bytes, BytesMut};
 
 #[derive(Error, Debug)]
@@ -41,7 +40,7 @@ where
     last_sent: tokio::time::Instant,
     segment_mtu: usize,
     transfer_mru: usize,
-    from_sink: Receiver<(
+    from_sink: tokio::sync::mpsc::Receiver<(
         hardy_bpa::Bytes,
         tokio::sync::oneshot::Sender<Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes>>,
     )>,
@@ -63,7 +62,7 @@ where
         keepalive_interval: Option<tokio::time::Duration>,
         segment_mtu: usize,
         transfer_mru: usize,
-        from_sink: Receiver<(
+        from_sink: tokio::sync::mpsc::Receiver<(
             hardy_bpa::Bytes,
             tokio::sync::oneshot::Sender<
                 Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes>,

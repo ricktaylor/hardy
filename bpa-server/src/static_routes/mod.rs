@@ -10,7 +10,6 @@ use notify_debouncer_full::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf};
-use tokio::sync::mpsc::*;
 
 mod parse;
 
@@ -131,7 +130,7 @@ impl StaticRoutes {
         let mut self_cloned = self.clone();
         let cancel_token = cancel_token.clone();
         task_tracker.spawn(async move {
-            let (tx, mut rx) = channel(1);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
             let mut debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |res| {
                 tx.blocking_send(res)
