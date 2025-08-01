@@ -172,7 +172,7 @@ impl Dispatcher {
 
                 // Delete the bundle from the bundle store
                 if let Some(storage_name) = &bundle.metadata.storage_name {
-                    _ = dispatcher.store.delete_data(&storage_name).await;
+                    _ = dispatcher.store.delete_data(storage_name).await;
                 }
                 _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
             });
