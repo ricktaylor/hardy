@@ -1,6 +1,5 @@
-use std::ops::Deref;
-
 use super::*;
+use core::ops::Deref;
 use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
@@ -42,43 +41,23 @@ impl Dispatcher {
         // Parse the bundle
         let (bundle, reason, report_unsupported) =
             match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref())? {
-                hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => {
-                    // Write the bundle data to the store
-                    let hash = store::hash(&data);
-                    let Some(storage_name) = self.store.store_data(data, hash.clone()).await?
-                    else {
-                        // Duplicate
-                        return Ok(());
-                    };
-                    (
-                        bundle::Bundle {
-                            metadata: BundleMetadata {
-                                storage_name: Some(storage_name),
-                                hash: Some(hash),
-                                received_at,
-                            },
-                            bundle,
+                hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => (
+                    bundle::Bundle {
+                        metadata: BundleMetadata {
+                            storage_name: Some(self.store.save_data(data).await?),
+                            received_at,
                         },
-                        None,
-                        report_unsupported,
-                    )
-                }
+                        bundle,
+                    },
+                    None,
+                    report_unsupported,
+                ),
                 hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
                     trace!("Received bundle has been rewritten");
-
-                    // Write the bundle data to the store
-                    let hash = store::hash(&data);
-                    let Some(storage_name) =
-                        self.store.store_data(data.into(), hash.clone()).await?
-                    else {
-                        // Duplicate
-                        return Ok(());
-                    };
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
-                                storage_name: Some(storage_name),
-                                hash: Some(hash),
+                                storage_name: Some(self.store.save_data(data.into()).await?),
                                 received_at,
                             },
                             bundle,
@@ -95,7 +74,6 @@ impl Dispatcher {
                         bundle::Bundle {
                             metadata: BundleMetadata {
                                 storage_name: None,
-                                hash: None,
                                 received_at,
                             },
                             bundle,
@@ -106,28 +84,24 @@ impl Dispatcher {
                 }
             };
 
-        match self.store.store_metadata(&bundle).await {
+        match self.store.insert_metadata(&bundle).await {
             Ok(false) => {
                 // Bundle with matching id already exists in the metadata store
-                //trace!("Bundle with matching id already exists in the metadata store");
 
-                // Drop the stored data if it was valid, and do not process further
-                return self
-                    .store
-                    .delete_data(&bundle.metadata)
-                    .await
-                    .map_err(Into::into);
+                // Drop the stored data and do not process further
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    self.store.delete_data(storage_name).await?;
+                }
+                return Ok(());
             }
             Err(e) => {
-                return self
-                    .store
-                    .delete_data(&bundle.metadata)
-                    .await
-                    .and(Err(e))
-                    .map_err(Into::into);
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    _ = self.store.delete_data(storage_name).await;
+                }
+                return Err(e.into());
             }
             _ => {}
-        };
+        }
 
         // Report we have received the bundle
         self.report_bundle_reception(
@@ -188,65 +162,37 @@ impl Dispatcher {
         self: &Arc<Self>,
         storage_name: Arc<str>,
         file_time: Option<time::OffsetDateTime>,
-    ) -> (u64, u64) {
-        let Some(data) = self
-            .store
-            .load_data(&storage_name)
-            .await
-            .trace_expect(&format!("Failed to load bundle data: {storage_name}"))
-        else {
+    ) -> Result<(u64, u64), Error> {
+        let Some(data) = self.store.load_data(&storage_name).await? else {
             // Data has gone while we were restarting
-            return (0, 0);
+            return Ok((0, 0));
         };
-
-        let hash = store::hash(&data);
 
         // Parse the bundle (again, just in case we have changed policies etc)
         let (o, b, bundle, reason) =
             match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref()) {
                 Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
                     // Check if the metadata_storage knows about this bundle
-                    if let Some(metadata) = self
-                        .store
-                        .confirm_exists(&bundle.id)
-                        .await
-                        .trace_expect("Failed to confirm bundle existence")
-                    {
-                        if metadata.storage_name.as_ref() != Some(&storage_name)
-                            || metadata.hash.as_ref() != Some(&hash)
-                        {
+                    if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
+                        if metadata.storage_name.as_ref() != Some(&storage_name) {
                             warn!("Duplicate bundle data found: {storage_name}");
 
                             // Remove spurious duplicate
-                            self.store
-                                .delete_data(&BundleMetadata {
-                                    storage_name: Some(storage_name.clone()),
-                                    hash: Some(hash),
-                                    received_at: file_time,
-                                })
-                                .await
-                                .trace_expect(&format!(
-                                    "Failed to remove duplicate bundle: {storage_name}"
-                                ));
-                            return (0, 1);
+                            return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
                         }
-                        // All looks good, just continue validation
+                        // All looks good, just continue dispatching
                         (0, 0, bundle::Bundle { bundle, metadata }, None)
                     } else {
                         let bundle = bundle::Bundle {
                             metadata: BundleMetadata {
                                 storage_name: Some(storage_name),
-                                hash: Some(hash),
                                 received_at: file_time,
                             },
                             bundle,
                         };
 
                         // Save the metadata
-                        self.store
-                            .store_metadata(&bundle)
-                            .await
-                            .trace_expect("Failed to store bundle");
+                        self.store.insert_metadata(&bundle).await?;
 
                         // Report we have received the bundle
                         self.report_bundle_reception(
@@ -270,67 +216,40 @@ impl Dispatcher {
                 )) => {
                     warn!("Bundle in non-canonical format found: {storage_name}");
 
+                    // Check if the metadata_storage knows about this bundle
+                    let exists =
+                        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
+                            if metadata.storage_name.as_ref() != Some(&storage_name) {
+                                warn!("Duplicate bundle data found: {storage_name}");
+
+                                // Remove spurious duplicate
+                                return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
+                            }
+                            true
+                        } else {
+                            false
+                        };
+
                     // Write the rewritten bundle now for safety
-                    let new_hash = store::hash(&data);
-                    let new_storage_name = self
-                        .store
-                        .store_data(data.into(), new_hash.clone())
-                        .await
-                        .trace_expect("Failed to store rewritten canonical bundle");
-
-                    // Whatever we have in the store is non-canonical
-                    // Confirm it exists
-                    let exists = if self
-                        .store
-                        .confirm_exists(&bundle.id)
-                        .await
-                        .trace_expect("Failed to confirm bundle existence")
-                        .is_some()
-                    {
-                        warn!("Non-canonical bundle data found: {storage_name}");
-
-                        // And remove it
-                        self.store.remove_metadata(&bundle.id).await.trace_expect(
-                            "Failed to remove rewritten canonical bundle original metadata",
-                        );
-                        true
-                    } else {
-                        false
-                    };
+                    let new_storage_name = self.store.save_data(data.into()).await?;
 
                     // Remove the previous from bundle_storage
-                    self.store
-                        .delete_data(&BundleMetadata {
-                            storage_name: Some(storage_name.clone()),
-                            hash: Some(hash),
-                            received_at: file_time,
-                        })
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove duplicate bundle: {storage_name}"
-                        ));
-
-                    let Some(new_storage_name) = new_storage_name else {
-                        // The rewritten bundle is already in the bundle store!!
-                        return (0, 1);
-                    };
+                    self.store.delete_data(&storage_name).await?;
 
                     let bundle = bundle::Bundle {
                         metadata: BundleMetadata {
                             storage_name: Some(new_storage_name),
-                            hash: Some(new_hash),
                             received_at: file_time,
                         },
                         bundle,
                     };
 
-                    // Re-save the metadata
-                    self.store
-                        .store_metadata(&bundle)
-                        .await
-                        .trace_expect("Failed to store bundle");
+                    // Whatever we have in the metadata store is non-canonical
 
                     if !exists {
+                        // Save the metadata
+                        self.store.insert_metadata(&bundle).await?;
+
                         // Report we have received the bundle
                         self.report_bundle_reception(
                             &bundle,
@@ -341,66 +260,57 @@ impl Dispatcher {
                             },
                         )
                         .await;
+                    } else {
+                        // Replace the metadata
+                        self.store.update_metadata(&bundle).await?;
                     }
 
-                    // Treat the bundle as an orphan
+                    // Report the bundle as an orphan
                     (1, 0, bundle, None)
                 }
                 Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
                     warn!("Invalid bundle found: {storage_name}, {e}");
 
+                    // Check if the metadata_storage knows about this bundle
+                    let exists =
+                        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
+                            if metadata.storage_name.as_ref() != Some(&storage_name) {
+                                warn!("Duplicate bundle data found: {storage_name}");
+
+                                // Remove spurious duplicate
+                                return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
+                            }
+                            true
+                        } else {
+                            false
+                        };
+
                     // Remove it from bundle_storage, it shouldn't be there
-                    self.store
-                        .delete_data(&BundleMetadata {
-                            storage_name: Some(storage_name.clone()),
-                            hash: Some(hash),
-                            received_at: file_time,
-                        })
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove duplicate bundle: {storage_name}"
-                        ));
+                    self.store.delete_data(&storage_name).await?;
 
                     // Whatever we have in the store isn't correct
-                    // Confirm it exists
-                    let exists = if self
-                        .store
-                        .confirm_exists(&bundle.id)
-                        .await
-                        .trace_expect("Failed to confirm bundle existence")
-                        .is_some()
-                    {
-                        // And remove it
-                        self.store.remove_metadata(&bundle.id).await.trace_expect(
-                            "Failed to remove rewritten canonical bundle original metadata",
-                        );
-                        true
-                    } else {
-                        false
-                    };
 
                     let bundle = bundle::Bundle {
                         metadata: BundleMetadata {
                             storage_name: None,
-                            hash: None,
                             received_at: file_time,
                         },
                         bundle,
                     };
 
-                    // Save the correct metadata
-                    self.store
-                        .store_metadata(&bundle)
-                        .await
-                        .trace_expect("Failed to store bundle");
-
                     if !exists {
+                        // Save the metadata
+                        self.store.insert_metadata(&bundle).await?;
+
                         // Report we have received the bundle
                         self.report_bundle_reception(
                             &bundle,
                             hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation,
                         )
                         .await;
+                    } else {
+                        // Replace the metadata
+                        self.store.update_metadata(&bundle).await?;
                     }
 
                     (0, 1, bundle, Some(reason))
@@ -410,26 +320,11 @@ impl Dispatcher {
                     warn!("Junk data found: {storage_name}, {e}");
 
                     // Drop the bundle
-                    self.store
-                        .delete_data(&BundleMetadata {
-                            storage_name: Some(storage_name.clone()),
-                            hash: Some(hash),
-                            received_at: file_time,
-                        })
-                        .await
-                        .trace_expect(&format!(
-                            "Failed to remove malformed bundle: {storage_name}"
-                        ));
-
-                    return (0, 1);
+                    return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
                 }
             };
 
         // Check the bundle further
-        self.ingress_bundle(bundle, reason)
-            .await
-            .trace_expect("Bundle validation failed!");
-
-        (o, b)
+        self.ingress_bundle(bundle, reason).await.map(|_| (o, b))
     }
 }

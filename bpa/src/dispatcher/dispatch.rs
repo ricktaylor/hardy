@@ -214,7 +214,7 @@ impl Dispatcher {
         // Check to see if we should wait at all!
         let duration = until - time::OffsetDateTime::now_utc();
         if !duration.is_positive() {
-            let Some(bundle) = self.store.load(&bundle_id).await? else {
+            let Some(bundle) = self.store.get_metadata(&bundle_id).await? else {
                 // Bundle data was deleted sometime during processing
                 return Ok(());
             };
@@ -237,13 +237,13 @@ impl Dispatcher {
         {
             rib::WaitResult::Cancelled => {}
             rib::WaitResult::Timeout => {
-                if let Some(bundle) = self.store.load(&bundle_id).await? {
+                if let Some(bundle) = self.store.get_metadata(&bundle_id).await? {
                     self.drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
                         .await?;
                 }
             }
             rib::WaitResult::RouteChange => {
-                if let Some(bundle) = self.store.load(&bundle_id).await? {
+                if let Some(bundle) = self.store.get_metadata(&bundle_id).await? {
                     self.dispatch_bundle(bundle).await?;
                 }
             }

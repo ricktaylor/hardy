@@ -1,18 +1,13 @@
 use super::*;
-use metadata::*;
-use sha2::Digest;
 
 const LRU_CAPACITY: usize = 256;
-
-pub fn hash(data: &[u8]) -> Arc<[u8]> {
-    sha2::Sha256::digest(data).to_vec().into()
-}
+const MAX_CACHED_BUNDLE_SIZE: usize = 4096;
 
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
-    metadata_cache: std::sync::Mutex<lru::LruCache<hardy_bpv7::bundle::Id, ()>>,
+    metadata_cache: std::sync::Mutex<lru::LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
-    bundle_cache: std::sync::Mutex<lru::LruCache<Arc<[u8]>, ()>>,
+    bundle_cache: std::sync::Mutex<lru::LruCache<Arc<str>, Bytes>>,
 }
 
 impl Store {
@@ -43,7 +38,7 @@ impl Store {
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) {
+    ) -> Result<(), storage::Error> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<bundle::Bundle>(16);
         let h = tokio::spawn(async move {
             // Give some feedback
@@ -76,20 +71,19 @@ impl Store {
             bundles
         });
 
-        self.metadata_storage
-            .remove_unconfirmed_bundles(tx)
-            .await
-            .trace_expect("Failed to get unconfirmed bundles");
+        self.metadata_storage.remove_unconfirmed(tx).await?;
 
-        let bundles = h.await.trace_expect("Task terminated unexpectedly");
+        let bundles = h.await?;
         info!("Metadata storage check complete, {bundles} bundles cleaned up");
+
+        Ok(())
     }
 
     #[instrument(skip_all)]
     async fn list_stored_bundles(
         &self,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Vec<storage::ListResponse> {
+    ) -> Result<Vec<storage::ListResponse>, storage::Error> {
         /* This is done as a big Vec buffer, as we cannot start processing stored bundles
          * until we have enumerated them all, as the processing can create more report bundles
          * which causes all kinds of double-processing issues */
@@ -126,12 +120,9 @@ impl Store {
             results
         });
 
-        self.bundle_storage
-            .list(tx)
-            .await
-            .trace_expect("Failed to list stored bundles");
+        self.bundle_storage.list(tx).await?;
 
-        h.await.trace_expect("Task terminated unexpectedly")
+        h.await.map_err(Into::into)
     }
 
     #[instrument(skip_all)]
@@ -139,7 +130,7 @@ impl Store {
         self: &Arc<Self>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: &tokio_util::sync::CancellationToken,
-    ) {
+    ) -> Result<(), storage::Error> {
         // We're going to spawn a bunch of tasks
         let mut task_set = tokio::task::JoinSet::new();
 
@@ -150,7 +141,7 @@ impl Store {
         let mut bad = 0u64;
 
         // For each bundle in the store
-        for (storage_name, file_time) in self.list_stored_bundles(cancel_token.clone()).await {
+        for (storage_name, file_time) in self.list_stored_bundles(cancel_token.clone()).await? {
             bundles = bundles.saturating_add(1);
 
             loop {
@@ -161,7 +152,7 @@ impl Store {
                         info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
                     },
                     Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                        let (o,b) = r.trace_expect("Task terminated unexpectedly");
+                        let (o,b) = r??;
                         orphans = orphans.saturating_add(o);
                         bad = bad.saturating_add(b);
                     },
@@ -178,60 +169,14 @@ impl Store {
 
         // Wait for all sub-tasks to complete
         while let Some(r) = task_set.join_next().await {
-            let (o, b) = r.trace_expect("Task terminated unexpectedly");
+            let (o, b) = r??;
             orphans = orphans.saturating_add(o);
             bad = bad.saturating_add(b);
         }
         info!(
             "Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found"
         );
-    }
-
-    #[inline]
-    pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
-        self.bundle_storage.load(storage_name).await
-    }
-
-    pub async fn store_data(
-        &self,
-        data: Bytes,
-        hash: Arc<[u8]>,
-    ) -> storage::Result<Option<Arc<str>>> {
-        if self
-            .bundle_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .put(hash, ())
-            .is_some()
-        {
-            return Ok(None);
-        }
-
-        // Write to bundle storage
-        self.bundle_storage.store(data).await.map(Some)
-    }
-
-    #[inline]
-    pub async fn store_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        if self
-            .metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .push(bundle.bundle.id.clone(), ())
-            .is_some()
-        {
-            return Ok(false);
-        }
-
-        self.metadata_storage.store(bundle).await
-    }
-
-    #[inline]
-    pub async fn load(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<bundle::Bundle>> {
-        self.metadata_storage.load(bundle_id).await
+        Ok(())
     }
 
     #[instrument(skip(self, data))]
@@ -242,59 +187,112 @@ impl Store {
         received_at: Option<time::OffsetDateTime>,
     ) -> storage::Result<Option<bundle::Bundle>> {
         // Write to bundle storage
-        let hash = store::hash(&data);
-        let Some(storage_name) = self.store_data(data, hash.clone()).await? else {
-            return Ok(None);
-        };
+        let storage_name = self.save_data(data).await?;
 
         // Compose metadata
         let bundle = bundle::Bundle {
-            metadata: BundleMetadata {
+            metadata: metadata::BundleMetadata {
                 storage_name: Some(storage_name.clone()),
-                hash: Some(hash),
                 received_at,
             },
             bundle,
         };
 
         // Write to metadata store
-        match self.store_metadata(&bundle).await {
+        match self.insert_metadata(&bundle).await {
             Ok(true) => Ok(Some(bundle)),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
-                self.delete_data(&bundle.metadata).await.map(|_| None)
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    self.delete_data(storage_name).await?;
+                }
+                Ok(None)
             }
             Err(e) => {
                 // This is just bad, we can't really claim to have stored the bundle,
                 // so just cleanup and get out
-                self.delete_data(&bundle.metadata).await.and(Err(e))
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    _ = self.delete_data(storage_name).await;
+                }
+                Err(e)
             }
         }
     }
 
-    pub async fn delete_data(&self, metadata: &BundleMetadata) -> storage::Result<()> {
-        if let Some(hash) = &metadata.hash {
-            self.bundle_cache
-                .lock()
-                .expect("LRU cache lock failure")
-                .pop(hash);
+    pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
+        if let Some(data) = self
+            .bundle_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .get(storage_name)
+        {
+            return Ok(Some(data.clone()));
         }
 
-        if let Some(storage_name) = &metadata.storage_name {
-            // Delete the bundle from the bundle store
-            self.bundle_storage.delete(storage_name).await
+        self.bundle_storage.load(storage_name).await
+    }
+
+    pub async fn save_data(&self, data: Bytes) -> storage::Result<Arc<str>> {
+        if data.len() < MAX_CACHED_BUNDLE_SIZE {
+            let storage_name = self.bundle_storage.save(data.clone()).await?;
+
+            self.bundle_cache
+                .lock()
+                .trace_expect("LRU cache lock error")
+                .put(storage_name.clone(), data);
+
+            Ok(storage_name)
         } else {
-            Ok(())
+            self.bundle_storage.save(data).await
         }
     }
 
-    pub async fn remove_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        self.metadata_cache
+    pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
+        self.bundle_cache
             .lock()
             .expect("LRU cache lock failure")
-            .pop(bundle_id);
+            .pop(storage_name);
 
-        self.metadata_storage.remove(bundle_id).await
+        self.bundle_storage.delete(storage_name).await
+    }
+
+    pub async fn get_metadata(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> storage::Result<Option<bundle::Bundle>> {
+        if let Some(bundle) = self
+            .metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .get(bundle_id)
+        {
+            return Ok(bundle.clone());
+        }
+
+        self.metadata_storage.get(bundle_id).await
+    }
+
+    pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
+        let found = self.metadata_storage.insert(bundle).await?;
+
+        self.metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .put(bundle.bundle.id.clone(), found.then(|| bundle.clone()));
+
+        Ok(found)
+    }
+
+    pub async fn tombstone_metadata(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+    ) -> storage::Result<()> {
+        self.metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .put(bundle_id.clone(), None);
+
+        self.metadata_storage.tombstone(bundle_id).await
     }
 
     pub async fn confirm_exists(
@@ -302,5 +300,14 @@ impl Store {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<metadata::BundleMetadata>> {
         self.metadata_storage.confirm_exists(bundle_id).await
+    }
+
+    pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
+        self.metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .put(bundle.bundle.id.clone(), Some(bundle.clone()));
+
+        self.metadata_storage.replace(bundle).await
     }
 }

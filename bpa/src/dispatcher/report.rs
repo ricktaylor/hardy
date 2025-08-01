@@ -170,8 +170,10 @@ impl Dispatcher {
                 }
 
                 // Delete the bundle from the bundle store
-                _ = dispatcher.store.delete_data(&bundle.metadata).await;
-                _ = dispatcher.store.remove_metadata(&bundle.bundle.id).await;
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    _ = dispatcher.store.delete_data(&storage_name).await;
+                }
+                _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
             });
         }
     }

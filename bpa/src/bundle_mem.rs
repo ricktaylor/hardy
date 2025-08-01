@@ -47,7 +47,7 @@ impl storage::BundleStorage for Storage {
             .cloned())
     }
 
-    async fn store(&self, data: Bytes) -> storage::Result<Arc<str>> {
+    async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let mut rng = rand::rng();
         let mut bundles = self.bundles.lock().trace_expect("Failed to lock mutex");
         loop {

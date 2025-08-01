@@ -940,8 +940,6 @@ dependencies = [
  "rand",
  "rustversion",
  "serde",
- "serde_with",
- "sha2",
  "thiserror",
  "time",
  "tokio",

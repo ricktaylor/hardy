@@ -124,7 +124,7 @@ impl Storage {
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
-    async fn load(
+    async fn get(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
@@ -146,7 +146,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn store(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
+    async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let id = serde_json::to_string(&bundle.bundle.id)?;
         let bundle = serde_json::to_string(bundle)?;
@@ -163,7 +163,22 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip(self))]
-    async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
+    async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+        let expiry = bundle.expiry();
+        let id = serde_json::to_string(&bundle.bundle.id)?;
+        let bundle = serde_json::to_string(bundle)?;
+        self.pooled_connection(move |conn| {
+            // Update bundle
+            conn.prepare_cached("UPDATE bundles SET bundle = ?2, expiry = ?3 WHERE id = ?1")?
+                .execute((id, bundle, expiry))
+                .map(|_| ())
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    #[instrument(skip(self))]
+    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_string(bundle_id)?;
         self.pooled_connection(move |conn| {
             conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE id = ?1")?
@@ -210,7 +225,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip_all)]
-    async fn remove_unconfirmed_bundles(&self, tx: storage::Sender) -> storage::Result<()> {
+    async fn remove_unconfirmed(&self, tx: storage::Sender) -> storage::Result<()> {
         self.pooled_connection(move |conn| {
             loop {
                 let trans =

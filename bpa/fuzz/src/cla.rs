@@ -89,7 +89,8 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                 .unwrap(),
                 ..Default::default()
             })
-            .await;
+            .await
+            .expect("Failed to start BPA");
 
             // Load static routes
             bpa.add_route(

@@ -51,12 +51,12 @@ impl Dispatcher {
         }
     }
 
-    pub async fn start(self: &Arc<Self>) {
+    pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
         // Start the store - this can take a while as the store is walked
         info!("Starting store consistency check...");
         self.store
             .bundle_storage_check(self.clone(), &self.cancel_token)
-            .await;
+            .await?;
 
         info!("Store restarted");
 
@@ -67,7 +67,10 @@ impl Dispatcher {
                 .store
                 .metadata_storage_check(dispatcher.clone(), dispatcher.cancel_token.clone())
                 .await
+                .trace_expect("Metadata storage check failed")
         });
+
+        Ok(())
     }
 
     pub async fn shutdown(&self) {
@@ -77,12 +80,10 @@ impl Dispatcher {
     }
 
     async fn load_data(self: &Arc<Self>, bundle: &bundle::Bundle) -> Result<Option<Bytes>, Error> {
-        // Try to load the data, but treat errors as 'Storage Depleted'
-        let storage_name = bundle
-            .metadata
-            .storage_name
-            .as_ref()
-            .trace_expect("Bad bundle has made it deep into the pipeline");
+        let Some(storage_name) = bundle.metadata.storage_name.as_ref() else {
+            error!("Bad bundle has made it deep into the pipeline");
+            return Ok(None);
+        };
 
         if let Some(data) = self.store.load_data(storage_name).await? {
             Ok(Some(data))
@@ -103,9 +104,10 @@ impl Dispatcher {
         }
 
         // Delete the bundle from the bundle store
-        self.store.delete_data(&bundle.metadata).await?;
-
-        self.store.remove_metadata(&bundle.bundle.id).await
+        if let Some(storage_name) = &bundle.metadata.storage_name {
+            self.store.delete_data(storage_name).await?;
+        }
+        self.store.tombstone_metadata(&bundle.bundle.id).await
     }
 }
 

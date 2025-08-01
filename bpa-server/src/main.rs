@@ -121,7 +121,11 @@ async fn main() {
     start_storage(&mut config);
 
     // Start the BPA
-    let bpa = Arc::new(hardy_bpa::bpa::Bpa::start(&config.bpa).await);
+    let bpa = Arc::new(
+        hardy_bpa::bpa::Bpa::start(&config.bpa)
+            .await
+            .trace_expect("Failed to start BPA"),
+    );
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();

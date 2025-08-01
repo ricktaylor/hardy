@@ -110,7 +110,8 @@ fn send(msg: Msg) {
                 .unwrap(),
                 ..Default::default()
             })
-            .await;
+            .await
+            .expect("Failed to start BPA");
 
             bpa.add_route(
                 "fuzz".to_string(),

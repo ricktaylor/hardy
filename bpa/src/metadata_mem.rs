@@ -23,7 +23,7 @@ struct Storage {
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
-    async fn load(
+    async fn get(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
@@ -40,7 +40,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    async fn store(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
+    async fn insert(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         let mut entries = self.entries.lock().trace_expect("Failed to lock mutex");
         if entries.contains(&bundle.bundle.id) {
             Ok(false)
@@ -50,7 +50,15 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    async fn remove(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
+    async fn replace(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
+        self.entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .put(bundle.bundle.id.clone(), Some(bundle.clone()));
+        Ok(())
+    }
+
+    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         self.entries
             .lock()
             .trace_expect("Failed to lock mutex")
@@ -65,7 +73,7 @@ impl storage::MetadataStorage for Storage {
         Ok(None)
     }
 
-    async fn remove_unconfirmed_bundles(&self, _tx: storage::Sender) -> storage::Result<()> {
+    async fn remove_unconfirmed(&self, _tx: storage::Sender) -> storage::Result<()> {
         Ok(())
     }
 }

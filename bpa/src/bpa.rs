@@ -12,7 +12,7 @@ pub struct Bpa {
 
 impl Bpa {
     #[instrument]
-    pub async fn start(config: &config::Config) -> Self {
+    pub async fn start(config: &config::Config) -> Result<Self, Error> {
         trace!("Starting new BPA");
 
         if config.status_reports {
@@ -38,17 +38,17 @@ impl Bpa {
             rib.clone(),
         ));
 
-        dispatcher.start().await;
+        dispatcher.start().await?;
 
         trace!("BPA started");
 
-        Self {
+        Ok(Self {
             //store,
             rib,
             cla_registry,
             service_registry,
             dispatcher,
-        }
+        })
     }
 
     #[instrument(skip(self))]
