@@ -1,7 +1,7 @@
 use super::*;
 
-const LRU_CAPACITY: usize = 256;
-const MAX_CACHED_BUNDLE_SIZE: usize = 4096;
+const LRU_CAPACITY: usize = 1024;
+const MAX_CACHED_BUNDLE_SIZE: usize = 16 * 1024;
 
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
@@ -224,7 +224,7 @@ impl Store {
             .bundle_cache
             .lock()
             .trace_expect("LRU cache lock error")
-            .get(storage_name)
+            .peek(storage_name)
         {
             return Ok(Some(data.clone()));
         }
@@ -273,14 +273,24 @@ impl Store {
     }
 
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        let found = self.metadata_storage.insert(bundle).await?;
+        // Check cache first
+        if self
+            .metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .contains(&bundle.bundle.id)
+        {
+            return Ok(false);
+        }
+
+        let not_found = self.metadata_storage.insert(bundle).await?;
 
         self.metadata_cache
             .lock()
             .trace_expect("LRU cache lock error")
-            .put(bundle.bundle.id.clone(), found.then(|| bundle.clone()));
+            .put(bundle.bundle.id.clone(), not_found.then(|| bundle.clone()));
 
-        Ok(found)
+        Ok(not_found)
     }
 
     pub async fn tombstone_metadata(

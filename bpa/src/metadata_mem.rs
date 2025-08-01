@@ -31,7 +31,7 @@ impl storage::MetadataStorage for Storage {
             .entries
             .lock()
             .trace_expect("Failed to lock mutex")
-            .get(bundle_id)
+            .peek(bundle_id)
             .cloned()
         {
             Ok(bundle)
@@ -42,7 +42,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn insert(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         let mut entries = self.entries.lock().trace_expect("Failed to lock mutex");
-        if entries.contains(&bundle.bundle.id) {
+        if entries.get(&bundle.bundle.id).is_some() {
             Ok(false)
         } else {
             entries.put(bundle.bundle.id.clone(), Some(bundle.clone()));

@@ -7,18 +7,29 @@ use std::sync::{Arc, Mutex};
 #[serde(default)]
 pub struct Config {
     pub capacity: std::num::NonZeroUsize,
+
+    #[serde(rename = "min-bundles")]
+    pub min_bundles: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            capacity: std::num::NonZero::new(1_048_576).unwrap(),
+            capacity: std::num::NonZero::new(256 * 1_048_576).unwrap(),
+            min_bundles: 32,
         }
     }
 }
 
+struct Inner {
+    cache: lru::LruCache<String, Bytes>,
+    capacity: usize,
+}
+
 struct Storage {
-    bundles: Mutex<lru::LruCache<String, Bytes>>,
+    inner: Mutex<Inner>,
+    max_capacity: std::num::NonZeroUsize,
+    min_bundles: usize,
 }
 
 #[async_trait]
@@ -28,9 +39,10 @@ impl storage::BundleStorage for Storage {
         tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
     ) -> storage::Result<()> {
         for (name, _) in self
-            .bundles
+            .inner
             .lock()
             .trace_expect("Failed to lock mutex")
+            .cache
             .iter()
         {
             tx.blocking_send((name.clone().into(), None))?;
@@ -40,36 +52,62 @@ impl storage::BundleStorage for Storage {
 
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         Ok(self
-            .bundles
+            .inner
             .lock()
             .trace_expect("Failed to lock mutex")
-            .get(storage_name)
+            .cache
+            .peek(storage_name)
             .cloned())
     }
 
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let mut rng = rand::rng();
-        let mut bundles = self.bundles.lock().trace_expect("Failed to lock mutex");
-        loop {
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        let storage_name = loop {
             let storage_name = Alphanumeric.sample_string(&mut rng, 64);
-            if !bundles.contains(&storage_name) {
-                bundles.put(storage_name.clone(), data);
-                return Ok(storage_name.into());
+            if !inner.cache.contains(&storage_name) {
+                break storage_name;
             }
+        };
+
+        let new_len = data.len();
+        let old_len = inner
+            .cache
+            .put(storage_name.clone(), data)
+            .map(|d| d.len())
+            .unwrap_or(0);
+
+        // Ensure we cap the total stored, but keep 32 bundles
+        inner.capacity = inner
+            .capacity
+            .saturating_sub(old_len)
+            .saturating_add(new_len);
+        while inner.cache.len() > self.min_bundles && inner.capacity > self.max_capacity.into() {
+            let Some((_, d)) = inner.cache.pop_lru() else {
+                break;
+            };
+            inner.capacity = inner.capacity.saturating_sub(d.len());
         }
+
+        Ok(storage_name.into())
     }
 
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
-        self.bundles
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .pop(storage_name);
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        if let Some(d) = inner.cache.pop(storage_name) {
+            inner.capacity = inner.capacity.saturating_sub(d.len());
+        }
         Ok(())
     }
 }
 
 pub fn new(config: &Config) -> Arc<dyn storage::BundleStorage> {
     Arc::new(Storage {
-        bundles: Mutex::new(lru::LruCache::new(config.capacity)),
+        inner: Mutex::new(Inner {
+            cache: lru::LruCache::unbounded(),
+            capacity: 0,
+        }),
+        max_capacity: config.capacity,
+        min_bundles: config.min_bundles,
     })
 }

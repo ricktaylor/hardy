@@ -108,6 +108,10 @@ fn send(msg: Msg) {
                 .as_slice()
                 .try_into()
                 .unwrap(),
+                bundle_storage: Some(hardy_bpa::bundle_mem::new(&hardy_bpa::bundle_mem::Config {
+                    capacity: std::num::NonZero::new(1_048_576).unwrap(),
+                    ..Default::default()
+                })),
                 ..Default::default()
             })
             .await
