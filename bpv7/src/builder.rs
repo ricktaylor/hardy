@@ -61,7 +61,7 @@ impl Builder {
     }
 
     pub fn lifetime(&mut self, lifetime: core::time::Duration) -> &mut Self {
-        self.lifetime = lifetime;
+        self.lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
         self
     }
 

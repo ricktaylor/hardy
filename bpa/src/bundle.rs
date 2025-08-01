@@ -22,9 +22,12 @@ impl Bundle {
     }
 
     pub fn expiry(&self) -> time::OffsetDateTime {
-        self.creation_time()
-            // The following unwrap() is safe, as bundle.lifetime is u64::MAX millisecs
-            .saturating_add(self.bundle.lifetime.try_into().unwrap())
+        self.creation_time().saturating_add(
+            self.bundle
+                .lifetime
+                .try_into()
+                .unwrap_or(time::Duration::MAX),
+        )
     }
 
     pub fn has_expired(&self) -> bool {
