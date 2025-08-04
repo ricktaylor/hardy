@@ -16,16 +16,16 @@ struct SendFlags {
     notify_deletion: bool,
 }
 
-impl Into<hardy_bpa::service::SendFlags> for SendFlags {
-    fn into(self) -> hardy_bpa::service::SendFlags {
+impl From<SendFlags> for hardy_bpa::service::SendFlags {
+    fn from(val: SendFlags) -> Self {
         hardy_bpa::service::SendFlags {
-            do_not_fragment: self.do_not_fragment,
-            request_ack: self.request_ack,
-            report_status_time: self.report_status_time,
-            notify_reception: self.notify_reception,
-            notify_forwarding: self.notify_forwarding,
-            notify_delivery: self.notify_delivery,
-            notify_deletion: self.notify_deletion,
+            do_not_fragment: val.do_not_fragment,
+            request_ack: val.request_ack,
+            report_status_time: val.report_status_time,
+            notify_reception: val.notify_reception,
+            notify_forwarding: val.notify_forwarding,
+            notify_delivery: val.notify_delivery,
+            notify_deletion: val.notify_deletion,
         }
     }
 }
