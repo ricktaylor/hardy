@@ -28,9 +28,9 @@ fn perform_action(map: &mut hardy_eid_pattern::EidPatternMap<u8>, action: Action
                 map.remove::<std::collections::BinaryHeap<_>>(&pattern);
             }
         }
-        Action::RemoveIf(pattern, val) => {
+        Action::RemoveIf(pattern, value) => {
             if let Ok(pattern) = pattern.parse::<hardy_eid_pattern::EidPattern>() {
-                map.remove_if::<std::collections::BinaryHeap<_>>(&pattern, |b| b == &val);
+                map.remove_if::<std::collections::BinaryHeap<_>>(&pattern, |b| b == &value);
             }
         }
     }
