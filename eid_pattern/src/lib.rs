@@ -51,7 +51,7 @@ impl From<Eid> for EidPattern {
                 [
                     EidPatternItem::IpnPatternItem(ipn_pattern::IpnPatternItem::new(0, 0, 0)),
                     #[cfg(feature = "dtn-pat-item")]
-                    EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::DtnNone),
+                    EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::None),
                 ]
                 .into(),
             ),
@@ -79,9 +79,7 @@ impl From<Eid> for EidPattern {
             #[cfg(feature = "dtn-pat-item")]
             Eid::Dtn { node_name, demux } => EidPattern::Set(
                 [EidPatternItem::DtnPatternItem(
-                    dtn_pattern::DtnPatternItem::DtnSsp(dtn_pattern::DtnSsp::new(
-                        node_name, demux, false,
-                    )),
+                    dtn_pattern::DtnPatternItem::Exact(node_name.into(), demux.into()),
                 )]
                 .into(),
             ),

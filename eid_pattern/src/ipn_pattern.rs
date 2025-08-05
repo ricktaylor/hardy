@@ -122,17 +122,17 @@ impl std::cmp::PartialOrd for IpnInterval {
 impl std::cmp::Ord for IpnInterval {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
-            (IpnInterval::Number(n1), IpnInterval::Number(n2)) => n1.cmp(n2),
-            (IpnInterval::Number(n), IpnInterval::Range(r)) => {
-                n.cmp(r.start()).then((r.end() - r.start()).cmp(&1))
+            (IpnInterval::Number(lhs), IpnInterval::Number(rhs)) => lhs.cmp(rhs),
+            (IpnInterval::Number(lhs), IpnInterval::Range(rhs)) => {
+                lhs.cmp(rhs.start()).then(0.cmp(&(rhs.end() - rhs.start())))
             }
-            (IpnInterval::Range(r), IpnInterval::Number(n)) => {
-                r.start().cmp(n).then(1.cmp(&(r.end() - r.start())))
+            (IpnInterval::Range(lhs), IpnInterval::Number(rhs)) => {
+                lhs.start().cmp(rhs).then((lhs.end() - lhs.start()).cmp(&0))
             }
-            (IpnInterval::Range(r1), IpnInterval::Range(r2)) => r1
+            (IpnInterval::Range(lhs), IpnInterval::Range(rhs)) => lhs
                 .start()
-                .cmp(r2.start())
-                .then((r1.end() - r1.start()).cmp(&(r2.end() - r2.start()))),
+                .cmp(rhs.start())
+                .then((lhs.end() - lhs.start()).cmp(&(rhs.end() - rhs.start()))),
         }
     }
 }
@@ -150,7 +150,7 @@ impl IpnInterval {
 // ipn-ssp3 = ipn-part-pat nbr-delim ipn-part-pat nbr-delim ipn-part-pat
 // OLD: ipn-ssp2 = ipn-part-pat nbr-delim ipn-part-pat
 // ipn-ssp2 = ("!" / ipn-part-pat) nbr-delim ipn-part-pat
-pub(crate) fn parse_ipn_pat_item(input: &mut &[u8]) -> ModalResult<EidPatternItem> {
+pub(crate) fn parse_ipn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem> {
     preceded(
         "ipn:",
         alt((
@@ -184,7 +184,7 @@ pub(crate) fn parse_ipn_pat_item(input: &mut &[u8]) -> ModalResult<EidPatternIte
 }
 
 // ipn-part-pat = ipn-decimal / ipn-range / wildcard
-fn parse_ipn_part_pat(input: &mut &[u8]) -> ModalResult<IpnPattern> {
+fn parse_ipn_part_pat(input: &mut &str) -> ModalResult<IpnPattern> {
     alt((
         "*".map(|_| IpnPattern::Wildcard),
         dec_uint.map(|v| IpnPattern::Range(vec![IpnInterval::Number(v)])),
@@ -194,11 +194,11 @@ fn parse_ipn_part_pat(input: &mut &[u8]) -> ModalResult<IpnPattern> {
 }
 
 // ipn-range = "[" ipn-interval *( "," ipn-interval ) "]"
-fn parse_ipn_range(input: &mut &[u8]) -> ModalResult<IpnPattern> {
+fn parse_ipn_range(input: &mut &str) -> ModalResult<IpnPattern> {
     delimited("[", separated(1.., parse_ipn_interval, ","), "]")
         .map(|mut intervals: Vec<IpnInterval>| {
             // Sort
-            intervals.sort();
+            intervals.sort_unstable();
 
             // Dedup
             intervals.dedup();
@@ -209,21 +209,27 @@ fn parse_ipn_range(input: &mut &[u8]) -> ModalResult<IpnPattern> {
             let mut curr = i.next().unwrap();
             for next in i {
                 match (&curr, &next) {
-                    (IpnInterval::Number(n1), IpnInterval::Number(n2)) if *n2 == n1 + 1 => {
+                    (IpnInterval::Number(n1), IpnInterval::Number(n2))
+                        if *n2 == n1.saturating_add(1) =>
+                    {
                         curr = IpnInterval::Range(*n1..=*n2);
                     }
                     (IpnInterval::Number(n), IpnInterval::Range(r)) if n == r.start() => {
                         curr = next;
                     }
-                    (IpnInterval::Number(n), IpnInterval::Range(r)) if n + 1 == *r.start() => {
+                    (IpnInterval::Number(n), IpnInterval::Range(r))
+                        if n.saturating_add(1) == *r.start() =>
+                    {
                         curr = IpnInterval::Range(*n..=*r.end());
                     }
                     (IpnInterval::Range(r), IpnInterval::Number(n)) if r.contains(n) => {}
-                    (IpnInterval::Range(r), IpnInterval::Number(n)) if r.end() + 1 == *n => {
+                    (IpnInterval::Range(r), IpnInterval::Number(n))
+                        if r.end().saturating_add(1) == *n =>
+                    {
                         curr = IpnInterval::Range(*r.start()..=*n);
                     }
                     (IpnInterval::Range(r1), IpnInterval::Range(r2))
-                        if *r2.start() <= r1.end() + 1 =>
+                        if *r2.start() <= r1.end().saturating_add(1) =>
                     {
                         curr = IpnInterval::Range(*r1.start()..=*r2.end());
                     }
@@ -240,7 +246,7 @@ fn parse_ipn_range(input: &mut &[u8]) -> ModalResult<IpnPattern> {
 }
 
 // ipn-interval = ipn-decimal [ ("-" ipn-decimal) / "+" ]
-fn parse_ipn_interval(input: &mut &[u8]) -> ModalResult<IpnInterval> {
+fn parse_ipn_interval(input: &mut &str) -> ModalResult<IpnInterval> {
     (
         dec_uint,
         opt(alt(("+".map(|_| u32::MAX), preceded("-", dec_uint)))),
@@ -248,7 +254,11 @@ fn parse_ipn_interval(input: &mut &[u8]) -> ModalResult<IpnInterval> {
         .map(|(start, end)| {
             end.map_or_else(
                 || IpnInterval::Number(start),
-                |end| IpnInterval::Range(start..=end),
+                |end| match start.cmp(&end) {
+                    std::cmp::Ordering::Less => IpnInterval::Range(start..=end),
+                    std::cmp::Ordering::Equal => IpnInterval::Number(start),
+                    std::cmp::Ordering::Greater => IpnInterval::Range(end..=start),
+                },
             )
         })
         .parse_next(input)

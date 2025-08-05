@@ -37,10 +37,9 @@ impl<V: Eq + std::hash::Hash> EidPatternMap<V> {
         self.0.remove(pattern).collect()
     }
 
-    pub fn remove_if<B, F>(&mut self, pattern: &EidPattern, f: F) -> B
+    pub fn remove_if<B>(&mut self, pattern: &EidPattern, f: impl Fn(&V) -> bool) -> B
     where
         B: FromIterator<V>,
-        F: Fn(&V) -> bool,
     {
         self.0.remove_if(pattern, f).collect()
     }
@@ -49,11 +48,8 @@ impl<V: Eq + std::hash::Hash> EidPatternMap<V> {
         self.0.find(eid).next().is_some()
     }
 
-    pub fn find<'a, B>(&'a self, eid: &Eid) -> B
-    where
-        B: FromIterator<&'a V>,
-    {
-        self.0.find(eid).collect()
+    pub fn find<'a>(&'a self, eid: &Eid) -> impl Iterator<Item = &'a V> {
+        self.0.find(eid)
     }
 }
 
