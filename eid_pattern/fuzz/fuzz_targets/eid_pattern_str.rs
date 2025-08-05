@@ -20,9 +20,7 @@ fn perform_action(map: &mut hardy_eid_pattern::EidPatternMap<u8>, action: Action
         }
         Action::Lookup(eid) => {
             if let Ok(eid) = eid.parse::<hardy_bpv7::eid::Eid>() {
-                for i in map.find(&eid) {
-                    println!("{i}");
-                }
+                map.find(&eid).count();
             }
         }
         Action::RemoveAll(pattern) => {
