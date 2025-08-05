@@ -38,7 +38,7 @@ struct RouteEntry {
 #[derive(Debug)]
 struct RibInner {
     locals: HashMap<Eid, BinaryHeap<Reverse<LocalAction>>>,
-    routes: EidPatternMap<Reverse<RouteEntry>>,
+    routes: EidPatternMap<RouteEntry>,
     finals: EidPatternSet,
     address_types: HashMap<cla::ClaAddressType, Arc<cla_registry::Cla>>,
 }
@@ -86,7 +86,7 @@ impl Rib {
             locals.insert(
                 Eid::Dtn {
                     node_name: node_name.clone(),
-                    demux: [].into(),
+                    demux: "".into(),
                 },
                 vec![Reverse(LocalAction::AdminEndpoint)].into(),
             );
@@ -117,11 +117,11 @@ impl Rib {
         {
             self.inner.write().await.routes.insert(
                 pattern.clone(),
-                Reverse(RouteEntry {
+                RouteEntry {
                     source,
                     action,
                     priority,
-                }),
+                },
             )
         }
 
@@ -173,15 +173,15 @@ impl Rib {
                 .write()
                 .await
                 .routes
-                .remove_if::<Vec<_>, _>(pattern, |e| {
-                    e.0.source == source && e.0.priority == priority && &e.0.action == action
+                .remove_if::<Vec<_>>(pattern, |e| {
+                    e.source == source && e.priority == priority && &e.action == action
                 })
         };
 
         for v in &v {
             info!(
                 "Removed route {pattern} => {:?}, priority {priority}, source '{source}'",
-                v.0.action
+                v.action
             )
         }
 
@@ -366,7 +366,12 @@ fn find_recurse<'a>(
     // Now check routes (this is where route table switching can occur)
 
     let mut priority = None;
-    for entry in inner.routes.find::<std::collections::BinaryHeap<_>>(to) {
+    for entry in inner
+        .routes
+        .find(to)
+        .map(|a| Reverse(a))
+        .collect::<std::collections::BinaryHeap<_>>()
+    {
         // Ensure we only look at lowest priority values
         if let Some(priority) = priority {
             if entry.0.priority > priority {

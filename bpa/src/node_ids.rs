@@ -42,7 +42,7 @@ impl NodeIds {
             },
             (Eid::Dtn { .. }, _, Some(node_name)) | (_, None, Some(node_name)) => Eid::Dtn {
                 node_name: node_name.clone(),
-                demux: [].into(),
+                demux: "".into(),
             },
             (_, Some((allocator_id, node_number)), _) => Eid::Ipn {
                 allocator_id: *allocator_id,
@@ -106,7 +106,7 @@ impl From<&NodeIds> for Vec<Eid> {
         if let Some(node_name) = &value.dtn {
             v.push(Eid::Dtn {
                 node_name: node_name.clone(),
-                demux: [].into(),
+                demux: "".into(),
             });
         }
         v
@@ -187,7 +187,7 @@ impl Serialize for NodeIds {
             (None, Some(node_name)) => serializer.serialize_str(
                 Eid::Dtn {
                     node_name: node_name.clone(),
-                    demux: [].into(),
+                    demux: "".into(),
                 }
                 .to_string()
                 .as_str(),
@@ -210,7 +210,7 @@ impl Serialize for NodeIds {
                 .to_string(),
                 Eid::Dtn {
                     node_name: node_name.clone(),
-                    demux: [].into(),
+                    demux: "".into(),
                 }
                 .to_string(),
             ]),
