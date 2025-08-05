@@ -145,13 +145,15 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
     let mut tags = Vec::new();
     let mut offset = 0;
     let mut shortest = true;
-    while offset < data.len() {
-        match (data[offset] >> 5, data[offset] & 0x1F) {
+
+    while let Some(marker) = data.get(offset) {
+        match (marker >> 5, marker & 0x1F) {
             (6, minor) => {
-                let (tag, s, o) = parse_uint_minor(minor, &data[offset + 1..])?;
+                offset += 1;
+                let (tag, s, o) = parse_uint_minor(minor, &data[offset..])?;
                 tags.push(tag);
                 shortest = shortest && s;
-                offset += o + 1;
+                offset += o;
             }
             _ => break,
         }
@@ -170,10 +172,10 @@ fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
 fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error> {
     match minor {
         24 => {
-            if data.is_empty() {
-                Err(Error::NeedMoreData(1))
+            if let Some(val) = data.get(0) {
+                Ok((*val as u64, *val > 23, 1))
             } else {
-                Ok((data[0] as u64, data[0] > 23, 1))
+                Err(Error::NeedMoreData(1))
             }
         }
         25 => {
@@ -195,13 +197,15 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
 
 fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(Range<usize>, bool, usize), Error> {
     let (data_len, shortest, len) = parse_uint_minor(minor, data)?;
-    if (len as u64).checked_add(data_len).ok_or(Error::TooBig)? > data.len() as u64 {
-        Err(Error::NeedMoreData(
-            ((len as u64) + data_len - (data.len() as u64)) as usize,
-        ))
+    let data_len = data_len
+        .checked_add(len as u64)
+        .and_then(|data_len| (data_len <= usize::MAX as u64).then_some(data_len as usize))
+        .ok_or(Error::TooBig)?;
+
+    if data_len > data.len() {
+        Err(Error::NeedMoreData(data_len - data.len()))
     } else {
-        let end = ((len as u64) + data_len) as usize;
-        Ok((len..end, shortest, end))
+        Ok((len..data_len, shortest, data_len))
     }
 }
 
@@ -209,20 +213,15 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool
     let mut chunks = Vec::new();
     let mut offset = 0;
     let mut shortest = true;
-    loop {
-        if offset >= data.len() {
-            break Err(Error::NeedMoreData(offset + 1 - data.len()));
-        }
-
-        let v = data[offset];
+    while let Some(v) = data.get(offset) {
         offset += 1;
 
-        if v == 0xFF {
-            break Ok((chunks, shortest, offset));
+        if *v == 0xFF {
+            return Ok((chunks, shortest, offset));
         }
 
         if v >> 5 != major {
-            break Err(Error::InvalidChunk);
+            return Err(Error::InvalidChunk);
         }
 
         let (chunk, s, chunk_len) = parse_data_minor(v & 0x1F, &data[offset..])?;
@@ -230,6 +229,8 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool
         shortest = shortest && s;
         offset += chunk_len;
     }
+
+    Err(Error::NeedMoreData(1))
 }
 
 pub fn try_parse_value<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
@@ -238,47 +239,48 @@ where
     E: From<Error>,
 {
     let (tags, mut shortest, mut offset) = parse_tags(data)?;
-    if offset >= data.len() {
+    let Some(marker) = data.get(offset) else {
         if !tags.is_empty() {
             return Err(Error::JustTags.into());
         } else {
             return Ok(None);
         }
-    }
+    };
+    offset += 1;
 
-    match (data[offset] >> 5, data[offset] & 0x1F) {
+    match (marker >> 5, marker & 0x1F) {
         (0, minor) => {
-            let (v, s, len) = parse_uint_minor(minor, &data[offset + 1..])?;
-            offset += len + 1;
+            let (v, s, len) = parse_uint_minor(minor, &data[offset..])?;
+            offset += len;
             f(Value::UnsignedInteger(v), shortest && s, tags)
         }
         (1, minor) => {
-            let (v, s, len) = parse_uint_minor(minor, &data[offset + 1..])?;
-            offset += len + 1;
+            let (v, s, len) = parse_uint_minor(minor, &data[offset..])?;
+            offset += len;
             f(Value::NegativeInteger(v), shortest && s, tags)
         }
         (2, 31) => {
             /* Indefinite length byte string */
-            let (mut v, s, len) = parse_data_chunked(2, &data[offset + 1..])?;
+            let (mut v, s, len) = parse_data_chunked(2, &data[offset..])?;
             for t in v.iter_mut() {
-                t.start += offset + 1;
-                t.end += offset + 1;
+                t.start += offset;
+                t.end += offset;
             }
-            offset += len + 1;
+            offset += len;
             f(Value::ByteStream(v), shortest && s, tags)
         }
         (2, minor) => {
             /* Known length byte string */
-            let (t, s, len) = parse_data_minor(minor, &data[offset + 1..])?;
-            let t = t.start + offset + 1..t.end + offset + 1;
-            offset += len + 1;
+            let (t, s, len) = parse_data_minor(minor, &data[offset..])?;
+            let t = t.start + offset..t.end + offset;
+            offset += len;
             f(Value::Bytes(t), shortest && s, tags)
         }
         (3, 31) => {
             /* Indefinite length text string */
-            let data = &data[offset + 1..];
+            let data = &data[offset..];
             let (v, s, len) = parse_data_chunked(3, data)?;
-            offset += len + 1;
+            offset += len;
             let mut t = Vec::new();
             for b in v {
                 t.push(core::str::from_utf8(&data[b]).map_err(Into::into)?);
@@ -287,9 +289,9 @@ where
         }
         (3, minor) => {
             /* Known length text string */
-            let data = &data[offset + 1..];
+            let data = &data[offset..];
             let (t, s, len) = parse_data_minor(minor, data)?;
-            offset += len + 1;
+            offset += len;
             f(
                 Value::Text(core::str::from_utf8(&data[t]).map_err(Into::into)?),
                 shortest && s,
@@ -298,15 +300,14 @@ where
         }
         (4, 31) => {
             /* Indefinite length array */
-            offset += 1;
             let mut a = Array::new(data, None, &mut offset);
             let r = f(Value::Array(&mut a), shortest, tags)?;
             a.complete().map(|_| r).map_err(Into::into)
         }
         (4, minor) => {
             /* Known length array */
-            let (count, s, len) = parse_uint_minor(minor, &data[offset + 1..])?;
-            offset += len + 1;
+            let (count, s, len) = parse_uint_minor(minor, &data[offset..])?;
+            offset += len;
             if count > usize::MAX as u64 {
                 return Err(Error::TooBig.into());
             }
@@ -316,15 +317,14 @@ where
         }
         (5, 31) => {
             /* Indefinite length map */
-            offset += 1;
             let mut m = Map::new(data, None, &mut offset);
             let r = f(Value::Map(&mut m), true, tags)?;
             m.complete().map(|_| r).map_err(Into::into)
         }
         (5, minor) => {
             /* Known length array */
-            let (count, s, len) = parse_uint_minor(minor, &data[offset + 1..])?;
-            offset += len + 1;
+            let (count, s, len) = parse_uint_minor(minor, &data[offset..])?;
+            offset += len;
             if count > (usize::MAX as u64) / 2 {
                 return Err(Error::TooBig.into());
             }
@@ -335,51 +335,45 @@ where
         (6, _) => unreachable!(),
         (7, 20) => {
             /* False */
-            offset += 1;
             f(Value::False, shortest, tags)
         }
         (7, 21) => {
             /* True */
-            offset += 1;
             f(Value::True, shortest, tags)
         }
         (7, 22) => {
             /* Null */
-            offset += 1;
             f(Value::Null, shortest, tags)
         }
         (7, 23) => {
             /* Undefined */
-            offset += 1;
             f(Value::Undefined, shortest, tags)
         }
         (7, minor @ 0..=19) => {
             /* Unassigned simple type */
-            offset += 1;
             f(Value::Simple(minor), shortest, tags)
         }
         (7, 24) => {
             /* Unassigned simple type */
-            if offset + 1 >= data.len() {
-                return Err(Error::NeedMoreData(offset + 2 - data.len()).into());
+            let Some(v) = data.get(offset) else {
+                return Err(Error::NeedMoreData(1).into());
+            };
+            offset += 1;
+            if *v < 32 {
+                return Err(Error::InvalidSimpleType(*v).into());
             }
-            let v = data[offset + 1];
-            if v < 32 {
-                return Err(Error::InvalidSimpleType(v).into());
-            }
-            offset += 2;
-            f(Value::Simple(v), shortest, tags)
+            f(Value::Simple(*v), shortest, tags)
         }
         (7, 25) => {
             /* FP16 */
-            let v = half::f16::from_be_bytes(to_array(&data[offset + 1..])?);
-            offset += 3;
+            let v = half::f16::from_be_bytes(to_array(&data[offset..])?);
+            offset += 2;
             f(Value::Float(v.into()), shortest, tags)
         }
         (7, 26) => {
             /* FP32 */
-            let v = f32::from_be_bytes(to_array(&data[offset + 1..])?);
-            offset += 5;
+            let v = f32::from_be_bytes(to_array(&data[offset..])?);
+            offset += 4;
             if shortest {
                 match v.classify() {
                     core::num::FpCategory::Nan
@@ -401,8 +395,8 @@ where
         }
         (7, 27) => {
             /* FP64 */
-            let v = f64::from_be_bytes(to_array(&data[offset + 1..])?);
-            offset += 9;
+            let v = f64::from_be_bytes(to_array(&data[offset..])?);
+            offset += 8;
             if shortest {
                 match v.classify() {
                     core::num::FpCategory::Nan
