@@ -28,18 +28,12 @@ impl<'a, const D: usize> Series<'a, D> {
 
     fn check_for_end(&mut self) -> Result<bool, Error> {
         if let Some(count) = self.count {
-            if self.parsed >= count {
-                Ok(true)
-            } else {
-                Ok(false)
-            }
+            Ok(self.parsed >= count)
+        } else if D == 0 && *self.offset == self.data.len() {
+            self.count = Some(self.parsed);
+            Ok(true)
         } else if *self.offset >= self.data.len() {
-            if D == 0 && *self.offset == self.data.len() {
-                self.count = Some(self.parsed);
-                Ok(true)
-            } else {
-                Err(Error::NotEnoughData)
-            }
+            Err(Error::NeedMoreData(*self.offset + 1 - self.data.len()))
         } else if D > 0 && self.data[*self.offset] == 0xFF {
             if self.parsed % D == 1 {
                 Err(Error::PartialMap)
@@ -109,15 +103,16 @@ impl<'a, const D: usize> Series<'a, D> {
             Ok(None)
         } else {
             // Parse sub-item
-            let item_start = *self.offset;
-            let r = try_parse_value(&self.data[item_start..], |value, shortest, tags| {
-                f(value, shortest, tags)
-            });
-            if let Ok(Some((_, len))) = r {
-                self.parsed += 1;
-                *self.offset += len;
-            }
-            r.map(|o| o.map(|v| v.0))
+            let Some((value, len)) =
+                try_parse_value(&self.data[*self.offset..], |value, shortest, tags| {
+                    f(value, shortest, tags)
+                })?
+            else {
+                return Ok(None);
+            };
+            self.parsed += 1;
+            *self.offset += len;
+            Ok(Some(value))
         }
     }
 
@@ -127,7 +122,7 @@ impl<'a, const D: usize> Series<'a, D> {
         F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
-        self.try_parse_value(f)?.ok_or(Error::NotEnoughData.into())
+        self.try_parse_value(f)?.ok_or(Error::NoMoreItems.into())
     }
 
     pub fn try_parse<T>(&mut self) -> Result<Option<T>, T::Error>
@@ -154,7 +149,7 @@ impl<'a, const D: usize> Series<'a, D> {
         T: FromCbor,
         T::Error: From<self::Error>,
     {
-        self.try_parse::<T>()?.ok_or(Error::NotEnoughData.into())
+        self.try_parse::<T>()?.ok_or(Error::NoMoreItems.into())
     }
 
     pub fn try_parse_array<T, F, E>(&mut self, f: F) -> Result<Option<T>, E>
@@ -175,7 +170,7 @@ impl<'a, const D: usize> Series<'a, D> {
         F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
-        self.try_parse_array(f)?.ok_or(Error::NotEnoughData.into())
+        self.try_parse_array(f)?.ok_or(Error::NoMoreItems.into())
     }
 
     pub fn try_parse_map<T, F, E>(&mut self, f: F) -> Result<Option<T>, E>
@@ -196,7 +191,7 @@ impl<'a, const D: usize> Series<'a, D> {
         F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
         E: From<Error>,
     {
-        self.try_parse_map(f)?.ok_or(Error::NotEnoughData.into())
+        self.try_parse_map(f)?.ok_or(Error::NoMoreItems.into())
     }
 }
 

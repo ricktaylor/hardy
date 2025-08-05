@@ -26,7 +26,7 @@ fn parse_ranges<const D: usize>(
 
             let data_start = offset + outer_offset + a.offset();
             if a.skip_value(16).map_field_err("value")?.is_none() {
-                return Err(hardy_cbor::decode::Error::NotEnoughData.into());
+                return Err(hardy_cbor::decode::Error::NoMoreItems.into());
             };
             Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
         })? {

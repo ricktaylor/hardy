@@ -19,7 +19,7 @@ fn tests() {
     // Negative tests
     assert!(matches!(
         expect_error(&[]),
-        Error::InvalidCBOR(hardy_cbor::decode::Error::NotEnoughData)
+        Error::InvalidCBOR(hardy_cbor::decode::Error::NeedMoreData(1))
     ));
     assert!(matches!(
         expect_error(&hex!(

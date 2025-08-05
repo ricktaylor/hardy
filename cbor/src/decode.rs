@@ -5,11 +5,17 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Not enough data for encoded value")]
-    NotEnoughData,
+    #[error("An encoded item requires more memory than available")]
+    TooBig,
 
-    #[error("Additional items to be read")]
+    #[error("Need at least {0} more bytes to decode value")]
+    NeedMoreData(usize),
+
+    #[error("Additional unread items in sequence")]
     AdditionalItems,
+
+    #[error("No more items in sequence")]
+    NoMoreItems,
 
     #[error("Invalid minor-type value {0}")]
     InvalidMinorValue(u8),
@@ -155,7 +161,7 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
 
 fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
     match data.len().cmp(&N) {
-        core::cmp::Ordering::Less => Err(Error::NotEnoughData),
+        core::cmp::Ordering::Less => Err(Error::NeedMoreData(N - data.len())),
         core::cmp::Ordering::Equal => Ok(data.try_into().unwrap()),
         core::cmp::Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
     }
@@ -165,7 +171,7 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
     match minor {
         24 => {
             if data.is_empty() {
-                Err(Error::NotEnoughData)
+                Err(Error::NeedMoreData(1))
             } else {
                 Ok((data[0] as u64, data[0] > 23, 1))
             }
@@ -189,12 +195,10 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
 
 fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(Range<usize>, bool, usize), Error> {
     let (data_len, shortest, len) = parse_uint_minor(minor, data)?;
-    if (len as u64)
-        .checked_add(data_len)
-        .ok_or(Error::NotEnoughData)?
-        > data.len() as u64
-    {
-        Err(Error::NotEnoughData)
+    if (len as u64).checked_add(data_len).ok_or(Error::TooBig)? > data.len() as u64 {
+        Err(Error::NeedMoreData(
+            ((len as u64) + data_len - (data.len() as u64)) as usize,
+        ))
     } else {
         let end = ((len as u64) + data_len) as usize;
         Ok((len..end, shortest, end))
@@ -207,7 +211,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool
     let mut shortest = true;
     loop {
         if offset >= data.len() {
-            break Err(Error::NotEnoughData);
+            break Err(Error::NeedMoreData(offset + 1 - data.len()));
         }
 
         let v = data[offset];
@@ -304,7 +308,7 @@ where
             let (count, s, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
             if count > usize::MAX as u64 {
-                return Err(Error::NotEnoughData.into());
+                return Err(Error::TooBig.into());
             }
             let mut a = Array::new(data, Some(count as usize), &mut offset);
             let r = f(Value::Array(&mut a), shortest && s, tags)?;
@@ -322,7 +326,7 @@ where
             let (count, s, len) = parse_uint_minor(minor, &data[offset + 1..])?;
             offset += len + 1;
             if count > (usize::MAX as u64) / 2 {
-                return Err(Error::NotEnoughData.into());
+                return Err(Error::TooBig.into());
             }
             let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
             let r = f(Value::Map(&mut m), shortest && s, tags)?;
@@ -356,8 +360,8 @@ where
         }
         (7, 24) => {
             /* Unassigned simple type */
-            if data.len() <= offset + 1 {
-                return Err(Error::NotEnoughData.into());
+            if offset + 1 >= data.len() {
+                return Err(Error::NeedMoreData(offset + 2 - data.len()).into());
             }
             let v = data[offset + 1];
             if v < 32 {
@@ -438,7 +442,7 @@ where
     F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_value(data, f)?.ok_or(Error::NotEnoughData.into())
+    try_parse_value(data, f)?.ok_or(Error::NeedMoreData(1).into())
 }
 
 pub fn try_parse_sequence<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
@@ -462,7 +466,7 @@ where
     F: FnOnce(&mut Sequence) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_sequence(data, f)?.ok_or(Error::NotEnoughData.into())
+    try_parse_sequence(data, f)?.ok_or(Error::NeedMoreData(1).into())
 }
 
 pub fn try_parse_array<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
@@ -483,7 +487,7 @@ where
     F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_array(data, f)?.ok_or(Error::NotEnoughData.into())
+    try_parse_array(data, f)?.ok_or(Error::NeedMoreData(1).into())
 }
 
 pub fn try_parse_map<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
@@ -502,7 +506,7 @@ where
     F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_map(data, f)?.ok_or(Error::NotEnoughData.into())
+    try_parse_map(data, f)?.ok_or(Error::NeedMoreData(1).into())
 }
 
 pub fn try_parse<T>(data: &[u8]) -> Result<Option<T>, T::Error>
@@ -518,7 +522,7 @@ where
     T: FromCbor,
     T::Error: From<self::Error>,
 {
-    try_parse::<T>(data)?.ok_or(Error::NotEnoughData.into())
+    try_parse::<T>(data)?.ok_or(Error::NeedMoreData(1).into())
 }
 
 impl FromCbor for u8 {

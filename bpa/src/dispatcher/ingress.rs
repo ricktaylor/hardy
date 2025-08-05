@@ -12,7 +12,7 @@ impl Dispatcher {
         match data.first() {
             None => {
                 return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::NotEnoughData,
+                    hardy_cbor::decode::Error::NeedMoreData(1),
                 )
                 .into());
             }
