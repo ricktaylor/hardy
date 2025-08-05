@@ -17,28 +17,29 @@ fn tests() {
     null_check("ipn:0.0.0");
     null_check("dtn:none");
 
-    dtn_check("dtn://somewhere/", "somewhere", &[]);
-    dtn_check("dtn://somewhere/else", "somewhere", &["else"]);
-    dtn_check("dtn://somewhere/else/", "somewhere", &["else", ""]);
-    dtn_check("dtn://somewhere%2Felse/", "somewhere/else", &[]);
+    dtn_check("dtn://somewhere/", "somewhere", "");
+    dtn_check("dtn://somewhere/else", "somewhere", "else");
+    dtn_check("dtn://somewhere/else/", "somewhere", "else/");
+    dtn_check("dtn://somewhere%2Felse/", "somewhere/else", "");
     dtn_check(
         "dtn://somewhere/over/the/rainbow",
         "somewhere",
-        &["over", "the", "rainbow"],
+        "over/the/rainbow",
     );
     dtn_check(
         "dtn://somewhere/over%2Fthe/rainbow",
         "somewhere",
-        &["over/the", "rainbow"],
+        "over%2Fthe/rainbow",
     );
     dtn_check(
         "dtn://somewhere%2Fover/the%2Frainbow",
         "somewhere/over",
-        &["the/rainbow"],
+        "the%2Frainbow",
     );
 
-    dtn_check("dtn://somewhere//", "somewhere", &["", ""]);
-    dtn_check("dtn://somewhere//else", "somewhere", &["", "else"]);
+    dtn_check("dtn://somewhere//", "somewhere", "/");
+    dtn_check("dtn://somewhere//else", "somewhere", "/else");
+    dtn_check("dtn:///else", "", "else");
 
     // Negative tests
     expect_error("");
@@ -53,7 +54,6 @@ fn tests() {
     expect_error("dtn:/somewhere");
     expect_error("dtn://");
     expect_error("dtn://somewhere");
-    expect_error("dtn:///else");
 
     expect_error("ipn:");
     expect_error("ipn:1");
@@ -69,12 +69,13 @@ fn tests() {
 }
 
 fn expect_error(s: &str) -> error::Error {
-    s.parse::<Eid>().expect_err("Parsed successfully!")
+    s.parse::<Eid>()
+        .expect_err(&format!("\"{s}\" Parsed successfully!"))
 }
 
 fn null_check(s: &str) {
     assert!(matches!(
-        s.parse::<Eid>().expect("Failed to parse"),
+        s.parse::<Eid>().expect(&format!("Failed to parse \"{s}\"")),
         Eid::Null
     ));
 }
@@ -111,14 +112,10 @@ fn ipn_check(
     };
 }
 
-fn dtn_check(s: &str, expected_node_name: &str, expected_demux: &[&str]) {
+fn dtn_check(s: &str, expected_node_name: &str, expected_demux: &str) {
     let Eid::Dtn { node_name, demux } = s.parse().expect("Failed to parse") else {
         panic!("Not a dtn EID!")
     };
     assert_eq!(node_name.as_ref(), expected_node_name);
-
-    assert_eq!(demux.len(), expected_demux.len());
-    for (i, j) in demux.iter().zip(expected_demux.iter()) {
-        assert_eq!(i.as_ref(), *j);
-    }
+    assert_eq!(demux.as_ref(), expected_demux);
 }

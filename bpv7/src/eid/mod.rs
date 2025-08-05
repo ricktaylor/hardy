@@ -34,7 +34,7 @@ pub enum Eid {
     },
     Dtn {
         node_name: Box<str>,
-        demux: Box<[Box<str>]>,
+        demux: Box<str>,
     },
     Unknown {
         scheme: u64,
@@ -51,15 +51,7 @@ impl hardy_cbor::encode::ToCbor for Eid {
             }
             Eid::Dtn { node_name, demux } => {
                 a.emit(&1);
-                a.emit(&format!(
-                    "//{}/{}",
-                    urlencoding::encode(node_name),
-                    demux
-                        .iter()
-                        .map(|s| urlencoding::encode(s))
-                        .collect::<Vec<alloc::borrow::Cow<str>>>()
-                        .join("/")
-                ));
+                a.emit(&format!("//{}/{}", urlencoding::encode(node_name), demux));
             }
             Eid::LegacyIpn {
                 allocator_id,
@@ -146,16 +138,9 @@ impl core::fmt::Display for Eid {
                 node_number,
                 service_number,
             } => write!(f, "ipn:{allocator_id}.{node_number}.{service_number}"),
-            Eid::Dtn { node_name, demux } => write!(
-                f,
-                "dtn://{}/{}",
-                urlencoding::encode(node_name),
-                demux
-                    .iter()
-                    .map(|s| urlencoding::encode(s))
-                    .collect::<Vec<alloc::borrow::Cow<str>>>()
-                    .join("/")
-            ),
+            Eid::Dtn { node_name, demux } => {
+                write!(f, "dtn://{}/{}", urlencoding::encode(node_name), demux)
+            }
             Eid::Unknown { scheme, data } => {
                 let r = hardy_cbor::decode::parse_value(data, |mut value, _, _| {
                     write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)?;
