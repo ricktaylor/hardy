@@ -42,7 +42,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         if #[cfg(feature = "localdisk-storage")] {
             let bundle_storage = Some(hardy_localdisk_storage::new(
                 &hardy_localdisk_storage::Config {
-                    store_dir: std::path::Path::new("fuzz").join("localdisk").join(testname),
+                    store_dir: std::path::Path::new("fuzz").join(testname).join("localdisk"),
                 },
                 true,
             ));
