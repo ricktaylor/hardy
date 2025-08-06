@@ -11,6 +11,7 @@ pub struct ConnectionPool {
     timeout: std::time::Duration,
     connections: Mutex<Vec<rusqlite::Connection>>,
     semaphore: Arc<tokio::sync::Semaphore>,
+    write_lock: Mutex<()>,
 }
 
 impl ConnectionPool {
@@ -20,7 +21,7 @@ impl ConnectionPool {
             .clone()
             .acquire_owned()
             .await
-            .expect("Failed to grab semaphore");
+            .trace_expect("Failed to grab semaphore");
 
         if let Some(conn) = self.connections.lock().expect("Failed to lock mutex").pop() {
             return (permit, conn);
@@ -30,10 +31,10 @@ impl ConnectionPool {
             &self.path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
-        .expect("Failed to open connection");
+        .trace_expect("Failed to open connection");
 
         conn.busy_timeout(self.timeout)
-            .expect("Failed to set timeout");
+            .trace_expect("Failed to set timeout");
 
         conn.execute_batch("PRAGMA optimize=0x10002")
             .trace_expect("Failed to optimize");
@@ -45,7 +46,7 @@ impl ConnectionPool {
         self.connections
             .lock()
             .expect("Failed to lock mutex")
-            .push(conn);
+            .push(conn)
     }
 }
 
@@ -95,6 +96,10 @@ impl Storage {
         migrate::migrate(&mut connection, upgrade)
             .trace_expect("Failed to migrate metadata store database");
 
+        connection
+            .busy_timeout(config.timeout)
+            .trace_expect("Failed to set timeout");
+
         // Mark all existing non-Tombstone bundles as unconfirmed
         connection
             .execute_batch(
@@ -109,15 +114,16 @@ impl Storage {
                 timeout: config.timeout,
                 connections: Mutex::new(vec![connection]),
                 semaphore: Arc::new(tokio::sync::Semaphore::new(
-                      std::thread::available_parallelism()
-                          .map(Into::into)
-                          .unwrap_or(1)                     
+                    std::thread::available_parallelism()
+                        .map(Into::into)
+                        .unwrap_or(1),
                 )),
+                write_lock: Mutex::new(()),
             }),
         }
     }
 
-    async fn pooled_connection<F, R>(&self, f: F) -> storage::Result<R>
+    async fn pooled_connection<F, R>(&self, read_only: bool, f: F) -> storage::Result<R>
     where
         F: FnOnce(&mut rusqlite::Connection) -> storage::Result<R> + Send + 'static,
         R: Send + 'static,
@@ -125,9 +131,15 @@ impl Storage {
         let pool = self.pool.clone();
         let (permit, mut conn) = pool.get().await;
         tokio::task::spawn_blocking(move || {
+            let guard = (!read_only).then(|| {
+                pool.write_lock
+                    .lock()
+                    .trace_expect("Failed to acquire write lock")
+            });
             let r = f(&mut conn);
-            pool.put(conn);
+            drop(guard);
             drop(permit);
+            pool.put(conn);
             r
         })
         .await
@@ -144,12 +156,12 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
         let id = serde_json::to_string(bundle_id)?;
         let Some(s) = self
-            .pooled_connection(move |conn| {
+            .pooled_connection(true,move |conn| {
                 let r = conn
                     .prepare_cached(
                         "SELECT bundle FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                     )?
-                    .query_row((id,), |row| row.get::<_, String>(0))
+                    .query_row((&id,), |row| row.get::<_, String>(0))
                     .optional()?;
                 Ok(r)
             })
@@ -158,7 +170,9 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        serde_json::from_str(s.as_str()).map(Some).map_err(Into::into)
+        serde_json::from_str(s.as_str())
+            .map(Some)
+            .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
@@ -166,12 +180,12 @@ impl storage::MetadataStorage for Storage {
         let expiry = bundle.expiry();
         let id = serde_json::to_string(&bundle.bundle.id)?;
         let bundle = serde_json::to_string(bundle)?;
-        self.pooled_connection(move |conn| {
+        self.pooled_connection(false, move |conn| {
             // Insert bundle
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry) VALUES (?1,?2,?3)",
             )?
-            .execute((id, bundle, expiry))
+            .execute((&id, bundle, expiry))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -183,10 +197,10 @@ impl storage::MetadataStorage for Storage {
         let expiry = bundle.expiry();
         let id = serde_json::to_string(&bundle.bundle.id)?;
         let bundle = serde_json::to_string(bundle)?;
-        self.pooled_connection(move |conn| {
+        self.pooled_connection(false, move |conn| {
             // Update bundle
             conn.prepare_cached("UPDATE bundles SET bundle = ?2, expiry = ?3 WHERE bundle_id = ?1")?
-                .execute((id, bundle, expiry))
+                .execute((&id, bundle, expiry))
                 .map(|_| ())
                 .map_err(Into::into)
         })
@@ -196,13 +210,18 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_string(bundle_id)?;
-        self.pooled_connection(move |conn| {
-            conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE bundle_id = ?1")?
-                .execute((id,))
-                .map(|_| ())
-                .map_err(Into::into)
-        })
-        .await
+        if self
+            .pooled_connection(false, move |conn| {
+                conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE bundle_id = ?1")?
+                    .execute((&id,))
+                    .map_err(Into::into)
+            })
+            .await?
+            != 1
+        {
+            error!("Failed to tombstone bundle!");
+        }
+        Ok(())
     }
 
     #[instrument(skip(self))]
@@ -212,7 +231,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id = serde_json::to_string(bundle_id)?;
         let Some(bundle) = self
-            .pooled_connection(move |conn| {
+            .pooled_connection(false,move |conn| {
                 let trans =
                     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -226,16 +245,14 @@ impl storage::MetadataStorage for Storage {
                         return Ok(None);
                     };
 
-                
                 // Remove from unconfirmed set
                 if trans
                     .prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
-                    .execute((id,))?
+                    .execute((&id,))?
                     != 0
                 {
                     trans.commit()?;
                 }
-                
                 Ok(Some(bundle))
             })
             .await?
@@ -243,59 +260,60 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        // Unpack the bundle
-        serde_json::from_str(bundle.as_str()).map(Some).map_err(Into::into)
+        if let Ok(bundle) = serde_json::from_str(bundle.as_str()) {
+            Ok(Some(bundle))
+        } else {
+            warn!("Garbage bundle found in metadata!");
+            self.tombstone(bundle_id).await.map(|_| None)
+        }
     }
 
     #[instrument(skip_all)]
     async fn remove_unconfirmed(&self, tx: storage::Sender) -> storage::Result<()> {
-        self.pooled_connection(move |conn| {
-            loop {
+        loop {
+            let tx = tx.clone();
+            let Some(bundle) = self.pooled_connection(false,move |conn| {
                 let trans =
                     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-                let mut ids = Vec::new();
-                let mut bundles = Vec::new();
-                for r in trans
+                let Some((id,bundle)) = trans
                     .prepare_cached(
-                        "SELECT bundles.id,bundle FROM bundles JOIN unconfirmed_bundles ON unconfirmed_bundles.id = bundles.id LIMIT 256",
+                        "SELECT bundles.id,bundle FROM bundles JOIN unconfirmed_bundles ON unconfirmed_bundles.id = bundles.id LIMIT 1",
                     )?
-                    .query_map((), |row| {
+                    .query_row((), |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
-                    })?
-                {
-                    let (id, bundle) = r?;
-                    ids.push(id.to_string());
-                    if let Some(bundle) = bundle {
-                        bundles.push(bundle);
+                    }).optional()? else {
+                        return Ok(None);
+                    };
+
+                if trans
+                    .prepare_cached("UPDATE bundles SET bundle = NULL WHERE id = ?1")?
+                    .execute((&id,))? != 1 {
+                        error!("Failed to tombstone unconfirmed bundle!");
                     }
-                }
-                if ids.is_empty() {
-                    return Ok(());
-                }
-                let ids = ids.join(",");
 
-                trans
-                    .prepare_cached("UPDATE bundles SET bundle = NULL WHERE id IN (?1)")?
-                    .execute((&ids,))?;
-
-                trans
-                    .prepare_cached("DELETE FROM unconfirmed_bundles WHERE id IN (?1)")?
-                    .execute((&ids,))?;
+                if trans
+                    .prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
+                    .execute((&id,))? != 1 {
+                        error!("Failed to delete unconfirmed bundle!");
+                    }
 
                 trans.commit()?;
 
-                for bundle in bundles {
-                    if tx
-                        .blocking_send(serde_json::from_str::<hardy_bpa::bundle::Bundle>(&bundle)?)
-                        .is_err()
-                    {
-                        // The other end is shutting down - get out
-                        return Ok(());
-                    }
+                Ok(bundle)
+            })
+            .await? else {
+                return Ok(());
+            };
+
+            if let Ok(bundle) = serde_json::from_str::<hardy_bpa::bundle::Bundle>(&bundle) {
+                if tx.send(bundle).await.is_err() {
+                    // The other end is shutting down - get out
+                    return Ok(());
                 }
+            } else {
+                warn!("Garbage bundle found in metadata!");
             }
-        })
-        .await
+        }
     }
 }
