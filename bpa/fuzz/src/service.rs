@@ -98,7 +98,7 @@ fn send(msg: Msg) {
 
         get_runtime().spawn(async move {
             // New BPA
-            let bpa = new_bpa().await;
+            let bpa = new_bpa("service").await;
 
             bpa.add_route(
                 "fuzz".to_string(),

@@ -76,7 +76,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
         let (tx, mut rx) = mpsc::channel::<hardy_bpa::Bytes>(16);
 
         get_runtime().spawn(async move {
-            let bpa = new_bpa().await;
+            let bpa = new_bpa("cla").await;
 
             // Load static routes
             bpa.add_route(

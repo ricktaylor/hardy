@@ -16,13 +16,13 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-async fn new_bpa() -> hardy_bpa::bpa::Bpa {
+async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     // Metadata storage configuration
     cfg_if::cfg_if! {
         if #[cfg(feature = "sqlite-storage")] {
             let metadata_storage = Some(hardy_sqlite_storage::new(
                 &hardy_sqlite_storage::Config {
-                    db_dir: "fuzz".into(),
+                    db_dir: std::path::Path::new("fuzz").join(testname),
                     db_name: "sqlite-storage.db".to_string(),
                     timeout: std::time::Duration::from_secs(30),
                 },
@@ -42,7 +42,7 @@ async fn new_bpa() -> hardy_bpa::bpa::Bpa {
         if #[cfg(feature = "localdisk-storage")] {
             let bundle_storage = Some(hardy_localdisk_storage::new(
                 &hardy_localdisk_storage::Config {
-                    store_dir: "fuzz/localdisk".into(),
+                    store_dir: std::path::Path::new("fuzz").join("localdisk").join(testname),
                 },
                 true,
             ));
