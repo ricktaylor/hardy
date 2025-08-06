@@ -35,11 +35,6 @@ impl Dispatcher {
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
     ) -> Result<DispatchResult, Error> {
-        // Drop Eid::Null silently to cull spam
-        if bundle.bundle.destination == Eid::Null {
-            return Ok(DispatchResult::Drop(None));
-        }
-
         let mut next_hop = bundle.bundle.destination.clone();
         let mut previous = false;
         loop {

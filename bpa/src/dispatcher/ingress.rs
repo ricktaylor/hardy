@@ -130,6 +130,11 @@ impl Dispatcher {
          * the configured filters or code may have changed, and reprocessing is desired.
          */
 
+        // Drop Eid::Null silently to cull spam
+        if bundle.bundle.destination == Eid::Null {
+            return self.drop_bundle(bundle, None).await;
+        }
+
         if let Some(u) = bundle.bundle.flags.unrecognised {
             trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
         }
