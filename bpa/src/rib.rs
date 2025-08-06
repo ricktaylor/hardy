@@ -37,6 +37,22 @@ impl Ord for LocalAction {
     }
 }
 
+impl std::fmt::Display for LocalAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LocalAction::AdminEndpoint => write!(f, "administrative endpoint"),
+            LocalAction::Local(service) => write!(f, "local service {}", &service.service_id),
+            LocalAction::Forward(cla_address, cla) => {
+                if let Some(cla) = cla {
+                    write!(f, "forward via {}", cla.name)
+                } else {
+                    write!(f, "forward to {cla_address}")
+                }
+            }
+        }
+    }
+}
+
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Arc<service_registry::Service>), // Deliver to local service
@@ -163,7 +179,7 @@ impl Rib {
         action: routes::Action,
         priority: u32,
     ) {
-        info!("Adding route {pattern} => {action:?}, priority {priority}, source '{source}'");
+        info!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
 
         {
             self.inner.write().await.routes.insert(
@@ -181,7 +197,7 @@ impl Rib {
     }
 
     async fn add_local(&self, eid: Eid, action: LocalAction) {
-        info!("Adding local route {eid} => {action:?}");
+        info!("Adding local route {eid} => {action}");
 
         match self.inner.write().await.locals.entry(eid.clone()) {
             std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
@@ -231,7 +247,7 @@ impl Rib {
 
         for v in &v {
             info!(
-                "Removed route {pattern} => {:?}, priority {priority}, source '{source}'",
+                "Removed route {pattern} => {}, priority {priority}, source '{source}'",
                 v.action
             )
         }
@@ -257,7 +273,7 @@ impl Rib {
                 let mut removed = false;
                 h.retain(|a| {
                     if f(a) {
-                        info!("Removed route {eid} => {:?}", a);
+                        info!("Removed route {eid} => {a}");
                         removed = true;
                         false
                     } else {

@@ -142,7 +142,7 @@ impl Store {
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
-                        info!("Metadata storage check in progress, {bundles} expired bundles cleaned up");
+                        info!("Metadata storage check in progress, {bundles} lost bundles cleaned up");
                     },
                     bundle = rx.recv() => match bundle {
                         None => break,
@@ -164,7 +164,7 @@ impl Store {
             }
 
             if !cancel_token.is_cancelled() {
-                info!("Metadata storage check complete, {bundles} expired bundles cleaned up");
+                info!("Metadata storage check complete, {bundles} lost bundles cleaned up");
             }
             Ok(!cancel_token.is_cancelled())
         });
@@ -232,7 +232,7 @@ impl Store {
         self.bundle_storage.load(storage_name).await
     }
 
-    #[instrument(skip(self,data))]
+    #[instrument(skip(self, data))]
     pub async fn save_data(&self, data: Bytes) -> storage::Result<Arc<str>> {
         if data.len() < MAX_CACHED_BUNDLE_SIZE {
             let storage_name = self.bundle_storage.save(data.clone()).await?;

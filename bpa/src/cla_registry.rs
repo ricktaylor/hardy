@@ -5,7 +5,7 @@ use tokio::sync::{Mutex, RwLock};
 
 pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
-    name: String,
+    pub name: String,
     peers: Mutex<HashMap<Eid, cla::ClaAddress>>,
     address_type: Option<cla::ClaAddressType>,
 }

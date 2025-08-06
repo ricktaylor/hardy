@@ -70,6 +70,15 @@ impl From<ClaAddress> for (ClaAddressType, Bytes) {
     }
 }
 
+impl std::fmt::Display for ClaAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClaAddress::TcpClv4Address(socket_addr) => write!(f, "{socket_addr}"),
+            ClaAddress::Unknown(t, bytes) => write!(f, "raw({t}):{bytes:?}"),
+        }
+    }
+}
+
 pub enum ForwardBundleResult {
     Sent,
     NoNeighbour,
