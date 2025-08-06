@@ -7,16 +7,24 @@ edition.workspace = true
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+default = []
+sqlite-storage = ["dep:hardy-sqlite-storage"]
+localdisk-storage = ["dep:hardy-localdisk-storage"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 hardy-bpv7 = { path = "../../bpv7" }
 hardy-bpa = { path = ".." }
+hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
+hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 tokio = { version = "1.45.0", features = ["rt-multi-thread", "time"] }
 time = { version = "0.3.41", features = ["parsing"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"
 arbitrary = { version = "1.4.1", features = ["derive"] }
+cfg-if = "1.0.0"
 
 [lib]
 name = "common"

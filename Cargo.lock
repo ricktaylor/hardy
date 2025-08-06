@@ -959,8 +959,11 @@ name = "hardy-bpa-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "cfg-if",
  "hardy-bpa",
  "hardy-bpv7",
+ "hardy-localdisk-storage",
+ "hardy-sqlite-storage",
  "libfuzzer-sys",
  "time",
  "tokio",

@@ -38,7 +38,7 @@ impl Bpa {
             rib.clone(),
         ));
 
-        dispatcher.start().await?;
+        dispatcher.start()?;
 
         trace!("BPA started");
 

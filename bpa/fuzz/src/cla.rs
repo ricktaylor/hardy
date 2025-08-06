@@ -76,25 +76,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
         let (tx, mut rx) = mpsc::channel::<hardy_bpa::Bytes>(16);
 
         get_runtime().spawn(async move {
-            // New BPA
-            let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
-                status_reports: true,
-                node_ids: [Eid::Ipn {
-                    allocator_id: 0,
-                    node_number: 1,
-                    service_number: 0,
-                }]
-                .as_slice()
-                .try_into()
-                .unwrap(),
-                bundle_storage: Some(hardy_bpa::bundle_mem::new(&hardy_bpa::bundle_mem::Config {
-                    capacity: std::num::NonZero::new(1_048_576).unwrap(),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to start BPA");
+            let bpa = new_bpa().await;
 
             // Load static routes
             bpa.add_route(

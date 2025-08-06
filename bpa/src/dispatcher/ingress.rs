@@ -175,7 +175,14 @@ impl Dispatcher {
                     // Check if the metadata_storage knows about this bundle
                     if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
                         if metadata.storage_name.as_ref() != Some(&storage_name) {
-                            warn!("Duplicate bundle data found: {storage_name}");
+                            if metadata.storage_name.is_none() {
+                                warn!("Duplicate processed bundle data found: {storage_name}");
+                            } else {
+                                warn!(
+                                    "Duplicate valid bundle data found: {storage_name} != {:?}",
+                                    metadata.storage_name.as_ref()
+                                );
+                            }
 
                             // Remove spurious duplicate
                             return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
@@ -220,7 +227,7 @@ impl Dispatcher {
                     let exists =
                         if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
                             if metadata.storage_name.as_ref() != Some(&storage_name) {
-                                warn!("Duplicate bundle data found: {storage_name}");
+                                warn!("Duplicate non-canonical bundle data found: {storage_name}");
 
                                 // Remove spurious duplicate
                                 return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
@@ -275,7 +282,7 @@ impl Dispatcher {
                     let exists =
                         if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
                             if metadata.storage_name.as_ref() != Some(&storage_name) {
-                                warn!("Duplicate bundle data found: {storage_name}");
+                                warn!("Duplicate invalid bundle data found: {storage_name}");
 
                                 // Remove spurious duplicate
                                 return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
@@ -324,7 +331,7 @@ impl Dispatcher {
                 }
             };
 
-        // Check the bundle further
+        // Process the 'new' bundle
         self.ingress_bundle(bundle, reason).await.map(|_| (o, b))
     }
 }
