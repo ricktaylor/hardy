@@ -61,7 +61,7 @@ fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &tokio::sync::mpsc::Sender<storage::ListResponse>,
+    tx: &storage::Sender<storage::ListResponse>,
 ) -> Vec<PathBuf> {
     let mut remove = true;
     let mut subdirs = Vec::new();
@@ -136,10 +136,7 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[instrument(skip_all)]
-    async fn list(
-        &self,
-        tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
-    ) -> storage::Result<()> {
+    async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
 

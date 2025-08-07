@@ -2,7 +2,7 @@ use super::*;
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
-pub type Sender = tokio::sync::mpsc::Sender<bundle::Bundle>;
+pub type Sender<T> = tokio::sync::mpsc::Sender<T>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
@@ -20,14 +20,14 @@ pub trait MetadataStorage: Send + Sync {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> Result<Option<metadata::BundleMetadata>>;
 
-    async fn remove_unconfirmed(&self, tx: Sender) -> Result<()>;
+    async fn remove_unconfirmed(&self, tx: storage::Sender<bundle::Bundle>) -> Result<()>;
 }
 
 pub type ListResponse = (Arc<str>, Option<time::OffsetDateTime>);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
-    async fn list(&self, tx: tokio::sync::mpsc::Sender<ListResponse>) -> Result<()>;
+    async fn list(&self, tx: storage::Sender<ListResponse>) -> Result<()>;
 
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
 

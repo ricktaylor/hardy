@@ -269,7 +269,10 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[instrument(skip_all)]
-    async fn remove_unconfirmed(&self, tx: storage::Sender) -> storage::Result<()> {
+    async fn remove_unconfirmed(
+        &self,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+    ) -> storage::Result<()> {
         loop {
             let tx = tx.clone();
             let Some(bundle) = self.pooled_connection(false,move |conn| {

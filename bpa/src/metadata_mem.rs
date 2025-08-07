@@ -73,7 +73,10 @@ impl storage::MetadataStorage for Storage {
         Ok(None)
     }
 
-    async fn remove_unconfirmed(&self, _tx: storage::Sender) -> storage::Result<()> {
+    async fn remove_unconfirmed(
+        &self,
+        _tx: storage::Sender<bundle::Bundle>,
+    ) -> storage::Result<()> {
         Ok(())
     }
 }

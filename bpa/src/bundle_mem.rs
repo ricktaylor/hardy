@@ -34,10 +34,7 @@ struct Storage {
 
 #[async_trait]
 impl storage::BundleStorage for Storage {
-    async fn list(
-        &self,
-        tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
-    ) -> storage::Result<()> {
+    async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
         for (name, _) in self
             .inner
             .lock()
