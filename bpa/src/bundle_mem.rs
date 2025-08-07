@@ -35,14 +35,17 @@ struct Storage {
 #[async_trait]
 impl storage::BundleStorage for Storage {
     async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
-        for (name, _) in self
+        let snapshot = self
             .inner
             .lock()
             .trace_expect("Failed to lock mutex")
             .cache
             .iter()
-        {
-            tx.blocking_send((name.clone().into(), None))?;
+            .map(|(n, _)| n.clone().into())
+            .collect::<Vec<_>>();
+
+        for name in snapshot {
+            tx.send((name, None)).await?;
         }
         Ok(())
     }
@@ -61,7 +64,7 @@ impl storage::BundleStorage for Storage {
         let mut rng = rand::rng();
         let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
         let storage_name = loop {
-            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
+            let storage_name = Alphanumeric.sample_string(&mut rng, 16);
             if !inner.cache.contains(&storage_name) {
                 break storage_name;
             }
