@@ -64,7 +64,7 @@ impl storage::BundleStorage for Storage {
         let mut rng = rand::rng();
         let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
         let storage_name = loop {
-            let storage_name = Alphanumeric.sample_string(&mut rng, 16);
+            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
             if !inner.cache.contains(&storage_name) {
                 break storage_name;
             }
