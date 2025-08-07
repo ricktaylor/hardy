@@ -1,7 +1,9 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
-use std::{collections::HashMap, sync::Weak};
-use tokio::sync::{Mutex, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, RwLock, Weak},
+};
 
 pub struct Cla {
     pub cla: Arc<dyn cla::Cla>,
@@ -76,7 +78,7 @@ impl cla::Sink for Sink {
         let Some(cla) = self.cla.upgrade() else {
             return Err(cla::Error::Disconnected);
         };
-        Ok(self.registry.remove_peer(&cla, eid).await)
+        Ok(self.registry.remove_peer(&cla, eid))
     }
 }
 
@@ -104,14 +106,15 @@ impl ClaRegistry {
     }
 
     pub async fn shutdown(&self) {
-        for cla in self
+        let clas = self
             .clas
             .write()
-            .await
+            .trace_expect("Failed to lock mutex")
             .drain()
             .map(|(_, v)| v)
-            .collect::<Vec<_>>()
-        {
+            .collect::<Vec<_>>();
+
+        for cla in clas {
             self.unregister_cla(cla).await;
         }
     }
@@ -125,7 +128,7 @@ impl ClaRegistry {
     ) -> cla::Result<()> {
         // Scope lock
         let cla = {
-            let mut clas = self.clas.write().await;
+            let mut clas = self.clas.write().trace_expect("Failed to lock mutex");
 
             if clas.contains_key(&name) {
                 return Err(cla::Error::AlreadyExists(name));
@@ -157,20 +160,29 @@ impl ClaRegistry {
             .await
         {
             // Remove the CLA
-            self.clas.write().await.remove(&name);
+            self.clas
+                .write()
+                .trace_expect("Failed to lock mutex")
+                .remove(&name);
             return Err(e);
         }
 
         // Register that the CLA is a handler for the address type
         if let Some(address_type) = address_type {
-            self.rib.add_address_type(address_type, cla.clone()).await;
+            self.rib.add_address_type(address_type, cla.clone());
         }
 
         Ok(())
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {
-        if let Some(cla) = self.clas.write().await.remove(&cla.name) {
+        let cla = self
+            .clas
+            .write()
+            .trace_expect("Failed to lock mutex")
+            .remove(&cla.name);
+
+        if let Some(cla) = cla {
             self.unregister_cla(cla).await;
         }
     }
@@ -179,11 +191,18 @@ impl ClaRegistry {
         cla.cla.on_unregister().await;
 
         if let Some(address_type) = &cla.address_type {
-            self.rib.remove_address_type(address_type).await;
+            self.rib.remove_address_type(address_type);
         }
 
-        for (eid, cla_addr) in cla.peers.lock().await.drain().collect::<Vec<_>>() {
-            self.rib.remove_forward(&eid, &cla_addr, Some(&cla)).await;
+        let clas = cla
+            .peers
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .drain()
+            .collect::<Vec<_>>();
+
+        for (eid, cla_addr) in clas {
+            self.rib.remove_forward(&eid, &cla_addr, Some(&cla));
         }
 
         info!("Unregistered CLA: {}", cla.name);
@@ -193,18 +212,23 @@ impl ClaRegistry {
         if cla
             .peers
             .lock()
-            .await
+            .trace_expect("Failed to lock mutex")
             .insert(eid.clone(), addr.clone())
-            .is_some()
+            .is_none()
         {
-            return;
+            self.rib.add_forward(eid, addr, Some(cla.clone()))
         }
-        self.rib.add_forward(eid, addr, Some(cla.clone())).await
     }
 
-    async fn remove_peer(&self, cla: &Arc<Cla>, eid: &Eid) -> bool {
-        if let Some(cla_addr) = cla.peers.lock().await.remove(eid) {
-            self.rib.remove_forward(eid, &cla_addr, Some(cla)).await
+    fn remove_peer(&self, cla: &Arc<Cla>, eid: &Eid) -> bool {
+        let cla_addr = cla
+            .peers
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .remove(eid);
+
+        if let Some(cla_addr) = cla_addr {
+            self.rib.remove_forward(eid, &cla_addr, Some(cla))
         } else {
             false
         }

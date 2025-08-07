@@ -2,8 +2,10 @@ use super::*;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_pattern::{EidPattern, EidPatternMap, EidPatternSet};
 use rand::prelude::*;
-use std::collections::{BinaryHeap, HashMap, HashSet};
-use tokio::sync::{Mutex, RwLock};
+use std::{
+    collections::{BinaryHeap, HashMap, HashSet},
+    sync::{Mutex, RwLock},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LocalAction {
@@ -172,34 +174,36 @@ impl Rib {
         })
     }
 
-    pub async fn add(
-        &self,
-        pattern: EidPattern,
-        source: String,
-        action: routes::Action,
-        priority: u32,
-    ) {
+    pub fn add(&self, pattern: EidPattern, source: String, action: routes::Action, priority: u32) {
         info!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
 
-        {
-            self.inner.write().await.routes.insert(
+        self.inner
+            .write()
+            .trace_expect("Failed to lock mutex")
+            .routes
+            .insert(
                 pattern.clone(),
                 RouteEntry {
                     source,
                     action,
                     priority,
                 },
-            )
-        }
+            );
 
         // Wake all waiters
-        self.wake(pattern.into()).await
+        self.wake(pattern.into())
     }
 
-    async fn add_local(&self, eid: Eid, action: LocalAction) {
+    fn add_local(&self, eid: Eid, action: LocalAction) {
         info!("Adding local route {eid} => {action}");
 
-        match self.inner.write().await.locals.entry(eid.clone()) {
+        match self
+            .inner
+            .write()
+            .trace_expect("Failed to lock mutex")
+            .locals
+            .entry(eid.clone())
+        {
             std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
                 occupied_entry.get_mut().push(action);
             }
@@ -209,26 +213,30 @@ impl Rib {
         }
 
         // Wake all waiters
-        if let Some(token) = self.cancellable_waits.lock().await.remove(&eid) {
+        if let Some(token) = self
+            .cancellable_waits
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .remove(&eid)
+        {
             token.cancel();
         }
     }
 
-    pub async fn add_forward(
+    pub fn add_forward(
         &self,
         eid: Eid,
         cla_addr: cla::ClaAddress,
         cla: Option<Arc<cla_registry::Cla>>,
     ) {
         self.add_local(eid, LocalAction::Forward(cla_addr, cla))
-            .await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) {
-        self.add_local(eid, LocalAction::Local(service)).await
+    pub fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) {
+        self.add_local(eid, LocalAction::Local(service))
     }
 
-    pub async fn remove(
+    pub fn remove(
         &self,
         pattern: &EidPattern,
         source: &str,
@@ -238,7 +246,7 @@ impl Rib {
         let v = {
             self.inner
                 .write()
-                .await
+                .trace_expect("Failed to lock mutex")
                 .routes
                 .remove_if::<Vec<_>>(pattern, |e| {
                     e.source == source && e.priority == priority && &e.action == action
@@ -257,16 +265,16 @@ impl Rib {
         } else {
             if let routes::Action::Store(_) = action {
                 // Wake all waiters, we have changed a wait time
-                self.wake(pattern.clone().into()).await
+                self.wake(pattern.clone().into())
             }
             true
         }
     }
 
-    async fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&LocalAction) -> bool) -> bool {
+    fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&LocalAction) -> bool) -> bool {
         self.inner
             .write()
-            .await
+            .trace_expect("Failed to lock mutex")
             .locals
             .get_mut(eid)
             .map(|h| {
@@ -285,7 +293,7 @@ impl Rib {
             .unwrap_or(false)
     }
 
-    pub async fn remove_forward(
+    pub fn remove_forward(
         &self,
         eid: &Eid,
         cla_addr: &cla::ClaAddress,
@@ -295,10 +303,9 @@ impl Rib {
             LocalAction::Forward(addr, c) => addr == cla_addr && c.as_ref() == cla,
             _ => false,
         })
-        .await
     }
 
-    pub async fn remove_service(&self, eid: &Eid, service: &service_registry::Service) -> bool {
+    pub fn remove_service(&self, eid: &Eid, service: &service_registry::Service) -> bool {
         self.remove_local(eid, |action| {
             if let LocalAction::Local(svc) = action {
                 svc.as_ref() == service
@@ -306,30 +313,30 @@ impl Rib {
                 false
             }
         })
-        .await
     }
 
-    pub async fn add_address_type(
-        &self,
-        address_type: cla::ClaAddressType,
-        cla: Arc<cla_registry::Cla>,
-    ) {
+    pub fn add_address_type(&self, address_type: cla::ClaAddressType, cla: Arc<cla_registry::Cla>) {
         self.inner
             .write()
-            .await
+            .trace_expect("Failed to lock mutex")
             .address_types
             .insert(address_type, cla);
     }
 
-    pub async fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
-        self.inner.write().await.address_types.remove(address_type);
+    pub fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
+        self.inner
+            .write()
+            .trace_expect("Failed to lock mutex")
+            .address_types
+            .remove(address_type);
     }
 
-    pub async fn find(&self, to: &Eid) -> Result<Option<FindResult>, Option<ReasonCode>> {
-        let mut result = {
-            let inner = self.inner.read().await;
-            find_recurse(&inner, to, &mut HashSet::new())?
-        };
+    pub fn find(&self, to: &Eid) -> Result<Option<FindResult>, Option<ReasonCode>> {
+        let mut result = find_recurse(
+            &self.inner.read().trace_expect("Failed to lock mutex"),
+            to,
+            &mut HashSet::new(),
+        )?;
 
         if let Some(FindResult::Forward(clas, _)) = &mut result {
             // For ECMP, we need a random order
@@ -348,7 +355,7 @@ impl Rib {
         let token = self
             .cancellable_waits
             .lock()
-            .await
+            .trace_expect("Failed to lock mutex")
             .entry(to.clone())
             .or_insert(tokio_util::sync::CancellationToken::new())
             .clone();
@@ -364,17 +371,17 @@ impl Rib {
                 // Remove the token from the map
                 self.cancellable_waits
                     .lock()
-                    .await.remove(to);
+                    .trace_expect("Failed to lock mutex").remove(to);
                 WaitResult::RouteChange
             }
         }
     }
 
-    async fn wake(&self, pattern: EidPatternSet) {
+    fn wake(&self, pattern: EidPatternSet) {
         for token in self
             .cancellable_waits
             .lock()
-            .await
+            .trace_expect("Failed to lock mutex")
             .extract_if(|eid, _| pattern.contains(eid))
             .map(|(_, token)| token)
         {

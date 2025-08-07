@@ -4,8 +4,10 @@ use rand::{
     Rng,
     distr::{Alphanumeric, SampleString},
 };
-use std::{collections::HashMap, sync::Weak};
-use tokio::sync::RwLock;
+use std::{
+    collections::HashMap,
+    sync::{RwLock, Weak},
+};
 
 pub struct Service {
     pub service: Arc<dyn service::Service>,
@@ -114,14 +116,15 @@ impl ServiceRegistry {
     }
 
     pub async fn shutdown(&self) {
-        for service in self
+        let services = self
             .services
             .write()
-            .await
+            .trace_expect("Failed to lock mutex")
             .drain()
             .map(|(_, v)| v)
-            .collect::<Vec<_>>()
-        {
+            .collect::<Vec<_>>();
+
+        for service in services {
             self.unregister_service(service).await
         }
     }
@@ -135,7 +138,7 @@ impl ServiceRegistry {
     ) -> service::Result<Eid> {
         // Scope the lock
         let (service, service_id) = {
-            let mut services = self.services.write().await;
+            let mut services = self.services.write().trace_expect("Failed to lock mutex");
 
             let new_ipn_service = |allocator_id, node_number| {
                 let mut rng = rand::rng();
@@ -248,20 +251,26 @@ impl ServiceRegistry {
             .await;
 
         // Add local service to RIB
-        self.rib.add_service(service_id.clone(), service).await;
+        self.rib.add_service(service_id.clone(), service);
 
         Ok(service_id)
     }
 
     async fn unregister(&self, service: Arc<Service>) {
-        if let Some(service) = self.services.write().await.remove(&service.service_id) {
+        let service = self
+            .services
+            .write()
+            .trace_expect("Failed to lock mutex")
+            .remove(&service.service_id);
+
+        if let Some(service) = service {
             self.unregister_service(service).await
         }
     }
 
     async fn unregister_service(&self, service: Arc<Service>) {
         // Remove local service from RIB
-        self.rib.remove_service(&service.service_id, &service).await;
+        self.rib.remove_service(&service.service_id, &service);
 
         service.service.on_unregister().await;
 
@@ -269,6 +278,10 @@ impl ServiceRegistry {
     }
 
     pub async fn find(&self, service_id: &Eid) -> Option<Arc<Service>> {
-        self.services.read().await.get(service_id).cloned()
+        self.services
+            .read()
+            .trace_expect("Failed to lock mutex")
+            .get(service_id)
+            .cloned()
     }
 }

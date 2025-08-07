@@ -84,8 +84,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                 "ipn:*.*".parse().unwrap(),
                 hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
                 1,
-            )
-            .await;
+            );
 
             bpa.add_route(
                 "fuzz".to_string(),
@@ -98,8 +97,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                     .unwrap(),
                 ),
                 100,
-            )
-            .await;
+            );
 
             {
                 let cla = std::sync::Arc::new(NullCla::default());

@@ -110,8 +110,7 @@ fn send(msg: Msg) {
                     .unwrap(),
                 ),
                 100,
-            )
-            .await;
+            );
 
             {
                 let service = Arc::new(PipeService::default());
