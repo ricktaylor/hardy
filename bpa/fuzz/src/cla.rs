@@ -161,14 +161,12 @@ mod test {
                                     super::cla_send(buffer.into());
 
                                     count = count.saturating_add(1);
-                                    if count % 100 == 0 {
-                                        tracing::info!("Processed {count} bundles");
-                                    }
                                 }
                             }
                         }
                     }
                 }
+                tracing::info!("Processed {count} bundles");
             }
         }
     }

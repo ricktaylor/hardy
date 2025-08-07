@@ -5,7 +5,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
         tracing_subscriber::fmt()
-            .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
+            .with_max_level(tracing_subscriber::filter::LevelFilter::INFO)
             .with_target(true)
             .init();
 
@@ -25,7 +25,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 &hardy_sqlite_storage::Config {
                     db_dir: std::path::Path::new("fuzz").join(testname),
                     db_name: "sqlite-storage.db".to_string(),
-                    timeout: std::time::Duration::from_secs(30),
+                    timeout: std::time::Duration::from_secs(1),
                 },
                 true
             ));

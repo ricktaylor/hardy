@@ -199,14 +199,12 @@ mod test {
                                     super::service_send(&buffer);
 
                                     count = count.saturating_add(1);
-                                    if count % 100 == 0 {
-                                        tracing::info!("Processed {count} bundles");
-                                    }
                                 }
                             }
                         }
                     }
                 }
+                tracing::info!("Processed {count} bundles");
             }
         }
     }
