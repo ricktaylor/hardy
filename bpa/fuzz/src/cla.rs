@@ -1,7 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
-use tokio::sync::mpsc;
 
 #[derive(Default)]
 struct NullCla {
@@ -71,9 +70,10 @@ impl hardy_bpa::cla::Cla for NullCla {
 }
 
 pub fn cla_send(data: hardy_bpa::Bytes) {
-    static PIPE: std::sync::OnceLock<mpsc::Sender<hardy_bpa::Bytes>> = std::sync::OnceLock::new();
+    static PIPE: std::sync::OnceLock<tokio::sync::mpsc::Sender<hardy_bpa::Bytes>> =
+        std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, mut rx) = mpsc::channel::<hardy_bpa::Bytes>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<hardy_bpa::Bytes>(16);
 
         get_runtime().spawn(async move {
             let bpa = new_bpa("cla").await;

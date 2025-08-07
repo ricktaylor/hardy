@@ -3,7 +3,6 @@ use arbitrary::Arbitrary;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Arbitrary)]
 struct SendFlags {
@@ -92,9 +91,9 @@ impl hardy_bpa::service::Service for PipeService {
 }
 
 fn send(msg: Msg) {
-    static PIPE: std::sync::OnceLock<mpsc::Sender<Msg>> = std::sync::OnceLock::new();
+    static PIPE: std::sync::OnceLock<tokio::sync::mpsc::Sender<Msg>> = std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, mut rx) = mpsc::channel::<Msg>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(16);
 
         get_runtime().spawn(async move {
             // New BPA
