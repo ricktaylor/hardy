@@ -16,6 +16,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+#[allow(unused)]
 async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     // Metadata storage configuration
     cfg_if::cfg_if! {
