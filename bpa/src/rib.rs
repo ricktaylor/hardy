@@ -95,7 +95,7 @@ impl Ord for RouteEntry {
                 (routes::Action::Store(_), routes::Action::Via(_)) => std::cmp::Ordering::Less,
                 (routes::Action::Via(_), routes::Action::Drop(_))
                 | (routes::Action::Via(_), routes::Action::Store(_)) => std::cmp::Ordering::Greater,
-                (routes::Action::Via(lhs), routes::Action::Via(rhs)) => lhs.cmp(&rhs),
+                (routes::Action::Via(lhs), routes::Action::Via(rhs)) => lhs.cmp(rhs),
             })
             .reverse()
         // BinaryHeap is a max-heap!

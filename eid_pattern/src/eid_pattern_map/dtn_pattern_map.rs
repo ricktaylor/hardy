@@ -1,6 +1,7 @@
 use super::*;
 use dtn_pattern::*;
 
+#[allow(clippy::type_complexity)]
 #[derive(Debug)]
 pub struct DtnPatternMap<V: Eq + std::hash::Hash> {
     none: Vec<Arc<V>>,
@@ -126,8 +127,7 @@ impl<V: Eq + std::hash::Hash> DtnPatternMap<V> {
                     .chain(
                         self.exact
                             .get(node_name)
-                            .map(|e| e.get(demux).map(|v| v.iter()))
-                            .flatten()
+                            .and_then(|e| e.get(demux).map(|v| v.iter()))
                             .into_iter()
                             .flatten(),
                     )

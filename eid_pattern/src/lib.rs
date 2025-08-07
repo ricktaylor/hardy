@@ -79,7 +79,7 @@ impl From<Eid> for EidPattern {
             #[cfg(feature = "dtn-pat-item")]
             Eid::Dtn { node_name, demux } => EidPattern::Set(
                 [EidPatternItem::DtnPatternItem(
-                    dtn_pattern::DtnPatternItem::Exact(node_name.into(), demux.into()),
+                    dtn_pattern::DtnPatternItem::Exact(node_name, demux),
                 )]
                 .into(),
             ),

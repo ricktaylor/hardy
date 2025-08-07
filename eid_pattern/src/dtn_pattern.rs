@@ -51,7 +51,7 @@ pub(super) fn parse_dtn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem
         alt((
             "none".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::None)),
             "**".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::All)),
-            parse_dtn_fullssp.map(|s| EidPatternItem::DtnPatternItem(s)),
+            parse_dtn_fullssp.map(EidPatternItem::DtnPatternItem),
         )),
     )
     .parse_next(input)
@@ -108,6 +108,6 @@ fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
 
 fn parse_dtn_glob(input: &mut &str) -> ModalResult<DtnPatternItem> {
     take_while(1.., ('\x21'..='\x7b', /* No '|' (0x7c) */ '\x7d', '\x7e'))
-        .try_map(|pattern| DtnPatternItem::new_glob(pattern))
+        .try_map(DtnPatternItem::new_glob)
         .parse_next(input)
 }
