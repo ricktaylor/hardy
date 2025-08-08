@@ -169,7 +169,7 @@ fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
 fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error> {
     match minor {
         24 => {
-            if let Some(val) = data.get(0) {
+            if let Some(val) = data.first() {
                 Ok((*val as u64, *val > 23, 1))
             } else {
                 Err(Error::NeedMoreData(1))
