@@ -41,6 +41,12 @@ fn tests() {
     dtn_check("dtn://somewhere//else", "somewhere", "/else");
     dtn_check("dtn:///else", "", "else");
 
+    dtn_check(
+        "dtn://%21F0Lcomz8sXNHfnRoH2NjB62Utnq0inKdcqHpeFjHp46YOS5Qs9sbI//////{\"source\":\"ipn:1.0\",\"ti{\"source\":\"ipn:1.0\",\"timestamp\":{\"creation_time\":80790",
+        "!F0Lcomz8sXNHfnRoH2NjB62Utnq0inKdcqHpeFjHp46YOS5Qs9sbI",
+        "/////{\"source\":\"ipn:1.0\",\"ti{\"source\":\"ipn:1.0\",\"timestamp\":{\"creation_time\":80790",
+    );
+
     // Negative tests
     expect_error("");
     expect_error("dtn");

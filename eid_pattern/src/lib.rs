@@ -1,5 +1,6 @@
 use hardy_bpv7::eid::Eid;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use thiserror::Error;
 
 mod ipn_pattern;
@@ -24,16 +25,16 @@ pub enum Error {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String")]
-#[serde(try_from = "&str")]
+#[serde(try_from = "Cow<'_,str>")]
 pub enum EidPattern {
     Set(Box<[EidPatternItem]>),
     Any,
 }
 
-impl TryFrom<&str> for EidPattern {
+impl TryFrom<Cow<'_, str>> for EidPattern {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
         value.parse()
     }
 }
