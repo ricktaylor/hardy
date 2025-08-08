@@ -32,7 +32,9 @@ impl Ord for LocalAction {
             (LocalAction::Local(_), LocalAction::Forward(..)) => std::cmp::Ordering::Less,
             (LocalAction::Forward(..), LocalAction::AdminEndpoint)
             | (LocalAction::Forward(..), LocalAction::Local(_)) => std::cmp::Ordering::Greater,
-            (LocalAction::Forward(lhs, _), LocalAction::Forward(rhs, _)) => lhs.cmp(rhs),
+            (LocalAction::Forward(lhs_addr, lhs), LocalAction::Forward(rhs_addr, rhs)) => {
+                lhs_addr.cmp(rhs_addr).then(lhs.cmp(rhs))
+            }
         }
         .reverse()
         // BinaryHeap is a max-heap!
