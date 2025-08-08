@@ -20,9 +20,6 @@ pub enum Error {
     #[error("Invalid minor-type value {0}")]
     InvalidMinorValue(u8),
 
-    #[error("Tags with no following value")]
-    JustTags,
-
     #[error("Incorrect type, expecting {0}, found {1}")]
     IncorrectType(String, String),
 
@@ -241,7 +238,7 @@ where
     let (tags, mut shortest, mut offset) = parse_tags(data)?;
     let Some(marker) = data.get(offset) else {
         if !tags.is_empty() {
-            return Err(Error::JustTags.into());
+            return Err(Error::NeedMoreData(1).into());
         } else {
             return Ok(None);
         }
