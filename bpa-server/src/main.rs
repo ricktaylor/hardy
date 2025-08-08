@@ -62,9 +62,8 @@ fn start_storage(config: &mut config::Config) {
                 metadata_storage,
                 config.upgrade_storage,
             )),
-
-            #[cfg(feature = "postgres-storage")]
-            config::MetadataStorage::Postgres(config) => todo!(),
+            // #[cfg(feature = "postgres-storage")]
+            // config::MetadataStorage::Postgres(config) => todo!(),
         };
     }
 
@@ -79,9 +78,8 @@ fn start_storage(config: &mut config::Config) {
                 bundle_storage,
                 config.upgrade_storage,
             )),
-
-            #[cfg(feature = "s3-storage")]
-            config::BundleStorage::S3(config) => todo!(),
+            // #[cfg(feature = "s3-storage")]
+            // config::BundleStorage::S3(config) => todo!(),
         };
     }
 }
