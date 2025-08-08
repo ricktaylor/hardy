@@ -232,7 +232,7 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool
 
 pub fn try_parse_value<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
 where
-    F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
+    F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     let (tags, mut shortest, mut offset) = parse_tags(data)?;
@@ -249,12 +249,12 @@ where
         (0, minor) => {
             let (v, s, len) = parse_uint_minor(minor, &data[offset..])?;
             offset += len;
-            f(Value::UnsignedInteger(v), shortest && s, tags)
+            f(Value::UnsignedInteger(v), shortest && s, &tags)
         }
         (1, minor) => {
             let (v, s, len) = parse_uint_minor(minor, &data[offset..])?;
             offset += len;
-            f(Value::NegativeInteger(v), shortest && s, tags)
+            f(Value::NegativeInteger(v), shortest && s, &tags)
         }
         (2, 31) => {
             /* Indefinite length byte string */
@@ -264,14 +264,14 @@ where
                 t.end += offset;
             }
             offset += len;
-            f(Value::ByteStream(v), shortest && s, tags)
+            f(Value::ByteStream(v), shortest && s, &tags)
         }
         (2, minor) => {
             /* Known length byte string */
             let (t, s, len) = parse_data_minor(minor, &data[offset..])?;
             let t = t.start + offset..t.end + offset;
             offset += len;
-            f(Value::Bytes(t), shortest && s, tags)
+            f(Value::Bytes(t), shortest && s, &tags)
         }
         (3, 31) => {
             /* Indefinite length text string */
@@ -282,7 +282,7 @@ where
             for b in v {
                 t.push(core::str::from_utf8(&data[b]).map_err(Into::into)?);
             }
-            f(Value::TextStream(&t), shortest && s, tags)
+            f(Value::TextStream(&t), shortest && s, &tags)
         }
         (3, minor) => {
             /* Known length text string */
@@ -292,13 +292,13 @@ where
             f(
                 Value::Text(core::str::from_utf8(&data[t]).map_err(Into::into)?),
                 shortest && s,
-                tags,
+                &tags,
             )
         }
         (4, 31) => {
             /* Indefinite length array */
             let mut a = Array::new(data, None, &mut offset);
-            let r = f(Value::Array(&mut a), shortest, tags)?;
+            let r = f(Value::Array(&mut a), shortest, &tags)?;
             a.complete().map(|_| r).map_err(Into::into)
         }
         (4, minor) => {
@@ -309,13 +309,13 @@ where
                 return Err(Error::TooBig.into());
             }
             let mut a = Array::new(data, Some(count as usize), &mut offset);
-            let r = f(Value::Array(&mut a), shortest && s, tags)?;
+            let r = f(Value::Array(&mut a), shortest && s, &tags)?;
             a.complete().map(|_| r).map_err(Into::into)
         }
         (5, 31) => {
             /* Indefinite length map */
             let mut m = Map::new(data, None, &mut offset);
-            let r = f(Value::Map(&mut m), true, tags)?;
+            let r = f(Value::Map(&mut m), true, &tags)?;
             m.complete().map(|_| r).map_err(Into::into)
         }
         (5, minor) => {
@@ -326,29 +326,29 @@ where
                 return Err(Error::TooBig.into());
             }
             let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
-            let r = f(Value::Map(&mut m), shortest && s, tags)?;
+            let r = f(Value::Map(&mut m), shortest && s, &tags)?;
             m.complete().map(|_| r).map_err(Into::into)
         }
         (6, _) => unreachable!(),
         (7, 20) => {
             /* False */
-            f(Value::False, shortest, tags)
+            f(Value::False, shortest, &tags)
         }
         (7, 21) => {
             /* True */
-            f(Value::True, shortest, tags)
+            f(Value::True, shortest, &tags)
         }
         (7, 22) => {
             /* Null */
-            f(Value::Null, shortest, tags)
+            f(Value::Null, shortest, &tags)
         }
         (7, 23) => {
             /* Undefined */
-            f(Value::Undefined, shortest, tags)
+            f(Value::Undefined, shortest, &tags)
         }
         (7, minor @ 0..=19) => {
             /* Unassigned simple type */
-            f(Value::Simple(minor), shortest, tags)
+            f(Value::Simple(minor), shortest, &tags)
         }
         (7, 24) => {
             /* Unassigned simple type */
@@ -359,13 +359,13 @@ where
             if *v < 32 {
                 return Err(Error::InvalidSimpleType(*v).into());
             }
-            f(Value::Simple(*v), shortest, tags)
+            f(Value::Simple(*v), shortest, &tags)
         }
         (7, 25) => {
             /* FP16 */
             let v = half::f16::from_be_bytes(to_array(&data[offset..])?);
             offset += 2;
-            f(Value::Float(v.into()), shortest, tags)
+            f(Value::Float(v.into()), shortest, &tags)
         }
         (7, 26) => {
             /* FP32 */
@@ -388,7 +388,7 @@ where
                     }
                 }
             }
-            f(Value::Float(v.into()), shortest, tags)
+            f(Value::Float(v.into()), shortest, &tags)
         }
         (7, 27) => {
             /* FP64 */
@@ -417,7 +417,7 @@ where
                     }
                 }
             }
-            f(Value::Float(v), shortest, tags)
+            f(Value::Float(v), shortest, &tags)
         }
         (7, minor) => {
             return Err(Error::InvalidSimpleType(minor).into());
@@ -430,7 +430,7 @@ where
 #[inline]
 pub fn parse_value<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
-    F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
+    F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     try_parse_value(data, f)?.ok_or(Error::NeedMoreData(1).into())
@@ -462,7 +462,7 @@ where
 
 pub fn try_parse_array<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
 where
-    F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
+    F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     try_parse_value(data, |value, shortest, tags| match value {
@@ -475,7 +475,7 @@ where
 
 pub fn parse_array<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
-    F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
+    F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     try_parse_array(data, f)?.ok_or(Error::NeedMoreData(1).into())
@@ -483,7 +483,7 @@ where
 
 pub fn try_parse_map<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
 where
-    F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
+    F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     try_parse_value(data, |value, shortest, tags| match value {
@@ -494,7 +494,7 @@ where
 
 pub fn parse_map<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
-    F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
+    F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     try_parse_map(data, f)?.ok_or(Error::NeedMoreData(1).into())
