@@ -6,40 +6,60 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub struct ConnectionPool {
+struct ConnectionPool {
     path: PathBuf,
-    timeout: std::time::Duration,
     connections: Mutex<Vec<rusqlite::Connection>>,
-    semaphore: Arc<tokio::sync::Semaphore>,
-    write_lock: Mutex<()>,
+    write_lock: tokio::sync::Mutex<()>,
 }
 
 impl ConnectionPool {
-    async fn get(&self) -> (tokio::sync::OwnedSemaphorePermit, rusqlite::Connection) {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .trace_expect("Failed to grab semaphore");
-
-        if let Some(conn) = self.connections.lock().expect("Failed to lock mutex").pop() {
-            return (permit, conn);
+    fn new(path: PathBuf, connection: rusqlite::Connection) -> Self {
+        Self {
+            path,
+            connections: Mutex::new(vec![connection]),
+            write_lock: tokio::sync::Mutex::new(()),
         }
+    }
 
+    async fn new_connection<'a>(
+        &'a self,
+        guard: Option<&tokio::sync::MutexGuard<'a, ()>>,
+    ) -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_with_flags(
             &self.path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .trace_expect("Failed to open connection");
 
-        conn.busy_timeout(self.timeout)
+        conn.busy_timeout(std::time::Duration::ZERO)
             .trace_expect("Failed to set timeout");
 
-        conn.execute_batch("PRAGMA optimize=0x10002")
-            .trace_expect("Failed to optimize");
+        // We need a guard here, if we don't already have one, because we are writing to the DB
+        let guard = if guard.is_none() {
+            Some(self.write_lock.lock().await)
+        } else {
+            None
+        };
 
-        (permit, conn)
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+            PRAGMA optimize=0x10002",
+        )
+        .trace_expect("Failed to optimize");
+
+        drop(guard);
+        conn
+    }
+
+    async fn get<'a>(
+        &'a self,
+        guard: Option<&tokio::sync::MutexGuard<'a, ()>>,
+    ) -> rusqlite::Connection {
+        if let Some(conn) = self.connections.lock().expect("Failed to lock mutex").pop() {
+            conn
+        } else {
+            self.new_connection(guard).await
+        }
     }
 
     fn put(&self, conn: rusqlite::Connection) {
@@ -97,53 +117,45 @@ impl Storage {
             .trace_expect("Failed to migrate metadata store database");
 
         connection
-            .busy_timeout(config.timeout)
+            .busy_timeout(std::time::Duration::ZERO)
             .trace_expect("Failed to set timeout");
 
         // Mark all existing non-Tombstone bundles as unconfirmed
         connection
             .execute_batch(
-                "PRAGMA optimize=0x10002;
+                "PRAGMA journal_mode=WAL;
+                PRAGMA optimize=0x10002;
                 INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL",
             )
             .trace_expect("Failed to prepare metadata store database");
 
         Self {
-            pool: Arc::new(ConnectionPool {
-                path,
-                timeout: config.timeout,
-                connections: Mutex::new(vec![connection]),
-                semaphore: Arc::new(tokio::sync::Semaphore::new(
-                    std::thread::available_parallelism()
-                        .map(Into::into)
-                        .unwrap_or(1),
-                )),
-                write_lock: Mutex::new(()),
-            }),
+            pool: Arc::new(ConnectionPool::new(path, connection)),
         }
     }
 
-    async fn pooled_connection<F, R>(&self, read_only: bool, f: F) -> storage::Result<R>
+    async fn read<F, R>(&self, f: F) -> storage::Result<R>
     where
         F: FnOnce(&mut rusqlite::Connection) -> storage::Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let pool = self.pool.clone();
-        let (permit, mut conn) = pool.get().await;
-        tokio::task::spawn_blocking(move || {
-            let guard = (!read_only).then(|| {
-                pool.write_lock
-                    .lock()
-                    .trace_expect("Failed to acquire write lock")
-            });
-            let r = f(&mut conn);
-            drop(guard);
-            drop(permit);
-            pool.put(conn);
-            r
-        })
-        .await
-        .trace_expect("Failed to spawn blocking thread")
+        let mut conn = self.pool.get(None).await;
+        let r = f(&mut conn);
+        self.pool.put(conn);
+        r
+    }
+
+    async fn write<F, R>(&self, f: F) -> storage::Result<R>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> storage::Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let guard = self.pool.write_lock.lock().await;
+        let mut conn = self.pool.get(Some(&guard)).await;
+        let r = f(&mut conn);
+        drop(guard);
+        self.pool.put(conn);
+        r
     }
 }
 
@@ -156,7 +168,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
         let id = serde_json::to_string(bundle_id)?;
         let Some(s) = self
-            .pooled_connection(true,move |conn| {
+            .read(move |conn| {
                 let r = conn
                     .prepare_cached(
                         "SELECT bundle FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
@@ -180,7 +192,7 @@ impl storage::MetadataStorage for Storage {
         let expiry = bundle.expiry();
         let id = serde_json::to_string(&bundle.bundle.id)?;
         let bundle = serde_json::to_string(bundle)?;
-        self.pooled_connection(false, move |conn| {
+        self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry) VALUES (?1,?2,?3)",
@@ -197,21 +209,28 @@ impl storage::MetadataStorage for Storage {
         let expiry = bundle.expiry();
         let id = serde_json::to_string(&bundle.bundle.id)?;
         let bundle = serde_json::to_string(bundle)?;
-        self.pooled_connection(false, move |conn| {
-            // Update bundle
-            conn.prepare_cached("UPDATE bundles SET bundle = ?2, expiry = ?3 WHERE bundle_id = ?1")?
+        if self
+            .write(move |conn| {
+                // Update bundle
+                conn.prepare_cached(
+                    "UPDATE bundles SET bundle = ?2, expiry = ?3 WHERE bundle_id = ?1",
+                )?
                 .execute((&id, bundle, expiry))
-                .map(|_| ())
                 .map_err(Into::into)
-        })
-        .await
+            })
+            .await?
+            != 1
+        {
+            error!("Failed to replace bundle!");
+        }
+        Ok(())
     }
 
     #[instrument(skip(self))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_string(bundle_id)?;
         if self
-            .pooled_connection(false, move |conn| {
+            .write(move |conn| {
                 conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE bundle_id = ?1")?
                     .execute((&id,))
                     .map_err(Into::into)
@@ -231,7 +250,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id = serde_json::to_string(bundle_id)?;
         let Some(bundle) = self
-            .pooled_connection(false,move |conn| {
+            .write(move |conn| {
                 let trans =
                     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -275,7 +294,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<()> {
         loop {
             let tx = tx.clone();
-            let Some(bundle) = self.pooled_connection(false,move |conn| {
+            let Some(bundle) = self.write(move |conn| {
                 let trans =
                     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
@@ -309,13 +328,14 @@ impl storage::MetadataStorage for Storage {
                 return Ok(());
             };
 
-            if let Ok(bundle) = serde_json::from_str::<hardy_bpa::bundle::Bundle>(&bundle) {
-                if tx.send(bundle).await.is_err() {
-                    // The other end is shutting down - get out
-                    return Ok(());
+            match serde_json::from_str::<hardy_bpa::bundle::Bundle>(&bundle) {
+                Ok(bundle) => {
+                    if tx.send(bundle).await.is_err() {
+                        // The other end is shutting down - get out
+                        return Ok(());
+                    }
                 }
-            } else {
-                warn!("Garbage bundle found in metadata!");
+                Err(e) => warn!("Garbage bundle found in metadata: {e} {bundle}",),
             }
         }
     }

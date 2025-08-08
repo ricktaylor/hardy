@@ -8,5 +8,3 @@ CREATE TABLE bundles (
 CREATE TABLE unconfirmed_bundles (
     id INTEGER UNIQUE NOT NULL REFERENCES bundles(id) ON DELETE CASCADE
 ) STRICT;
-
-PRAGMA journal_mode=WAL;

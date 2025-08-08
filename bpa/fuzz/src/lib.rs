@@ -25,7 +25,6 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 &hardy_sqlite_storage::Config {
                     db_dir: std::path::Path::new("fuzz").join(testname),
                     db_name: "sqlite-storage.db".to_string(),
-                    timeout: std::time::Duration::from_secs(1),
                 },
                 true
             ));
