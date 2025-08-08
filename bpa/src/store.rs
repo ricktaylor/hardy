@@ -1,13 +1,15 @@
 use super::*;
+use lru::LruCache;
+use std::sync::Mutex;
 
 const LRU_CAPACITY: usize = 1024;
 const MAX_CACHED_BUNDLE_SIZE: usize = 16 * 1024;
 
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
-    metadata_cache: std::sync::Mutex<lru::LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
+    metadata_cache: Mutex<LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
-    bundle_cache: std::sync::Mutex<lru::LruCache<Arc<str>, Bytes>>,
+    bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
 }
 
 impl Store {
@@ -19,7 +21,7 @@ impl Store {
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(metadata_mem::new(&metadata_mem::Config::default())),
-            metadata_cache: std::sync::Mutex::new(lru::LruCache::new(
+            metadata_cache: Mutex::new(LruCache::new(
                 std::num::NonZero::new(LRU_CAPACITY).unwrap(),
             )),
             bundle_storage: config
@@ -27,18 +29,110 @@ impl Store {
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
-            bundle_cache: std::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZero::new(LRU_CAPACITY).unwrap(),
-            )),
+            bundle_cache: Mutex::new(LruCache::new(std::num::NonZero::new(LRU_CAPACITY).unwrap())),
         }
     }
 
     #[instrument(skip_all)]
-    pub async fn metadata_storage_check(
+    pub async fn start(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        cancel_token: tokio_util::sync::CancellationToken,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<(), storage::Error> {
+        // Start the store - this can take a while as the store is walked
+        info!("Starting store consistency check...");
+
+        if self
+            .bundle_storage_check(dispatcher.clone(), cancel_token)
+            .await?
+            && self
+                .metadata_storage_check(dispatcher, cancel_token)
+                .await?
+        {
+            info!("Store restarted");
+        }
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn bundle_storage_check(
+        &self,
+        dispatcher: Arc<dispatcher::Dispatcher>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, storage::Error> {
+        let outer_cancel_token = cancel_token.child_token();
+        let cancel_token = outer_cancel_token.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(16);
+        let h = tokio::spawn(async move {
+            // We're going to spawn a bunch of tasks
+            let mut task_set = tokio::task::JoinSet::new();
+
+            // Give some feedback
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut bundles = 0u64;
+            let mut orphans = 0u64;
+            let mut bad = 0u64;
+
+            loop {
+                tokio::select! {
+                    _ = timer.tick() => {
+                        info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
+                    },
+                    r = rx.recv() => match r {
+                        None => {
+                            break;
+                        }
+                        Some(r) => {
+                            bundles = bundles.saturating_add(1);
+                            let dispatcher = dispatcher.clone();
+                            task_set.spawn(async move {
+                                dispatcher.restart_bundle(r.0,r.1).await
+                            });
+                        }
+                    },
+                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                        let (o,b) = r??;
+                        orphans = orphans.saturating_add(o);
+                        bad = bad.saturating_add(b);
+                    },
+                    _ = cancel_token.cancelled() => {
+                        rx.close()
+                    }
+                }
+            }
+
+            // Wait for all sub-tasks to complete
+            while let Some(r) = task_set.join_next().await {
+                let (o, b) = r??;
+                orphans = orphans.saturating_add(o);
+                bad = bad.saturating_add(b);
+            }
+
+            if !cancel_token.is_cancelled() {
+                info!(
+                    "Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found"
+                );
+            }
+            Ok(!cancel_token.is_cancelled())
+        });
+
+        if let Err(e) = self.bundle_storage.list(tx).await {
+            outer_cancel_token.cancel();
+            _ = h.await;
+            Err(e)
+        } else {
+            h.await?
+        }
+    }
+
+    #[instrument(skip_all)]
+    async fn metadata_storage_check(
+        &self,
+        dispatcher: Arc<dispatcher::Dispatcher>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool, storage::Error> {
+        let outer_cancel_token = cancel_token.child_token();
+        let cancel_token = outer_cancel_token.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<bundle::Bundle>(16);
         let h = tokio::spawn(async move {
             // Give some feedback
@@ -48,7 +142,7 @@ impl Store {
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
-                        info!("Metadata storage check in progress, {bundles} bundles cleaned up");
+                        info!("Metadata storage check in progress, {bundles} lost bundles cleaned up");
                     },
                     bundle = rx.recv() => match bundle {
                         None => break,
@@ -68,115 +162,20 @@ impl Store {
                     }
                 }
             }
-            bundles
+
+            if !cancel_token.is_cancelled() {
+                info!("Metadata storage check complete, {bundles} lost bundles cleaned up");
+            }
+            Ok(!cancel_token.is_cancelled())
         });
 
-        self.metadata_storage.remove_unconfirmed(tx).await?;
-
-        let bundles = h.await?;
-        info!("Metadata storage check complete, {bundles} bundles cleaned up");
-
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn list_stored_bundles(
-        &self,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<Vec<storage::ListResponse>, storage::Error> {
-        /* This is done as a big Vec buffer, as we cannot start processing stored bundles
-         * until we have enumerated them all, as the processing can create more report bundles
-         * which causes all kinds of double-processing issues */
-
-        // TODO: We might want to use a tempfile here as the Vec<> could get really big!
-
-        const CHUNK_SIZE: usize = 128;
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(CHUNK_SIZE);
-        let h = tokio::spawn(async move {
-            let mut results = Vec::new();
-
-            // Give some feedback
-            let mut bundles = 0u64;
-            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
-
-            loop {
-                tokio::select! {
-                    _ = timer.tick() => {
-                        info!("Bundle storage restart in progress, {bundles} bundles found");
-                    },
-                    r = rx.recv_many(&mut results,CHUNK_SIZE) => {
-                        if r == 0 {
-                            break;
-                        } else {
-                            bundles = bundles.saturating_add(r as u64);
-                        }
-                    },
-                    _ = cancel_token.cancelled() => {
-                        rx.close()
-                    }
-                }
-            }
-            results
-        });
-
-        self.bundle_storage.list(tx).await?;
-
-        h.await.map_err(Into::into)
-    }
-
-    #[instrument(skip_all)]
-    pub async fn bundle_storage_check(
-        self: &Arc<Self>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        cancel_token: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), storage::Error> {
-        // We're going to spawn a bunch of tasks
-        let mut task_set = tokio::task::JoinSet::new();
-
-        // Give some feedback
-        let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
-        let mut bundles = 0u64;
-        let mut orphans = 0u64;
-        let mut bad = 0u64;
-
-        // For each bundle in the store
-        for (storage_name, file_time) in self.list_stored_bundles(cancel_token.clone()).await? {
-            bundles = bundles.saturating_add(1);
-
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = cancel_token.cancelled() => break,
-                    _ = timer.tick() => {
-                        info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
-                    },
-                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                        let (o,b) = r??;
-                        orphans = orphans.saturating_add(o);
-                        bad = bad.saturating_add(b);
-                    },
-                    _ = std::future::ready(()) => {
-                        let dispatcher = dispatcher.clone();
-                        let storage_name = storage_name.clone();
-                        task_set.spawn(async move {
-                            dispatcher.restart_bundle(storage_name, file_time).await
-                        });
-                    }
-                }
-            }
+        if let Err(e) = self.metadata_storage.remove_unconfirmed(tx).await {
+            outer_cancel_token.cancel();
+            _ = h.await;
+            Err(e)
+        } else {
+            h.await?
         }
-
-        // Wait for all sub-tasks to complete
-        while let Some(r) = task_set.join_next().await {
-            let (o, b) = r??;
-            orphans = orphans.saturating_add(o);
-            bad = bad.saturating_add(b);
-        }
-        info!(
-            "Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found"
-        );
-        Ok(())
     }
 
     #[instrument(skip(self, data))]
@@ -219,6 +218,7 @@ impl Store {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         if let Some(data) = self
             .bundle_cache
@@ -232,6 +232,7 @@ impl Store {
         self.bundle_storage.load(storage_name).await
     }
 
+    #[instrument(skip(self, data))]
     pub async fn save_data(&self, data: Bytes) -> storage::Result<Arc<str>> {
         if data.len() < MAX_CACHED_BUNDLE_SIZE {
             let storage_name = self.bundle_storage.save(data.clone()).await?;
@@ -247,6 +248,7 @@ impl Store {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
         self.bundle_cache
             .lock()
@@ -256,6 +258,7 @@ impl Store {
         self.bundle_storage.delete(storage_name).await
     }
 
+    #[instrument(skip(self))]
     pub async fn get_metadata(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -272,6 +275,7 @@ impl Store {
         self.metadata_storage.get(bundle_id).await
     }
 
+    #[instrument(skip(self))]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         // Check cache first
         if self
@@ -293,6 +297,7 @@ impl Store {
         Ok(not_found)
     }
 
+    #[instrument(skip(self))]
     pub async fn tombstone_metadata(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -305,6 +310,7 @@ impl Store {
         self.metadata_storage.tombstone(bundle_id).await
     }
 
+    #[instrument(skip(self))]
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -312,6 +318,7 @@ impl Store {
         self.metadata_storage.confirm_exists(bundle_id).await
     }
 
+    #[instrument(skip(self))]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
         self.metadata_cache
             .lock()

@@ -11,10 +11,9 @@ pub enum MetadataStorage {
     #[cfg(feature = "sqlite-storage")]
     #[serde(rename = "sqlite")]
     Sqlite(hardy_sqlite_storage::Config),
-
-    #[cfg(feature = "postgres-storage")]
-    #[serde(rename = "postgres")]
-    Postgres(PostgresConfig),
+    // #[cfg(feature = "postgres-storage")]
+    // #[serde(rename = "postgres")]
+    // Postgres(PostgresConfig),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -26,10 +25,9 @@ pub enum BundleStorage {
     #[cfg(feature = "localdisk-storage")]
     #[serde(rename = "localdisk")]
     LocalDisk(hardy_localdisk_storage::Config),
-
-    #[cfg(feature = "s3-storage")]
-    #[serde(rename = "s3")]
-    S3(S3Config),
+    // #[cfg(feature = "s3-storage")]
+    // #[serde(rename = "s3")]
+    // S3(S3Config),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

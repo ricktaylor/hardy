@@ -3,7 +3,6 @@ use arbitrary::Arbitrary;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 #[derive(Arbitrary)]
 struct SendFlags {
@@ -16,16 +15,16 @@ struct SendFlags {
     notify_deletion: bool,
 }
 
-impl Into<hardy_bpa::service::SendFlags> for SendFlags {
-    fn into(self) -> hardy_bpa::service::SendFlags {
+impl From<SendFlags> for hardy_bpa::service::SendFlags {
+    fn from(val: SendFlags) -> Self {
         hardy_bpa::service::SendFlags {
-            do_not_fragment: self.do_not_fragment,
-            request_ack: self.request_ack,
-            report_status_time: self.report_status_time,
-            notify_reception: self.notify_reception,
-            notify_forwarding: self.notify_forwarding,
-            notify_delivery: self.notify_delivery,
-            notify_deletion: self.notify_deletion,
+            do_not_fragment: val.do_not_fragment,
+            request_ack: val.request_ack,
+            report_status_time: val.report_status_time,
+            notify_reception: val.notify_reception,
+            notify_forwarding: val.notify_forwarding,
+            notify_delivery: val.notify_delivery,
+            notify_deletion: val.notify_deletion,
         }
     }
 }
@@ -92,30 +91,13 @@ impl hardy_bpa::service::Service for PipeService {
 }
 
 fn send(msg: Msg) {
-    static PIPE: std::sync::OnceLock<mpsc::Sender<Msg>> = std::sync::OnceLock::new();
+    static PIPE: std::sync::OnceLock<tokio::sync::mpsc::Sender<Msg>> = std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, mut rx) = mpsc::channel::<Msg>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(16);
 
         get_runtime().spawn(async move {
             // New BPA
-            let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
-                status_reports: true,
-                node_ids: [Eid::Ipn {
-                    allocator_id: 0,
-                    node_number: 1,
-                    service_number: 0,
-                }]
-                .as_slice()
-                .try_into()
-                .unwrap(),
-                bundle_storage: Some(hardy_bpa::bundle_mem::new(&hardy_bpa::bundle_mem::Config {
-                    capacity: std::num::NonZero::new(1_048_576).unwrap(),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to start BPA");
+            let bpa = new_bpa("service").await;
 
             bpa.add_route(
                 "fuzz".to_string(),
@@ -128,8 +110,7 @@ fn send(msg: Msg) {
                     .unwrap(),
                 ),
                 100,
-            )
-            .await;
+            );
 
             {
                 let service = Arc::new(PipeService::default());
@@ -216,14 +197,12 @@ mod test {
                                     super::service_send(&buffer);
 
                                     count = count.saturating_add(1);
-                                    if count % 100 == 0 {
-                                        tracing::info!("Processed {count} bundles");
-                                    }
                                 }
                             }
                         }
                     }
                 }
+                tracing::info!("Processed {count} bundles");
             }
         }
     }

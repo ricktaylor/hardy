@@ -1,4 +1,5 @@
 use super::*;
+use alloc::borrow::Cow;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -15,7 +16,7 @@ mod cbor_tests;
 
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(into = "String")]
-#[serde(try_from = "&str")]
+#[serde(try_from = "Cow<str>")]
 pub enum Eid {
     #[default]
     Null,
@@ -34,12 +35,20 @@ pub enum Eid {
     },
     Dtn {
         node_name: Box<str>,
-        demux: Box<[Box<str>]>,
+        demux: Box<str>,
     },
     Unknown {
         scheme: u64,
         data: Box<[u8]>,
     },
+}
+
+impl TryFrom<Cow<'_, str>> for Eid {
+    type Error = Error;
+
+    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
+        value.parse()
+    }
 }
 
 impl hardy_cbor::encode::ToCbor for Eid {
@@ -51,15 +60,7 @@ impl hardy_cbor::encode::ToCbor for Eid {
             }
             Eid::Dtn { node_name, demux } => {
                 a.emit(&1);
-                a.emit(&format!(
-                    "//{}/{}",
-                    urlencoding::encode(node_name),
-                    demux
-                        .iter()
-                        .map(|s| urlencoding::encode(s))
-                        .collect::<Vec<alloc::borrow::Cow<str>>>()
-                        .join("/")
-                ));
+                a.emit(&format!("//{}/{}", urlencoding::encode(node_name), demux));
             }
             Eid::LegacyIpn {
                 allocator_id,
@@ -111,7 +112,7 @@ impl hardy_cbor::encode::ToCbor for Eid {
 }
 
 #[derive(Error, Debug)]
-enum DebugError {
+enum DisplayError {
     #[error(transparent)]
     Decode(#[from] hardy_cbor::decode::Error),
 
@@ -146,25 +147,18 @@ impl core::fmt::Display for Eid {
                 node_number,
                 service_number,
             } => write!(f, "ipn:{allocator_id}.{node_number}.{service_number}"),
-            Eid::Dtn { node_name, demux } => write!(
-                f,
-                "dtn://{}/{}",
-                urlencoding::encode(node_name),
-                demux
-                    .iter()
-                    .map(|s| urlencoding::encode(s))
-                    .collect::<Vec<alloc::borrow::Cow<str>>>()
-                    .join("/")
-            ),
+            Eid::Dtn { node_name, demux } => {
+                write!(f, "dtn://{}/{}", urlencoding::encode(node_name), demux)
+            }
             Eid::Unknown { scheme, data } => {
                 let r = hardy_cbor::decode::parse_value(data, |mut value, _, _| {
-                    write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DebugError>::into)?;
-                    value.skip(16).map_err(Into::<DebugError>::into)
+                    write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DisplayError>::into)?;
+                    value.skip(16).map_err(Into::<DisplayError>::into)
                 });
                 match r {
                     Ok(_) => Ok(()),
-                    Err(DebugError::Fmt(e)) => Err(e),
-                    Err(DebugError::Decode(e)) => write!(f, "unknown({scheme}):error: {e:?}"),
+                    Err(DisplayError::Fmt(e)) => Err(e),
+                    Err(DisplayError::Decode(e)) => write!(f, "unknown({scheme}):error: {e:?}"),
                 }
             }
         }

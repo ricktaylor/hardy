@@ -14,18 +14,21 @@ pub struct PatternMap<V: Eq + std::hash::Hash> {
 
 impl<V: Eq + std::hash::Hash> PatternMap<V> {
     pub fn is_empty(&self) -> bool {
-        let mut b = self.exact.is_empty()
-            && self.any.is_empty()
-            && self.ipn_map.is_empty()
-            && self.numeric_schemes.is_empty()
-            && self.text_schemes.is_empty();
+        if !self.exact.is_empty()
+            || !self.any.is_empty()
+            || !self.ipn_map.is_empty()
+            || !self.numeric_schemes.is_empty()
+            || !self.text_schemes.is_empty()
+        {
+            return false;
+        }
 
         #[cfg(feature = "dtn-pat-item")]
         if !self.dtn_map.is_empty() {
-            b = false;
+            return false;
         }
 
-        b
+        true
     }
 
     pub fn insert(&mut self, pattern: EidPattern, value: V) {

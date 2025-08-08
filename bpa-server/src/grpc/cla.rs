@@ -4,11 +4,11 @@ use hardy_proto::cla::*;
 use std::{
     collections::HashMap,
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicI32, Ordering},
     },
 };
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Streaming};
 
@@ -214,7 +214,12 @@ impl Cla {
         msg_id: i32,
         response: Result<forward_bundle_response::Result, tonic::Status>,
     ) -> Option<Result<bpa_to_cla::Msg, tonic::Status>> {
-        if let Some(entry) = self.forward_acks.lock().await.remove(&msg_id) {
+        if let Some(entry) = self
+            .forward_acks
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .remove(&msg_id)
+        {
             _ = entry.send(response.map_err(|s| hardy_bpa::cla::Error::Internal(s.into())));
         }
         None
@@ -247,13 +252,18 @@ impl hardy_bpa::cla::Cla for Cla {
         let (tx, rx) = oneshot::channel();
 
         // Generate a new msg_id, and add to the forward_ack map
-        let mut forward_acks = self.forward_acks.lock().await;
-        let mut msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
-        while forward_acks.contains_key(&msg_id) {
-            msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
-        }
-        forward_acks.insert(msg_id, tx);
-        drop(forward_acks);
+        let msg_id = {
+            let mut forward_acks = self
+                .forward_acks
+                .lock()
+                .trace_expect("Failed to lock mutex");
+            let mut msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
+            while forward_acks.contains_key(&msg_id) {
+                msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
+            }
+            forward_acks.insert(msg_id, tx);
+            msg_id
+        };
 
         if self
             .tx
@@ -272,7 +282,10 @@ impl hardy_bpa::cla::Cla for Cla {
             .is_err()
         {
             // Remove ack waiter
-            self.forward_acks.lock().await.remove(&msg_id);
+            self.forward_acks
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .remove(&msg_id);
             return Err(hardy_bpa::cla::Error::Disconnected);
         }
 

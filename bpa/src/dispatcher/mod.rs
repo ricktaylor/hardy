@@ -51,25 +51,17 @@ impl Dispatcher {
         }
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
+    pub fn start(self: &Arc<Self>) -> Result<(), Error> {
         // Start the store - this can take a while as the store is walked
-        info!("Starting store consistency check...");
-        self.store
-            .bundle_storage_check(self.clone(), &self.cancel_token)
-            .await?;
-
-        info!("Store restarted");
-
         let dispatcher = self.clone();
         self.task_tracker.spawn(async move {
             // Now check the metadata storage for old data
             dispatcher
                 .store
-                .metadata_storage_check(dispatcher.clone(), dispatcher.cancel_token.clone())
+                .start(dispatcher.clone(), &dispatcher.cancel_token)
                 .await
-                .trace_expect("Metadata storage check failed")
+                .trace_expect("Storage check failed")
         });
-
         Ok(())
     }
 

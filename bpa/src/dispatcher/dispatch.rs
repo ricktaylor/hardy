@@ -35,16 +35,11 @@ impl Dispatcher {
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
     ) -> Result<DispatchResult, Error> {
-        // Drop Eid::Null silently to cull spam
-        if bundle.bundle.destination == Eid::Null {
-            return Ok(DispatchResult::Drop(None));
-        }
-
         let mut next_hop = bundle.bundle.destination.clone();
         let mut previous = false;
         loop {
             // Perform RIB lookup
-            let (clas, until) = match self.rib.find(&next_hop).await {
+            let (clas, until) = match self.rib.find(&next_hop) {
                 Err(reason) => {
                     trace!("Bundle is black-holed");
                     return Ok(DispatchResult::Drop(reason));

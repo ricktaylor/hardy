@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpa::{Bytes, async_trait, storage, storage::BundleStorage};
 use rand::prelude::*;
-use std::{io::Write, path::PathBuf, str::FromStr, sync::Arc};
+use std::{io::Write, path::PathBuf, str::FromStr, sync::Arc, time::SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -56,10 +56,12 @@ fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
     }
 }
 
+#[instrument(skip(tx))]
 fn walk_dirs(
+    before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &tokio::sync::mpsc::Sender<storage::ListResponse>,
+    tx: &storage::Sender<storage::ListResponse>,
 ) -> Vec<PathBuf> {
     let mut remove = true;
     let mut subdirs = Vec::new();
@@ -94,11 +96,16 @@ fn walk_dirs(
                     remove = false;
 
                     // We have something useful
-                    let received_at = entry
-                        .metadata()
-                        .and_then(|m| m.created())
-                        .map(time::OffsetDateTime::from)
-                        .ok();
+                    let received_at =
+                        if let Ok(received_at) = entry.metadata().and_then(|m| m.created()) {
+                            // Ignore anything created after we began our walk
+                            if &received_at > before {
+                                continue;
+                            }
+                            Some(time::OffsetDateTime::from(received_at))
+                        } else {
+                            None
+                        };
 
                     if tx
                         .blocking_send((
@@ -129,10 +136,8 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[instrument(skip_all)]
-    async fn list(
-        &self,
-        tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
-    ) -> storage::Result<()> {
+    async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
+        let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
 
         let parallelism = std::thread::available_parallelism()
@@ -156,7 +161,7 @@ impl BundleStorage for Storage {
                         task_set.spawn_blocking(move || {
                             let mut dirs = Vec::new();
                             for dir in subdirs {
-                                dirs.extend(walk_dirs(&root, dir, &tx));
+                                dirs.extend(walk_dirs(&before,&root, dir, &tx));
                             }
                             drop(permit);
                             dirs
@@ -214,6 +219,7 @@ impl BundleStorage for Storage {
         }
     }
 
+    #[instrument(skip(self, data))]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let root = self.store_root.clone();
 
@@ -284,6 +290,7 @@ impl BundleStorage for Storage {
             Ok(_) => Ok(()),
             Err(e) => {
                 if let std::io::ErrorKind::NotFound = e.kind() {
+                    warn!("Failed to remove {storage_name}");
                     Ok(())
                 } else {
                     Err(e.into())

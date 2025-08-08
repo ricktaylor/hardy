@@ -1,15 +1,14 @@
 use super::*;
-use alloc::borrow::Cow;
 use error::CaptureFieldErr;
 use winnow::{
     ModalResult, Parser,
     ascii::dec_uint,
-    combinator::{alt, opt, preceded, repeat, separated, terminated},
+    combinator::{alt, opt, preceded, terminated},
     stream::AsChar,
-    token::{one_of, take_while},
+    token::take_while,
 };
 
-fn parse_ipn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
+fn parse_ipn_parts(input: &mut &str) -> ModalResult<Eid> {
     (
         dec_uint,
         preceded(".", dec_uint),
@@ -37,115 +36,60 @@ fn parse_ipn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
         .parse_next(input)
 }
 
-fn parse_local_node(input: &mut &[u8]) -> ModalResult<Eid> {
+fn parse_local_node(input: &mut &str) -> ModalResult<Eid> {
     preceded("!.", dec_uint)
         .map(|service_number| Eid::LocalNode { service_number })
         .parse_next(input)
 }
 
-fn parse_ipn(input: &mut &[u8]) -> ModalResult<Eid> {
+fn parse_ipn(input: &mut &str) -> ModalResult<Eid> {
     (alt((parse_local_node, parse_ipn_parts))).parse_next(input)
 }
 
-fn from_hex_digit(digit: u8) -> u8 {
-    match digit {
-        b'0'..=b'9' => digit - b'0',
-        b'A'..=b'F' => digit - b'A' + 10,
-        _ => digit - b'a' + 10,
-    }
-}
-
-fn parse_pchar<'a>(input: &mut &'a [u8]) -> ModalResult<Cow<'a, str>> {
-    alt((
-        take_while(
-            1..,
-            (
-                AsChar::is_alphanum,
-                '!',
-                '$',
-                '&'..'.',
-                ':',
-                ';',
-                '=',
-                '@',
-                '_',
-                '~',
-            ),
-        )
-        .map(|v| Cow::Borrowed(unsafe { str::from_utf8_unchecked(v) })),
-        preceded(
-            '%',
-            (one_of(AsChar::is_hex_digit), one_of(AsChar::is_hex_digit)),
-        )
-        .map(|(first, second)| {
-            /* This is a more cautious UTF8 url decode expansion */
-            let first = from_hex_digit(first);
-            let second = from_hex_digit(second);
-            if first <= 7 {
-                let val = [(first << 4) | second];
-                Cow::Owned(unsafe { str::from_utf8_unchecked(&val) }.into())
-            } else {
-                let val = [0xC0u8 | (first >> 2), 0x80u8 | ((first & 3) << 4) | second];
-                Cow::Owned(unsafe { str::from_utf8_unchecked(&val) }.into())
-            }
-        }),
-    ))
+fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
+    take_while(
+        0..,
+        (
+            AsChar::is_alphanum,
+            '-',
+            '.',
+            '_',
+            '~',
+            '!',
+            '$',
+            '&',
+            '\'',
+            '(',
+            ')',
+            '*',
+            '+',
+            ',',
+            ';',
+            '=',
+            ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
+        ),
+    )
+    .try_map(|v| urlencoding::decode(v).map(|s| s.into_owned().into()))
     .parse_next(input)
 }
 
-fn parse_dtn_parts(input: &mut &[u8]) -> ModalResult<Eid> {
+fn parse_dtn_parts(input: &mut &str) -> ModalResult<Eid> {
     (
-        terminated(
-            repeat(1.., parse_pchar)
-                .fold(String::new, |mut acc, v| {
-                    if acc.is_empty() {
-                        acc = v.into()
-                    } else {
-                        acc.push_str(&v)
-                    }
-                    acc
-                })
-                .map(|s| s.into_boxed_str()),
-            "/",
-        ),
-        separated(
-            0..,
-            repeat(0.., parse_pchar)
-                .fold(String::new, |mut acc, v| {
-                    if acc.is_empty() {
-                        acc = v.into()
-                    } else {
-                        acc.push_str(&v)
-                    }
-                    acc
-                })
-                .map(|s| s.into_boxed_str()),
-            "/",
-        ),
+        terminated(parse_regname, "/"),
+        take_while(0.., '\x21'..='\x7e'),
     )
-        .map(|(node_name, mut demux): (Box<str>, Vec<Box<str>>)| {
-            // [[]] => []
-            if demux.len() == 1
-                && demux
-                    .first()
-                    .and_then(|s| (s.is_empty()).then_some(()))
-                    .is_some()
-            {
-                demux = Vec::new();
-            }
-            Eid::Dtn {
-                node_name,
-                demux: demux.into(),
-            }
+        .map(|(node_name, demux)| Eid::Dtn {
+            node_name,
+            demux: demux.into(),
         })
         .parse_next(input)
 }
 
-fn parse_dtn(input: &mut &[u8]) -> ModalResult<Eid> {
+fn parse_dtn(input: &mut &str) -> ModalResult<Eid> {
     alt(("none".map(|_| Eid::Null), preceded("//", parse_dtn_parts))).parse_next(input)
 }
 
-pub fn parse_eid(input: &mut &[u8]) -> ModalResult<Eid> {
+pub fn parse_eid(input: &mut &str) -> ModalResult<Eid> {
     alt((preceded("dtn:", parse_dtn), preceded("ipn:", parse_ipn))).parse_next(input)
 }
 
@@ -154,7 +98,7 @@ impl core::str::FromStr for Eid {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_eid
-            .parse(s.as_bytes())
+            .parse(s)
             .map_err(|e| Error::ParseError(e.to_string()))
     }
 }
@@ -258,7 +202,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                             hardy_cbor::decode::Value::UnsignedInteger(0)
                             | hardy_cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
                             hardy_cbor::decode::Value::Text(s) => parse_dtn
-                                .parse(s.as_bytes())
+                                .parse(s)
                                 .map(|e| (e, shortest))
                                 .map_err(|e| Error::ParseError(e.to_string())),
                             hardy_cbor::decode::Value::TextStream(s) => {
@@ -267,7 +211,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                                     acc
                                 });
                                 parse_dtn
-                                    .parse(s.as_bytes())
+                                    .parse(&s)
                                     .map(|e| (e, shortest))
                                     .map_err(|e| Error::ParseError(e.to_string()))
                             }

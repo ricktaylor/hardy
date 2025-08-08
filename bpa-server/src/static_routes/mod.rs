@@ -89,26 +89,22 @@ impl StaticRoutes {
         // Drop routes
         for (k, v) in drop_routes {
             self.routes.remove(&k);
-            self.bpa
-                .remove_route(
-                    &self.config.protocol_id,
-                    &k,
-                    &v.action,
-                    v.priority.unwrap_or(self.config.priority),
-                )
-                .await;
+            self.bpa.remove_route(
+                &self.config.protocol_id,
+                &k,
+                &v.action,
+                v.priority.unwrap_or(self.config.priority),
+            );
         }
 
         // Add routes
         for (k, v) in add_routes {
-            self.bpa
-                .add_route(
-                    self.config.protocol_id.clone(),
-                    k.clone(),
-                    v.action.clone(),
-                    v.priority.unwrap_or(self.config.priority),
-                )
-                .await;
+            self.bpa.add_route(
+                self.config.protocol_id.clone(),
+                k.clone(),
+                v.action.clone(),
+                v.priority.unwrap_or(self.config.priority),
+            );
             self.routes.insert(k, v);
         }
         Ok(())

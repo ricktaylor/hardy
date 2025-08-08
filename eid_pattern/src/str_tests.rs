@@ -114,35 +114,24 @@ fn tests() {
     {
         dtn_match(
             "dtn://node/service",
-            DtnSsp::new("node".into(), ["service".into()].into(), false),
+            DtnPatternItem::Exact("node".into(), "service".into()),
         );
+        dtn_match("dtn://node/*", DtnPatternItem::new_glob("node/*").unwrap());
         dtn_match(
-            "dtn://node/*",
-            DtnSsp {
-                node_name: DtnNodeNamePattern::PatternMatch(PatternMatch::Exact("node".into())),
-                demux: [DtnSinglePattern::Wildcard].into(),
-                last_wild: false,
-            },
+            "dtn://node/**",
+            DtnPatternItem::new_glob("node/**").unwrap(),
         );
-        dtn_match("dtn://node/**", DtnSsp::new("node".into(), [].into(), true));
         dtn_match(
             "dtn://node/pre/**",
-            DtnSsp::new("node".into(), ["pre".into()].into(), true),
+            DtnPatternItem::new_glob("node/pre/**").unwrap(),
         );
         dtn_match(
             "dtn://**/some/serv",
-            DtnSsp {
-                node_name: DtnNodeNamePattern::MultiWildcard,
-                demux: [
-                    DtnSinglePattern::PatternMatch(PatternMatch::Exact("some".into())),
-                    DtnSinglePattern::PatternMatch(PatternMatch::Exact("serv".into())),
-                ]
-                .into(),
-                last_wild: false,
-            },
+            DtnPatternItem::new_glob("**/some/serv").unwrap(),
         );
-        dtn_match(
-            "dtn://**/[%5B^a%5D]",
+        /*dtn_match(
+        "dtn://**/
+[%5B^a%5D]",
             DtnSsp {
                 node_name: DtnNodeNamePattern::MultiWildcard,
                 demux: [DtnSinglePattern::PatternMatch(PatternMatch::Regex(
@@ -151,20 +140,20 @@ fn tests() {
                 .into(),
                 last_wild: false,
             },
-        );
+        );*/
 
         assert_eq!(
             "dtn:none".parse::<EidPattern>().expect("Failed to parse"),
-            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::DtnNone)].into())
+            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::None)].into())
         );
 
         assert_eq!(
             "dtn:**".parse::<EidPattern>().expect("Failed to parse"),
-            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())].into())
+            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::All)].into())
         );
         assert_eq!(
             "1:**".parse::<EidPattern>().expect("Failed to parse"),
-            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::new_any())].into())
+            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::All)].into())
         );
 
         assert_eq!(
@@ -173,11 +162,10 @@ fn tests() {
                 .expect("Failed to parse"),
             EidPattern::Set(
                 [
-                    EidPatternItem::DtnPatternItem(DtnPatternItem::DtnSsp(DtnSsp::new(
+                    EidPatternItem::DtnPatternItem(DtnPatternItem::Exact(
                         "node".into(),
-                        ["service".into()].into(),
-                        false
-                    ))),
+                        "service".into()
+                    )),
                     EidPatternItem::IpnPatternItem(IpnPatternItem::new(0, 3, 4))
                 ]
                 .into()
@@ -208,14 +196,14 @@ fn ipn_match(s: &str, expected: IpnPatternItem) {
 }
 
 #[cfg(feature = "dtn-pat-item")]
-fn dtn_match(s: &str, expected: DtnSsp) {
+fn dtn_match(s: &str, expected: DtnPatternItem) {
     match s.parse().expect("Failed to parse") {
         EidPattern::Set(v) => {
             if v.len() != 1 {
                 panic!("More than 1 pattern item!");
             }
 
-            let EidPatternItem::DtnPatternItem(DtnPatternItem::DtnSsp(i)) = &v[0] else {
+            let EidPatternItem::DtnPatternItem(i) = &v[0] else {
                 panic!("Not a dtn pattern item!")
             };
 

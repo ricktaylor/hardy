@@ -1,5 +1,6 @@
 use hardy_bpv7::eid::Eid;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use thiserror::Error;
 
 mod ipn_pattern;
@@ -24,16 +25,16 @@ pub enum Error {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String")]
-#[serde(try_from = "&str")]
+#[serde(try_from = "Cow<'_,str>")]
 pub enum EidPattern {
     Set(Box<[EidPatternItem]>),
     Any,
 }
 
-impl TryFrom<&str> for EidPattern {
+impl TryFrom<Cow<'_, str>> for EidPattern {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
         value.parse()
     }
 }
@@ -51,7 +52,7 @@ impl From<Eid> for EidPattern {
                 [
                     EidPatternItem::IpnPatternItem(ipn_pattern::IpnPatternItem::new(0, 0, 0)),
                     #[cfg(feature = "dtn-pat-item")]
-                    EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::DtnNone),
+                    EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::None),
                 ]
                 .into(),
             ),
@@ -79,9 +80,7 @@ impl From<Eid> for EidPattern {
             #[cfg(feature = "dtn-pat-item")]
             Eid::Dtn { node_name, demux } => EidPattern::Set(
                 [EidPatternItem::DtnPatternItem(
-                    dtn_pattern::DtnPatternItem::DtnSsp(dtn_pattern::DtnSsp::new(
-                        node_name, demux, false,
-                    )),
+                    dtn_pattern::DtnPatternItem::Exact(node_name, demux),
                 )]
                 .into(),
             ),

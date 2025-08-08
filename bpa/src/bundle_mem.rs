@@ -34,18 +34,18 @@ struct Storage {
 
 #[async_trait]
 impl storage::BundleStorage for Storage {
-    async fn list(
-        &self,
-        tx: tokio::sync::mpsc::Sender<storage::ListResponse>,
-    ) -> storage::Result<()> {
-        for (name, _) in self
+    async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
+        let snapshot = self
             .inner
             .lock()
             .trace_expect("Failed to lock mutex")
             .cache
             .iter()
-        {
-            tx.blocking_send((name.clone().into(), None))?;
+            .map(|(n, _)| n.clone().into())
+            .collect::<Vec<_>>();
+
+        for name in snapshot {
+            tx.send((name, None)).await?;
         }
         Ok(())
     }

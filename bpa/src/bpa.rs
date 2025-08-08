@@ -38,7 +38,7 @@ impl Bpa {
             rib.clone(),
         ));
 
-        dispatcher.start().await?;
+        dispatcher.start()?;
 
         trace!("BPA started");
 
@@ -86,24 +86,24 @@ impl Bpa {
     }
 
     #[instrument(skip(self))]
-    pub async fn add_route(
+    pub fn add_route(
         &self,
         source: String,
         pattern: hardy_eid_pattern::EidPattern,
         action: routes::Action,
         priority: u32,
     ) {
-        self.rib.add(pattern, source, action, priority).await
+        self.rib.add(pattern, source, action, priority)
     }
 
     #[instrument(skip(self))]
-    pub async fn remove_route(
+    pub fn remove_route(
         &self,
         source: &str,
         pattern: &hardy_eid_pattern::EidPattern,
         action: &routes::Action,
         priority: u32,
     ) -> bool {
-        self.rib.remove(pattern, source, action, priority).await
+        self.rib.remove(pattern, source, action, priority)
     }
 }

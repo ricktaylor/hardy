@@ -4,11 +4,11 @@ use hardy_proto::application::*;
 use std::{
     collections::HashMap,
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicI32, Ordering},
     },
 };
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Streaming};
 
@@ -204,7 +204,12 @@ impl Application {
         msg_id: i32,
         response: Result<(), tonic::Status>,
     ) -> Option<Result<bpa_to_app::Msg, tonic::Status>> {
-        if let Some(entry) = self.acks.lock().await.remove(&msg_id) {
+        if let Some(entry) = self
+            .acks
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .remove(&msg_id)
+        {
             _ = entry.send(response.map_err(|s| hardy_bpa::service::Error::Internal(s.into())));
         }
         None
@@ -214,13 +219,15 @@ impl Application {
         let (tx, rx) = oneshot::channel();
 
         // Generate a new msg_id, and add to the forward_ack map
-        let mut acks = self.acks.lock().await;
-        let mut msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
-        while acks.contains_key(&msg_id) {
-            msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
-        }
-        acks.insert(msg_id, tx);
-        drop(acks);
+        let msg_id = {
+            let mut acks = self.acks.lock().trace_expect("Failed to lock mutex");
+            let mut msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
+            while acks.contains_key(&msg_id) {
+                msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
+            }
+            acks.insert(msg_id, tx);
+            msg_id
+        };
 
         if self
             .tx
@@ -232,7 +239,10 @@ impl Application {
             .is_err()
         {
             // Remove ack waiter
-            self.acks.lock().await.remove(&msg_id);
+            self.acks
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .remove(&msg_id);
             return Err(hardy_bpa::service::Error::Disconnected);
         }
 

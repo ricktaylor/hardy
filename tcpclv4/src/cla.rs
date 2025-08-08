@@ -9,7 +9,7 @@ struct ClaInner {
 }
 
 impl ClaInner {
-    async fn start_listeners(
+    fn start_listeners(
         &self,
         config: &config::Config,
         cancel_token: &tokio_util::sync::CancellationToken,
@@ -69,9 +69,7 @@ impl hardy_bpa::cla::Cla for Cla {
             node_ids: node_ids.into(),
         };
 
-        inner
-            .start_listeners(&self.config, &self.cancel_token, &self.task_tracker)
-            .await;
+        inner.start_listeners(&self.config, &self.cancel_token, &self.task_tracker);
 
         if self.inner.set(inner).is_err() {
             error!("CLA on_register called twice!");

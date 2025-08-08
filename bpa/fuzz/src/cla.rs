@@ -1,7 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
-use tokio::sync::mpsc;
 
 #[derive(Default)]
 struct NullCla {
@@ -71,30 +70,13 @@ impl hardy_bpa::cla::Cla for NullCla {
 }
 
 pub fn cla_send(data: hardy_bpa::Bytes) {
-    static PIPE: std::sync::OnceLock<mpsc::Sender<hardy_bpa::Bytes>> = std::sync::OnceLock::new();
+    static PIPE: std::sync::OnceLock<tokio::sync::mpsc::Sender<hardy_bpa::Bytes>> =
+        std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, mut rx) = mpsc::channel::<hardy_bpa::Bytes>(16);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<hardy_bpa::Bytes>(16);
 
         get_runtime().spawn(async move {
-            // New BPA
-            let bpa = hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
-                status_reports: true,
-                node_ids: [Eid::Ipn {
-                    allocator_id: 0,
-                    node_number: 1,
-                    service_number: 0,
-                }]
-                .as_slice()
-                .try_into()
-                .unwrap(),
-                bundle_storage: Some(hardy_bpa::bundle_mem::new(&hardy_bpa::bundle_mem::Config {
-                    capacity: std::num::NonZero::new(1_048_576).unwrap(),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to start BPA");
+            let bpa = new_bpa("cla").await;
 
             // Load static routes
             bpa.add_route(
@@ -102,8 +84,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                 "ipn:*.*".parse().unwrap(),
                 hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
                 1,
-            )
-            .await;
+            );
 
             bpa.add_route(
                 "fuzz".to_string(),
@@ -116,8 +97,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                     .unwrap(),
                 ),
                 100,
-            )
-            .await;
+            );
 
             {
                 let cla = std::sync::Arc::new(NullCla::default());
@@ -179,14 +159,12 @@ mod test {
                                     super::cla_send(buffer.into());
 
                                     count = count.saturating_add(1);
-                                    if count % 100 == 0 {
-                                        tracing::info!("Processed {count} bundles");
-                                    }
                                 }
                             }
                         }
                     }
                 }
+                tracing::info!("Processed {count} bundles");
             }
         }
     }
