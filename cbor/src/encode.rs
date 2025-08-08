@@ -705,3 +705,15 @@ where
     e.emit_map_tagged(count, tags, f);
     e.build()
 }
+
+#[cfg(test)]
+pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {
+    match value {
+        20 | 21 | 23 | 24..=31 => panic!("Invalid simple value, use bool or Option<T>"),
+        _ => {
+            let mut e = Encoder::new();
+            e.emit_uint_minor(7, value as u64);
+            e.build()
+        }
+    }
+}
