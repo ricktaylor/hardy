@@ -95,7 +95,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<T>, E>
     where
-        F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
         // Check for end of array
@@ -119,7 +119,7 @@ impl<'a, const D: usize> Series<'a, D> {
     #[inline]
     pub fn parse_value<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
-        F: FnOnce(Value, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_value(f)?.ok_or(Error::NoMoreItems.into())
@@ -154,7 +154,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn try_parse_array<T, F, E>(&mut self, f: F) -> Result<Option<T>, E>
     where
-        F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_value(|value, shortest, tags| match value {
@@ -167,7 +167,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn parse_array<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
-        F: FnOnce(&mut Array, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_array(f)?.ok_or(Error::NoMoreItems.into())
@@ -175,7 +175,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn try_parse_map<T, F, E>(&mut self, f: F) -> Result<Option<T>, E>
     where
-        F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_value(|value, shortest, tags| match value {
@@ -188,7 +188,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn parse_map<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
-        F: FnOnce(&mut Map, bool, Vec<u64>) -> Result<T, E>,
+        F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
         self.try_parse_map(f)?.ok_or(Error::NoMoreItems.into())
@@ -231,7 +231,7 @@ enum DebugError {
 fn debug_fmt(
     value: Value,
     _shortest: bool,
-    _tags: Vec<u64>,
+    _tags: &[u64],
     max_recursion: usize,
 ) -> Result<SequenceDebugInfo, DebugError> {
     match value {

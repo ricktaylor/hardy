@@ -247,7 +247,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 if shortest {
                     // Appendix B of RFC9171
                     let mut seen_24 = false;
-                    for tag in &tags {
+                    for tag in tags {
                         match *tag {
                             24 if !seen_24 => seen_24 = true,
                             _ => {

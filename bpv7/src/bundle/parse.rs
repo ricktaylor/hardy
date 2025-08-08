@@ -529,7 +529,7 @@ impl ValidBundle {
                 // TODO: POLICY CHECK
                 // Appendix B of RFC9171
                 let mut seen_55799 = false;
-                for tag in &tags {
+                for tag in tags {
                     match *tag {
                         255799 if !seen_55799 => seen_55799 = true,
                         _ => {
