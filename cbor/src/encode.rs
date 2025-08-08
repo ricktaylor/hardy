@@ -604,17 +604,6 @@ where
     e.build()
 }
 
-pub fn emit_simple_value(value: u8) -> Vec<u8> {
-    match value {
-        20 | 21 | 23 | 24..=31 => panic!("Invalid simple value, use bool or Option<T>"),
-        _ => {
-            let mut e = Encoder::new();
-            e.emit_uint_minor(7, value as u64);
-            e.build()
-        }
-    }
-}
-
 pub fn emit_tagged<T, I, U>(value: &T, tags: I) -> Vec<u8>
 where
     T: ToCbor + ?Sized,
