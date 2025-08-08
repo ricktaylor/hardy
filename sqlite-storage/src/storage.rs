@@ -249,35 +249,33 @@ impl storage::MetadataStorage for Storage {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id = serde_json::to_string(bundle_id)?;
-        let Some(bundle) = self
-            .write(move |conn| {
-                let trans =
-                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-                // Check if bundle exists
-                let Some((bundle,id)) = trans
-                    .prepare_cached(
-                        "SELECT bundle,id FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
-                    )?
-                    .query_row((&id,), |row| Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?)))
-                    .optional()? else {
-                        return Ok(None);
-                    };
-
-                // Remove from unconfirmed set
-                if trans
-                    .prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
-                    .execute((&id,))?
-                    != 0
-                {
-                    trans.commit()?;
-                }
-                Ok(Some(bundle))
+        let Some((bundle, id)) = self
+            .read(move |conn| {
+                conn.prepare_cached(
+                    "SELECT bundle,unconfirmed_bundles.id FROM bundles 
+                    LEFT OUTER JOIN unconfirmed_bundles ON bundles.id = unconfirmed_bundles.id 
+                    WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
+                )?
+                .query_row((&id,), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })
+                .optional()
+                .map_err(Into::into)
             })
             .await?
         else {
             return Ok(None);
         };
+
+        if let Some(id) = id {
+            // Delete from unconfirmed_bundles
+            self.write(move |conn| {
+                conn.prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
+                    .execute((&id,))
+                    .map_err(Into::into)
+            })
+            .await?;
+        }
 
         if let Ok(bundle) = serde_json::from_str(bundle.as_str()) {
             Ok(Some(bundle))
