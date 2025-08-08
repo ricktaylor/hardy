@@ -190,7 +190,7 @@ impl Dispatcher {
                             }
 
                             // Remove spurious duplicate
-                            return self.store.delete_data(&storage_name).await.map(|_| (0, 1));
+                            return self.store.delete_data(&storage_name).await.map(|_| (1, 0));
                         }
                         // All looks good, just continue dispatching
                         (0, 0, bundle::Bundle { bundle, metadata }, None)
