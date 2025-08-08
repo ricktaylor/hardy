@@ -1,6 +1,5 @@
 use super::*;
 use base64::prelude::*;
-use serde::{Deserialize, Serialize};
 
 mod parse;
 mod primary_block;
@@ -19,7 +18,9 @@ impl core::fmt::Debug for Payload {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct FragmentInfo {
     pub offset: u64,
     pub total_len: u64,
@@ -63,7 +64,9 @@ impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldIdErr<T>
     }
 }
 
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Id {
     pub source: eid::Eid,
     pub timestamp: creation_timestamp::CreationTimestamp,
@@ -113,7 +116,9 @@ impl Id {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
     pub is_fragment: bool,
     pub is_admin_record: bool,
@@ -125,7 +130,7 @@ pub struct Flags {
     pub delivery_report_requested: bool,
     pub delete_report_requested: bool,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub unrecognised: Option<u64>,
 }
 
@@ -225,10 +230,12 @@ impl<'a> bpsec::BlockSet<'a> for BlockSet<'a> {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Bundle {
     // From Primary Block
-    #[serde(flatten)]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub id: Id,
 
     pub flags: Flags,

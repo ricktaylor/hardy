@@ -1,11 +1,11 @@
 use super::*;
-use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(default)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
-    #[serde(rename = "max-bundles")]
+    #[cfg_attr(feature = "serde", serde(rename = "max-bundles"))]
     pub max_bundles: std::num::NonZeroUsize,
 }
 

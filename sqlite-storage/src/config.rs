@@ -1,13 +1,12 @@
-use serde::{Deserialize, Serialize};
-
 // Buildtime info
 mod built_info {
     // The file has been placed there by the build script.
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(default)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub db_dir: std::path::PathBuf,
     pub db_name: String,

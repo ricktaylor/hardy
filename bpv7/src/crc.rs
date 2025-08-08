@@ -1,5 +1,4 @@
 use super::*;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const X25: ::crc::Crc<u16> = ::crc::Crc::<u16>::new(&::crc::CRC_16_IBM_SDLC);
@@ -27,7 +26,9 @@ pub enum Error {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum CrcType {
     #[default]
     None,

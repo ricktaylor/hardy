@@ -1,8 +1,9 @@
 use super::*;
 use error::CaptureFieldErr;
-use serde::{Deserialize, Serialize};
 
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct CreationTimestamp {
     pub creation_time: Option<dtn_time::DtnTime>,
     pub sequence_number: u64,

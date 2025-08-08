@@ -1,7 +1,6 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(default)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct SessionConfig {
     // Seconds to wait for the initial contact header
     pub contact_timeout: u16, // default 15
@@ -22,8 +21,9 @@ impl Default for SessionConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(default)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     // The TCP address:port to listen for TCP connections
     pub address: std::net::SocketAddr, // default = [::]:4556
@@ -37,7 +37,7 @@ pub struct Config {
     // Maximum number of idle connections, per remote address
     pub max_idle_connections: usize,
 
-    #[serde(flatten)]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub session_defaults: SessionConfig,
 }
 

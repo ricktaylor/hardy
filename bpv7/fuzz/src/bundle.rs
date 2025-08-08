@@ -1,14 +1,14 @@
-use hardy_bpv7::{bpsec, bundle::ValidBundle, eid::Eid};
-use serde_json::json;
+use base64::prelude::*;
+use hardy_bpv7::{bpsec::key, bundle::ValidBundle, eid::Eid};
 
-struct Keys(Vec<bpsec::key::Key>);
+struct Keys(Vec<key::Key>);
 
-impl bpsec::key::KeyStore for Keys {
+impl key::KeyStore for Keys {
     fn decrypt_keys<'a>(
         &'a self,
         source: &Eid,
-        operation: &[bpsec::key::Operation],
-    ) -> impl Iterator<Item = &'a bpsec::key::Key> {
+        operation: &[key::Operation],
+    ) -> impl Iterator<Item = &'a key::Key> {
         self.0.iter().filter(move |k| {
             if let (Some(kid), Some(ops)) = (&k.id, &k.operations) {
                 if let Ok(eid) = kid.parse::<Eid>() {
@@ -32,52 +32,82 @@ pub fn test_bundle(orig_data: &[u8]) {
 
     let keys = KEYS.get_or_init(|| {
         Keys(
-            serde_json::from_value(json!([
-                {
-                    "kid": "ipn:2.1",
-                    "alg": "HS512",
-                    "key_ops": ["verify"],
-                    "kty": "oct",
-                    "k": "GisaKxorGisaKxorGisaKw",
+            [
+                key::Key {
+                    id: Some("ipn:2.1".into()),
+                    key_algorithm: Some(key::KeyAlgorithm::HS512),
+                    operations: Some([key::Operation::Verify].into()),
+                    key_type: key::Type::OctetSequence {
+                        key: BASE64_URL_SAFE_NO_PAD
+                            .decode(b"GisaKxorGisaKxorGisaKw")
+                            .unwrap()
+                            .into(),
+                    },
+                    ..Default::default()
                 },
-                {
-                    "kid": "ipn:2.1",
-                    "alg": "A128KW",
-                    "key_ops": ["unwrapKey","decrypt"],
-                    "kty": "oct",
-                    "k": "YWJjZGVmZ2hpamtsbW5vcA",
+                key::Key {
+                    id: Some("ipn:2.1".into()),
+                    key_algorithm: Some(key::KeyAlgorithm::A128KW),
+                    operations: Some([key::Operation::UnwrapKey, key::Operation::Decrypt].into()),
+                    key_type: key::Type::OctetSequence {
+                        key: BASE64_URL_SAFE_NO_PAD
+                            .decode(b"YWJjZGVmZ2hpamtsbW5vcA")
+                            .unwrap()
+                            .into(),
+                    },
+                    ..Default::default()
                 },
-                {
-                    "kid": "ipn:3.0",
-                    "alg": "HS256",
-                    "key_ops": ["verify"],
-                    "kty": "oct",
-                    "k": "GisaKxorGisaKxorGisaKw",
+                key::Key {
+                    id: Some("ipn:3.0".into()),
+                    key_algorithm: Some(key::KeyAlgorithm::HS256),
+                    operations: Some([key::Operation::Verify].into()),
+                    key_type: key::Type::OctetSequence {
+                        key: BASE64_URL_SAFE_NO_PAD
+                            .decode(b"GisaKxorGisaKxorGisaKw")
+                            .unwrap()
+                            .into(),
+                    },
+                    ..Default::default()
                 },
-                {
-                    "kid": "ipn:2.1",
-                    "alg": "dir",
-                    "enc": "A128GCM",
-                    "key_ops": ["decrypt"],
-                    "kty": "oct",
-                    "k": "cXdlcnR5dWlvcGFzZGZnaA",
+                key::Key {
+                    id: Some("ipn:2.1".into()),
+                    key_algorithm: Some(key::KeyAlgorithm::Direct),
+                    enc_algorithm: Some(key::EncAlgorithm::A128GCM),
+                    operations: Some([key::Operation::Decrypt].into()),
+                    key_type: key::Type::OctetSequence {
+                        key: BASE64_URL_SAFE_NO_PAD
+                            .decode(b"cXdlcnR5dWlvcGFzZGZnaA")
+                            .unwrap()
+                            .into(),
+                    },
+                    ..Default::default()
                 },
-                {
-                    "kid": "ipn:2.1",
-                    "alg": "HS384",
-                    "key_ops": ["verify"],
-                    "kty": "oct",
-                    "k": "GisaKxorGisaKxorGisaKw",
+                key::Key {
+                    id: Some("ipn:2.1".into()),
+                    key_algorithm: Some(key::KeyAlgorithm::HS384),
+                    operations: Some([key::Operation::Verify].into()),
+                    key_type: key::Type::OctetSequence {
+                        key: BASE64_URL_SAFE_NO_PAD
+                            .decode(b"GisaKxorGisaKxorGisaKw")
+                            .unwrap()
+                            .into(),
+                    },
+                    ..Default::default()
                 },
-                {
-                    "kid": "ipn:3.1",
-                    "enc": "A256GCM",
-                    "key_ops": ["decrypt"],
-                    "kty": "oct",
-                    "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g",
-                }
-            ]))
-            .unwrap(),
+                key::Key {
+                    id: Some("ipn:2.1".into()),
+                    enc_algorithm: Some(key::EncAlgorithm::A256GCM),
+                    operations: Some([key::Operation::Decrypt].into()),
+                    key_type: key::Type::OctetSequence {
+                        key: BASE64_URL_SAFE_NO_PAD
+                            .decode(b"cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g")
+                            .unwrap()
+                            .into(),
+                    },
+                    ..Default::default()
+                },
+            ]
+            .into(),
         )
     });
 

@@ -19,13 +19,13 @@ grpc = ["dep:tonic", "dep:hardy-proto", "dep:tokio-stream", "dep:prost","dep:pro
 tcpclv4 = ["dep:hardy-tcpclv4"]
 
 [dependencies]
-hardy-bpv7 = { path = "../bpv7" }
-hardy-bpa = { path = "../bpa" }
-hardy-eid-pattern = { path = "../eid_pattern" }
+hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
+hardy-bpa = { path = "../bpa", features = ["serde"] }
+hardy-eid-pattern = { path = "../eid_pattern", features = ["serde"] }
 hardy-proto = { path = "../proto", optional = true }
-hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
-hardy-localdisk-storage = { path = "../localdisk-storage", optional = true }
-hardy-tcpclv4 = { path = "../tcpclv4", optional = true }
+hardy-sqlite-storage = { path = "../sqlite-storage", features = ["serde"], optional = true }
+hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
+hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 tokio = { version = "1.45.0", features = [
     "macros",
     "rt-multi-thread",

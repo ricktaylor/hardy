@@ -1,8 +1,6 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
 use rand::Rng;
-use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -177,10 +175,11 @@ impl TryFrom<&[Eid]> for NodeIds {
     }
 }
 
-impl Serialize for NodeIds {
+#[cfg(feature = "serde")]
+impl serde::Serialize for NodeIds {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: Serializer,
+        S: serde::Serializer,
     {
         match (&self.ipn, &self.dtn) {
             (None, None) => unreachable!(),
@@ -218,14 +217,15 @@ impl Serialize for NodeIds {
     }
 }
 
-impl<'de> Deserialize<'de> for NodeIds {
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NodeIds {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de>,
+        D: serde::Deserializer<'de>,
     {
         struct AdminEndpointsVisitor;
 
-        impl<'de> Visitor<'de> for AdminEndpointsVisitor {
+        impl<'de> serde::de::Visitor<'de> for AdminEndpointsVisitor {
             type Value = NodeIds;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -234,12 +234,12 @@ impl<'de> Deserialize<'de> for NodeIds {
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
-                E: de::Error,
+                E: serde::de::Error,
             {
                 [value.parse().map_err(E::custom)?]
                     .as_slice()
                     .try_into()
-                    .map_err(de::Error::custom)
+                    .map_err(serde::de::Error::custom)
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -248,21 +248,24 @@ impl<'de> Deserialize<'de> for NodeIds {
             {
                 let mut endpoints = Vec::new();
                 while let Some(eid) = seq.next_element::<String>()? {
-                    endpoints.push(eid.parse().map_err(de::Error::custom)?);
+                    endpoints.push(eid.parse().map_err(serde::de::Error::custom)?);
                 }
-                endpoints.as_slice().try_into().map_err(de::Error::custom)
+                endpoints
+                    .as_slice()
+                    .try_into()
+                    .map_err(serde::de::Error::custom)
             }
 
             fn visit_none<E>(self) -> Result<Self::Value, E>
             where
-                E: de::Error,
+                E: serde::de::Error,
             {
                 Ok(NodeIds::default())
             }
 
             fn visit_unit<E>(self) -> Result<Self::Value, E>
             where
-                E: de::Error,
+                E: serde::de::Error,
             {
                 Ok(NodeIds::default())
             }

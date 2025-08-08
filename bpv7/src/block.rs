@@ -1,16 +1,17 @@
 use super::*;
 use core::ops::Range;
 use error::CaptureFieldErr;
-use serde::{Deserialize, Serialize};
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
     pub must_replicate: bool,
     pub report_on_failure: bool,
     pub delete_bundle_on_failure: bool,
     pub delete_block_on_failure: bool,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub unrecognised: Option<u64>,
 }
 
@@ -75,7 +76,9 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum Type {
     Primary,
     Payload,
@@ -132,7 +135,9 @@ impl hardy_cbor::decode::FromCbor for Type {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Block {
     pub block_type: Type,
     pub flags: Flags,

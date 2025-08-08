@@ -1,5 +1,4 @@
 use hardy_bpv7::eid::Eid;
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use thiserror::Error;
 
@@ -23,9 +22,10 @@ pub enum Error {
     NotExact,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(into = "String")]
-#[serde(try_from = "Cow<'_,str>")]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(into = "String"))]
+#[cfg_attr(feature = "serde", serde(try_from = "Cow<'_,str>"))]
 pub enum EidPattern {
     Set(Box<[EidPatternItem]>),
     Any,

@@ -72,6 +72,7 @@ impl ConnectionPool {
 
 pub struct Storage {
     pool: Arc<ConnectionPool>,
+    bincode_config: bincode::config::Configuration,
 }
 
 impl Storage {
@@ -131,6 +132,7 @@ impl Storage {
 
         Self {
             pool: Arc::new(ConnectionPool::new(path, connection)),
+            bincode_config: bincode::config::standard(),
         }
     }
 
@@ -166,14 +168,14 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
-        let id = serde_json::to_string(bundle_id)?;
-        let Some(s) = self
+        let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
+        let Some(bundle) = self
             .read(move |conn| {
                 let r = conn
                     .prepare_cached(
                         "SELECT bundle FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                     )?
-                    .query_row((&id,), |row| row.get::<_, String>(0))
+                    .query_row((&id,), |row| row.get::<_, Vec<u8>>(0))
                     .optional()?;
                 Ok(r)
             })
@@ -182,16 +184,16 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        serde_json::from_str(s.as_str())
-            .map(Some)
+        bincode::decode_from_slice(&bundle, self.bincode_config)
+            .map(|(b, _)| Some(b))
             .map_err(Into::into)
     }
 
     #[instrument(skip(self))]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
-        let id = serde_json::to_string(&bundle.bundle.id)?;
-        let bundle = serde_json::to_string(bundle)?;
+        let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
+        let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
@@ -207,8 +209,8 @@ impl storage::MetadataStorage for Storage {
     #[instrument(skip(self))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
-        let id = serde_json::to_string(&bundle.bundle.id)?;
-        let bundle = serde_json::to_string(bundle)?;
+        let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
+        let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         if self
             .write(move |conn| {
                 // Update bundle
@@ -228,7 +230,7 @@ impl storage::MetadataStorage for Storage {
 
     #[instrument(skip(self))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        let id = serde_json::to_string(bundle_id)?;
+        let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
         if self
             .write(move |conn| {
                 conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE bundle_id = ?1")?
@@ -248,7 +250,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
-        let id = serde_json::to_string(bundle_id)?;
+        let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
         let Some((bundle, id)) = self
             .read(move |conn| {
                 conn.prepare_cached(
@@ -257,7 +259,7 @@ impl storage::MetadataStorage for Storage {
                     WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                 )?
                 .query_row((&id,), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<i64>>(1)?))
                 })
                 .optional()
                 .map_err(Into::into)
@@ -277,7 +279,7 @@ impl storage::MetadataStorage for Storage {
             .await?;
         }
 
-        if let Ok(bundle) = serde_json::from_str(bundle.as_str()) {
+        if let Ok((bundle, _)) = bincode::decode_from_slice(&bundle, self.bincode_config) {
             Ok(Some(bundle))
         } else {
             warn!("Garbage bundle found in metadata!");
@@ -301,7 +303,7 @@ impl storage::MetadataStorage for Storage {
                         "SELECT bundles.id,bundle FROM bundles JOIN unconfirmed_bundles ON unconfirmed_bundles.id = bundles.id LIMIT 1",
                     )?
                     .query_row((), |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
                     }).optional()? else {
                         return Ok(None);
                     };
@@ -326,14 +328,14 @@ impl storage::MetadataStorage for Storage {
                 return Ok(());
             };
 
-            match serde_json::from_str::<hardy_bpa::bundle::Bundle>(&bundle) {
-                Ok(bundle) => {
+            match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                Ok((bundle, _)) => {
                     if tx.send(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         return Ok(());
                     }
                 }
-                Err(e) => warn!("Garbage bundle found in metadata: {e} {bundle}",),
+                Err(e) => warn!("Garbage bundle found in metadata: {e}"),
             }
         }
     }

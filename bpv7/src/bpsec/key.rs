@@ -1,5 +1,6 @@
 use super::*;
-use serde::Deserialize;
+
+#[cfg(feature = "serde")]
 use serde_with::{
     NoneAsEmptyString,
     base64::{Base64, UrlSafe},
@@ -16,85 +17,91 @@ pub trait KeyStore {
     ) -> impl Iterator<Item = &'a Key>;
 }
 
-#[serde_as]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(feature = "serde", serde_as)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub struct Key {
-    #[serde(flatten)]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub key_type: Type,
 
-    #[serde(flatten)]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub key_algorithm: Option<KeyAlgorithm>,
 
-    #[serde(flatten)]
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub enc_algorithm: Option<EncAlgorithm>,
 
-    #[serde(rename = "key_ops")]
+    #[cfg_attr(feature = "serde", serde(rename = "key_ops"))]
     pub operations: Option<HashSet<Operation>>,
 
     /* The following members are standard, but unused in the implementation
      * but here for use by crate users */
-    #[serde(rename = "kid")]
-    #[serde_as(as = "NoneAsEmptyString")]
+    #[cfg_attr(feature = "serde", serde(rename = "kid"))]
+    #[cfg_attr(feature = "serde", serde_as(as = "NoneAsEmptyString"))]
     pub id: Option<String>,
 
-    #[serde(rename = "use")]
+    #[cfg_attr(feature = "serde", serde(rename = "use"))]
     pub key_use: Option<Use>,
 }
 
-#[serde_as]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kty")]
+#[derive(Default, Debug, Clone)]
+#[cfg_attr(feature = "serde", serde_as)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kty"))]
 pub enum Type {
-    #[serde(rename = "EC")]
+    #[cfg_attr(feature = "serde", serde(rename = "EC"))]
     EllipticCurve,
     RSA,
-    #[serde(rename = "oct")]
+    #[cfg_attr(feature = "serde", serde(rename = "oct"))]
     OctetSequence {
-        #[serde(rename = "k")]
-        #[serde_as(as = "Base64<UrlSafe, Unpadded>")]
-        key: Vec<u8>,
+        #[cfg_attr(feature = "serde", serde(rename = "k"))]
+        #[cfg_attr(feature = "serde", serde_as(as = "Base64<UrlSafe, Unpadded>"))]
+        key: Box<[u8]>,
     },
-    #[serde(other)]
+    #[default]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
 }
 
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub enum Use {
-    #[serde(rename = "sig")]
+    #[cfg_attr(feature = "serde", serde(rename = "sig"))]
     Signature,
-    #[serde(rename = "enc")]
+    #[cfg_attr(feature = "serde", serde(rename = "enc"))]
     Encryption,
-    #[serde(other)]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub enum Operation {
-    #[serde(rename = "sign")]
+    #[cfg_attr(feature = "serde", serde(rename = "sign"))]
     Sign,
-    #[serde(rename = "verify")]
+    #[cfg_attr(feature = "serde", serde(rename = "verify"))]
     Verify,
-    #[serde(rename = "encrypt")]
+    #[cfg_attr(feature = "serde", serde(rename = "encrypt"))]
     Encrypt,
-    #[serde(rename = "decrypt")]
+    #[cfg_attr(feature = "serde", serde(rename = "decrypt"))]
     Decrypt,
-    #[serde(rename = "wrapKey")]
+    #[cfg_attr(feature = "serde", serde(rename = "wrapKey"))]
     WrapKey,
-    #[serde(rename = "unwrapKey")]
+    #[cfg_attr(feature = "serde", serde(rename = "unwrapKey"))]
     UnwrapKey,
-    #[serde(rename = "deriveKey")]
+    #[cfg_attr(feature = "serde", serde(rename = "deriveKey"))]
     DeriveKey,
-    #[serde(rename = "deriveBits")]
+    #[cfg_attr(feature = "serde", serde(rename = "deriveBits"))]
     DeriveBits,
-    #[serde(other)]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "alg")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "alg"))]
 pub enum KeyAlgorithm {
-    #[serde(rename = "dir")]
+    #[cfg_attr(feature = "serde", serde(rename = "dir"))]
     Direct,
     A128KW,
     A192KW,
@@ -102,21 +109,22 @@ pub enum KeyAlgorithm {
     HS256,
     HS384,
     HS512,
-    #[serde(rename = "HS256+A128KW")]
+    #[cfg_attr(feature = "serde", serde(rename = "HS256+A128KW"))]
     HS256_A128KW,
-    #[serde(rename = "HS384+A192KW")]
+    #[cfg_attr(feature = "serde", serde(rename = "HS384+A192KW"))]
     HS384_A192KW,
-    #[serde(rename = "HS512+A256KW")]
+    #[cfg_attr(feature = "serde", serde(rename = "HS512+A256KW"))]
     HS512_A256KW,
-    #[serde(other)]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "enc")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "enc"))]
 pub enum EncAlgorithm {
     A128GCM,
     A256GCM,
-    #[serde(other)]
+    #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
 }

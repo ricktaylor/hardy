@@ -1,14 +1,14 @@
 use super::*;
 use rand::distr::{Alphanumeric, SampleString};
-use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(default)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub capacity: std::num::NonZeroUsize,
 
-    #[serde(rename = "min-bundles")]
+    #[cfg_attr(feature = "serde", serde(rename = "min-bundles"))]
     pub min_bundles: usize,
 }
 

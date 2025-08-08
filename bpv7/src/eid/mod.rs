@@ -1,6 +1,5 @@
 use super::*;
 use alloc::borrow::Cow;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod error;
@@ -14,9 +13,11 @@ mod str_tests;
 #[cfg(test)]
 mod cbor_tests;
 
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(into = "String")]
-#[serde(try_from = "Cow<str>")]
+#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
+#[cfg_attr(feature = "serde", serde(into = "String"))]
+#[cfg_attr(feature = "serde", serde(try_from = "Cow<str>"))]
 pub enum Eid {
     #[default]
     Null,

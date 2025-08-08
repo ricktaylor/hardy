@@ -1,7 +1,8 @@
 use super::*;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Bundle {
     pub bundle: hardy_bpv7::bundle::Bundle,
     pub metadata: metadata::BundleMetadata,

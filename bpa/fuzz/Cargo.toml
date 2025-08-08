@@ -9,6 +9,8 @@ cargo-fuzz = true
 
 [features]
 default = []
+serde = ["dep:serde"]
+bincode = ["dep:bincode"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 
@@ -25,6 +27,8 @@ tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"
 arbitrary = { version = "1.4.1", features = ["derive"] }
 cfg-if = "1.0.0"
+serde = { version = "1.0.219", features = ["derive"], optional = true }
+bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
 
 [lib]
 name = "common"

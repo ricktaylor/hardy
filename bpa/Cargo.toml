@@ -3,6 +3,12 @@ name = "hardy-bpa"
 version = "0.1.0"
 edition.workspace = true
 
+[features]
+default = ["rfc9173"]
+rfc9173 = ["hardy-bpv7/rfc9173"]
+serde = ["dep:serde","hardy-bpv7/serde","hardy-eid-pattern/serde"]
+bincode = ["dep:bincode","hardy-bpv7/bincode"]
+
 [lib]
 path = "src/lib.rs"
 crate-type = ["rlib"]
@@ -19,11 +25,11 @@ tokio-util = { version = "0.7.15", features = ["rt"] }
 tracing = "0.1.41"
 trace-err = "0.1.3"
 rand = "0.9.1"
-serde = { version = "1.0.219", features = ["derive","rc"] }
 lru = "0.16.0"
-
 thiserror = "2.0.12"
 rustversion = "1.0"
+serde = { version = "1.0.219", features = ["derive","rc"], optional = true }
+bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

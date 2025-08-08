@@ -1,7 +1,7 @@
 CREATE TABLE bundles (
     id INTEGER PRIMARY KEY,
-    bundle_id TEXT UNIQUE NOT NULL,
-    bundle TEXT,
+    bundle_id BLOB UNIQUE NOT NULL,
+    bundle BLOB,
     expiry TEXT NOT NULL
 ) STRICT;
 

@@ -1,15 +1,15 @@
 use super::*;
-use serde::{Deserialize, Serialize};
 
-#[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub status_reports: bool,
 
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
 
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
 
     pub node_ids: node_ids::NodeIds,
