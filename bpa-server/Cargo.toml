@@ -46,7 +46,7 @@ cfg-if = "1.0.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"
-notify-debouncer-full = "0.5.0"
+notify-debouncer-full = "0.6.0"
 notify = { version = "8.0.0", default-features = false, features = [
     "macos_kqueue",
 ] }
