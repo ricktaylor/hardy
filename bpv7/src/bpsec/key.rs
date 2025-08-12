@@ -1,12 +1,7 @@
 use super::*;
 
 #[cfg(feature = "serde")]
-use serde_with::{
-    NoneAsEmptyString,
-    base64::{Base64, UrlSafe},
-    formats::Unpadded,
-    serde_as,
-};
+use serde_with::serde_as;
 
 pub trait KeyStore {
     /// Get an iterator for keys suitable for decryption, verification, or unwrapping
@@ -36,7 +31,7 @@ pub struct Key {
     /* The following members are standard, but unused in the implementation
      * but here for use by crate users */
     #[cfg_attr(feature = "serde", serde(rename = "kid"))]
-    #[cfg_attr(feature = "serde", serde_as(as = "NoneAsEmptyString"))]
+    #[cfg_attr(feature = "serde", serde_as(as = "serde_with::NoneAsEmptyString"))]
     pub id: Option<String>,
 
     #[cfg_attr(feature = "serde", serde(rename = "use"))]
@@ -54,7 +49,12 @@ pub enum Type {
     #[cfg_attr(feature = "serde", serde(rename = "oct"))]
     OctetSequence {
         #[cfg_attr(feature = "serde", serde(rename = "k"))]
-        #[cfg_attr(feature = "serde", serde_as(as = "Base64<UrlSafe, Unpadded>"))]
+        #[cfg_attr(
+            feature = "serde",
+            serde_as(
+                as = "serde_with::base64::Base64<serde_with::base64::UrlSafe, serde_with::formats::Unpadded>"
+            )
+        )]
         key: Box<[u8]>,
     },
     #[default]
