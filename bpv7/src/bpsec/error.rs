@@ -86,7 +86,7 @@ pub enum Error {
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
 
     #[error("Underlying cryptographic operation failed: {0}")]
-    Algorithm(Box<dyn core::error::Error + Send + Sync>),
+    Algorithm(String),
 }
 
 pub trait CaptureFieldErr<T> {

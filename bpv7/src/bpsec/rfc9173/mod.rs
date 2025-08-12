@@ -72,7 +72,7 @@ impl hardy_cbor::encode::ToCbor for ScopeFlags {
 fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
     OsRng
         .try_fill_bytes(&mut cek)
-        .map_err(|e| Error::Algorithm(e.into()))?;
+        .map_err(|e| Error::Algorithm(e.to_string()))?;
     Ok(zeroize::Zeroizing::from(cek))
 }
 

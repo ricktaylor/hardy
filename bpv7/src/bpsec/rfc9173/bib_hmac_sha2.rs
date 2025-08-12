@@ -179,7 +179,8 @@ where
     <<A as CoreProxy>::Core as BlockSizeUser>::BlockSize: typenum::IsLess<U256>,
     typenum::Le<<<A as CoreProxy>::Core as BlockSizeUser>::BlockSize, U256>: typenum::NonZero,
 {
-    let mut mac = hmac::Hmac::<A>::new_from_slice(key).map_err(|e| Error::Algorithm(e.into()))?;
+    let mut mac =
+        hmac::Hmac::<A>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
 
     // Build IPT
     mac.update(&hardy_cbor::encode::emit(&ScopeFlags {
@@ -307,17 +308,17 @@ impl Operation {
                 Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
                     aes_kw::KekAes128::try_from(kek.as_ref())
                         .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.into()))
+                        .map_err(|e| Error::Algorithm(e.to_string()))
                 }
                 Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
                     aes_kw::KekAes192::try_from(kek.as_ref())
                         .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.into()))
+                        .map_err(|e| Error::Algorithm(e.to_string()))
                 }
                 Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
                     aes_kw::KekAes256::try_from(kek.as_ref())
                         .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.into()))
+                        .map_err(|e| Error::Algorithm(e.to_string()))
                 }
                 _ => return Ok(None),
             }?;
@@ -514,17 +515,17 @@ impl Operation {
                 Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
                     aes_kw::KekAes128::try_from(kek.as_ref())
                         .and_then(|kek| kek.unwrap_vec(cek))
-                        .map_err(|e| Error::Algorithm(e.into()))
+                        .map_err(|e| Error::Algorithm(e.to_string()))
                 }
                 Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
                     aes_kw::KekAes192::try_from(kek.as_ref())
                         .and_then(|kek| kek.unwrap_vec(cek))
-                        .map_err(|e| Error::Algorithm(e.into()))
+                        .map_err(|e| Error::Algorithm(e.to_string()))
                 }
                 Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
                     aes_kw::KekAes256::try_from(kek.as_ref())
                         .and_then(|kek| kek.unwrap_vec(cek))
-                        .map_err(|e| Error::Algorithm(e.into()))
+                        .map_err(|e| Error::Algorithm(e.to_string()))
                 }
                 _ => Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone())),
             }
