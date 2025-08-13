@@ -8,6 +8,7 @@ pub(super) enum DispatchResult {
 }
 
 impl Dispatcher {
+    #[instrument(skip_all)]
     pub(super) async fn dispatch_bundle(
         self: &Arc<Self>,
         bundle: bundle::Bundle,
@@ -31,6 +32,7 @@ impl Dispatcher {
         self.drop_bundle(bundle, reason_code).await
     }
 
+    #[instrument(skip_all)]
     pub(super) async fn dispatch_bundle_inner(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -133,6 +135,7 @@ impl Dispatcher {
         }
     }
 
+    #[instrument(skip_all)]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,

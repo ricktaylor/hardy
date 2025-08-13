@@ -2,7 +2,7 @@ use super::*;
 use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
 
 impl Dispatcher {
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub(super) async fn administrative_bundle(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,

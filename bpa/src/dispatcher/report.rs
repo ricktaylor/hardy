@@ -5,7 +5,7 @@ use hardy_bpv7::{
 };
 
 impl Dispatcher {
-    #[instrument(skip(self))]
+    #[instrument(skip(self, bundle))]
     pub(super) async fn report_bundle_reception(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -43,7 +43,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub(super) async fn report_bundle_forwarded(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} forwarded", &bundle.bundle.id);
 
@@ -71,7 +71,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub(super) async fn report_bundle_delivery(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} delivered", &bundle.bundle.id);
 
@@ -97,7 +97,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, bundle))]
     pub async fn report_bundle_deletion(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -128,7 +128,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip(self, payload))]
     async fn dispatch_status_report(self: &Arc<Self>, payload: Box<[u8]>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {

@@ -333,6 +333,7 @@ impl Rib {
             .remove(address_type);
     }
 
+    #[instrument(skip(self))]
     pub fn find(&self, to: &Eid) -> Result<Option<FindResult>, Option<ReasonCode>> {
         let mut result = find_recurse(
             &self.inner.read().trace_expect("Failed to lock mutex"),
@@ -392,6 +393,7 @@ impl Rib {
     }
 }
 
+#[instrument(skip(inner))]
 fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
     let mut clas: Option<Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>> = None;
     for action in inner.locals.get(to).into_iter().flatten() {

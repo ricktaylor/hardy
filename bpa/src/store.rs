@@ -178,7 +178,7 @@ impl Store {
         }
     }
 
-    #[instrument(skip(self, data))]
+    #[instrument(skip_all)]
     pub async fn store(
         &self,
         bundle: hardy_bpv7::bundle::Bundle,
@@ -232,7 +232,7 @@ impl Store {
         self.bundle_storage.load(storage_name).await
     }
 
-    #[instrument(skip(self, data))]
+    #[instrument(skip_all)]
     pub async fn save_data(&self, data: Bytes) -> storage::Result<Arc<str>> {
         if data.len() < MAX_CACHED_BUNDLE_SIZE {
             let storage_name = self.bundle_storage.save(data.clone()).await?;
@@ -275,7 +275,7 @@ impl Store {
         self.metadata_storage.get(bundle_id).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         // Check cache first
         if self
@@ -318,7 +318,7 @@ impl Store {
         self.metadata_storage.confirm_exists(bundle_id).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
         self.metadata_cache
             .lock()
