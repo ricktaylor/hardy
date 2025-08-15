@@ -12,6 +12,7 @@ members = [
     "eid_pattern",
     "eid_pattern/fuzz",
     "localdisk-storage",
+    "otel",
     "proto",
     "sqlite-storage",
     "tcpclv4",

@@ -105,9 +105,19 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                     .await
                     .expect("Failed to register CLA");
 
+                let mut count = std::sync::atomic::AtomicU64::new(0);
+
                 // Now pull from the channel
                 while let Some(data) = rx.recv().await {
                     _ = cla.dispatch(data).await;
+
+                    let count = count.get_mut();
+                    *count += 1;
+                    tracing::event!(
+                        target: "metrics",
+                        tracing::Level::TRACE,
+                        monotonic_counter.fuzz_cla.dispatched_bundles = count
+                    );
                 }
 
                 cla.unregister().await;

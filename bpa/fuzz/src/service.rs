@@ -119,6 +119,9 @@ fn send(msg: Msg) {
                     .await
                     .expect("Failed to register service");
 
+                let mut good_count = std::sync::atomic::AtomicU64::new(0);
+                let mut bad_count = std::sync::atomic::AtomicU64::new(0);
+
                 // Now pull from the channel
                 while let Some(msg) = rx.recv().await {
                     if let Ok(destination) = msg.destination.as_ref().parse() {
@@ -130,6 +133,22 @@ fn send(msg: Msg) {
                                 msg.flags.map(Into::into),
                             )
                             .await;
+
+                        let count = good_count.get_mut();
+                        *count += 1;
+                        tracing::event!(
+                            target: "metrics",
+                            tracing::Level::TRACE,
+                            monotonic_counter.fuzz_service.dispatched_bundles = count
+                        );
+                    } else {
+                        let count = bad_count.get_mut();
+                        *count += 1;
+                        tracing::event!(
+                            target: "metrics",
+                            tracing::Level::TRACE,
+                            monotonic_counter.fuzz_service.bad_bundles = count
+                        );
                     }
                 }
 

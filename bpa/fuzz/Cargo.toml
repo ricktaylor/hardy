@@ -9,13 +9,12 @@ cargo-fuzz = true
 
 [features]
 default = []
-serde = ["dep:serde"]
-bincode = ["dep:bincode"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 
 [dependencies]
 libfuzzer-sys = "0.4"
+hardy-otel = { path = "../../otel" }
 hardy-bpv7 = { path = "../../bpv7" }
 hardy-bpa = { path = ".." }
 hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
@@ -27,8 +26,6 @@ tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"
 arbitrary = { version = "1.4.2", features = ["derive"] }
 cfg-if = "1.0.1"
-serde = { version = "1.0.219", features = ["derive"], optional = true }
-bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
 
 [lib]
 name = "common"

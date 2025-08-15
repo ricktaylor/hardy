@@ -2,18 +2,18 @@ pub mod cla;
 pub mod service;
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing_subscriber::filter::LevelFilter::INFO)
-            .with_target(true)
-            .init();
-
-        tokio::runtime::Builder::new_multi_thread()
+    static RT: std::sync::OnceLock<(tokio::runtime::Runtime, hardy_otel::OtelGuard)> =
+        std::sync::OnceLock::new();
+    &RT.get_or_init(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .unwrap()
+            .unwrap();
+
+        let guard = rt.block_on(async { hardy_otel::init(None, Some(tracing::Level::INFO)) });
+        (rt, guard)
     })
+    .0
 }
 
 #[allow(unused)]
