@@ -134,7 +134,7 @@ impl Store {
             let mut task_set = tokio::task::JoinSet::new();
 
             // Give some feedback
-            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
             let mut stats = RestartStats::new();
 
             loop {
@@ -192,7 +192,7 @@ impl Store {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<bundle::Bundle>(16);
         let h = tokio::spawn(async move {
             // Give some feedback
-            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
 
             loop {
                 tokio::select! {
