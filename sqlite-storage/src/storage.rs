@@ -336,7 +336,7 @@ impl storage::MetadataStorage for Storage {
                         return Ok(());
                     }
                 }
-                Err(e) => warn!("Garbage bundle found in metadata: {e}"),
+                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
             }
         }
     }
