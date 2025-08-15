@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 hardy-eid-pattern = { path = ".." }
 hardy-bpv7 = { path = "../../bpv7" }
-arbitrary = { version = "1.4.1", features = ["derive"] }
+arbitrary = { version = "1.4.2", features = ["derive"] }
 
 [[bin]]
 name = "eid_pattern_str"
