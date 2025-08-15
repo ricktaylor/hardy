@@ -4,7 +4,7 @@ use super::*;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BundleMetadata {
     pub storage_name: Option<Arc<str>>,
-    pub received_at: Option<time::OffsetDateTime>,
+    pub received_at: time::OffsetDateTime,
 }
 
 #[cfg(feature = "bincode")]
@@ -14,7 +14,7 @@ impl bincode::Encode for BundleMetadata {
         encoder: &mut E,
     ) -> Result<(), bincode::error::EncodeError> {
         bincode::Encode::encode(&self.storage_name, encoder)?;
-        bincode::Encode::encode(&self.received_at.map(|t| t.unix_timestamp_nanos()), encoder)?;
+        bincode::Encode::encode(&self.received_at.unix_timestamp_nanos(), encoder)?;
         Ok(())
     }
 }
@@ -27,14 +27,8 @@ impl<Context> bincode::Decode<Context> for BundleMetadata {
         Ok(Self {
             storage_name: bincode::Decode::decode(decoder)?,
             received_at: {
-                if let Some(t) = bincode::Decode::decode(decoder)? {
-                    Some(
-                        time::OffsetDateTime::from_unix_timestamp_nanos(t)
-                            .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?,
-                    )
-                } else {
-                    None
-                }
+                time::OffsetDateTime::from_unix_timestamp_nanos(bincode::Decode::decode(decoder)?)
+                    .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?
             },
         })
     }
@@ -48,14 +42,10 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for BundleMetadata {
         Ok(Self {
             storage_name: bincode::BorrowDecode::borrow_decode(decoder)?,
             received_at: {
-                if let Some(t) = bincode::BorrowDecode::borrow_decode(decoder)? {
-                    Some(
-                        time::OffsetDateTime::from_unix_timestamp_nanos(t)
-                            .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?,
-                    )
-                } else {
-                    None
-                }
+                time::OffsetDateTime::from_unix_timestamp_nanos(
+                    bincode::BorrowDecode::borrow_decode(decoder)?,
+                )
+                .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?
             },
         })
     }

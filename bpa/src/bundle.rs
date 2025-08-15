@@ -14,7 +14,6 @@ impl Bundle {
             || {
                 self.metadata
                     .received_at
-                    .unwrap_or_else(time::OffsetDateTime::now_utc)
                     // The following unwrap() is safe, as bundle.age is u64::MAX millisecs
                     .saturating_sub(self.bundle.age.unwrap_or_default().try_into().unwrap())
             },

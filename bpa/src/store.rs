@@ -183,7 +183,6 @@ impl Store {
         &self,
         bundle: hardy_bpv7::bundle::Bundle,
         data: Bytes,
-        received_at: Option<time::OffsetDateTime>,
     ) -> storage::Result<Option<bundle::Bundle>> {
         // Write to bundle storage
         let storage_name = self.save_data(data).await?;
@@ -192,7 +191,7 @@ impl Store {
         let bundle = bundle::Bundle {
             metadata: metadata::BundleMetadata {
                 storage_name: Some(storage_name.clone()),
-                received_at,
+                received_at: time::OffsetDateTime::now_utc(),
             },
             bundle,
         };

@@ -23,7 +23,7 @@ pub trait MetadataStorage: Send + Sync {
     async fn remove_unconfirmed(&self, tx: storage::Sender<bundle::Bundle>) -> Result<()>;
 }
 
-pub type ListResponse = (Arc<str>, Option<time::OffsetDateTime>);
+pub type ListResponse = (Arc<str>, time::OffsetDateTime);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {

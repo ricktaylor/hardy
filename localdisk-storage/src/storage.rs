@@ -97,16 +97,14 @@ fn walk_dirs(
                     remove = false;
 
                     // We have something useful
-                    let received_at =
-                        if let Ok(received_at) = entry.metadata().and_then(|m| m.created()) {
-                            // Ignore anything created after we began our walk
-                            if &received_at > before {
-                                continue;
-                            }
-                            Some(time::OffsetDateTime::from(received_at))
-                        } else {
-                            None
-                        };
+                    let Ok(received_at) = entry.metadata().and_then(|m| m.created()) else {
+                        continue;
+                    };
+
+                    // Ignore anything created after we began our walk
+                    if &received_at > before {
+                        continue;
+                    }
 
                     if tx
                         .blocking_send((
@@ -116,7 +114,7 @@ fn walk_dirs(
                                 .unwrap()
                                 .to_string_lossy()
                                 .into(),
-                            received_at,
+                            time::OffsetDateTime::from(received_at),
                         ))
                         .is_err()
                     {

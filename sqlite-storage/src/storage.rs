@@ -279,11 +279,12 @@ impl storage::MetadataStorage for Storage {
             .await?;
         }
 
-        if let Ok((bundle, _)) = bincode::decode_from_slice(&bundle, self.bincode_config) {
-            Ok(Some(bundle))
-        } else {
-            warn!("Garbage bundle found in metadata!");
-            self.tombstone(bundle_id).await.map(|_| None)
+        match bincode::decode_from_slice(&bundle, self.bincode_config) {
+            Ok((bundle, _)) => Ok(Some(bundle)),
+            Err(e) => {
+                warn!("Garbage bundle found in metadata: {e}");
+                self.tombstone(bundle_id).await.map(|_| None)
+            }
         }
     }
 

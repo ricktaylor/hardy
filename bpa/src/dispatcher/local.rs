@@ -74,7 +74,7 @@ impl Dispatcher {
             let (bundle, data) = b.build();
 
             // Store to store
-            if let Some(bundle) = self.store.store(bundle, data.into(), None).await? {
+            if let Some(bundle) = self.store.store(bundle, data.into()).await? {
                 break bundle;
             }
 

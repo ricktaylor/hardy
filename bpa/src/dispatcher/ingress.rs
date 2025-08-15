@@ -6,7 +6,7 @@ impl Dispatcher {
     #[instrument(skip_all)]
     pub async fn receive_bundle(self: &Arc<Self>, data: Bytes) -> cla::Result<()> {
         // Capture received_at as soon as possible
-        let received_at = Some(time::OffsetDateTime::now_utc());
+        let received_at = time::OffsetDateTime::now_utc();
 
         // Do a fast pre-check
         match data.first() {
@@ -166,7 +166,7 @@ impl Dispatcher {
     pub async fn restart_bundle(
         self: &Arc<Self>,
         storage_name: Arc<str>,
-        file_time: Option<time::OffsetDateTime>,
+        file_time: time::OffsetDateTime,
     ) -> Result<(u64, u64), Error> {
         let Some(data) = self.store.load_data(&storage_name).await? else {
             // Data has gone while we were restarting

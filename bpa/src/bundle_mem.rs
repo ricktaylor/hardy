@@ -22,7 +22,7 @@ impl Default for Config {
 }
 
 struct Inner {
-    cache: lru::LruCache<String, Bytes>,
+    cache: lru::LruCache<String, (time::OffsetDateTime, Bytes)>,
     capacity: usize,
 }
 
@@ -41,11 +41,11 @@ impl storage::BundleStorage for Storage {
             .trace_expect("Failed to lock mutex")
             .cache
             .iter()
-            .map(|(n, _)| n.clone().into())
+            .map(|(n, (t, _))| (n.clone().into(), t.clone()))
             .collect::<Vec<_>>();
 
-        for name in snapshot {
-            tx.send((name, None)).await?;
+        for (name, t) in snapshot {
+            tx.send((name, t)).await?;
         }
         Ok(())
     }
@@ -57,7 +57,7 @@ impl storage::BundleStorage for Storage {
             .trace_expect("Failed to lock mutex")
             .cache
             .peek(storage_name)
-            .cloned())
+            .map(|(_, b)| b.clone()))
     }
 
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
@@ -73,8 +73,11 @@ impl storage::BundleStorage for Storage {
         let new_len = data.len();
         let old_len = inner
             .cache
-            .put(storage_name.clone(), data)
-            .map(|d| d.len())
+            .put(
+                storage_name.clone(),
+                (time::OffsetDateTime::now_utc(), data),
+            )
+            .map(|(_, d)| d.len())
             .unwrap_or(0);
 
         // Ensure we cap the total stored, but keep 32 bundles
@@ -83,7 +86,7 @@ impl storage::BundleStorage for Storage {
             .saturating_sub(old_len)
             .saturating_add(new_len);
         while inner.cache.len() > self.min_bundles && inner.capacity > self.max_capacity.into() {
-            let Some((_, d)) = inner.cache.pop_lru() else {
+            let Some((_, (_, d))) = inner.cache.pop_lru() else {
                 break;
             };
             inner.capacity = inner.capacity.saturating_sub(d.len());
@@ -94,7 +97,7 @@ impl storage::BundleStorage for Storage {
 
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
-        if let Some(d) = inner.cache.pop(storage_name) {
+        if let Some((_, d)) = inner.cache.pop(storage_name) {
             inner.capacity = inner.capacity.saturating_sub(d.len());
         }
         Ok(())

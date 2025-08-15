@@ -23,11 +23,7 @@ impl Dispatcher {
                         bundle_id: bundle.bundle.id.clone(),
                         received: Some(StatusAssertion(
                             if bundle.bundle.flags.report_status_time {
-                                if let Some(t) = bundle.metadata.received_at {
-                                    t.try_into().ok()
-                                } else {
-                                    None
-                                }
+                                bundle.metadata.received_at.try_into().ok()
                             } else {
                                 None
                             },
@@ -146,7 +142,7 @@ impl Dispatcher {
                 let (bundle, data) = b.build();
 
                 // Store to store
-                match self.store.store(bundle, data.into(), None).await {
+                match self.store.store(bundle, data.into()).await {
                     Err(e) => {
                         error!("Failed to store status report: {e}");
                         return;
