@@ -4,6 +4,7 @@ mod fragment;
 mod ingress;
 mod local;
 mod report;
+mod restart;
 
 use super::*;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
