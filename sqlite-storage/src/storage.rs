@@ -189,7 +189,7 @@ impl storage::MetadataStorage for Storage {
             .map_err(Into::into)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
@@ -206,7 +206,7 @@ impl storage::MetadataStorage for Storage {
         .await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;

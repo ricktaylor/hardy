@@ -21,6 +21,7 @@ impl Storage {
     }
 }
 
+#[instrument(skip_all)]
 fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
     let mut rng = rand::rng();
     loop {
@@ -219,7 +220,7 @@ impl BundleStorage for Storage {
         }
     }
 
-    #[instrument(skip(self, data))]
+    #[instrument(skip_all)]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let root = self.store_root.clone();
 
