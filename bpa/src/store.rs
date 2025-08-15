@@ -5,6 +5,68 @@ use std::sync::Mutex;
 const LRU_CAPACITY: usize = 1024;
 const MAX_CACHED_BUNDLE_SIZE: usize = 16 * 1024;
 
+pub(crate) enum RestartResult {
+    Missing,
+    Duplicate,
+    Restarted,
+    Orphan,
+    Junk,
+}
+
+struct RestartStats {
+    lost: u64,
+    duplicates: u64,
+    restarted: u64,
+    orphans: u64,
+    junk: u64,
+}
+
+impl RestartStats {
+    fn new() -> Self {
+        Self {
+            lost: 0,
+            duplicates: 0,
+            restarted: 0,
+            orphans: 0,
+            junk: 0,
+        }
+    }
+
+    fn add(&mut self, r: RestartResult) {
+        match r {
+            RestartResult::Missing => self.lost = self.lost.saturating_add(1),
+            RestartResult::Duplicate => self.duplicates = self.duplicates.saturating_add(1),
+            RestartResult::Restarted => self.restarted = self.restarted.saturating_add(1),
+            RestartResult::Orphan => self.orphans = self.orphans.saturating_add(1),
+            RestartResult::Junk => self.junk = self.junk.saturating_add(1),
+        }
+    }
+
+    fn trace(&self) {
+        tracing::event!(
+            target: "metrics",
+            tracing::Level::TRACE,
+            monotonic_counter.bpa.store.restart.lost_bundles = self.lost,
+            monotonic_counter.bpa.store.restart.duplicate_bundles = self.duplicates,
+            monotonic_counter.bpa.store.restart.restarted_bundles = self.restarted,
+            monotonic_counter.bpa.store.restart.orphan_bundles = self.orphans,
+            monotonic_counter.bpa.store.restart.junk_bundles = self.junk,
+        );
+    }
+}
+
+impl core::fmt::Display for RestartStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} bundles restarted, {} orphan and {} bad bundles found",
+            self.restarted,
+            self.orphans,
+            self.lost + self.junk + self.duplicates
+        )
+    }
+}
+
 pub struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     metadata_cache: Mutex<LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
@@ -42,14 +104,18 @@ impl Store {
         // Start the store - this can take a while as the store is walked
         info!("Starting store consistency check...");
 
-        if self
+        let stats = self
             .bundle_storage_check(dispatcher.clone(), cancel_token)
-            .await?
-            && self
-                .metadata_storage_check(dispatcher, cancel_token)
+            .await?;
+        let stats = if cancel_token.is_cancelled() {
+            self.metadata_storage_check(dispatcher, stats, cancel_token)
                 .await?
-        {
-            info!("Store restarted");
+        } else {
+            stats
+        };
+
+        if !cancel_token.is_cancelled() {
+            info!("Store restarted: {stats}");
         }
         Ok(())
     }
@@ -59,7 +125,7 @@ impl Store {
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
         cancel_token: &tokio_util::sync::CancellationToken,
-    ) -> Result<bool, storage::Error> {
+    ) -> Result<RestartStats, storage::Error> {
         let outer_cancel_token = cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(16);
@@ -69,21 +135,18 @@ impl Store {
 
             // Give some feedback
             let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            let mut bundles = 0u64;
-            let mut orphans = 0u64;
-            let mut bad = 0u64;
+            let mut stats = RestartStats::new();
 
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
-                        info!("Bundle store restart in progress, {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found");
+                        stats.trace();
                     },
                     r = rx.recv() => match r {
                         None => {
                             break;
                         }
                         Some(r) => {
-                            bundles = bundles.saturating_add(1);
                             let dispatcher = dispatcher.clone();
                             task_set.spawn(async move {
                                 dispatcher.restart_bundle(r.0,r.1).await
@@ -91,9 +154,7 @@ impl Store {
                         }
                     },
                     Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                        let (o,b) = r??;
-                        orphans = orphans.saturating_add(o);
-                        bad = bad.saturating_add(b);
+                        stats.add(r??);
                     },
                     _ = cancel_token.cancelled() => {
                         rx.close()
@@ -103,17 +164,11 @@ impl Store {
 
             // Wait for all sub-tasks to complete
             while let Some(r) = task_set.join_next().await {
-                let (o, b) = r??;
-                orphans = orphans.saturating_add(o);
-                bad = bad.saturating_add(b);
+                stats.add(r??);
             }
 
-            if !cancel_token.is_cancelled() {
-                info!(
-                    "Bundle store restart complete: {bundles} bundles processed, {orphans} orphan and {bad} bad bundles found"
-                );
-            }
-            Ok(!cancel_token.is_cancelled())
+            stats.trace();
+            Ok(stats)
         });
 
         if let Err(e) = self.bundle_storage.list(tx).await {
@@ -129,25 +184,25 @@ impl Store {
     async fn metadata_storage_check(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
+        mut stats: RestartStats,
         cancel_token: &tokio_util::sync::CancellationToken,
-    ) -> Result<bool, storage::Error> {
+    ) -> Result<RestartStats, storage::Error> {
         let outer_cancel_token = cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<bundle::Bundle>(16);
         let h = tokio::spawn(async move {
             // Give some feedback
-            let mut bundles = 0u64;
             let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(5));
 
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
-                        info!("Metadata storage check in progress, {bundles} lost bundles cleaned up");
+                        stats.trace();
                     },
                     bundle = rx.recv() => match bundle {
                         None => break,
                         Some(bundle) => {
-                            bundles = bundles.saturating_add(1);
+                            stats.add(RestartResult::Orphan);
 
                             // The data associated with `bundle` has gone!
                             dispatcher.report_bundle_deletion(
@@ -163,10 +218,8 @@ impl Store {
                 }
             }
 
-            if !cancel_token.is_cancelled() {
-                info!("Metadata storage check complete, {bundles} lost bundles cleaned up");
-            }
-            Ok(!cancel_token.is_cancelled())
+            stats.trace();
+            Ok(stats)
         });
 
         if let Err(e) = self.metadata_storage.remove_unconfirmed(tx).await {
