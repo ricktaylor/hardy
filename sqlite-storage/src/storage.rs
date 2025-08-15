@@ -256,10 +256,13 @@ impl storage::MetadataStorage for Storage {
                 conn.prepare_cached(
                     "SELECT bundle,unconfirmed_bundles.id FROM bundles 
                     LEFT OUTER JOIN unconfirmed_bundles ON bundles.id = unconfirmed_bundles.id 
-                    WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
+                    WHERE bundle_id = ?1 LIMIT 1",
                 )?
                 .query_row((&id,), |row| {
-                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<i64>>(1)?))
+                    Ok((
+                        row.get::<_, Option<Vec<u8>>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                    ))
                 })
                 .optional()
                 .map_err(Into::into)
@@ -278,6 +281,10 @@ impl storage::MetadataStorage for Storage {
             })
             .await?;
         }
+
+        let Some(bundle) = bundle else {
+            return Ok(None);
+        };
 
         match bincode::decode_from_slice(&bundle, self.bincode_config) {
             Ok((bundle, _)) => Ok(Some(bundle)),
