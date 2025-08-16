@@ -11,6 +11,7 @@ cargo-fuzz = true
 default = []
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
+coverage = ["hardy-bpa/coverage","hardy-sqlite-storage/coverage","hardy-localdisk-storage/coverage"]
 
 [dependencies]
 libfuzzer-sys = "0.4"

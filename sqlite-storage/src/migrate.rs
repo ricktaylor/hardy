@@ -1,6 +1,6 @@
+use super::*;
 use rusqlite::OptionalExtension;
 use thiserror::Error;
-use tracing::instrument;
 
 #[derive(Error, Debug)]
 pub enum Error {
