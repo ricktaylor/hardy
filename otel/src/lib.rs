@@ -68,7 +68,12 @@ fn init_logs(resource: &Resource) -> SdkLoggerProvider {
         .build()
 }
 
-pub fn init(env_var: Option<&str>, config_level: Option<tracing::Level>) -> OtelGuard {
+pub fn init(
+    pkg_name: &'static str,
+    pkg_ver: &'static str,
+    env_var: Option<&str>,
+    config_level: Option<tracing::Level>,
+) -> OtelGuard {
     let env_filter = || {
         EnvFilter::builder()
             .with_default_directive(
@@ -83,11 +88,8 @@ pub fn init(env_var: Option<&str>, config_level: Option<tracing::Level>) -> Otel
     };
 
     let resource = Resource::builder()
-        .with_service_name(env!("CARGO_PKG_NAME"))
-        .with_schema_url(
-            [KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION"))],
-            SCHEMA_URL,
-        )
+        .with_service_name(pkg_name)
+        .with_schema_url([KeyValue::new(SERVICE_VERSION, pkg_ver)], SCHEMA_URL)
         .build();
 
     let tracer_provider = init_tracer(&resource);

@@ -10,7 +10,14 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
             .build()
             .unwrap();
 
-        let guard = rt.block_on(async { hardy_otel::init(None, Some(tracing::Level::INFO)) });
+        let guard = rt.block_on(async {
+            hardy_otel::init(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+                None,
+                Some(tracing::Level::INFO),
+            )
+        });
         (rt, guard)
     })
     .0
