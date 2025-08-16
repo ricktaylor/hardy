@@ -3,8 +3,6 @@ use sha1::Digest;
 use std::io::{Read, Write};
 
 fn main() {
-    built::write_built_file().expect("Failed to acquire build-time information");
-
     gen_migrations("schemas/").expect("Failed to build migration info");
 }
 

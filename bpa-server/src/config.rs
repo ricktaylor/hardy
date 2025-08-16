@@ -95,18 +95,18 @@ fn options() -> getopts::Options {
 }
 
 pub fn config_dir() -> PathBuf {
-    directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
+    directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME")).map_or_else(
         || {
             cfg_if::cfg_if! {
                 if #[cfg(all(
                     target_os = "linux",
                     not(feature = "packaged-installation")
                 ))] {
-                    Path::new("/etc/opt").join(built_info::PKG_NAME)
+                    Path::new("/etc/opt").join(env!("CARGO_PKG_NAME"))
                 } else if #[cfg(unix)] {
-                    Path::new("/etc").join(built_info::PKG_NAME)
+                    Path::new("/etc").join(env!("CARGO_PKG_NAME"))
                 } else if #[cfg(windows)] {
-                    std::env::current_exe().join(built_info::PKG_NAME)
+                    std::env::current_exe().join(env!("CARGO_PKG_NAME"))
                 } else {
                     compile_error!("No idea how to determine default config directory for target platform")
                 }
@@ -132,16 +132,16 @@ pub fn init() -> Option<(Config, String)> {
     if flags.opt_present("h") {
         let brief = format!(
             "{} {} - {}\n\nUsage: {} [options]",
-            built_info::PKG_NAME,
-            built_info::PKG_VERSION,
-            built_info::PKG_DESCRIPTION,
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_DESCRIPTION"),
             program
         );
         print!("{}", opts.usage(&brief));
         return None;
     }
     if flags.opt_present("v") {
-        println!("{}", built_info::PKG_VERSION);
+        println!("{}", env!("CARGO_PKG_VERSION"));
         return None;
     }
 
@@ -158,7 +158,7 @@ pub fn init() -> Option<(Config, String)> {
         );
         b = b.add_source(::config::File::with_name(&source))
     } else {
-        let path = config_dir().join(format!("{}.yaml", built_info::PKG_NAME));
+        let path = config_dir().join(format!("{}.yaml", env!("CARGO_PKG_NAME")));
         config_source = format!("Using configuration file '{}'", path.display());
         b = b.add_source(::config::File::from(path).required(false))
     }

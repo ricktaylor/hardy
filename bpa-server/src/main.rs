@@ -4,11 +4,6 @@ mod static_routes;
 #[cfg(feature = "grpc")]
 mod grpc;
 
-mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
 // This is the generic Error type used almost everywhere
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -99,8 +94,8 @@ fn start_logging(config: &config::Config, config_source: String) {
 
     info!(
         "{} version {} starting...",
-        built_info::PKG_NAME,
-        built_info::PKG_VERSION
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
     );
     info!("{config_source}");
 }

@@ -32,8 +32,5 @@ libc = "0.2.172"
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
 
-[build-dependencies]
-built = "0.8.0"
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

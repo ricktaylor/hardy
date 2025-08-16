@@ -1,9 +1,3 @@
-// Buildtime info
-mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -13,13 +7,13 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { store_dir: directories::ProjectDirs::from("dtn", "Hardy", built_info::PKG_NAME).map_or_else(
+        Self { store_dir: directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME")).map_or_else(
             || {
                 cfg_if::cfg_if! {
                     if #[cfg(unix)] {
-                        std::path::Path::new("/var/spool").join(built_info::PKG_NAME)
+                        std::path::Path::new("/var/spool").join(env!("CARGO_PKG_NAME"))
                     } else if #[cfg(windows)] {
-                        std::env::current_exe().join(built_info::PKG_NAME)
+                        std::env::current_exe().join(env!("CARGO_PKG_NAME"))
                     } else {
                         compile_error!("No idea how to determine default localdisk bundle store directory for target platform")
                     }
