@@ -34,6 +34,7 @@ struct Msg {
     destination: Box<str>,
     lifetime: std::time::Duration,
     flags: Option<SendFlags>,
+    payload: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -128,7 +129,7 @@ fn send(msg: Msg) {
                         _ = service
                             .send(
                                 destination,
-                                "This is just fuzz data".as_bytes(),
+                                &msg.payload,
                                 msg.lifetime,
                                 msg.flags.map(Into::into),
                             )
