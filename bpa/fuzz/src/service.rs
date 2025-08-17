@@ -164,12 +164,14 @@ fn send(msg: Msg) {
     .expect("Send failed")
 }
 
-pub fn service_send(data: &[u8]) {
+pub fn service_send(data: &[u8]) -> bool {
     if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
         if msg.destination.as_ref().parse::<Eid>().is_ok() {
             send(msg);
+            return true;
         }
     }
+    false
 }
 
 // Use this to build a corpus of valid messages as a minimum
