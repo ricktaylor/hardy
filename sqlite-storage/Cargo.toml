@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 [features]
 default = []
 serde = ["dep:serde"]
-coverage = ["dep:fuzz-macros"]
+no-tracing = ["dep:fuzz-macros"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa", features = ["bincode"] }
@@ -33,6 +33,3 @@ fuzz-macros = { path = "../fuzz-macros", optional = true }
 regex = "1.11.1"
 sha1 = "0.10.6"
 base64 = "0.22.1"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

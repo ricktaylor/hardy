@@ -8,7 +8,7 @@ default = ["rfc9173"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
 serde = ["dep:serde","hardy-bpv7/serde","hardy-eid-pattern/serde"]
 bincode = ["dep:bincode","hardy-bpv7/bincode"]
-coverage = ["dep:fuzz-macros"]
+no-tracing = ["dep:fuzz-macros"]
 
 [lib]
 path = "src/lib.rs"
@@ -31,6 +31,3 @@ rustversion = "1.0"
 serde = { version = "1.0.219", features = ["derive","rc"], optional = true }
 bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
 fuzz-macros = { path = "../fuzz-macros", optional = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

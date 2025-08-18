@@ -20,10 +20,10 @@ use std::sync::Arc;
 use trace_err::*;
 use tracing::{error, info, trace, warn};
 
-#[cfg(all(fuzzing, feature = "coverage"))]
+#[cfg(feature = "no-tracing")]
 use fuzz_macros::instrument;
 
-#[cfg(not(all(fuzzing, feature = "coverage")))]
+#[cfg(not(feature = "no-tracing"))]
 use tracing::instrument;
 
 // Re-export for consistency

@@ -7,10 +7,10 @@ pub use config::Config;
 use trace_err::*;
 use tracing::{error, info, warn};
 
-#[cfg(all(fuzzing, feature = "coverage"))]
+#[cfg(feature = "no-tracing")]
 use fuzz_macros::instrument;
 
-#[cfg(not(all(fuzzing, feature = "coverage")))]
+#[cfg(not(feature = "no-tracing"))]
 use tracing::instrument;
 
 pub fn new(

@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 default = ["mmap"]
 mmap = ["dep:memmap2"]
 serde = ["dep:serde"]
-coverage = ["dep:fuzz-macros"]
+no-tracing = ["dep:fuzz-macros"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
@@ -31,6 +31,3 @@ libc = "0.2.172"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
