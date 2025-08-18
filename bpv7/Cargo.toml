@@ -24,7 +24,7 @@ crc = "3.3.0"
 sha2 = "0.10.9"
 rand = "0.9.1"
 zeroize = { version = "1.8.1", features = ["derive"] }
-winnow = "0.7.10"
+winnow = "0.7.12"
 hmac = { version = "0.12.1", optional = true }
 aes-gcm = { version = "0.10.3",features = ["zeroize"], optional = true }
 aes-kw = { version = "0.2.1", features = ["alloc"], optional = true }
