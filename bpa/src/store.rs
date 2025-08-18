@@ -129,7 +129,7 @@ impl Store {
     ) -> Result<RestartStats, storage::Error> {
         let outer_cancel_token = cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<storage::ListResponse>(16);
+        let (tx, rx) = flume::bounded::<storage::ListResponse>(16);
         let h = tokio::spawn(async move {
             // We're going to spawn a bunch of tasks
             let mut task_set = tokio::task::JoinSet::new();
@@ -143,11 +143,11 @@ impl Store {
                     _ = timer.tick() => {
                         stats.trace();
                     },
-                    r = rx.recv() => match r {
-                        None => {
+                    r = rx.recv_async() => match r {
+                        Err(_) => {
                             break;
                         }
-                        Some(r) => {
+                        Ok(r) => {
                             let dispatcher = dispatcher.clone();
                             task_set.spawn(async move {
                                 dispatcher.restart_bundle(r.0,r.1).await
@@ -158,7 +158,7 @@ impl Store {
                         stats.add(r??);
                     },
                     _ = cancel_token.cancelled() => {
-                        rx.close()
+                        break;
                     }
                 }
             }
@@ -190,7 +190,7 @@ impl Store {
     ) -> Result<RestartStats, storage::Error> {
         let outer_cancel_token = cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<bundle::Bundle>(16);
+        let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
         let h = tokio::spawn(async move {
             // Give some feedback
             let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
@@ -200,9 +200,9 @@ impl Store {
                     _ = timer.tick() => {
                         stats.trace();
                     },
-                    bundle = rx.recv() => match bundle {
-                        None => break,
-                        Some(bundle) => {
+                    bundle = rx.recv_async() => match bundle {
+                        Err(_) => break,
+                        Ok(bundle) => {
                             stats.add(RestartResult::Orphan);
 
                             // The data associated with `bundle` has gone!
@@ -214,7 +214,7 @@ impl Store {
                         }
                     },
                     _ = cancel_token.cancelled() => {
-                        rx.close();
+                        break;
                     }
                 }
             }

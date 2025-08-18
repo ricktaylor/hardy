@@ -45,7 +45,7 @@ impl storage::BundleStorage for Storage {
             .collect::<Vec<_>>();
 
         for (name, t) in snapshot {
-            tx.send((name, t)).await?;
+            tx.send_async((name, t)).await?;
         }
         Ok(())
     }

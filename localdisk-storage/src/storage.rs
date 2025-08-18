@@ -103,7 +103,7 @@ fn walk_dirs(
                     }
 
                     if tx
-                        .blocking_send((
+                        .send((
                             entry
                                 .path()
                                 .strip_prefix(root)
@@ -142,7 +142,7 @@ impl BundleStorage for Storage {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
         // Loop through the directories
-        while !dirs.is_empty() && !tx.is_closed() {
+        while !dirs.is_empty() && !tx.is_disconnected() {
             // Take a chunk off the back, to ensure depth first walk
             let subdirs = dirs.split_off(dirs.len() - dirs.len().min(32));
 
@@ -170,7 +170,7 @@ impl BundleStorage for Storage {
                 }
             }
 
-            while dirs.is_empty() || tx.is_closed() {
+            while dirs.is_empty() || tx.is_disconnected() {
                 // Accumulate results
                 let Some(r) = task_set.join_next().await else {
                     break;

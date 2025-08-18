@@ -70,10 +70,10 @@ impl hardy_bpa::cla::Cla for NullCla {
 }
 
 pub fn cla_send(data: hardy_bpa::Bytes) {
-    static PIPE: std::sync::OnceLock<tokio::sync::mpsc::Sender<hardy_bpa::Bytes>> =
+    static PIPE: std::sync::OnceLock<flume::Sender<hardy_bpa::Bytes>> =
         std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<hardy_bpa::Bytes>(16);
+        let (tx, rx) = flume::bounded::<hardy_bpa::Bytes>(16);
 
         get_runtime().spawn(async move {
             let bpa = new_bpa("cla").await;
@@ -108,7 +108,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                 let mut count = std::sync::atomic::AtomicU64::new(0);
 
                 // Now pull from the channel
-                while let Some(data) = rx.recv().await {
+                while let Ok(data) = rx.recv_async().await {
                     _ = cla.dispatch(data).await;
 
                     let count = count.get_mut();
@@ -128,7 +128,7 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
 
         tx
     })
-    .blocking_send(data)
+    .send(data)
     .expect("Send failed")
 }
 

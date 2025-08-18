@@ -341,7 +341,7 @@ impl storage::MetadataStorage for Storage {
 
             match bincode::decode_from_slice(&bundle, self.bincode_config) {
                 Ok((bundle, _)) => {
-                    if tx.send(bundle).await.is_err() {
+                    if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         return Ok(());
                     }

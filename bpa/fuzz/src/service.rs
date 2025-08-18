@@ -92,9 +92,9 @@ impl hardy_bpa::service::Service for PipeService {
 }
 
 fn send(msg: Msg) {
-    static PIPE: std::sync::OnceLock<tokio::sync::mpsc::Sender<Msg>> = std::sync::OnceLock::new();
+    static PIPE: std::sync::OnceLock<flume::Sender<Msg>> = std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(16);
+        let (tx, rx) = flume::bounded::<Msg>(16);
 
         get_runtime().spawn(async move {
             // New BPA
@@ -124,7 +124,7 @@ fn send(msg: Msg) {
                 let mut bad_count = std::sync::atomic::AtomicU64::new(0);
 
                 // Now pull from the channel
-                while let Some(msg) = rx.recv().await {
+                while let Ok(msg) = rx.recv_async().await {
                     if let Ok(destination) = msg.destination.as_ref().parse() {
                         _ = service
                             .send(
@@ -161,7 +161,7 @@ fn send(msg: Msg) {
 
         tx
     })
-    .blocking_send(msg)
+    .send(msg)
     .expect("Send failed")
 }
 

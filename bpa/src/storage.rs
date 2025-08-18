@@ -2,7 +2,7 @@ use super::*;
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
-pub type Sender<T> = tokio::sync::mpsc::Sender<T>;
+pub type Sender<T> = flume::Sender<T>;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
