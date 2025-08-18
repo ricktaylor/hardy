@@ -64,14 +64,12 @@ fn walk_dirs(
     dir: PathBuf,
     tx: &storage::Sender<storage::ListResponse>,
 ) -> Vec<PathBuf> {
-    let mut remove = true;
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
         for entry in dir.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
                     subdirs.push(entry.path());
-                    remove = false;
                 } else if file_type.is_file() {
                     // Drop anything .tmp
                     if let Some(extension) = entry.path().extension() {
@@ -93,8 +91,6 @@ fn walk_dirs(
                             .trace_expect("Failed to remove placeholder file");
                         continue;
                     }
-
-                    remove = false;
 
                     // We have something useful
                     let Ok(received_at) = entry.metadata().and_then(|m| m.created()) else {
@@ -126,9 +122,9 @@ fn walk_dirs(
         }
     }
 
-    if remove {
-        _ = std::fs::remove_dir(&dir);
-    }
+    // Try to remove the directory - this will benignly fail if there is content
+    _ = std::fs::remove_dir(&dir);
+
     subdirs
 }
 
