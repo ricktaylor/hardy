@@ -199,7 +199,7 @@ impl storage::MetadataStorage for Storage {
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry) VALUES (?1,?2,?3)",
             )?
-            .execute((&id, bundle, expiry))
+            .execute((id, bundle, expiry))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -217,7 +217,7 @@ impl storage::MetadataStorage for Storage {
                 conn.prepare_cached(
                     "UPDATE bundles SET bundle = ?2, expiry = ?3 WHERE bundle_id = ?1",
                 )?
-                .execute((&id, bundle, expiry))
+                .execute((id, bundle, expiry))
                 .map_err(Into::into)
             })
             .await?
@@ -234,7 +234,7 @@ impl storage::MetadataStorage for Storage {
         if self
             .write(move |conn| {
                 conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE bundle_id = ?1")?
-                    .execute((&id,))
+                    .execute((id,))
                     .map_err(Into::into)
             })
             .await?
@@ -258,7 +258,7 @@ impl storage::MetadataStorage for Storage {
                     LEFT OUTER JOIN unconfirmed_bundles ON bundles.id = unconfirmed_bundles.id 
                     WHERE bundle_id = ?1 LIMIT 1",
                 )?
-                .query_row((&id,), |row| {
+                .query_row((id,), |row| {
                     Ok((
                         row.get::<_, Option<Vec<u8>>>(0)?,
                         row.get::<_, Option<i64>>(1)?,
@@ -276,7 +276,7 @@ impl storage::MetadataStorage for Storage {
             // Delete from unconfirmed_bundles
             self.write(move |conn| {
                 conn.prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
-                    .execute((&id,))
+                    .execute((id,))
                     .map_err(Into::into)
             })
             .await?;
@@ -286,8 +286,11 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        match bincode::decode_from_slice(&bundle, self.bincode_config) {
-            Ok((bundle, _)) => Ok(Some(bundle)),
+        match bincode::decode_from_slice::<hardy_bpa::bundle::Bundle, _>(
+            &bundle,
+            self.bincode_config,
+        ) {
+            Ok((bundle, _)) => Ok(Some(bundle.metadata)),
             Err(e) => {
                 warn!("Garbage bundle found in metadata: {e}");
                 self.tombstone(bundle_id).await.map(|_| None)
