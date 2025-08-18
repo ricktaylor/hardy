@@ -95,7 +95,8 @@ impl Store {
         }
     }
 
-    #[instrument(skip_all)]
+    // This is a self-contained span
+    #[instrument(skip_all,parent = None)]
     pub async fn start(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,

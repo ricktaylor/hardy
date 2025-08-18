@@ -3,6 +3,7 @@ use hardy_bpv7::{
     dtn_time::DtnTime,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion},
 };
+use tracing::Instrument;
 
 impl Dispatcher {
     #[instrument(skip(self, bundle))]
@@ -157,21 +158,26 @@ impl Dispatcher {
 
             // Dispatch the new bundle
             let dispatcher = self.clone();
-            self.task_tracker.spawn(async move {
-                if let Ok(dispatch::DispatchResult::Keep) = dispatcher
-                    .dispatch_bundle_inner(&bundle)
-                    .await
-                    .inspect_err(|e| error!("Failed to send status report: {e}"))
-                {
-                    return;
-                }
+            let span = tracing::info_span!("parent: None", "dispatch_status_report_task");
+            span.follows_from(tracing::Span::current());
+            self.task_tracker.spawn(
+                async move {
+                    if let Ok(dispatch::DispatchResult::Keep) = dispatcher
+                        .dispatch_bundle_inner(&bundle)
+                        .await
+                        .inspect_err(|e| error!("Failed to send status report: {e}"))
+                    {
+                        return;
+                    }
 
-                // Delete the bundle from the bundle store
-                if let Some(storage_name) = &bundle.metadata.storage_name {
-                    _ = dispatcher.store.delete_data(storage_name).await;
+                    // Delete the bundle from the bundle store
+                    if let Some(storage_name) = &bundle.metadata.storage_name {
+                        _ = dispatcher.store.delete_data(storage_name).await;
+                    }
+                    _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
                 }
-                _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
-            });
+                .instrument(span),
+            );
         }
     }
 }
