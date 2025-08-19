@@ -15,7 +15,7 @@ postgres-storage = []
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = []
 packaged-installation = []
-grpc = ["dep:tonic", "dep:hardy-proto", "dep:tokio-stream", "dep:prost","dep:prost-types"]
+grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic","dep:prost-types"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 
 [dependencies]
@@ -26,16 +26,11 @@ hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", features = ["serde"], optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
-tokio = { version = "1.47.1", features = [
-    "macros",
-    "rt-multi-thread",
-    "signal",
-] }
+tokio = { version = "1.47.1", features = ["macros","rt-multi-thread","signal"] }
 tokio-util = { version = "0.7.15", features = ["rt"] }
-tonic = { version = "0.13.0", optional = true }
 tokio-stream = { version = "0.1.15", optional = true }
-prost = { version = "0.13", optional = true }
-prost-types = { version = "0.13", optional = true }
+tonic = { version = "0.14.1", optional = true }
+prost-types = { version = "0.14.1", optional = true }
 config = { version = "0.15.14", features = ["toml"] }
 serde = { version = "1.0.219", features = ["derive"] }
 getopts = "0.2.23"
@@ -47,9 +42,7 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tracing-log = "0.2.0"
 notify-debouncer-full = "0.6.0"
-notify = { version = "8.0.0", default-features = false, features = [
-    "macos_kqueue",
-] }
+notify = { version = "8.0.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "0.1.5"
 winnow = "0.7.12"
 anyhow = "1.0.99"

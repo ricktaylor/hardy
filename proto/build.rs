@@ -9,8 +9,8 @@ fn compile_proto(proto: impl AsRef<Path>) -> std::io::Result<()> {
         .parent()
         .expect("proto file should reside in a directory");
 
-    tonic_build::configure()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
         .protoc_arg("--experimental_allow_proto3_optional") // for older systems
         .compile_protos(&[proto_path], &[proto_dir])
 }
