@@ -16,7 +16,7 @@ bincode = ["dep:bincode"]
 
 [dependencies]
 hardy-cbor = { path = "../cbor" }
-thiserror = "2.0.12"
+thiserror = "2.0.15"
 time = { version = "0.3.41", features = ["macros"] }
 base64 = "0.22.1"
 urlencoding = "2.1.3"

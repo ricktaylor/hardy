@@ -8,7 +8,7 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-thiserror = "2.0.12"
+thiserror = "2.0.15"
 half = { version = "2.6.0", features = ["num-traits"] }
 num-traits = "0.2.19"
 
