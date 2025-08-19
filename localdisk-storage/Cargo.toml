@@ -20,7 +20,7 @@ rand = "0.9.1"
 directories = "6.0.0"
 tracing = "0.1.41"
 time = "0.3.41"
-cfg-if = "1.0.1"
+cfg-if = "1.0.3"
 trace-err = "0.1.5"
 flume = "0.11.1"
 memmap2 = { version = "0.9.7", optional = true }
