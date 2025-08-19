@@ -19,7 +19,7 @@ hardy-bpv7 = { path = "../bpv7" }
 hardy-cbor = { path = "../cbor" }
 hardy-eid-pattern = { path = "../eid_pattern" }
 time = { version = "0.3.41", features = ["serde-human-readable"] }
-async-trait = "0.1.88"
+async-trait = "0.1.89"
 tokio = { version = "1.47.1", features = ["rt", "macros", "time"] }
 tokio-util = { version = "0.7.15", features = ["rt"] }
 tracing = "0.1.41"
