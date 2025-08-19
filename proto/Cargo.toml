@@ -9,7 +9,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
-prost = "0.13"
+prost = "0.14"
 prost-types = "0.13"
 tonic = "0.13.1"
 
