@@ -23,7 +23,7 @@ time = "0.3.41"
 cfg-if = "1.0.1"
 trace-err = "0.1.5"
 flume = "0.11.1"
-memmap2 = { version = "0.9.5", optional = true }
+memmap2 = { version = "0.9.7", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 fuzz-macros = { path = "../fuzz-macros", optional = true }
 
