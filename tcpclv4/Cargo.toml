@@ -21,7 +21,7 @@ tokio-util = { version = "0.7.15", features = ["rt"] }
 tower = "0.5.2"
 tokio-tower = "0.6.0"
 trace-err = "0.1.5"
-thiserror = "2.0.12"
+thiserror = "2.0.15"
 futures = "0.3"
 rand = "0.9.1"
 serde = { version = "1.0.219", features = ["derive"], optional = true }
