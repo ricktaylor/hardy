@@ -17,7 +17,7 @@ hardy-bpa = { path = "../bpa", features = ["bincode"] }
 hardy-bpv7 = { path = "../bpv7", features = ["std", "bincode"] }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
-tokio = { version = "1.45.0", features = ["rt-multi-thread"] }
+tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
 thiserror = "2.0.15"
 bincode = "2.0.1"
 directories = "6.0.0"
