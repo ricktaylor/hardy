@@ -16,7 +16,7 @@ no-tracing = ["dep:fuzz-macros"]
 [dependencies]
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "fs"] }
-rand = "0.9.1"
+rand = "0.9.2"
 directories = "6.0.0"
 tracing = "0.1.41"
 time = "0.3.41"
