@@ -16,7 +16,7 @@ serde = ["dep:serde"]
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 tracing = "0.1.41"
-tokio = { version = "1.45.0", features = ["rt", "macros", "time"] }
+tokio = { version = "1.47.1", features = ["rt", "macros", "time"] }
 tokio-util = { version = "0.7.15", features = ["rt"] }
 tower = "0.5.2"
 tokio-tower = "0.6.0"
