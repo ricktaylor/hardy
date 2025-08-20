@@ -1,6 +1,6 @@
 use super::*;
 use rand::distr::{Alphanumeric, SampleString};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
