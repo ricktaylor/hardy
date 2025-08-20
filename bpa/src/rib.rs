@@ -33,7 +33,7 @@ impl Ord for LocalAction {
             (LocalAction::Forward(..), LocalAction::AdminEndpoint)
             | (LocalAction::Forward(..), LocalAction::Local(_)) => std::cmp::Ordering::Greater,
             (LocalAction::Forward(lhs_addr, lhs), LocalAction::Forward(rhs_addr, rhs)) => {
-                lhs_addr.cmp(rhs_addr).then(lhs.cmp(rhs))
+                lhs_addr.cmp(rhs_addr).then_with(|| lhs.cmp(rhs))
             }
         }
         .reverse()

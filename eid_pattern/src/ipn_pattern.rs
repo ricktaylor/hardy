@@ -123,16 +123,17 @@ impl std::cmp::Ord for IpnInterval {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (IpnInterval::Number(lhs), IpnInterval::Number(rhs)) => lhs.cmp(rhs),
-            (IpnInterval::Number(lhs), IpnInterval::Range(rhs)) => {
-                lhs.cmp(rhs.start()).then(0.cmp(&(rhs.end() - rhs.start())))
-            }
-            (IpnInterval::Range(lhs), IpnInterval::Number(rhs)) => {
-                lhs.start().cmp(rhs).then((lhs.end() - lhs.start()).cmp(&0))
-            }
+            (IpnInterval::Number(lhs), IpnInterval::Range(rhs)) => lhs
+                .cmp(rhs.start())
+                .then_with(|| 0.cmp(&(rhs.end() - rhs.start()))),
+            (IpnInterval::Range(lhs), IpnInterval::Number(rhs)) => lhs
+                .start()
+                .cmp(rhs)
+                .then_with(|| (lhs.end() - lhs.start()).cmp(&0)),
             (IpnInterval::Range(lhs), IpnInterval::Range(rhs)) => lhs
                 .start()
                 .cmp(rhs.start())
-                .then((lhs.end() - lhs.start()).cmp(&(rhs.end() - rhs.start()))),
+                .then_with(|| (lhs.end() - lhs.start()).cmp(&(rhs.end() - rhs.start()))),
         }
     }
 }
