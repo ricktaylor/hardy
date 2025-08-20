@@ -23,7 +23,7 @@ impl Bpa {
         let store = Arc::new(store::Store::new(config));
 
         // New RIB
-        let rib = rib::Rib::new(config);
+        let rib = Arc::new(rib::Rib::new(config));
 
         // New registries
         let cla_registry = Arc::new(cla_registry::ClaRegistry::new(config, rib.clone()));

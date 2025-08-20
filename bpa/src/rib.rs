@@ -121,7 +121,7 @@ pub struct Rib {
 }
 
 impl Rib {
-    pub fn new(config: &config::Config) -> Arc<Self> {
+    pub fn new(config: &config::Config) -> Self {
         let mut locals = HashMap::new();
         let mut finals = EidPatternSet::new();
 
@@ -165,7 +165,7 @@ impl Rib {
             finals.insert(format!("dtn://{node_name}/**").parse().unwrap());
         }
 
-        Arc::new(Self {
+        Self {
             inner: RwLock::new(RibInner {
                 locals,
                 finals,
@@ -173,7 +173,7 @@ impl Rib {
                 address_types: HashMap::new(),
             }),
             cancellable_waits: Mutex::default(),
-        })
+        }
     }
 
     pub fn add(&self, pattern: EidPattern, source: String, action: routes::Action, priority: u32) {
