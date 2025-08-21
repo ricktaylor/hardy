@@ -3,10 +3,9 @@ use hardy_bpv7::{
     dtn_time::DtnTime,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion},
 };
-use tracing::Instrument;
 
 impl Dispatcher {
-    #[instrument(skip(self, bundle))]
+    #[instrument(level = "trace", skip(self, bundle))]
     pub(super) async fn report_bundle_reception(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -40,7 +39,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub(super) async fn report_bundle_forwarded(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} forwarded", &bundle.bundle.id);
 
@@ -68,7 +67,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub(super) async fn report_bundle_delivery(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} delivered", &bundle.bundle.id);
 
@@ -94,7 +93,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip(self, bundle))]
+    #[instrument(level = "trace", skip(self, bundle))]
     pub async fn report_bundle_deletion(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -125,7 +124,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip(self, payload))]
+    #[instrument(level = "trace", skip(self, payload))]
     async fn dispatch_status_report(self: &Arc<Self>, payload: Box<[u8]>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {
@@ -158,7 +157,7 @@ impl Dispatcher {
 
             // Dispatch the new bundle
             let dispatcher = self.clone();
-            let span = tracing::info_span!("parent: None", "dispatch_status_report_task");
+            let span = tracing::trace_span!("parent: None", "dispatch_status_report_task");
             span.follows_from(tracing::Span::current());
             self.task_tracker.spawn(
                 async move {

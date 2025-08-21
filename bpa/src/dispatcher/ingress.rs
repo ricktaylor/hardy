@@ -3,7 +3,7 @@ use core::ops::Deref;
 use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub async fn receive_bundle(self: &Arc<Self>, data: Bytes) -> cla::Result<()> {
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
@@ -120,7 +120,7 @@ impl Dispatcher {
             .map_err(Into::into)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub async fn ingress_bundle(
         self: &Arc<Self>,
         bundle: bundle::Bundle,

@@ -3,7 +3,7 @@ use std::ops::Deref;
 use super::*;
 
 impl Dispatcher {
-    #[instrument(skip(self, data))]
+    #[instrument(level = "trace", skip(self, data))]
     pub async fn local_dispatch(
         self: &Arc<Self>,
         mut source: Eid,
@@ -87,7 +87,7 @@ impl Dispatcher {
         self.dispatch_bundle(bundle).await.map(|_| bundle_id)
     }
 
-    #[instrument(skip(self, bundle))]
+    #[instrument(level = "trace", skip(self, bundle))]
     pub(super) async fn deliver_bundle(
         self: &Arc<Self>,
         service: Arc<service_registry::Service>,

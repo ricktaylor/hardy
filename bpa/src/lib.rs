@@ -18,7 +18,7 @@ pub mod storage;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, trace, warn};
+use tracing::{Instrument, error, info, trace, warn};
 
 #[cfg(feature = "no-tracing")]
 use fuzz_macros::instrument;

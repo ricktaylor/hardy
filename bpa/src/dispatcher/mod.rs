@@ -72,7 +72,7 @@ impl Dispatcher {
         self.task_tracker.wait().await;
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     async fn load_data(self: &Arc<Self>, bundle: &bundle::Bundle) -> Result<Option<Bytes>, Error> {
         let Some(storage_name) = bundle.metadata.storage_name.as_ref() else {
             error!("Bad bundle has made it deep into the pipeline");
@@ -87,7 +87,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(skip(self, bundle))]
+    #[instrument(level = "trace", skip(self, bundle))]
     async fn drop_bundle(
         self: &Arc<Self>,
         bundle: bundle::Bundle,

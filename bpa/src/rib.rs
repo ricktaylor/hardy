@@ -333,7 +333,7 @@ impl Rib {
             .remove(address_type);
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub fn find(&self, to: &Eid) -> Result<Option<FindResult>, Option<ReasonCode>> {
         let mut result = find_recurse(
             &self.inner.read().trace_expect("Failed to lock mutex"),
@@ -424,7 +424,7 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
     clas.map(|clas| FindResult::Forward(clas, None))
 }
 
-#[instrument(skip(inner, trail))]
+#[instrument(level = "trace", skip(inner, trail))]
 fn find_recurse<'a>(
     inner: &'a RibInner,
     to: &'a Eid,

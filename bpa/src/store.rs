@@ -121,7 +121,7 @@ impl Store {
         Ok(())
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     async fn bundle_storage_check(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
@@ -181,7 +181,7 @@ impl Store {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     async fn metadata_storage_check(
         &self,
         dispatcher: Arc<dispatcher::Dispatcher>,
@@ -232,7 +232,7 @@ impl Store {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub async fn store(
         &self,
         bundle: hardy_bpv7::bundle::Bundle,
@@ -271,7 +271,7 @@ impl Store {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         if let Some(data) = self
             .bundle_cache
@@ -285,7 +285,7 @@ impl Store {
         self.bundle_storage.load(storage_name).await
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub async fn save_data(&self, data: Bytes) -> storage::Result<Arc<str>> {
         if data.len() < MAX_CACHED_BUNDLE_SIZE {
             let storage_name = self.bundle_storage.save(data.clone()).await?;
@@ -301,7 +301,7 @@ impl Store {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
         self.bundle_cache
             .lock()
@@ -311,7 +311,7 @@ impl Store {
         self.bundle_storage.delete(storage_name).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub async fn get_metadata(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -328,7 +328,7 @@ impl Store {
         self.metadata_storage.get(bundle_id).await
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         // Check cache first
         if self
@@ -350,7 +350,7 @@ impl Store {
         Ok(not_found)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub async fn tombstone_metadata(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -363,7 +363,7 @@ impl Store {
         self.metadata_storage.tombstone(bundle_id).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -371,7 +371,7 @@ impl Store {
         self.metadata_storage.confirm_exists(bundle_id).await
     }
 
-    #[instrument(skip_all)]
+    #[instrument(level = "trace", skip_all)]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
         self.metadata_cache
             .lock()

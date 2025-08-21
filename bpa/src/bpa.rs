@@ -13,7 +13,7 @@ pub struct Bpa {
 impl Bpa {
     #[instrument]
     pub async fn start(config: &config::Config) -> Result<Self, Error> {
-        trace!("Starting new BPA");
+        info!("Starting new BPA");
 
         if config.status_reports {
             warn!("Bundle status reports are enabled");
@@ -40,7 +40,7 @@ impl Bpa {
 
         dispatcher.start()?;
 
-        trace!("BPA started");
+        info!("BPA started");
 
         Ok(Self {
             //store,
@@ -62,7 +62,7 @@ impl Bpa {
         trace!("BPA stopped");
     }
 
-    #[instrument(skip(self, service))]
+    #[instrument(level = "trace", skip(self, service))]
     pub async fn register_service(
         &self,
         service_id: Option<service::ServiceId<'_>>,
@@ -73,7 +73,7 @@ impl Bpa {
             .await
     }
 
-    #[instrument(skip(self, cla))]
+    #[instrument(level = "trace", skip(self, cla))]
     pub async fn register_cla(
         &self,
         name: String,
@@ -85,18 +85,18 @@ impl Bpa {
             .await
     }
 
-    #[instrument(skip(self))]
-    pub fn add_route(
+    #[instrument(level = "trace", skip(self))]
+    pub async fn add_route(
         &self,
         source: String,
         pattern: hardy_eid_pattern::EidPattern,
         action: routes::Action,
         priority: u32,
     ) {
-        self.rib.add(pattern, source, action, priority)
+        self.rib.add(pattern, source, action, priority).await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "trace", skip(self))]
     pub fn remove_route(
         &self,
         source: &str,
