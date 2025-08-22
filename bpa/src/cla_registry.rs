@@ -216,7 +216,7 @@ impl ClaRegistry {
             .insert(eid.clone(), addr.clone())
             .is_none()
         {
-            self.rib.add_forward(eid, addr, Some(cla.clone()))
+            self.rib.add_forward(eid, addr, Some(cla.clone())).await
         }
     }
 

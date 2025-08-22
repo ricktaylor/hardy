@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     Drop(Option<hardy_bpv7::status_report::ReasonCode>), // Drop the bundle
-    Store(time::OffsetDateTime),                         // Wait for later availability
+    Reflect,                                             // Return to last hop
     Via(hardy_bpv7::eid::Eid),                           // Recursive lookup
 }
 
@@ -15,8 +15,8 @@ impl core::fmt::Display for Action {
                     write!(f, "Drop")
                 }
             }
-            Action::Store(until) => write!(f, "wait until {until}"),
-            Action::Via(eid) => write!(f, "via {eid}"),
+            Action::Reflect => write!(f, "Reflect"),
+            Action::Via(eid) => write!(f, "Via {eid}"),
         }
     }
 }

@@ -1,251 +1,186 @@
 use super::*;
-
-pub(super) enum DispatchResult {
-    Drop(Option<ReasonCode>),
-    Keep,
-    Forwarded,
-    Delivered,
-}
+use core::ops::Deref;
+use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
-    #[instrument(skip_all)]
-    pub(super) async fn dispatch_bundle(
+    #[instrument(level = "trace", skip_all)]
+    pub async fn receive_bundle(self: &Arc<Self>, data: Bytes) -> cla::Result<()> {
+        // Capture received_at as soon as possible
+        let received_at = time::OffsetDateTime::now_utc();
+
+        // Do a fast pre-check
+        match data.first() {
+            None => {
+                return Err(hardy_bpv7::Error::InvalidCBOR(
+                    hardy_cbor::decode::Error::NeedMoreData(1),
+                )
+                .into());
+            }
+            Some(0x06) => {
+                trace!("Data looks like a BPv6 bundle");
+                return Err(hardy_bpv7::Error::InvalidCBOR(
+                    hardy_cbor::decode::Error::IncorrectType(
+                        "BPv7 bundle".to_string(),
+                        "Possible BPv6 bundle".to_string(),
+                    ),
+                )
+                .into());
+            }
+            Some(0x80..=0x9F) => {}
+            _ => {
+                return Err(hardy_bpv7::Error::InvalidCBOR(
+                    hardy_cbor::decode::Error::IncorrectType(
+                        "BPv7 bundle".to_string(),
+                        "Invalid CBOR".to_string(),
+                    ),
+                )
+                .into());
+            }
+        }
+
+        // Parse the bundle
+        let (bundle, reason, report_unsupported) =
+            match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref())? {
+                hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => (
+                    bundle::Bundle {
+                        metadata: BundleMetadata {
+                            status: BundleStatus::Dispatching,
+                            storage_name: Some(self.store.save_data(data).await?),
+                            received_at,
+                        },
+                        bundle,
+                    },
+                    None,
+                    report_unsupported,
+                ),
+                hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
+                    trace!("Received bundle has been rewritten");
+                    (
+                        bundle::Bundle {
+                            metadata: BundleMetadata {
+                                status: BundleStatus::Dispatching,
+                                storage_name: Some(self.store.save_data(data.into()).await?),
+                                received_at,
+                            },
+                            bundle,
+                        },
+                        None,
+                        report_unsupported,
+                    )
+                }
+                hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e) => {
+                    trace!("Invalid bundle received: {e}");
+
+                    // Don't bother saving the bundle data, it's garbage
+                    (
+                        bundle::Bundle {
+                            metadata: BundleMetadata {
+                                status: BundleStatus::Dispatching,
+                                storage_name: None,
+                                received_at,
+                            },
+                            bundle,
+                        },
+                        Some(reason),
+                        false,
+                    )
+                }
+            };
+
+        match self.store.insert_metadata(&bundle).await {
+            Ok(false) => {
+                // Bundle with matching id already exists in the metadata store
+
+                // Drop the stored data and do not process further
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    self.store.delete_data(storage_name).await?;
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    _ = self.store.delete_data(storage_name).await;
+                }
+                return Err(e.into());
+            }
+            _ => {}
+        }
+
+        // Report we have received the bundle
+        self.report_bundle_reception(
+            &bundle,
+            if report_unsupported {
+                ReasonCode::BlockUnsupported
+            } else {
+                ReasonCode::NoAdditionalInformation
+            },
+        )
+        .await;
+
+        // Check the bundle further
+        self.dispatch_bundle(bundle, reason)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[instrument(level = "trace", skip(self))]
+    pub async fn dispatch_bundle(
         self: &Arc<Self>,
         bundle: bundle::Bundle,
+        mut reason: Option<ReasonCode>,
     ) -> Result<(), Error> {
-        // Now process the bundle
-        let reason_code = match self.dispatch_bundle_inner(&bundle).await? {
-            DispatchResult::Drop(reason_code) => reason_code,
-            DispatchResult::Keep => {
-                return Ok(());
-            }
-            DispatchResult::Forwarded => {
-                self.report_bundle_forwarded(&bundle).await;
-                None
-            }
-            DispatchResult::Delivered => {
-                self.report_bundle_delivery(&bundle).await;
-                None
-            }
-        };
+        /* Always check bundles, no matter the state, as after restarting
+         * the configured filters or code may have changed, and reprocessing is desired.
+         */
 
-        self.drop_bundle(bundle, reason_code).await
-    }
+        // Drop Eid::Null silently to cull spam
+        if bundle.bundle.destination == Eid::Null {
+            return self.drop_bundle(bundle, None).await;
+        }
 
-    #[instrument(level = "trace", skip_all)]
-    pub(super) async fn dispatch_bundle_inner(
-        self: &Arc<Self>,
-        bundle: &bundle::Bundle,
-    ) -> Result<DispatchResult, Error> {
-        let mut next_hop = bundle.bundle.destination.clone();
-        let mut previous = false;
-        loop {
-            // Perform RIB lookup
-            let (clas, until) = match self.rib.find(&next_hop) {
-                Err(reason) => {
-                    trace!("Bundle is black-holed");
-                    return Ok(DispatchResult::Drop(reason));
-                }
-                Ok(Some(rib::FindResult::AdminEndpoint)) => {
-                    if bundle.bundle.id.fragment_info.is_some() {
-                        return self.reassemble(bundle).await;
-                    }
+        if let Some(u) = bundle.bundle.flags.unrecognised {
+            trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
+        }
 
-                    // The bundle is for the Administrative Endpoint
-                    return self.administrative_bundle(bundle).await;
-                }
-                Ok(Some(rib::FindResult::Deliver(service))) => {
-                    if bundle.bundle.id.fragment_info.is_some() {
-                        return self.reassemble(bundle).await;
-                    }
-
-                    // Bundle is for a local service
-                    return self.deliver_bundle(service, bundle).await;
-                }
-                Ok(Some(rib::FindResult::Forward(clas, until))) => (clas, until),
-                Ok(None) => (Vec::new(), None),
-            };
-
-            if !clas.is_empty() {
-                // Get bundle data from store, now we know we need it!
-                let Some(data) = self.load_data(bundle).await? else {
-                    // Bundle data was deleted sometime during processing
-                    return Ok(DispatchResult::Drop(Some(ReasonCode::DepletedStorage)));
-                };
-
-                // TODO: Pluggable Egress filters!
-
-                // Track fragmentation status
-                let mut max_bundle_size = None;
-
-                // For each CLA
-                for (cla, cla_addr) in clas {
-                    // Increment Hop Count, etc...
-                    // We ignore the fact that a new bundle has been created, as it makes no difference below
-                    let (_, data) = self.update_extension_blocks(bundle, &data);
-
-                    match cla.cla.on_forward(cla_addr, data.into()).await {
-                        Err(e) => warn!("CLA failed to forward: {e}"),
-                        Ok(cla::ForwardBundleResult::Sent) => {
-                            // We have successfully forwarded!
-                            return Ok(DispatchResult::Forwarded);
-                        }
-                        Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                            trace!("CLA has no neighbour for {next_hop}");
-                        }
-                        Ok(cla::ForwardBundleResult::TooBig(mbs)) => {
-                            // Need to fragment to fit, track the largest MTU possible to minimize number of fragments
-                            max_bundle_size = max_bundle_size.max(Some(mbs));
-                        }
-                    }
-                }
-
-                if let Some(max_bundle_size) = max_bundle_size {
-                    // Fragmentation required
-                    return self.fragment(max_bundle_size, bundle).await;
+        if reason.is_none() {
+            // Check some basic semantic validity, lifetime first
+            if bundle.has_expired() {
+                trace!("Bundle lifetime has expired");
+                reason = Some(ReasonCode::LifetimeExpired);
+            } else if let Some(hop_info) = bundle.bundle.hop_count.as_ref() {
+                // Check hop count exceeded
+                if hop_info.count >= hop_info.limit {
+                    trace!("Bundle hop-limit {} exceeded", hop_info.limit);
+                    reason = Some(ReasonCode::HopLimitExceeded);
                 }
             }
+        }
 
-            // See if we should wait
-            if let Some(until) = until {
-                return self.bundle_wait(next_hop, bundle, until);
+        if reason.is_some() {
+            // Not valid, drop it
+            return self.drop_bundle(bundle, reason).await;
+        }
+
+        match bundle.metadata.status {
+            BundleStatus::Dispatching => {
+                // Now process the bundle
+                self.forward_bundle(bundle).await
             }
-
-            // By the time we get here, we have tried every CLA
-            trace!("Failed to forward bundle to {next_hop}, no route to node");
-
-            if previous {
-                trace!("Failed to return bundle to previous node, no route to node");
-
-                return Ok(DispatchResult::Drop(Some(
-                    hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
-                )));
+            BundleStatus::Waiting => {
+                // Just wait
+                self.delay_bundle(bundle).await
             }
-
-            // Return the bundle to the source via the 'previous_node' or 'bundle.source'
-            previous = true;
-            next_hop = bundle
-                .bundle
-                .previous_node
-                .as_ref()
-                .unwrap_or(&bundle.bundle.id.source)
-                .clone();
-
-            trace!("Returning bundle to previous node {next_hop}");
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
-    fn update_extension_blocks(
-        &self,
-        bundle: &bundle::Bundle,
-        source_data: &[u8],
-    ) -> (hardy_bpv7::bundle::Bundle, Box<[u8]>) {
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data);
-
-        // Previous Node Block
-        editor
-            .replace_extension_block(hardy_bpv7::block::Type::PreviousNode)
-            .data(
-                hardy_cbor::encode::emit(
-                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
-                )
-                .into(),
-            )
-            .build();
-
-        // Increment Hop Count
-        if let Some(hop_count) = &bundle.bundle.hop_count {
-            editor
-                .replace_extension_block(hardy_bpv7::block::Type::HopCount)
-                .data(
-                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                        limit: hop_count.limit,
-                        count: hop_count.count + 1,
-                    })
-                    .into(),
-                )
-                .build();
+    #[instrument(level = "trace", skip(self))]
+    pub(super) async fn delay_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
+        if !matches!(bundle.metadata.status, BundleStatus::Waiting) {
+            bundle.metadata.status = BundleStatus::Waiting;
+            self.store.update_metadata(&bundle).await?;
         }
 
-        // Update Bundle Age, if required
-        if bundle.bundle.age.is_some() || bundle.bundle.id.timestamp.creation_time.is_none() {
-            // We have a bundle age block already, or no valid clock at bundle source
-            // So we must add an updated bundle age block
-            let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
-                .whole_milliseconds()
-                .clamp(0, u64::MAX as i128) as u64;
-
-            editor
-                .replace_extension_block(hardy_bpv7::block::Type::BundleAge)
-                .data(hardy_cbor::encode::emit(&bundle_age).into())
-                .build();
-        }
-
-        editor.build()
-    }
-
-    fn bundle_wait(
-        self: &Arc<Self>,
-        next_hop: Eid,
-        bundle: &bundle::Bundle,
-        until: time::OffsetDateTime,
-    ) -> Result<dispatch::DispatchResult, Error> {
-        let until = until.min(bundle.expiry());
-        let id = bundle.bundle.id.clone();
-        let dispatcher = self.clone();
-        self.task_tracker.spawn(async move {
-            dispatcher
-                .on_bundle_wait(next_hop, id, until)
-                .await
-                .expect("Failed to wait for bundle");
-        });
-        Ok(dispatch::DispatchResult::Keep)
-    }
-
-    async fn on_bundle_wait(
-        self: &Arc<Self>,
-        next_hop: Eid,
-        bundle_id: hardy_bpv7::bundle::Id,
-        until: time::OffsetDateTime,
-    ) -> Result<(), Error> {
-        // Check to see if we should wait at all!
-        let duration = until - time::OffsetDateTime::now_utc();
-        if !duration.is_positive() {
-            let Some(bundle) = self.store.get_metadata(&bundle_id).await? else {
-                // Bundle data was deleted sometime during processing
-                return Ok(());
-            };
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
-                .await;
-        }
-
-        match self
-            .rib
-            .wait_for_route(
-                &next_hop,
-                tokio::time::Duration::new(
-                    duration.whole_seconds() as u64,
-                    duration.subsec_nanoseconds() as u32,
-                ),
-                &self.cancel_token,
-            )
-            .await
-        {
-            rib::WaitResult::Cancelled => {}
-            rib::WaitResult::Timeout => {
-                if let Some(bundle) = self.store.get_metadata(&bundle_id).await? {
-                    self.drop_bundle(bundle, Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute))
-                        .await?;
-                }
-            }
-            rib::WaitResult::RouteChange => {
-                if let Some(bundle) = self.store.get_metadata(&bundle_id).await? {
-                    self.dispatch_bundle(bundle).await?;
-                }
-            }
-        }
+        self.sentinel.watch_bundle(bundle).await;
         Ok(())
     }
 }

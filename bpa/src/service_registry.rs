@@ -251,7 +251,7 @@ impl ServiceRegistry {
             .await;
 
         // Add local service to RIB
-        self.rib.add_service(service_id.clone(), service);
+        self.rib.add_service(service_id.clone(), service).await;
 
         Ok(service_id)
     }

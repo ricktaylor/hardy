@@ -21,6 +21,32 @@ struct Storage {
     entries: Mutex<lru::LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
 }
 
+struct SortedBundle(bundle::Bundle);
+
+impl PartialEq for SortedBundle {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.bundle.id == other.0.bundle.id
+    }
+}
+
+impl Eq for SortedBundle {}
+
+impl PartialOrd for SortedBundle {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SortedBundle {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .expiry()
+            .cmp(&other.0.expiry())
+            .then_with(|| self.0.bundle.id.cmp(&other.0.bundle.id))
+            .reverse()
+    }
+}
+
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     async fn get(
@@ -77,6 +103,32 @@ impl storage::MetadataStorage for Storage {
         &self,
         _tx: storage::Sender<bundle::Bundle>,
     ) -> storage::Result<()> {
+        Ok(())
+    }
+
+    async fn poll_pending(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
+        let entries = self
+            .entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .iter()
+            .filter_map(|(_, v)| {
+                let Some(v) = v else {
+                    return None;
+                };
+                if matches!(v.metadata.status, metadata::BundleStatus::Waiting) {
+                    Some(SortedBundle(v.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::BinaryHeap<_>>();
+
+        for e in entries {
+            if tx.send_async(e.0).await.is_err() {
+                break;
+            }
+        }
         Ok(())
     }
 }

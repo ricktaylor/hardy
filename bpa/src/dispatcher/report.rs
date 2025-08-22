@@ -161,8 +161,8 @@ impl Dispatcher {
             span.follows_from(tracing::Span::current());
             self.task_tracker.spawn(
                 async move {
-                    if let Ok(dispatch::DispatchResult::Keep) = dispatcher
-                        .dispatch_bundle_inner(&bundle)
+                    if let Ok(forward::ForwardResult::Keep) = dispatcher
+                        .forward_bundle_inner(&bundle)
                         .await
                         .inspect_err(|e| error!("Failed to send status report: {e}"))
                     {

@@ -1,7 +1,7 @@
 mod admin;
 mod dispatch;
+mod forward;
 mod fragment;
-mod ingress;
 mod local;
 mod report;
 mod restart;
@@ -16,9 +16,11 @@ pub struct Dispatcher {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
     store: Arc<store::Store>,
+    sentinel: Arc<sentinel::Sentinel>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     rib: Arc<rib::Rib>,
     ipn_2_element: Arc<hardy_eid_pattern::EidPatternSet>,
+    //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
 
     // Config options
     status_reports: bool,
@@ -30,6 +32,7 @@ impl Dispatcher {
     pub fn new(
         config: &config::Config,
         store: Arc<store::Store>,
+        sentinel: Arc<sentinel::Sentinel>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         rib: Arc<rib::Rib>,
         //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
@@ -38,6 +41,7 @@ impl Dispatcher {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
             store,
+            sentinel,
             service_registry,
             rib,
             ipn_2_element: Arc::new(config.ipn_2_element.iter().fold(
@@ -47,23 +51,10 @@ impl Dispatcher {
                     acc
                 },
             )),
+            //keys: keys.unwrap_or(Box<NoKeys>::new()),
             status_reports: config.status_reports,
             node_ids: config.node_ids.clone(),
         }
-    }
-
-    pub fn start(self: &Arc<Self>) -> Result<(), Error> {
-        // Start the store - this can take a while as the store is walked
-        let dispatcher = self.clone();
-        self.task_tracker.spawn(async move {
-            // Now check the metadata storage for old data
-            dispatcher
-                .store
-                .start(dispatcher.clone(), &dispatcher.cancel_token)
-                .await
-                .trace_expect("Storage check failed")
-        });
-        Ok(())
     }
 
     pub async fn shutdown(&self) {
@@ -88,7 +79,7 @@ impl Dispatcher {
     }
 
     #[instrument(level = "trace", skip(self, bundle))]
-    async fn drop_bundle(
+    pub async fn drop_bundle(
         self: &Arc<Self>,
         bundle: bundle::Bundle,
         reason: Option<ReasonCode>,

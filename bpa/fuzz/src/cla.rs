@@ -70,8 +70,7 @@ impl hardy_bpa::cla::Cla for NullCla {
 }
 
 pub fn cla_send(data: hardy_bpa::Bytes) {
-    static PIPE: std::sync::OnceLock<flume::Sender<hardy_bpa::Bytes>> =
-        std::sync::OnceLock::new();
+    static PIPE: std::sync::OnceLock<flume::Sender<hardy_bpa::Bytes>> = std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
         let (tx, rx) = flume::bounded::<hardy_bpa::Bytes>(16);
 
@@ -84,20 +83,16 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
                 "ipn:*.*".parse().unwrap(),
                 hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
                 1,
-            );
+            )
+            .await;
 
             bpa.add_route(
                 "fuzz".to_string(),
                 "dtn://**/**".parse().unwrap(),
-                hardy_bpa::routes::Action::Store(
-                    time::OffsetDateTime::parse(
-                        "2035-01-02T11:12:13Z",
-                        &time::format_description::well_known::Rfc3339,
-                    )
-                    .unwrap(),
-                ),
+                hardy_bpa::routes::Action::Reflect,
                 100,
-            );
+            )
+            .await;
 
             {
                 let cla = std::sync::Arc::new(NullCla::default());

@@ -6,20 +6,20 @@ impl Dispatcher {
     pub(super) async fn administrative_bundle(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
-    ) -> Result<dispatch::DispatchResult, Error> {
+    ) -> Result<forward::ForwardResult, Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             trace!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
-            return Ok(dispatch::DispatchResult::Drop(Some(
+            return Ok(forward::ForwardResult::Drop(Some(
                 ReasonCode::BlockUnintelligible,
             )));
         }
 
         let Some(data) = self.load_data(bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
-            return Ok(dispatch::DispatchResult::Drop(Some(
+            return Ok(forward::ForwardResult::Drop(Some(
                 ReasonCode::DepletedStorage,
             )));
         };
@@ -27,7 +27,7 @@ impl Dispatcher {
         match hardy_cbor::decode::parse(&data) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
-                Ok(dispatch::DispatchResult::Drop(Some(
+                Ok(forward::ForwardResult::Drop(Some(
                     ReasonCode::BlockUnintelligible,
                 )))
             }
@@ -51,7 +51,7 @@ impl Dispatcher {
                     on_status_notify(report.delivered, service::StatusNotify::Delivered).await;
                     on_status_notify(report.deleted, service::StatusNotify::Deleted).await;
                 }
-                Ok(dispatch::DispatchResult::Drop(None))
+                Ok(forward::ForwardResult::Drop(None))
             }
         }
     }

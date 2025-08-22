@@ -3,7 +3,8 @@ use super::*;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct Bpa {
-    //store: Arc<store::Store>,
+    store: Arc<store::Store>,
+    sentinel: Arc<sentinel::Sentinel>,
     rib: Arc<rib::Rib>,
     cla_registry: Arc<cla_registry::ClaRegistry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
@@ -22,28 +23,38 @@ impl Bpa {
         // New store
         let store = Arc::new(store::Store::new(config));
 
+        // New sentinel
+        let (sentinel, sentinel_rx) = sentinel::Sentinel::new(store.clone());
+        let sentinel = Arc::new(sentinel);
+
         // New RIB
-        let rib = Arc::new(rib::Rib::new(config));
+        let rib = Arc::new(rib::Rib::new(config, sentinel.clone()));
 
         // New registries
         let cla_registry = Arc::new(cla_registry::ClaRegistry::new(config, rib.clone()));
         let service_registry =
             Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
 
-        // Create a new dispatcher
+        // New dispatcher
         let dispatcher = Arc::new(dispatcher::Dispatcher::new(
             config,
             store.clone(),
+            sentinel.clone(),
             service_registry.clone(),
             rib.clone(),
         ));
 
-        dispatcher.start()?;
+        // Start the sentinel
+        sentinel.start(dispatcher.clone(), sentinel_rx);
+
+        // And finally restart the store
+        store.start(dispatcher.clone());
 
         info!("BPA started");
 
         Ok(Self {
-            //store,
+            store,
+            sentinel,
             rib,
             cla_registry,
             service_registry,
@@ -51,6 +62,7 @@ impl Bpa {
         })
     }
 
+    // TODO: Make this a Drop impl
     #[instrument(skip(self))]
     pub async fn shutdown(&self) {
         trace!("Shutting down BPA");
@@ -58,6 +70,8 @@ impl Bpa {
         self.dispatcher.shutdown().await;
         self.service_registry.shutdown().await;
         self.cla_registry.shutdown().await;
+        self.sentinel.shutdown().await;
+        self.store.shutdown().await;
 
         trace!("BPA stopped");
     }

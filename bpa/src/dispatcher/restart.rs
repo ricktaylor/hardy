@@ -14,8 +14,7 @@ impl Dispatcher {
         };
 
         // Parse the bundle (again, just in case we have changed policies etc)
-        let (r, bundle, reason) = match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref())
-        {
+        match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref()) {
             Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
                 // Check if the metadata_storage knows about this bundle
                 if let Some(metadata) = self.store.confirm_exists(&bundle.id).await? {
@@ -30,21 +29,21 @@ impl Dispatcher {
                         }
 
                         // Remove spurious duplicate
-                        return self
-                            .store
+                        self.store
                             .delete_data(&storage_name)
                             .await
-                            .map(|_| store::RestartResult::Duplicate);
+                            .map(|_| store::RestartResult::Duplicate)
+                    } else {
+                        // All looks good, just continue dispatching
+                        self.dispatch_bundle(bundle::Bundle { bundle, metadata }, None)
+                            .await
+                            .map(|_| store::RestartResult::Restarted)
                     }
-                    // All looks good, just continue dispatching
-                    (
-                        store::RestartResult::Restarted,
-                        bundle::Bundle { bundle, metadata },
-                        None,
-                    )
                 } else {
+                    // Effectively a new bundle
                     let bundle = bundle::Bundle {
                         metadata: BundleMetadata {
+                            status: BundleStatus::Dispatching,
                             storage_name: Some(storage_name),
                             received_at: file_time,
                         },
@@ -65,8 +64,9 @@ impl Dispatcher {
                     )
                     .await;
 
-                    // Effectively a new bundle
-                    (store::RestartResult::Orphan, bundle, None)
+                    self.dispatch_bundle(bundle, None)
+                        .await
+                        .map(|_| store::RestartResult::Orphan)
                 }
             }
             Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported)) => {
@@ -106,6 +106,7 @@ impl Dispatcher {
 
                 let bundle = bundle::Bundle {
                     metadata: BundleMetadata {
+                        status: BundleStatus::Dispatching,
                         storage_name: Some(new_storage_name),
                         received_at: file_time,
                     },
@@ -134,7 +135,9 @@ impl Dispatcher {
                 }
 
                 // Report the bundle as an orphan
-                (store::RestartResult::Orphan, bundle, None)
+                self.dispatch_bundle(bundle, None)
+                    .await
+                    .map(|_| store::RestartResult::Orphan)
             }
             Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
                 warn!("Invalid bundle found: {storage_name}, {e}");
@@ -170,6 +173,7 @@ impl Dispatcher {
 
                 let bundle = bundle::Bundle {
                     metadata: BundleMetadata {
+                        status: BundleStatus::Dispatching,
                         storage_name: None,
                         received_at: file_time,
                     },
@@ -191,24 +195,21 @@ impl Dispatcher {
                     self.store.update_metadata(&bundle).await?;
                 }
 
-                (store::RestartResult::Orphan, bundle, Some(reason))
+                // Process the 'new' bundle
+                self.dispatch_bundle(bundle, Some(reason))
+                    .await
+                    .map(|_| store::RestartResult::Orphan)
             }
             Err(e) => {
                 // Parse failed badly, no idea who to report to
                 warn!("Junk data found: {storage_name}, {e}");
 
                 // Drop the bundle
-                return self
-                    .store
+                self.store
                     .delete_data(&storage_name)
                     .await
-                    .map(|_| store::RestartResult::Junk);
+                    .map(|_| store::RestartResult::Junk)
             }
-        };
-
-        // Process the 'new' bundle
-        self.ingress_bundle(bundle, reason).await?;
-
-        Ok(r)
+        }
     }
 }

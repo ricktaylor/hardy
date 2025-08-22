@@ -161,6 +161,13 @@ impl Storage {
     }
 }
 
+fn from_status(status: &hardy_bpa::metadata::BundleStatus) -> i64 {
+    match status {
+        hardy_bpa::metadata::BundleStatus::Dispatching => 0,
+        hardy_bpa::metadata::BundleStatus::Waiting => 1,
+    }
+}
+
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[instrument(level = "trace", skip(self))]
@@ -192,14 +199,15 @@ impl storage::MetadataStorage for Storage {
     #[instrument(level = "trace", skip_all)]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
+        let status_code = from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
-                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry) VALUES (?1,?2,?3)",
+                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,status_code) VALUES (?1,?2,?3,?4)",
             )?
-            .execute((id, bundle, expiry))
+            .execute((id, bundle, expiry, status_code))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -209,15 +217,16 @@ impl storage::MetadataStorage for Storage {
     #[instrument(level = "trace", skip_all)]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
+        let status_code = from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         if self
             .write(move |conn| {
                 // Update bundle
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3 WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = ?2, expiry = ?3, status_code = ?4 WHERE bundle_id = ?1",
                 )?
-                .execute((id, bundle, expiry))
+                .execute((id, bundle, expiry, status_code))
                 .map_err(Into::into)
             })
             .await?
@@ -233,9 +242,11 @@ impl storage::MetadataStorage for Storage {
         let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
         if self
             .write(move |conn| {
-                conn.prepare_cached("UPDATE bundles SET bundle = NULL WHERE bundle_id = ?1")?
-                    .execute((id,))
-                    .map_err(Into::into)
+                conn.prepare_cached(
+                    "UPDATE bundles SET bundle = NULL, status_code = NULL WHERE bundle_id = ?1",
+                )?
+                .execute((id,))
+                .map_err(Into::into)
             })
             .await?
             != 1
@@ -304,7 +315,6 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         loop {
-            let tx = tx.clone();
             let Some(bundle) = self.write(move |conn| {
                 let trans =
                     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -347,6 +357,83 @@ impl storage::MetadataStorage for Storage {
                     }
                 }
                 Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+            }
+        }
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    async fn poll_pending(
+        &self,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+    ) -> storage::Result<()> {
+        // We have a hard-coded number below
+        assert_eq!(1, from_status(&hardy_bpa::metadata::BundleStatus::Waiting));
+
+        let mut max_expiry = None;
+        loop {
+            let (bundles, expiry) = self
+                .read(move |conn| {
+                    let mut bundles = Vec::new();
+                    if let Some(expiry) = max_expiry {
+                        for r in conn
+                            .prepare_cached(
+                                "SELECT bundle,expiry FROM bundles 
+                                WHERE expiry >= ?1
+                                    AND status_code = 1
+                                    AND bundle IS NOT NULL 
+                                    AND id NOT IN (SELECT id FROM unconfirmed_bundles)
+                                ORDER BY expiry
+                                LIMIT 64",
+                            )?
+                            .query_map((expiry,), |row| {
+                                Ok((
+                                    row.get::<_, Vec<u8>>(0)?,
+                                    row.get::<_, time::OffsetDateTime>(1)?,
+                                ))
+                            })?
+                        {
+                            let (bundle, expiry) = r?;
+                            max_expiry = Some(expiry);
+                            bundles.push(bundle);
+                        }
+                    } else {
+                        for r in conn
+                            .prepare_cached(
+                                "SELECT bundle,expiry FROM bundles 
+                                WHERE status_code = 1
+                                    AND bundle IS NOT NULL 
+                                    AND id NOT IN (SELECT id FROM unconfirmed_bundles)
+                                ORDER BY expiry
+                                LIMIT 64",
+                            )?
+                            .query_map((), |row| {
+                                Ok((
+                                    row.get::<_, Vec<u8>>(0)?,
+                                    row.get::<_, time::OffsetDateTime>(1)?,
+                                ))
+                            })?
+                        {
+                            let (bundle, expiry) = r?;
+                            max_expiry = Some(expiry);
+                            bundles.push(bundle);
+                        }
+                    };
+                    Ok((bundles, max_expiry))
+                })
+                .await?;
+
+            max_expiry = expiry;
+
+            for bundle in bundles {
+                match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                    Ok((bundle, _)) => {
+                        if tx.send_async(bundle).await.is_err() {
+                            // The other end is shutting down - get out
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+                }
             }
         }
     }

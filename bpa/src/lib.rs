@@ -1,6 +1,7 @@
 mod cla_registry;
 mod dispatcher;
 mod rib;
+mod sentinel;
 mod service_registry;
 mod store;
 

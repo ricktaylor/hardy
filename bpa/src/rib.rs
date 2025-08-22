@@ -4,7 +4,7 @@ use hardy_eid_pattern::{EidPattern, EidPatternMap, EidPatternSet};
 use rand::prelude::*;
 use std::{
     collections::{BinaryHeap, HashMap, HashSet},
-    sync::{Mutex, RwLock},
+    sync::RwLock,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -62,14 +62,8 @@ pub enum FindResult {
     Deliver(Arc<service_registry::Service>), // Deliver to local service
     Forward(
         Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>, // Available endpoints for forwarding
-        Option<time::OffsetDateTime>,                   // Timestamp of next forwarding opportunity
+        bool,                                           // Should we reflect if forwarding fails
     ),
-}
-
-pub enum WaitResult {
-    Cancelled,
-    Timeout,
-    RouteChange,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -92,13 +86,13 @@ impl Ord for RouteEntry {
             .cmp(&other.priority)
             .then_with(|| match (&self.action, &other.action) {
                 (routes::Action::Drop(lhs), routes::Action::Drop(rhs)) => lhs.cmp(rhs),
-                (routes::Action::Drop(_), routes::Action::Store(_))
+                (routes::Action::Drop(_), routes::Action::Reflect)
                 | (routes::Action::Drop(_), routes::Action::Via(_)) => std::cmp::Ordering::Less,
-                (routes::Action::Store(_), routes::Action::Drop(_)) => std::cmp::Ordering::Greater,
-                (routes::Action::Store(lhs), routes::Action::Store(rhs)) => lhs.cmp(rhs),
-                (routes::Action::Store(_), routes::Action::Via(_)) => std::cmp::Ordering::Less,
+                (routes::Action::Reflect, routes::Action::Drop(_)) => std::cmp::Ordering::Greater,
+                (routes::Action::Reflect, routes::Action::Reflect) => std::cmp::Ordering::Equal,
+                (routes::Action::Reflect, routes::Action::Via(_)) => std::cmp::Ordering::Less,
                 (routes::Action::Via(_), routes::Action::Drop(_))
-                | (routes::Action::Via(_), routes::Action::Store(_)) => std::cmp::Ordering::Greater,
+                | (routes::Action::Via(_), routes::Action::Reflect) => std::cmp::Ordering::Greater,
                 (routes::Action::Via(lhs), routes::Action::Via(rhs)) => lhs.cmp(rhs),
             })
             .reverse()
@@ -106,7 +100,6 @@ impl Ord for RouteEntry {
     }
 }
 
-#[derive(Debug)]
 struct RibInner {
     locals: HashMap<Eid, BinaryHeap<LocalAction>>,
     routes: EidPatternMap<RouteEntry>,
@@ -114,14 +107,13 @@ struct RibInner {
     address_types: HashMap<cla::ClaAddressType, Arc<cla_registry::Cla>>,
 }
 
-#[derive(Debug)]
 pub struct Rib {
     inner: RwLock<RibInner>,
-    cancellable_waits: Mutex<HashMap<Eid, tokio_util::sync::CancellationToken>>,
+    sentinel: Arc<sentinel::Sentinel>,
 }
 
 impl Rib {
-    pub fn new(config: &config::Config) -> Self {
+    pub fn new(config: &config::Config, sentinel: Arc<sentinel::Sentinel>) -> Self {
         let mut locals = HashMap::new();
         let mut finals = EidPatternSet::new();
 
@@ -172,11 +164,17 @@ impl Rib {
                 routes: EidPatternMap::new(),
                 address_types: HashMap::new(),
             }),
-            cancellable_waits: Mutex::default(),
+            sentinel,
         }
     }
 
-    pub fn add(&self, pattern: EidPattern, source: String, action: routes::Action, priority: u32) {
+    pub async fn add(
+        &self,
+        pattern: EidPattern,
+        source: String,
+        action: routes::Action,
+        priority: u32,
+    ) {
         info!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
 
         self.inner
@@ -192,11 +190,10 @@ impl Rib {
                 },
             );
 
-        // Wake all waiters
-        self.wake(pattern.into())
+        self.sentinel.new_route(pattern).await
     }
 
-    fn add_local(&self, eid: Eid, action: LocalAction) {
+    async fn add_local(&self, eid: Eid, action: LocalAction) {
         info!("Adding local route {eid} => {action}");
 
         match self
@@ -214,28 +211,21 @@ impl Rib {
             }
         }
 
-        // Wake all waiters
-        if let Some(token) = self
-            .cancellable_waits
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .remove(&eid)
-        {
-            token.cancel();
-        }
+        self.sentinel.new_route(eid.into()).await
     }
 
-    pub fn add_forward(
+    pub async fn add_forward(
         &self,
         eid: Eid,
         cla_addr: cla::ClaAddress,
         cla: Option<Arc<cla_registry::Cla>>,
     ) {
         self.add_local(eid, LocalAction::Forward(cla_addr, cla))
+            .await
     }
 
-    pub fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) {
-        self.add_local(eid, LocalAction::Local(service))
+    pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) {
+        self.add_local(eid, LocalAction::Local(service)).await
     }
 
     pub fn remove(
@@ -262,15 +252,7 @@ impl Rib {
             )
         }
 
-        if v.is_empty() {
-            false
-        } else {
-            if let routes::Action::Store(_) = action {
-                // Wake all waiters, we have changed a wait time
-                self.wake(pattern.clone().into())
-            }
-            true
-        }
+        !v.is_empty()
     }
 
     fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&LocalAction) -> bool) -> bool {
@@ -348,52 +330,9 @@ impl Rib {
 
         Ok(result)
     }
-
-    pub async fn wait_for_route(
-        &self,
-        to: &Eid,
-        duration: std::time::Duration,
-        cancel_token: &tokio_util::sync::CancellationToken,
-    ) -> WaitResult {
-        let token = self
-            .cancellable_waits
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .entry(to.clone())
-            .or_insert(tokio_util::sync::CancellationToken::new())
-            .clone();
-
-        // Wait a bit
-        let timer = tokio::time::sleep(duration);
-        tokio::pin!(timer);
-
-        tokio::select! {
-            () = &mut timer => WaitResult::Timeout,
-            _ = cancel_token.cancelled() => WaitResult::Cancelled,
-            _ = token.cancelled() => {
-                // Remove the token from the map
-                self.cancellable_waits
-                    .lock()
-                    .trace_expect("Failed to lock mutex").remove(to);
-                WaitResult::RouteChange
-            }
-        }
-    }
-
-    fn wake(&self, pattern: EidPatternSet) {
-        for token in self
-            .cancellable_waits
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .extract_if(|eid, _| pattern.contains(eid))
-            .map(|(_, token)| token)
-        {
-            token.cancel();
-        }
-    }
 }
 
-#[instrument(skip(inner))]
+#[instrument(level = "trace", skip(inner))]
 fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
     let mut clas: Option<Vec<(Arc<cla_registry::Cla>, cla::ClaAddress)>> = None;
     for action in inner.locals.get(to).into_iter().flatten() {
@@ -421,7 +360,7 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
             }
         }
     }
-    clas.map(|clas| FindResult::Forward(clas, None))
+    clas.map(|clas| FindResult::Forward(clas, false))
 }
 
 #[instrument(level = "trace", skip(inner, trail))]
@@ -460,53 +399,37 @@ fn find_recurse<'a>(
         }
 
         match &entry.action {
-            routes::Action::Via(via) => {
-                // Recusive lookup
-                if let Some(sub_result) = find_recurse(inner, via, trail)? {
-                    let FindResult::Forward(sub_clas, sub_until) = sub_result else {
-                        // If we find a non-forward, then break
-                        result = Some(sub_result);
-                        break;
-                    };
-
-                    if let Some(FindResult::Forward(clas, until)) = &mut result {
-                        clas.extend(sub_clas);
-
-                        if let Some(sub_until) = sub_until {
-                            if let Some(until) = until {
-                                if sub_until < *until {
-                                    *until = sub_until
-                                }
-                            } else {
-                                *until = Some(sub_until);
-                            }
-                        }
-                    } else {
-                        result = Some(FindResult::Forward(sub_clas, sub_until));
-                    }
-                }
-            }
-            routes::Action::Store(sub_until) => {
-                if *sub_until >= time::OffsetDateTime::now_utc() {
-                    if let Some(FindResult::Forward(_, until)) = &mut result {
-                        if let Some(until) = until {
-                            if sub_until < until {
-                                *until = *sub_until
-                            }
-                        } else {
-                            *until = Some(*sub_until);
-                        }
-                    } else {
-                        result = Some(FindResult::Forward(Vec::new(), Some(*sub_until)));
-                    }
-                }
-
-                // The sort ensures that this is the shortest wait and have processed everything else relevant already
-                break;
-            }
             routes::Action::Drop(reason) => {
                 // Drop trumps everything else
                 return Err(*reason);
+            }
+            routes::Action::Reflect => {
+                if let Some(FindResult::Forward(_, reflect)) = &mut result {
+                    *reflect = true;
+                } else {
+                    result = Some(FindResult::Forward(Vec::new(), true));
+                }
+            }
+            routes::Action::Via(via) => {
+                // Recursive lookup
+                if let Some(sub_result) = find_recurse(inner, via, trail)? {
+                    match sub_result {
+                        FindResult::AdminEndpoint | FindResult::Deliver(_) => {
+                            // If we find a non-forward, then break
+                            result = Some(sub_result);
+                            break;
+                        }
+                        FindResult::Forward(sub_clas, sub_reflect) => {
+                            // Append clas to the running set of clas
+                            if let Some(FindResult::Forward(clas, reflect)) = &mut result {
+                                clas.extend(sub_clas);
+                                *reflect = *reflect || sub_reflect;
+                            } else {
+                                result = Some(FindResult::Forward(sub_clas, sub_reflect));
+                            }
+                        }
+                    }
+                }
             }
         }
 

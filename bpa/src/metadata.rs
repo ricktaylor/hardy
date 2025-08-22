@@ -2,7 +2,16 @@ use super::*;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
+pub enum BundleStatus {
+    Dispatching,
+    Waiting,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BundleMetadata {
+    pub status: BundleStatus,
     pub storage_name: Option<Arc<str>>,
     pub received_at: time::OffsetDateTime,
 }
@@ -13,6 +22,7 @@ impl bincode::Encode for BundleMetadata {
         &self,
         encoder: &mut E,
     ) -> Result<(), bincode::error::EncodeError> {
+        bincode::Encode::encode(&self.status, encoder)?;
         bincode::Encode::encode(&self.storage_name, encoder)?;
         bincode::Encode::encode(&self.received_at.unix_timestamp_nanos(), encoder)?;
         Ok(())
@@ -25,6 +35,7 @@ impl<Context> bincode::Decode<Context> for BundleMetadata {
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
         Ok(Self {
+            status: bincode::Decode::decode(decoder)?,
             storage_name: bincode::Decode::decode(decoder)?,
             received_at: {
                 time::OffsetDateTime::from_unix_timestamp_nanos(bincode::Decode::decode(decoder)?)
@@ -40,6 +51,7 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for BundleMetadata {
         decoder: &mut D,
     ) -> core::result::Result<Self, bincode::error::DecodeError> {
         Ok(Self {
+            status: bincode::BorrowDecode::borrow_decode(decoder)?,
             storage_name: bincode::BorrowDecode::borrow_decode(decoder)?,
             received_at: {
                 time::OffsetDateTime::from_unix_timestamp_nanos(

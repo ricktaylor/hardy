@@ -84,7 +84,7 @@ impl Dispatcher {
 
         // And process
         let bundle_id = bundle.bundle.id.clone();
-        self.dispatch_bundle(bundle).await.map(|_| bundle_id)
+        self.forward_bundle(bundle).await.map(|_| bundle_id)
     }
 
     #[instrument(level = "trace", skip(self, bundle))]
@@ -92,10 +92,10 @@ impl Dispatcher {
         self: &Arc<Self>,
         service: Arc<service_registry::Service>,
         bundle: &bundle::Bundle,
-    ) -> Result<dispatch::DispatchResult, Error> {
+    ) -> Result<forward::ForwardResult, Error> {
         let Some(data) = self.load_data(bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
-            return Ok(dispatch::DispatchResult::Drop(Some(
+            return Ok(forward::ForwardResult::Drop(Some(
                 ReasonCode::DepletedStorage,
             )));
         };
@@ -103,7 +103,7 @@ impl Dispatcher {
         let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {
             None => {
                 // TODO: We are unable to decrypt the payload, what do we do?
-                return Ok(dispatch::DispatchResult::Keep);
+                return Ok(forward::ForwardResult::Keep);
             }
             Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
             Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
@@ -121,6 +121,6 @@ impl Dispatcher {
             .await;
 
         // And we are done with the bundle
-        Ok(dispatch::DispatchResult::Delivered)
+        Ok(forward::ForwardResult::Delivered)
     }
 }

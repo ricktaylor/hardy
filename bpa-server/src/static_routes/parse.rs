@@ -30,20 +30,9 @@ fn parse_via(input: &mut &[u8]) -> ModalResult<Action> {
 }
 
 fn parse_store(input: &mut &[u8]) -> ModalResult<Action> {
-    preceded(
-        (Caseless("store"), opt((space1, Caseless("until")))),
-        preceded(
-            space1,
-            take_till(1.., AsChar::is_space).try_map(|s| {
-                time::OffsetDateTime::parse(
-                    &String::from_utf8_lossy(s),
-                    &time::format_description::well_known::Rfc3339,
-                )
-            }),
-        )
-        .map(Action::Store),
-    )
-    .parse_next(input)
+    Caseless("reflect")
+        .map(|_| Action::Reflect)
+        .parse_next(input)
 }
 
 fn parse_action(input: &mut &[u8]) -> ModalResult<StaticRoute> {

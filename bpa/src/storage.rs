@@ -20,14 +20,17 @@ pub trait MetadataStorage: Send + Sync {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> Result<Option<metadata::BundleMetadata>>;
 
-    async fn remove_unconfirmed(&self, tx: storage::Sender<bundle::Bundle>) -> Result<()>;
+    async fn remove_unconfirmed(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
+
+    /// Return a sorted list of waiting bundles, ordered by expiry.  The receiver will hangup when it has enough
+    async fn poll_pending(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
 }
 
 pub type ListResponse = (Arc<str>, time::OffsetDateTime);
 
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
-    async fn list(&self, tx: storage::Sender<ListResponse>) -> Result<()>;
+    async fn list(&self, tx: Sender<ListResponse>) -> Result<()>;
 
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
 
