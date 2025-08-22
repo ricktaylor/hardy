@@ -113,13 +113,13 @@ impl std::fmt::Display for IpnInterval {
     }
 }
 
-impl std::cmp::PartialOrd for IpnInterval {
+impl PartialOrd for IpnInterval {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl std::cmp::Ord for IpnInterval {
+impl Ord for IpnInterval {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (IpnInterval::Number(lhs), IpnInterval::Number(rhs)) => lhs.cmp(rhs),

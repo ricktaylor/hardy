@@ -129,16 +129,16 @@ fn ipn_from_cbor(
         (None, shortest && s1 && s2)
     };
 
-    const MAX: u64 = u32::MAX as u64;
+    const U32_MAX: u64 = u32::MAX as u64;
 
     match (a, b, c) {
         (0, 0, Some(0)) => Ok((Eid::Null, false)),
         (0, 0, None) => Ok((Eid::Null, shortest)),
         (0, 0, Some(s)) | (0, s, None) => Err(Error::IpnInvalidServiceNumber(s)),
-        (a, _, Some(_)) if a > MAX => Err(Error::IpnInvalidAllocatorId(a)),
-        (_, n, Some(_)) if n > MAX => Err(Error::IpnInvalidNodeNumber(n)),
-        (_, _, Some(s)) | (_, s, None) if s > MAX => Err(Error::IpnInvalidServiceNumber(s)),
-        (0, MAX, Some(s)) | (MAX, s, None) => Ok((
+        (a, _, Some(_)) if a > U32_MAX => Err(Error::IpnInvalidAllocatorId(a)),
+        (_, n, Some(_)) if n > U32_MAX => Err(Error::IpnInvalidNodeNumber(n)),
+        (_, _, Some(s)) | (_, s, None) if s > U32_MAX => Err(Error::IpnInvalidServiceNumber(s)),
+        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => Ok((
             Eid::LocalNode {
                 service_number: s as u32,
             },
@@ -160,7 +160,7 @@ fn ipn_from_cbor(
             },
             shortest,
         )),
-        (n, s, None) if n <= MAX => Ok((
+        (n, s, None) if n <= U32_MAX => Ok((
             Eid::Ipn {
                 allocator_id: 0,
                 node_number: n as u32,
@@ -171,7 +171,7 @@ fn ipn_from_cbor(
         (fqnn, s, None) => Ok((
             Eid::LegacyIpn {
                 allocator_id: (fqnn >> 32) as u32,
-                node_number: (fqnn & MAX) as u32,
+                node_number: (fqnn & U32_MAX) as u32,
                 service_number: s as u32,
             },
             shortest,
