@@ -5,7 +5,7 @@ use hardy_bpv7::{
 };
 
 impl Dispatcher {
-    #[instrument(level = "trace", skip(self, bundle))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     pub(super) async fn report_bundle_reception(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -39,7 +39,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub(super) async fn report_bundle_forwarded(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} forwarded", &bundle.bundle.id);
 
@@ -67,7 +67,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub(super) async fn report_bundle_delivery(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} delivered", &bundle.bundle.id);
 
@@ -93,7 +93,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(level = "trace", skip(self, bundle))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     pub async fn report_bundle_deletion(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -124,7 +124,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(level = "trace", skip(self, payload))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, payload)))]
     async fn dispatch_status_report(self: &Arc<Self>, payload: Box<[u8]>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {

@@ -129,7 +129,7 @@ impl ServiceRegistry {
         }
     }
 
-    #[instrument(level = "trace", skip(self, service, dispatcher))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, service, dispatcher)))]
     pub async fn register(
         self: &Arc<Self>,
         service_id: Option<service::ServiceId<'_>>,

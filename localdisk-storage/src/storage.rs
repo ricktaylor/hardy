@@ -21,7 +21,7 @@ impl Storage {
     }
 }
 
-#[instrument(level = "trace", skip_all)]
+#[cfg_attr(feature = "tracing", instrument(skip_all))]
 fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
     let mut rng = rand::rng();
     loop {
@@ -56,7 +56,7 @@ fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
     }
 }
 
-#[instrument(level = "trace", skip(tx))]
+#[cfg_attr(feature = "tracing", instrument(skip(tx)))]
 fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
@@ -129,7 +129,7 @@ fn walk_dirs(
 
 #[async_trait]
 impl BundleStorage for Storage {
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
@@ -180,7 +180,7 @@ impl BundleStorage for Storage {
         Ok(())
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
 
@@ -213,7 +213,7 @@ impl BundleStorage for Storage {
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let root = self.store_root.clone();
 
@@ -277,7 +277,7 @@ impl BundleStorage for Storage {
             .into())
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         match tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?)).await
         {

@@ -2,7 +2,7 @@ use super::*;
 use core::ops::Deref;
 
 impl Dispatcher {
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn restart_bundle(
         self: &Arc<Self>,
         storage_name: Arc<str>,

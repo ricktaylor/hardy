@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 default = ["mmap"]
 mmap = ["dep:memmap2"]
 serde = ["dep:serde"]
-no-tracing = ["dep:fuzz-macros"]
+tracing = []
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
@@ -25,7 +25,6 @@ trace-err = "0.1.5"
 flume = "0.11.1"
 memmap2 = { version = "0.9.7", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
-fuzz-macros = { path = "../fuzz-macros", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"

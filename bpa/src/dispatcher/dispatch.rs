@@ -3,7 +3,7 @@ use core::ops::Deref;
 use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn receive_bundle(self: &Arc<Self>, data: Bytes) -> cla::Result<()> {
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
@@ -123,7 +123,7 @@ impl Dispatcher {
             .map_err(Into::into)
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn dispatch_bundle(
         self: &Arc<Self>,
         bundle: bundle::Bundle,
@@ -173,7 +173,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub(super) async fn delay_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
         if !matches!(bundle.metadata.status, BundleStatus::Waiting) {
             bundle.metadata.status = BundleStatus::Waiting;

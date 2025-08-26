@@ -16,7 +16,6 @@ members = [
     "proto",
     "sqlite-storage",
     "tcpclv4",
-    "fuzz-macros",
 ]
 
 [profile.release]

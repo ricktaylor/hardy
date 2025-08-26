@@ -20,7 +20,7 @@ pub enum Error {
     UpdateRequired,
 }
 
-#[instrument(skip_all)]
+#[cfg_attr(feature = "tracing", instrument(skip_all))]
 pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Error> {
     let migrations = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 

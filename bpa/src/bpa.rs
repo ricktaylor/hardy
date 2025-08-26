@@ -12,7 +12,7 @@ pub struct Bpa {
 }
 
 impl Bpa {
-    #[instrument]
+    #[cfg_attr(feature = "tracing", instrument)]
     pub async fn start(config: &config::Config) -> Result<Self, Error> {
         info!("Starting new BPA");
 
@@ -63,7 +63,7 @@ impl Bpa {
     }
 
     // TODO: Make this a Drop impl
-    #[instrument(skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
         trace!("Shutting down BPA");
 
@@ -76,7 +76,7 @@ impl Bpa {
         trace!("BPA stopped");
     }
 
-    #[instrument(level = "trace", skip(self, service))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
     pub async fn register_service(
         &self,
         service_id: Option<service::ServiceId<'_>>,
@@ -87,7 +87,7 @@ impl Bpa {
             .await
     }
 
-    #[instrument(level = "trace", skip(self, cla))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, cla)))]
     pub async fn register_cla(
         &self,
         name: String,
@@ -99,7 +99,7 @@ impl Bpa {
             .await
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn add_route(
         &self,
         source: String,
@@ -110,7 +110,7 @@ impl Bpa {
         self.rib.add(pattern, source, action, priority).await
     }
 
-    #[instrument(level = "trace", skip(self))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub fn remove_route(
         &self,
         source: &str,

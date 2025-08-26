@@ -8,7 +8,7 @@ pub enum ForwardResult {
 }
 
 impl Dispatcher {
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn forward_bundle(self: &Arc<Self>, bundle: bundle::Bundle) -> Result<(), Error> {
         // Now process the bundle
         let reason_code = match self.forward_bundle_inner(&bundle).await? {
@@ -29,7 +29,7 @@ impl Dispatcher {
         self.drop_bundle(bundle, reason_code).await
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub(super) async fn forward_bundle_inner(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -136,7 +136,7 @@ impl Dispatcher {
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,

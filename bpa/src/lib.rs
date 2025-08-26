@@ -21,10 +21,7 @@ use std::sync::Arc;
 use trace_err::*;
 use tracing::{Instrument, error, info, trace, warn};
 
-#[cfg(feature = "no-tracing")]
-use fuzz_macros::instrument;
-
-#[cfg(not(feature = "no-tracing"))]
+#[cfg(feature = "tracing")]
 use tracing::instrument;
 
 // Re-export for consistency
