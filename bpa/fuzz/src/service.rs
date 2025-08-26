@@ -94,7 +94,7 @@ impl hardy_bpa::service::Service for PipeService {
 fn send(msg: Msg) {
     static PIPE: std::sync::OnceLock<flume::Sender<Msg>> = std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
-        let (tx, rx) = flume::bounded::<Msg>(16);
+        let (tx, rx) = flume::bounded::<Msg>(0);
 
         get_runtime().spawn(async move {
             // New BPA
@@ -107,8 +107,8 @@ fn send(msg: Msg) {
                     .await
                     .expect("Failed to register service");
 
-                let mut good_count = std::sync::atomic::AtomicU64::new(0);
-                let mut bad_count = std::sync::atomic::AtomicU64::new(0);
+                let mut good_count = 0u64;
+                let mut bad_count = 0u64;
 
                 // Now pull from the channel
                 while let Ok(msg) = rx.recv_async().await {
@@ -122,20 +122,18 @@ fn send(msg: Msg) {
                             )
                             .await;
 
-                        let count = good_count.get_mut();
-                        *count += 1;
+                        good_count += 1;
                         tracing::event!(
                             target: "metrics",
                             tracing::Level::TRACE,
-                            monotonic_counter.fuzz_service.dispatched_bundles = count
+                            monotonic_counter.fuzz_service.dispatched_bundles = good_count
                         );
                     } else {
-                        let count = bad_count.get_mut();
-                        *count += 1;
+                        bad_count += 1;
                         tracing::event!(
                             target: "metrics",
                             tracing::Level::TRACE,
-                            monotonic_counter.fuzz_service.bad_bundles = count
+                            monotonic_counter.fuzz_service.bad_bundles = bad_count
                         );
                     }
                 }
