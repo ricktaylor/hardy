@@ -151,9 +151,14 @@ impl Sentinel {
                     .first()
                 {
                     // Calculate precise duration until the next expiry.
-                    (entry.expiry - time::OffsetDateTime::now_utc())
-                        .try_into()
-                        .unwrap_or(std::time::Duration::ZERO)
+                    let sleep_duration = entry.expiry - time::OffsetDateTime::now_utc();
+                    if sleep_duration.is_positive() {
+                        sleep_duration
+                            .try_into()
+                            .unwrap_or(std::time::Duration::MAX)
+                    } else {
+                        std::time::Duration::ZERO
+                    }
                 } else {
                     // Cache is empty. Wait "forever" for a notification.
                     std::time::Duration::MAX
@@ -183,7 +188,7 @@ impl Sentinel {
 
                 let now = time::OffsetDateTime::now_utc();
                 while let Some(entry) = cache.first() {
-                    if entry.expiry > now {
+                    if entry.expiry >= now {
                         break;
                     }
 
