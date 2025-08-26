@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
-const CACHE_SIZE: usize = 2;
+const CACHE_SIZE: usize = 64;
 
 // CacheEntry stores the expiry and ID for the heap.
 #[derive(Clone, Eq, PartialEq)]
