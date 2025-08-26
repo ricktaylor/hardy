@@ -99,12 +99,14 @@ impl StaticRoutes {
 
         // Add routes
         for (k, v) in add_routes {
-            self.bpa.add_route(
-                self.config.protocol_id.clone(),
-                k.clone(),
-                v.action.clone(),
-                v.priority.unwrap_or(self.config.priority),
-            );
+            self.bpa
+                .add_route(
+                    self.config.protocol_id.clone(),
+                    k.clone(),
+                    v.action.clone(),
+                    v.priority.unwrap_or(self.config.priority),
+                )
+                .await;
             self.routes.insert(k, v);
         }
         Ok(())

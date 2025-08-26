@@ -279,10 +279,11 @@ impl Sentinel {
 
         // --- Action 2: Trigger Slow Background Store Check ---
         let sentinel = self.clone();
+        let dispatcher = dispatcher.clone();
         let span = tracing::trace_span!("parent: None", "search_store_task");
         span.follows_from(tracing::Span::current());
         self.task_tracker
-            .spawn(async move { sentinel.search_store(filter).await }.instrument(span));
+            .spawn(async move { sentinel.search_store(dispatcher, filter).await }.instrument(span));
     }
 
     pub async fn shutdown(&self) {
@@ -318,12 +319,12 @@ impl Sentinel {
             .instrument(span),
         );
 
-        if !self
+        if self
             .store
             .poll_pending(tx)
             .await
             .inspect_err(|e| error!("Failed to poll store for pending bundles: {e}"))
-            .is_err()
+            .is_ok()
         {
             // Cancel the reader task
             outer_cancel_token.cancel();
@@ -332,7 +333,11 @@ impl Sentinel {
         _ = h.await;
     }
 
-    async fn search_store(self: Arc<Self>, filter: EidPatternSet) {
+    async fn search_store(
+        self: Arc<Self>,
+        _dispatcher: Arc<dispatcher::Dispatcher>,
+        _filter: EidPatternSet,
+    ) {
         //todo!();
     }
 }
