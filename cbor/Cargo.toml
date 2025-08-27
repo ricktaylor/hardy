@@ -8,9 +8,9 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-thiserror = "2.0.15"
-half = { version = "2.6.0", features = ["num-traits"] }
-num-traits = "0.2.19"
+thiserror = { version = "2.0.15", default-features = false }
+half = { version = "2.6.0", default-features = false, features = ["num-traits"] }
+num-traits = { version = "0.2.19", default-features = false }
 
 [dev-dependencies]
 hex-literal = "1.0.0"

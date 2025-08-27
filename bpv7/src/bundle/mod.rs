@@ -35,8 +35,8 @@ pub mod id {
         #[error("Bad bundle id key")]
         BadKey,
 
-        #[error("Bad base64 encoding")]
-        BadBase64(#[from] base64::DecodeError),
+        #[error("Bad base64 encoding: {0}")]
+        BadBase64(base64::DecodeError),
 
         #[error("Failed to decode {field}: {source}")]
         InvalidField {
@@ -75,27 +75,32 @@ pub struct Id {
 
 impl Id {
     pub fn from_key(k: &str) -> Result<Self, id::Error> {
-        hardy_cbor::decode::parse_array(&BASE64_STANDARD_NO_PAD.decode(k)?, |array, _, _| {
-            let s = Self {
-                source: array.parse().map_field_id_err("source EID")?,
-                timestamp: array.parse().map_field_id_err("creation timestamp")?,
-                fragment_info: if array.count() == Some(4) {
-                    Some(FragmentInfo {
-                        offset: array.parse().map_field_id_err("fragment offset")?,
-                        total_len: array
-                            .parse()
-                            .map_field_id_err("total application data unit Length")?,
-                    })
+        hardy_cbor::decode::parse_array(
+            &BASE64_STANDARD_NO_PAD
+                .decode(k)
+                .map_err(|e| id::Error::BadBase64(e))?,
+            |array, _, _| {
+                let s = Self {
+                    source: array.parse().map_field_id_err("source EID")?,
+                    timestamp: array.parse().map_field_id_err("creation timestamp")?,
+                    fragment_info: if array.count() == Some(4) {
+                        Some(FragmentInfo {
+                            offset: array.parse().map_field_id_err("fragment offset")?,
+                            total_len: array
+                                .parse()
+                                .map_field_id_err("total application data unit Length")?,
+                        })
+                    } else {
+                        None
+                    },
+                };
+                if array.end()?.is_none() {
+                    Err(id::Error::BadKey)
                 } else {
-                    None
-                },
-            };
-            if array.end()?.is_none() {
-                Err(id::Error::BadKey)
-            } else {
-                Ok(s)
-            }
-        })
+                    Ok(s)
+                }
+            },
+        )
         .map(|v| v.0)
     }
 
