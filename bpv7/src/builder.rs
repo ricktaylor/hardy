@@ -11,13 +11,13 @@ pub struct Builder {
     extensions: Vec<BlockTemplate>,
 }
 
-impl Default for Builder {
-    fn default() -> Self {
+impl Builder {
+    pub fn new(source: eid::Eid, destination: eid::Eid) -> Self {
         Self {
+            source,
+            destination,
             bundle_flags: bundle::Flags::default(),
             crc_type: crc::CrcType::CRC32_CASTAGNOLI,
-            source: eid::Eid::default(),
-            destination: eid::Eid::default(),
             report_to: None,
             lifetime: core::time::Duration::new(24 * 60 * 60 * 60, 0),
             payload: BlockTemplate::new(
@@ -28,39 +28,23 @@ impl Default for Builder {
             extensions: Vec::new(),
         }
     }
-}
 
-impl Builder {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn flags(&mut self, flags: bundle::Flags) -> &mut Self {
+    pub fn with_flags(&mut self, flags: bundle::Flags) -> &mut Self {
         self.bundle_flags = flags;
         self
     }
 
-    pub fn crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
+    pub fn with_crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
         self.crc_type = crc_type;
         self
     }
 
-    pub fn source(&mut self, source: eid::Eid) -> &mut Self {
-        self.source = source;
-        self
-    }
-
-    pub fn destination(&mut self, destination: eid::Eid) -> &mut Self {
-        self.destination = destination;
-        self
-    }
-
-    pub fn report_to(&mut self, report_to: eid::Eid) -> &mut Self {
+    pub fn with_report_to(&mut self, report_to: eid::Eid) -> &mut Self {
         self.report_to = Some(report_to);
         self
     }
 
-    pub fn lifetime(&mut self, lifetime: core::time::Duration) -> &mut Self {
+    pub fn with_lifetime(&mut self, lifetime: core::time::Duration) -> &mut Self {
         self.lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
         self
     }
@@ -69,13 +53,10 @@ impl Builder {
         BlockBuilder::new(self, block_type)
     }
 
-    pub fn add_payload_block<T: AsRef<[u8]>>(&mut self, data: T) -> &mut Self {
+    pub fn build<T: AsRef<[u8]>>(mut self, payload: T) -> (bundle::Bundle, Box<[u8]>) {
         self.add_extension_block(block::Type::Payload)
-            .data(data)
-            .build()
-    }
+            .build(payload);
 
-    pub fn build(self) -> (bundle::Bundle, Box<[u8]>) {
         let mut bundle = bundle::Bundle {
             report_to: self.report_to.unwrap_or(self.source.clone()),
             id: bundle::Id {
@@ -122,39 +103,19 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn must_replicate(mut self, must_replicate: bool) -> Self {
-        self.template.must_replicate(must_replicate);
+    pub fn with_flags(&mut self, flags: block::Flags) -> &mut Self {
+        self.template.flags = flags;
         self
     }
 
-    pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
-        self.template.report_on_failure(report_on_failure);
+    pub fn with_crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
+        self.template.crc_type = crc_type;
         self
     }
 
-    pub fn delete_bundle_on_failure(mut self, delete_bundle_on_failure: bool) -> Self {
-        self.template
-            .delete_bundle_on_failure(delete_bundle_on_failure);
-        self
-    }
+    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> &'a mut Builder {
+        self.template.data = Some(data.as_ref().into());
 
-    pub fn delete_block_on_failure(mut self, delete_block_on_failure: bool) -> Self {
-        self.template
-            .delete_block_on_failure(delete_block_on_failure);
-        self
-    }
-
-    pub fn crc_type(mut self, crc_type: crc::CrcType) -> Self {
-        self.template.crc_type(crc_type);
-        self
-    }
-
-    pub fn data<T: AsRef<[u8]>>(mut self, data: T) -> Self {
-        self.template.data(data);
-        self
-    }
-
-    pub fn build(self) -> &'a mut Builder {
         if let block::Type::Payload = self.template.block_type {
             self.builder.payload = self.template;
         } else {
@@ -165,11 +126,11 @@ impl<'a> BlockBuilder<'a> {
 }
 
 #[derive(Clone)]
-pub struct BlockTemplate {
-    block_type: block::Type,
-    flags: block::Flags,
-    crc_type: crc::CrcType,
-    data: Option<Box<[u8]>>,
+pub(crate) struct BlockTemplate {
+    pub block_type: block::Type,
+    pub flags: block::Flags,
+    pub crc_type: crc::CrcType,
+    pub data: Option<Box<[u8]>>,
 }
 
 impl BlockTemplate {
@@ -180,35 +141,6 @@ impl BlockTemplate {
             crc_type,
             data: None,
         }
-    }
-
-    pub fn block_type(&self) -> block::Type {
-        self.block_type
-    }
-
-    pub fn must_replicate(&mut self, must_replicate: bool) {
-        self.flags.must_replicate = must_replicate;
-    }
-
-    pub fn report_on_failure(&mut self, report_on_failure: bool) {
-        self.flags.report_on_failure = report_on_failure;
-    }
-
-    pub fn delete_bundle_on_failure(&mut self, delete_bundle_on_failure: bool) {
-        self.flags.delete_bundle_on_failure = delete_bundle_on_failure;
-    }
-
-    pub fn delete_block_on_failure(&mut self, delete_block_on_failure: bool) {
-        self.flags.delete_block_on_failure = delete_block_on_failure;
-    }
-
-    pub fn crc_type(&mut self, crc_type: crc::CrcType) {
-        self.crc_type = crc_type;
-    }
-
-    pub fn data<T: AsRef<[u8]>>(&mut self, data: T) {
-        // Just copy the data for now
-        self.data = Some(data.as_ref().into());
     }
 
     pub fn build(self, block_number: u64, array: &mut hardy_cbor::encode::Array) -> block::Block {
@@ -230,14 +162,71 @@ impl BlockTemplate {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+pub struct BundleTemplate {
+    pub source: eid::Eid,
+    pub destination: eid::Eid,
+    pub report_to: Option<eid::Eid>,
+    pub flags: Option<bundle::Flags>,
+    pub crc_type: Option<crc::CrcType>,
+    pub lifetime: Option<core::time::Duration>,
+    pub hop_limit: Option<u64>,
+}
+
+impl From<BundleTemplate> for Builder {
+    fn from(value: BundleTemplate) -> Self {
+        let mut builder = Builder::new(value.source, value.destination);
+
+        if let Some(report_to) = value.report_to {
+            builder.with_report_to(report_to);
+        }
+
+        if let Some(flags) = value.flags {
+            builder.with_flags(flags);
+        }
+
+        if let Some(crc_type) = value.crc_type {
+            builder.with_crc_type(crc_type);
+        }
+
+        if let Some(lifetime) = value.lifetime {
+            builder.with_lifetime(lifetime);
+        }
+
+        if let Some(hop_limit) = value.hop_limit {
+            let mut builder = builder.add_extension_block(block::Type::HopCount);
+            builder.with_flags(block::Flags {
+                must_replicate: true,
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            });
+            builder.build(hardy_cbor::encode::emit(&hop_info::HopInfo {
+                limit: hop_limit,
+                count: 0,
+            }));
+        }
+
+        builder
+    }
+}
+
 #[test]
-fn test() {
-    let mut b = Builder::new();
+fn test_builder() {
+    let mut b = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap());
+    b.with_report_to("ipn:3.0".parse().unwrap());
+    b.build("Hello");
+}
 
-    b.source("ipn:1.0".parse().unwrap())
-        .destination("ipn:2.0".parse().unwrap())
-        .report_to("ipn:3.0".parse().unwrap())
-        .add_payload_block("Hello");
+#[cfg(feature = "serde")]
+#[test]
+fn test_template() {
+    let b: Builder = serde_json::from_value::<BundleTemplate>(serde_json::json!({
+        "source": "ipn:1.0",
+        "destination": "ipn:2.0",
+        "report_to": "ipn:3.0"
+    }))
+    .unwrap()
+    .into();
 
-    b.build();
+    b.build("Hello");
 }

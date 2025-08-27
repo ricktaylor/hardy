@@ -43,11 +43,12 @@ impl Dispatcher {
 
         // Build the bundle
         let bundle = loop {
-            let mut b = hardy_bpv7::builder::Builder::new();
+            let mut b = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone());
+            b.with_lifetime(lifetime);
 
             // Set flags
             if let Some(flags) = &flags {
-                b.flags(hardy_bpv7::bundle::Flags {
+                b.with_flags(hardy_bpv7::bundle::Flags {
                     do_not_fragment: flags.do_not_fragment,
                     app_ack_requested: flags.request_ack,
                     report_status_time: flags.report_status_time,
@@ -63,15 +64,11 @@ impl Dispatcher {
                     || flags.notify_delivery
                     || flags.notify_deletion
                 {
-                    b.report_to(self.node_ids.get_admin_endpoint(&destination));
+                    b.with_report_to(self.node_ids.get_admin_endpoint(&destination));
                 }
             }
-            b.source(source.clone())
-                .destination(destination.clone())
-                .lifetime(lifetime)
-                .add_payload_block(data);
 
-            let (bundle, data) = b.build();
+            let (bundle, data) = b.build(data);
 
             // Store to store
             if let Some(bundle) = self.store.store(bundle, data.into()).await? {

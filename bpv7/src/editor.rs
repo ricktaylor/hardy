@@ -36,7 +36,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn add_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
+    pub fn add_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
         if let block::Type::Primary | block::Type::Payload = block_type {
             panic!("Don't add primary or payload blocks!");
         }
@@ -51,7 +51,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn replace_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
+    pub fn replace_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
         if let block::Type::Primary = block_type {
             panic!("Don't replace primary block!");
         }
@@ -61,7 +61,7 @@ impl<'a> Editor<'a> {
             .iter()
             .find(|(_, block)| match block {
                 BlockTemplate::Keep(t) => *t == block_type,
-                BlockTemplate::Add(t) => t.block_type() == block_type,
+                BlockTemplate::Add(t) => t.block_type == block_type,
             })
             .and_then(|(block_number, template)| match template {
                 BlockTemplate::Keep(_) => self.original.blocks.get(block_number).map(|block| {
@@ -79,11 +79,11 @@ impl<'a> Editor<'a> {
         {
             BlockBuilder::new_from_template(self, block_number, template)
         } else {
-            self.add_extension_block(block_type)
+            self.add_block(block_type)
         }
     }
 
-    pub fn remove_extension_block(&mut self, block_number: u64) {
+    pub fn remove_block(&mut self, block_number: u64) {
         if block_number == 0 || block_number == 1 {
             panic!("Don't remove primary or payload blocks!");
         }
@@ -178,39 +178,19 @@ impl<'a, 'b> BlockBuilder<'a, 'b> {
         }
     }
 
-    pub fn must_replicate(mut self, must_replicate: bool) -> Self {
-        self.template.must_replicate(must_replicate);
+    pub fn with_flags(&mut self, flags: block::Flags) -> &mut Self {
+        self.template.flags = flags;
         self
     }
 
-    pub fn report_on_failure(mut self, report_on_failure: bool) -> Self {
-        self.template.report_on_failure(report_on_failure);
+    pub fn with_crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
+        self.template.crc_type = crc_type;
         self
     }
 
-    pub fn delete_bundle_on_failure(mut self, delete_bundle_on_failure: bool) -> Self {
-        self.template
-            .delete_bundle_on_failure(delete_bundle_on_failure);
-        self
-    }
+    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> &'b mut Editor<'a> {
+        self.template.data = Some(data.as_ref().into());
 
-    pub fn delete_block_on_failure(mut self, delete_block_on_failure: bool) -> Self {
-        self.template
-            .delete_block_on_failure(delete_block_on_failure);
-        self
-    }
-
-    pub fn crc_type(mut self, crc_type: crc::CrcType) -> Self {
-        self.template.crc_type(crc_type);
-        self
-    }
-
-    pub fn data(mut self, data: Box<[u8]>) -> Self {
-        self.template.data(data);
-        self
-    }
-
-    pub fn build(self) -> &'b mut Editor<'a> {
         self.editor
             .blocks
             .insert(self.block_number, BlockTemplate::Add(self.template));

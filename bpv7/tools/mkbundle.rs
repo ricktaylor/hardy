@@ -47,24 +47,20 @@ fn main() {
         &mut BufWriter::new(std::io::stdout())
     };
 
-    let mut b = hardy_bpv7::builder::Builder::new();
-
-    b.source(args.source).destination(args.destination);
+    let mut b = hardy_bpv7::builder::Builder::new(args.source, args.destination);
 
     if let Some(report_to) = args.report_to {
-        b.report_to(report_to);
+        b.with_report_to(report_to);
     }
 
     if let Some(lifetime) = args.lifetime {
         if lifetime.as_millis() > u64::MAX as u128 {
             panic!("Lifetime too long!")
         }
-        b.lifetime(lifetime.into());
+        b.with_lifetime(lifetime.into());
     }
 
-    b.add_payload_block(&payload);
-
     output
-        .write_all(&b.build().1)
+        .write_all(&b.build(&payload).1)
         .expect("Failed to write bundle")
 }
