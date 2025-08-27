@@ -126,27 +126,18 @@ mod test {
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
             ),
-            &[
-                // {
-                //     "kid": "ipn:2.1",
-                //     "alg": "HS512",
-                //     "key_ops": ["verify"],
-                //     "kty": "oct",
-                //     "k": "GisaKxorGisaKxorGisaKw",
-                // }
-                key::Key {
-                    id: Some("ipn:2.1".into()),
-                    key_algorithm: Some(key::KeyAlgorithm::HS512),
-                    operations: Some([key::Operation::Verify].into()),
-                    key_type: key::Type::OctetSequence {
-                        key: BASE64_URL_SAFE_NO_PAD
-                            .decode(b"GisaKxorGisaKxorGisaKw")
-                            .unwrap()
-                            .into(),
-                    },
-                    ..Default::default()
+            &[key::Key {
+                id: Some("ipn:2.1".into()),
+                key_algorithm: Some(key::KeyAlgorithm::HS512),
+                operations: Some([key::Operation::Verify].into()),
+                key_type: key::Type::OctetSequence {
+                    key: BASE64_URL_SAFE_NO_PAD
+                        .decode(b"GisaKxorGisaKxorGisaKw")
+                        .unwrap()
+                        .into(),
                 },
-            ],
+                ..Default::default()
+            }],
         )
     }
 
@@ -161,27 +152,18 @@ mod test {
                 a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
             ),
-            &[
-                // {
-                //     "kid": "ipn:2.1",
-                //     "alg": "A128KW",
-                //     "key_ops": ["unwrapKey","decrypt"],
-                //     "kty": "oct",
-                //     "k": "YWJjZGVmZ2hpamtsbW5vcA",
-                // }
-                key::Key {
-                    id: Some("ipn:2.1".into()),
-                    key_algorithm: Some(key::KeyAlgorithm::A128KW),
-                    operations: Some([key::Operation::UnwrapKey, key::Operation::Decrypt].into()),
-                    key_type: key::Type::OctetSequence {
-                        key: BASE64_URL_SAFE_NO_PAD
-                            .decode(b"YWJjZGVmZ2hpamtsbW5vcA")
-                            .unwrap()
-                            .into(),
-                    },
-                    ..Default::default()
+            &[key::Key {
+                id: Some("ipn:2.1".into()),
+                key_algorithm: Some(key::KeyAlgorithm::A128KW),
+                operations: Some([key::Operation::UnwrapKey, key::Operation::Decrypt].into()),
+                key_type: key::Type::OctetSequence {
+                    key: BASE64_URL_SAFE_NO_PAD
+                        .decode(b"YWJjZGVmZ2hpamtsbW5vcA")
+                        .unwrap()
+                        .into(),
                 },
-            ],
+                ..Default::default()
+            }],
         )
     }
 
@@ -199,13 +181,6 @@ mod test {
                 9aff"
             ),
             &[
-                // {
-                //     "kid": "ipn:3.0",
-                //     "alg": "HS256",
-                //     "key_ops": ["verify"],
-                //     "kty": "oct",
-                //     "k": "GisaKxorGisaKxorGisaKw",
-                // },
                 key::Key {
                     id: Some("ipn:3.0".into()),
                     key_algorithm: Some(key::KeyAlgorithm::HS256),
@@ -218,14 +193,6 @@ mod test {
                     },
                     ..Default::default()
                 },
-                // {
-                //     "kid": "ipn:2.1",
-                //     "alg": "dir",
-                //     "enc": "A128GCM",
-                //     "key_ops": ["decrypt"],
-                //     "kty": "oct",
-                //     "k": "cXdlcnR5dWlvcGFzZGZnaA",
-                // }
                 key::Key {
                     id: Some("ipn:2.1".into()),
                     key_algorithm: Some(key::KeyAlgorithm::Direct),
@@ -257,13 +224,6 @@ mod test {
                 457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
             ),
             &[
-                // {
-                //     "kid": "ipn:2.1",
-                //     "alg": "HS384",
-                //     "key_ops": ["verify"],
-                //     "kty": "oct",
-                //     "k": "GisaKxorGisaKxorGisaKw",
-                // },
                 key::Key {
                     id: Some("ipn:2.1".into()),
                     key_algorithm: Some(key::KeyAlgorithm::HS384),
@@ -276,13 +236,6 @@ mod test {
                     },
                     ..Default::default()
                 },
-                // {
-                //     "kid": "ipn:2.1",
-                //     "enc": "A256GCM",
-                //     "key_ops": ["decrypt"],
-                //     "kty": "oct",
-                //     "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g",
-                // }
                 key::Key {
                     id: Some("ipn:2.1".into()),
                     enc_algorithm: Some(key::EncAlgorithm::A256GCM),
