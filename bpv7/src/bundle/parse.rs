@@ -424,6 +424,7 @@ impl<'a> BlockParse<'a> {
     fn rewrite(mut self, bundle: &mut Bundle) -> Option<Box<[u8]>> {
         // If we have nothing to rewrite, get out now
         if self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty() {
+            bundle.blocks = self.blocks;
             return None;
         }
 
