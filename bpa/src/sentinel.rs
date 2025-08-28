@@ -72,10 +72,16 @@ impl Sentinel {
         route_rx: flume::Receiver<EidPattern>,
     ) {
         let sentinel = self.clone();
-        let span = tracing::trace_span!("parent: None", "sentinel_task");
-        span.follows_from(tracing::Span::current());
-        self.task_tracker
-            .spawn(async move { sentinel.run(dispatcher, route_rx).await }.instrument(span));
+        let task = async move { sentinel.run(dispatcher, route_rx).await };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "sentinel_task");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        self.task_tracker.spawn(task);
     }
 
     /// Provides the public API for other components to signal a route change.
@@ -224,15 +230,17 @@ impl Sentinel {
                 }
 
                 // No active task, so we can spawn a new one.
-                info!("Cache empty, spawning task to repopulate from store.");
-
                 let sentinel = self.clone();
-                let span = tracing::trace_span!("parent: None", "refill_cache_task");
-                span.follows_from(tracing::Span::current());
-                repopulation_task = Some(
-                    self.task_tracker
-                        .spawn(async move { sentinel.refill_cache().await }.instrument(span)),
-                );
+                let task = async move { sentinel.refill_cache().await };
+
+                #[cfg(feature = "tracing")]
+                let task = {
+                    let span = tracing::trace_span!("parent: None", "refill_cache_task");
+                    span.follows_from(tracing::Span::current());
+                    task.instrument(span)
+                };
+
+                repopulation_task = Some(self.task_tracker.spawn(task));
             }
         }
     }
@@ -285,10 +293,16 @@ impl Sentinel {
         // --- Action 2: Trigger Slow Background Store Check ---
         let sentinel = self.clone();
         let dispatcher = dispatcher.clone();
-        let span = tracing::trace_span!("parent: None", "search_store_task");
-        span.follows_from(tracing::Span::current());
-        self.task_tracker
-            .spawn(async move { sentinel.search_store(dispatcher, filter).await }.instrument(span));
+        let task = async move { sentinel.search_store(dispatcher, filter).await };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "search_store_task");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        self.task_tracker.spawn(task);
     }
 
     pub async fn shutdown(&self) {
@@ -301,28 +315,32 @@ impl Sentinel {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let sentinel = self.clone();
-        let span = tracing::trace_span!("parent: None", "refill_cache_reader");
-        span.follows_from(tracing::Span::current());
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.max_cache_size);
-        let h = tokio::spawn(
-            async move {
-                loop {
-                    tokio::select! {
-                        bundle = rx.recv_async() => match bundle {
-                            Err(_) => break,
-                            Ok(bundle) => if !sentinel.watch_bundle(bundle).await {
-                                // Cache is now full
-                                break;
-                            }
-                        },
-                        _ = cancel_token.cancelled() => {
+        let task = async move {
+            loop {
+                tokio::select! {
+                    bundle = rx.recv_async() => match bundle {
+                        Err(_) => break,
+                        Ok(bundle) => if !sentinel.watch_bundle(bundle).await {
+                            // Cache is now full
                             break;
                         }
+                    },
+                    _ = cancel_token.cancelled() => {
+                        break;
                     }
                 }
             }
-            .instrument(span),
-        );
+        };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "refill_cache_reader");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        let h = tokio::spawn(task);
 
         if self
             .store

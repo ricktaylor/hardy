@@ -157,26 +157,30 @@ impl Dispatcher {
 
             // Dispatch the new bundle
             let dispatcher = self.clone();
-            let span = tracing::trace_span!("parent: None", "dispatch_status_report_task");
-            span.follows_from(tracing::Span::current());
-            self.task_tracker.spawn(
-                async move {
-                    if let Ok(forward::ForwardResult::Keep) = dispatcher
-                        .forward_bundle_inner(&bundle)
-                        .await
-                        .inspect_err(|e| error!("Failed to send status report: {e}"))
-                    {
-                        return;
-                    }
-
-                    // Delete the bundle from the bundle store
-                    if let Some(storage_name) = &bundle.metadata.storage_name {
-                        _ = dispatcher.store.delete_data(storage_name).await;
-                    }
-                    _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
+            let task = async move {
+                if let Ok(forward::ForwardResult::Keep) = dispatcher
+                    .forward_bundle_inner(&bundle)
+                    .await
+                    .inspect_err(|e| error!("Failed to send status report: {e}"))
+                {
+                    return;
                 }
-                .instrument(span),
-            );
+
+                // Delete the bundle from the bundle store
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    _ = dispatcher.store.delete_data(storage_name).await;
+                }
+                _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
+            };
+
+            #[cfg(feature = "tracing")]
+            let task = {
+                let span = tracing::trace_span!("parent: None", "dispatch_status_report_task");
+                span.follows_from(tracing::Span::current());
+                task.instrument(span)
+            };
+
+            self.task_tracker.spawn(task);
         }
     }
 }

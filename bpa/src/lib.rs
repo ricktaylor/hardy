@@ -19,10 +19,10 @@ pub mod storage;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{Instrument, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 #[cfg(feature = "tracing")]
-use tracing::instrument;
+use tracing::{Instrument, instrument};
 
 // Re-export for consistency
 pub use async_trait::async_trait;

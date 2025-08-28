@@ -102,32 +102,36 @@ impl Store {
     pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         // Start the store - this can take a while as the store is walked
         let store = self.clone();
-        let span = tracing::trace_span!("parent: None", "store_check_task");
-        span.follows_from(tracing::Span::current());
-        self.task_tracker.spawn(
-            async move {
-                // Start the store - this can take a while as the store is walked
-                info!("Starting store consistency check...");
+        let task = async move {
+            // Start the store - this can take a while as the store is walked
+            info!("Starting store consistency check...");
 
-                let stats = store
-                    .bundle_storage_check(dispatcher.clone())
+            let stats = store
+                .bundle_storage_check(dispatcher.clone())
+                .await
+                .trace_expect("Bundle storage check failed");
+            let stats = if !store.cancel_token.is_cancelled() {
+                store
+                    .metadata_storage_check(dispatcher, stats)
                     .await
-                    .trace_expect("Bundle storage check failed");
-                let stats = if !store.cancel_token.is_cancelled() {
-                    store
-                        .metadata_storage_check(dispatcher, stats)
-                        .await
-                        .trace_expect("Metadata storage check failed")
-                } else {
-                    stats
-                };
+                    .trace_expect("Metadata storage check failed")
+            } else {
+                stats
+            };
 
-                if !store.cancel_token.is_cancelled() {
-                    info!("Store restarted: {stats}");
-                }
+            if !store.cancel_token.is_cancelled() {
+                info!("Store restarted: {stats}");
             }
-            .instrument(span),
-        );
+        };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "store_check_task");
+            span.follows_from(tracing::Span::current());
+            tast.instrument(span)
+        };
+
+        self.task_tracker.spawn(task);
     }
 
     pub async fn shutdown(&self) {
@@ -143,55 +147,59 @@ impl Store {
     ) -> storage::Result<RestartStats> {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
-        let span = tracing::trace_span!("parent: None", "bundle_storage_check_reader");
-        span.follows_from(tracing::Span::current());
         let (tx, rx) = flume::bounded::<storage::ListResponse>(16);
-        let h = tokio::spawn(
-            async move {
-                // We're going to spawn a bunch of tasks
-                let mut task_set = tokio::task::JoinSet::new();
+        let task = async move {
+            // We're going to spawn a bunch of tasks
+            let mut task_set = tokio::task::JoinSet::new();
 
-                // Give some feedback
-                let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
-                let mut stats = RestartStats::new();
+            // Give some feedback
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            let mut stats = RestartStats::new();
 
-                loop {
-                    tokio::select! {
-                        _ = timer.tick() => {
-                            stats.trace();
-                        },
-                        r = rx.recv_async() => match r {
-                            Err(_) => {
-                                break;
-                            }
-                            Ok(r) => {
-                                // TODO: Use a semaphore to rate control this
-
-                                //let dispatcher = dispatcher.clone();
-                                //task_set.spawn(async move {
-                                stats.add(dispatcher.restart_bundle(r.0,r.1).await?);
-                                //});
-                            }
-                        },
-                        Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                            stats.add(r?);
-                        },
-                        _ = cancel_token.cancelled() => {
+            loop {
+                tokio::select! {
+                    _ = timer.tick() => {
+                        stats.trace();
+                    },
+                    r = rx.recv_async() => match r {
+                        Err(_) => {
                             break;
                         }
+                        Ok(r) => {
+                            // TODO: Use a semaphore to rate control this
+
+                            //let dispatcher = dispatcher.clone();
+                            //task_set.spawn(async move {
+                            stats.add(dispatcher.restart_bundle(r.0,r.1).await?);
+                            //});
+                        }
+                    },
+                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                        stats.add(r?);
+                    },
+                    _ = cancel_token.cancelled() => {
+                        break;
                     }
                 }
-
-                // Wait for all sub-tasks to complete
-                while let Some(r) = task_set.join_next().await {
-                    stats.add(r?);
-                }
-
-                stats.trace();
-                Ok(stats)
             }
-            .instrument(span),
-        );
+
+            // Wait for all sub-tasks to complete
+            while let Some(r) = task_set.join_next().await {
+                stats.add(r?);
+            }
+
+            stats.trace();
+            Ok(stats)
+        };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "bundle_storage_check_reader");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        let h = tokio::spawn(task);
 
         if let Err(e) = self.bundle_storage.list(tx).await {
             outer_cancel_token.cancel();
@@ -210,43 +218,47 @@ impl Store {
     ) -> storage::Result<RestartStats> {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
-        let span = tracing::trace_span!("parent: None", "metadata_storage_check_reader");
-        span.follows_from(tracing::Span::current());
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
-        let h = tokio::spawn(
-            async move {
-                // Give some feedback
-                let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        let task = async move {
+            // Give some feedback
+            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
 
-                loop {
-                    tokio::select! {
-                        _ = timer.tick() => {
-                            stats.trace();
-                        },
-                        bundle = rx.recv_async() => match bundle {
-                            Err(_) => break,
-                            Ok(bundle) => {
-                                stats.add(RestartResult::Orphan);
+            loop {
+                tokio::select! {
+                    _ = timer.tick() => {
+                        stats.trace();
+                    },
+                    bundle = rx.recv_async() => match bundle {
+                        Err(_) => break,
+                        Ok(bundle) => {
+                            stats.add(RestartResult::Orphan);
 
-                                // The data associated with `bundle` has gone!
-                                dispatcher.report_bundle_deletion(
-                                    &bundle,
-                                    hardy_bpv7::status_report::ReasonCode::DepletedStorage,
-                                )
-                                .await
-                            }
-                        },
-                        _ = cancel_token.cancelled() => {
-                            break;
+                            // The data associated with `bundle` has gone!
+                            dispatcher.report_bundle_deletion(
+                                &bundle,
+                                hardy_bpv7::status_report::ReasonCode::DepletedStorage,
+                            )
+                            .await
                         }
+                    },
+                    _ = cancel_token.cancelled() => {
+                        break;
                     }
                 }
-
-                stats.trace();
-                Ok(stats)
             }
-            .instrument(span),
-        );
+
+            stats.trace();
+            Ok(stats)
+        };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "metadata_storage_check_reader");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        let h = tokio::spawn(task);
 
         if let Err(e) = self.metadata_storage.remove_unconfirmed(tx).await {
             outer_cancel_token.cancel();
