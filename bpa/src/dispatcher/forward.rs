@@ -174,6 +174,6 @@ impl Dispatcher {
                 .build(hardy_cbor::encode::emit(&bundle_age));
         }
 
-        editor.build()
+        editor.rebuild()
     }
 }

@@ -90,7 +90,7 @@ impl<'a> Editor<'a> {
         self.blocks.remove(&block_number);
     }
 
-    pub fn build(mut self) -> (bundle::Bundle, Box<[u8]>) {
+    pub fn rebuild(mut self) -> (bundle::Bundle, Box<[u8]>) {
         let mut bundle = bundle::Bundle {
             id: self.original.id.clone(),
             flags: self.original.flags.clone(),
