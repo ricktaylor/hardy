@@ -977,6 +977,7 @@ dependencies = [
  "flume",
  "hardy-bpa",
  "hardy-bpv7",
+ "hardy-cbor",
  "hardy-localdisk-storage",
  "hardy-otel",
  "hardy-sqlite-storage",

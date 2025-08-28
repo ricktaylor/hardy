@@ -1,6 +1,73 @@
 use super::*;
+use arbitrary::Arbitrary;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
+
+#[derive(Arbitrary)]
+struct RandomBundle {
+    source: String,
+    destination: String,
+    report_to: Option<String>,
+    flags: Option<u32>,
+    crc_type: Option<u8>,
+    lifetime: Option<core::time::Duration>,
+    hop_limit: Option<(u8, u8)>,
+    payload: Vec<u8>,
+}
+
+impl RandomBundle {
+    fn into_bundle(self) -> Option<hardy_bpa::Bytes> {
+        let Ok(source) = self.source.parse() else {
+            return None;
+        };
+
+        let Ok(destination) = self.destination.parse() else {
+            return None;
+        };
+
+        let report_to = if let Some(report_to) = self.report_to {
+            let Ok(report_to) = report_to.parse() else {
+                return None;
+            };
+            Some(report_to)
+        } else {
+            None
+        };
+
+        let mut builder = hardy_bpv7::builder::Builder::new(source, destination);
+
+        if let Some(report_to) = report_to {
+            builder.with_report_to(report_to);
+        }
+
+        if let Some(flags) = self.flags {
+            builder.with_flags((flags as u64).into());
+        }
+
+        if let Some(crc_type) = self.crc_type {
+            builder.with_crc_type((crc_type as u64).into());
+        }
+
+        if let Some(lifetime) = self.lifetime {
+            builder.with_lifetime(lifetime);
+        }
+
+        if let Some((hop_limit, hop_count)) = self.hop_limit {
+            let mut builder = builder.add_extension_block(hardy_bpv7::block::Type::HopCount);
+            builder.with_flags(hardy_bpv7::block::Flags {
+                must_replicate: true,
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            });
+            builder.build(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                limit: hop_limit as u64,
+                count: hop_count as u64,
+            }));
+        }
+
+        Some(builder.build(self.payload).1.into())
+    }
+}
 
 #[derive(Default)]
 struct NullCla {
@@ -69,7 +136,7 @@ impl hardy_bpa::cla::Cla for NullCla {
     }
 }
 
-pub fn cla_send(data: hardy_bpa::Bytes) {
+fn send(data: hardy_bpa::Bytes) {
     static PIPE: std::sync::OnceLock<flume::Sender<hardy_bpa::Bytes>> = std::sync::OnceLock::new();
     PIPE.get_or_init(|| {
         let (tx, rx) = flume::bounded::<hardy_bpa::Bytes>(0);
@@ -126,6 +193,16 @@ pub fn cla_send(data: hardy_bpa::Bytes) {
     .expect("Send failed")
 }
 
+pub fn cla_send(data: &[u8]) -> bool {
+    if let Ok(bundle) = RandomBundle::arbitrary(&mut arbitrary::Unstructured::new(data)) {
+        if let Some(b) = bundle.into_bundle() {
+            send(b);
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod test {
     use std::io::Read;
@@ -137,7 +214,7 @@ mod test {
         {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
-                super::cla_send(buffer.into());
+                super::cla_send(&buffer);
             }
         }
     }
@@ -160,7 +237,7 @@ mod test {
                             if let Ok(mut file) = std::fs::File::open(&path) {
                                 let mut buffer = Vec::new();
                                 if file.read_to_end(&mut buffer).is_ok() {
-                                    super::cla_send(buffer.into());
+                                    super::cla_send(&buffer);
 
                                     count = count.saturating_add(1);
                                 }

@@ -31,7 +31,7 @@ impl From<SendFlags> for hardy_bpa::service::SendFlags {
 
 #[derive(Arbitrary)]
 struct Msg {
-    destination: Box<str>,
+    destination: String,
     lifetime: std::time::Duration,
     flags: Option<SendFlags>,
     payload: Vec<u8>,
@@ -112,7 +112,7 @@ fn send(msg: Msg) {
 
                 // Now pull from the channel
                 while let Ok(msg) = rx.recv_async().await {
-                    if let Ok(destination) = msg.destination.as_ref().parse() {
+                    if let Ok(destination) = msg.destination.parse() {
                         _ = service
                             .send(
                                 destination,
@@ -152,19 +152,12 @@ fn send(msg: Msg) {
 
 pub fn service_send(data: &[u8]) -> bool {
     if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
-        if msg.destination.as_ref().parse::<Eid>().is_ok() {
+        if msg.destination.parse::<Eid>().is_ok() {
             send(msg);
             return true;
         }
     }
     false
-}
-
-// Use this to build a corpus of valid messages as a minimum
-pub fn seed_msg(data: &[u8]) {
-    if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
-        _ = msg.destination.as_ref().parse::<Eid>();
-    }
 }
 
 #[cfg(test)]
