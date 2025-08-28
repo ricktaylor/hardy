@@ -1,5 +1,4 @@
 use super::*;
-use arbitrary::Arbitrary;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
@@ -31,7 +30,7 @@ impl From<SendFlags> for hardy_bpa::service::SendFlags {
 
 #[derive(Arbitrary)]
 struct Msg {
-    destination: String,
+    destination: ArbitraryEid,
     lifetime: std::time::Duration,
     flags: Option<SendFlags>,
     payload: Vec<u8>,
@@ -107,35 +106,25 @@ fn send(msg: Msg) {
                     .await
                     .expect("Failed to register service");
 
-                let mut good_count = 0u64;
-                let mut bad_count = 0u64;
+                let mut count = 0u64;
 
                 // Now pull from the channel
                 while let Ok(msg) = rx.recv_async().await {
-                    if let Ok(destination) = msg.destination.parse() {
-                        _ = service
-                            .send(
-                                destination,
-                                &msg.payload,
-                                msg.lifetime,
-                                msg.flags.map(Into::into),
-                            )
-                            .await;
+                    _ = service
+                        .send(
+                            msg.destination.0,
+                            &msg.payload,
+                            msg.lifetime,
+                            msg.flags.map(Into::into),
+                        )
+                        .await;
 
-                        good_count += 1;
-                        tracing::event!(
-                            target: "metrics",
-                            tracing::Level::TRACE,
-                            monotonic_counter.fuzz_service.dispatched_bundles = good_count
-                        );
-                    } else {
-                        bad_count += 1;
-                        tracing::event!(
-                            target: "metrics",
-                            tracing::Level::TRACE,
-                            monotonic_counter.fuzz_service.bad_bundles = bad_count
-                        );
-                    }
+                    count += 1;
+                    tracing::event!(
+                        target: "metrics",
+                        tracing::Level::TRACE,
+                        monotonic_counter.fuzz_service.dispatched_bundles = count
+                    );
                 }
 
                 service.unregister().await;
@@ -152,12 +141,11 @@ fn send(msg: Msg) {
 
 pub fn service_send(data: &[u8]) -> bool {
     if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
-        if msg.destination.parse::<Eid>().is_ok() {
-            send(msg);
-            return true;
-        }
+        send(msg);
+        true
+    } else {
+        false
     }
-    false
 }
 
 #[cfg(test)]

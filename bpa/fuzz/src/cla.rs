@@ -1,43 +1,25 @@
 use super::*;
-use arbitrary::Arbitrary;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 
 #[derive(Arbitrary)]
 struct RandomBundle {
-    source: String,
-    destination: String,
-    report_to: Option<String>,
+    source: ArbitraryEid,
+    destination: ArbitraryEid,
+    report_to: Option<ArbitraryEid>,
     flags: Option<u32>,
     crc_type: Option<u8>,
     lifetime: Option<core::time::Duration>,
-    hop_limit: Option<(u8, u8)>,
+    hop_limit: Option<(u64, u64)>,
     payload: Vec<u8>,
 }
 
 impl RandomBundle {
-    fn into_bundle(self) -> Option<hardy_bpa::Bytes> {
-        let Ok(source) = self.source.parse() else {
-            return None;
-        };
+    fn into_bundle(self) -> hardy_bpa::Bytes {
+        let mut builder = hardy_bpv7::builder::Builder::new(self.source.0, self.destination.0);
 
-        let Ok(destination) = self.destination.parse() else {
-            return None;
-        };
-
-        let report_to = if let Some(report_to) = self.report_to {
-            let Ok(report_to) = report_to.parse() else {
-                return None;
-            };
-            Some(report_to)
-        } else {
-            None
-        };
-
-        let mut builder = hardy_bpv7::builder::Builder::new(source, destination);
-
-        if let Some(report_to) = report_to {
-            builder.with_report_to(report_to);
+        if let Some(report_to) = self.report_to {
+            builder.with_report_to(report_to.0);
         }
 
         if let Some(flags) = self.flags {
@@ -52,7 +34,7 @@ impl RandomBundle {
             builder.with_lifetime(lifetime);
         }
 
-        if let Some((hop_limit, hop_count)) = self.hop_limit {
+        if let Some((limit, count)) = self.hop_limit {
             let mut builder = builder.add_extension_block(hardy_bpv7::block::Type::HopCount);
             builder.with_flags(hardy_bpv7::block::Flags {
                 must_replicate: true,
@@ -60,12 +42,12 @@ impl RandomBundle {
                 ..Default::default()
             });
             builder.build(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                limit: hop_limit as u64,
-                count: hop_count as u64,
+                limit,
+                count,
             }));
         }
 
-        Some(builder.build(self.payload).1.into())
+        builder.build(self.payload).1.into()
     }
 }
 
@@ -195,12 +177,11 @@ fn send(data: hardy_bpa::Bytes) {
 
 pub fn cla_send(data: &[u8]) -> bool {
     if let Ok(bundle) = RandomBundle::arbitrary(&mut arbitrary::Unstructured::new(data)) {
-        if let Some(b) = bundle.into_bundle() {
-            send(b);
-            return true;
-        }
+        send(bundle.into_bundle());
+        true
+    } else {
+        false
     }
-    false
 }
 
 #[cfg(test)]
@@ -210,7 +191,7 @@ mod test {
     #[test]
     fn test() {
         if let Ok(mut file) =
-            std::fs::File::open("./artifacts/cla/crash-4172e046d6370086ed8cd40e39103a772cc5b6be")
+            std::fs::File::open("./artifacts/cla/crash-5943b7c21c186171effb01f9514dbe9302f2a606")
         {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
