@@ -19,6 +19,7 @@ pub mod block;
 pub mod bpsec;
 pub mod builder;
 pub mod bundle;
+pub mod crc;
 pub mod creation_timestamp;
 pub mod dtn_time;
 pub mod editor;
@@ -28,5 +29,3 @@ pub mod hop_info;
 pub mod status_report;
 
 pub use error::Error;
-
-mod crc;

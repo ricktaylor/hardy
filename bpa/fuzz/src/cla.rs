@@ -27,7 +27,10 @@ impl RandomBundle {
         }
 
         if let Some(crc_type) = self.crc_type {
-            builder.with_crc_type((crc_type as u64).into());
+            builder.with_crc_type(match (crc_type as u64).into() {
+                hardy_bpv7::crc::CrcType::Unrecognised(_) => hardy_bpv7::crc::CrcType::None,
+                crc_type => crc_type,
+            });
         }
 
         if let Some(lifetime) = self.lifetime {

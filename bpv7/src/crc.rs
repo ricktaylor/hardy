@@ -75,7 +75,7 @@ impl hardy_cbor::decode::FromCbor for CrcType {
     }
 }
 
-pub fn parse_crc_value(
+pub(super) fn parse_crc_value(
     data: &[u8],
     block: &mut hardy_cbor::decode::Array,
     crc_type: CrcType,
@@ -140,7 +140,7 @@ pub fn parse_crc_value(
     }
 }
 
-pub fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
+pub(super) fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
     match crc_type {
         CrcType::None => {}
         CrcType::CRC16_X25 => {
@@ -157,7 +157,7 @@ pub fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Vec<u8> {
             digest.update(&[0; 4]);
             data.extend_from_slice(&digest.finalize().to_be_bytes());
         }
-        _ => unreachable!(),
+        CrcType::Unrecognised(t) => panic!("Invalid CRC type {t}"),
     }
     data
 }
