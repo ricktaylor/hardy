@@ -35,13 +35,7 @@ path = "src/lib.rs"
 test = true
 
 [[bin]]
-name = "cla"
-path = "fuzz_targets/cla.rs"
-test = false
-bench = false
-
-[[bin]]
-name = "service"
-path = "fuzz_targets/service.rs"
+name = "bpa"
+path = "fuzz_targets/bpa.rs"
 test = false
 bench = false
