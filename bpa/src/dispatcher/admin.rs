@@ -1,5 +1,6 @@
 use super::*;
 use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
+use std::ops::Deref;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -24,7 +25,16 @@ impl Dispatcher {
             )));
         };
 
-        match hardy_cbor::decode::parse(&data) {
+        let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {
+            None => {
+                // TODO: We are unable to decrypt the payload, what do we do?
+                return Ok(forward::ForwardResult::Keep);
+            }
+            Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
+            Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
+        };
+
+        match hardy_cbor::decode::parse(&payload) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
                 Ok(forward::ForwardResult::Drop(Some(

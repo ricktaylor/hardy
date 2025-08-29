@@ -1,6 +1,5 @@
-use std::ops::Deref;
-
 use super::*;
+use std::ops::Deref;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
