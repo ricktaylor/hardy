@@ -47,7 +47,7 @@ impl Dispatcher {
             ipn_2_element: Arc::new(config.ipn_2_element.iter().fold(
                 hardy_eid_pattern::EidPatternSet::new(),
                 |mut acc, e| {
-                    acc.insert(e.clone());
+                    acc.insert(e);
                     acc
                 },
             )),

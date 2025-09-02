@@ -15,21 +15,21 @@ impl<V: Eq + std::hash::Hash> DtnPatternMap<V> {
         self.none.is_empty() && self.all.is_empty() && self.exact.is_empty() && self.glob.is_empty()
     }
 
-    pub fn insert(&mut self, pattern: DtnPatternItem, value: Arc<V>) {
+    pub fn insert(&mut self, pattern: &DtnPatternItem, value: Arc<V>) {
         match pattern {
             DtnPatternItem::None => self.none.push(value),
             DtnPatternItem::All => self.all.push(value),
-            DtnPatternItem::Glob(pattern) => match self.glob.entry(pattern) {
+            DtnPatternItem::Glob(pattern) => match self.glob.entry(pattern.clone()) {
                 hash_map::Entry::Occupied(mut o) => o.get_mut().push(value),
                 hash_map::Entry::Vacant(v) => {
                     v.insert(vec![value]);
                 }
             },
-            DtnPatternItem::Exact(node_name, demux) => match self.exact.entry(node_name) {
+            DtnPatternItem::Exact(node_name, demux) => match self.exact.entry(node_name.clone()) {
                 hash_map::Entry::Vacant(v) => {
-                    v.insert([(demux, vec![value])].into());
+                    v.insert([(demux.clone(), vec![value])].into());
                 }
-                hash_map::Entry::Occupied(mut o) => match o.get_mut().entry(demux) {
+                hash_map::Entry::Occupied(mut o) => match o.get_mut().entry(demux.clone()) {
                     hash_map::Entry::Vacant(v) => {
                         v.insert(vec![value]);
                     }

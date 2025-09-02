@@ -124,7 +124,7 @@ impl Rib {
         );
 
         // Drop LocalNode services
-        finals.insert("ipn:!.*".parse().unwrap());
+        finals.insert(&"ipn:!.*".parse().unwrap());
 
         if let Some((allocator_id, node_number)) = config.node_ids.ipn {
             // Add the Admin Endpoint EID itself
@@ -138,7 +138,7 @@ impl Rib {
             );
 
             finals.insert(
-                format!("ipn:{allocator_id}.{node_number}.*")
+                &format!("ipn:{allocator_id}.{node_number}.*")
                     .parse()
                     .unwrap(),
             );
@@ -154,7 +154,7 @@ impl Rib {
                 vec![LocalAction::AdminEndpoint].into(),
             );
 
-            finals.insert(format!("dtn://{node_name}/**").parse().unwrap());
+            finals.insert(&format!("dtn://{node_name}/**").parse().unwrap());
         }
 
         Self {
@@ -182,7 +182,7 @@ impl Rib {
             .trace_expect("Failed to lock mutex")
             .routes
             .insert(
-                pattern.clone(),
+                &pattern,
                 RouteEntry {
                     source,
                     action,

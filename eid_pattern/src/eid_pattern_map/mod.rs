@@ -26,7 +26,7 @@ impl<V: Eq + std::hash::Hash> EidPatternMap<V> {
         self.0 = Default::default()
     }
 
-    pub fn insert(&mut self, pattern: EidPattern, value: V) {
+    pub fn insert(&mut self, pattern: &EidPattern, value: V) {
         self.0.insert(pattern, value)
     }
 
@@ -75,7 +75,7 @@ impl EidPatternSet {
         self.0 = Default::default()
     }
 
-    pub fn insert(&mut self, pattern: EidPattern) {
+    pub fn insert(&mut self, pattern: &EidPattern) {
         self.0.insert(pattern, ())
     }
 
@@ -88,8 +88,8 @@ impl EidPatternSet {
     }
 }
 
-impl From<EidPattern> for EidPatternSet {
-    fn from(value: EidPattern) -> Self {
+impl From<&EidPattern> for EidPatternSet {
+    fn from(value: &EidPattern) -> Self {
         let mut s = Self::new();
         s.insert(value);
         s

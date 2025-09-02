@@ -178,7 +178,7 @@ impl Sentinel {
                 // Use recv_async to await a message from the flume channel.
                 Ok(pattern) = route_rx.recv_async() => {
                     info!("Handling new route pattern: {pattern}");
-                    self.handle_new_route(&dispatcher, pattern.into()).await;
+                    self.handle_new_route(&dispatcher, (&pattern).into()).await;
                     continue;
                 },
 

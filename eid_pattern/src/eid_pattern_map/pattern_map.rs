@@ -31,7 +31,7 @@ impl<V: Eq + std::hash::Hash> PatternMap<V> {
         true
     }
 
-    pub fn insert(&mut self, pattern: EidPattern, value: V) {
+    pub fn insert(&mut self, pattern: &EidPattern, value: V) {
         let value = Arc::new(value);
         match pattern {
             EidPattern::Any => {
@@ -45,21 +45,21 @@ impl<V: Eq + std::hash::Hash> PatternMap<V> {
         }
     }
 
-    fn insert_item(&mut self, pattern: EidPatternItem, value: Arc<V>) {
+    fn insert_item(&mut self, pattern: &EidPatternItem, value: Arc<V>) {
         if let Some(eid) = pattern.try_to_eid() {
             self.exact.entry(eid).or_default().push(value);
         } else {
             match pattern {
                 EidPatternItem::IpnPatternItem(pattern) => self.ipn_map.insert(pattern, value),
                 EidPatternItem::AnyNumericScheme(n) => {
-                    self.numeric_schemes.entry(n).or_default().push(value);
+                    self.numeric_schemes.entry(*n).or_default().push(value);
                 }
                 EidPatternItem::AnyTextScheme(s) => {
-                    let h = self.text_schemes.get_mut(&s);
+                    let h = self.text_schemes.get_mut(s);
                     if let Some(h) = h {
                         h.push(value);
                     } else {
-                        self.text_schemes.insert(s, vec![value]);
+                        self.text_schemes.insert(s.clone(), vec![value]);
                     }
                 }
 

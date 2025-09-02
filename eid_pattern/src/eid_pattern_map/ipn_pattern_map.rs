@@ -254,7 +254,7 @@ impl<V: Eq + std::hash::Hash> IpnPatternMap<V> {
         self.intervals.is_empty()
     }
 
-    pub fn insert(&mut self, pattern: IpnPatternItem, value: Arc<V>) {
+    pub fn insert(&mut self, pattern: &IpnPatternItem, value: Arc<V>) {
         let allocators = unpack_intervals(&pattern.allocator_id);
         let node_numbers = unpack_intervals(&pattern.node_number);
         let service_numbers = unpack_intervals(&pattern.service_number);

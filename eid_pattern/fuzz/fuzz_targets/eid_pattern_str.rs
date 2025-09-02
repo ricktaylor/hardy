@@ -15,7 +15,7 @@ fn perform_action(map: &mut hardy_eid_pattern::EidPatternMap<u8>, action: Action
     match action {
         Action::Add(pattern, value) => {
             if let Ok(pattern) = pattern.parse::<hardy_eid_pattern::EidPattern>() {
-                map.insert(pattern, value);
+                map.insert(&pattern, value);
             }
         }
         Action::Lookup(eid) => {
