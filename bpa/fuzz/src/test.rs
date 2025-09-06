@@ -24,18 +24,16 @@ fn test_all() {
         }
         Ok(dir) => {
             let mut count = 0u64;
-            for entry in dir {
-                if let Ok(path) = entry {
-                    let path = path.path();
-                    if path.is_file() {
-                        if let Ok(mut file) = std::fs::File::open(&path) {
-                            let mut buffer = Vec::new();
-                            if file.read_to_end(&mut buffer).is_ok() {
-                                send(&buffer);
+            for path in dir.flatten() {
+                let path = path.path();
+                if path.is_file()
+                    && let Ok(mut file) = std::fs::File::open(&path)
+                {
+                    let mut buffer = Vec::new();
+                    if file.read_to_end(&mut buffer).is_ok() {
+                        send(&buffer);
 
-                                count = count.saturating_add(1);
-                            }
-                        }
+                        count = count.saturating_add(1);
                     }
                 }
             }
