@@ -128,7 +128,7 @@ impl Store {
         let task = {
             let span = tracing::trace_span!("parent: None", "store_check_task");
             span.follows_from(tracing::Span::current());
-            tast.instrument(span)
+            task.instrument(span)
         };
 
         self.task_tracker.spawn(task);

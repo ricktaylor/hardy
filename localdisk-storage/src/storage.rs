@@ -240,7 +240,7 @@ impl BundleStorage for Storage {
                 if #[cfg(unix)] {
                     options.custom_flags(libc::O_SYNC);
                 } else if #[cfg(windows)] {
-                    options.custom_flags(winapi::FILE_FLAG_WRITE_THROUGH);
+                    options.custom_flags(winapi::um::winbase::FILE_FLAG_WRITE_THROUGH);
                 }
             }
             let mut file = options.open(&storage_name)?;
