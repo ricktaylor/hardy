@@ -78,7 +78,7 @@ impl Id {
         hardy_cbor::decode::parse_array(
             &BASE64_STANDARD_NO_PAD
                 .decode(k)
-                .map_err(|e| id::Error::BadBase64(e))?,
+                .map_err(id::Error::BadBase64)?,
             |array, _, _| {
                 let s = Self {
                     source: array.parse().map_field_id_err("source EID")?,

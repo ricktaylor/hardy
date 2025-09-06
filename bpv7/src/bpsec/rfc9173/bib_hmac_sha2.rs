@@ -247,19 +247,17 @@ impl Operation {
     }
 
     pub fn sign(jwk: &Key, args: bib::OperationArgs) -> Result<Option<Self>, Error> {
-        if let Some(ops) = &jwk.operations {
-            if !ops.contains(&key::Operation::Sign) {
+        if let Some(ops) = &jwk.operations
+            && !ops.contains(&key::Operation::Sign) {
                 return Ok(None);
             }
-        }
 
         let (cek, variant) = match &jwk.key_algorithm {
             Some(key::KeyAlgorithm::HS256_A128KW) => {
-                if let Some(ops) = &jwk.operations {
-                    if !ops.contains(&key::Operation::WrapKey) {
+                if let Some(ops) = &jwk.operations
+                    && !ops.contains(&key::Operation::WrapKey) {
                         return Ok(None);
                     }
-                }
                 (
                     Some(rand_key(Box::from([0u8; 32]))?),
                     ShaVariant::HMAC_256_256,
@@ -269,22 +267,20 @@ impl Operation {
             | Some(key::KeyAlgorithm::A192KW)
             | Some(key::KeyAlgorithm::A256KW)
             | Some(key::KeyAlgorithm::HS384_A192KW) => {
-                if let Some(ops) = &jwk.operations {
-                    if !ops.contains(&key::Operation::WrapKey) {
+                if let Some(ops) = &jwk.operations
+                    && !ops.contains(&key::Operation::WrapKey) {
                         return Ok(None);
                     }
-                }
                 (
                     Some(rand_key(Box::from([0u8; 48]))?),
                     ShaVariant::HMAC_384_384,
                 )
             }
             Some(key::KeyAlgorithm::HS512_A256KW) => {
-                if let Some(ops) = &jwk.operations {
-                    if !ops.contains(&key::Operation::WrapKey) {
+                if let Some(ops) = &jwk.operations
+                    && !ops.contains(&key::Operation::WrapKey) {
                         return Ok(None);
                     }
-                }
                 (
                     Some(rand_key(Box::from([0u8; 64]))?),
                     ShaVariant::HMAC_512_512,
@@ -423,8 +419,7 @@ impl Operation {
                         _ => None,
                     }
                     .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-                    {
-                        if match self.parameters.variant {
+                        && match self.parameters.variant {
                             ShaVariant::HMAC_256_256 => {
                                 calculate_hmac::<sha2::Sha256>(&self.parameters.flags, &cek, &args)
                                     .ok()
@@ -445,13 +440,12 @@ impl Operation {
                         {
                             return Ok(Some(true));
                         }
-                    }
                 }
             }
         } else {
             for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Verify]) {
-                if let key::Type::OctetSequence { key: cek } = &jwk.key_type {
-                    if match (self.parameters.variant, &jwk.key_algorithm) {
+                if let key::Type::OctetSequence { key: cek } = &jwk.key_type
+                    && match (self.parameters.variant, &jwk.key_algorithm) {
                         (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
                             calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, &args)
                                 .ok()
@@ -475,7 +469,6 @@ impl Operation {
                     {
                         return Ok(Some(true));
                     }
-                }
             }
         }
 
