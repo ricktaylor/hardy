@@ -175,14 +175,13 @@ impl PrimaryBlock {
             ..Default::default()
         };
 
-        if e.is_none() {
-            if let Err(e2) = self.crc_result {
+        if e.is_none()
+            && let Err(e2) = self.crc_result {
                 e = Some(Error::InvalidField {
                     field: "Crc Value",
                     source: e2.into(),
                 });
             }
-        }
 
         // Add a block 0
         bundle.blocks.insert(

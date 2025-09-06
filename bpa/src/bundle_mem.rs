@@ -41,7 +41,7 @@ impl storage::BundleStorage for Storage {
             .trace_expect("Failed to lock mutex")
             .cache
             .iter()
-            .map(|(n, (t, _))| (n.clone().into(), t.clone()))
+            .map(|(n, (t, _))| (n.clone().into(), *t))
             .collect::<Vec<_>>();
 
         for (name, t) in snapshot {
