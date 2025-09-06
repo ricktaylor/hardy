@@ -1,6 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
