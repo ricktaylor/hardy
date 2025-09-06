@@ -106,7 +106,7 @@ pub fn config_dir() -> PathBuf {
                 } else if #[cfg(unix)] {
                     Path::new("/etc").join(env!("CARGO_PKG_NAME"))
                 } else if #[cfg(windows)] {
-                    std::env::current_exe().join(env!("CARGO_PKG_NAME"))
+                    std::env::current_exe().expect("Failed to get current executable path").join(env!("CARGO_PKG_NAME"))
                 } else {
                     compile_error!("No idea how to determine default config directory for target platform")
                 }
