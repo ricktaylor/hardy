@@ -12,14 +12,15 @@ impl key::KeyStore for Keys {
         self.0.iter().filter(move |k| {
             if let (Some(kid), Some(ops)) = (&k.id, &k.operations)
                 && let Ok(eid) = kid.parse::<Eid>()
-                    && &eid == source {
-                        for op in operation {
-                            if !ops.contains(op) {
-                                return false;
-                            }
-                        }
-                        return true;
+                && &eid == source
+            {
+                for op in operation {
+                    if !ops.contains(op) {
+                        return false;
                     }
+                }
+                return true;
+            }
             false
         })
     }
@@ -158,16 +159,14 @@ mod test {
                 );
             }
             Ok(dir) => {
-                for entry in dir {
-                    if let Ok(entry) = entry {
-                        let path = entry.path();
-                        if path.is_file() {
-                            if let Ok(mut file) = std::fs::File::open(&path) {
-                                let mut buffer = Vec::new();
-                                if file.read_to_end(&mut buffer).is_ok() {
-                                    test_bundle(&buffer);
-                                }
-                            }
+                for entry in dir.flatten() {
+                    let path = entry.path();
+                    if path.is_file()
+                        && let Ok(mut file) = std::fs::File::open(&path)
+                    {
+                        let mut buffer = Vec::new();
+                        if file.read_to_end(&mut buffer).is_ok() {
+                            test_bundle(&buffer);
                         }
                     }
                 }
