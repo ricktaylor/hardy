@@ -19,9 +19,9 @@ fn listen_for_cancel(
         if #[cfg(unix)] {
             let mut term_handler =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .trace_expect("Failed to register signal handlers");
+                .trace_expect("Failed to register signal handlers").recv();
         } else {
-            let mut term_handler = std::future::pending();
+            let term_handler = std::future::pending();
         }
     }
 
@@ -29,7 +29,7 @@ fn listen_for_cancel(
     let task_tracker_cloned = task_tracker.clone();
     task_tracker.spawn(async move {
         tokio::select! {
-            _ = term_handler.recv() => {
+            _ = term_handler => {
                 // Signal stop
                 info!("Received terminate signal, stopping...");
             }

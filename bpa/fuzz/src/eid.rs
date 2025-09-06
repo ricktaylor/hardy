@@ -30,7 +30,7 @@ impl<'a> Arbitrary<'a> for ArbitraryEid {
                 Ok(ArbitraryEid(hardy_bpv7::eid::Eid::Null))
             } else {
                 let demux: String = u.arbitrary()?;
-                if demux.contains(|c| c >= '\u{21}' && c <= '\u{7e}') {
+                if demux.contains(|c| ('\u{21}'..='\u{7e}').contains(&c)) {
                     Err(arbitrary::Error::IncorrectFormat)
                 } else {
                     Ok(ArbitraryEid(hardy_bpv7::eid::Eid::Dtn {

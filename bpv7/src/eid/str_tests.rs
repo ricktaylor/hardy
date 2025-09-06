@@ -81,7 +81,8 @@ fn expect_error(s: &str) -> error::Error {
 
 fn null_check(s: &str) {
     assert!(matches!(
-        s.parse::<Eid>().expect(&format!("Failed to parse \"{s}\"")),
+        s.parse::<Eid>()
+            .unwrap_or_else(|_| panic!("Failed to parse \"{s}\"")),
         Eid::Null
     ));
 }

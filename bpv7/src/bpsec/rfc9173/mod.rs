@@ -90,17 +90,16 @@ mod test {
             operation: &[key::Operation],
         ) -> impl Iterator<Item = &'a key::Key> {
             self.0.iter().filter(move |k| {
-                if let (Some(kid), Some(ops)) = (&k.id, &k.operations) {
-                    if let Ok(eid) = kid.parse::<eid::Eid>() {
-                        if &eid == source {
-                            for op in operation {
-                                if !ops.contains(op) {
-                                    return false;
-                                }
-                            }
-                            return true;
+                if let (Some(kid), Some(ops)) = (&k.id, &k.operations)
+                    && let Ok(eid) = kid.parse::<eid::Eid>()
+                    && &eid == source
+                {
+                    for op in operation {
+                        if !ops.contains(op) {
+                            return false;
                         }
                     }
+                    return true;
                 }
                 false
             })

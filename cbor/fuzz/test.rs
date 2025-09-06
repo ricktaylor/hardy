@@ -12,19 +12,17 @@ fn test_all() {
             );
         }
         Ok(dir) => {
-            for entry in dir {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Ok(mut file) = std::fs::File::open(&path) {
-                            let mut buffer = Vec::new();
-                            if file.read_to_end(&mut buffer).is_ok() {
-                                _ = hardy_cbor::decode::try_parse_value(&buffer, |value, _, _| {
-                                    _ = format!("{value:?}");
-                                    Ok::<_, hardy_cbor::decode::Error>(())
-                                });
-                            }
-                        }
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Ok(mut file) = std::fs::File::open(&path)
+                {
+                    let mut buffer = Vec::new();
+                    if file.read_to_end(&mut buffer).is_ok() {
+                        _ = hardy_cbor::decode::try_parse_value(&buffer, |value, _, _| {
+                            _ = format!("{value:?}");
+                            Ok::<_, hardy_cbor::decode::Error>(())
+                        });
                     }
                 }
             }

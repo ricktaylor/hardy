@@ -345,7 +345,7 @@ fn rfc_tests() {
         Value::TextStream(v) => {
             assert_eq!(
                 "streaming",
-                v.into_iter().fold(String::new(), |mut v, b| {
+                v.iter().fold(String::new(), |mut v, b| {
                     v.push_str(b);
                     v
                 })

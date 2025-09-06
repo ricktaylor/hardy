@@ -13,7 +13,7 @@ impl Default for Config {
                     if #[cfg(unix)] {
                         std::path::Path::new("/var/spool").join(env!("CARGO_PKG_NAME"))
                     } else if #[cfg(windows)] {
-                        std::env::current_exe().join(env!("CARGO_PKG_NAME"))
+                        std::env::current_exe().expect("Failed to get current exe").join(env!("CARGO_PKG_NAME"))
                     } else {
                         compile_error!("No idea how to determine default localdisk bundle store directory for target platform")
                     }

@@ -267,21 +267,19 @@ impl Operation {
         jwk: &Key,
         args: bcb::OperationArgs,
     ) -> Result<Option<(Self, Box<[u8]>)>, Error> {
-        if let Some(ops) = &jwk.operations {
-            if !ops.contains(&key::Operation::Encrypt) {
+        if let Some(ops) = &jwk.operations
+            && !ops.contains(&key::Operation::Encrypt) {
                 return Ok(None);
             }
-        }
 
         let (cek, variant) = match &jwk.key_algorithm {
             Some(key::KeyAlgorithm::A128KW)
             | Some(key::KeyAlgorithm::A192KW)
             | Some(key::KeyAlgorithm::A256KW) => {
-                if let Some(ops) = &jwk.operations {
-                    if !ops.contains(&key::Operation::WrapKey) {
+                if let Some(ops) = &jwk.operations
+                    && !ops.contains(&key::Operation::WrapKey) {
                         return Ok(None);
                     }
-                }
                 match &jwk.enc_algorithm {
                     Some(key::EncAlgorithm::A128GCM) => {
                         (Some(rand_key(Box::from([0u8; 32]))?), AesVariant::A128GCM)
@@ -386,8 +384,8 @@ impl Operation {
                 args.bpsec_source,
                 &[key::Operation::UnwrapKey, key::Operation::Decrypt],
             ) {
-                if let key::Type::OctetSequence { key: kek } = &jwk.key_type {
-                    if let Some(cek) = match &jwk.key_algorithm {
+                if let key::Type::OctetSequence { key: kek } = &jwk.key_type
+                    && let Some(cek) = match &jwk.key_algorithm {
                         Some(key::KeyAlgorithm::A128KW) => {
                             aes_kw::KekAes128::try_from(kek.as_ref())
                                 .and_then(|kek| kek.unwrap_vec(cek))
@@ -406,8 +404,7 @@ impl Operation {
                         _ => None,
                     }
                     .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-                    {
-                        if let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm)
+                        && let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm)
                         {
                             (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
                                 aes_gcm::Aes128Gcm::new_from_slice(&cek)
@@ -426,19 +423,16 @@ impl Operation {
                         } {
                             return Ok(Some(plaintext));
                         }
-                    }
-                }
             }
         } else {
             for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Decrypt]) {
-                if let Some(key_algorithm) = &jwk.key_algorithm {
-                    if !matches!(key_algorithm, key::KeyAlgorithm::Direct) {
+                if let Some(key_algorithm) = &jwk.key_algorithm
+                    && !matches!(key_algorithm, key::KeyAlgorithm::Direct) {
                         continue;
-                    }
-                };
+                    };
 
-                if let key::Type::OctetSequence { key: cek } = &jwk.key_type {
-                    if let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm) {
+                if let key::Type::OctetSequence { key: cek } = &jwk.key_type
+                    && let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm) {
                         (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
                             aes_gcm::Aes128Gcm::new_from_slice(cek)
                                 .ok()
@@ -456,7 +450,6 @@ impl Operation {
                     } {
                         return Ok(Some(plaintext));
                     }
-                }
             }
         }
 
