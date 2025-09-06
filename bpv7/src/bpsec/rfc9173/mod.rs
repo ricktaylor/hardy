@@ -25,7 +25,7 @@ impl Default for ScopeFlags {
     }
 }
 
-impl hardy_cbor::decode::TryFromCbor for ScopeFlags {
+impl hardy_cbor::decode::FromCbor for ScopeFlags {
     type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

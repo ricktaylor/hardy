@@ -570,7 +570,6 @@ where
     }
 }
 
-
 pub fn emit<T>(value: &T) -> Vec<u8>
 where
     T: ToCbor + ?Sized,
@@ -592,9 +591,9 @@ where
 }
 
 macro_rules! impl_stream_emit_functions {
-    ($(($fn_name:ident, $fn_tagged:ident, $method:ident, $method_tagged:ident, $stream_type:ty)),*) => {
+    ($(( $method:ident, $method_tagged:ident, $stream_type:ty)),*) => {
         $(
-            pub fn $fn_name<F>(f: F) -> Vec<u8>
+            pub fn $method<F>(f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $stream_type),
             {
@@ -603,7 +602,7 @@ macro_rules! impl_stream_emit_functions {
                 e.build()
             }
 
-            pub fn $fn_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
+            pub fn $method_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $stream_type),
                 I: IntoIterator<Item = T>,
@@ -618,14 +617,14 @@ macro_rules! impl_stream_emit_functions {
 }
 
 impl_stream_emit_functions!(
-    (emit_byte_stream, emit_byte_stream_tagged, emit_byte_stream, emit_byte_stream_tagged, ByteStream),
-    (emit_text_stream, emit_text_stream_tagged, emit_text_stream, emit_text_stream_tagged, TextStream)
+    (emit_byte_stream, emit_byte_stream_tagged, ByteStream),
+    (emit_text_stream, emit_text_stream_tagged, TextStream)
 );
 
 macro_rules! impl_collection_emit_functions {
-    ($(($fn_name:ident, $fn_tagged:ident, $method:ident, $method_tagged:ident, $collection_type:ty)),*) => {
+    ($(( $method:ident, $method_tagged:ident, $collection_type:ty)),*) => {
         $(
-            pub fn $fn_name<F>(count: Option<usize>, f: F) -> Vec<u8>
+            pub fn $method<F>(count: Option<usize>, f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $collection_type),
             {
@@ -634,7 +633,7 @@ macro_rules! impl_collection_emit_functions {
                 e.build()
             }
 
-            pub fn $fn_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
+            pub fn $method_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $collection_type),
                 I: IntoIterator<Item = T>,
@@ -649,8 +648,8 @@ macro_rules! impl_collection_emit_functions {
 }
 
 impl_collection_emit_functions!(
-    (emit_array, emit_array_tagged, emit_array, emit_array_tagged, Array),
-    (emit_map, emit_map_tagged, emit_map, emit_map_tagged, Map)
+    (emit_array, emit_array_tagged, Array),
+    (emit_map, emit_map_tagged, Map)
 );
 
 #[cfg(test)]

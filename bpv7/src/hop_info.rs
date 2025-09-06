@@ -18,7 +18,7 @@ impl hardy_cbor::encode::ToCbor for HopInfo {
     }
 }
 
-impl hardy_cbor::decode::TryFromCbor for HopInfo {
+impl hardy_cbor::decode::FromCbor for HopInfo {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

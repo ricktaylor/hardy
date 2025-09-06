@@ -118,7 +118,7 @@ pub struct AbstractSyntaxBlock {
     pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
 }
 
-impl hardy_cbor::decode::TryFromCbor for AbstractSyntaxBlock {
+impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

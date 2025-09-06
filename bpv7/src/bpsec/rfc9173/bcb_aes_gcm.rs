@@ -22,7 +22,7 @@ impl hardy_cbor::encode::ToCbor for AesVariant {
     }
 }
 
-impl hardy_cbor::decode::TryFromCbor for AesVariant {
+impl hardy_cbor::decode::FromCbor for AesVariant {
     type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

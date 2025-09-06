@@ -45,7 +45,7 @@ pub enum Error {
     PrecisionLoss,
 }
 
-pub trait TryFromCbor: Sized {
+pub trait FromCbor: Sized {
     type Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error>;
@@ -501,7 +501,7 @@ where
 
 pub fn try_parse<T>(data: &[u8]) -> Result<Option<T>, T::Error>
 where
-    T: TryFromCbor,
+    T: FromCbor,
     T::Error: From<self::Error>,
 {
     T::try_from_cbor(data).map(|o| o.map(|v| v.0))
@@ -509,7 +509,7 @@ where
 
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
-    T: TryFromCbor,
+    T: FromCbor,
     T::Error: From<self::Error>,
 {
     try_parse::<T>(data)?.ok_or(Error::NeedMoreData(1).into())
@@ -518,7 +518,7 @@ where
 macro_rules! impl_uint_try_from_cbor {
     ($($ty:ty),*) => {
         $(
-            impl TryFromCbor for $ty {
+            impl FromCbor for $ty {
                 type Error = self::Error;
 
                 fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -535,7 +535,7 @@ macro_rules! impl_uint_try_from_cbor {
 
 impl_uint_try_from_cbor!(u8, u16, u32, usize);
 
-impl TryFromCbor for u64 {
+impl FromCbor for u64 {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -553,7 +553,7 @@ impl TryFromCbor for u64 {
 macro_rules! impl_int_try_from_cbor {
     ($($ty:ty),*) => {
         $(
-            impl TryFromCbor for $ty {
+            impl FromCbor for $ty {
                 type Error = self::Error;
 
                 fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -570,7 +570,7 @@ macro_rules! impl_int_try_from_cbor {
 
 impl_int_try_from_cbor!(i8, i16, i32, isize);
 
-impl TryFromCbor for i64 {
+impl FromCbor for i64 {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -591,7 +591,7 @@ impl TryFromCbor for i64 {
 macro_rules! impl_float_try_from_cbor {
     ($(($ty:ty, $convert_expr:expr)),*) => {
         $(
-            impl TryFromCbor for $ty {
+            impl FromCbor for $ty {
                 type Error = self::Error;
 
                 fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -611,11 +611,13 @@ macro_rules! impl_float_try_from_cbor {
 }
 
 impl_float_try_from_cbor!(
-    (half::f16, |v: f64| <half::f16 as num_traits::FromPrimitive>::from_f64(v)),
+    (half::f16, |v: f64| {
+        <half::f16 as num_traits::FromPrimitive>::from_f64(v)
+    }),
     (f32, f32::from_f64)
 );
 
-impl TryFromCbor for f64 {
+impl FromCbor for f64 {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -630,7 +632,7 @@ impl TryFromCbor for f64 {
     }
 }
 
-impl TryFromCbor for bool {
+impl FromCbor for bool {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -646,9 +648,9 @@ impl TryFromCbor for bool {
     }
 }
 
-impl<T> TryFromCbor for Option<T>
+impl<T> FromCbor for Option<T>
 where
-    T: TryFromCbor,
+    T: FromCbor,
     T::Error: From<self::Error>,
 {
     type Error = T::Error;
@@ -670,9 +672,9 @@ where
 macro_rules! impl_tuple_try_from_cbor {
     ($(($tuple_ty:ty, $map_expr:expr)),*) => {
         $(
-            impl<T> TryFromCbor for $tuple_ty
+            impl<T> FromCbor for $tuple_ty
             where
-                T: TryFromCbor,
+                T: FromCbor,
                 T::Error: From<self::Error>,
             {
                 type Error = T::Error;
@@ -687,7 +689,9 @@ macro_rules! impl_tuple_try_from_cbor {
 }
 
 impl_tuple_try_from_cbor!(
-    ((T, bool, usize), |value, shortest, length| (value, shortest, length)),
+    ((T, bool, usize), |value, shortest, length| (
+        value, shortest, length
+    )),
     ((T, bool), |value, shortest, _length| (value, shortest)),
     ((T, usize), |value, _shortest, length| (value, length))
 );

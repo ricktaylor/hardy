@@ -67,7 +67,7 @@ impl hardy_cbor::encode::ToCbor for Flags {
     }
 }
 
-impl hardy_cbor::decode::TryFromCbor for Flags {
+impl hardy_cbor::decode::FromCbor for Flags {
     type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -126,7 +126,7 @@ impl hardy_cbor::encode::ToCbor for Type {
     }
 }
 
-impl hardy_cbor::decode::TryFromCbor for Type {
+impl hardy_cbor::decode::FromCbor for Type {
     type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -202,7 +202,7 @@ pub(crate) struct BlockWithNumber {
     pub payload: Option<Box<[u8]>>,
 }
 
-impl hardy_cbor::decode::TryFromCbor for BlockWithNumber {
+impl hardy_cbor::decode::FromCbor for BlockWithNumber {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
