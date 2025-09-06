@@ -116,7 +116,7 @@ impl hardy_cbor::encode::ToCbor for ReasonCode {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for ReasonCode {
+impl hardy_cbor::decode::TryFromCbor for ReasonCode {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -228,7 +228,7 @@ impl hardy_cbor::encode::ToCbor for BundleStatusReport {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for BundleStatusReport {
+impl hardy_cbor::decode::TryFromCbor for BundleStatusReport {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
@@ -310,7 +310,7 @@ impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
+impl hardy_cbor::decode::TryFromCbor for AdministrativeRecord {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

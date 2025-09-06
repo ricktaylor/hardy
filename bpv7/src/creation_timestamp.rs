@@ -28,7 +28,7 @@ impl hardy_cbor::encode::ToCbor for CreationTimestamp {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for CreationTimestamp {
+impl hardy_cbor::decode::TryFromCbor for CreationTimestamp {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

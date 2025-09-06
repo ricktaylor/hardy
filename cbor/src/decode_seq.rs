@@ -127,7 +127,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn try_parse<T>(&mut self) -> Result<Option<T>, T::Error>
     where
-        T: FromCbor,
+        T: TryFromCbor,
         T::Error: From<self::Error>,
     {
         // Check for end of array
@@ -146,7 +146,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     pub fn parse<T>(&mut self) -> Result<T, T::Error>
     where
-        T: FromCbor,
+        T: TryFromCbor,
         T::Error: From<self::Error>,
     {
         self.try_parse::<T>()?.ok_or(Error::NoMoreItems.into())

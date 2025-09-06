@@ -211,7 +211,7 @@ impl hardy_cbor::encode::ToCbor for Flags {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for Flags {
+impl hardy_cbor::decode::TryFromCbor for Flags {
     type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

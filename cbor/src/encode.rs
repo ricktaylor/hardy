@@ -402,35 +402,19 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 }
 
-impl ToCbor for u64 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self);
-    }
+macro_rules! impl_uint_to_cbor {
+    ($($ty:ty),*) => {
+        $(
+            impl ToCbor for $ty {
+                fn to_cbor(&self, encoder: &mut Encoder) {
+                    encoder.emit_uint_minor(0, *self as u64);
+                }
+            }
+        )*
+    };
 }
 
-impl ToCbor for usize {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
-
-impl ToCbor for u32 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
-
-impl ToCbor for u16 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
-
-impl ToCbor for u8 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
+impl_uint_to_cbor!(u8, u16, u32, u64, usize);
 
 fn emit_i64(encoder: &mut Encoder, val: i64) {
     if val >= 0 {
@@ -440,35 +424,19 @@ fn emit_i64(encoder: &mut Encoder, val: i64) {
     }
 }
 
-impl ToCbor for i64 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self)
-    }
+macro_rules! impl_int_to_cbor {
+    ($($ty:ty),*) => {
+        $(
+            impl ToCbor for $ty {
+                fn to_cbor(&self, encoder: &mut Encoder) {
+                    emit_i64(encoder, *self as i64)
+                }
+            }
+        )*
+    };
 }
 
-impl ToCbor for isize {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
-
-impl ToCbor for i32 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
-
-impl ToCbor for i16 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
-
-impl ToCbor for i8 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
+impl_int_to_cbor!(i8, i16, i32, i64, isize);
 
 fn lossless_float_coerce<T>(value: f64) -> Option<T>
 where
@@ -520,18 +488,25 @@ impl ToCbor for bool {
     }
 }
 
-impl ToCborMeasured for str {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        encoder.emit_uint_minor(3, self.len() as u64);
-        encoder.emit_extend(self.as_bytes())
-    }
+macro_rules! impl_string_to_cbor {
+    ($ty:ty, $as_method:ident) => {
+        impl ToCborMeasured for $ty {
+            fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
+                let bytes = self.$as_method();
+                encoder.emit_uint_minor(3, bytes.len() as u64);
+                encoder.emit_extend(bytes)
+            }
+        }
+
+        impl ToCbor for $ty {
+            fn to_cbor(&self, encoder: &mut Encoder) {
+                self.to_cbor_measured(encoder);
+            }
+        }
+    };
 }
 
-impl ToCbor for str {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
+impl_string_to_cbor!(str, as_bytes);
 
 impl ToCborMeasured for String {
     fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
@@ -595,6 +570,7 @@ where
     }
 }
 
+
 pub fn emit<T>(value: &T) -> Vec<u8>
 where
     T: ToCbor + ?Sized,
@@ -615,85 +591,67 @@ where
     e.build()
 }
 
-pub fn emit_byte_stream<F>(f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut ByteStream),
-{
-    let mut e = Encoder::new();
-    e.emit_byte_stream(f);
-    e.build()
+macro_rules! impl_stream_emit_functions {
+    ($(($fn_name:ident, $fn_tagged:ident, $method:ident, $method_tagged:ident, $stream_type:ty)),*) => {
+        $(
+            pub fn $fn_name<F>(f: F) -> Vec<u8>
+            where
+                F: FnOnce(&mut $stream_type),
+            {
+                let mut e = Encoder::new();
+                e.$method(f);
+                e.build()
+            }
+
+            pub fn $fn_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
+            where
+                F: FnOnce(&mut $stream_type),
+                I: IntoIterator<Item = T>,
+                T: num_traits::ToPrimitive,
+            {
+                let mut e = Encoder::new();
+                e.$method_tagged(tags, f);
+                e.build()
+            }
+        )*
+    };
 }
 
-pub fn emit_byte_stream_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut ByteStream),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_byte_stream_tagged(tags, f);
-    e.build()
+impl_stream_emit_functions!(
+    (emit_byte_stream, emit_byte_stream_tagged, emit_byte_stream, emit_byte_stream_tagged, ByteStream),
+    (emit_text_stream, emit_text_stream_tagged, emit_text_stream, emit_text_stream_tagged, TextStream)
+);
+
+macro_rules! impl_collection_emit_functions {
+    ($(($fn_name:ident, $fn_tagged:ident, $method:ident, $method_tagged:ident, $collection_type:ty)),*) => {
+        $(
+            pub fn $fn_name<F>(count: Option<usize>, f: F) -> Vec<u8>
+            where
+                F: FnOnce(&mut $collection_type),
+            {
+                let mut e = Encoder::new();
+                e.$method(count, f);
+                e.build()
+            }
+
+            pub fn $fn_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
+            where
+                F: FnOnce(&mut $collection_type),
+                I: IntoIterator<Item = T>,
+                T: num_traits::ToPrimitive,
+            {
+                let mut e = Encoder::new();
+                e.$method_tagged(count, tags, f);
+                e.build()
+            }
+        )*
+    };
 }
 
-pub fn emit_text_stream<F>(f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut TextStream),
-{
-    let mut e = Encoder::new();
-    e.emit_text_stream(f);
-    e.build()
-}
-
-pub fn emit_text_stream_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut TextStream),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_text_stream_tagged(tags, f);
-    e.build()
-}
-
-pub fn emit_array<F>(count: Option<usize>, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Array),
-{
-    let mut e = Encoder::new();
-    e.emit_array(count, f);
-    e.build()
-}
-
-pub fn emit_array_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Array),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_array_tagged(count, tags, f);
-    e.build()
-}
-
-pub fn emit_map<F>(count: Option<usize>, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Map),
-{
-    let mut e = Encoder::new();
-    e.emit_map(count, f);
-    e.build()
-}
-
-pub fn emit_map_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Map),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_map_tagged(count, tags, f);
-    e.build()
-}
+impl_collection_emit_functions!(
+    (emit_array, emit_array_tagged, emit_array, emit_array_tagged, Array),
+    (emit_map, emit_map_tagged, emit_map, emit_map_tagged, Map)
+);
 
 #[cfg(test)]
 pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {

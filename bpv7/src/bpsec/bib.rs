@@ -114,7 +114,7 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for OperationSet {
+impl hardy_cbor::decode::TryFromCbor for OperationSet {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

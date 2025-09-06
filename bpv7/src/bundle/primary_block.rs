@@ -13,7 +13,7 @@ pub struct PrimaryBlock {
     pub crc_result: Result<(), Error>,
 }
 
-impl hardy_cbor::decode::FromCbor for PrimaryBlock {
+impl hardy_cbor::decode::TryFromCbor for PrimaryBlock {
     type Error = Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

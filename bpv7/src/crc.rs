@@ -65,7 +65,7 @@ impl hardy_cbor::encode::ToCbor for CrcType {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for CrcType {
+impl hardy_cbor::decode::TryFromCbor for CrcType {
     type Error = self::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

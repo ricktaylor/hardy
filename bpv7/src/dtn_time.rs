@@ -25,7 +25,7 @@ impl hardy_cbor::encode::ToCbor for DtnTime {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for DtnTime {
+impl hardy_cbor::decode::TryFromCbor for DtnTime {
     type Error = hardy_cbor::decode::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {

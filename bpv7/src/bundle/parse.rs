@@ -40,7 +40,7 @@ impl<'a> BlockParse<'a> {
 
     fn parse_payload<T>(&'a self, block_number: u64) -> Result<(T, bool), Error>
     where
-        T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
+        T: hardy_cbor::decode::TryFromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
     {
         let payload = <Self as bpsec::BlockSet>::block_payload(self, block_number)
             .expect("Missing block payload!");

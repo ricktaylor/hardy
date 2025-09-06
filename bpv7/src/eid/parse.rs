@@ -179,7 +179,7 @@ fn ipn_from_cbor(
     }
 }
 
-impl hardy_cbor::decode::FromCbor for Eid {
+impl hardy_cbor::decode::TryFromCbor for Eid {
     type Error = error::Error;
 
     fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
