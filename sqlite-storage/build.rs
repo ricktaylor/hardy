@@ -21,10 +21,11 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(src_dir)?.flatten() {
         if let Ok(filetype) = entry.file_type()
             && filetype.is_file()
-                && let Some(c) = regex.captures(&entry.file_name().to_string_lossy()) {
-                    let seq: u64 = c.get(1).unwrap().as_str().parse().unwrap();
-                    m.push((seq, entry.path()));
-                }
+            && let Some(c) = regex.captures(&entry.file_name().to_string_lossy())
+        {
+            let seq: u64 = c.get(1).unwrap().as_str().parse().unwrap();
+            m.push((seq, entry.path()));
+        }
     }
 
     m.sort_by(|a, b| a.0.cmp(&b.0));
