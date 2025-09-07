@@ -210,22 +210,23 @@ impl ConnectionRegistry {
                 .trace_expect("Failed to lock mutex")
                 .insert(remote_addr, eid.clone())
                 .is_none()
-                && let Err(e) = self
-                    .sink
-                    .add_peer(eid, hardy_bpa::cla::ClaAddress::TcpClv4Address(remote_addr))
-                    .await
-                {
-                    error!("add_peer failed: {e:?}");
-                }
+            && let Err(e) = self
+                .sink
+                .add_peer(eid, hardy_bpa::cla::ClaAddress::TcpClv4Address(remote_addr))
+                .await
+        {
+            error!("add_peer failed: {e:?}");
+        }
     }
 
     pub async fn unregister_session(&self, local_addr: &SocketAddr, remote_addr: &SocketAddr) {
         {
             let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
             if let Some(e) = pools.get_mut(remote_addr)
-                && e.remove(local_addr) {
-                    pools.remove(remote_addr);
-                }
+                && e.remove(local_addr)
+            {
+                pools.remove(remote_addr);
+            }
         }
 
         let eid = self
@@ -235,9 +236,10 @@ impl ConnectionRegistry {
             .remove(remote_addr);
 
         if let Some(eid) = eid
-            && let Err(e) = self.sink.remove_peer(&eid).await {
-                error!("Failed to unregister peer: {e:?}");
-            }
+            && let Err(e) = self.sink.remove_peer(&eid).await
+        {
+            error!("Failed to unregister peer: {e:?}");
+        }
     }
 
     pub async fn on_forward(

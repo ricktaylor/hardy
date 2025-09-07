@@ -102,9 +102,9 @@ pub fn config_dir() -> PathBuf {
                     target_os = "linux",
                     not(feature = "packaged-installation")
                 ))] {
-                    Path::new("/etc/opt").join(env!("CARGO_PKG_NAME"))
+                    std::path::Path::new("/etc/opt").join(env!("CARGO_PKG_NAME"))
                 } else if #[cfg(unix)] {
-                    Path::new("/etc").join(env!("CARGO_PKG_NAME"))
+                    std::path::Path::new("/etc").join(env!("CARGO_PKG_NAME"))
                 } else if #[cfg(windows)] {
                     std::env::current_exe().expect("Failed to get current executable path").join(env!("CARGO_PKG_NAME"))
                 } else {

@@ -268,18 +268,20 @@ impl Operation {
         args: bcb::OperationArgs,
     ) -> Result<Option<(Self, Box<[u8]>)>, Error> {
         if let Some(ops) = &jwk.operations
-            && !ops.contains(&key::Operation::Encrypt) {
-                return Ok(None);
-            }
+            && !ops.contains(&key::Operation::Encrypt)
+        {
+            return Ok(None);
+        }
 
         let (cek, variant) = match &jwk.key_algorithm {
             Some(key::KeyAlgorithm::A128KW)
             | Some(key::KeyAlgorithm::A192KW)
             | Some(key::KeyAlgorithm::A256KW) => {
                 if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey) {
-                        return Ok(None);
-                    }
+                    && !ops.contains(&key::Operation::WrapKey)
+                {
+                    return Ok(None);
+                }
                 match &jwk.enc_algorithm {
                     Some(key::EncAlgorithm::A128GCM) => {
                         (Some(rand_key(Box::from([0u8; 32]))?), AesVariant::A128GCM)
@@ -404,32 +406,33 @@ impl Operation {
                         _ => None,
                     }
                     .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-                        && let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm)
-                        {
-                            (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                                aes_gcm::Aes128Gcm::new_from_slice(&cek)
-                                    .ok()
-                                    .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
-                            }
-                            (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                                aes_gcm::Aes256Gcm::new_from_slice(&cek)
-                                    .ok()
-                                    .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
-                            }
-                            (AesVariant::Unrecognised(_), _) => {
-                                return Err(Error::UnsupportedOperation);
-                            }
-                            _ => None,
-                        } {
-                            return Ok(Some(plaintext));
+                    && let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm) {
+                        (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
+                            aes_gcm::Aes128Gcm::new_from_slice(&cek)
+                                .ok()
+                                .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
                         }
+                        (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
+                            aes_gcm::Aes256Gcm::new_from_slice(&cek)
+                                .ok()
+                                .and_then(|cek| self.decrypt_inner(cek, &aad, data).ok())
+                        }
+                        (AesVariant::Unrecognised(_), _) => {
+                            return Err(Error::UnsupportedOperation);
+                        }
+                        _ => None,
+                    }
+                {
+                    return Ok(Some(plaintext));
+                }
             }
         } else {
             for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Decrypt]) {
                 if let Some(key_algorithm) = &jwk.key_algorithm
-                    && !matches!(key_algorithm, key::KeyAlgorithm::Direct) {
-                        continue;
-                    };
+                    && !matches!(key_algorithm, key::KeyAlgorithm::Direct)
+                {
+                    continue;
+                };
 
                 if let key::Type::OctetSequence { key: cek } = &jwk.key_type
                     && let Some(plaintext) = match (self.parameters.variant, &jwk.enc_algorithm) {
@@ -447,9 +450,10 @@ impl Operation {
                             return Err(Error::UnsupportedOperation);
                         }
                         _ => None,
-                    } {
-                        return Ok(Some(plaintext));
                     }
+                {
+                    return Ok(Some(plaintext));
+                }
             }
         }
 

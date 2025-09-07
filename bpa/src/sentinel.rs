@@ -223,10 +223,11 @@ impl Sentinel {
             if check_store {
                 // Check the local variable instead of a field on `self`.
                 if let Some(handle) = &repopulation_task
-                    && !handle.is_finished() {
-                        // A task is active, so we do nothing.
-                        continue; // Continue to the next loop iteration
-                    }
+                    && !handle.is_finished()
+                {
+                    // A task is active, so we do nothing.
+                    continue; // Continue to the next loop iteration
+                }
 
                 // No active task, so we can spawn a new one.
                 let sentinel = self.clone();

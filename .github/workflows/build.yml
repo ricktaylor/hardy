@@ -15,7 +15,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - run: sudo apt-get install protobuf-compiler
+      - run: sudo apt-get update && sudo apt-get install protobuf-compiler -y
       - name: Build
         run: cargo build --verbose
       - name: Run tests
