@@ -512,9 +512,10 @@ fn parse_blocks(
 
     // Check we have at least some primary block protection
     if let crc::CrcType::None = bundle.crc_type
-        && parser.protects_primary_block.is_empty() {
-            return Err(Error::MissingIntegrityCheck);
-        }
+        && parser.protects_primary_block.is_empty()
+    {
+        return Err(Error::MissingIntegrityCheck);
+    }
 
     // Now rewrite blocks (if required)
     Ok((parser.rewrite(bundle), report_unsupported))

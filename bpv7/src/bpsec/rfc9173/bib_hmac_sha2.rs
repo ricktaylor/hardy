@@ -248,16 +248,18 @@ impl Operation {
 
     pub fn sign(jwk: &Key, args: bib::OperationArgs) -> Result<Option<Self>, Error> {
         if let Some(ops) = &jwk.operations
-            && !ops.contains(&key::Operation::Sign) {
-                return Ok(None);
-            }
+            && !ops.contains(&key::Operation::Sign)
+        {
+            return Ok(None);
+        }
 
         let (cek, variant) = match &jwk.key_algorithm {
             Some(key::KeyAlgorithm::HS256_A128KW) => {
                 if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey) {
-                        return Ok(None);
-                    }
+                    && !ops.contains(&key::Operation::WrapKey)
+                {
+                    return Ok(None);
+                }
                 (
                     Some(rand_key(Box::from([0u8; 32]))?),
                     ShaVariant::HMAC_256_256,
@@ -268,9 +270,10 @@ impl Operation {
             | Some(key::KeyAlgorithm::A256KW)
             | Some(key::KeyAlgorithm::HS384_A192KW) => {
                 if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey) {
-                        return Ok(None);
-                    }
+                    && !ops.contains(&key::Operation::WrapKey)
+                {
+                    return Ok(None);
+                }
                 (
                     Some(rand_key(Box::from([0u8; 48]))?),
                     ShaVariant::HMAC_384_384,
@@ -278,9 +281,10 @@ impl Operation {
             }
             Some(key::KeyAlgorithm::HS512_A256KW) => {
                 if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey) {
-                        return Ok(None);
-                    }
+                    && !ops.contains(&key::Operation::WrapKey)
+                {
+                    return Ok(None);
+                }
                 (
                     Some(rand_key(Box::from([0u8; 64]))?),
                     ShaVariant::HMAC_512_512,
@@ -437,9 +441,9 @@ impl Operation {
                             }
                             ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
                         } == Some(true)
-                        {
-                            return Ok(Some(true));
-                        }
+                    {
+                        return Ok(Some(true));
+                    }
                 }
             }
         } else {
@@ -466,9 +470,9 @@ impl Operation {
                         }
                         _ => None,
                     } == Some(true)
-                    {
-                        return Ok(Some(true));
-                    }
+                {
+                    return Ok(Some(true));
+                }
             }
         }
 
