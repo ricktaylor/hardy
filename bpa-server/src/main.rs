@@ -17,19 +17,22 @@ fn listen_for_cancel(
 ) {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
-            let mut term_handler =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .trace_expect("Failed to register signal handlers").recv();
+            let mut term_handler = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .trace_expect("Failed to register signal handlers");
         } else {
-            let term_handler = std::future::pending();
+            let (term_sender, mut term_handler) = tokio::sync::mpsc::channel::<()>(1);
+            // On non-unix platforms we just use a channel that is never written to
+            // and listen for CTRL+C only
+            std::mem::drop(term_sender);
+            trace!("Terminate signal handler not supported on this platform");
         }
-    }
+    };
 
     let cancel_token = cancel_token.clone();
     let task_tracker_cloned = task_tracker.clone();
     task_tracker.spawn(async move {
         tokio::select! {
-            _ = term_handler => {
+            _ = term_handler.recv() => {
                 // Signal stop
                 info!("Received terminate signal, stopping...");
             }
