@@ -19,7 +19,7 @@ hardy-cbor = { path = "../cbor" }
 thiserror = { version = "2.0.15", default-features = false }
 
 # Time still needs std!
-time = { version = "0.3.41", features = ["macros"] }
+time = { version = "0.3.43", features = ["macros"] }
 
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 urlencoding = "2.1.3"
