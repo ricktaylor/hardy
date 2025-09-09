@@ -158,6 +158,19 @@ impl Encoder {
         a.end()
     }
 
+    pub fn emit_array_oneshot<T>(&mut self, values: &[T])
+    where
+        T: ToCbor + Sized,
+    {
+        let count = values.len();
+        let mut a = Array::new(self, Some(count));
+
+        for value in values {
+            a.emit(value);
+        }
+        a.end()
+    }
+
     pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Array),
@@ -650,6 +663,38 @@ macro_rules! impl_collection_emit_functions {
 impl_collection_emit_functions!(
     (emit_array, emit_array_tagged, Array),
     (emit_map, emit_map_tagged, Map)
+);
+
+macro_rules! impl_array_emit_functions {
+    ($( ($method:ident, $value_type:ty)),*) => {
+        $(
+            pub fn $method(values: &[$value_type]) -> Vec<u8>
+            {
+                let mut e = Encoder::new();
+                e.emit_array_oneshot(values);
+                e.build()
+            }
+
+        )*
+    };
+}
+
+impl_array_emit_functions!(
+    (emit_array_u8, u8),
+    (emit_array_u16, u16),
+    (emit_array_u32, u32),
+    (emit_array_u64, u64),
+    (emit_array_usize, usize),
+    (emit_array_i8, i8),
+    (emit_array_i16, i16),
+    (emit_array_i32, i32),
+    (emit_array_i64, i64),
+    (emit_array_isize, isize),
+    (emit_array_f16, half::f16),
+    (emit_array_f32, f32),
+    (emit_array_f64, f64),
+    (emit_array_bool, bool),
+    (emit_array_string, String)
 );
 
 #[cfg(test)]
