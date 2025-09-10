@@ -158,7 +158,7 @@ impl Encoder {
         a.end()
     }
 
-    pub fn emit_array_oneshot<T>(&mut self, values: &[T])
+    pub fn emit_slice<T>(&mut self, values: &[T])
     where
         T: ToCbor + Sized,
     {
@@ -666,13 +666,12 @@ impl_collection_emit_functions!(
 );
 
 macro_rules! impl_array_emit_functions {
-    ($( ($method:ident, $value_type:ty)),*) => {
+    ($( $value_type:ty),*) => {
         $(
-            pub fn $method(values: &[$value_type]) -> Vec<u8>
-            {
-                let mut e = Encoder::new();
-                e.emit_array_oneshot(values);
-                e.build()
+            impl ToCbor for &[$value_type] {
+                fn to_cbor(&self, encoder: &mut Encoder) {
+                    encoder.emit_slice(self)
+                }
             }
 
         )*
@@ -680,21 +679,21 @@ macro_rules! impl_array_emit_functions {
 }
 
 impl_array_emit_functions!(
-    (emit_array_u8, u8),
-    (emit_array_u16, u16),
-    (emit_array_u32, u32),
-    (emit_array_u64, u64),
-    (emit_array_usize, usize),
-    (emit_array_i8, i8),
-    (emit_array_i16, i16),
-    (emit_array_i32, i32),
-    (emit_array_i64, i64),
-    (emit_array_isize, isize),
-    (emit_array_f16, half::f16),
-    (emit_array_f32, f32),
-    (emit_array_f64, f64),
-    (emit_array_bool, bool),
-    (emit_array_string, String)
+    u8,
+    u16,
+    u32,
+    u64,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    isize,
+    half::f16,
+    f32,
+    f64,
+    bool,
+    String
 );
 
 #[cfg(test)]
@@ -706,5 +705,16 @@ pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {
             e.emit_uint_minor(7, value as u64);
             e.build()
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_slice_encode() {
+        use super::*;
+        use hex_literal::hex;
+
+        assert_eq!(emit(&&[1u16, 2, 3][..]), hex!("83010203"));
     }
 }

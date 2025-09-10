@@ -110,7 +110,6 @@ fn rfc_tests() {
         }),
         hex!("83010203")
     );
-    assert_eq!(*emit_array_u16(&[1, 2, 3]), hex!("83010203"));
     assert_eq!(
         *emit_array(Some(3), |a| {
             a.emit(&1);
