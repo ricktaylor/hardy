@@ -178,7 +178,7 @@ impl hardy_cbor::encode::ToCbor for Results {
                 });
             })
         } else {
-            encoder.emit_array(Some(0), |_| {})
+            encoder.emit::<[u8; 0]>(&[])
         }
     }
 }

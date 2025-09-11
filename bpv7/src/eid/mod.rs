@@ -54,61 +54,38 @@ impl TryFrom<Cow<'_, str>> for Eid {
 
 impl hardy_cbor::encode::ToCbor for Eid {
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit_array(Some(2), |a| match self {
-            Eid::Null => {
-                a.emit(&1);
-                a.emit(&0);
-            }
+        match self {
+            Eid::Null => encoder.emit(&(1, 0)),
             Eid::Dtn { node_name, demux } => {
-                a.emit(&1);
-                a.emit(&format!("//{}/{}", urlencoding::encode(node_name), demux));
+                encoder.emit(&(1, format!("//{}/{}", urlencoding::encode(node_name), demux)))
             }
             Eid::LegacyIpn {
                 allocator_id,
                 node_number,
                 service_number,
-            } => {
-                a.emit(&2);
-                a.emit_array(Some(2), |a| {
-                    a.emit(&(((*allocator_id as u64) << 32) | *node_number as u64));
-                    a.emit(service_number);
-                });
-            }
+            } => encoder.emit(&(
+                2,
+                &(
+                    (((*allocator_id as u64) << 32) | *node_number as u64),
+                    service_number,
+                ),
+            )),
             Eid::Ipn {
                 allocator_id: 0,
                 node_number,
                 service_number,
-            } => {
-                a.emit(&2);
-                a.emit_array(Some(2), |a| {
-                    a.emit(node_number);
-                    a.emit(service_number);
-                });
-            }
+            } => encoder.emit(&(2, &[node_number, service_number])),
             Eid::Ipn {
                 allocator_id,
                 node_number,
                 service_number,
-            } => {
-                a.emit(&2);
-                a.emit_array(Some(3), |a| {
-                    a.emit(allocator_id);
-                    a.emit(node_number);
-                    a.emit(service_number);
-                });
-            }
-            Eid::LocalNode { service_number } => {
-                a.emit(&2);
-                a.emit_array(Some(2), |a| {
-                    a.emit(&u32::MAX);
-                    a.emit(service_number);
-                });
-            }
-            Eid::Unknown { scheme, data } => {
+            } => encoder.emit(&(2, &[allocator_id, node_number, service_number])),
+            Eid::LocalNode { service_number } => encoder.emit(&(2, &(u32::MAX, service_number))),
+            Eid::Unknown { scheme, data } => encoder.emit_array(Some(2), |a| {
                 a.emit(scheme);
                 a.emit_raw_slice(data);
-            }
-        })
+            }),
+        }
     }
 }
 
