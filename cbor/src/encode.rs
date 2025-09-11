@@ -131,23 +131,13 @@ impl Encoder {
         self.emit_byte_stream(f)
     }
 
-    pub fn emit_string<V>(&mut self, value: &V) -> Range<usize>
+    fn emit_string<V>(&mut self, value: &V) -> Range<usize>
     where
         V: AsRef<str> + ?Sized,
     {
         let value = value.as_ref().as_bytes();
         self.emit_uint_minor(3, value.len() as u64);
         self.emit_extend(value)
-    }
-
-    pub fn emit_string_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
-    where
-        V: AsRef<str> + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        self.emit_tags(tags);
-        self.emit_string(value)
     }
 
     pub fn emit_text_stream<F>(&mut self, f: F)
@@ -188,7 +178,7 @@ impl Encoder {
         self.emit_array(count, f)
     }
 
-    pub fn emit_array_slice<V, T>(&mut self, values: &V)
+    fn emit_array_slice<V, T>(&mut self, values: &V)
     where
         V: AsRef<[T]> + ?Sized,
         T: ToCbor + Sized,
@@ -199,17 +189,6 @@ impl Encoder {
             a.emit(value);
         }
         a.end()
-    }
-
-    pub fn emit_array_slice_tagged<V, T, I, U>(&mut self, values: &V, tags: I)
-    where
-        V: AsRef<[T]> + ?Sized,
-        T: ToCbor + Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        self.emit_tags(tags);
-        self.emit_array_slice(values)
     }
 
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
@@ -347,11 +326,6 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_raw_slice(data)
     }
 
-    /// Append an additional slice of data, without incrementing the field count
-    pub fn append_raw_slice(&mut self, data: &[u8]) {
-        self.encoder.emit_raw_slice(data)
-    }
-
     pub fn emit<T>(&mut self, value: &T)
     where
         T: ToCbor + ?Sized,
@@ -398,22 +372,6 @@ impl<'a, const D: usize> Sequence<'a, D> {
         T: num_traits::ToPrimitive,
     {
         self.next_field().emit_byte_stream_tagged(tags, f)
-    }
-
-    pub fn emit_string<V>(&mut self, value: &V) -> Range<usize>
-    where
-        V: AsRef<str> + ?Sized,
-    {
-        self.next_field().emit_string(value)
-    }
-
-    pub fn emit_string_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
-    where
-        V: AsRef<str> + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_string_tagged(value, tags)
     }
 
     pub fn emit_text_stream<F>(&mut self, f: F)
