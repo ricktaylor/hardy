@@ -21,10 +21,10 @@ impl CreationTimestamp {
 
 impl hardy_cbor::encode::ToCbor for CreationTimestamp {
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit_array(Some(2), |a| {
-            a.emit(&self.creation_time.unwrap_or_default());
-            a.emit(&self.sequence_number);
-        })
+        encoder.emit(&(
+            &self.creation_time.unwrap_or_default(),
+            &self.sequence_number,
+        ));
     }
 }
 

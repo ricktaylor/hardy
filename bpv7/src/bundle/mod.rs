@@ -106,17 +106,14 @@ impl Id {
 
     pub fn to_key(&self) -> String {
         BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = &self.fragment_info {
-            hardy_cbor::encode::emit_array(Some(4), |array| {
-                array.emit(&self.source);
-                array.emit(&self.timestamp);
-                array.emit(&fragment_info.offset);
-                array.emit(&fragment_info.total_len);
-            })
+            hardy_cbor::encode::emit(&(
+                &self.source,
+                &self.timestamp,
+                fragment_info.offset,
+                fragment_info.total_len,
+            ))
         } else {
-            hardy_cbor::encode::emit_array(Some(2), |array| {
-                array.emit(&self.source);
-                array.emit(&self.timestamp);
-            })
+            hardy_cbor::encode::emit(&(&self.source, &self.timestamp))
         })
     }
 }

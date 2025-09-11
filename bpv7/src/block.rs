@@ -173,7 +173,7 @@ impl Block {
                     a.emit(&self.flags);
                     a.emit(&self.crc_type);
 
-                    self.data = a.emit_measured(data);
+                    self.data = a.emit_bytes(data);
 
                     // CRC
                     if let crc::CrcType::None = self.crc_type {

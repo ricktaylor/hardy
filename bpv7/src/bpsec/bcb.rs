@@ -98,21 +98,20 @@ impl OperationSet {
 impl hardy_cbor::encode::ToCbor for OperationSet {
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
         // Ensure we process operations in the same order
-        let ops = self.operations.iter().collect::<Vec<(&u64, &Operation)>>();
+        let (targets, operations): (Vec<&u64>, Vec<&Operation>) = self.operations.iter().unzip();
 
         // Targets
-        encoder.emit_array(Some(ops.len()), |a| {
-            for (t, _) in &ops {
-                a.emit(*t);
-            }
-        });
+        encoder.emit(targets.as_slice());
 
         // Context
-        ops.first().unwrap().1.emit_context(encoder, &self.source);
+        operations
+            .first()
+            .unwrap()
+            .emit_context(encoder, &self.source);
 
         // Results
-        encoder.emit_array(Some(ops.len()), |a| {
-            for (_, op) in ops {
+        encoder.emit_array(Some(operations.len()), |a| {
+            for op in operations {
                 op.emit_result(a);
             }
         });
