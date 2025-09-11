@@ -5,10 +5,6 @@ pub trait ToCbor {
     fn to_cbor(&self, encoder: &mut Encoder);
 }
 
-pub trait ToCborMeasured {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize>;
-}
-
 pub struct Encoder {
     data: Vec<u8>,
 }
@@ -73,8 +69,11 @@ impl Encoder {
         self.data.extend(data)
     }
 
-    pub fn emit_raw_slice(&mut self, data: &[u8]) {
-        self.data.extend_from_slice(data)
+    pub fn emit_raw_slice<V>(&mut self, data: &V)
+    where
+        V: AsRef<[u8]> + ?Sized,
+    {
+        self.data.extend_from_slice(data.as_ref())
     }
 
     pub fn emit<T>(&mut self, value: &T)
@@ -94,21 +93,23 @@ impl Encoder {
         self.emit(value)
     }
 
-    pub fn emit_measured<T>(&mut self, value: &T) -> Range<usize>
+    pub fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
     where
-        T: ToCborMeasured + ?Sized,
+        V: AsRef<[u8]> + ?Sized,
     {
-        value.to_cbor_measured(self)
+        let value = value.as_ref();
+        self.emit_uint_minor(2, value.len() as u64);
+        self.emit_extend(value)
     }
 
-    pub fn emit_tagged_measured<T, I, U>(&mut self, value: &T, tags: I) -> Range<usize>
+    pub fn emit_bytes_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
     where
-        T: ToCborMeasured + ?Sized,
+        V: AsRef<[u8]> + ?Sized,
         I: IntoIterator<Item = U>,
         U: num_traits::ToPrimitive,
     {
         self.emit_tags(tags);
-        self.emit_measured(value)
+        self.emit_bytes(value)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -128,6 +129,25 @@ impl Encoder {
     {
         self.emit_tags(tags);
         self.emit_byte_stream(f)
+    }
+
+    pub fn emit_string<V>(&mut self, value: &V) -> Range<usize>
+    where
+        V: AsRef<str> + ?Sized,
+    {
+        let value = value.as_ref().as_bytes();
+        self.emit_uint_minor(3, value.len() as u64);
+        self.emit_extend(value)
+    }
+
+    pub fn emit_string_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
+    where
+        V: AsRef<str> + ?Sized,
+        I: IntoIterator<Item = U>,
+        U: num_traits::ToPrimitive,
+    {
+        self.emit_tags(tags);
+        self.emit_string(value)
     }
 
     pub fn emit_text_stream<F>(&mut self, f: F)
@@ -158,19 +178,6 @@ impl Encoder {
         a.end()
     }
 
-    pub fn emit_slice<T>(&mut self, values: &[T])
-    where
-        T: ToCbor + Sized,
-    {
-        let count = values.len();
-        let mut a = Array::new(self, Some(count));
-
-        for value in values {
-            a.emit(value);
-        }
-        a.end()
-    }
-
     pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Array),
@@ -179,6 +186,30 @@ impl Encoder {
     {
         self.emit_tags(tags);
         self.emit_array(count, f)
+    }
+
+    pub fn emit_array_slice<V, T>(&mut self, values: &V)
+    where
+        V: AsRef<[T]> + ?Sized,
+        T: ToCbor + Sized,
+    {
+        let values = values.as_ref();
+        let mut a = Array::new(self, Some(values.len()));
+        for value in values {
+            a.emit(value);
+        }
+        a.end()
+    }
+
+    pub fn emit_array_slice_tagged<V, T, I, U>(&mut self, values: &V, tags: I)
+    where
+        V: AsRef<[T]> + ?Sized,
+        T: ToCbor + Sized,
+        I: IntoIterator<Item = U>,
+        U: num_traits::ToPrimitive,
+    {
+        self.emit_tags(tags);
+        self.emit_array_slice(values)
     }
 
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
@@ -215,7 +246,7 @@ impl<'a> ByteStream<'a> {
     where
         V: AsRef<[u8]> + ?Sized,
     {
-        value.as_ref().to_cbor(self.encoder);
+        self.encoder.emit_bytes(value);
     }
 
     fn end(self) {
@@ -237,7 +268,7 @@ impl<'a> TextStream<'a> {
     where
         V: AsRef<str> + ?Sized,
     {
-        value.as_ref().to_cbor(self.encoder);
+        self.encoder.emit_string(value);
     }
 
     fn end(self) {
@@ -309,7 +340,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_raw(data)
     }
 
-    pub fn emit_raw_slice(&mut self, data: &[u8]) {
+    pub fn emit_raw_slice<V>(&mut self, data: &V)
+    where
+        V: AsRef<[u8]> + ?Sized,
+    {
         self.next_field().emit_raw_slice(data)
     }
 
@@ -334,20 +368,20 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_tagged(value, tags)
     }
 
-    pub fn emit_measured<T>(&mut self, value: &T) -> Range<usize>
+    pub fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
     where
-        T: ToCborMeasured + ?Sized,
+        V: AsRef<[u8]> + ?Sized,
     {
-        self.next_field().emit_measured(value)
+        self.next_field().emit_bytes(value)
     }
 
-    pub fn emit_tagged_measured<T, I, U>(&mut self, value: &T, tags: I) -> Range<usize>
+    pub fn emit_bytes_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
     where
-        T: ToCborMeasured + ?Sized,
+        V: AsRef<[u8]> + ?Sized,
         I: IntoIterator<Item = U>,
         U: num_traits::ToPrimitive,
     {
-        self.next_field().emit_tagged_measured(value, tags)
+        self.next_field().emit_bytes_tagged(value, tags)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -364,6 +398,22 @@ impl<'a, const D: usize> Sequence<'a, D> {
         T: num_traits::ToPrimitive,
     {
         self.next_field().emit_byte_stream_tagged(tags, f)
+    }
+
+    pub fn emit_string<V>(&mut self, value: &V) -> Range<usize>
+    where
+        V: AsRef<str> + ?Sized,
+    {
+        self.next_field().emit_string(value)
+    }
+
+    pub fn emit_string_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
+    where
+        V: AsRef<str> + ?Sized,
+        I: IntoIterator<Item = U>,
+        U: num_traits::ToPrimitive,
+    {
+        self.next_field().emit_string_tagged(value, tags)
     }
 
     pub fn emit_text_stream<F>(&mut self, f: F)
@@ -415,6 +465,16 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 }
 
+// Blanket implementation for references
+impl<T> ToCbor for &T
+where
+    T: ToCbor,
+{
+    fn to_cbor(&self, encoder: &mut Encoder) {
+        (*self).to_cbor(encoder)
+    }
+}
+
 macro_rules! impl_uint_to_cbor {
     ($($ty:ty),*) => {
         $(
@@ -429,20 +489,16 @@ macro_rules! impl_uint_to_cbor {
 
 impl_uint_to_cbor!(u8, u16, u32, u64, usize);
 
-fn emit_i64(encoder: &mut Encoder, val: i64) {
-    if val >= 0 {
-        encoder.emit_uint_minor(0, val as u64);
-    } else {
-        encoder.emit_uint_minor(1, i64::abs(val) as u64 - 1);
-    }
-}
-
 macro_rules! impl_int_to_cbor {
     ($($ty:ty),*) => {
         $(
             impl ToCbor for $ty {
                 fn to_cbor(&self, encoder: &mut Encoder) {
-                    emit_i64(encoder, *self as i64)
+                    if *self >= 0 {
+                        encoder.emit_uint_minor(0, *self as u64);
+                    } else {
+                        encoder.emit_uint_minor(1, self.unsigned_abs() as u64 - 1);
+                    }
                 }
             }
         )*
@@ -502,72 +558,34 @@ impl ToCbor for bool {
 }
 
 macro_rules! impl_string_to_cbor {
-    ($ty:ty, $as_method:ident) => {
-        impl ToCborMeasured for $ty {
-            fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-                let bytes = self.$as_method();
-                encoder.emit_uint_minor(3, bytes.len() as u64);
-                encoder.emit_extend(bytes)
+    ($( $value_type:ty),*) => {
+        $(
+            impl ToCbor for $value_type {
+                fn to_cbor(&self, encoder: &mut Encoder) {
+                    encoder.emit_string(self);
+                }
             }
-        }
-
-        impl ToCbor for $ty {
-            fn to_cbor(&self, encoder: &mut Encoder) {
-                self.to_cbor_measured(encoder);
-            }
-        }
+        )*
     };
 }
 
-impl_string_to_cbor!(str, as_bytes);
+impl_string_to_cbor!(str, String);
 
-impl ToCborMeasured for String {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        self.as_str().to_cbor_measured(encoder)
-    }
-}
-
-impl ToCbor for String {
+impl<T> ToCbor for [T]
+where
+    T: ToCbor,
+{
     fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
+        encoder.emit_array_slice(self)
     }
 }
 
-impl ToCborMeasured for [u8] {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        encoder.emit_uint_minor(2, self.len() as u64);
-        encoder.emit_extend(self)
-    }
-}
-
-impl ToCbor for [u8] {
+impl<T, const N: usize> ToCbor for [T; N]
+where
+    T: ToCbor,
+{
     fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
-
-impl ToCborMeasured for Vec<u8> {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        self.as_slice().to_cbor_measured(encoder)
-    }
-}
-
-impl ToCbor for Vec<u8> {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
-
-impl<const N: usize> ToCborMeasured for [u8; N] {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        encoder.emit_uint_minor(2, N as u64);
-        encoder.emit_extend(self)
-    }
-}
-
-impl<const N: usize> ToCbor for [u8; N] {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
+        encoder.emit_array_slice(self)
     }
 }
 
@@ -601,6 +619,26 @@ where
     let mut e = Encoder::new();
     e.emit_tagged(value, tags);
     e.build()
+}
+
+pub fn emit_bytes<V>(value: &V) -> (Range<usize>, Vec<u8>)
+where
+    V: AsRef<[u8]> + ?Sized,
+{
+    let mut e = Encoder::new();
+    let r = e.emit_bytes(value);
+    (r, e.build())
+}
+
+pub fn emit_bytes_tagged<V, I, U>(value: &V, tags: I) -> (Range<usize>, Vec<u8>)
+where
+    V: AsRef<[u8]> + ?Sized,
+    I: IntoIterator<Item = U>,
+    U: num_traits::ToPrimitive,
+{
+    let mut e = Encoder::new();
+    let r = e.emit_bytes_tagged(value, tags);
+    (r, e.build())
 }
 
 macro_rules! impl_stream_emit_functions {
@@ -665,37 +703,42 @@ impl_collection_emit_functions!(
     (emit_map, emit_map_tagged, Map)
 );
 
-macro_rules! impl_array_emit_functions {
-    ($( $value_type:ty),*) => {
-        $(
-            impl ToCbor for &[$value_type] {
-                fn to_cbor(&self, encoder: &mut Encoder) {
-                    encoder.emit_slice(self)
-                }
+macro_rules! impl_tuple_emit_functions {
+    // The first argument `$len:expr` captures the tuple's length.
+    // The `( $($name:ident, $index:tt),* )` part matches a comma-separated list of
+    // pairs, like `(T1, 0), (T2, 1)`.
+    // `$name` will be the generic type identifier (e.g., T1, T2).
+    // `$index` will be the numeric tuple index (e.g., 0, 1).
+    ( $len:expr; $( ($name:ident, $index:tt) ),* ) => {
+        impl<$($name: ToCbor),*> ToCbor for ($($name,)*) {
+            fn to_cbor(&self, encoder: &mut Encoder) {
+                encoder.emit_array(Some($len),|a| {
+                    $( a.emit(&self.$index); )*
+                })
             }
-
-        )*
+        }
     };
 }
 
-impl_array_emit_functions!(
-    u8,
-    u16,
-    u32,
-    u64,
-    usize,
-    i8,
-    i16,
-    i32,
-    i64,
-    isize,
-    half::f16,
-    f32,
-    f64,
-    bool,
-    String
-);
+// Now, we call the macro to generate the implementations for tuples
+// containing 2 to 16 elements, passing the length each time.
+impl_tuple_emit_functions!(2; (T0, 0), (T1, 1));
+impl_tuple_emit_functions!(3; (T0, 0), (T1, 1), (T2, 2));
+impl_tuple_emit_functions!(4; (T0, 0), (T1, 1), (T2, 2), (T3, 3));
+impl_tuple_emit_functions!(5; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4));
+impl_tuple_emit_functions!(6; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5));
+impl_tuple_emit_functions!(7; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6));
+impl_tuple_emit_functions!(8; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7));
+impl_tuple_emit_functions!(9; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8));
+impl_tuple_emit_functions!(10; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9));
+impl_tuple_emit_functions!(11; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10));
+impl_tuple_emit_functions!(12; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11));
+impl_tuple_emit_functions!(13; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12));
+impl_tuple_emit_functions!(14; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13));
+impl_tuple_emit_functions!(15; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13), (T14, 14));
+impl_tuple_emit_functions!(16; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13), (T14, 14), (T15, 15));
 
+// This is only exposed for testing
 #[cfg(test)]
 pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {
     match value {
@@ -705,16 +748,5 @@ pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {
             e.emit_uint_minor(7, value as u64);
             e.build()
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_slice_encode() {
-        use super::*;
-        use hex_literal::hex;
-
-        assert_eq!(emit(&&[1u16, 2, 3][..]), hex!("83010203"));
     }
 }

@@ -118,7 +118,9 @@ impl hardy_cbor::encode::ToCbor for Parameters {
                         a.emit(&b);
                         match b {
                             1 => a.emit(&self.variant),
-                            2 => a.emit(self.key.as_ref().unwrap().as_ref()),
+                            2 => {
+                                a.emit_bytes(&self.key.as_ref().unwrap());
+                            }
                             3 => a.emit(&self.flags),
                             _ => unreachable!(),
                         };
@@ -157,7 +159,7 @@ impl hardy_cbor::encode::ToCbor for Results {
         encoder.emit_array(Some(1), |a| {
             a.emit_array(Some(2), |a| {
                 a.emit(&1);
-                a.emit(self.0.as_ref());
+                a.emit_bytes(&self.0);
             });
         })
     }

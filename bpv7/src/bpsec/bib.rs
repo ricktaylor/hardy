@@ -98,7 +98,7 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
         // Targets
         encoder.emit_array(Some(ops.len()), |a| {
             for (t, _) in &ops {
-                a.emit(*t);
+                a.emit(t);
             }
         });
 
