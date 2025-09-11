@@ -5,6 +5,7 @@ mod fragment;
 mod local;
 mod report;
 mod restart;
+mod stats;
 
 use super::*;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
@@ -16,7 +17,7 @@ pub struct Dispatcher {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
     store: Arc<store::Store>,
-    sentinel: Arc<sentinel::Sentinel>,
+    reaper: Arc<reaper::Reaper>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     rib: Arc<rib::Rib>,
     ipn_2_element: Arc<hardy_eid_pattern::EidPatternSet>,
@@ -32,7 +33,7 @@ impl Dispatcher {
     pub fn new(
         config: &config::Config,
         store: Arc<store::Store>,
-        sentinel: Arc<sentinel::Sentinel>,
+        reaper: Arc<reaper::Reaper>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         rib: Arc<rib::Rib>,
         //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
@@ -41,7 +42,7 @@ impl Dispatcher {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
             store,
-            sentinel,
+            reaper,
             service_registry,
             rib,
             ipn_2_element: Arc::new(config.ipn_2_element.iter().fold(
@@ -88,6 +89,11 @@ impl Dispatcher {
             self.report_bundle_deletion(&bundle, reason).await;
         }
 
+        self.delete_bundle(bundle).await
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    pub async fn delete_bundle(&self, bundle: bundle::Bundle) -> Result<(), Error> {
         // Delete the bundle from the bundle store
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await?;

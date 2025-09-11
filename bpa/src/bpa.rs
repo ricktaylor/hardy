@@ -4,9 +4,9 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct Bpa {
     store: Arc<store::Store>,
-    sentinel: Arc<sentinel::Sentinel>,
+    reaper: Arc<reaper::Reaper>,
     rib: Arc<rib::Rib>,
-    cla_registry: Arc<cla_registry::ClaRegistry>,
+    cla_registry: Arc<cla::registry::Registry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
@@ -23,29 +23,28 @@ impl Bpa {
         // New store
         let store = Arc::new(store::Store::new(config));
 
-        // New sentinel
-        let (sentinel, sentinel_rx) = sentinel::Sentinel::new(store.clone());
-        let sentinel = Arc::new(sentinel);
-
         // New RIB
-        let rib = Arc::new(rib::Rib::new(config, sentinel.clone()));
+        let rib = Arc::new(rib::Rib::new(config));
 
         // New registries
-        let cla_registry = Arc::new(cla_registry::ClaRegistry::new(config, rib.clone()));
+        let cla_registry = Arc::new(cla::registry::Registry::new(config, rib.clone()));
         let service_registry =
             Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
+
+        // New reaper
+        let reaper = Arc::new(reaper::Reaper::new(store.clone()));
 
         // New dispatcher
         let dispatcher = Arc::new(dispatcher::Dispatcher::new(
             config,
             store.clone(),
-            sentinel.clone(),
+            reaper.clone(),
             service_registry.clone(),
             rib.clone(),
         ));
 
-        // Start the sentinel
-        sentinel.start(dispatcher.clone(), sentinel_rx);
+        // Start the reaper
+        reaper.start(dispatcher.clone());
 
         // And finally restart the store
         store.start(dispatcher.clone());
@@ -54,7 +53,7 @@ impl Bpa {
 
         Ok(Self {
             store,
-            sentinel,
+            reaper,
             rib,
             cla_registry,
             service_registry,
@@ -70,7 +69,7 @@ impl Bpa {
         self.dispatcher.shutdown().await;
         self.service_registry.shutdown().await;
         self.cla_registry.shutdown().await;
-        self.sentinel.shutdown().await;
+        self.reaper.shutdown().await;
         self.store.shutdown().await;
 
         trace!("BPA stopped");

@@ -106,7 +106,11 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_pending(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
+    async fn poll_pending(
+        &self,
+        tx: storage::Sender<bundle::Bundle>,
+        limit: usize,
+    ) -> storage::Result<()> {
         let entries = self
             .entries
             .lock()
@@ -116,10 +120,10 @@ impl storage::MetadataStorage for Storage {
                 let Some(v) = v else {
                     return None;
                 };
-                if matches!(v.metadata.status, metadata::BundleStatus::Waiting) {
-                    Some(SortedBundle(v.clone()))
-                } else {
+                if matches!(v.metadata.status, metadata::BundleStatus::Dispatching) {
                     None
+                } else {
+                    Some(SortedBundle(v.clone()))
                 }
             })
             .collect::<std::collections::BinaryHeap<_>>();

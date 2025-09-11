@@ -63,7 +63,10 @@ message AddPeerRequest {
 
 message AddPeerResponse {}
 
-message RemovePeerRequest { string eid = 1; }
+message RemovePeerRequest {
+  string eid = 1;
+  ClaAddress address = 2;
+}
 
 message RemovePeerResponse {}
 

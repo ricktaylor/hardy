@@ -1,5 +1,4 @@
 use super::*;
-use hardy_eid_pattern::{EidPattern, EidPatternSet};
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 use tokio::sync::Notify;
@@ -31,52 +30,40 @@ impl Ord for CacheEntry {
 
 /// A background component that monitors time-sensitive bundles and triggers
 /// a cleanup action when they expire.
-pub struct Sentinel {
+pub struct Reaper {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
     cache: Arc<Mutex<BTreeSet<CacheEntry>>>,
     store: Arc<store::Store>,
     max_cache_size: usize,
     wakeup: Arc<Notify>,
-    route_updates_tx: flume::Sender<EidPattern>,
 }
 
-impl Sentinel {
-    /// Creates a new Sentinel. Returns the instance and the receiver for route updates.
-    pub fn new(store: Arc<store::Store>) -> (Self, flume::Receiver<EidPattern>) {
+impl Reaper {
+    /// Creates a new Reaper. Returns the instance and the receiver for route updates.
+    pub fn new(store: Arc<store::Store>) -> Self {
         let cache = Arc::new(Mutex::new(BTreeSet::new()));
         let wakeup = Arc::new(Notify::new());
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let task_tracker = tokio_util::task::TaskTracker::new();
 
-        // Use flume::bounded for a channel with a fixed capacity.
-        let (route_updates_tx, route_updates_rx) = flume::bounded(16);
-
-        (
-            Self {
-                cache,
-                max_cache_size: CACHE_SIZE,
-                task_tracker,
-                store,
-                wakeup,
-                cancel_token,
-                route_updates_tx,
-            },
-            route_updates_rx,
-        )
+        Self {
+            cache,
+            max_cache_size: CACHE_SIZE,
+            task_tracker,
+            store,
+            wakeup,
+            cancel_token,
+        }
     }
 
-    pub fn start(
-        self: &Arc<Self>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        route_rx: flume::Receiver<EidPattern>,
-    ) {
-        let sentinel = self.clone();
-        let task = async move { sentinel.run(dispatcher, route_rx).await };
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+        let reaper = self.clone();
+        let task = async move { reaper.run(dispatcher).await };
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "sentinel_task");
+            let span = tracing::trace_span!("parent: None", "reaper_task");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
@@ -84,15 +71,13 @@ impl Sentinel {
         self.task_tracker.spawn(task);
     }
 
-    /// Provides the public API for other components to signal a route change.
-    pub async fn new_route(&self, pattern: EidPattern) {
-        // Use send_async for the async version of flume's send.
-        _ = self.route_updates_tx.send_async(pattern).await;
+    /// Adds a bundle to the Reaper's cache to be monitored.
+    /// If a new bundle has the soonest expiry, the background task is notified.
+    pub async fn watch_bundle(&self, bundle: bundle::Bundle) {
+        self.watch_bundle_inner(bundle, true).await;
     }
 
-    /// Adds a bundle to the Sentinel's cache to be monitored.
-    /// If a new bundle has the soonest expiry, the background task is notified.
-    pub async fn watch_bundle(&self, bundle: bundle::Bundle) -> bool {
+    async fn watch_bundle_inner(&self, bundle: bundle::Bundle, cap: bool) {
         let new_entry = CacheEntry {
             expiry: bundle.expiry(),
             id: bundle.bundle.id,
@@ -104,11 +89,11 @@ impl Sentinel {
             let mut cache = self.cache.lock().trace_expect("Failed to acquire lock");
             let old_expiry = cache.first().map(|e| e.expiry);
 
-            if cache.len() < self.max_cache_size {
+            if !cap || cache.len() < self.max_cache_size {
                 // Case 1: Cache is not full, just insert.
                 if !cache.insert(new_entry) {
                     // Just in case we have duplicates
-                    return true;
+                    return;
                 }
             } else {
                 // Case 2: Cache is full, check for eviction.
@@ -118,11 +103,11 @@ impl Sentinel {
                     cache.pop_last();
                     if !cache.insert(new_entry) {
                         // Just in case we have duplicates
-                        return true;
+                        return;
                     }
                 } else {
                     // New entry is worse than the worst, so it's dropped.
-                    return false;
+                    return;
                 }
             }
             old_expiry
@@ -136,16 +121,10 @@ impl Sentinel {
         if needs_wakeup {
             self.wakeup.notify_one();
         }
-
-        true
     }
 
     /// The background task that waits for the next expiry, a notification, or shutdown.
-    async fn run(
-        self: Arc<Self>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-        route_rx: flume::Receiver<EidPattern>,
-    ) {
+    async fn run(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let mut repopulation_task: Option<tokio::task::JoinHandle<()>> = None;
 
         loop {
@@ -174,14 +153,6 @@ impl Sentinel {
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {},
                 _ = self.wakeup.notified() => {},
-
-                // Use recv_async to await a message from the flume channel.
-                Ok(pattern) = route_rx.recv_async() => {
-                    info!("Handling new route pattern: {pattern}");
-                    self.handle_new_route(&dispatcher, (&pattern).into()).await;
-                    continue;
-                },
-
                 _ = self.cancel_token.cancelled() => {
                     // Shutting down
                     break;
@@ -230,8 +201,8 @@ impl Sentinel {
                 }
 
                 // No active task, so we can spawn a new one.
-                let sentinel = self.clone();
-                let task = async move { sentinel.refill_cache().await };
+                let reaper = self.clone();
+                let task = async move { reaper.refill_cache().await };
 
                 #[cfg(feature = "tracing")]
                 let task = {
@@ -245,66 +216,6 @@ impl Sentinel {
         }
     }
 
-    /// Handles the logic for a new route announcement.
-    ///
-    /// This involves two steps:
-    /// 1. An immediate, fast check of the in-memory cache.
-    /// 2. Triggering a slow, background check of the store.
-    async fn handle_new_route(
-        self: &Arc<Self>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-        filter: EidPatternSet,
-    ) {
-        // --- Action 1: Immediate Cache Check ---
-        let bundles_to_forward = {
-            let mut cache = self.cache.lock().expect("Failed to acquire lock");
-
-            // .retain() iterates through the cache and keeps only the elements
-            // for which the closure returns `true`.
-            let mut ids = Vec::new();
-            cache.retain(|entry| {
-                if filter.contains(&entry.destination) {
-                    // This bundle matches the new route.
-                    ids.push(entry.id.clone());
-                    false // Return `false` to REMOVE the item from the cache.
-                } else {
-                    true // Return `true` to KEEP the item in the cache.
-                }
-            });
-            ids
-        };
-
-        // With the lock released, perform the dispatching
-        for id in bundles_to_forward {
-            if let Ok(Some(bundle)) = self
-                .store
-                .get_metadata(&id)
-                .await
-                .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
-            {
-                // Forward the bundle
-                _ = dispatcher
-                    .forward_bundle(bundle)
-                    .await
-                    .inspect_err(|e| error!("Failed to dispatch bundle: {e}"));
-            }
-        }
-
-        // --- Action 2: Trigger Slow Background Store Check ---
-        let sentinel = self.clone();
-        let dispatcher = dispatcher.clone();
-        let task = async move { sentinel.search_store(dispatcher, filter).await };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!("parent: None", "search_store_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
-    }
-
     pub async fn shutdown(&self) {
         self.cancel_token.cancel();
         self.task_tracker.close();
@@ -314,17 +225,14 @@ impl Sentinel {
     async fn refill_cache(self: Arc<Self>) {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
-        let sentinel = self.clone();
+        let reaper = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.max_cache_size);
         let task = async move {
             loop {
                 tokio::select! {
                     bundle = rx.recv_async() => match bundle {
                         Err(_) => break,
-                        Ok(bundle) => if !sentinel.watch_bundle(bundle).await {
-                            // Cache is now full
-                            break;
-                        }
+                        Ok(bundle) => reaper.watch_bundle_inner(bundle,false).await,
                     },
                     _ = cancel_token.cancelled() => {
                         break;
@@ -344,7 +252,7 @@ impl Sentinel {
 
         if self
             .store
-            .poll_pending(tx)
+            .poll_pending(tx, self.max_cache_size)
             .await
             .inspect_err(|e| error!("Failed to poll store for pending bundles: {e}"))
             .is_ok()
@@ -354,13 +262,5 @@ impl Sentinel {
         }
 
         _ = h.await;
-    }
-
-    async fn search_store(
-        self: Arc<Self>,
-        _dispatcher: Arc<dispatcher::Dispatcher>,
-        _filter: EidPatternSet,
-    ) {
-        //todo!();
     }
 }

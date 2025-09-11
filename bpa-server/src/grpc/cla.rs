@@ -109,7 +109,13 @@ impl Cla {
                             Err(tonic::Status::invalid_argument("Missing address"))
                         })
                     }
-                    Some(cla_to_bpa::Msg::RemovePeer(msg)) => Some(cla.remove_peer(msg.eid).await),
+                    Some(cla_to_bpa::Msg::RemovePeer(msg)) => {
+                        Some(if let Some(address) = msg.address {
+                            cla.remove_peer(msg.eid, address).await
+                        } else {
+                            Err(tonic::Status::invalid_argument("Missing address"))
+                        })
+                    }
                     Some(cla_to_bpa::Msg::Forward(msg)) => {
                         if let Some(result) = msg.result {
                             cla.forward_ack_response(msg_id, Ok(result))
@@ -182,28 +188,33 @@ impl Cla {
         let eid = eid
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
+        let addr = addr
+            .try_into()
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
         self.sink
             .get()
             .expect("CLA registration not complete!")
-            .add_peer(
-                eid,
-                addr.try_into().map_err(|e| {
-                    tonic::Status::invalid_argument(format!("Invalid address: {e}"))
-                })?,
-            )
+            .add_peer(eid, addr)
             .await
             .map(|_| bpa_to_cla::Msg::AddPeer(AddPeerResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn remove_peer(&self, eid: String) -> Result<bpa_to_cla::Msg, tonic::Status> {
+    async fn remove_peer(
+        &self,
+        eid: String,
+        addr: ClaAddress,
+    ) -> Result<bpa_to_cla::Msg, tonic::Status> {
         let eid = eid
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
+        let addr = addr
+            .try_into()
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
         self.sink
             .get()
             .expect("CLA registration not complete!")
-            .remove_peer(&eid)
+            .remove_peer(&eid, &addr)
             .await
             .map(|_| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))

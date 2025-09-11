@@ -2,14 +2,15 @@ use super::*;
 use hardy_bpv7::eid::Eid;
 use std::{
     collections::HashMap,
+    ops::DerefMut,
     sync::{Mutex, RwLock, Weak},
 };
 
 pub struct Cla {
-    pub cla: Arc<dyn cla::Cla>,
-    pub name: String,
-    peers: Mutex<HashMap<Eid, cla::ClaAddress>>,
-    address_type: Option<cla::ClaAddressType>,
+    cla: Arc<dyn cla::Cla>,
+    name: String,
+    peers: Mutex<HashMap<Eid, HashMap<ClaAddress, u32>>>,
+    address_type: Option<ClaAddressType>,
 }
 
 impl PartialEq for Cla {
@@ -50,7 +51,7 @@ impl std::fmt::Debug for Cla {
 
 struct Sink {
     cla: Weak<Cla>,
-    registry: Arc<ClaRegistry>,
+    registry: Arc<Registry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -66,19 +67,23 @@ impl cla::Sink for Sink {
         self.dispatcher.receive_bundle(bundle).await
     }
 
-    async fn add_peer(&self, eid: Eid, addr: cla::ClaAddress) -> cla::Result<()> {
-        let Some(cla) = self.cla.upgrade() else {
-            return Err(cla::Error::Disconnected);
-        };
-        self.registry.add_peer(&cla, eid, addr).await;
+    async fn add_peer(&self, eid: Eid, addr: ClaAddress) -> cla::Result<()> {
+        self.registry
+            .add_peer(
+                self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
+                eid,
+                addr,
+            )
+            .await;
         Ok(())
     }
 
-    async fn remove_peer(&self, eid: &Eid) -> cla::Result<bool> {
-        let Some(cla) = self.cla.upgrade() else {
-            return Err(cla::Error::Disconnected);
-        };
-        Ok(self.registry.remove_peer(&cla, eid))
+    async fn remove_peer(&self, eid: &Eid, addr: &ClaAddress) -> cla::Result<bool> {
+        Ok(self.registry.remove_peer(
+            self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
+            eid,
+            addr,
+        ))
     }
 }
 
@@ -90,18 +95,20 @@ impl Drop for Sink {
     }
 }
 
-pub struct ClaRegistry {
+pub struct Registry {
     node_ids: Vec<Eid>,
     clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
+    peers: peers::PeerTable,
 }
 
-impl ClaRegistry {
+impl Registry {
     pub fn new(config: &config::Config, rib: Arc<rib::Rib>) -> Self {
         Self {
             node_ids: (&config.node_ids).into(),
             clas: Default::default(),
             rib,
+            peers: peers::PeerTable::new(),
         }
     }
 
@@ -122,29 +129,31 @@ impl ClaRegistry {
     pub async fn register(
         self: &Arc<Self>,
         name: String,
-        address_type: Option<cla::ClaAddressType>,
+        address_type: Option<ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> cla::Result<()> {
         // Scope lock
         let cla = {
             let mut clas = self.clas.write().trace_expect("Failed to lock mutex");
+            match clas.entry(name.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(cla::Error::AlreadyExists(name));
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    info!("Registered new CLA: {name}");
 
-            if clas.contains_key(&name) {
-                return Err(cla::Error::AlreadyExists(name));
+                    let cla = Arc::new(Cla {
+                        cla,
+                        peers: Default::default(),
+                        name: name.clone(),
+                        address_type,
+                    });
+
+                    e.insert(cla.clone());
+                    cla
+                }
             }
-
-            let cla = Arc::new(Cla {
-                cla,
-                peers: Default::default(),
-                name: name.clone(),
-                address_type,
-            });
-
-            info!("Registered new CLA: {name}");
-
-            clas.insert(name.clone(), cla.clone());
-            cla
         };
 
         if let Err(e) = cla
@@ -194,43 +203,70 @@ impl ClaRegistry {
             self.rib.remove_address_type(address_type);
         }
 
-        let clas = cla
-            .peers
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .drain()
-            .collect::<Vec<_>>();
+        let peers = std::mem::take(
+            cla.peers
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .deref_mut(),
+        );
 
-        for (eid, cla_addr) in clas {
-            self.rib.remove_forward(&eid, &cla_addr, Some(&cla));
+        for (eid, i) in peers {
+            for peer_id in i.values() {
+                self.rib.remove_forward(&eid, *peer_id);
+                self.peers.remove(*peer_id);
+            }
         }
 
         info!("Unregistered CLA: {}", cla.name);
     }
 
-    async fn add_peer(&self, cla: &Arc<Cla>, eid: Eid, addr: cla::ClaAddress) {
-        if cla
-            .peers
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .insert(eid.clone(), addr.clone())
-            .is_none()
-        {
-            self.rib.add_forward(eid, addr, Some(cla.clone())).await
-        }
+    async fn add_peer(&self, cla: Arc<Cla>, eid: Eid, addr: ClaAddress) -> bool {
+        // We search here because it results in better lookups than linear searching the peers table
+        let peer_id = {
+            match cla
+                .peers
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .entry(eid.clone())
+            {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    match e.get_mut().entry(addr.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => return false,
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            let peer_id = self.peers.insert(cla.clone(), eid.clone(), addr);
+                            e.insert(peer_id);
+                            peer_id
+                        }
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let peer_id = self.peers.insert(cla.clone(), eid.clone(), addr.clone());
+                    e.insert([(addr, peer_id)].into());
+                    peer_id
+                }
+            }
+        };
+
+        self.rib.add_forward(eid, peer_id).await;
+
+        true
     }
 
-    fn remove_peer(&self, cla: &Arc<Cla>, eid: &Eid) -> bool {
-        let cla_addr = cla
+    fn remove_peer(&self, cla: Arc<Cla>, eid: &Eid, addr: &ClaAddress) -> bool {
+        let Some(peer_id) = cla
             .peers
             .lock()
             .trace_expect("Failed to lock mutex")
-            .remove(eid);
+            .get_mut(eid)
+            .and_then(|m| m.remove(addr))
+        else {
+            return false;
+        };
 
-        if let Some(cla_addr) = cla_addr {
-            self.rib.remove_forward(eid, &cla_addr, Some(cla))
-        } else {
-            false
-        }
+        self.rib.remove_forward(eid, peer_id);
+
+        self.peers.remove(peer_id);
+
+        true
     }
 }

@@ -164,7 +164,9 @@ impl Storage {
 fn from_status(status: &hardy_bpa::metadata::BundleStatus) -> i64 {
     match status {
         hardy_bpa::metadata::BundleStatus::Dispatching => 0,
-        hardy_bpa::metadata::BundleStatus::Waiting => 1,
+        hardy_bpa::metadata::BundleStatus::NoRoute => 1,
+        hardy_bpa::metadata::BundleStatus::ForwardPending(_) => 2,
+        hardy_bpa::metadata::BundleStatus::LocalPending(_) => 4,
     }
 }
 
@@ -365,76 +367,40 @@ impl storage::MetadataStorage for Storage {
     async fn poll_pending(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+        limit: usize,
     ) -> storage::Result<()> {
-        // We have a hard-coded number below
-        assert_eq!(1, from_status(&hardy_bpa::metadata::BundleStatus::Waiting));
+        let bundles = self
+            .read(move |conn| {
+                let mut bundles = Vec::new();
 
-        let mut max_expiry = None;
-        loop {
-            let (bundles, expiry) = self
-                .read(move |conn| {
-                    let mut bundles = Vec::new();
-                    if let Some(expiry) = max_expiry {
-                        for r in conn
-                            .prepare_cached(
-                                "SELECT bundle,expiry FROM bundles 
-                                WHERE expiry >= ?1
-                                    AND status_code = 1
-                                    AND bundle IS NOT NULL 
-                                    AND id NOT IN (SELECT id FROM unconfirmed_bundles)
-                                ORDER BY expiry
-                                LIMIT 64",
-                            )?
-                            .query_map((expiry,), |row| {
-                                Ok((
-                                    row.get::<_, Vec<u8>>(0)?,
-                                    row.get::<_, time::OffsetDateTime>(1)?,
-                                ))
-                            })?
-                        {
-                            let (bundle, expiry) = r?;
-                            max_expiry = Some(expiry);
-                            bundles.push(bundle);
-                        }
-                    } else {
-                        for r in conn
-                            .prepare_cached(
-                                "SELECT bundle,expiry FROM bundles 
-                                WHERE status_code = 1
-                                    AND bundle IS NOT NULL 
-                                    AND id NOT IN (SELECT id FROM unconfirmed_bundles)
-                                ORDER BY expiry
-                                LIMIT 64",
-                            )?
-                            .query_map((), |row| {
-                                Ok((
-                                    row.get::<_, Vec<u8>>(0)?,
-                                    row.get::<_, time::OffsetDateTime>(1)?,
-                                ))
-                            })?
-                        {
-                            let (bundle, expiry) = r?;
-                            max_expiry = Some(expiry);
-                            bundles.push(bundle);
-                        }
-                    };
-                    Ok((bundles, max_expiry))
-                })
-                .await?;
-
-            max_expiry = expiry;
-
-            for bundle in bundles {
-                match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                    Ok((bundle, _)) => {
-                        if tx.send_async(bundle).await.is_err() {
-                            // The other end is shutting down - get out
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+                for r in conn
+                    .prepare_cached(
+                        "SELECT bundle FROM bundles 
+                        WHERE bundle IS NOT NULL 
+                        ORDER BY expiry
+                        LIMIT ?1",
+                    )?
+                    .query_map((limit,), |row| row.get::<_, Vec<u8>>(0))?
+                {
+                    bundles.push(r?);
                 }
+
+                Ok(bundles)
+            })
+            .await?;
+
+        for bundle in bundles {
+            match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                Ok((bundle, _)) => {
+                    if tx.send_async(bundle).await.is_err() {
+                        // The other end is shutting down - get out
+                        break;
+                    }
+                }
+                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
             }
         }
+
+        Ok(())
     }
 }

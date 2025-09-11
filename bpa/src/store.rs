@@ -421,7 +421,11 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_pending(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
-        self.metadata_storage.poll_pending(tx).await
+    pub async fn poll_pending(
+        &self,
+        tx: storage::Sender<bundle::Bundle>,
+        limit: usize,
+    ) -> storage::Result<()> {
+        self.metadata_storage.poll_pending(tx, limit).await
     }
 }

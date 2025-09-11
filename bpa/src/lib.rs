@@ -1,7 +1,6 @@
-mod cla_registry;
 mod dispatcher;
+mod reaper;
 mod rib;
-mod sentinel;
 mod service_registry;
 mod store;
 

@@ -132,7 +132,7 @@ impl Dispatcher {
     async fn dispatch_status_report(self: &Arc<Self>, payload: Box<[u8]>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {
-            let bundle = loop {
+            let mut bundle = loop {
                 // Build the bundle
                 let mut b = hardy_bpv7::builder::Builder::new(
                     self.node_ids.get_admin_endpoint(report_to),
@@ -163,18 +163,15 @@ impl Dispatcher {
             let dispatcher = self.clone();
             let task = async move {
                 if let Ok(forward::ForwardResult::Keep) = dispatcher
-                    .forward_bundle_inner(&bundle)
+                    .forward_bundle_inner(&mut bundle)
                     .await
                     .inspect_err(|e| error!("Failed to send status report: {e}"))
                 {
-                    return;
+                    dispatcher.reaper.watch_bundle(bundle).await;
+                } else {
+                    // Delete the bundle from the bundle store
+                    _ = dispatcher.delete_bundle(bundle).await;
                 }
-
-                // Delete the bundle from the bundle store
-                if let Some(storage_name) = &bundle.metadata.storage_name {
-                    _ = dispatcher.store.delete_data(storage_name).await;
-                }
-                _ = dispatcher.store.tombstone_metadata(&bundle.bundle.id).await;
             };
 
             #[cfg(feature = "tracing")]

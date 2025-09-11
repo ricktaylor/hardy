@@ -23,7 +23,7 @@ pub trait MetadataStorage: Send + Sync {
     async fn remove_unconfirmed(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
 
     /// Return a sorted list of waiting bundles, ordered by expiry.  The receiver will hangup when it has enough
-    async fn poll_pending(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
+    async fn poll_pending(&self, tx: Sender<bundle::Bundle>, limit: usize) -> Result<()>;
 }
 
 pub type ListResponse = (Arc<str>, time::OffsetDateTime);

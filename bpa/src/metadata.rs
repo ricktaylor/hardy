@@ -5,7 +5,9 @@ use super::*;
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum BundleStatus {
     Dispatching,
-    Waiting,
+    ForwardPending(u32),
+    LocalPending(u32),
+    NoRoute,
 }
 
 #[derive(Debug, Clone)]

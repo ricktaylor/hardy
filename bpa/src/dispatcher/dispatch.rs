@@ -169,26 +169,13 @@ impl Dispatcher {
             return self.drop_bundle(bundle, reason).await;
         }
 
-        match bundle.metadata.status {
-            BundleStatus::Dispatching => {
-                // Now process the bundle
-                self.forward_bundle(bundle).await
-            }
-            BundleStatus::Waiting => {
-                // Just wait
-                self.delay_bundle(bundle).await
-            }
+        if let BundleStatus::Dispatching = bundle.metadata.status {
+            // Now process the bundle
+            self.forward_bundle(bundle).await
+        } else {
+            // Do nothing more (this can happen from restart)
+            self.reaper.watch_bundle(bundle).await;
+            Ok(())
         }
-    }
-
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub(super) async fn delay_bundle(&self, mut bundle: bundle::Bundle) -> Result<(), Error> {
-        if !matches!(bundle.metadata.status, BundleStatus::Waiting) {
-            bundle.metadata.status = BundleStatus::Waiting;
-            self.store.update_metadata(&bundle).await?;
-        }
-
-        self.sentinel.watch_bundle(bundle).await;
-        Ok(())
     }
 }

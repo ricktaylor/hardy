@@ -3,7 +3,7 @@ use core::ops::Deref;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn restart_bundle(
+    pub(crate) async fn restart_bundle(
         self: &Arc<Self>,
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,

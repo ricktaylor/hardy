@@ -1,6 +1,10 @@
 use super::*;
 use thiserror::Error;
 
+pub mod registry;
+
+mod peers;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
@@ -106,5 +110,5 @@ pub trait Sink: Send + Sync {
 
     async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, addr: ClaAddress) -> Result<()>;
 
-    async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid) -> Result<bool>;
+    async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid, addr: &ClaAddress) -> Result<bool>;
 }

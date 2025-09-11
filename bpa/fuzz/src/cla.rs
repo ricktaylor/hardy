@@ -97,11 +97,14 @@ impl hardy_bpa::cla::Cla for NullCla {
             panic!("Extra unregister!");
         };
 
-        sink.remove_peer(&Eid::Ipn {
-            allocator_id: 0,
-            node_number: 2,
-            service_number: 0,
-        })
+        sink.remove_peer(
+            &Eid::Ipn {
+                allocator_id: 0,
+                node_number: 2,
+                service_number: 0,
+            },
+            &hardy_bpa::cla::ClaAddress::Unknown(1, "fuzz".as_bytes().into()),
+        )
         .await
         .expect("remove_peer failed");
     }

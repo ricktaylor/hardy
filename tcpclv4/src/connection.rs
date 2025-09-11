@@ -160,15 +160,19 @@ impl ConnectionRegistry {
 
     pub async fn shutdown(&self) {
         // Unregister peers
-        let eids = std::mem::take(
+        let peers = std::mem::take(
             self.peers
                 .lock()
                 .trace_expect("Failed to lock mutex")
                 .deref_mut(),
         );
 
-        for eid in eids.values() {
-            if let Err(e) = self.sink.remove_peer(eid).await {
+        for (addr, eid) in peers {
+            if let Err(e) = self
+                .sink
+                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::TcpClv4Address(addr))
+                .await
+            {
                 error!("Failed to unregister peer: {e:?}");
             }
         }
@@ -229,14 +233,17 @@ impl ConnectionRegistry {
             }
         }
 
-        let eid = self
+        let peer = self
             .peers
             .lock()
             .trace_expect("Failed to lock mutex")
-            .remove(remote_addr);
+            .remove_entry(remote_addr);
 
-        if let Some(eid) = eid
-            && let Err(e) = self.sink.remove_peer(&eid).await
+        if let Some((addr, eid)) = peer
+            && let Err(e) = self
+                .sink
+                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::TcpClv4Address(addr))
+                .await
         {
             error!("Failed to unregister peer: {e:?}");
         }

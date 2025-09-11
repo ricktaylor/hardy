@@ -69,10 +69,6 @@ impl service::Sink for Sink {
         lifetime: std::time::Duration,
         flags: Option<service::SendFlags>,
     ) -> service::Result<Box<str>> {
-        let Some(service) = self.service.upgrade() else {
-            return Err(service::Error::Disconnected);
-        };
-
         // Sanity check
         if let Eid::Null = &destination {
             return Err(service::Error::InvalidDestination(destination));
@@ -80,7 +76,11 @@ impl service::Sink for Sink {
 
         self.dispatcher
             .local_dispatch(
-                service.service_id.clone(),
+                self.service
+                    .upgrade()
+                    .ok_or(service::Error::Disconnected)?
+                    .service_id
+                    .clone(),
                 destination,
                 data,
                 lifetime,
@@ -170,9 +170,11 @@ impl ServiceRegistry {
             let service_id = if let Some(service_id) = service_id {
                 match &service_id {
                     service::ServiceId::DtnService(service_name) => {
-                        let Some(node_name) = &self.node_ids.dtn else {
-                            return Err(service::Error::NoDtnNodeId);
-                        };
+                        let node_name = self
+                            .node_ids
+                            .dtn
+                            .as_ref()
+                            .ok_or(service::Error::NoDtnNodeId)?;
 
                         if service_name.is_empty() {
                             new_dtn_service(node_name)
