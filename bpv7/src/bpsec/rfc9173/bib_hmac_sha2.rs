@@ -114,17 +114,12 @@ impl hardy_cbor::encode::ToCbor for Parameters {
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
             for b in 1..=3 {
                 if mask & (1 << b) != 0 {
-                    a.emit_array(Some(2), |a| {
-                        a.emit(&b);
-                        match b {
-                            1 => a.emit(&self.variant),
-                            2 => {
-                                a.emit_bytes(&self.key.as_ref().unwrap());
-                            }
-                            3 => a.emit(&self.flags),
-                            _ => unreachable!(),
-                        };
-                    });
+                    match b {
+                        1 => a.emit(&(b, &self.variant)),
+                        2 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.key.as_ref().unwrap()))),
+                        3 => a.emit(&(b, &self.flags)),
+                        _ => unreachable!(),
+                    }
                 }
             }
         })
@@ -156,12 +151,7 @@ impl Results {
 
 impl hardy_cbor::encode::ToCbor for Results {
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit_array(Some(1), |a| {
-            a.emit_array(Some(2), |a| {
-                a.emit(&1);
-                a.emit_bytes(&self.0);
-            });
-        })
+        encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(&self.0))]);
     }
 }
 
