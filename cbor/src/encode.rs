@@ -38,20 +38,28 @@ impl Encoder {
     }
 
     fn emit_uint_minor(&mut self, major: u8, val: u64) {
-        if val < 24 {
-            self.data.push((major << 5) | (val as u8))
-        } else if val <= u8::MAX as u64 {
-            self.data.push((major << 5) | 24u8);
-            self.data.push(val as u8)
-        } else if val <= u16::MAX as u64 {
-            self.data.push((major << 5) | 25u8);
-            self.data.extend((val as u16).to_be_bytes())
-        } else if val <= u32::MAX as u64 {
-            self.data.push((major << 5) | 26u8);
-            self.data.extend((val as u32).to_be_bytes())
-        } else {
-            self.data.push((major << 5) | 27u8);
-            self.data.extend(val.to_be_bytes())
+        const U8_MAX: u64 = (u8::MAX as u64) + 1;
+        const U16_MAX: u64 = (u16::MAX as u64) + 1;
+        const U32_MAX: u64 = (u32::MAX as u64) + 1;
+
+        match val {
+            0..24 => self.data.push((major << 5) | (val as u8)),
+            24..U8_MAX => {
+                self.data.push((major << 5) | 24u8);
+                self.data.push(val as u8)
+            }
+            U8_MAX..U16_MAX => {
+                self.data.push((major << 5) | 25u8);
+                self.data.extend((val as u16).to_be_bytes())
+            }
+            U16_MAX..U32_MAX => {
+                self.data.push((major << 5) | 26u8);
+                self.data.extend((val as u32).to_be_bytes())
+            }
+            _ => {
+                self.data.push((major << 5) | 27u8);
+                self.data.extend(val.to_be_bytes())
+            }
         }
     }
 
