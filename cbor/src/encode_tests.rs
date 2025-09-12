@@ -93,10 +93,12 @@ fn rfc_tests() {
         hex!("d82076687474703a2f2f7777772e6578616d706c652e636f6d")
     );
     assert_eq!(emit_bytes(&[]), (1..1, hex!("40").into()));
+    assert_eq!(*emit(&Bytes(&[])), hex!("40"));
     assert_eq!(
         emit_bytes(&hex!("01020304")),
         (1..5, hex!("4401020304").into())
     );
+    assert_eq!(*emit(&Bytes(&hex!("01020304"))), hex!("4401020304"));
     assert_eq!(*emit(""), hex!("60"));
     assert_eq!(*emit("a"), hex!("6161"));
     assert_eq!(*emit("IETF"), hex!("6449455446"));
