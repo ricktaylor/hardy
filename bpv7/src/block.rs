@@ -183,14 +183,12 @@ impl Block {
                 },
             ),
         );
-        let block_start = array.offset();
-        array.emit_raw(block_data);
-        self.extent = block_start..array.offset();
+        self.extent = array.emit_raw(block_data);
     }
 
     pub(crate) fn r#move(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
         let block_start = array.offset();
-        array.emit_raw_slice(&source_data[self.extent.clone()]);
+        array.emit(&hardy_cbor::encode::Raw(&source_data[self.extent.clone()]));
         self.extent = block_start..array.offset();
     }
 }

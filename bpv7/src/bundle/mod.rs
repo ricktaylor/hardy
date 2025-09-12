@@ -257,8 +257,7 @@ pub struct Bundle {
 
 impl Bundle {
     pub(crate) fn emit_primary_block(&mut self, array: &mut hardy_cbor::encode::Array) {
-        let start = array.offset();
-        array.emit_raw(primary_block::PrimaryBlock::emit(self));
+        let extent = array.emit_raw(primary_block::PrimaryBlock::emit(self));
 
         // Replace existing block record
         self.blocks.insert(
@@ -272,8 +271,8 @@ impl Bundle {
                     ..Default::default()
                 },
                 crc_type: self.crc_type,
-                extent: start..array.offset(),
-                data: start..array.offset(),
+                data: extent.clone(),
+                extent,
                 bib: None,
                 bcb: None,
             },

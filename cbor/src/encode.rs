@@ -63,14 +63,16 @@ impl Encoder {
         self
     }
 
-    pub fn emit_raw<I>(&mut self, data: I)
+    pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
     where
         I: IntoIterator<Item = u8>,
     {
-        self.data.extend(data)
+        let start = self.offset();
+        self.data.extend(data);
+        start..self.offset()
     }
 
-    pub fn emit_raw_slice<V>(&mut self, data: &V)
+    fn emit_raw_slice<V>(&mut self, data: &V)
     where
         V: AsRef<[u8]> + ?Sized,
     {
@@ -197,10 +199,29 @@ impl Encoder {
     }
 }
 
-/// Marker struct to ensure that byte slices are written as definite length byte streams, not arrays
-pub struct Bytes<'a>(pub &'a [u8]);
+/// Marker struct to ensure that raw bytes are written as raw data, not arrays
+pub struct Raw<'a, V>(pub &'a V)
+where
+    V: AsRef<[u8]> + ?Sized;
 
-impl<'a> ToCbor for Bytes<'a> {
+impl<'a, V> ToCbor for Raw<'a, V>
+where
+    V: AsRef<[u8]> + ?Sized,
+{
+    fn to_cbor(&self, encoder: &mut Encoder) {
+        encoder.emit_raw_slice(self.0);
+    }
+}
+
+/// Marker struct to ensure that byte slices are written as definite length byte streams, not arrays
+pub struct Bytes<'a, V>(pub &'a V)
+where
+    V: AsRef<[u8]> + ?Sized;
+
+impl<'a, V> ToCbor for Bytes<'a, V>
+where
+    V: AsRef<[u8]> + ?Sized,
+{
     fn to_cbor(&self, encoder: &mut Encoder) {
         encoder.emit_bytes(self.0);
     }
@@ -315,18 +336,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field();
     }
 
-    pub fn emit_raw<I>(&mut self, data: I)
+    pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
     where
         I: IntoIterator<Item = u8>,
     {
         self.next_field().emit_raw(data)
-    }
-
-    pub fn emit_raw_slice<V>(&mut self, data: &V)
-    where
-        V: AsRef<[u8]> + ?Sized,
-    {
-        self.next_field().emit_raw_slice(data)
     }
 
     pub fn emit<T>(&mut self, value: &T)

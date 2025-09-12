@@ -189,11 +189,11 @@ fn build_data<'a>(
     });
 
     if flags.include_primary_block {
-        encoder.emit_raw_slice(
+        encoder.emit(&hardy_cbor::encode::Raw(
             args.blocks
                 .block_payload(args.target)
                 .expect("Missing primary block!"),
-        );
+        ));
     }
 
     if flags.include_target_header {

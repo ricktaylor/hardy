@@ -90,10 +90,7 @@ impl UnknownOperation {
             encoder.emit(source);
             encoder.emit_array(Some(self.parameters.len()), |a| {
                 for (id, result) in self.parameters.iter() {
-                    a.emit_array(Some(2), |a| {
-                        a.emit(id);
-                        a.emit_raw_slice(result);
-                    });
+                    a.emit(&(id, hardy_cbor::encode::Raw(result)));
                 }
             });
         }
@@ -102,10 +99,7 @@ impl UnknownOperation {
     pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
         array.emit_array(Some(self.results.len()), |a| {
             for (id, result) in &self.results {
-                a.emit_array(Some(2), |a| {
-                    a.emit(id);
-                    a.emit_raw_slice(result);
-                });
+                a.emit(&(id, hardy_cbor::encode::Raw(result)));
             }
         });
     }

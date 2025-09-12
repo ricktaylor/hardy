@@ -437,13 +437,17 @@ impl<'a> BlockParse<'a> {
             hardy_cbor::encode::emit_array(None, |block_array| {
                 // Primary block first
                 let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
-                let block_start = block_array.offset();
-                if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
-                    block_array.emit_raw(payload);
-                } else {
-                    block_array.emit_raw_slice(&self.source_data[primary_block.extent]);
-                }
-                primary_block.extent = block_start..block_array.offset();
+
+                primary_block.extent =
+                    if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
+                        block_array.emit_raw(payload)
+                    } else {
+                        let block_start = block_array.offset();
+                        block_array.emit(&hardy_cbor::encode::Raw(
+                            &self.source_data[primary_block.extent],
+                        ));
+                        block_start..block_array.offset()
+                    };
                 primary_block.data = primary_block.extent.clone();
                 bundle.blocks.insert(0, primary_block);
 

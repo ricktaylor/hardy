@@ -81,10 +81,7 @@ impl hardy_cbor::encode::ToCbor for Eid {
                 service_number,
             } => encoder.emit(&(2, &[allocator_id, node_number, service_number])),
             Eid::LocalNode { service_number } => encoder.emit(&(2, &(u32::MAX, service_number))),
-            Eid::Unknown { scheme, data } => encoder.emit_array(Some(2), |a| {
-                a.emit(scheme);
-                a.emit_raw_slice(data);
-            }),
+            Eid::Unknown { scheme, data } => encoder.emit(&(scheme, hardy_cbor::encode::Raw(data))),
         }
     }
 }
