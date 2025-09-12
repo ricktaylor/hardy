@@ -2,7 +2,9 @@ use super::*;
 use core::ops::Range;
 
 pub trait ToCbor {
-    fn to_cbor(&self, encoder: &mut Encoder);
+    type Result;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result;
 }
 
 pub struct Encoder {
@@ -57,24 +59,14 @@ impl Encoder {
         self
     }
 
-    fn emit_tags<I>(&mut self, tags: I) -> &mut Self
-    where
-        I: IntoIterator<Item = u64>,
-    {
-        for tag in tags {
-            self.emit_tag(tag);
-        }
-        self
-    }
-
-    pub fn emit<T>(&mut self, value: &T)
+    pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
     {
         value.to_cbor(self)
     }
 
-    pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
+    fn emit_raw_owned<I>(&mut self, data: I) -> Range<usize>
     where
         I: IntoIterator<Item = u8>,
     {
@@ -83,37 +75,22 @@ impl Encoder {
         start..self.offset()
     }
 
-    fn emit_raw_slice<V>(&mut self, data: &V)
+    fn emit_raw_slice<V>(&mut self, data: &V) -> Range<usize>
     where
         V: AsRef<[u8]> + ?Sized,
     {
-        self.data.extend_from_slice(data.as_ref())
+        let start = self.offset();
+        self.data.extend_from_slice(data.as_ref());
+        start..self.offset()
     }
 
-    pub fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
+    fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
     where
         V: AsRef<[u8]> + ?Sized,
     {
         let value = value.as_ref();
         self.emit_uint_minor(2, value.len() as u64);
         self.emit_extend(value)
-    }
-
-    pub fn emit_bytes_tagged<V, I>(&mut self, value: &V, tags: I) -> Range<usize>
-    where
-        V: AsRef<[u8]> + ?Sized,
-        I: IntoIterator<Item = u64>,
-    {
-        self.emit_tags(tags).emit_bytes(value)
-    }
-
-    pub fn emit_byte_stream<F>(&mut self, f: F)
-    where
-        F: FnOnce(&mut ByteStream),
-    {
-        let mut s = ByteStream::new(self);
-        f(&mut s);
-        s.end()
     }
 
     fn emit_string<V>(&mut self, value: &V) -> Range<usize>
@@ -123,6 +100,15 @@ impl Encoder {
         let value = value.as_ref().as_bytes();
         self.emit_uint_minor(3, value.len() as u64);
         self.emit_extend(value)
+    }
+
+    pub fn emit_byte_stream<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut ByteStream),
+    {
+        let mut s = ByteStream::new(self);
+        f(&mut s);
+        s.end()
     }
 
     pub fn emit_text_stream<F>(&mut self, f: F)
@@ -175,7 +161,9 @@ impl<'a, const TAG: u64, T> ToCbor for Tagged<'a, TAG, T>
 where
     T: ToCbor + ?Sized,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = T::Result;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit_tag(TAG).emit(self.0)
     }
 }
@@ -189,8 +177,39 @@ impl<'a, V> ToCbor for Raw<'a, V>
 where
     V: AsRef<[u8]> + ?Sized,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_raw_slice(self.0);
+    type Result = Range<usize>;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_raw_slice(self.0)
+    }
+}
+
+/// Marker struct to ensure that raw bytes are written as raw data, not arrays
+pub struct RawOwned<I>(core::cell::Cell<Option<I>>)
+where
+    I: IntoIterator<Item = u8>;
+
+impl<I> RawOwned<I>
+where
+    I: IntoIterator<Item = u8>,
+{
+    pub fn new(iter: I) -> Self {
+        Self(core::cell::Cell::new(Some(iter)))
+    }
+}
+
+impl<I> ToCbor for RawOwned<I>
+where
+    I: IntoIterator<Item = u8>,
+{
+    type Result = Range<usize>;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_raw_owned(
+            self.0
+                .take()
+                .expect("to_cbor called on an already consumed RawOwned value"),
+        )
     }
 }
 
@@ -203,8 +222,10 @@ impl<'a, V> ToCbor for Bytes<'a, V>
 where
     V: AsRef<[u8]> + ?Sized,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_bytes(self.0);
+    type Result = Range<usize>;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_bytes(self.0)
     }
 }
 
@@ -293,13 +314,6 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.encoder
     }
 
-    fn next_field_tagged<I>(&mut self, tags: I) -> &mut Encoder
-    where
-        I: IntoIterator<Item = u64>,
-    {
-        self.next_field().emit_tags(tags)
-    }
-
     fn end(self) {
         let Some(count) = self.count else {
             return self.encoder.data.push(0xFF);
@@ -316,33 +330,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field();
     }
 
-    pub fn emit<T>(&mut self, value: &T)
+    pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
     {
         self.next_field().emit(value)
-    }
-
-    pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        self.next_field().emit_raw(data)
-    }
-
-    pub fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
-    where
-        V: AsRef<[u8]> + ?Sized,
-    {
-        self.next_field().emit_bytes(value)
-    }
-
-    pub fn emit_bytes_tagged<V, I>(&mut self, value: &V, tags: I) -> Range<usize>
-    where
-        V: AsRef<[u8]> + ?Sized,
-        I: IntoIterator<Item = u64>,
-    {
-        self.next_field_tagged(tags).emit_bytes(value)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -379,7 +371,9 @@ impl<T> ToCbor for &T
 where
     T: ToCbor,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = T::Result;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         (*self).to_cbor(encoder)
     }
 }
@@ -388,8 +382,9 @@ macro_rules! impl_uint_to_cbor {
     ($($ty:ty),*) => {
         $(
             impl ToCbor for $ty {
-                fn to_cbor(&self, encoder: &mut Encoder) {
-                    encoder.emit_uint_minor(0, *self as u64);
+                type Result = ();
+                fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+                    encoder.emit_uint_minor(0, *self as u64)
                 }
             }
         )*
@@ -402,11 +397,12 @@ macro_rules! impl_int_to_cbor {
     ($($ty:ty),*) => {
         $(
             impl ToCbor for $ty {
-                fn to_cbor(&self, encoder: &mut Encoder) {
+                type Result = ();
+                fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
                     if *self >= 0 {
-                        encoder.emit_uint_minor(0, *self as u64);
+                        encoder.emit_uint_minor(0, *self as u64)
                     } else {
-                        encoder.emit_uint_minor(1, self.unsigned_abs() as u64 - 1);
+                        encoder.emit_uint_minor(1, self.unsigned_abs() as u64 - 1)
                     }
                 }
             }
@@ -427,7 +423,9 @@ where
 }
 
 impl ToCbor for f64 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         if let Some(f) = lossless_float_coerce::<half::f16>(*self) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(f.to_be_bytes())
@@ -442,7 +440,9 @@ impl ToCbor for f64 {
 }
 
 impl ToCbor for f32 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         if let Some(f) = lossless_float_coerce::<half::f16>(*self as f64) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(f.to_be_bytes())
@@ -454,14 +454,18 @@ impl ToCbor for f32 {
 }
 
 impl ToCbor for half::f16 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.data.push((7 << 5) | 25);
         encoder.data.extend(self.to_be_bytes())
     }
 }
 
 impl ToCbor for bool {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.data.push((7 << 5) | if *self { 21 } else { 20 })
     }
 }
@@ -470,8 +474,9 @@ macro_rules! impl_string_to_cbor {
     ($( $value_type:ty),*) => {
         $(
             impl ToCbor for $value_type {
-                fn to_cbor(&self, encoder: &mut Encoder) {
-                    encoder.emit_string(self);
+                type Result = Range<usize>;
+                fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+                    encoder.emit_string(self)
                 }
             }
         )*
@@ -484,7 +489,9 @@ impl<T> ToCbor for [T]
 where
     T: ToCbor,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit_array_slice(self)
     }
 }
@@ -493,7 +500,9 @@ impl<T, const N: usize> ToCbor for [T; N]
 where
     T: ToCbor,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit_array_slice(self)
     }
 }
@@ -502,40 +511,25 @@ impl<T> ToCbor for Option<T>
 where
     T: ToCbor,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = Option<T::Result>;
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         match self {
-            Some(value) => encoder.emit(value),
-            None => encoder.data.push((7 << 5) | 23),
+            Some(value) => Some(encoder.emit(value)),
+            None => {
+                encoder.data.push((7 << 5) | 23);
+                None
+            }
         }
     }
 }
 
-pub fn emit<T>(value: &T) -> Vec<u8>
+pub fn emit<T>(value: &T) -> (Vec<u8>, T::Result)
 where
     T: ToCbor + ?Sized,
 {
     let mut e = Encoder::new();
-    e.emit(value);
-    e.build()
-}
-
-pub fn emit_bytes<V>(value: &V) -> (Range<usize>, Vec<u8>)
-where
-    V: AsRef<[u8]> + ?Sized,
-{
-    let mut e = Encoder::new();
-    let r = e.emit_bytes(value);
-    (r, e.build())
-}
-
-pub fn emit_bytes_tagged<V, I>(value: &V, tags: I) -> (Range<usize>, Vec<u8>)
-where
-    V: AsRef<[u8]> + ?Sized,
-    I: IntoIterator<Item = u64>,
-{
-    let mut e = Encoder::new();
-    let r = e.emit_tags(tags).emit_bytes(value);
-    (r, e.build())
+    let r = e.emit(value);
+    (e.build(), r)
 }
 
 macro_rules! impl_stream_emit_functions {
@@ -583,7 +577,8 @@ macro_rules! impl_tuple_emit_functions {
     // `$index` will be the numeric tuple index (e.g., 0, 1).
     ( $len:expr; $( ($name:ident, $index:tt) ),* ) => {
         impl<$($name: ToCbor),*> ToCbor for ($($name,)*) {
-            fn to_cbor(&self, encoder: &mut Encoder) {
+            type Result = ();
+            fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
                 encoder.emit_array(Some($len),|a| {
                     $( a.emit(&self.$index); )*
                 })
