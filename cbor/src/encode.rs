@@ -116,14 +116,6 @@ impl Encoder {
         s.end()
     }
 
-    pub fn emit_byte_stream_tagged<F, I>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut ByteStream),
-        I: IntoIterator<Item = u64>,
-    {
-        self.emit_tags(tags).emit_byte_stream(f)
-    }
-
     fn emit_string<V>(&mut self, value: &V) -> Range<usize>
     where
         V: AsRef<str> + ?Sized,
@@ -142,14 +134,6 @@ impl Encoder {
         s.end()
     }
 
-    pub fn emit_text_stream_tagged<F, I>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut TextStream),
-        I: IntoIterator<Item = u64>,
-    {
-        self.emit_tags(tags).emit_text_stream(f)
-    }
-
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Array),
@@ -157,14 +141,6 @@ impl Encoder {
         let mut a = Array::new(self, count);
         f(&mut a);
         a.end()
-    }
-
-    pub fn emit_array_tagged<F, I>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Array),
-        I: IntoIterator<Item = u64>,
-    {
-        self.emit_tags(tags).emit_array(count, f)
     }
 
     fn emit_array_slice<V, T>(&mut self, values: &V)
@@ -187,14 +163,6 @@ impl Encoder {
         let mut m = Map::new(self, count);
         f(&mut m);
         m.end()
-    }
-
-    pub fn emit_map_tagged<F, I>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Map),
-        I: IntoIterator<Item = u64>,
-    {
-        self.emit_tags(tags).emit_map(count, f)
     }
 }
 
@@ -384,27 +352,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_byte_stream(f)
     }
 
-    pub fn emit_byte_stream_tagged<F, I>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut ByteStream),
-        I: IntoIterator<Item = u64>,
-    {
-        self.next_field_tagged(tags).emit_byte_stream(f)
-    }
-
     pub fn emit_text_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut TextStream),
     {
         self.next_field().emit_text_stream(f)
-    }
-
-    pub fn emit_text_stream_tagged<F, I>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut TextStream),
-        I: IntoIterator<Item = u64>,
-    {
-        self.next_field_tagged(tags).emit_text_stream(f)
     }
 
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
@@ -414,27 +366,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_array(count, f)
     }
 
-    pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Array),
-        I: IntoIterator<Item = u64>,
-    {
-        self.next_field_tagged(tags).emit_array(count, f)
-    }
-
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
     {
         self.next_field().emit_map(count, f)
-    }
-
-    pub fn emit_map_tagged<F, I>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Map),
-        I: IntoIterator<Item = u64>,
-    {
-        self.next_field_tagged(tags).emit_map(count, f)
     }
 }
 
@@ -603,7 +539,7 @@ where
 }
 
 macro_rules! impl_stream_emit_functions {
-    ($(( $method:ident, $method_tagged:ident, $stream_type:ty)),*) => {
+    ($(( $method:ident,  $stream_type:ty)),*) => {
         $(
             pub fn $method<F>(f: F) -> Vec<u8>
             where
@@ -613,27 +549,17 @@ macro_rules! impl_stream_emit_functions {
                 e.$method(f);
                 e.build()
             }
-
-            pub fn $method_tagged<F, I>(tags: I, f: F) -> Vec<u8>
-            where
-                F: FnOnce(&mut $stream_type),
-                I: IntoIterator<Item = u64>,
-            {
-                let mut e = Encoder::new();
-                e.emit_tags(tags).$method(f);
-                e.build()
-            }
         )*
     };
 }
 
 impl_stream_emit_functions!(
-    (emit_byte_stream, emit_byte_stream_tagged, ByteStream),
-    (emit_text_stream, emit_text_stream_tagged, TextStream)
+    (emit_byte_stream, ByteStream),
+    (emit_text_stream, TextStream)
 );
 
 macro_rules! impl_collection_emit_functions {
-    ($(( $method:ident, $method_tagged:ident, $collection_type:ty)),*) => {
+    ($(( $method:ident, $collection_type:ty)),*) => {
         $(
             pub fn $method<F>(count: Option<usize>, f: F) -> Vec<u8>
             where
@@ -643,24 +569,11 @@ macro_rules! impl_collection_emit_functions {
                 e.$method(count, f);
                 e.build()
             }
-
-            pub fn $method_tagged<F, I>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
-            where
-                F: FnOnce(&mut $collection_type),
-                I: IntoIterator<Item = u64>,
-            {
-                let mut e = Encoder::new();
-                e.emit_tags(tags).$method(count, f);
-                e.build()
-            }
         )*
     };
 }
 
-impl_collection_emit_functions!(
-    (emit_array, emit_array_tagged, Array),
-    (emit_map, emit_map_tagged, Map)
-);
+impl_collection_emit_functions!((emit_array, Array), (emit_map, Map));
 
 macro_rules! impl_tuple_emit_functions {
     // The first argument `$len:expr` captures the tuple's length.
