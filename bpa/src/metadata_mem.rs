@@ -43,7 +43,6 @@ impl Ord for SortedBundle {
             .expiry()
             .cmp(&other.0.expiry())
             .then_with(|| self.0.bundle.id.cmp(&other.0.bundle.id))
-            .reverse()
     }
 }
 
@@ -126,7 +125,7 @@ impl storage::MetadataStorage for Storage {
                     Some(SortedBundle(v.clone()))
                 }
             })
-            .collect::<std::collections::BinaryHeap<_>>();
+            .collect::<std::collections::BTreeSet<_>>();
 
         for e in entries {
             if tx.send_async(e.0).await.is_err() {
