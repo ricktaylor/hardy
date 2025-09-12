@@ -52,15 +52,26 @@ impl Encoder {
         }
     }
 
-    fn emit_tags<I, T>(&mut self, tags: I) -> &mut Self
+    fn emit_tag(&mut self, tag: u64) -> &mut Self {
+        self.emit_uint_minor(6, tag);
+        self
+    }
+
+    fn emit_tags<I>(&mut self, tags: I) -> &mut Self
     where
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         for tag in tags {
-            self.emit_uint_minor(6, tag.to_u64().expect("Tags must be unsigned integers"));
+            self.emit_tag(tag);
         }
         self
+    }
+
+    pub fn emit<T>(&mut self, value: &T)
+    where
+        T: ToCbor + ?Sized,
+    {
+        value.to_cbor(self)
     }
 
     pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
@@ -79,29 +90,21 @@ impl Encoder {
         self.data.extend_from_slice(data.as_ref())
     }
 
-    pub fn emit<T>(&mut self, value: &T)
-    where
-        T: ToCbor + ?Sized,
-    {
-        value.to_cbor(self)
-    }
-
-    pub fn emit_tagged<T, I, U>(&mut self, value: &T, tags: I)
-    where
-        T: ToCbor + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        self.emit_tags(tags).emit(value)
-    }
-
-    fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
+    pub fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
     where
         V: AsRef<[u8]> + ?Sized,
     {
         let value = value.as_ref();
         self.emit_uint_minor(2, value.len() as u64);
         self.emit_extend(value)
+    }
+
+    pub fn emit_bytes_tagged<V, I>(&mut self, value: &V, tags: I) -> Range<usize>
+    where
+        V: AsRef<[u8]> + ?Sized,
+        I: IntoIterator<Item = u64>,
+    {
+        self.emit_tags(tags).emit_bytes(value)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -113,11 +116,10 @@ impl Encoder {
         s.end()
     }
 
-    pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    pub fn emit_byte_stream_tagged<F, I>(&mut self, tags: I, f: F)
     where
         F: FnOnce(&mut ByteStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.emit_tags(tags).emit_byte_stream(f)
     }
@@ -140,11 +142,10 @@ impl Encoder {
         s.end()
     }
 
-    pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    pub fn emit_text_stream_tagged<F, I>(&mut self, tags: I, f: F)
     where
         F: FnOnce(&mut TextStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.emit_tags(tags).emit_text_stream(f)
     }
@@ -158,11 +159,10 @@ impl Encoder {
         a.end()
     }
 
-    pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    pub fn emit_array_tagged<F, I>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Array),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.emit_tags(tags).emit_array(count, f)
     }
@@ -189,13 +189,26 @@ impl Encoder {
         m.end()
     }
 
-    pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    pub fn emit_map_tagged<F, I>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Map),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.emit_tags(tags).emit_map(count, f)
+    }
+}
+
+/// Marker struct to add a tag value to a type, these can be nested to add multiple tags
+pub struct Tagged<'a, const TAG: u64, T>(pub &'a T)
+where
+    T: ToCbor + ?Sized;
+
+impl<'a, const TAG: u64, T> ToCbor for Tagged<'a, TAG, T>
+where
+    T: ToCbor + ?Sized,
+{
+    fn to_cbor(&self, encoder: &mut Encoder) {
+        encoder.emit_tag(TAG).emit(self.0)
     }
 }
 
@@ -312,10 +325,9 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.encoder
     }
 
-    fn next_field_tagged<I, U>(&mut self, tags: I) -> &mut Encoder
+    fn next_field_tagged<I>(&mut self, tags: I) -> &mut Encoder
     where
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.next_field().emit_tags(tags)
     }
@@ -336,13 +348,6 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field();
     }
 
-    pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        self.next_field().emit_raw(data)
-    }
-
     pub fn emit<T>(&mut self, value: &T)
     where
         T: ToCbor + ?Sized,
@@ -350,13 +355,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit(value)
     }
 
-    pub fn emit_tagged<T, I, U>(&mut self, value: &T, tags: I)
+    pub fn emit_raw<I>(&mut self, data: I) -> Range<usize>
     where
-        T: ToCbor + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u8>,
     {
-        self.next_field_tagged(tags).emit(value)
+        self.next_field().emit_raw(data)
     }
 
     pub fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
@@ -366,11 +369,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_bytes(value)
     }
 
-    pub fn emit_bytes_tagged<V, I, U>(&mut self, value: &V, tags: I) -> Range<usize>
+    pub fn emit_bytes_tagged<V, I>(&mut self, value: &V, tags: I) -> Range<usize>
     where
         V: AsRef<[u8]> + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.next_field_tagged(tags).emit_bytes(value)
     }
@@ -382,11 +384,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_byte_stream(f)
     }
 
-    pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    pub fn emit_byte_stream_tagged<F, I>(&mut self, tags: I, f: F)
     where
         F: FnOnce(&mut ByteStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.next_field_tagged(tags).emit_byte_stream(f)
     }
@@ -398,11 +399,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_text_stream(f)
     }
 
-    pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
+    pub fn emit_text_stream_tagged<F, I>(&mut self, tags: I, f: F)
     where
         F: FnOnce(&mut TextStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.next_field_tagged(tags).emit_text_stream(f)
     }
@@ -417,8 +417,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Array),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.next_field_tagged(tags).emit_array(count, f)
     }
@@ -430,11 +429,10 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_map(count, f)
     }
 
-    pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    pub fn emit_map_tagged<F, I>(&mut self, count: Option<usize>, tags: I, f: F)
     where
         F: FnOnce(&mut Map),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u64>,
     {
         self.next_field_tagged(tags).emit_map(count, f)
     }
@@ -585,17 +583,6 @@ where
     e.build()
 }
 
-pub fn emit_tagged<T, I, U>(value: &T, tags: I) -> Vec<u8>
-where
-    T: ToCbor + ?Sized,
-    I: IntoIterator<Item = U>,
-    U: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_tagged(value, tags);
-    e.build()
-}
-
 pub fn emit_bytes<V>(value: &V) -> (Range<usize>, Vec<u8>)
 where
     V: AsRef<[u8]> + ?Sized,
@@ -605,11 +592,10 @@ where
     (r, e.build())
 }
 
-pub fn emit_bytes_tagged<V, I, U>(value: &V, tags: I) -> (Range<usize>, Vec<u8>)
+pub fn emit_bytes_tagged<V, I>(value: &V, tags: I) -> (Range<usize>, Vec<u8>)
 where
     V: AsRef<[u8]> + ?Sized,
-    I: IntoIterator<Item = U>,
-    U: num_traits::ToPrimitive,
+    I: IntoIterator<Item = u64>,
 {
     let mut e = Encoder::new();
     let r = e.emit_tags(tags).emit_bytes(value);
@@ -628,11 +614,10 @@ macro_rules! impl_stream_emit_functions {
                 e.build()
             }
 
-            pub fn $method_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
+            pub fn $method_tagged<F, I>(tags: I, f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $stream_type),
-                I: IntoIterator<Item = T>,
-                T: num_traits::ToPrimitive,
+                I: IntoIterator<Item = u64>,
             {
                 let mut e = Encoder::new();
                 e.emit_tags(tags).$method(f);
@@ -659,11 +644,10 @@ macro_rules! impl_collection_emit_functions {
                 e.build()
             }
 
-            pub fn $method_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
+            pub fn $method_tagged<F, I>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $collection_type),
-                I: IntoIterator<Item = T>,
-                T: num_traits::ToPrimitive,
+                I: IntoIterator<Item = u64>,
             {
                 let mut e = Encoder::new();
                 e.emit_tags(tags).$method(count, f);

@@ -72,12 +72,12 @@ fn rfc_tests() {
     assert_eq!(*emit_simple_value(16), hex!("f0"));
     assert_eq!(*emit_simple_value(255), hex!("f8ff"));
     assert_eq!(
-        *emit_tagged("2013-03-21T20:04:00Z", [0]),
+        *emit(&Tagged::<0, _>("2013-03-21T20:04:00Z")),
         hex!("c074323031332d30332d32315432303a30343a30305a")
     );
-    assert_eq!(*emit_tagged(&1363896240, [1]), hex!("c11a514b67b0"));
+    assert_eq!(*emit(&Tagged::<1, _>(&1363896240)), hex!("c11a514b67b0"));
     assert_eq!(
-        *emit_tagged(&1363896240.5, [1]),
+        *emit(&Tagged::<1, _>(&1363896240.5)),
         hex!("c1fb41d452d9ec200000")
     );
     assert_eq!(
@@ -85,11 +85,19 @@ fn rfc_tests() {
         (2..6, hex!("d74401020304").into())
     );
     assert_eq!(
+        *emit(&Tagged::<23, _>(&Bytes(&hex!("01020304")))),
+        hex!("d74401020304")
+    );
+    assert_eq!(
         emit_bytes_tagged(&hex!("6449455446"), [24]),
         (3..8, hex!("d818456449455446").into())
     );
     assert_eq!(
-        *emit_tagged("http://www.example.com", [32]),
+        *emit(&Tagged::<24, _>(&Bytes(&hex!("6449455446")))),
+        hex!("d818456449455446")
+    );
+    assert_eq!(
+        *emit(&Tagged::<32, _>("http://www.example.com")),
         hex!("d82076687474703a2f2f7777772e6578616d706c652e636f6d")
     );
     assert_eq!(emit_bytes(&[]), (1..1, hex!("40").into()));
