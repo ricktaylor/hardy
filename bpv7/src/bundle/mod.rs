@@ -105,16 +105,19 @@ impl Id {
     }
 
     pub fn to_key(&self) -> String {
-        BASE64_STANDARD_NO_PAD.encode(if let Some(fragment_info) = &self.fragment_info {
-            hardy_cbor::encode::emit(&(
-                &self.source,
-                &self.timestamp,
-                fragment_info.offset,
-                fragment_info.total_len,
-            ))
-        } else {
-            hardy_cbor::encode::emit(&(&self.source, &self.timestamp))
-        })
+        BASE64_STANDARD_NO_PAD.encode(
+            if let Some(fragment_info) = &self.fragment_info {
+                hardy_cbor::encode::emit(&(
+                    &self.source,
+                    &self.timestamp,
+                    fragment_info.offset,
+                    fragment_info.total_len,
+                ))
+            } else {
+                hardy_cbor::encode::emit(&(&self.source, &self.timestamp))
+            }
+            .0,
+        )
     }
 }
 
@@ -203,7 +206,9 @@ impl From<&Flags> for u64 {
 }
 
 impl hardy_cbor::encode::ToCbor for Flags {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&u64::from(self))
     }
 }
@@ -257,7 +262,9 @@ pub struct Bundle {
 
 impl Bundle {
     pub(crate) fn emit_primary_block(&mut self, array: &mut hardy_cbor::encode::Array) {
-        let extent = array.emit_raw(primary_block::PrimaryBlock::emit(self));
+        let extent = array.emit(&hardy_cbor::encode::RawOwned::new(
+            primary_block::PrimaryBlock::emit(self),
+        ));
 
         // Replace existing block record
         self.blocks.insert(

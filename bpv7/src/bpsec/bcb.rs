@@ -96,7 +96,9 @@ impl OperationSet {
 }
 
 impl hardy_cbor::encode::ToCbor for OperationSet {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         // Ensure we process operations in the same order
         let (targets, operations): (Vec<&u64>, Vec<&Operation>) = self.operations.iter().unzip();
 

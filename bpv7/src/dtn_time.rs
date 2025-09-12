@@ -20,7 +20,9 @@ impl DtnTime {
 }
 
 impl hardy_cbor::encode::ToCbor for DtnTime {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&self.0)
     }
 }

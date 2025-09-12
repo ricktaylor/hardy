@@ -53,7 +53,9 @@ impl TryFrom<Cow<'_, str>> for Eid {
 }
 
 impl hardy_cbor::encode::ToCbor for Eid {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         match self {
             Eid::Null => encoder.emit(&(1, 0)),
             Eid::Dtn { node_name, demux } => {

@@ -23,13 +23,15 @@ enum ShaVariant {
 }
 
 impl hardy_cbor::encode::ToCbor for ShaVariant {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(match self {
-            Self::HMAC_256_256 => &5,
-            Self::HMAC_384_384 => &6,
-            Self::HMAC_512_512 => &7,
-            Self::Unrecognised(v) => v,
-        })
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        match self {
+            Self::HMAC_256_256 => encoder.emit(&5),
+            Self::HMAC_384_384 => encoder.emit(&6),
+            Self::HMAC_512_512 => encoder.emit(&7),
+            Self::Unrecognised(v) => encoder.emit(v),
+        }
     }
 }
 
@@ -100,7 +102,9 @@ impl Parameters {
 }
 
 impl hardy_cbor::encode::ToCbor for Parameters {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         let mut mask: u32 = 0;
         if self.variant != ShaVariant::default() {
             mask |= 1 << 1;
@@ -150,7 +154,9 @@ impl Results {
 }
 
 impl hardy_cbor::encode::ToCbor for Results {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(&self.0))]);
     }
 }
@@ -175,12 +181,15 @@ where
         hmac::Hmac::<A>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
 
     // Build IPT
-    mac.update(&hardy_cbor::encode::emit(&ScopeFlags {
-        include_primary_block: flags.include_primary_block,
-        include_target_header: flags.include_target_header,
-        include_security_header: flags.include_security_header,
-        ..Default::default()
-    }));
+    mac.update(
+        &hardy_cbor::encode::emit(&ScopeFlags {
+            include_primary_block: flags.include_primary_block,
+            include_target_header: flags.include_target_header,
+            include_security_header: flags.include_security_header,
+            ..Default::default()
+        })
+        .0,
+    );
 
     let target_block = args
         .blocks

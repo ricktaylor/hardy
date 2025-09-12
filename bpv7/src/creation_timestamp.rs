@@ -20,7 +20,9 @@ impl CreationTimestamp {
 }
 
 impl hardy_cbor::encode::ToCbor for CreationTimestamp {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&(
             &self.creation_time.unwrap_or_default(),
             &self.sequence_number,

@@ -32,6 +32,7 @@ impl Dispatcher {
                         ..Default::default()
                     },
                 ))
+                .0
                 .into(),
                 &bundle.bundle.report_to,
             )
@@ -60,6 +61,7 @@ impl Dispatcher {
                         ..Default::default()
                     },
                 ))
+                .0
                 .into(),
                 &bundle.bundle.report_to,
             )
@@ -86,6 +88,7 @@ impl Dispatcher {
                         ..Default::default()
                     },
                 ))
+                .0
                 .into(),
                 &bundle.bundle.report_to,
             )
@@ -117,6 +120,7 @@ impl Dispatcher {
                         ..Default::default()
                     },
                 ))
+                .0
                 .into(),
                 &bundle.bundle.report_to,
             )

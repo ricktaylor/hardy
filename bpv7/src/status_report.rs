@@ -111,7 +111,9 @@ impl TryFrom<u64> for ReasonCode {
 }
 
 impl hardy_cbor::encode::ToCbor for ReasonCode {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&u64::from(*self))
     }
 }
@@ -192,7 +194,9 @@ pub struct BundleStatusReport {
 }
 
 impl hardy_cbor::encode::ToCbor for BundleStatusReport {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit_array(
             Some(if self.bundle_id.fragment_info.is_none() {
                 4
@@ -297,7 +301,9 @@ pub enum AdministrativeRecord {
 }
 
 impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         match self {
             AdministrativeRecord::BundleStatusReport(report) => encoder.emit(&(1, report)),
         }

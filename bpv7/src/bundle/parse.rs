@@ -119,7 +119,7 @@ impl<'a> BlockParse<'a> {
 
                     if !canonical {
                         // Rewrite the BCB canonically
-                        block.payload = Some(hardy_cbor::encode::emit(&bcb).into());
+                        block.payload = Some(hardy_cbor::encode::emit(&bcb).0.into());
                     }
 
                     self.bcbs.insert(block.number, bcb);
@@ -269,7 +269,7 @@ impl<'a> BlockParse<'a> {
                     let (v, s) = self
                         .parse_payload(block_number)
                         .map_field_err("Previous Node Block")?;
-                    let r = (!s).then(|| hardy_cbor::encode::emit(&v).into());
+                    let r = (!s).then(|| hardy_cbor::encode::emit(&v).0.into());
                     bundle.previous_node = Some(v);
                     r
                 }
@@ -278,13 +278,13 @@ impl<'a> BlockParse<'a> {
                         .parse_payload(block_number)
                         .map_field_err("Bundle Age Block")?;
                     bundle.age = Some(core::time::Duration::from_millis(v));
-                    (!s).then(|| hardy_cbor::encode::emit(&v).into())
+                    (!s).then(|| hardy_cbor::encode::emit(&v).0.into())
                 }
                 block::Type::HopCount => {
                     let (v, s) = self
                         .parse_payload(block_number)
                         .map_field_err("Hop Count Block")?;
-                    let r = (!s).then(|| hardy_cbor::encode::emit(&v).into());
+                    let r = (!s).then(|| hardy_cbor::encode::emit(&v).0.into());
                     bundle.hop_count = Some(v);
                     r
                 }
@@ -373,7 +373,7 @@ impl<'a> BlockParse<'a> {
             } else if !canonical || bib.operations.len() != old_len {
                 self.noncanonical_blocks.insert(
                     bib_block_number,
-                    Some(hardy_cbor::encode::emit(&bib).into()),
+                    Some(hardy_cbor::encode::emit(&bib).0.into()),
                 );
             }
         }
@@ -402,7 +402,7 @@ impl<'a> BlockParse<'a> {
             } else if bcb.operations.len() != old_len {
                 self.noncanonical_blocks.insert(
                     bcb_block_number,
-                    Some(hardy_cbor::encode::emit(&bcb).into()),
+                    Some(hardy_cbor::encode::emit(&bcb).0.into()),
                 );
             }
         }
@@ -440,13 +440,11 @@ impl<'a> BlockParse<'a> {
 
                 primary_block.extent =
                     if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
-                        block_array.emit_raw(payload)
+                        block_array.emit(&hardy_cbor::encode::RawOwned::new(payload))
                     } else {
-                        let block_start = block_array.offset();
                         block_array.emit(&hardy_cbor::encode::Raw(
                             &self.source_data[primary_block.extent],
-                        ));
-                        block_start..block_array.offset()
+                        ))
                     };
                 primary_block.data = primary_block.extent.clone();
                 bundle.blocks.insert(0, primary_block);

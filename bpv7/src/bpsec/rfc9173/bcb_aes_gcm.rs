@@ -13,12 +13,14 @@ enum AesVariant {
 }
 
 impl hardy_cbor::encode::ToCbor for AesVariant {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(match self {
-            Self::A128GCM => &1,
-            Self::A256GCM => &3,
-            Self::Unrecognised(v) => v,
-        })
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        match self {
+            Self::A128GCM => encoder.emit(&1),
+            Self::A256GCM => encoder.emit(&3),
+            Self::Unrecognised(v) => encoder.emit(v),
+        }
     }
 }
 
@@ -111,7 +113,9 @@ impl Parameters {
 }
 
 impl hardy_cbor::encode::ToCbor for Parameters {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         let mut mask: u32 = 1 << 1;
         if self.variant != AesVariant::default() {
             mask |= 1 << 2;
@@ -162,7 +166,9 @@ impl Results {
 }
 
 impl hardy_cbor::encode::ToCbor for Results {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         if let Some(r) = self.0.as_ref() {
             encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(r))]);
         } else {

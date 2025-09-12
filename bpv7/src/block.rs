@@ -62,7 +62,9 @@ impl From<u64> for Flags {
 }
 
 impl hardy_cbor::encode::ToCbor for Flags {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&u64::from(self))
     }
 }
@@ -121,7 +123,9 @@ impl From<u64> for Type {
 }
 
 impl hardy_cbor::encode::ToCbor for Type {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&u64::from(*self))
     }
 }
@@ -159,7 +163,7 @@ impl Block {
         data: &[u8],
         array: &mut hardy_cbor::encode::Array,
     ) {
-        let block_data = crc::append_crc_value(
+        self.extent = array.emit(&hardy_cbor::encode::RawOwned::new(crc::append_crc_value(
             self.crc_type,
             hardy_cbor::encode::emit_array(
                 Some(if let crc::CrcType::None = self.crc_type {
@@ -173,7 +177,7 @@ impl Block {
                     a.emit(&self.flags);
                     a.emit(&self.crc_type);
 
-                    self.data = a.emit_bytes(data);
+                    self.data = a.emit(&hardy_cbor::encode::Bytes(data));
 
                     // CRC
                     if let crc::CrcType::None = self.crc_type {
@@ -182,8 +186,7 @@ impl Block {
                     }
                 },
             ),
-        );
-        self.extent = array.emit_raw(block_data);
+        )));
     }
 
     pub(crate) fn r#move(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
