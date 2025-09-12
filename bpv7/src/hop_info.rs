@@ -10,11 +10,10 @@ pub struct HopInfo {
 }
 
 impl hardy_cbor::encode::ToCbor for HopInfo {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit_array(Some(2), |a| {
-            a.emit(&self.limit);
-            a.emit(&self.count);
-        })
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        encoder.emit(&(&self.limit, &self.count))
     }
 }
 

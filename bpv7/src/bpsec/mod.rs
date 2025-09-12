@@ -25,7 +25,9 @@ pub enum Context {
 }
 
 impl hardy_cbor::encode::ToCbor for Context {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(match self {
             Self::BIB_HMAC_SHA2 => &1,
             Self::BCB_AES_GCM => &2,

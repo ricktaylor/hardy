@@ -44,10 +44,8 @@ impl RandomBundle {
                 delete_bundle_on_failure: true,
                 ..Default::default()
             });
-            builder.build(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                limit,
-                count,
-            }));
+            builder
+                .build(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo { limit, count }).0);
         }
 
         builder.build(self.payload).1.into()

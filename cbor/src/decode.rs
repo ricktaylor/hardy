@@ -515,53 +515,25 @@ where
     try_parse::<T>(data)?.ok_or(Error::NeedMoreData(1).into())
 }
 
-impl FromCbor for u8 {
-    type Error = self::Error;
+macro_rules! impl_uint_try_from_cbor {
+    ($($ty:ty),*) => {
+        $(
+            impl FromCbor for $ty {
+                type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = u64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
+                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+                    if let Some((v, shortest, len)) = u64::try_from_cbor(data)? {
+                        Ok(Some((v.try_into()?, shortest, len)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
+        )*
+    };
 }
 
-impl FromCbor for u16 {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = u64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-impl FromCbor for u32 {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = u64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-impl FromCbor for usize {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = u64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
-}
+impl_uint_try_from_cbor!(u8, u16, u32, usize);
 
 impl FromCbor for u64 {
     type Error = self::Error;
@@ -578,53 +550,25 @@ impl FromCbor for u64 {
     }
 }
 
-impl FromCbor for i8 {
-    type Error = self::Error;
+macro_rules! impl_int_try_from_cbor {
+    ($($ty:ty),*) => {
+        $(
+            impl FromCbor for $ty {
+                type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = i64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
+                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+                    if let Some((v, shortest, len)) = i64::try_from_cbor(data)? {
+                        Ok(Some((v.try_into()?, shortest, len)))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
+        )*
+    };
 }
 
-impl FromCbor for i16 {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = i64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-impl FromCbor for i32 {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = i64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-impl FromCbor for isize {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = i64::try_from_cbor(data)? {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
-    }
-}
+impl_int_try_from_cbor!(i8, i16, i32, isize);
 
 impl FromCbor for i64 {
     type Error = self::Error;
@@ -644,38 +588,34 @@ impl FromCbor for i64 {
     }
 }
 
-impl FromCbor for half::f16 {
-    type Error = self::Error;
+macro_rules! impl_float_try_from_cbor {
+    ($(($ty:ty, $convert_expr:expr)),*) => {
+        $(
+            impl FromCbor for $ty {
+                type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = f64::try_from_cbor(data)? {
-            Ok(Some((
-                <half::f16 as num_traits::FromPrimitive>::from_f64(v)
-                    .ok_or(Error::PrecisionLoss)?,
-                shortest,
-                len,
-            )))
-        } else {
-            Ok(None)
-        }
-    }
+                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+                    if let Some((v, shortest, len)) = f64::try_from_cbor(data)? {
+                        Ok(Some((
+                            $convert_expr(v).ok_or(Error::PrecisionLoss)?,
+                            shortest,
+                            len,
+                        )))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
+        )*
+    };
 }
 
-impl FromCbor for f32 {
-    type Error = self::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = f64::try_from_cbor(data)? {
-            Ok(Some((
-                f32::from_f64(v).ok_or(Error::PrecisionLoss)?,
-                shortest,
-                len,
-            )))
-        } else {
-            Ok(None)
-        }
-    }
-}
+impl_float_try_from_cbor!(
+    (half::f16, |v: f64| {
+        <half::f16 as num_traits::FromPrimitive>::from_f64(v)
+    }),
+    (f32, f32::from_f64)
+);
 
 impl FromCbor for f64 {
     type Error = self::Error;
@@ -729,42 +669,29 @@ where
     }
 }
 
-impl<T> FromCbor for (T, bool, usize)
-where
-    T: FromCbor,
-    T::Error: From<self::Error>,
-{
-    type Error = T::Error;
+macro_rules! impl_tuple_try_from_cbor {
+    ($(($tuple_ty:ty, $map_expr:expr)),*) => {
+        $(
+            impl<T> FromCbor for $tuple_ty
+            where
+                T: FromCbor,
+                T::Error: From<self::Error>,
+            {
+                type Error = T::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        T::try_from_cbor(data).map(|o| {
-            o.map(|(value, shortest, length)| ((value, shortest, length), shortest, length))
-        })
-    }
+                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
+                    T::try_from_cbor(data)
+                        .map(|o| o.map(|(value, shortest, length)| ($map_expr(value, shortest, length), shortest, length)))
+                }
+            }
+        )*
+    };
 }
 
-impl<T> FromCbor for (T, bool)
-where
-    T: FromCbor,
-    T::Error: From<self::Error>,
-{
-    type Error = T::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        T::try_from_cbor(data)
-            .map(|o| o.map(|(value, shortest, length)| ((value, shortest), shortest, length)))
-    }
-}
-
-impl<T> FromCbor for (T, usize)
-where
-    T: FromCbor,
-    T::Error: From<self::Error>,
-{
-    type Error = T::Error;
-
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        T::try_from_cbor(data)
-            .map(|o| o.map(|(value, shortest, length)| ((value, length), shortest, length)))
-    }
-}
+impl_tuple_try_from_cbor!(
+    ((T, bool, usize), |value, shortest, length| (
+        value, shortest, length
+    )),
+    ((T, bool), |value, shortest, _length| (value, shortest)),
+    ((T, usize), |value, _shortest, length| (value, length))
+);
