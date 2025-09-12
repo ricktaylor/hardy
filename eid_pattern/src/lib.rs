@@ -5,8 +5,6 @@ use thiserror::Error;
 mod ipn_pattern;
 mod parse;
 
-mod eid_pattern_map;
-
 #[cfg(feature = "dtn-pat-item")]
 mod dtn_pattern;
 
@@ -27,8 +25,17 @@ pub enum Error {
 #[cfg_attr(feature = "serde", serde(into = "String"))]
 #[cfg_attr(feature = "serde", serde(try_from = "Cow<'_,str>"))]
 pub enum EidPattern {
-    Set(Box<[EidPatternItem]>),
     Any,
+    Set(Box<[EidPatternItem]>),
+}
+
+impl EidPattern {
+    pub fn is_match(&self, eid: &Eid) -> bool {
+        match self {
+            EidPattern::Any => true,
+            EidPattern::Set(items) => items.iter().any(|i| i.is_match(eid)),
+        }
+    }
 }
 
 impl TryFrom<Cow<'_, str>> for EidPattern {
@@ -135,14 +142,22 @@ impl std::fmt::Display for EidPattern {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EidPatternItem {
+    AnyNumericScheme(u64),
+    AnyTextScheme(String),
     IpnPatternItem(ipn_pattern::IpnPatternItem),
     #[cfg(feature = "dtn-pat-item")]
     DtnPatternItem(dtn_pattern::DtnPatternItem),
-    AnyNumericScheme(u64),
-    AnyTextScheme(String),
 }
 
 impl EidPatternItem {
+    fn is_match(&self, eid: &Eid) -> bool {
+        match self {
+            EidPatternItem::IpnPatternItem(i) => i.is_match(eid),
+            EidPatternItem::DtnPatternItem(i) => i.is_match(eid),
+            _ => false,
+        }
+    }
+
     pub(crate) fn try_to_eid(&self) -> Option<Eid> {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.try_to_eid(),
@@ -164,5 +179,3 @@ impl std::fmt::Display for EidPatternItem {
         }
     }
 }
-
-pub use eid_pattern_map::{EidPatternMap, EidPatternSet};

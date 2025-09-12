@@ -1,5 +1,3 @@
-use crate::ipn_pattern::IpnPatternItem;
-
 use super::*;
 use winnow::{
     ModalResult, Parser,
@@ -62,7 +60,7 @@ fn parse_any_ssp_item(input: &mut &str) -> ModalResult<EidPatternItem> {
             parse_non_zero_decimal.map(|v| match v {
                 #[cfg(feature = "dtn-pat-item")]
                 1 => EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::All),
-                2 => EidPatternItem::IpnPatternItem(IpnPatternItem::new_any()),
+                2 => EidPatternItem::IpnPatternItem(ipn_pattern::ANY),
                 _ => EidPatternItem::AnyNumericScheme(v),
             }),
         )),

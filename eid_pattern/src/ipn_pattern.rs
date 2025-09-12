@@ -13,15 +13,13 @@ pub struct IpnPatternItem {
     pub(crate) service_number: IpnPattern,
 }
 
-impl IpnPatternItem {
-    pub(crate) fn new_any() -> Self {
-        Self {
-            allocator_id: IpnPattern::Wildcard,
-            node_number: IpnPattern::Wildcard,
-            service_number: IpnPattern::Wildcard,
-        }
-    }
+pub const ANY: IpnPatternItem = IpnPatternItem {
+    allocator_id: IpnPattern::Wildcard,
+    node_number: IpnPattern::Wildcard,
+    service_number: IpnPattern::Wildcard,
+};
 
+impl IpnPatternItem {
     pub(crate) fn new(allocator_id: u32, node_number: u32, service_number: u32) -> Self {
         Self {
             allocator_id: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
@@ -33,6 +31,36 @@ impl IpnPatternItem {
             service_number: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
                 service_number,
             )]),
+        }
+    }
+
+    pub(super) fn is_match(&self, eid: &Eid) -> bool {
+        match eid {
+            Eid::Null => {
+                self.allocator_id.is_match(0)
+                    && self.node_number.is_match(0)
+                    && self.service_number.is_match(0)
+            }
+            Eid::LocalNode { service_number } => {
+                self.allocator_id.is_match(0)
+                    && self.node_number.is_match(u32::MAX)
+                    && self.service_number.is_match(*service_number)
+            }
+            Eid::LegacyIpn {
+                allocator_id,
+                node_number,
+                service_number,
+            }
+            | Eid::Ipn {
+                allocator_id,
+                node_number,
+                service_number,
+            } => {
+                self.allocator_id.is_match(*allocator_id)
+                    && self.node_number.is_match(*node_number)
+                    && self.service_number.is_match(*service_number)
+            }
+            _ => false,
         }
     }
 
@@ -57,21 +85,22 @@ impl std::fmt::Display for IpnPatternItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IpnPattern {
-    Range(Vec<IpnInterval>),
     Wildcard,
+    Range(Vec<IpnInterval>),
 }
 
 impl IpnPattern {
+    fn is_match(&self, v: u32) -> bool {
+        let IpnPattern::Range(r) = self else {
+            return true;
+        };
+        r.iter().any(|r| r.is_match(v))
+    }
+
     fn try_to_eid(&self) -> Option<u32> {
         match self {
-            IpnPattern::Range(r) => {
-                if r.len() != 1 {
-                    None
-                } else {
-                    r[0].try_to_u32()
-                }
-            }
-            IpnPattern::Wildcard => None,
+            IpnPattern::Range(r) if r.len() == 1 => r[0].try_to_u32(),
+            _ => None,
         }
     }
 }
@@ -139,6 +168,13 @@ impl Ord for IpnInterval {
 }
 
 impl IpnInterval {
+    fn is_match(&self, v: u32) -> bool {
+        match self {
+            IpnInterval::Number(n) => *n == v,
+            IpnInterval::Range(r) => r.contains(&v),
+        }
+    }
+
     fn try_to_u32(&self) -> Option<u32> {
         match self {
             IpnInterval::Number(n) => Some(*n),
@@ -155,7 +191,7 @@ pub(crate) fn parse_ipn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem
     preceded(
         "ipn:",
         alt((
-            "**".map(|_| IpnPatternItem::new_any()),
+            "**".map(|_| ipn_pattern::ANY),
             preceded("!.", parse_ipn_part_pat).map(|c| IpnPatternItem {
                 allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
                 node_number: IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)]),

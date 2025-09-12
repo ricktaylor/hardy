@@ -6,6 +6,9 @@ use winnow::{
     token::take_while,
 };
 
+// TODO:  The whole Glob thing needs more work.  Probably splitting into 2 parts, a node_name glob and demux glob
+// Also need to ensure proper parsing of globs so we can have [|] an not interfere with set pipe splitting
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnPatternItem {
     None,
@@ -15,6 +18,31 @@ pub enum DtnPatternItem {
 }
 
 impl DtnPatternItem {
+    pub(super) fn is_match(&self, eid: &Eid) -> bool {
+        match self {
+            DtnPatternItem::None => matches!(eid, Eid::Null),
+            DtnPatternItem::All => matches!(
+                eid,
+                /* TODO: will not match dtn:none */
+                Eid::Dtn { .. } | Eid::Unknown { scheme: 1, .. }
+            ),
+            DtnPatternItem::Exact(n1, d1) => {
+                matches!(eid, Eid::Dtn { node_name, demux } if n1 == node_name && d1 == demux)
+            }
+            DtnPatternItem::Glob(pattern) => match eid {
+                Eid::Dtn { node_name, demux } => pattern.matches_with(
+                    &format!("{node_name}//{demux}"),
+                    glob::MatchOptions {
+                        case_sensitive: false,
+                        require_literal_separator: true,
+                        require_literal_leading_dot: false,
+                    },
+                ),
+                _ => false,
+            },
+        }
+    }
+
     pub(super) fn try_to_eid(&self) -> Option<Eid> {
         match self {
             DtnPatternItem::None => Some(Eid::Null),
