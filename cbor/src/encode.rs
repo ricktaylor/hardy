@@ -26,14 +26,15 @@ impl Encoder {
         self.data
     }
 
+    #[inline]
     pub fn offset(&self) -> usize {
         self.data.len()
     }
 
     fn emit_extend(&mut self, b: &[u8]) -> Range<usize> {
-        let start = self.data.len();
+        let start = self.offset();
         self.data.extend_from_slice(b);
-        start..self.data.len()
+        start..self.offset()
     }
 
     fn emit_uint_minor(&mut self, major: u8, val: u64) {

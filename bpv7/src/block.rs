@@ -190,9 +190,7 @@ impl Block {
     }
 
     pub(crate) fn r#move(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
-        let block_start = array.offset();
-        array.emit(&hardy_cbor::encode::Raw(&source_data[self.extent.clone()]));
-        self.extent = block_start..array.offset();
+        self.extent = array.emit(&hardy_cbor::encode::Raw(&source_data[self.extent.clone()]));
     }
 }
 
