@@ -233,11 +233,11 @@ fn tests() {
 
         assert_eq!(
             "dtn:**".parse::<EidPattern>().expect("Failed to parse"),
-            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::All)].into())
+            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::Any)].into())
         );
         assert_eq!(
             "1:**".parse::<EidPattern>().expect("Failed to parse"),
-            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::All)].into())
+            EidPattern::Set([EidPatternItem::DtnPatternItem(DtnPatternItem::Any)].into())
         );
 
         assert_eq!(
@@ -263,7 +263,7 @@ fn ipn_match(pattern: &str, eid: &str) -> bool {
         .parse::<EidPattern>()
         .inspect_err(|e| print!("{e}"))
         .expect("Failed to parse pattern")
-        .is_match(&eid.parse().expect("Failed to parse EID"))
+        .matches(&eid.parse().expect("Failed to parse EID"))
 }
 
 fn ipn_parse(s: &str, expected: IpnPatternItem) {

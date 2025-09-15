@@ -12,34 +12,43 @@ use winnow::{
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DtnPatternItem {
     None,
-    All,
+    Any,
     Exact(Box<str>, Box<str>),
     Glob(glob::Pattern),
 }
 
 impl DtnPatternItem {
-    pub(super) fn is_match(&self, eid: &Eid) -> bool {
+    pub(super) fn matches(&self, eid: &Eid) -> bool {
         match self {
             DtnPatternItem::None => matches!(eid, Eid::Null),
-            DtnPatternItem::All => matches!(
-                eid,
-                /* TODO: will not match dtn:none */
-                Eid::Dtn { .. } | Eid::Unknown { scheme: 1, .. }
-            ),
+            DtnPatternItem::Any => matches!(eid, Eid::Dtn { .. } | Eid::Unknown { scheme: 1, .. }),
             DtnPatternItem::Exact(n1, d1) => {
                 matches!(eid, Eid::Dtn { node_name, demux } if n1 == node_name && d1 == demux)
             }
             DtnPatternItem::Glob(pattern) => match eid {
-                Eid::Dtn { node_name, demux } => pattern.matches_with(
-                    &format!("{node_name}//{demux}"),
-                    glob::MatchOptions {
-                        case_sensitive: false,
-                        require_literal_separator: true,
-                        require_literal_leading_dot: false,
-                    },
-                ),
+                Eid::Dtn { node_name, demux } => do_glob(node_name, demux, pattern),
                 _ => false,
             },
+        }
+    }
+
+    pub(super) fn is_subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DtnPatternItem::None, DtnPatternItem::None) => true,
+            (DtnPatternItem::None, DtnPatternItem::Any) => false,
+            (_, DtnPatternItem::Any) => true,
+            (DtnPatternItem::Any, DtnPatternItem::Glob(pattern)) => pattern.as_str() == "**",
+            (DtnPatternItem::Exact(lhs1, lhs2), DtnPatternItem::Exact(rhs1, rhs2)) => {
+                lhs1 == rhs1 && lhs2 == rhs2
+            }
+            (DtnPatternItem::Exact(node_name, demux), DtnPatternItem::Glob(pattern)) => {
+                do_glob(node_name, demux, pattern)
+            }
+            (DtnPatternItem::Glob(_lhs), DtnPatternItem::Glob(_rhs)) => {
+                // TODO: We just have to say true here, everything else is too hard
+                true
+            }
+            _ => false,
         }
     }
 
@@ -56,7 +65,10 @@ impl DtnPatternItem {
 
     pub(crate) fn new_glob(pattern: &str) -> Result<Self, Error> {
         Ok(Self::Glob(
-            glob::Pattern::new(pattern).map_err(|e| Error::ParseError(e.to_string()))?,
+            glob::Pattern::new(
+                &urlencoding::decode(pattern).map_err(|e| Error::ParseError(e.to_string()))?,
+            )
+            .map_err(|e| Error::ParseError(e.to_string()))?,
         ))
     }
 }
@@ -65,9 +77,19 @@ impl std::fmt::Display for DtnPatternItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => write!(f, "none"),
-            Self::All => write!(f, "**"),
-            Self::Exact(node_name, demux) => write!(f, "//{node_name}/{demux}"),
-            Self::Glob(pattern) => write!(f, "//{pattern}"),
+            Self::Any => write!(f, "**"),
+            Self::Exact(node_name, demux) => {
+                write!(f, "//{}/{demux}", urlencoding::encode(node_name))
+            }
+            Self::Glob(pattern) => {
+                let pattern = urlencoding::encode(pattern.as_str())
+                    .replace("%2A", "*")
+                    .replace("%2F", "/")
+                    .replace("%3F", "?")
+                    .replace("%5B", "[")
+                    .replace("%5D", "]");
+                write!(f, "//{pattern}")
+            }
         }
     }
 }
@@ -78,7 +100,7 @@ pub(super) fn parse_dtn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem
         "dtn:",
         alt((
             "none".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::None)),
-            "**".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::All)),
+            "**".map(|_| EidPatternItem::DtnPatternItem(DtnPatternItem::Any)),
             parse_dtn_fullssp.map(EidPatternItem::DtnPatternItem),
         )),
     )
@@ -99,7 +121,10 @@ fn parse_dtn_exact_ssp(input: &mut &str) -> ModalResult<DtnPatternItem> {
         .try_map(|(node_name, demux)| {
             if demux.find(['?', '*', '[']).is_some() {
                 // Looks like a glob
-                DtnPatternItem::new_glob(&format!("{node_name}/{demux}"))
+                DtnPatternItem::new_glob(&format!(
+                    "{node_name}/{}",
+                    urlencoding::decode(demux).map_err(|e| Error::ParseError(e.to_string()))?
+                ))
             } else {
                 Ok(DtnPatternItem::Exact(node_name, demux.into()))
             }
@@ -135,7 +160,53 @@ fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
 }
 
 fn parse_dtn_glob(input: &mut &str) -> ModalResult<DtnPatternItem> {
-    take_while(1.., ('\x21'..='\x7b', /* No '|' (0x7c) */ '\x7d', '\x7e'))
-        .try_map(DtnPatternItem::new_glob)
+    (
+        terminated(
+            take_while(
+                0..,
+                (
+                    AsChar::is_alphanum,
+                    '-',
+                    '.',
+                    '_',
+                    '~',
+                    '!',
+                    '$',
+                    '&',
+                    '\'',
+                    '(',
+                    ')',
+                    '*',
+                    '+',
+                    ',',
+                    ';',
+                    '=',
+                    '[',
+                    '?',
+                    ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
+                ),
+            ),
+            "/",
+        ),
+        take_while(0.., ('\x21'..='\x7b', /* No '|' (0x7c) */ '\x7d', '\x7e')),
+    )
+        .try_map(|(node_name, demux)| {
+            DtnPatternItem::new_glob(&format!(
+                "{}/{}",
+                urlencoding::decode(node_name).map_err(|e| Error::ParseError(e.to_string()))?,
+                urlencoding::decode(demux).map_err(|e| Error::ParseError(e.to_string()))?
+            ))
+        })
         .parse_next(input)
+}
+
+fn do_glob(node_name: &str, demux: &str, pattern: &glob::Pattern) -> bool {
+    pattern.matches_with(
+        &format!("{node_name}//{demux}"),
+        glob::MatchOptions {
+            case_sensitive: false,
+            require_literal_separator: true,
+            require_literal_leading_dot: false,
+        },
+    )
 }

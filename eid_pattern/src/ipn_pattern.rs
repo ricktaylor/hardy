@@ -34,17 +34,17 @@ impl IpnPatternItem {
         }
     }
 
-    pub(super) fn is_match(&self, eid: &Eid) -> bool {
+    pub(super) fn matches(&self, eid: &Eid) -> bool {
         match eid {
             Eid::Null => {
-                self.allocator_id.is_match(0)
-                    && self.node_number.is_match(0)
-                    && self.service_number.is_match(0)
+                self.allocator_id.matches(0)
+                    && self.node_number.matches(0)
+                    && self.service_number.matches(0)
             }
             Eid::LocalNode { service_number } => {
-                self.allocator_id.is_match(0)
-                    && self.node_number.is_match(u32::MAX)
-                    && self.service_number.is_match(*service_number)
+                self.allocator_id.matches(0)
+                    && self.node_number.matches(u32::MAX)
+                    && self.service_number.matches(*service_number)
             }
             Eid::LegacyIpn {
                 allocator_id,
@@ -56,12 +56,18 @@ impl IpnPatternItem {
                 node_number,
                 service_number,
             } => {
-                self.allocator_id.is_match(*allocator_id)
-                    && self.node_number.is_match(*node_number)
-                    && self.service_number.is_match(*service_number)
+                self.allocator_id.matches(*allocator_id)
+                    && self.node_number.matches(*node_number)
+                    && self.service_number.matches(*service_number)
             }
             _ => false,
         }
+    }
+
+    pub(super) fn is_subset(&self, other: &Self) -> bool {
+        self.allocator_id.is_subset(&other.allocator_id)
+            && self.node_number.is_subset(&other.node_number)
+            && self.service_number.is_subset(&other.service_number)
     }
 
     pub(super) fn try_to_eid(&self) -> Option<Eid> {
@@ -75,11 +81,19 @@ impl IpnPatternItem {
 
 impl std::fmt::Display for IpnPatternItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}.{}.{}",
-            self.allocator_id, self.node_number, self.service_number
-        )
+        if self == &ANY {
+            return write!(f, "**");
+        } else if self.allocator_id == IpnPattern::Range(vec![IpnInterval::Number(0)]) {
+            // Old style without allocator ID
+            write!(f, "{}.{}", self.node_number, self.service_number)
+        } else {
+            // New style with allocator ID
+            write!(
+                f,
+                "{}.{}.{}",
+                self.allocator_id, self.node_number, self.service_number
+            )
+        }
     }
 }
 
@@ -90,11 +104,22 @@ pub enum IpnPattern {
 }
 
 impl IpnPattern {
-    fn is_match(&self, v: u32) -> bool {
+    fn matches(&self, v: u32) -> bool {
         let IpnPattern::Range(r) = self else {
             return true;
         };
-        r.iter().any(|r| r.is_match(v))
+        r.iter().any(|r| r.matches(v))
+    }
+
+    fn is_subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (_, IpnPattern::Wildcard) => true,
+            (IpnPattern::Wildcard, IpnPattern::Range(_)) => false,
+            (IpnPattern::Range(lhs), IpnPattern::Range(rhs)) => {
+                // Every member must be a subset of at least one member in rhs
+                !lhs.iter().any(|l| rhs.iter().any(|r| !l.is_subset(r)))
+            }
+        }
     }
 
     fn try_to_eid(&self) -> Option<u32> {
@@ -168,10 +193,21 @@ impl Ord for IpnInterval {
 }
 
 impl IpnInterval {
-    fn is_match(&self, v: u32) -> bool {
+    fn matches(&self, v: u32) -> bool {
         match self {
             IpnInterval::Number(n) => *n == v,
             IpnInterval::Range(r) => r.contains(&v),
+        }
+    }
+
+    fn is_subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (IpnInterval::Number(lhs), IpnInterval::Number(rhs)) => lhs == rhs,
+            (IpnInterval::Number(lhs), IpnInterval::Range(rhs)) => rhs.contains(lhs),
+            (IpnInterval::Range(_), IpnInterval::Number(_)) => false,
+            (IpnInterval::Range(lhs), IpnInterval::Range(rhs)) => {
+                rhs.start() <= lhs.start() && rhs.end() >= lhs.end()
+            }
         }
     }
 

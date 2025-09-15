@@ -59,7 +59,7 @@ fn parse_any_ssp_item(input: &mut &str) -> ModalResult<EidPatternItem> {
             parse_scheme,
             parse_non_zero_decimal.map(|v| match v {
                 #[cfg(feature = "dtn-pat-item")]
-                1 => EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::All),
+                1 => EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::Any),
                 2 => EidPatternItem::IpnPatternItem(ipn_pattern::ANY),
                 _ => EidPatternItem::AnyNumericScheme(v),
             }),
@@ -76,7 +76,12 @@ fn parse_scheme(input: &mut &str) -> ModalResult<EidPatternItem> {
         take_while(0.., (AsChar::is_alphanum, '+', '-', '.')),
     )
         .take()
-        .map(|v: &str| EidPatternItem::AnyTextScheme(v.into()))
+        .map(|v: &str| match v {
+            #[cfg(feature = "dtn-pat-item")]
+            "dtn" => EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::Any),
+            "ipn" => EidPatternItem::IpnPatternItem(ipn_pattern::ANY),
+            _ => EidPatternItem::AnyTextScheme(v.into()),
+        })
         .parse_next(input)
 }
 

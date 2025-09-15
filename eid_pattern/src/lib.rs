@@ -30,10 +30,22 @@ pub enum EidPattern {
 }
 
 impl EidPattern {
-    pub fn is_match(&self, eid: &Eid) -> bool {
+    pub fn matches(&self, eid: &Eid) -> bool {
         match self {
             EidPattern::Any => true,
-            EidPattern::Set(items) => items.iter().any(|i| i.is_match(eid)),
+            EidPattern::Set(items) => items.iter().any(|i| i.matches(eid)),
+        }
+    }
+
+    /// Is `self`` a subset (or equal to) `other`
+    pub fn is_subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (_, EidPattern::Any) => true,
+            (EidPattern::Any, _) => false,
+            (EidPattern::Set(lhs), EidPattern::Set(rhs)) => {
+                // Every member must be a subset of at least one member in rhs
+                !lhs.iter().any(|l| rhs.iter().any(|r| !l.is_subset(r)))
+            }
         }
     }
 }
@@ -99,7 +111,6 @@ impl From<Eid> for EidPattern {
                 ]
                 .into(),
             ),
-
             Eid::Unknown { scheme, .. } => {
                 EidPattern::Set([EidPatternItem::AnyNumericScheme(scheme)].into())
             }
@@ -125,14 +136,11 @@ impl std::fmt::Display for EidPattern {
         match self {
             EidPattern::Any => write!(f, "*:**"),
             EidPattern::Set(items) => {
-                let mut first = true;
-                for i in items {
-                    if first {
-                        first = false;
-                    } else {
+                for (i, p) in items.iter().enumerate() {
+                    if i != 0 {
                         write!(f, "|")?;
                     }
-                    write!(f, "{i}")?;
+                    write!(f, "{p}")?;
                 }
                 Ok(())
             }
@@ -150,15 +158,51 @@ pub enum EidPatternItem {
 }
 
 impl EidPatternItem {
-    fn is_match(&self, eid: &Eid) -> bool {
+    fn matches(&self, eid: &Eid) -> bool {
         match self {
-            EidPatternItem::IpnPatternItem(i) => i.is_match(eid),
-            EidPatternItem::DtnPatternItem(i) => i.is_match(eid),
+            EidPatternItem::IpnPatternItem(i) => i.matches(eid),
+            #[cfg(feature = "dtn-pat-item")]
+            EidPatternItem::DtnPatternItem(i) => i.matches(eid),
             _ => false,
         }
     }
 
-    pub(crate) fn try_to_eid(&self) -> Option<Eid> {
+    fn is_subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EidPatternItem::AnyNumericScheme(lhs), EidPatternItem::AnyNumericScheme(rhs)) => {
+                lhs == rhs
+            }
+            (EidPatternItem::AnyNumericScheme(s_n), EidPatternItem::AnyTextScheme(s_str))
+            | (EidPatternItem::AnyTextScheme(s_str), EidPatternItem::AnyNumericScheme(s_n)) => {
+                (*s_n == 1 && s_str == "dtn") || (*s_n == 2 && s_str == "ipn")
+            }
+            (EidPatternItem::AnyTextScheme(lhs), EidPatternItem::AnyTextScheme(rhs)) => lhs == rhs,
+            (EidPatternItem::IpnPatternItem(_), EidPatternItem::AnyNumericScheme(2)) => true,
+            (EidPatternItem::IpnPatternItem(_), EidPatternItem::AnyTextScheme(s)) => s == "ipn",
+            (EidPatternItem::IpnPatternItem(lhs), EidPatternItem::IpnPatternItem(rhs)) => {
+                lhs.is_subset(rhs)
+            }
+            #[cfg(feature = "dtn-pat-item")]
+            (EidPatternItem::IpnPatternItem(lhs), EidPatternItem::DtnPatternItem(rhs)) => {
+                lhs.try_to_eid() == Some(Eid::Null) && rhs.try_to_eid() == Some(Eid::Null)
+            }
+            #[cfg(feature = "dtn-pat-item")]
+            (EidPatternItem::DtnPatternItem(_), EidPatternItem::AnyNumericScheme(1)) => true,
+            #[cfg(feature = "dtn-pat-item")]
+            (EidPatternItem::DtnPatternItem(_), EidPatternItem::AnyTextScheme(s)) => s == "dtn",
+            #[cfg(feature = "dtn-pat-item")]
+            (EidPatternItem::DtnPatternItem(lhs), EidPatternItem::IpnPatternItem(rhs)) => {
+                lhs.try_to_eid() == Some(Eid::Null) && rhs.try_to_eid() == Some(Eid::Null)
+            }
+            #[cfg(feature = "dtn-pat-item")]
+            (EidPatternItem::DtnPatternItem(lhs), EidPatternItem::DtnPatternItem(rhs)) => {
+                lhs.is_subset(rhs)
+            }
+            _ => false,
+        }
+    }
+
+    fn try_to_eid(&self) -> Option<Eid> {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.try_to_eid(),
             #[cfg(feature = "dtn-pat-item")]
