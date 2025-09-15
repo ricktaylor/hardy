@@ -29,5 +29,5 @@ lru = "0.16.0"
 thiserror = "2.0.15"
 rustversion = "1.0"
 flume = "0.11.1"
-serde = { version = "1.0.219", features = ["derive","rc"], optional = true }
+serde = { version = "1.0.223", features = ["derive","rc"], optional = true }
 bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
