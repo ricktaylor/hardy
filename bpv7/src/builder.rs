@@ -53,7 +53,11 @@ impl Builder {
         BlockBuilder::new(self, block_type)
     }
 
-    pub fn build<T: AsRef<[u8]>>(mut self, payload: T) -> (bundle::Bundle, Box<[u8]>) {
+    pub fn build<T: AsRef<[u8]>>(
+        mut self,
+        payload: T,
+        timestamp: creation_timestamp::CreationTimestamp,
+    ) -> (bundle::Bundle, Box<[u8]>) {
         self.add_extension_block(block::Type::Payload)
             .build(payload);
 
@@ -61,7 +65,7 @@ impl Builder {
             report_to: self.report_to.unwrap_or(self.source.clone()),
             id: bundle::Id {
                 source: self.source,
-                timestamp: creation_timestamp::CreationTimestamp::now(),
+                timestamp,
                 ..Default::default()
             },
             flags: self.bundle_flags.clone(),
@@ -217,7 +221,7 @@ impl From<BundleTemplate> for Builder {
 fn test_builder() {
     let mut b = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap());
     b.with_report_to("ipn:3.0".parse().unwrap());
-    b.build("Hello");
+    b.build("Hello", creation_timestamp::CreationTimestamp::now());
 }
 
 #[cfg(feature = "serde")]
@@ -231,5 +235,5 @@ fn test_template() {
     .unwrap()
     .into();
 
-    b.build("Hello");
+    b.build("Hello", creation_timestamp::CreationTimestamp::now());
 }

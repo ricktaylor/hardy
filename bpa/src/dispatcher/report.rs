@@ -143,7 +143,10 @@ impl Dispatcher {
                     ..Default::default()
                 });
 
-                let (bundle, data) = b.build(&payload);
+                let (bundle, data) = b.build(
+                    &payload,
+                    hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                );
 
                 // Store to store
                 match self.store.store(bundle, data.into()).await {

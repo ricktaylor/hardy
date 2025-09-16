@@ -6,6 +6,7 @@ const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00
 pub struct DtnTime(u64);
 
 impl DtnTime {
+    #[cfg(feature = "std")]
     pub fn now() -> Self {
         Self(((time::OffsetDateTime::now_utc() - DTN_EPOCH).whole_milliseconds()) as u64)
     }

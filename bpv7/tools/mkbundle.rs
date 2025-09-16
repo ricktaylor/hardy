@@ -61,6 +61,12 @@ fn main() {
     }
 
     output
-        .write_all(&b.build(&payload).1)
+        .write_all(
+            &b.build(
+                &payload,
+                hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+            )
+            .1,
+        )
         .expect("Failed to write bundle")
 }

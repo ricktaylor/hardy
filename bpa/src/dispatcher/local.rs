@@ -67,7 +67,10 @@ impl Dispatcher {
                 }
             }
 
-            let (bundle, data) = b.build(data);
+            let (bundle, data) = b.build(
+                data,
+                hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+            );
 
             // Store to store
             if let Some(bundle) = self.store.store(bundle, data.into()).await? {

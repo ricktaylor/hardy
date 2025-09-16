@@ -10,6 +10,7 @@ pub struct CreationTimestamp {
 }
 
 impl CreationTimestamp {
+    #[cfg(feature = "std")]
     pub fn now() -> Self {
         let timestamp = time::OffsetDateTime::now_utc();
         Self {
