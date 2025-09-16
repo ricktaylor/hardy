@@ -82,7 +82,7 @@ impl IpnPatternItem {
 impl std::fmt::Display for IpnPatternItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self == &ANY {
-            return write!(f, "**");
+            write!(f, "**")
         } else if self.allocator_id == IpnPattern::Range(vec![IpnInterval::Number(0)]) {
             // Old style without allocator ID
             write!(f, "{}.{}", self.node_number, self.service_number)

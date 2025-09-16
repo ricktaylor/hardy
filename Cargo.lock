@@ -1114,6 +1114,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-eid_pattern-fuzz"
+version = "0.0.0"
+dependencies = [
+ "hardy-bpv7",
+ "hardy-eid-pattern",
+ "libfuzzer-sys",
+]
+
+[[package]]
 name = "hardy-localdisk-storage"
 version = "0.1.0"
 dependencies = [

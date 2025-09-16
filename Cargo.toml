@@ -10,7 +10,7 @@ members = [
     "cbor",
     "cbor/fuzz",
     "eid_pattern",
-    #"eid_pattern/fuzz",
+    "eid_pattern/fuzz",
     "localdisk-storage",
     "otel",
     "proto",
