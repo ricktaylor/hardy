@@ -125,8 +125,7 @@ impl Storage {
         connection
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
-                PRAGMA optimize=0x10002;
-                INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL",
+                PRAGMA optimize=0x10002;",
             )
             .trace_expect("Failed to prepare metadata store database");
 
@@ -256,6 +255,23 @@ impl storage::MetadataStorage for Storage {
             error!("Failed to tombstone bundle!");
         }
         Ok(())
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    async fn start_recovery(&self) {
+        if self
+            .write(move |conn| {
+                conn.prepare_cached(
+                    "INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL",
+                )?
+                .execute((id,))
+                .map_err(Into::into)
+            })
+            .await?
+            != 1
+        {
+            error!("Failed to mark unconfirmed bundles!");
+        }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]

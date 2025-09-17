@@ -91,6 +91,10 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    async fn start_recovery(&self) {
+        // No-op for in-memory store
+    }
+
     async fn confirm_exists(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,

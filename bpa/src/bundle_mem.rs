@@ -34,7 +34,7 @@ struct Storage {
 
 #[async_trait]
 impl storage::BundleStorage for Storage {
-    async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
+    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let snapshot = self
             .inner
             .lock()

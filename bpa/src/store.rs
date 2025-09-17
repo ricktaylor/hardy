@@ -99,20 +99,23 @@ impl Store {
         }
     }
 
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>, recover_storage: bool) {
+        if recover_storage {
         // Start the store - this can take a while as the store is walked
         let store = self.clone();
         let task = async move {
             // Start the store - this can take a while as the store is walked
             info!("Starting store consistency check...");
 
+                store.start_metadata_storage_recovery().await;
+
             let stats = store
-                .bundle_storage_check(dispatcher.clone())
+                    .bundle_storage_recovery(dispatcher.clone())
                 .await
                 .trace_expect("Bundle storage check failed");
             let stats = if !store.cancel_token.is_cancelled() {
                 store
-                    .metadata_storage_check(dispatcher, stats)
+                        .metadata_storage_recovery(dispatcher, stats)
                     .await
                     .trace_expect("Metadata storage check failed")
             } else {
@@ -132,6 +135,7 @@ impl Store {
         };
 
         self.task_tracker.spawn(task);
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -141,13 +145,18 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn bundle_storage_check(
+    async fn start_metadata_storage_recovery(&self) {
+        self.metadata_storage.start_recovery().await;
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    async fn bundle_storage_recovery(
         self: &Arc<Self>,
         dispatcher: Arc<dispatcher::Dispatcher>,
     ) -> storage::Result<RestartStats> {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
-        let (tx, rx) = flume::bounded::<storage::ListResponse>(16);
+        let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
         let task = async move {
             // We're going to spawn a bunch of tasks
             let mut task_set = tokio::task::JoinSet::new();
@@ -194,14 +203,14 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "bundle_storage_check_reader");
+            let span = tracing::trace_span!("parent: None", "bundle_storage_recovery_reader");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
 
         let h = tokio::spawn(task);
 
-        if let Err(e) = self.bundle_storage.list(tx).await {
+        if let Err(e) = self.bundle_storage.recover(tx).await {
             outer_cancel_token.cancel();
             _ = h.await;
             Err(e)
@@ -211,7 +220,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn metadata_storage_check(
+    async fn metadata_storage_recovery(
         self: &Arc<Self>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         mut stats: RestartStats,

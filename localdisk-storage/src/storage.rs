@@ -61,7 +61,7 @@ fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &storage::Sender<storage::ListResponse>,
+    tx: &storage::Sender<storage::RecoveryResponse>,
 ) -> Vec<PathBuf> {
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
@@ -130,7 +130,7 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn list(&self, tx: storage::Sender<storage::ListResponse>) -> storage::Result<()> {
+    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
 

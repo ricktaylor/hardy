@@ -79,6 +79,9 @@ pub struct Config {
 
     #[serde(skip)]
     pub upgrade_storage: bool,
+
+    #[serde(skip)]
+    pub recover_storage: bool,
 }
 
 fn options() -> getopts::Options {
@@ -89,6 +92,11 @@ fn options() -> getopts::Options {
             "u",
             "upgrade-store",
             "upgrade the bundle store to the current format",
+        )
+        .optflag(
+            "r",
+            "recover-store",
+            "attempt to recover any damaged records in the store",
         )
         .optopt("c", "config", "use a custom configuration file", "FILE");
     opts
@@ -166,12 +174,15 @@ pub fn init() -> Option<(Config, String)> {
     // Pull in environment vars
     b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
 
+    let mut config = b
+        .build()
+        .expect("Failed to read configuration")
+        .try_deserialize()
+        .expect("Failed to parse configuration");
+
+    config.upgrade_store = flags.opt_present("u");
+    config.recover_storage = flags.opt_present("r");
+
     // And parse...
-    Some((
-        b.build()
-            .expect("Failed to read configuration")
-            .try_deserialize()
-            .expect("Failed to parse configuration"),
-        config_source,
-    ))
+    Some((config, config_source))
 }

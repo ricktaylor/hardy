@@ -118,7 +118,7 @@ async fn main() {
 
     // Start the BPA
     let bpa = Arc::new(
-        hardy_bpa::bpa::Bpa::start(&config.bpa)
+        hardy_bpa::bpa::Bpa::start(&config.bpa, config.recover_storage)
             .await
             .trace_expect("Failed to start BPA"),
     );

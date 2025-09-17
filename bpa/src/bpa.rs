@@ -13,7 +13,7 @@ pub struct Bpa {
 
 impl Bpa {
     #[cfg_attr(feature = "tracing", instrument)]
-    pub async fn start(config: &config::Config) -> Result<Self, Error> {
+    pub async fn start(config: &config::Config, recover_storage: bool) -> Result<Self, Error> {
         info!("Starting new BPA");
 
         if config.status_reports {
@@ -47,7 +47,7 @@ impl Bpa {
         reaper.start(dispatcher.clone());
 
         // And finally restart the store
-        store.start(dispatcher.clone());
+        store.start(dispatcher.clone(), recover_storage);
 
         info!("BPA started");
 
