@@ -101,40 +101,40 @@ impl Store {
 
     pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>, recover_storage: bool) {
         if recover_storage {
-        // Start the store - this can take a while as the store is walked
-        let store = self.clone();
-        let task = async move {
             // Start the store - this can take a while as the store is walked
-            info!("Starting store consistency check...");
+            let store = self.clone();
+            let task = async move {
+                // Start the store - this can take a while as the store is walked
+                info!("Starting store consistency check...");
 
                 store.start_metadata_storage_recovery().await;
 
-            let stats = store
+                let stats = store
                     .bundle_storage_recovery(dispatcher.clone())
-                .await
-                .trace_expect("Bundle storage check failed");
-            let stats = if !store.cancel_token.is_cancelled() {
-                store
-                        .metadata_storage_recovery(dispatcher, stats)
                     .await
-                    .trace_expect("Metadata storage check failed")
-            } else {
-                stats
+                    .trace_expect("Bundle storage check failed");
+                let stats = if !store.cancel_token.is_cancelled() {
+                    store
+                        .metadata_storage_recovery(dispatcher, stats)
+                        .await
+                        .trace_expect("Metadata storage check failed")
+                } else {
+                    stats
+                };
+
+                if !store.cancel_token.is_cancelled() {
+                    info!("Store restarted: {stats}");
+                }
             };
 
-            if !store.cancel_token.is_cancelled() {
-                info!("Store restarted: {stats}");
-            }
-        };
+            #[cfg(feature = "tracing")]
+            let task = {
+                let span = tracing::trace_span!("parent: None", "store_check_task");
+                span.follows_from(tracing::Span::current());
+                task.instrument(span)
+            };
 
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!("parent: None", "store_check_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
+            self.task_tracker.spawn(task);
         }
     }
 
@@ -430,11 +430,11 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_pending(
+    pub async fn poll_expiry(
         &self,
         tx: storage::Sender<bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
-        self.metadata_storage.poll_pending(tx, limit).await
+        self.metadata_storage.poll_expiry(tx, limit).await
     }
 }

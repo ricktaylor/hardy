@@ -252,7 +252,7 @@ impl Reaper {
 
         if self
             .store
-            .poll_pending(tx, self.max_cache_size)
+            .poll_expiry(tx, self.max_cache_size)
             .await
             .inspect_err(|e| error!("Failed to poll store for pending bundles: {e}"))
             .is_ok()

@@ -380,7 +380,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn poll_pending(
+    async fn poll_expiry(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,

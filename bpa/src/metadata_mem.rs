@@ -109,7 +109,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_pending(
+    async fn poll_expiry(
         &self,
         tx: storage::Sender<bundle::Bundle>,
         limit: usize,
