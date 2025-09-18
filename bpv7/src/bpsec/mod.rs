@@ -19,7 +19,9 @@ pub use key::Key;
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 pub enum Context {
+    #[cfg(feature = "rfc9173")]
     BIB_HMAC_SHA2,
+    #[cfg(feature = "rfc9173")]
     BCB_AES_GCM,
     Unrecognised(u64),
 }
@@ -29,7 +31,9 @@ impl hardy_cbor::encode::ToCbor for Context {
 
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(match self {
+            #[cfg(feature = "rfc9173")]
             Self::BIB_HMAC_SHA2 => &1,
+            #[cfg(feature = "rfc9173")]
             Self::BCB_AES_GCM => &2,
             Self::Unrecognised(v) => v,
         })
@@ -44,7 +48,9 @@ impl hardy_cbor::decode::FromCbor for Context {
             o.map(|(value, shortest, len)| {
                 (
                     match value {
+                        #[cfg(feature = "rfc9173")]
                         1 => Self::BIB_HMAC_SHA2,
+                        #[cfg(feature = "rfc9173")]
                         2 => Self::BCB_AES_GCM,
                         value => Self::Unrecognised(value),
                     },
