@@ -269,70 +269,56 @@ fn parse_ipn_part_pat(input: &mut &str) -> ModalResult<IpnPattern> {
 // ipn-range = "[" ipn-interval *( "," ipn-interval ) "]"
 fn parse_ipn_range(input: &mut &str) -> ModalResult<IpnPattern> {
     delimited("[", separated(1.., parse_ipn_interval, ","), "]")
-        .map(|mut intervals: Vec<IpnInterval>| {
-            // Sort
-            intervals.sort_unstable();
+        .map(|mut intervals: Vec<RangeInclusive<u32>>| {
+            if intervals.is_empty() {
+                IpnPattern::Range(Vec::new())
+            } else {
+                // 1. Sort the ranges by their start value.
+                intervals.sort_by_key(|r| *r.start());
 
-            // Dedup
-            intervals.dedup();
+                // 2. Merge them into a new vector.
+                let mut merged = Vec::new();
+                let mut current_interval = intervals.remove(0);
 
-            // Merge intervals
-            let mut i = intervals.into_iter();
-            let mut intervals = Vec::new();
-            let mut curr = i.next().unwrap();
-            for next in i {
-                match (&curr, &next) {
-                    (IpnInterval::Number(n1), IpnInterval::Number(n2))
-                        if *n2 == n1.saturating_add(1) =>
-                    {
-                        curr = IpnInterval::Range(*n1..=*n2);
-                    }
-                    (IpnInterval::Number(n), IpnInterval::Range(r)) if n == r.start() => {
-                        curr = next;
-                    }
-                    (IpnInterval::Number(n), IpnInterval::Range(r))
-                        if n.saturating_add(1) == *r.start() =>
-                    {
-                        curr = IpnInterval::Range(*n..=*r.end());
-                    }
-                    (IpnInterval::Range(r), IpnInterval::Number(n)) if r.contains(n) => {}
-                    (IpnInterval::Range(r), IpnInterval::Number(n))
-                        if r.end().saturating_add(1) == *n =>
-                    {
-                        curr = IpnInterval::Range(*r.start()..=*n);
-                    }
-                    (IpnInterval::Range(r1), IpnInterval::Range(r2))
-                        if *r2.start() <= r1.end().saturating_add(1) =>
-                    {
-                        curr = IpnInterval::Range(*r1.start()..=*r2.end());
-                    }
-                    _ => {
-                        intervals.push(curr);
-                        curr = next;
+                for next_interval in intervals {
+                    // Check if the next range is adjacent or overlapping.
+                    // The `+ 1` handles adjacency, e.g., `1..=5` and `6..=10`.
+                    if *next_interval.start() <= current_interval.end().saturating_add(1) {
+                        // If so, extend the current range to encompass the next one.
+                        current_interval = *current_interval.start()
+                            ..=*current_interval.end().max(next_interval.end());
+                    } else {
+                        // Otherwise, the current range is finished. Push it to the results
+                        // and start a new current range.
+                        if current_interval.end() == current_interval.start() {
+                            merged.push(IpnInterval::Number(*current_interval.start()));
+                        } else {
+                            merged.push(IpnInterval::Range(current_interval));
+                        }
+                        current_interval = next_interval;
                     }
                 }
+                // Add the last processed range.
+                if current_interval.end() == current_interval.start() {
+                    merged.push(IpnInterval::Number(*current_interval.start()));
+                } else {
+                    merged.push(IpnInterval::Range(current_interval));
+                }
+                IpnPattern::Range(merged)
             }
-            intervals.push(curr);
-            IpnPattern::Range(intervals)
         })
         .parse_next(input)
 }
 
 // ipn-interval = ipn-decimal [ ("-" ipn-decimal) / "+" ]
-fn parse_ipn_interval(input: &mut &str) -> ModalResult<IpnInterval> {
+fn parse_ipn_interval(input: &mut &str) -> ModalResult<RangeInclusive<u32>> {
     (
         dec_uint,
         opt(alt(("+".map(|_| u32::MAX), preceded("-", dec_uint)))),
     )
         .map(|(start, end)| {
-            end.map_or_else(
-                || IpnInterval::Number(start),
-                |end| match start.cmp(&end) {
-                    std::cmp::Ordering::Less => IpnInterval::Range(start..=end),
-                    std::cmp::Ordering::Equal => IpnInterval::Number(start),
-                    std::cmp::Ordering::Greater => IpnInterval::Range(end..=start),
-                },
-            )
+            let end = end.unwrap_or(start);
+            start.min(end)..=start.max(end)
         })
         .parse_next(input)
 }
