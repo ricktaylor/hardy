@@ -23,13 +23,15 @@ enum ShaVariant {
 }
 
 impl hardy_cbor::encode::ToCbor for ShaVariant {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(match self {
-            Self::HMAC_256_256 => &5,
-            Self::HMAC_384_384 => &6,
-            Self::HMAC_512_512 => &7,
-            Self::Unrecognised(v) => v,
-        })
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        match self {
+            Self::HMAC_256_256 => encoder.emit(&5),
+            Self::HMAC_384_384 => encoder.emit(&6),
+            Self::HMAC_512_512 => encoder.emit(&7),
+            Self::Unrecognised(v) => encoder.emit(v),
+        }
     }
 }
 
@@ -100,7 +102,9 @@ impl Parameters {
 }
 
 impl hardy_cbor::encode::ToCbor for Parameters {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         let mut mask: u32 = 0;
         if self.variant != ShaVariant::default() {
             mask |= 1 << 1;
@@ -114,15 +118,12 @@ impl hardy_cbor::encode::ToCbor for Parameters {
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
             for b in 1..=3 {
                 if mask & (1 << b) != 0 {
-                    a.emit_array(Some(2), |a| {
-                        a.emit(&b);
-                        match b {
-                            1 => a.emit(&self.variant),
-                            2 => a.emit(self.key.as_ref().unwrap().as_ref()),
-                            3 => a.emit(&self.flags),
-                            _ => unreachable!(),
-                        };
-                    });
+                    match b {
+                        1 => a.emit(&(b, &self.variant)),
+                        2 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.key.as_ref().unwrap()))),
+                        3 => a.emit(&(b, &self.flags)),
+                        _ => unreachable!(),
+                    }
                 }
             }
         })
@@ -153,13 +154,10 @@ impl Results {
 }
 
 impl hardy_cbor::encode::ToCbor for Results {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit_array(Some(1), |a| {
-            a.emit_array(Some(2), |a| {
-                a.emit(&1);
-                a.emit(self.0.as_ref());
-            });
-        })
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(&self.0))]);
     }
 }
 
@@ -183,12 +181,15 @@ where
         hmac::Hmac::<A>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
 
     // Build IPT
-    mac.update(&hardy_cbor::encode::emit(&ScopeFlags {
-        include_primary_block: flags.include_primary_block,
-        include_target_header: flags.include_target_header,
-        include_security_header: flags.include_security_header,
-        ..Default::default()
-    }));
+    mac.update(
+        &hardy_cbor::encode::emit(&ScopeFlags {
+            include_primary_block: flags.include_primary_block,
+            include_target_header: flags.include_target_header,
+            include_security_header: flags.include_security_header,
+            ..Default::default()
+        })
+        .0,
+    );
 
     let target_block = args
         .blocks

@@ -200,10 +200,13 @@ impl From<BundleTemplate> for Builder {
                 delete_bundle_on_failure: true,
                 ..Default::default()
             });
-            builder.build(hardy_cbor::encode::emit(&hop_info::HopInfo {
-                limit: hop_limit,
-                count: 0,
-            }));
+            builder.build(
+                hardy_cbor::encode::emit(&hop_info::HopInfo {
+                    limit: hop_limit,
+                    count: 0,
+                })
+                .0,
+            );
         }
 
         builder

@@ -147,18 +147,24 @@ impl Dispatcher {
         // Previous Node Block
         editor
             .replace_block(hardy_bpv7::block::Type::PreviousNode)
-            .build(hardy_cbor::encode::emit(
-                &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
-            ));
+            .build(
+                hardy_cbor::encode::emit(
+                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
+                )
+                .0,
+            );
 
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
             editor
                 .replace_block(hardy_bpv7::block::Type::HopCount)
-                .build(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                    limit: hop_count.limit,
-                    count: hop_count.count + 1,
-                }));
+                .build(
+                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                        limit: hop_count.limit,
+                        count: hop_count.count + 1,
+                    })
+                    .0,
+                );
         }
 
         // Update Bundle Age, if required
@@ -171,7 +177,7 @@ impl Dispatcher {
 
             editor
                 .replace_block(hardy_bpv7::block::Type::BundleAge)
-                .build(hardy_cbor::encode::emit(&bundle_age));
+                .build(hardy_cbor::encode::emit(&bundle_age).0);
         }
 
         editor.rebuild()

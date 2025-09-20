@@ -13,12 +13,14 @@ enum AesVariant {
 }
 
 impl hardy_cbor::encode::ToCbor for AesVariant {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
-        encoder.emit(match self {
-            Self::A128GCM => &1,
-            Self::A256GCM => &3,
-            Self::Unrecognised(v) => v,
-        })
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        match self {
+            Self::A128GCM => encoder.emit(&1),
+            Self::A256GCM => encoder.emit(&3),
+            Self::Unrecognised(v) => encoder.emit(v),
+        }
     }
 }
 
@@ -111,7 +113,9 @@ impl Parameters {
 }
 
 impl hardy_cbor::encode::ToCbor for Parameters {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         let mut mask: u32 = 1 << 1;
         if self.variant != AesVariant::default() {
             mask |= 1 << 2;
@@ -125,16 +129,13 @@ impl hardy_cbor::encode::ToCbor for Parameters {
         encoder.emit_array(Some(mask.count_ones() as usize), |a| {
             for b in 1..=4 {
                 if mask & (1 << b) != 0 {
-                    a.emit_array(Some(2), |a| {
-                        a.emit(&b);
-                        match b {
-                            1 => a.emit(self.iv.as_ref()),
-                            2 => a.emit(&self.variant),
-                            3 => a.emit(self.key.as_ref().unwrap().as_ref()),
-                            4 => a.emit(&self.flags),
-                            _ => unreachable!(),
-                        };
-                    });
+                    match b {
+                        1 => a.emit(&(b, &hardy_cbor::encode::Bytes(&self.iv))),
+                        2 => a.emit(&(b, &self.variant)),
+                        3 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.key.as_ref().unwrap()))),
+                        4 => a.emit(&(b, &self.flags)),
+                        _ => unreachable!(),
+                    }
                 }
             }
         })
@@ -165,16 +166,13 @@ impl Results {
 }
 
 impl hardy_cbor::encode::ToCbor for Results {
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         if let Some(r) = self.0.as_ref() {
-            encoder.emit_array(Some(1), |a| {
-                a.emit_array(Some(2), |a| {
-                    a.emit(&1);
-                    a.emit(r.as_ref());
-                });
-            })
+            encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(r))]);
         } else {
-            encoder.emit_array(Some(0), |_| {})
+            encoder.emit::<[u8; 0]>(&[])
         }
     }
 }
@@ -197,11 +195,11 @@ fn build_data<'a>(
     });
 
     if flags.include_primary_block {
-        encoder.emit_raw_slice(
+        encoder.emit(&hardy_cbor::encode::Raw(
             args.blocks
                 .block_payload(args.target)
                 .expect("Missing primary block!"),
-        );
+        ));
     }
 
     if flags.include_target_header {

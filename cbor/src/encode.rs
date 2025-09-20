@@ -2,11 +2,9 @@ use super::*;
 use core::ops::Range;
 
 pub trait ToCbor {
-    fn to_cbor(&self, encoder: &mut Encoder);
-}
+    type Result;
 
-pub trait ToCborMeasured {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize>;
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result;
 }
 
 pub struct Encoder {
@@ -28,87 +26,89 @@ impl Encoder {
         self.data
     }
 
+    #[inline]
     pub fn offset(&self) -> usize {
         self.data.len()
     }
 
     fn emit_extend(&mut self, b: &[u8]) -> Range<usize> {
-        let start = self.data.len();
+        let start = self.offset();
         self.data.extend_from_slice(b);
-        start..self.data.len()
+        start..self.offset()
     }
 
     fn emit_uint_minor(&mut self, major: u8, val: u64) {
-        if val < 24 {
-            self.data.push((major << 5) | (val as u8))
-        } else if val <= u8::MAX as u64 {
-            self.data.push((major << 5) | 24u8);
-            self.data.push(val as u8)
-        } else if val <= u16::MAX as u64 {
-            self.data.push((major << 5) | 25u8);
-            self.data.extend((val as u16).to_be_bytes())
-        } else if val <= u32::MAX as u64 {
-            self.data.push((major << 5) | 26u8);
-            self.data.extend((val as u32).to_be_bytes())
-        } else {
-            self.data.push((major << 5) | 27u8);
-            self.data.extend(val.to_be_bytes())
+        const U8_MAX: u64 = (u8::MAX as u64) + 1;
+        const U16_MAX: u64 = (u16::MAX as u64) + 1;
+        const U32_MAX: u64 = (u32::MAX as u64) + 1;
+
+        match val {
+            0..24 => self.data.push((major << 5) | (val as u8)),
+            24..U8_MAX => {
+                self.data.push((major << 5) | 24u8);
+                self.data.push(val as u8)
+            }
+            U8_MAX..U16_MAX => {
+                self.data.push((major << 5) | 25u8);
+                self.data.extend((val as u16).to_be_bytes())
+            }
+            U16_MAX..U32_MAX => {
+                self.data.push((major << 5) | 26u8);
+                self.data.extend((val as u32).to_be_bytes())
+            }
+            _ => {
+                self.data.push((major << 5) | 27u8);
+                self.data.extend(val.to_be_bytes())
+            }
         }
     }
 
-    fn emit_tags<I, T>(&mut self, tags: I)
-    where
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        for tag in tags {
-            self.emit_uint_minor(6, tag.to_u64().expect("Tags must be unsigned integers"));
-        }
+    fn emit_tag(&mut self, tag: u64) -> &mut Self {
+        self.emit_uint_minor(6, tag);
+        self
     }
 
-    pub fn emit_raw<I>(&mut self, data: I)
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        self.data.extend(data)
-    }
-
-    pub fn emit_raw_slice(&mut self, data: &[u8]) {
-        self.data.extend_from_slice(data)
-    }
-
-    pub fn emit<T>(&mut self, value: &T)
+    pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
     {
         value.to_cbor(self)
     }
 
-    pub fn emit_tagged<T, I, U>(&mut self, value: &T, tags: I)
+    fn emit_raw_owned<I>(&mut self, data: I) -> Range<usize>
     where
-        T: ToCbor + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
+        I: IntoIterator<Item = u8>,
     {
-        self.emit_tags(tags);
-        self.emit(value)
+        let start = self.offset();
+        self.data.extend(data);
+        start..self.offset()
     }
 
-    pub fn emit_measured<T>(&mut self, value: &T) -> Range<usize>
+    fn emit_raw_slice<V>(&mut self, data: &V) -> Range<usize>
     where
-        T: ToCborMeasured + ?Sized,
+        V: AsRef<[u8]> + ?Sized,
     {
-        value.to_cbor_measured(self)
+        let start = self.offset();
+        self.data.extend_from_slice(data.as_ref());
+        start..self.offset()
     }
 
-    pub fn emit_tagged_measured<T, I, U>(&mut self, value: &T, tags: I) -> Range<usize>
+    fn emit_bytes<V>(&mut self, value: &V) -> Range<usize>
     where
-        T: ToCborMeasured + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
+        V: AsRef<[u8]> + ?Sized,
     {
-        self.emit_tags(tags);
-        self.emit_measured(value)
+        let value = value.as_ref();
+        self.emit_uint_minor(2, value.len() as u64);
+        self.emit_extend(value)
+    }
+
+    fn emit_string<V>(&mut self, value: &V) -> Range<usize>
+    where
+        V: AsRef<str> + ?Sized,
+    {
+        let value = value.as_ref().as_bytes();
+        self.emit_uint_minor(3, value.len() as u64);
+        self.emit_extend(value)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -120,16 +120,6 @@ impl Encoder {
         s.end()
     }
 
-    pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut ByteStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.emit_tags(tags);
-        self.emit_byte_stream(f)
-    }
-
     pub fn emit_text_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut TextStream),
@@ -137,16 +127,6 @@ impl Encoder {
         let mut s = TextStream::new(self);
         f(&mut s);
         s.end()
-    }
-
-    pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut TextStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.emit_tags(tags);
-        self.emit_text_stream(f)
     }
 
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
@@ -158,14 +138,17 @@ impl Encoder {
         a.end()
     }
 
-    pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
+    fn emit_array_slice<V, T>(&mut self, values: &V)
     where
-        F: FnOnce(&mut Array),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
+        V: AsRef<[T]> + ?Sized,
+        T: ToCbor + Sized,
     {
-        self.emit_tags(tags);
-        self.emit_array(count, f)
+        let values = values.as_ref();
+        let mut a = Array::new(self, Some(values.len()));
+        for value in values {
+            a.emit(value);
+        }
+        a.end()
     }
 
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
@@ -176,15 +159,82 @@ impl Encoder {
         f(&mut m);
         m.end()
     }
+}
 
-    pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Map),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.emit_tags(tags);
-        self.emit_map(count, f)
+/// Marker struct to add a tag value to a type, these can be nested to add multiple tags
+pub struct Tagged<'a, const TAG: u64, T>(pub &'a T)
+where
+    T: ToCbor + ?Sized;
+
+impl<'a, const TAG: u64, T> ToCbor for Tagged<'a, TAG, T>
+where
+    T: ToCbor + ?Sized,
+{
+    type Result = T::Result;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_tag(TAG).emit(self.0)
+    }
+}
+
+/// Marker struct to ensure that raw bytes are written as raw data, not arrays
+pub struct Raw<'a, V>(pub &'a V)
+where
+    V: AsRef<[u8]> + ?Sized;
+
+impl<'a, V> ToCbor for Raw<'a, V>
+where
+    V: AsRef<[u8]> + ?Sized,
+{
+    type Result = Range<usize>;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_raw_slice(self.0)
+    }
+}
+
+/// Marker struct to ensure that raw bytes are written as raw data, not arrays
+pub struct RawOwned<I>(core::cell::Cell<Option<I>>)
+where
+    I: IntoIterator<Item = u8>;
+
+impl<I> RawOwned<I>
+where
+    I: IntoIterator<Item = u8>,
+{
+    pub fn new(iter: I) -> Self {
+        Self(core::cell::Cell::new(Some(iter)))
+    }
+}
+
+impl<I> ToCbor for RawOwned<I>
+where
+    I: IntoIterator<Item = u8>,
+{
+    type Result = Range<usize>;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_raw_owned(
+            self.0
+                .take()
+                .expect("to_cbor called on an already consumed RawOwned value"),
+        )
+    }
+}
+
+/// Marker struct to ensure that byte slices are written as definite length byte streams, not arrays
+pub struct Bytes<'a, V>(pub &'a V)
+where
+    V: AsRef<[u8]> + ?Sized;
+
+impl<'a, V> ToCbor for Bytes<'a, V>
+where
+    V: AsRef<[u8]> + ?Sized,
+{
+    type Result = Range<usize>;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_bytes(self.0)
     }
 }
 
@@ -202,7 +252,7 @@ impl<'a> ByteStream<'a> {
     where
         V: AsRef<[u8]> + ?Sized,
     {
-        value.as_ref().to_cbor(self.encoder);
+        self.encoder.emit_bytes(value);
     }
 
     fn end(self) {
@@ -224,7 +274,7 @@ impl<'a> TextStream<'a> {
     where
         V: AsRef<str> + ?Sized,
     {
-        value.as_ref().to_cbor(self.encoder);
+        self.encoder.emit_string(value);
     }
 
     fn end(self) {
@@ -289,52 +339,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field();
     }
 
-    pub fn emit_raw<I>(&mut self, data: I)
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        self.next_field().emit_raw(data)
-    }
-
-    pub fn emit_raw_slice(&mut self, data: &[u8]) {
-        self.next_field().emit_raw_slice(data)
-    }
-
-    /// Append an additional slice of data, without incrementing the field count
-    pub fn append_raw_slice(&mut self, data: &[u8]) {
-        self.encoder.emit_raw_slice(data)
-    }
-
-    pub fn emit<T>(&mut self, value: &T)
+    pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
     {
         self.next_field().emit(value)
-    }
-
-    pub fn emit_tagged<T, I, U>(&mut self, value: &T, tags: I)
-    where
-        T: ToCbor + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_tagged(value, tags)
-    }
-
-    pub fn emit_measured<T>(&mut self, value: &T) -> Range<usize>
-    where
-        T: ToCborMeasured + ?Sized,
-    {
-        self.next_field().emit_measured(value)
-    }
-
-    pub fn emit_tagged_measured<T, I, U>(&mut self, value: &T, tags: I) -> Range<usize>
-    where
-        T: ToCborMeasured + ?Sized,
-        I: IntoIterator<Item = U>,
-        U: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_tagged_measured(value, tags)
     }
 
     pub fn emit_byte_stream<F>(&mut self, f: F)
@@ -344,29 +353,11 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_byte_stream(f)
     }
 
-    pub fn emit_byte_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut ByteStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_byte_stream_tagged(tags, f)
-    }
-
     pub fn emit_text_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut TextStream),
     {
         self.next_field().emit_text_stream(f)
-    }
-
-    pub fn emit_text_stream_tagged<F, I, T>(&mut self, tags: I, f: F)
-    where
-        F: FnOnce(&mut TextStream),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_text_stream_tagged(tags, f)
     }
 
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
@@ -376,99 +367,59 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_array(count, f)
     }
 
-    pub fn emit_array_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Array),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_array_tagged(count, tags, f)
-    }
-
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
     {
         self.next_field().emit_map(count, f)
     }
+}
 
-    pub fn emit_map_tagged<F, I, T>(&mut self, count: Option<usize>, tags: I, f: F)
-    where
-        F: FnOnce(&mut Map),
-        I: IntoIterator<Item = T>,
-        T: num_traits::ToPrimitive,
-    {
-        self.next_field().emit_map_tagged(count, tags, f)
+// Blanket implementation for references
+impl<T> ToCbor for &T
+where
+    T: ToCbor,
+{
+    type Result = T::Result;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        (*self).to_cbor(encoder)
     }
 }
 
-impl ToCbor for u64 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self);
-    }
+macro_rules! impl_uint_to_cbor {
+    ($($ty:ty),*) => {
+        $(
+            impl ToCbor for $ty {
+                type Result = ();
+                fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+                    encoder.emit_uint_minor(0, *self as u64)
+                }
+            }
+        )*
+    };
 }
 
-impl ToCbor for usize {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
+impl_uint_to_cbor!(u8, u16, u32, u64, usize);
+
+macro_rules! impl_int_to_cbor {
+    ($($ty:ty),*) => {
+        $(
+            impl ToCbor for $ty {
+                type Result = ();
+                fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+                    if *self >= 0 {
+                        encoder.emit_uint_minor(0, *self as u64)
+                    } else {
+                        encoder.emit_uint_minor(1, self.unsigned_abs() as u64 - 1)
+                    }
+                }
+            }
+        )*
+    };
 }
 
-impl ToCbor for u32 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
-
-impl ToCbor for u16 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
-
-impl ToCbor for u8 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        encoder.emit_uint_minor(0, *self as u64);
-    }
-}
-
-fn emit_i64(encoder: &mut Encoder, val: i64) {
-    if val >= 0 {
-        encoder.emit_uint_minor(0, val as u64);
-    } else {
-        encoder.emit_uint_minor(1, i64::abs(val) as u64 - 1);
-    }
-}
-
-impl ToCbor for i64 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self)
-    }
-}
-
-impl ToCbor for isize {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
-
-impl ToCbor for i32 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
-
-impl ToCbor for i16 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
-
-impl ToCbor for i8 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        emit_i64(encoder, *self as i64)
-    }
-}
+impl_int_to_cbor!(i8, i16, i32, i64, isize);
 
 fn lossless_float_coerce<T>(value: f64) -> Option<T>
 where
@@ -481,7 +432,9 @@ where
 }
 
 impl ToCbor for f64 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         if let Some(f) = lossless_float_coerce::<half::f16>(*self) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(f.to_be_bytes())
@@ -496,7 +449,9 @@ impl ToCbor for f64 {
 }
 
 impl ToCbor for f32 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         if let Some(f) = lossless_float_coerce::<half::f16>(*self as f64) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(f.to_be_bytes())
@@ -508,78 +463,56 @@ impl ToCbor for f32 {
 }
 
 impl ToCbor for half::f16 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.data.push((7 << 5) | 25);
         encoder.data.extend(self.to_be_bytes())
     }
 }
 
 impl ToCbor for bool {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.data.push((7 << 5) | if *self { 21 } else { 20 })
     }
 }
 
-impl ToCborMeasured for str {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        encoder.emit_uint_minor(3, self.len() as u64);
-        encoder.emit_extend(self.as_bytes())
+macro_rules! impl_string_to_cbor {
+    ($( $value_type:ty),*) => {
+        $(
+            impl ToCbor for $value_type {
+                type Result = Range<usize>;
+                fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+                    encoder.emit_string(self)
+                }
+            }
+        )*
+    };
+}
+
+impl_string_to_cbor!(str, String);
+
+impl<T> ToCbor for [T]
+where
+    T: ToCbor,
+{
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_array_slice(self)
     }
 }
 
-impl ToCbor for str {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
+impl<T, const N: usize> ToCbor for [T; N]
+where
+    T: ToCbor,
+{
+    type Result = ();
 
-impl ToCborMeasured for String {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        self.as_str().to_cbor_measured(encoder)
-    }
-}
-
-impl ToCbor for String {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
-
-impl ToCborMeasured for [u8] {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        encoder.emit_uint_minor(2, self.len() as u64);
-        encoder.emit_extend(self)
-    }
-}
-
-impl ToCbor for [u8] {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
-
-impl ToCborMeasured for Vec<u8> {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        self.as_slice().to_cbor_measured(encoder)
-    }
-}
-
-impl ToCbor for Vec<u8> {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
-    }
-}
-
-impl<const N: usize> ToCborMeasured for [u8; N] {
-    fn to_cbor_measured(&self, encoder: &mut Encoder) -> Range<usize> {
-        encoder.emit_uint_minor(2, N as u64);
-        encoder.emit_extend(self)
-    }
-}
-
-impl<const N: usize> ToCbor for [u8; N] {
-    fn to_cbor(&self, encoder: &mut Encoder) {
-        self.to_cbor_measured(encoder);
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_array_slice(self)
     }
 }
 
@@ -587,114 +520,101 @@ impl<T> ToCbor for Option<T>
 where
     T: ToCbor,
 {
-    fn to_cbor(&self, encoder: &mut Encoder) {
+    type Result = Option<T::Result>;
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         match self {
-            Some(value) => encoder.emit(value),
-            None => encoder.data.push((7 << 5) | 23),
+            Some(value) => Some(encoder.emit(value)),
+            None => {
+                encoder.data.push((7 << 5) | 23);
+                None
+            }
         }
     }
 }
 
-pub fn emit<T>(value: &T) -> Vec<u8>
+pub fn emit<T>(value: &T) -> (Vec<u8>, T::Result)
 where
     T: ToCbor + ?Sized,
 {
     let mut e = Encoder::new();
-    e.emit(value);
-    e.build()
+    let r = e.emit(value);
+    (e.build(), r)
 }
 
-pub fn emit_tagged<T, I, U>(value: &T, tags: I) -> Vec<u8>
-where
-    T: ToCbor + ?Sized,
-    I: IntoIterator<Item = U>,
-    U: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_tagged(value, tags);
-    e.build()
+macro_rules! impl_stream_emit_functions {
+    ($(( $method:ident,  $stream_type:ty)),*) => {
+        $(
+            pub fn $method<F>(f: F) -> Vec<u8>
+            where
+                F: FnOnce(&mut $stream_type),
+            {
+                let mut e = Encoder::new();
+                e.$method(f);
+                e.build()
+            }
+        )*
+    };
 }
 
-pub fn emit_byte_stream<F>(f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut ByteStream),
-{
-    let mut e = Encoder::new();
-    e.emit_byte_stream(f);
-    e.build()
+impl_stream_emit_functions!(
+    (emit_byte_stream, ByteStream),
+    (emit_text_stream, TextStream)
+);
+
+macro_rules! impl_collection_emit_functions {
+    ($(( $method:ident, $collection_type:ty)),*) => {
+        $(
+            pub fn $method<F>(count: Option<usize>, f: F) -> Vec<u8>
+            where
+                F: FnOnce(&mut $collection_type),
+            {
+                let mut e = Encoder::new();
+                e.$method(count, f);
+                e.build()
+            }
+        )*
+    };
 }
 
-pub fn emit_byte_stream_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut ByteStream),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_byte_stream_tagged(tags, f);
-    e.build()
+impl_collection_emit_functions!((emit_array, Array), (emit_map, Map));
+
+macro_rules! impl_tuple_emit_functions {
+    // The first argument `$len:expr` captures the tuple's length.
+    // The `( $($name:ident, $index:tt),* )` part matches a comma-separated list of
+    // pairs, like `(T1, 0), (T2, 1)`.
+    // `$name` will be the generic type identifier (e.g., T1, T2).
+    // `$index` will be the numeric tuple index (e.g., 0, 1).
+    ( $len:expr; $( ($name:ident, $index:tt) ),* ) => {
+        impl<$($name: ToCbor),*> ToCbor for ($($name,)*) {
+            type Result = ();
+            fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+                encoder.emit_array(Some($len),|a| {
+                    $( a.emit(&self.$index); )*
+                })
+            }
+        }
+    };
 }
 
-pub fn emit_text_stream<F>(f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut TextStream),
-{
-    let mut e = Encoder::new();
-    e.emit_text_stream(f);
-    e.build()
-}
+// Now, we call the macro to generate the implementations for tuples
+// containing 2 to 16 elements, passing the length each time.
+impl_tuple_emit_functions!(2; (T0, 0), (T1, 1));
+impl_tuple_emit_functions!(3; (T0, 0), (T1, 1), (T2, 2));
+impl_tuple_emit_functions!(4; (T0, 0), (T1, 1), (T2, 2), (T3, 3));
+impl_tuple_emit_functions!(5; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4));
+impl_tuple_emit_functions!(6; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5));
+impl_tuple_emit_functions!(7; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6));
+impl_tuple_emit_functions!(8; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7));
+impl_tuple_emit_functions!(9; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8));
+impl_tuple_emit_functions!(10; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9));
+impl_tuple_emit_functions!(11; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10));
+impl_tuple_emit_functions!(12; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11));
+impl_tuple_emit_functions!(13; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12));
+impl_tuple_emit_functions!(14; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13));
+impl_tuple_emit_functions!(15; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13), (T14, 14));
+impl_tuple_emit_functions!(16; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13), (T14, 14), (T15, 15));
 
-pub fn emit_text_stream_tagged<F, I, T>(tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut TextStream),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_text_stream_tagged(tags, f);
-    e.build()
-}
-
-pub fn emit_array<F>(count: Option<usize>, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Array),
-{
-    let mut e = Encoder::new();
-    e.emit_array(count, f);
-    e.build()
-}
-
-pub fn emit_array_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Array),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_array_tagged(count, tags, f);
-    e.build()
-}
-
-pub fn emit_map<F>(count: Option<usize>, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Map),
-{
-    let mut e = Encoder::new();
-    e.emit_map(count, f);
-    e.build()
-}
-
-pub fn emit_map_tagged<F, I, T>(count: Option<usize>, tags: I, f: F) -> Vec<u8>
-where
-    F: FnOnce(&mut Map),
-    I: IntoIterator<Item = T>,
-    T: num_traits::ToPrimitive,
-{
-    let mut e = Encoder::new();
-    e.emit_map_tagged(count, tags, f);
-    e.build()
-}
-
+// This is only exposed for testing
 #[cfg(test)]
 pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {
     match value {
