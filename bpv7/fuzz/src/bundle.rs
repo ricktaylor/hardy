@@ -110,7 +110,8 @@ pub fn test_bundle(orig_data: &[u8]) {
         )
     });
 
-    if let Ok(ValidBundle::Rewritten(_, rewritten_data, _)) = ValidBundle::parse(orig_data, keys) {
+    if let Ok(ValidBundle::Rewritten(_, rewritten_data, _, _)) = ValidBundle::parse(orig_data, keys)
+    {
         match ValidBundle::parse(&rewritten_data, keys) {
             Ok(ValidBundle::Valid(..)) => {}
             Ok(ValidBundle::Rewritten(..)) => {

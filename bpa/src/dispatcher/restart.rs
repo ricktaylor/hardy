@@ -46,6 +46,7 @@ impl Dispatcher {
                             status: BundleStatus::Dispatching,
                             storage_name: Some(storage_name),
                             received_at: file_time,
+                            non_canonical: false,
                         },
                         bundle,
                     };
@@ -69,7 +70,12 @@ impl Dispatcher {
                         .map(|_| store::RestartResult::Orphan)
                 }
             }
-            Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported)) => {
+            Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
+                bundle,
+                data,
+                report_unsupported,
+                non_canonical,
+            )) => {
                 warn!("Bundle in non-canonical format found: {storage_name}");
 
                 // Check if the metadata_storage knows about this bundle
@@ -109,6 +115,7 @@ impl Dispatcher {
                         status: BundleStatus::Dispatching,
                         storage_name: Some(new_storage_name),
                         received_at: file_time,
+                        non_canonical,
                     },
                     bundle,
                 };
@@ -176,6 +183,7 @@ impl Dispatcher {
                         status: BundleStatus::Dispatching,
                         storage_name: None,
                         received_at: file_time,
+                        non_canonical: false,
                     },
                     bundle,
                 };

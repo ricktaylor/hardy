@@ -14,6 +14,7 @@ pub struct BundleMetadata {
     pub status: BundleStatus,
     pub storage_name: Option<Arc<str>>,
     pub received_at: time::OffsetDateTime,
+    pub non_canonical: bool,
 }
 
 #[cfg(feature = "bincode")]
@@ -41,6 +42,7 @@ impl<Context> bincode::Decode<Context> for BundleMetadata {
                 time::OffsetDateTime::from_unix_timestamp_nanos(bincode::Decode::decode(decoder)?)
                     .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?
             },
+            non_canonical: bincode::Decode::decode(decoder)?,
         })
     }
 }
@@ -59,6 +61,7 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for BundleMetadata {
                 )
                 .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?
             },
+            non_canonical: bincode::BorrowDecode::borrow_decode(decoder)?,
         })
     }
 }

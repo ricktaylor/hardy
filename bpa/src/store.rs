@@ -284,6 +284,7 @@ impl Store {
                 status: metadata::BundleStatus::Dispatching,
                 storage_name: Some(storage_name.clone()),
                 received_at: time::OffsetDateTime::now_utc(),
+                non_canonical: false,
             },
             bundle,
         };

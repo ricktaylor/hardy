@@ -421,19 +421,21 @@ impl<'a> BlockParse<'a> {
         }
     }
 
-    fn rewrite(mut self, bundle: &mut Bundle) -> Option<Box<[u8]>> {
+    fn rewrite(mut self, bundle: &mut Bundle) -> Option<(Box<[u8]>, bool)> {
         // If we have nothing to rewrite, get out now
         if self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty() {
             bundle.blocks = self.blocks;
             return None;
         }
 
+        let non_canonical = !self.noncanonical_blocks.is_empty();
+
         // Drop any blocks marked for removal
         self.blocks
             .retain(|block_number, _| !self.blocks_to_remove.contains(block_number));
 
         // Write out the new bundle
-        Some(
+        Some((
             hardy_cbor::encode::emit_array(None, |block_array| {
                 // Primary block first
                 let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
@@ -463,7 +465,8 @@ impl<'a> BlockParse<'a> {
                 bundle.blocks.insert(1, payload_block);
             })
             .into(),
-        )
+            non_canonical,
+        ))
     }
 }
 
@@ -474,7 +477,7 @@ fn parse_blocks(
     block_array: &mut hardy_cbor::decode::Array,
     source_data: &[u8],
     key_f: &impl bpsec::key::KeyStore,
-) -> Result<(Option<Box<[u8]>>, bool), Error> {
+) -> Result<(Option<(Box<[u8]>, bool)>, bool), Error> {
     let mut parser = BlockParse::new(source_data);
 
     // Steal the primary block, we put it back later
@@ -569,9 +572,12 @@ impl ValidBundle {
             // And now parse the blocks
             match parse_blocks(&mut bundle, canonical, block_array, data, key_f) {
                 Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
-                Ok((Some(new_data), report_unsupported)) => {
-                    Ok(Self::Rewritten(bundle, new_data, report_unsupported))
-                }
+                Ok((Some((new_data, non_canonical)), report_unsupported)) => Ok(Self::Rewritten(
+                    bundle,
+                    new_data,
+                    report_unsupported,
+                    non_canonical,
+                )),
                 Err(Error::Unsupported(n)) => Ok(Self::Invalid(
                     bundle,
                     status_report::ReasonCode::BlockUnsupported,
@@ -585,7 +591,7 @@ impl ValidBundle {
             }
         })
         .map(|(bundle, len)| match bundle {
-            ValidBundle::Valid(bundle, _) | ValidBundle::Rewritten(bundle, _, _)
+            ValidBundle::Valid(bundle, _) | ValidBundle::Rewritten(bundle, _, _, _)
                 if len != data.len() =>
             {
                 Self::Invalid(

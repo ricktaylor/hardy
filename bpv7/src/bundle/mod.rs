@@ -347,6 +347,6 @@ impl Bundle {
 #[derive(Debug)]
 pub enum ValidBundle {
     Valid(Bundle, bool),
-    Rewritten(Bundle, Box<[u8]>, bool),
+    Rewritten(Bundle, Box<[u8]>, bool, bool),
     Invalid(Bundle, status_report::ReasonCode, Error),
 }

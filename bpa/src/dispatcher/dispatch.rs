@@ -47,13 +47,19 @@ impl Dispatcher {
                             status: BundleStatus::Dispatching,
                             storage_name: Some(self.store.save_data(data).await?),
                             received_at,
+                            non_canonical: false,
                         },
                         bundle,
                     },
                     None,
                     report_unsupported,
                 ),
-                hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, data, report_unsupported) => {
+                hardy_bpv7::bundle::ValidBundle::Rewritten(
+                    bundle,
+                    data,
+                    report_unsupported,
+                    non_canonical,
+                ) => {
                     trace!("Received bundle has been rewritten");
                     (
                         bundle::Bundle {
@@ -61,6 +67,7 @@ impl Dispatcher {
                                 status: BundleStatus::Dispatching,
                                 storage_name: Some(self.store.save_data(data.into()).await?),
                                 received_at,
+                                non_canonical,
                             },
                             bundle,
                         },
@@ -78,6 +85,7 @@ impl Dispatcher {
                                 status: BundleStatus::Dispatching,
                                 storage_name: None,
                                 received_at,
+                                non_canonical: false,
                             },
                             bundle,
                         },
