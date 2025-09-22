@@ -7,6 +7,10 @@ edition.workspace = true
 name = "mkbundle"
 path = "mkbundle.rs"
 
+[[bin]]
+name = "parse_bundle"
+path = "parse_bundle.rs"
+
 [dependencies]
 hardy-bpv7 = { path = ".." }
 clap = { version = "4.5.48", features = ["derive","cargo"] }
