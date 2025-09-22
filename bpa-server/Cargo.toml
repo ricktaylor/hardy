@@ -28,21 +28,21 @@ hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"],
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 tokio = { version = "1.47.1", features = ["macros","rt-multi-thread","signal"] }
 tokio-util = { version = "0.7.16", features = ["rt"] }
-tokio-stream = { version = "0.1.15", optional = true }
-tonic = { version = "0.14.1", optional = true }
+tokio-stream = { version = "0.1.17", optional = true }
+tonic = { version = "0.14.2", optional = true }
 prost-types = { version = "0.14.1", optional = true }
-config = { version = "0.15.14", features = ["toml"] }
-serde = { version = "1.0.219", features = ["derive"] }
-getopts = "0.2.23"
+config = { version = "0.15.16", features = ["toml"] }
+serde = { version = "1.0.226", features = ["derive"] }
+getopts = "0.2.24"
 directories = "6.0.0"
-thiserror = "2.0.15"
-time = "0.3.41"
+thiserror = "2.0.16"
+time = "0.3.44"
 cfg-if = "1.0.3"
 tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tracing-subscriber = "0.3.20"
 tracing-log = "0.2.0"
 notify-debouncer-full = "0.6.0"
-notify = { version = "8.0.0", default-features = false, features = ["macos_kqueue"] }
+notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "0.1.5"
-winnow = "0.7.12"
-anyhow = "1.0.99"
+winnow = "0.7.13"
+anyhow = "1.0.100"

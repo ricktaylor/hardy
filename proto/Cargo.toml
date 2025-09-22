@@ -9,10 +9,10 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
-tonic = "0.14.1"
-tonic-prost = "0.14.1"
+tonic = "0.14.2"
+tonic-prost = "0.14.2"
 prost = "0.14.1"
 prost-types = "0.14.1"
 
 [build-dependencies]
-tonic-prost-build = "0.14.1"
+tonic-prost-build = "0.14.2"

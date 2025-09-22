@@ -22,7 +22,7 @@ hardy-bpa = { path = ".." }
 hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }
-time = { version = "0.3.41", features = ["parsing"] }
+time = { version = "0.3.44", features = ["parsing"] }
 tracing = "0.1.41"
 arbitrary = { version = "1.4.2", features = ["derive"] }
 cfg-if = "1.0.3"
