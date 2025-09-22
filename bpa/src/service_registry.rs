@@ -158,7 +158,7 @@ impl ServiceRegistry {
                 loop {
                     let service_id = Eid::Dtn {
                         node_name: node_name.into(),
-                        demux: format!("auto_{}", Alphanumeric.sample_string(&mut rng, 16)).into(),
+                        demux: format!("auto/{}", Alphanumeric.sample_string(&mut rng, 16)).into(),
                     };
                     if !services.contains_key(&service_id) {
                         break service_id;

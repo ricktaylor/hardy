@@ -1,13 +1,13 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum BundleStatus {
     Dispatching,
-    ForwardPending(u32),
-    LocalPending(u32),
-    NoRoute,
+    ForwardPending { peer: u32, queue: u32 },
+    LocalPending { service: u32 },
+    Waiting,
 }
 
 #[derive(Debug, Clone)]

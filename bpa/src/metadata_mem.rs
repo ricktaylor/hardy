@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Mutex;
+use std::{collections::BTreeMap, sync::Mutex};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -19,31 +19,6 @@ impl Default for Config {
 
 struct Storage {
     entries: Mutex<lru::LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
-}
-
-struct SortedBundle(bundle::Bundle);
-
-impl PartialEq for SortedBundle {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.bundle.id == other.0.bundle.id
-    }
-}
-
-impl Eq for SortedBundle {}
-
-impl PartialOrd for SortedBundle {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SortedBundle {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .expiry()
-            .cmp(&other.0.expiry())
-            .then_with(|| self.0.bundle.id.cmp(&other.0.bundle.id))
-    }
 }
 
 #[async_trait]
@@ -109,30 +84,73 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<()> {
+        for (_, v) in self
+            .entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .iter_mut()
+        {
+            if let Some(v) = v
+                && let metadata::BundleStatus::ForwardPending { peer: p, queue: _ } =
+                    v.metadata.status
+                && p == peer
+            {
+                v.metadata.status = metadata::BundleStatus::Waiting;
+            }
+        }
+        Ok(())
+    }
+
     async fn poll_expiry(
         &self,
         tx: storage::Sender<bundle::Bundle>,
-        limit: usize,
+        mut limit: usize,
     ) -> storage::Result<()> {
-        let entries = self
+        let mut entries = BTreeMap::new();
+        for (_, v) in self
             .entries
             .lock()
             .trace_expect("Failed to lock mutex")
             .iter()
-            .filter_map(|(_, v)| {
-                let Some(v) = v else {
-                    return None;
-                };
-                if matches!(v.metadata.status, metadata::BundleStatus::Dispatching) {
-                    None
-                } else {
-                    Some(SortedBundle(v.clone()))
-                }
-            })
-            .collect::<std::collections::BTreeSet<_>>();
+        {
+            if let Some(v) = v
+                && v.metadata.status != metadata::BundleStatus::Dispatching
+            {
+                entries.insert(v.expiry(), v.clone());
+            }
+        }
 
-        for e in entries {
-            if tx.send_async(e.0).await.is_err() {
+        for (_, e) in entries {
+            if limit == 0 {
+                break;
+            }
+            limit -= 1;
+
+            if tx.send_async(e).await.is_err() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
+        let mut entries = BTreeMap::new();
+        for (_, v) in self
+            .entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .iter()
+        {
+            if let Some(v) = v
+                && v.metadata.status == metadata::BundleStatus::Waiting
+            {
+                entries.insert(v.metadata.received_at, v.clone());
+            }
+        }
+
+        for (_, e) in entries {
+            if tx.send_async(e).await.is_err() {
                 break;
             }
         }

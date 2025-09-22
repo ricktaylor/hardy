@@ -12,7 +12,7 @@ impl Dispatcher {
         flags: Option<service::SendFlags>,
     ) -> Result<hardy_bpv7::bundle::Id, Error> {
         // Check to see if we should use ipn 2-element encoding
-        if self.ipn_2_element.contains(&destination) {
+        if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
             if let Eid::Ipn {
                 allocator_id: sa,
                 node_number: sn,

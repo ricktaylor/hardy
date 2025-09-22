@@ -437,4 +437,14 @@ impl Store {
     ) -> storage::Result<()> {
         self.metadata_storage.poll_expiry(tx, limit).await
     }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
+        self.metadata_storage.poll_waiting(tx).await
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    pub async fn reset_peer_queue(&self, peer: u32) -> storage::Result<()> {
+        self.metadata_storage.reset_peer_queue(peer).await
+    }
 }

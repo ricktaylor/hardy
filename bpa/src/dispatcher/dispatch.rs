@@ -99,6 +99,8 @@ impl Dispatcher {
             Ok(false) => {
                 // Bundle with matching id already exists in the metadata store
 
+                // TODO: There may be custody transfer signalling that needs to happen here
+
                 // Drop the stored data and do not process further
                 if let Some(storage_name) = &bundle.metadata.storage_name {
                     self.store.delete_data(storage_name).await?;
@@ -141,11 +143,6 @@ impl Dispatcher {
          * the configured filters or code may have changed, and reprocessing is desired.
          */
 
-        // Drop Eid::Null silently to cull spam
-        if bundle.bundle.destination == Eid::Null {
-            return self.drop_bundle(bundle, None).await;
-        }
-
         if let Some(u) = bundle.bundle.flags.unrecognised {
             trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
         }
@@ -169,13 +166,7 @@ impl Dispatcher {
             return self.drop_bundle(bundle, reason).await;
         }
 
-        if let BundleStatus::Dispatching = bundle.metadata.status {
-            // Now process the bundle
-            self.forward_bundle(bundle).await
-        } else {
-            // Do nothing more (this can happen from restart)
-            self.reaper.watch_bundle(bundle).await;
-            Ok(())
-        }
+        // Now process the bundle
+        self.forward_bundle(bundle).await
     }
 }

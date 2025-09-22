@@ -1,8 +1,8 @@
 use super::*;
-use hardy_bpv7::eid::Eid;
-use hardy_eid_pattern::EidPatternMap;
+use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_eid_pattern::EidPattern;
 use std::{
-    collections::{BinaryHeap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::RwLock,
 };
 
@@ -12,32 +12,76 @@ mod route;
 
 pub enum FindResult {
     AdminEndpoint,
-    Deliver(Arc<service_registry::Service>), // Deliver to local service
-    Forward(
-        Vec<u32>, // Available endpoints for forwarding
-        bool,     // Should we reflect if forwarding fails
-    ),
+    Deliver(Option<Arc<service_registry::Service>>), // Deliver to local service
+    Forward { peer: u32, queue: u32 },               // Forward to peer on queue
+    Drop(Option<ReasonCode>),                        // Drop with reason code
 }
+
+type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries
 
 struct RibInner {
     locals: local::LocalInner,
-    routes: EidPatternMap<route::Entry>,
+    routes: RouteTable,
     address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
 }
 
 pub struct Rib {
     inner: RwLock<RibInner>,
+    cancel_token: tokio_util::sync::CancellationToken,
+    task_tracker: tokio_util::task::TaskTracker,
+    poll_waiting_notify: Arc<tokio::sync::Notify>,
+    store: Arc<store::Store>,
 }
 
 impl Rib {
-    pub fn new(config: &config::Config) -> Self {
+    pub fn new(config: &config::Config, store: Arc<store::Store>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(config),
-                routes: EidPatternMap::new(),
+                routes: BTreeMap::new(),
                 address_types: HashMap::new(),
             }),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            task_tracker: tokio_util::task::TaskTracker::new(),
+            poll_waiting_notify: Arc::new(tokio::sync::Notify::new()),
+            store,
         }
+    }
+
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+        let cancel_token = self.cancel_token.clone();
+        let rib = self.clone();
+        let task = async move {
+            loop {
+                tokio::select! {
+                    _ = rib.poll_waiting_notify.notified() => {
+                        dispatcher.poll_waiting(&cancel_token).await;
+                    },
+                    _ = cancel_token.cancelled() => {
+                        break;
+                    }
+                }
+            }
+        };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "poll_waiting_task");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        self.task_tracker.spawn(task);
+    }
+
+    pub async fn shutdown(&self) {
+        self.cancel_token.cancel();
+        self.task_tracker.close();
+        self.task_tracker.wait().await;
+    }
+
+    async fn notify_updated(&self) {
+        self.poll_waiting_notify.notify_one();
     }
 
     pub fn add_address_type(

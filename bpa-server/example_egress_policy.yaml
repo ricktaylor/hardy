@@ -1,0 +1,64 @@
+# This configuration file defines the Quality of Service (QoS) policies
+# for various convergence layer adaptors.
+clas:
+  - name: "uplink"                     # Logical name for the CLA
+    type: tcpclv4                      # Convergence Layer Type
+    config:
+      local_port: 4556                 # Port to listen on for TCP connections
+      peers:
+        - host: "node1.example.com"    # Remote peer address
+          port: 4556                   # Remote peer port
+
+    # This interface uses the HTB (Hierarchical Token Bucket) policy.
+    # The policy's configuration is nested under a 'config' key.
+    egress_policy:
+      type: htb
+      config:
+        channels:
+          - name: critical_systems
+            flow_labels: "[10-19, 100, 105]"
+            default: false
+            priority: 1
+            rate: 10mbit
+            ceil: 100mbit
+          - name: primary_payload
+            flow_labels: "[20]"
+            default: false
+            priority: 2
+            rate: 50mbit
+            ceil: 100mbit
+          - name: bulk_data
+            flow_labels: "[30-39]"
+            default: true
+            priority: 3
+            rate: 5mbit
+            ceil: 80mbit
+
+  # --- BTPU-Ethernet (Experimental Ethernet-based CLA) ---
+  - name: "experimental"
+    type: btpu-ethernet
+    config:
+      interface: "eth0"                         # Network interface to use (e.g., eth0)
+      mtu: 1500                                 # Maximum Transmission Unit
+      destination_mac: "02:42:ac:11:00:02"      # MAC address to send frames to
+      ethertype: 0x88B5                         # Custom Ethertype for BPA frames
+
+    # This interface uses a simpler TBF (Token Bucket Filter) policy.
+    egress_policy:
+      type: tbf
+      config:
+        rate: 25mbit
+        burst: 512kb
+        latency: 50ms
+
+  - name: "downlink"
+    type: udpclv2
+    config:
+      local_port: 4557                 # Local port to bind to
+      remote_host: "groundstation.example.com"  # Destination host
+      remote_port: 4557                # Destination port
+
+    # This interface has no specific policy defined. The system should
+    # apply a default, simple FIFO (First-In, First-Out) queue.
+    # The `egress_policy` key is intentionally omitted.
+

@@ -1,7 +1,6 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
-use tokio::sync::Notify;
 
 const CACHE_SIZE: usize = 64;
 
@@ -36,14 +35,14 @@ pub struct Reaper {
     cache: Arc<Mutex<BTreeSet<CacheEntry>>>,
     store: Arc<store::Store>,
     max_cache_size: usize,
-    wakeup: Arc<Notify>,
+    wakeup: Arc<tokio::sync::Notify>,
 }
 
 impl Reaper {
     /// Creates a new Reaper. Returns the instance and the receiver for route updates.
     pub fn new(store: Arc<store::Store>) -> Self {
         let cache = Arc::new(Mutex::new(BTreeSet::new()));
-        let wakeup = Arc::new(Notify::new());
+        let wakeup = Arc::new(tokio::sync::Notify::new());
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let task_tracker = tokio_util::task::TaskTracker::new();
 
@@ -230,9 +229,13 @@ impl Reaper {
         let task = async move {
             loop {
                 tokio::select! {
-                    bundle = rx.recv_async() => match bundle {
-                        Err(_) => break,
-                        Ok(bundle) => reaper.watch_bundle_inner(bundle,false).await,
+                    bundle = rx.recv_async() => {
+                        let Ok(bundle) = bundle else {
+                            break;
+                        };
+                        if bundle.metadata.status != metadata::BundleStatus::Dispatching {
+                            reaper.watch_bundle_inner(bundle, false).await;
+                        }
                     },
                     _ = cancel_token.cancelled() => {
                         break;
@@ -254,8 +257,8 @@ impl Reaper {
             .store
             .poll_expiry(tx, self.max_cache_size)
             .await
-            .inspect_err(|e| error!("Failed to poll store for pending bundles: {e}"))
-            .is_ok()
+            .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"))
+            .is_err()
         {
             // Cancel the reader task
             outer_cancel_token.cancel();

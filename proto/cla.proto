@@ -12,7 +12,7 @@ service Cla {
 }
 
 message ClaToBpa {
-  int32 msg_id = 1;
+  uint32 msg_id = 1;
   oneof msg {
     google.rpc.Status status = 2;
     RegisterClaRequest register = 3;
@@ -24,7 +24,7 @@ message ClaToBpa {
 }
 
 message BpaToCla {
-  int32 msg_id = 1;
+  uint32 msg_id = 1;
   oneof msg {
     google.rpc.Status status = 2;
     RegisterClaResponse register = 3;
@@ -73,6 +73,7 @@ message RemovePeerResponse {}
 message ForwardBundleRequest {
   bytes bundle = 1;
   ClaAddress address = 2;
+  uint32 queue = 3;
 }
 
 message ForwardBundleResponse {

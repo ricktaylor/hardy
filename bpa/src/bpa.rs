@@ -24,10 +24,14 @@ impl Bpa {
         let store = Arc::new(store::Store::new(config));
 
         // New RIB
-        let rib = Arc::new(rib::Rib::new(config));
+        let rib = Arc::new(rib::Rib::new(config, store.clone()));
 
         // New registries
-        let cla_registry = Arc::new(cla::registry::Registry::new(config, rib.clone()));
+        let cla_registry = Arc::new(cla::registry::Registry::new(
+            config,
+            rib.clone(),
+            store.clone(),
+        ));
         let service_registry =
             Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
 
@@ -39,15 +43,19 @@ impl Bpa {
             config,
             store.clone(),
             reaper.clone(),
+            cla_registry.clone(),
             service_registry.clone(),
             rib.clone(),
         ));
 
+        // Start the store
+        store.start(dispatcher.clone(), recover_storage);
+
+        // Start the RIB
+        rib.start(dispatcher.clone());
+
         // Start the reaper
         reaper.start(dispatcher.clone());
-
-        // And finally restart the store
-        store.start(dispatcher.clone(), recover_storage);
 
         info!("BPA started");
 
@@ -70,6 +78,7 @@ impl Bpa {
         self.service_registry.shutdown().await;
         self.cla_registry.shutdown().await;
         self.reaper.shutdown().await;
+        self.rib.shutdown().await;
         self.store.shutdown().await;
 
         trace!("BPA stopped");
@@ -92,9 +101,10 @@ impl Bpa {
         name: String,
         address_type: Option<cla::ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
+        policy: Option<Arc<dyn cla::EgressPolicy>>,
     ) -> cla::Result<()> {
         self.cla_registry
-            .register(name, address_type, cla, &self.dispatcher)
+            .register(name, address_type, cla, &self.dispatcher, policy)
             .await
     }
 
@@ -105,18 +115,18 @@ impl Bpa {
         pattern: hardy_eid_pattern::EidPattern,
         action: routes::Action,
         priority: u32,
-    ) {
+    ) -> bool {
         self.rib.add(pattern, source, action, priority).await
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub fn remove_route(
+    pub async fn remove_route(
         &self,
         source: &str,
         pattern: &hardy_eid_pattern::EidPattern,
         action: &routes::Action,
         priority: u32,
     ) -> bool {
-        self.rib.remove(pattern, source, action, priority)
+        self.rib.remove(pattern, source, action, priority).await
     }
 }

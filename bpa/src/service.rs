@@ -30,6 +30,7 @@ pub enum Error {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ServiceId<'a> {
+    // TODO: Anonymous
     DtnService(&'a str),
     IpnService(u32),
 }

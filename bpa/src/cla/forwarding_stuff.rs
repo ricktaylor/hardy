@@ -22,7 +22,7 @@ fn lifted_from_dispatcher() {
             // We ignore the fact that a new bundle has been created, as it makes no difference below
             let (_, data) = self.update_extension_blocks(bundle, &data);
 
-            match cla.cla.on_forward(cla_addr, data.into()).await {
+            match cla.cla.forward(cla_addr, data.into()).await {
                 Err(e) => warn!("CLA failed to forward: {e}"),
                 Ok(cla::ForwardBundleResult::Sent) => {
                     // We have successfully forwarded!

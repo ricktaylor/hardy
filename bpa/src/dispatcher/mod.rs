@@ -1,3 +1,7 @@
+use super::{metadata::*, *};
+use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use std::collections::BTreeSet;
+
 mod admin;
 mod dispatch;
 mod forward;
@@ -5,11 +9,6 @@ mod fragment;
 mod local;
 mod report;
 mod restart;
-mod stats;
-
-use super::*;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
-use metadata::*;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -19,8 +18,9 @@ pub struct Dispatcher {
     store: Arc<store::Store>,
     reaper: Arc<reaper::Reaper>,
     service_registry: Arc<service_registry::ServiceRegistry>,
+    cla_registry: Arc<cla::registry::Registry>,
     rib: Arc<rib::Rib>,
-    ipn_2_element: Arc<hardy_eid_pattern::EidPatternSet>,
+    ipn_2_element: Arc<BTreeSet<hardy_eid_pattern::EidPattern>>,
     //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
 
     // Config options
@@ -34,6 +34,7 @@ impl Dispatcher {
         config: &config::Config,
         store: Arc<store::Store>,
         reaper: Arc<reaper::Reaper>,
+        cla_registry: Arc<cla::registry::Registry>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         rib: Arc<rib::Rib>,
         //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
@@ -44,14 +45,15 @@ impl Dispatcher {
             store,
             reaper,
             service_registry,
+            cla_registry,
             rib,
-            ipn_2_element: Arc::new(config.ipn_2_element.iter().fold(
-                hardy_eid_pattern::EidPatternSet::new(),
-                |mut acc, e| {
-                    acc.insert(e);
-                    acc
-                },
-            )),
+            ipn_2_element: Arc::new(
+                config
+                    .ipn_2_element
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+            ),
             //keys: keys.unwrap_or(Box<NoKeys>::new()),
             status_reports: config.status_reports,
             node_ids: config.node_ids.clone(),

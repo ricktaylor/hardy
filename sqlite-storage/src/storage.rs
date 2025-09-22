@@ -42,8 +42,8 @@ impl ConnectionPool {
         };
 
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-            PRAGMA optimize=0x10002",
+            "PRAGMA foreign_keys = ON;
+            PRAGMA optimize = 0x10002",
         )
         .trace_expect("Failed to optimize");
 
@@ -124,8 +124,8 @@ impl Storage {
         // Mark all existing non-Tombstone bundles as unconfirmed
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                PRAGMA optimize=0x10002;",
+                "PRAGMA foreign_keys = ON;
+                PRAGMA optimize = 0x10002;",
             )
             .trace_expect("Failed to prepare metadata store database");
 
@@ -160,12 +160,14 @@ impl Storage {
     }
 }
 
-fn from_status(status: &hardy_bpa::metadata::BundleStatus) -> i64 {
+fn from_status(status: &hardy_bpa::metadata::BundleStatus) -> (i64, Option<u32>, Option<u32>) {
     match status {
-        hardy_bpa::metadata::BundleStatus::Dispatching => 0,
-        hardy_bpa::metadata::BundleStatus::NoRoute => 1,
-        hardy_bpa::metadata::BundleStatus::ForwardPending(_) => 2,
-        hardy_bpa::metadata::BundleStatus::LocalPending(_) => 4,
+        hardy_bpa::metadata::BundleStatus::Dispatching => (0, None, None),
+        hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None),
+        hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
+            (2, Some(*peer), Some(*queue))
+        }
+        hardy_bpa::metadata::BundleStatus::LocalPending { service } => (3, Some(*service), None),
     }
 }
 
@@ -200,15 +202,16 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
-        let status_code = from_status(&bundle.metadata.status);
+        let received_at = bundle.metadata.received_at;
+        let (status_code, status_param1, status_param2) = from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
-                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,status_code) VALUES (?1,?2,?3,?4)",
+                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             )?
-            .execute((id, bundle, expiry, status_code))
+            .execute((id, bundle, expiry, received_at, status_code,status_param1,status_param2))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -218,16 +221,16 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
-        let status_code = from_status(&bundle.metadata.status);
+        let (status_code, status_param1, status_param2) = from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         if self
             .write(move |conn| {
                 // Update bundle
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, status_code = ?4 WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = ?2, expiry = ?3, status_code = ?4, status_param1 = ?5, status_param2 = ?6 WHERE bundle_id = ?1",
                 )?
-                .execute((id, bundle, expiry, status_code))
+                .execute((id, bundle, expiry, status_code,status_param1,status_param2))
                 .map_err(Into::into)
             })
             .await?
@@ -244,7 +247,7 @@ impl storage::MetadataStorage for Storage {
         if self
             .write(move |conn| {
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = NULL, status_code = NULL WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL WHERE bundle_id = ?1",
                 )?
                 .execute((id,))
                 .map_err(Into::into)
@@ -259,18 +262,14 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn start_recovery(&self) {
-        if self
+        if let Err(e) = self
             .write(move |conn| {
-                conn.prepare_cached(
-                    "INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL",
-                )?
-                .execute((id,))
+                conn.execute_batch("INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL")
                 .map_err(Into::into)
             })
-            .await?
-            != 1
+            .await
         {
-            error!("Failed to mark unconfirmed bundles!");
+            error!("Failed to mark unconfirmed bundles!: {e}");
         }
     }
 
@@ -333,50 +332,59 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         loop {
-            let Some(bundle) = self.write(move |conn| {
-                let trans =
-                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let bundles = self
+            .write(move |conn| {
+                let mut bundles = Vec::new();
 
-                let Some((id,bundle)) = trans
+                for r in conn
                     .prepare_cached(
-                        "SELECT bundles.id,bundle FROM bundles JOIN unconfirmed_bundles ON unconfirmed_bundles.id = bundles.id LIMIT 1",
+                        "WITH
+                            -- 1. Atomically delete one row from unconfirmed_bundles and return its ID.
+                            unconfirmed AS (
+                                DELETE FROM unconfirmed_bundles
+                                WHERE id IN (SELECT id FROM unconfirmed_bundles LIMIT 64)
+                                RETURNING id
+                            ),
+                            -- 2. Using the ID from the first CTE, update the bundles table.
+                            --    We must reference this CTE in the final SELECT to ensure it executes.
+                            updated AS (
+                                UPDATE bundles SET bundle = NULL
+                                WHERE id IN (SELECT id FROM unconfirmed)
+                                RETURNING id
+                        )
+                        -- 3. Select the ORIGINAL data from the bundles table.
+                        --    The final SELECT reads the table state from *before* the UPDATE occurred,
+                        --    and we join it with our CTEs to get the right row and ensure they ran.
+                        SELECT bundle FROM bundles
+                        INNER JOIN unconfirmed ON bundle.id = unconfirmed.id
+                        INNER JOIN updated ON unconfirmed.id = updated.id;",
                     )?
-                    .query_row((), |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
-                    }).optional()? else {
-                        return Ok(None);
-                    };
-
-                if trans
-                    .prepare_cached("UPDATE bundles SET bundle = NULL WHERE id = ?1")?
-                    .execute((&id,))? != 1 {
-                        error!("Failed to tombstone unconfirmed bundle!");
-                    }
-
-                if trans
-                    .prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
-                    .execute((&id,))? != 1 {
-                        error!("Failed to delete unconfirmed bundle!");
-                    }
-
-                trans.commit()?;
-
-                Ok(bundle)
-            })
-            .await? else {
-                return Ok(());
-            };
-
-            match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                Ok((bundle, _)) => {
-                    if tx.send_async(bundle).await.is_err() {
-                        // The other end is shutting down - get out
-                        return Ok(());
-                    }
+                    .query_map((), |row| row.get::<_, Vec<u8>>(0))?
+                {
+                    bundles.push(r?);
                 }
-                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+
+                Ok(bundles)
+            })
+            .await?;
+
+            for bundle in bundles {
+                match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                    Ok((bundle, _)) => {
+                        if tx.send_async(bundle).await.is_err() {
+                            // The other end is shutting down - get out
+                            break;
+                        }
+                    }
+                    Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+                }
             }
         }
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<()> {
+        todo!()
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -385,6 +393,8 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
+        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 1); // Ensure status codes match
+
         let bundles = self
             .read(move |conn| {
                 let mut bundles = Vec::new();
@@ -392,8 +402,8 @@ impl storage::MetadataStorage for Storage {
                 for r in conn
                     .prepare_cached(
                         "SELECT bundle FROM bundles 
-                        WHERE bundle IS NOT NULL 
-                        ORDER BY expiry
+                        WHERE bundle IS NOT NULL AND status_code != 1
+                        ORDER BY expiry ASC
                         LIMIT ?1",
                     )?
                     .query_map((limit,), |row| row.get::<_, Vec<u8>>(0))?
@@ -418,5 +428,62 @@ impl storage::MetadataStorage for Storage {
         }
 
         Ok(())
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    async fn poll_waiting(
+        &self,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+    ) -> storage::Result<()> {
+        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 3); // Ensure status codes match
+
+        // Refresh the waiting queue
+        self.write(move |conn| {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO waiting_queue (id,received_at) SELECT id,received_at FROM bundles WHERE status_code = 3",
+            )
+            .map_err(Into::into)
+        }).await?;
+
+        loop {
+            let bundles = self
+                .write(move |conn| {
+                    let mut bundles = Vec::new();
+
+                    for r in conn
+                        .prepare_cached(
+                            "WITH waiting_bundles AS (
+                                DELETE FROM waiting_queue
+                                WHERE id IN (SELECT id FROM waiting_queue ORDER BY received_at ASC LIMIT 64)
+                                RETURNING id, received_at
+                            )
+                            SELECT bundle FROM bundles 
+                            INNER JOIN waiting_bundles ON bundles.id = waiting_bundles.id;",
+                        )?
+                        .query_map((), |row| row.get::<_, Vec<u8>>(0))?
+                    {
+                        bundles.push(r?);
+                    }
+
+                    Ok(bundles)
+                })
+                .await?;
+
+            if bundles.is_empty() {
+                return Ok(());
+            }
+
+            for bundle in bundles {
+                match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                    Ok((bundle, _)) => {
+                        if tx.send_async(bundle).await.is_err() {
+                            // The other end is shutting down - get out
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+                }
+            }
+        }
     }
 }

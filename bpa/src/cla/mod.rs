@@ -1,7 +1,14 @@
 use super::*;
 use thiserror::Error;
 
+pub mod policy;
 pub mod registry;
+
+// #[cfg(feature = "htb_policy")]
+// pub mod htb_policy;
+
+// #[cfg(feature = "tbf_policy")]
+// pub mod tbf_policy;
 
 mod peers;
 
@@ -90,7 +97,17 @@ pub enum ForwardBundleResult {
 }
 
 #[async_trait]
-pub trait Cla: Send + Sync {
+pub trait EgressController: Send + Sync {
+    async fn forward(
+        &self,
+        queue: u32,
+        cla_addr: ClaAddress,
+        bundle: Bytes,
+    ) -> Result<ForwardBundleResult>;
+}
+
+#[async_trait]
+pub trait Cla: EgressController {
     async fn on_register(
         &self,
         sink: Box<dyn Sink>,
@@ -98,8 +115,17 @@ pub trait Cla: Send + Sync {
     ) -> Result<()>;
 
     async fn on_unregister(&self);
+}
 
-    async fn on_forward(&self, cla_addr: ClaAddress, bundle: Bytes) -> Result<ForwardBundleResult>;
+#[async_trait]
+pub trait EgressPolicy: Send + Sync {
+    fn queue_count(&self) -> u32 {
+        1
+    }
+
+    fn classify(&self, flow_label: u32) -> u32;
+
+    async fn new_controller(&self, cla: Arc<dyn Cla>) -> Arc<dyn EgressController>;
 }
 
 #[async_trait]
@@ -108,7 +134,7 @@ pub trait Sink: Send + Sync {
 
     async fn dispatch(&self, bundle: Bytes) -> Result<()>;
 
-    async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, addr: ClaAddress) -> Result<()>;
+    async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, addr: ClaAddress) -> Result<bool>;
 
     async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid, addr: &ClaAddress) -> Result<bool>;
 }

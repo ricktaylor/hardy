@@ -174,13 +174,13 @@ pub fn init() -> Option<(Config, String)> {
     // Pull in environment vars
     b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
 
-    let mut config = b
+    let mut config: Config = b
         .build()
         .expect("Failed to read configuration")
         .try_deserialize()
         .expect("Failed to parse configuration");
 
-    config.upgrade_store = flags.opt_present("u");
+    config.upgrade_storage = flags.opt_present("u");
     config.recover_storage = flags.opt_present("r");
 
     // And parse...

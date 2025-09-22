@@ -15,7 +15,7 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-hardy-bpv7 = { path = "../bpv7" }
+hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
 hardy-eid-pattern = { path = "../eid_pattern" }
 time = { version = "0.3.44", features = ["serde-human-readable"] }

@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicU32, Ordering},
     },
 };
 use tokio::sync::{mpsc, oneshot};
@@ -17,8 +17,8 @@ type AckMapEntry<T> = oneshot::Sender<hardy_bpa::cla::Result<T>>;
 struct Cla {
     sink: OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
     tx: mpsc::Sender<Result<BpaToCla, tonic::Status>>,
-    msg_id: AtomicI32,
-    forward_acks: Mutex<HashMap<i32, AckMapEntry<forward_bundle_response::Result>>>,
+    msg_id: AtomicU32,
+    forward_acks: Mutex<HashMap<u32, AckMapEntry<forward_bundle_response::Result>>>,
 }
 
 impl Cla {
@@ -53,6 +53,7 @@ impl Cla {
                                     Err(_) => hardy_bpa::cla::ClaAddressType::Unknown(o as u32),
                                 }),
                                 cla.clone(),
+                                None,
                             )
                             .await
                             .map(|_| BpaToCla {
@@ -222,7 +223,7 @@ impl Cla {
 
     async fn forward_ack_response(
         &self,
-        msg_id: i32,
+        msg_id: u32,
         response: Result<forward_bundle_response::Result, tonic::Status>,
     ) -> Option<Result<bpa_to_cla::Msg, tonic::Status>> {
         if let Some(entry) = self
@@ -254,9 +255,13 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_unregister(&self) {
         // We do nothing
     }
+}
 
-    async fn on_forward(
+#[async_trait]
+impl hardy_bpa::cla::EgressController for Cla {
+    async fn forward(
         &self,
+        queue: u32,
         cla_addr: hardy_bpa::cla::ClaAddress,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
@@ -286,6 +291,7 @@ impl hardy_bpa::cla::Cla for Cla {
                             hardy_bpa::cla::Error::Internal(e.into())
                         })?,
                     ),
+                    queue,
                 })),
                 msg_id,
             }))

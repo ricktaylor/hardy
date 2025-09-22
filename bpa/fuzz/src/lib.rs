@@ -83,20 +83,23 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     }
 
     // New BPA
-    hardy_bpa::bpa::Bpa::start(&hardy_bpa::config::Config {
-        status_reports: true,
-        node_ids: [hardy_bpv7::eid::Eid::Ipn {
-            allocator_id: 0,
-            node_number: 1,
-            service_number: 0,
-        }]
-        .as_slice()
-        .try_into()
-        .unwrap(),
-        metadata_storage,
-        bundle_storage,
-        ..Default::default()
-    })
+    hardy_bpa::bpa::Bpa::start(
+        &hardy_bpa::config::Config {
+            status_reports: true,
+            node_ids: [hardy_bpv7::eid::Eid::Ipn {
+                allocator_id: 0,
+                node_number: 1,
+                service_number: 0,
+            }]
+            .as_slice()
+            .try_into()
+            .unwrap(),
+            metadata_storage,
+            bundle_storage,
+            ..Default::default()
+        },
+        false,
+    )
     .await
     .expect("Failed to start BPA")
 }
@@ -136,7 +139,7 @@ impl Msg {
 
                     {
                         let cla = std::sync::Arc::new(cla::NullCla::default());
-                        bpa.register_cla("fuzz".to_string(), None, cla.clone())
+                        bpa.register_cla("fuzz".to_string(), None, cla.clone(), None)
                             .await
                             .expect("Failed to register CLA");
 

@@ -249,7 +249,7 @@ impl ConnectionRegistry {
         }
     }
 
-    pub async fn on_forward(
+    pub async fn forward(
         &self,
         remote_addr: &SocketAddr,
         mut bundle: hardy_bpa::Bytes,

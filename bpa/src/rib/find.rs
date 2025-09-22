@@ -1,118 +1,197 @@
 use super::*;
-use hardy_bpv7::status_report::ReasonCode;
-use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+
+enum InternalFindResult {
+    AdminEndpoint,
+    Deliver(Option<Arc<service_registry::Service>>), // Deliver to local service
+    Forward(HashSet<u32>),                           // Available CLA peers for forwarding
+    Drop(Option<ReasonCode>),                        // Drop with reason code
+    Reflect,                                         // Reflect
+}
 
 impl Rib {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub fn find(&self, to: &Eid) -> Result<Option<FindResult>, Option<ReasonCode>> {
-        find_recurse(
-            &self.inner.read().trace_expect("Failed to lock mutex"),
-            to,
+    pub async fn find(
+        &self,
+        cla_registry: &cla::registry::Registry,
+        bundle: &bundle::Bundle,
+    ) -> Option<FindResult> {
+        let inner = self.inner.read().trace_expect("Failed to lock mutex");
+
+        // TODO: this is where route table switching can occur
+        let table = &inner.routes;
+
+        let result = find_recurse(
+            &inner,
+            table,
+            &bundle.bundle.destination,
+            true,
             &mut HashSet::new(),
-        )
+        )?;
+        if !matches!(result, InternalFindResult::Reflect) {
+            // Drop the mutex before the mapping
+            return map_result(cla_registry, result, bundle);
+        };
+
+        // Return the bundle to the source via the 'previous_node' or 'bundle.source'
+        let previous = bundle
+            .bundle
+            .previous_node
+            .as_ref()
+            .unwrap_or(&bundle.bundle.id.source);
+
+        let result = find_recurse(&inner, table, previous, false, &mut HashSet::new())?;
+        if matches!(result, InternalFindResult::Reflect) {
+            // Ignore double reflection
+            None
+        } else {
+            map_result(cla_registry, result, bundle)
+        }
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
+        let inner = self.inner.read().trace_expect("Failed to lock mutex");
+
+        // TODO: this is where route table switching can occur
+        let table = &inner.routes;
+
+        if let Some(InternalFindResult::Forward(peers)) =
+            find_recurse(&inner, table, to, false, &mut HashSet::new())
+        {
+            Some(peers)
+        } else {
+            None
+        }
+    }
+}
+
+fn map_result(
+    cla_registry: &cla::registry::Registry,
+    result: InternalFindResult,
+    bundle: &bundle::Bundle,
+) -> Option<FindResult> {
+    match result {
+        InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
+        InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
+        InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
+        InternalFindResult::Forward(peers) => {
+            let peers = peers.into_iter().collect::<Vec<_>>();
+            let peer = if peers.len() > 1 {
+                // Use a hash of source+destination as the hash input
+                // TODO: Look at other flow labels here as well
+                // TODO: This is an open research topic - is this really the correct behavior with bundles?
+                let mut hasher = std::hash::DefaultHasher::default();
+                (&bundle.bundle.id.source, &bundle.bundle.destination).hash(&mut hasher);
+
+                *peers
+                    .get((hasher.finish() % (peers.len() as u64)) as usize)
+                    .trace_expect("ECMP hash has picked an invalid entry")
+            } else {
+                *peers.first().expect("Empty CLA result from find?!?")
+            };
+
+            // TODO: Flow labelling
+
+            cla_registry
+                .map_peer_queue(peer, 0)
+                .map(|queue| FindResult::Forward { peer, queue })
+        }
+        InternalFindResult::Reflect => unreachable!(),
     }
 }
 
 #[cfg_attr(feature = "tracing", instrument(skip(inner)))]
-fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<FindResult> {
-    let mut clas: Option<Vec<u32>> = None;
+fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult> {
+    let mut peers: Option<HashSet<u32>> = None;
     for action in inner.locals.actions.get(to).into_iter().flatten() {
         match &action {
             local::Action::AdminEndpoint => {
-                return Some(FindResult::AdminEndpoint);
+                return Some(InternalFindResult::AdminEndpoint);
             }
             local::Action::Local(service) => {
-                return Some(FindResult::Deliver(service.clone()));
+                return Some(InternalFindResult::Deliver(service.clone()));
             }
-            local::Action::Forward(peer_id) => {
-                if let Some(clas) = &mut clas {
-                    clas.push(*peer_id);
+            local::Action::Forward(peer) => {
+                if let Some(peers) = &mut peers {
+                    peers.insert(*peer);
                 } else {
-                    clas = Some(vec![*peer_id]);
+                    peers = Some([*peer].into());
                 }
             }
         }
     }
-    clas.map(|clas| FindResult::Forward(clas, false))
+    peers.map(InternalFindResult::Forward)
 }
 
 #[cfg_attr(feature = "tracing", instrument(skip(inner, trail)))]
 fn find_recurse<'a>(
     inner: &'a RibInner,
+    table: &'a RouteTable,
     to: &'a Eid,
+    reflect: bool,
     trail: &mut HashSet<&'a Eid>,
-) -> Result<Option<FindResult>, Option<ReasonCode>> {
-    // Recursion check
-    if !trail.insert(to) {
-        warn!("Recursive route {to} found!");
-        return Err(Some(ReasonCode::NoKnownRouteToDestinationFromHere));
-    }
-
+) -> Option<InternalFindResult> {
     // Always check locals first
     let mut result = find_local(inner, to);
     if result.is_some() {
-        return Ok(result);
+        return result;
     }
 
-    // Now check routes (this is where route table switching can occur)
-
-    let mut priority = None;
-    for entry in inner
-        .routes
-        .find(to)
-        .collect::<std::collections::BinaryHeap<_>>()
-    {
-        // Ensure we only look at lowest priority values
-        if let Some(priority) = priority {
-            if entry.priority > priority {
-                break;
-            }
-        } else {
-            priority = Some(entry.priority);
-        }
-
-        match &entry.action {
-            routes::Action::Drop(reason) => {
-                // Drop trumps everything else
-                return Err(*reason);
-            }
-            routes::Action::Reflect => {
-                if let Some(FindResult::Forward(_, reflect)) = &mut result {
-                    *reflect = true;
-                } else {
-                    result = Some(FindResult::Forward(Vec::new(), true));
-                }
-            }
-            routes::Action::Via(via) => {
-                // Recursive lookup
-                if let Some(sub_result) = find_recurse(inner, via, trail)? {
-                    match sub_result {
-                        FindResult::AdminEndpoint | FindResult::Deliver(_) => {
-                            // If we find a non-forward, then break
-                            result = Some(sub_result);
-                            break;
+    for entries in table.values() {
+        for (pattern, actions) in entries {
+            if pattern.matches(to) {
+                for entry in actions {
+                    match &entry.action {
+                        routes::Action::Drop(reason) => {
+                            // Drop trumps everything else
+                            return Some(InternalFindResult::Drop(*reason));
                         }
-                        FindResult::Forward(sub_clas, sub_reflect) => {
-                            // Append clas to the running set of clas
-                            if let Some(FindResult::Forward(clas, reflect)) = &mut result {
-                                clas.extend(sub_clas);
-                                *reflect = *reflect || sub_reflect;
+                        routes::Action::Reflect => {
+                            if reflect {
+                                return Some(InternalFindResult::Reflect);
+                            }
+                        }
+                        routes::Action::Via(via) => {
+                            // Recursive lookup
+                            if !trail.insert(to) {
+                                warn!("Recursive route {to} found!");
+                                return Some(InternalFindResult::Drop(Some(
+                                    ReasonCode::NoKnownRouteToDestinationFromHere,
+                                )));
+                            }
+
+                            let sub_result = find_recurse(inner, table, via, reflect, trail);
+
+                            trail.remove(to);
+
+                            if let Some(sub_result) = sub_result {
+                                let InternalFindResult::Forward(sub_peers) = sub_result else {
+                                    // If we find a non-forward, then get out
+                                    return Some(sub_result);
+                                };
+
+                                // Append clas to the running set of clas
+                                if let Some(InternalFindResult::Forward(peers)) = &mut result {
+                                    peers.extend(sub_peers);
+                                } else {
+                                    result = Some(InternalFindResult::Forward(sub_peers));
+                                }
                             } else {
-                                result = Some(FindResult::Forward(sub_clas, sub_reflect));
+                                // TODO: Kick off a resolver lookup for `via`
                             }
                         }
                     }
-                } else {
-                    // TODO: Kick off a resolver lookup for `via`
                 }
+                break; // No need to check lower priority entries
             }
         }
-
-        trail.remove(to);
     }
 
-    if result.is_none() && inner.locals.finals.contains(to) {
-        return Err(Some(ReasonCode::DestinationEndpointIDUnavailable));
+    if result.is_none() && inner.locals.finals.iter().any(|e| e.matches(to)) {
+        return Some(InternalFindResult::Drop(Some(
+            ReasonCode::DestinationEndpointIDUnavailable,
+        )));
     }
-    Ok(result)
+    result
 }

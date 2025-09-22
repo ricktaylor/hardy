@@ -90,14 +90,17 @@ impl hardy_bpa::cla::Cla for Cla {
             self.task_tracker.wait().await;
         }
     }
-
-    async fn on_forward(
+}
+#[async_trait]
+impl hardy_bpa::cla::EgressController for Cla {
+    async fn forward(
         &self,
+        _queue: u32,
         cla_addr: hardy_bpa::cla::ClaAddress,
         mut bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let Some(inner) = self.inner.get() else {
-            error!("on_forward called before on_register!");
+            error!("forward called before on_register!");
             return Err(hardy_bpa::cla::Error::Disconnected);
         };
 
@@ -108,7 +111,7 @@ impl hardy_bpa::cla::Cla for Cla {
         // We try this 5 times, because peers can close at random times
         for _ in 0..5 {
             // See if we have an active connection already
-            match inner.registry.on_forward(&remote_addr, bundle).await {
+            match inner.registry.forward(&remote_addr, bundle).await {
                 Ok(r) => return r,
                 Err(b) => {
                     bundle = b;

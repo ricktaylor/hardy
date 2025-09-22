@@ -1,11 +1,10 @@
 use super::*;
-use hardy_eid_pattern::EidPatternSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    AdminEndpoint,                         // Deliver to the admin endpoint
-    Local(Arc<service_registry::Service>), // Deliver to local service
-    Forward(u32),                          // Forward to CLA peer
+    AdminEndpoint,                                 // Deliver to the admin endpoint
+    Local(Option<Arc<service_registry::Service>>), // Deliver to local service
+    Forward(u32),                                  // Forward to a cla peer
 }
 
 impl PartialOrd for Action {
@@ -19,17 +18,13 @@ impl Ord for Action {
         // The order is critical, hence done long-hand
         match (self, other) {
             (Action::AdminEndpoint, Action::AdminEndpoint) => std::cmp::Ordering::Equal,
-            (Action::AdminEndpoint, Action::Local(_))
-            | (Action::AdminEndpoint, Action::Forward(..)) => std::cmp::Ordering::Less,
+            (Action::AdminEndpoint, _) => std::cmp::Ordering::Less,
             (Action::Local(_), Action::AdminEndpoint) => std::cmp::Ordering::Greater,
             (Action::Local(lhs), Action::Local(rhs)) => lhs.cmp(rhs),
             (Action::Local(_), Action::Forward(..)) => std::cmp::Ordering::Less,
-            (Action::Forward(_), Action::AdminEndpoint)
-            | (Action::Forward(_), Action::Local(_)) => std::cmp::Ordering::Greater,
             (Action::Forward(lhs), Action::Forward(rhs)) => lhs.cmp(rhs),
+            (Action::Forward(_), _) => std::cmp::Ordering::Greater,
         }
-        .reverse()
-        // BinaryHeap is a max-heap!
     }
 }
 
@@ -37,32 +32,40 @@ impl std::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Action::AdminEndpoint => write!(f, "administrative endpoint"),
-            Action::Local(service) => write!(f, "local service {}", &service.service_id),
-            Action::Forward(peer_id) => {
-                write!(f, "forward to peer {peer_id}")
+            Action::Local(Some(service)) => write!(f, "local service {}", &service.service_id),
+            Action::Local(None) => write!(f, "well-known service"),
+            Action::Forward(peer) => {
+                write!(f, "CLA peer {peer}")
             }
         }
     }
 }
 
 pub struct LocalInner {
-    pub actions: HashMap<Eid, BinaryHeap<local::Action>>,
-    pub finals: EidPatternSet,
+    pub actions: HashMap<Eid, BTreeSet<local::Action>>,
+    pub finals: BTreeSet<EidPattern>,
 }
 
 impl LocalInner {
     pub fn new(config: &config::Config) -> Self {
         let mut actions = HashMap::new();
-        let mut finals = EidPatternSet::new();
+        let mut finals = BTreeSet::new();
 
         // Add localnode admin endpoint
         actions.insert(
             Eid::LocalNode { service_number: 0 },
-            vec![local::Action::AdminEndpoint].into(),
+            [local::Action::AdminEndpoint].into(),
         );
 
+        // Wait for well-known services
+        // TODO: Drive this from a services file...
+
         // Drop LocalNode services
-        finals.insert(&"ipn:!.*".parse().unwrap());
+        finals.insert(
+            "ipn:!.*"
+                .parse()
+                .trace_expect("Failed to parse hard-coded pattern item"),
+        );
 
         if let Some((allocator_id, node_number)) = config.node_ids.ipn {
             // Add the Admin Endpoint EID itself
@@ -72,13 +75,19 @@ impl LocalInner {
                     node_number,
                     service_number: 0,
                 },
-                vec![local::Action::AdminEndpoint].into(),
+                [local::Action::AdminEndpoint].into(),
             );
 
+            // Wait for well-known services
+            // TODO: Drive this from a services file...
+
+            // Drop ephemeral services
             finals.insert(
-                &format!("ipn:{allocator_id}.{node_number}.*")
+                format!("ipn:{allocator_id}.{node_number}.*")
                     .parse()
-                    .unwrap(),
+                    .trace_expect(
+                        "Failed to parse pattern item: 'ipn:{allocator_id}.{node_number}.*'",
+                    ),
             );
         }
 
@@ -89,10 +98,18 @@ impl LocalInner {
                     node_name: node_name.clone(),
                     demux: "".into(),
                 },
-                vec![local::Action::AdminEndpoint].into(),
+                [local::Action::AdminEndpoint].into(),
             );
 
-            finals.insert(&format!("dtn://{node_name}/**").parse().unwrap());
+            // Wait for well-known services
+            // TODO: Drive this from a services file...
+
+            // Drop ephemeral services
+            finals.insert(
+                format!("dtn://{node_name}/**")
+                    .parse()
+                    .trace_expect("Failed to parse pattern item: 'dtn://{node_name}/auto/**'"),
+            );
         }
 
         Self { actions, finals }
@@ -100,10 +117,10 @@ impl LocalInner {
 }
 
 impl Rib {
-    async fn add_local(&self, eid: Eid, action: Action) {
+    async fn add_local(&self, eid: Eid, action: Action) -> bool {
         info!("Adding local route {eid} => {action}");
 
-        match self
+        if !match self
             .inner
             .write()
             .trace_expect("Failed to lock mutex")
@@ -112,22 +129,26 @@ impl Rib {
             .entry(eid.clone())
         {
             std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                occupied_entry.get_mut().push(action);
+                occupied_entry.get_mut().insert(action)
             }
             std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                vacant_entry.insert(vec![action].into());
+                vacant_entry.insert([action].into());
+                true
             }
+        } {
+            return false;
         }
+
+        self.notify_updated().await;
+        true
     }
 
-    pub async fn add_forward(&self, eid: Eid, peer_id: u32) {
-        self.add_local(eid, Action::Forward(peer_id)).await
-
-        // TODO: Re-evaluate NoRoute and Pending bundles
+    pub async fn add_forward(&self, eid: Eid, peer: u32) -> bool {
+        self.add_local(eid, Action::Forward(peer)).await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) {
-        self.add_local(eid, Action::Local(service)).await
+    pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) -> bool {
+        self.add_local(eid, Action::Local(Some(service))).await
     }
 
     fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&Action) -> bool) -> bool {
@@ -153,26 +174,26 @@ impl Rib {
             .unwrap_or(false)
     }
 
-    pub fn remove_forward(&self, eid: &Eid, peer_id: u32) -> bool {
-        if !self.remove_local(eid, |action| match action {
-            Action::Forward(p) => &peer_id == p,
-            _ => false,
-        }) {
+    pub async fn remove_forward(&self, eid: &Eid, peer: u32) -> bool {
+        if !self.remove_local(
+            eid,
+            |action| matches!(action, Action::Forward(p) if &peer == p),
+        ) {
             return false;
         }
 
-        // TODO: Re-evaluate NoRoute and Pending bundles
+        if let Err(e) = self.store.reset_peer_queue(peer).await {
+            error!("Failed to reset peer queue: {e}");
+        }
 
+        self.notify_updated().await;
         true
     }
 
     pub fn remove_service(&self, eid: &Eid, service: &service_registry::Service) -> bool {
-        self.remove_local(eid, |action| {
-            if let Action::Local(svc) = action {
-                svc.as_ref() == service
-            } else {
-                false
-            }
-        })
+        self.remove_local(
+            eid,
+            |action| matches!(action, Action::Local(Some(svc)) if svc.as_ref() == service),
+        )
     }
 }

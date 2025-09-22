@@ -114,9 +114,13 @@ impl hardy_bpa::cla::Cla for NullCla {
         .await
         .expect("remove_peer failed");
     }
+}
 
-    async fn on_forward(
+#[async_trait]
+impl hardy_bpa::cla::EgressController for NullCla {
+    async fn forward(
         &self,
+        _queue: u32,
         _cla_addr: hardy_bpa::cla::ClaAddress,
         _bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
