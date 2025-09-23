@@ -7,20 +7,20 @@ impl Dispatcher {
     pub(super) async fn administrative_bundle(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
-    ) -> Result<forward::ForwardResult, Error> {
+    ) -> Result<dispatch::DispatchResult, Error> {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             trace!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
-            return Ok(forward::ForwardResult::Drop(Some(
+            return Ok(dispatch::DispatchResult::Drop(Some(
                 ReasonCode::BlockUnintelligible,
             )));
         }
 
         let Some(data) = self.load_data(bundle).await? else {
             // Bundle data was deleted sometime during processing - this is benign
-            return Ok(forward::ForwardResult::Drop(Some(
+            return Ok(dispatch::DispatchResult::Drop(Some(
                 ReasonCode::DepletedStorage,
             )));
         };
@@ -28,7 +28,7 @@ impl Dispatcher {
         let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {
             None => {
                 // TODO: We are unable to decrypt the payload, what do we do?
-                return Ok(forward::ForwardResult::Keep);
+                return Ok(dispatch::DispatchResult::Keep);
             }
             Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
             Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
@@ -37,7 +37,7 @@ impl Dispatcher {
         match hardy_cbor::decode::parse(&payload) {
             Err(e) => {
                 trace!("Failed to parse administrative record: {e}");
-                Ok(forward::ForwardResult::Drop(Some(
+                Ok(dispatch::DispatchResult::Drop(Some(
                     ReasonCode::BlockUnintelligible,
                 )))
             }
@@ -61,7 +61,7 @@ impl Dispatcher {
                     on_status_notify(report.delivered, service::StatusNotify::Delivered).await;
                     on_status_notify(report.deleted, service::StatusNotify::Deleted).await;
                 }
-                Ok(forward::ForwardResult::Drop(None))
+                Ok(dispatch::DispatchResult::Drop(None))
             }
         }
     }

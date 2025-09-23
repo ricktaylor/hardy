@@ -83,13 +83,17 @@ impl Rib {
             vias
         };
 
+        let mut changed = false;
         for v in vias {
-            if let Some(peers) = self.find_peers(&v) {
-                self.reset_peer_queues(peers).await;
+            if let Some(peers) = self.find_peers(&v)
+                && self.reset_peer_queues(peers).await
+            {
+                changed = true;
             }
         }
-
-        self.notify_updated().await;
+        if changed {
+            self.notify_updated().await;
+        }
         true
     }
 
@@ -126,19 +130,26 @@ impl Rib {
         // See if we are removing a Via
         if let routes::Action::Via(to) = action
             && let Some(peers) = self.find_peers(to)
+            && self.reset_peer_queues(peers).await
         {
-            self.reset_peer_queues(peers).await;
-
             self.notify_updated().await;
         }
         true
     }
 
-    async fn reset_peer_queues(&self, peers: HashSet<u32>) {
+    async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
+        let mut updated = false;
         for p in peers {
-            if let Err(e) = self.store.reset_peer_queue(p).await {
-                error!("Failed to reset peer queue: {e}");
+            match self.store.reset_peer_queue(p).await {
+                Ok(true) => {
+                    updated = true;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    error!("Failed to reset peer queue: {e}");
+                }
             }
         }
+        updated
     }
 }

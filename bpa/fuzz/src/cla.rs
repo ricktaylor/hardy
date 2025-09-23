@@ -124,10 +124,6 @@ impl hardy_bpa::cla::EgressController for NullCla {
         _cla_addr: hardy_bpa::cla::ClaAddress,
         _bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        // if bundle.len() > 1024 {
-        //     return Ok(hardy_bpa::cla::ForwardBundleResult::TooBig(1024));
-        // }
-
         Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
     }
 }

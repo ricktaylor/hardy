@@ -28,6 +28,7 @@ impl bincode::Encode for BundleMetadata {
         bincode::Encode::encode(&self.status, encoder)?;
         bincode::Encode::encode(&self.storage_name, encoder)?;
         bincode::Encode::encode(&self.received_at.unix_timestamp_nanos(), encoder)?;
+        bincode::Encode::encode(&self.non_canonical, encoder)?;
         Ok(())
     }
 }

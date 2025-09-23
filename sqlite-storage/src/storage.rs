@@ -181,13 +181,12 @@ impl storage::MetadataStorage for Storage {
         let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
         let Some(bundle) = self
             .read(move |conn| {
-                let r = conn
+                conn
                     .prepare_cached(
                         "SELECT bundle FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                     )?
                     .query_row((&id,), |row| row.get::<_, Vec<u8>>(0))
-                    .optional()?;
-                Ok(r)
+                    .optional().map_err(Into::into)
             })
             .await?
         else {
@@ -334,9 +333,7 @@ impl storage::MetadataStorage for Storage {
         loop {
             let bundles = self
             .write(move |conn| {
-                let mut bundles = Vec::new();
-
-                for r in conn
+                conn
                     .prepare_cached(
                         "WITH
                             -- 1. Atomically delete one row from unconfirmed_bundles and return its ID.
@@ -359,12 +356,8 @@ impl storage::MetadataStorage for Storage {
                         INNER JOIN unconfirmed ON bundle.id = unconfirmed.id
                         INNER JOIN updated ON unconfirmed.id = updated.id;",
                     )?
-                    .query_map((), |row| row.get::<_, Vec<u8>>(0))?
-                {
-                    bundles.push(r?);
-                }
-
-                Ok(bundles)
+                    .query_map((), |row| row.get::<_, Vec<u8>>(0))?.collect::<Result<Vec<Vec<u8>>, _>>()
+                    .map_err(Into::into)
             })
             .await?;
 
@@ -383,8 +376,23 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<()> {
-        todo!()
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
+        // Ensure status codes match
+        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1);
+        assert!(
+            from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue: 0 })
+                == (2, Some(peer), Some(0))
+        );
+
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET status_code = 1 WHERE status_code = 2 AND status_param1 = ?1",
+            )?
+            .execute((Some(peer),))
+            .map(|c| c == 1)
+            .map_err(Into::into)
+        })
+        .await
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -393,25 +401,19 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
-        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 1); // Ensure status codes match
+        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 0); // Ensure status codes match
 
         let bundles = self
             .read(move |conn| {
-                let mut bundles = Vec::new();
-
-                for r in conn
-                    .prepare_cached(
+                conn.prepare_cached(
                         "SELECT bundle FROM bundles 
-                        WHERE bundle IS NOT NULL AND status_code != 1
+                        WHERE bundle IS NOT NULL AND status_code != 0
                         ORDER BY expiry ASC
                         LIMIT ?1",
                     )?
                     .query_map((limit,), |row| row.get::<_, Vec<u8>>(0))?
-                {
-                    bundles.push(r?);
-                }
-
-                Ok(bundles)
+                .collect::<Result<Vec<Vec<u8>>, _>>()
+                .map_err(Into::into)
             })
             .await?;
 
@@ -435,12 +437,12 @@ impl storage::MetadataStorage for Storage {
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
-        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 3); // Ensure status codes match
+        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1); // Ensure status codes match
 
         // Refresh the waiting queue
         self.write(move |conn| {
             conn.execute_batch(
-                "INSERT OR IGNORE INTO waiting_queue (id,received_at) SELECT id,received_at FROM bundles WHERE status_code = 3",
+                "INSERT OR IGNORE INTO waiting_queue (id,received_at) SELECT id,received_at FROM bundles WHERE status_code = 1",
             )
             .map_err(Into::into)
         }).await?;
@@ -448,22 +450,35 @@ impl storage::MetadataStorage for Storage {
         loop {
             let bundles = self
                 .write(move |conn| {
-                    let mut bundles = Vec::new();
+                    let trans =
+                        conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-                    for r in conn
+                    let ids = trans
                         .prepare_cached(
-                            "WITH waiting_bundles AS (
-                                DELETE FROM waiting_queue
-                                WHERE id IN (SELECT id FROM waiting_queue ORDER BY received_at ASC LIMIT 64)
-                                RETURNING id, received_at
-                            )
-                            SELECT bundle FROM bundles 
-                            INNER JOIN waiting_bundles ON bundles.id = waiting_bundles.id;",
+                            "DELETE FROM waiting_queue WHERE id IN (
+                                SELECT id FROM waiting_queue ORDER BY received_at ASC LIMIT 64
+                            ) RETURNING id",
                         )?
-                        .query_map((), |row| row.get::<_, Vec<u8>>(0))?
-                    {
-                        bundles.push(r?);
+                        .query_map([], |row| row.get(0))?
+                        .collect::<Result<Vec<i64>, _>>()?;
+
+                    if ids.is_empty() {
+                        return Ok(Vec::new()); // No bundles to process
                     }
+
+                    let params = rusqlite::params_from_iter(&ids);
+                    let mut s = "?1".to_string();
+                    for i in 2..=ids.len() {
+                        s.push_str(", ?");
+                        s.push_str(&i.to_string());
+                    }
+
+                    let bundles = trans
+                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({s});"))?
+                        .query_map(params, |row| row.get::<_, Vec<u8>>(0))?
+                        .collect::<Result<Vec<Vec<u8>>, _>>()?;
+
+                    trans.commit()?;
 
                     Ok(bundles)
                 })
@@ -485,5 +500,42 @@ impl storage::MetadataStorage for Storage {
                 }
             }
         }
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    async fn poll_pending(
+        &self,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+        state: &hardy_bpa::metadata::BundleStatus,
+        limit: usize,
+    ) -> storage::Result<()> {
+        let (status, status_param1, status_param2) = from_status(state);
+
+        let bundles = self
+            .read(move |conn| {
+                conn
+                    .prepare_cached(
+                        "SELECT bundle FROM bundles 
+                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3
+                        ORDER BY received_at ASC
+                        LIMIT ?4",
+                    )?
+                    .query_map((status,status_param1,status_param2,limit), |row| row.get::<_, Vec<u8>>(0))?.collect::<Result<Vec<Vec<u8>>, _>>().map_err(Into::into)
+            })
+            .await?;
+
+        for bundle in bundles {
+            match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                Ok((bundle, _)) => {
+                    if tx.send_async(bundle).await.is_err() {
+                        // The other end is shutting down - get out
+                        break;
+                    }
+                }
+                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+            }
+        }
+
+        Ok(())
     }
 }

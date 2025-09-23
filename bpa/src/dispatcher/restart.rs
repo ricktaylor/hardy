@@ -34,10 +34,8 @@ impl Dispatcher {
                             .await
                             .map(|_| store::RestartResult::Duplicate)
                     } else {
-                        // All looks good, just continue dispatching
-                        self.dispatch_bundle(bundle::Bundle { bundle, metadata }, None)
-                            .await
-                            .map(|_| store::RestartResult::Restarted)
+                        // All good, no further action required
+                        Ok(store::RestartResult::Restarted)
                     }
                 } else {
                     // Effectively a new bundle
@@ -65,7 +63,7 @@ impl Dispatcher {
                     )
                     .await;
 
-                    self.dispatch_bundle(bundle, None)
+                    self.process_bundle(bundle, None)
                         .await
                         .map(|_| store::RestartResult::Orphan)
                 }
@@ -142,7 +140,7 @@ impl Dispatcher {
                 }
 
                 // Report the bundle as an orphan
-                self.dispatch_bundle(bundle, None)
+                self.process_bundle(bundle, None)
                     .await
                     .map(|_| store::RestartResult::Orphan)
             }
@@ -204,7 +202,7 @@ impl Dispatcher {
                 }
 
                 // Process the 'new' bundle
-                self.dispatch_bundle(bundle, Some(reason))
+                self.process_bundle(bundle, Some(reason))
                     .await
                     .map(|_| store::RestartResult::Orphan)
             }

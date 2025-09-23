@@ -77,7 +77,11 @@ impl Dispatcher {
             Ok(Some(data))
         } else {
             warn!("Bundle data {storage_name} has gone from storage");
-            Ok(None)
+
+            self.store
+                .tombstone_metadata(&bundle.bundle.id)
+                .await
+                .map(|_| None)
         }
     }
 

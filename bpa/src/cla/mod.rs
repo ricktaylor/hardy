@@ -93,7 +93,6 @@ impl std::fmt::Display for ClaAddress {
 pub enum ForwardBundleResult {
     Sent,
     NoNeighbour,
-    TooBig(u64),
 }
 
 #[async_trait]

@@ -165,8 +165,8 @@ impl Dispatcher {
             // Dispatch the new bundle
             let dispatcher = self.clone();
             let task = async move {
-                if let Ok(forward::ForwardResult::Keep) = dispatcher
-                    .forward_bundle_inner(&mut bundle)
+                if let Ok(dispatch::DispatchResult::Keep) = dispatcher
+                    .dispatch_bundle_inner(&mut bundle)
                     .await
                     .inspect_err(|e| error!("Failed to send status report: {e}"))
                 {

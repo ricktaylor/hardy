@@ -84,7 +84,8 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<()> {
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
+        let mut updated = false;
         for (_, v) in self
             .entries
             .lock()
@@ -97,9 +98,10 @@ impl storage::MetadataStorage for Storage {
                 && p == peer
             {
                 v.metadata.status = metadata::BundleStatus::Waiting;
+                updated = true;
             }
         }
-        Ok(())
+        Ok(updated)
     }
 
     async fn poll_expiry(
@@ -150,6 +152,39 @@ impl storage::MetadataStorage for Storage {
         }
 
         for (_, e) in entries {
+            if tx.send_async(e).await.is_err() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn poll_pending(
+        &self,
+        tx: storage::Sender<bundle::Bundle>,
+        state: &metadata::BundleStatus,
+        mut limit: usize,
+    ) -> storage::Result<()> {
+        let mut entries = BTreeMap::new();
+        for (_, v) in self
+            .entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .iter()
+        {
+            if let Some(v) = v
+                && &v.metadata.status == state
+            {
+                entries.insert(v.metadata.received_at, v.clone());
+            }
+        }
+
+        for (_, e) in entries {
+            if limit == 0 {
+                break;
+            }
+            limit -= 1;
+
             if tx.send_async(e).await.is_err() {
                 break;
             }

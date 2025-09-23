@@ -67,9 +67,6 @@ pub mod cla {
                 forward_bundle_response::Result::NoNeighbour(_) => {
                     hardy_bpa::cla::ForwardBundleResult::NoNeighbour
                 }
-                forward_bundle_response::Result::TooBig(max_bundle_size) => {
-                    hardy_bpa::cla::ForwardBundleResult::TooBig(max_bundle_size)
-                }
             }
         }
     }

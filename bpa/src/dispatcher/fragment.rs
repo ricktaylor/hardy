@@ -1,19 +1,10 @@
 use super::*;
 
 impl Dispatcher {
-    pub(super) async fn fragment(
-        &self,
-        _max_bundle_size: u64,
-        _bundle: &bundle::Bundle,
-    ) -> Result<forward::ForwardResult, Error> {
-        warn!("Bundle requires fragmentation");
-        todo!()
-    }
-
     pub(super) async fn reassemble(
         &self,
         _bundle: &bundle::Bundle,
-    ) -> Result<forward::ForwardResult, Error> {
+    ) -> Result<dispatch::DispatchResult, Error> {
         /* Either wait for more fragments to arrive
         self.store.set_status(&mut bundle, BundleStatus::ReassemblyPending).await?;
 

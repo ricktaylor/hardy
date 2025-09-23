@@ -80,6 +80,5 @@ message ForwardBundleResponse {
   oneof result {
     google.protobuf.Empty sent = 1;
     google.protobuf.Empty no_neighbour = 2;
-    uint64 too_big = 3;
   }
 }

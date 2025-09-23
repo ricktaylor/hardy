@@ -100,7 +100,10 @@ impl cla::Sink for Sink {
 
     async fn add_peer(&self, eid: Eid, addr: ClaAddress) -> cla::Result<bool> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        Ok(self.registry.add_peer(cla, eid, addr).await)
+        Ok(self
+            .registry
+            .add_peer(cla, self.dispatcher.clone(), eid, addr)
+            .await)
     }
 
     async fn remove_peer(&self, eid: &Eid, addr: &ClaAddress) -> cla::Result<bool> {
@@ -252,8 +255,14 @@ impl Registry {
         info!("Unregistered CLA: {}", cla.name);
     }
 
-    async fn add_peer(&self, cla: Arc<Cla>, eid: Eid, addr: ClaAddress) -> bool {
-        let peer = Arc::new(peers::Peer::new(cla.clone(), &self.store).await);
+    async fn add_peer(
+        &self,
+        cla: Arc<Cla>,
+        dispatcher: Arc<dispatcher::Dispatcher>,
+        eid: Eid,
+        addr: ClaAddress,
+    ) -> bool {
+        let peer = Arc::new(peers::Peer::new(cla.clone()));
 
         // We search here because it results in better lookups than linear searching the peers table
         let peer_id = {
@@ -277,14 +286,16 @@ impl Registry {
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let peer_id = self.peers.insert(peer.clone());
-                    e.insert([(addr, peer_id)].into());
+                    e.insert([(addr.clone(), peer_id)].into());
                     peer_id
                 }
             }
         };
 
+        // Start the peer polling the queue
+        peer.start(peer_id, addr, self.store.clone(), dispatcher)
+            .await;
         self.rib.add_forward(eid, peer_id).await;
-
         true
     }
 

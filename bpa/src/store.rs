@@ -444,7 +444,17 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn reset_peer_queue(&self, peer: u32) -> storage::Result<()> {
+    pub async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         self.metadata_storage.reset_peer_queue(peer).await
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    pub async fn poll_pending(
+        &self,
+        tx: storage::Sender<bundle::Bundle>,
+        state: &metadata::BundleStatus,
+        limit: usize,
+    ) -> storage::Result<()> {
+        self.metadata_storage.poll_pending(tx, state, limit).await
     }
 }
