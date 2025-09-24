@@ -292,6 +292,11 @@ impl Registry {
             }
         };
 
+        info!(
+            "Added new peer {peer_id}: {eid} via {addr} for CLA {}",
+            cla.name
+        );
+
         // Start the peer polling the queue
         peer.start(peer_id, addr, self.store.clone(), dispatcher)
             .await;
@@ -312,6 +317,9 @@ impl Registry {
 
         self.peers.remove(peer_id);
         self.rib.remove_forward(eid, peer_id).await;
+
+        info!("Removed peer {peer_id}");
+
         true
     }
 

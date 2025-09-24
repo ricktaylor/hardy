@@ -93,10 +93,10 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
     ) -> Result<dispatch::DispatchResult, Error> {
         let Some(data) = self.load_data(bundle).await? else {
-            // Bundle data was deleted sometime during processing - this is benign
-            return Ok(dispatch::DispatchResult::Drop(Some(
-                ReasonCode::DepletedStorage,
-            )));
+            warn!("At deliver_bundle!");
+
+            // Bundle data was deleted sometime during processing
+            return Ok(dispatch::DispatchResult::Gone);
         };
 
         let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {

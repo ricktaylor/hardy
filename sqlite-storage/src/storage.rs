@@ -31,8 +31,8 @@ impl ConnectionPool {
         )
         .trace_expect("Failed to open connection");
 
-        conn.busy_timeout(std::time::Duration::ZERO)
-            .trace_expect("Failed to set timeout");
+        // conn.busy_timeout(std::time::Duration::ZERO)
+        //     .trace_expect("Failed to set timeout");
 
         // We need a guard here, if we don't already have one, because we are writing to the DB
         let guard = if guard.is_none() {
@@ -117,9 +117,9 @@ impl Storage {
         migrate::migrate(&mut connection, upgrade)
             .trace_expect("Failed to migrate metadata store database");
 
-        connection
-            .busy_timeout(std::time::Duration::ZERO)
-            .trace_expect("Failed to set timeout");
+        // connection
+        //     .busy_timeout(std::time::Duration::ZERO)
+        //     .trace_expect("Failed to set timeout");
 
         // Mark all existing non-Tombstone bundles as unconfirmed
         connection
@@ -210,7 +210,7 @@ impl storage::MetadataStorage for Storage {
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             )?
-            .execute((id, bundle, expiry, received_at, status_code,status_param1,status_param2))
+            .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -220,6 +220,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
+        let received_at = bundle.metadata.received_at;
         let (status_code, status_param1, status_param2) = from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
@@ -227,9 +228,9 @@ impl storage::MetadataStorage for Storage {
             .write(move |conn| {
                 // Update bundle
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, status_code = ?4, status_param1 = ?5, status_param2 = ?6 WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7 WHERE bundle_id = ?1",
                 )?
-                .execute((id, bundle, expiry, status_code,status_param1,status_param2))
+                .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2))
                 .map_err(Into::into)
             })
             .await?
@@ -332,34 +333,43 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<()> {
         loop {
             let bundles = self
-            .write(move |conn| {
-                conn
-                    .prepare_cached(
-                        "WITH
-                            -- 1. Atomically delete one row from unconfirmed_bundles and return its ID.
-                            unconfirmed AS (
-                                DELETE FROM unconfirmed_bundles
-                                WHERE id IN (SELECT id FROM unconfirmed_bundles LIMIT 64)
-                                RETURNING id
-                            ),
-                            -- 2. Using the ID from the first CTE, update the bundles table.
-                            --    We must reference this CTE in the final SELECT to ensure it executes.
-                            updated AS (
-                                UPDATE bundles SET bundle = NULL
-                                WHERE id IN (SELECT id FROM unconfirmed)
-                                RETURNING id
-                        )
-                        -- 3. Select the ORIGINAL data from the bundles table.
-                        --    The final SELECT reads the table state from *before* the UPDATE occurred,
-                        --    and we join it with our CTEs to get the right row and ensure they ran.
-                        SELECT bundle FROM bundles
-                        INNER JOIN unconfirmed ON bundle.id = unconfirmed.id
-                        INNER JOIN updated ON unconfirmed.id = updated.id;",
-                    )?
-                    .query_map((), |row| row.get::<_, Vec<u8>>(0))?.collect::<Result<Vec<Vec<u8>>, _>>()
-                    .map_err(Into::into)
-            })
-            .await?;
+                .write(move |conn| {
+                    let trans =
+                        conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+                    let ids = trans
+                        .prepare_cached(
+                            "DELETE FROM unconfirmed_bundles
+                            WHERE id IN (SELECT id FROM unconfirmed_bundles LIMIT 64)
+                            RETURNING id",
+                        )?
+                        .query_map([], |row| row.get(0))?
+                        .collect::<Result<Vec<i64>, _>>()?;
+
+                    if ids.is_empty() {
+                        return Ok(Vec::new());
+                    }
+
+                    let sql = (1..=ids.len())
+                        .map(|i| format!("?{i}"))
+                        .collect::<Vec<String>>()
+                        .join(",");                                     
+
+                    let bundles = trans
+                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql})"))?
+                        .query_map(rusqlite::params_from_iter(&ids), |row| row.get(0))?
+                        .collect::<Result<Vec<Vec<u8>>, _>>()?;
+
+                    trans.execute(
+                        &format!("UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL WHERE id IN ({sql})"),
+                        rusqlite::params_from_iter(&ids),
+                    )?;
+
+                    trans.commit()?;
+
+                    Ok(bundles)
+                })
+                .await?;
 
             for bundle in bundles {
                 match bincode::decode_from_slice(&bundle, self.bincode_config) {
@@ -406,12 +416,12 @@ impl storage::MetadataStorage for Storage {
         let bundles = self
             .read(move |conn| {
                 conn.prepare_cached(
-                        "SELECT bundle FROM bundles 
+                    "SELECT bundle FROM bundles 
                         WHERE bundle IS NOT NULL AND status_code != 0
                         ORDER BY expiry ASC
                         LIMIT ?1",
-                    )?
-                    .query_map((limit,), |row| row.get::<_, Vec<u8>>(0))?
+                )?
+                .query_map((limit,), |row| row.get::<_, Vec<u8>>(0))?
                 .collect::<Result<Vec<Vec<u8>>, _>>()
                 .map_err(Into::into)
             })
@@ -455,9 +465,9 @@ impl storage::MetadataStorage for Storage {
 
                     let ids = trans
                         .prepare_cached(
-                            "DELETE FROM waiting_queue WHERE id IN (
-                                SELECT id FROM waiting_queue ORDER BY received_at ASC LIMIT 64
-                            ) RETURNING id",
+                            "DELETE FROM waiting_queue 
+                            WHERE id IN (SELECT id FROM waiting_queue ORDER BY received_at ASC LIMIT 64)
+                            RETURNING id",
                         )?
                         .query_map([], |row| row.get(0))?
                         .collect::<Result<Vec<i64>, _>>()?;
@@ -466,16 +476,14 @@ impl storage::MetadataStorage for Storage {
                         return Ok(Vec::new()); // No bundles to process
                     }
 
-                    let params = rusqlite::params_from_iter(&ids);
-                    let mut s = "?1".to_string();
-                    for i in 2..=ids.len() {
-                        s.push_str(", ?");
-                        s.push_str(&i.to_string());
-                    }
+                    let sql = (1..=ids.len())
+                        .map(|i| format!("?{i}"))
+                        .collect::<Vec<String>>()
+                        .join(",");
 
                     let bundles = trans
-                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({s});"))?
-                        .query_map(params, |row| row.get::<_, Vec<u8>>(0))?
+                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL;"))?
+                        .query_map(rusqlite::params_from_iter(&ids), |row| row.get::<_, Vec<u8>>(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
 
                     trans.commit()?;
@@ -513,14 +521,17 @@ impl storage::MetadataStorage for Storage {
 
         let bundles = self
             .read(move |conn| {
-                conn
-                    .prepare_cached(
-                        "SELECT bundle FROM bundles 
-                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3
+                conn.prepare_cached(
+                    "SELECT bundle FROM bundles 
+                        WHERE status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3
                         ORDER BY received_at ASC
                         LIMIT ?4",
-                    )?
-                    .query_map((status,status_param1,status_param2,limit), |row| row.get::<_, Vec<u8>>(0))?.collect::<Result<Vec<Vec<u8>>, _>>().map_err(Into::into)
+                )?
+                .query_map((status, status_param1, status_param2, limit), |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })?
+                .collect::<Result<Vec<Vec<u8>>, _>>()
+                .map_err(Into::into)
             })
             .await?;
 

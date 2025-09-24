@@ -450,6 +450,21 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
+        for (_, bundle) in self
+            .metadata_cache
+            .lock()
+            .trace_expect("LRU cache lock error")
+            .iter_mut()
+        {
+            if let Some(bundle) = bundle
+                && let metadata::BundleStatus::ForwardPending { peer: p, queue: _ } =
+                    bundle.metadata.status
+                && p == peer
+            {
+                bundle.metadata.status = metadata::BundleStatus::Waiting;
+            }
+        }
+
         self.metadata_storage.reset_peer_queue(peer).await
     }
 

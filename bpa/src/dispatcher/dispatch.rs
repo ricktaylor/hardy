@@ -3,6 +3,7 @@ use core::ops::Deref;
 use hardy_bpv7::status_report::ReasonCode;
 
 pub enum DispatchResult {
+    Gone,
     Drop(Option<ReasonCode>),
     Keep,
     Delivered,
@@ -183,6 +184,7 @@ impl Dispatcher {
     ) -> Result<(), Error> {
         // Now process the bundle
         let reason_code = match self.dispatch_bundle_inner(&mut bundle).await? {
+            DispatchResult::Gone => return Ok(()),
             DispatchResult::Drop(reason_code) => reason_code,
             DispatchResult::Keep => {
                 self.reaper.watch_bundle(bundle).await;
@@ -227,7 +229,7 @@ impl Dispatcher {
                 }
             }
             Some(rib::FindResult::Forward { peer, queue }) => {
-                trace!("Queuing bundle for forwarding to egress peer {peer} queue {queue}");
+                trace!("Queuing bundle for forwarding to CLA peer {peer} queue {queue}");
 
                 // Bundle is ready to forward
                 if bundle.metadata.status != (BundleStatus::ForwardPending { peer, queue }) {
@@ -261,6 +263,13 @@ impl Dispatcher {
         let dispatcher = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(CHANNEL_DEPTH);
         let task = async move {
+            // We're going to spawn a bunch of tasks
+            let parallelism = std::thread::available_parallelism()
+                .map(Into::into)
+                .unwrap_or(1);
+            let mut task_set = tokio::task::JoinSet::new();
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
+
             loop {
                 tokio::select! {
                     bundle = rx.recv_async() => {
@@ -268,30 +277,39 @@ impl Dispatcher {
                             break;
                         };
 
-                        // TODO: Use a semaphore to rate control this
-
-                        // Now process the bundle
-                        match dispatcher.dispatch_bundle_inner(&mut bundle).await {
-                            Err(e) => error!("Failed to reforward bundle: {e}"),
-                            Ok(DispatchResult::Drop(reason_code)) => {
-                                if let Err(e) = dispatcher.drop_bundle(bundle, reason_code).await {
-                                    error!("Failed to drop bundle: {e}");
-                                }
-                            }
-                            Ok(DispatchResult::Keep) => {}
-                            Ok(DispatchResult::Delivered) => {
-                                dispatcher.report_bundle_delivery(&bundle).await;
-                                if let Err(e) = dispatcher.drop_bundle(bundle, None).await {
-                                    error!("Failed to drop bundle: {e}");
-                                }
-                            }
+                        if !bundle.has_expired() {
+                            let permit = semaphore.clone().acquire_owned().await.trace_expect("Failed to acquire permit");
+                            let dispatcher = dispatcher.clone();
+                            task_set.spawn(async move {
+                                // Now process the bundle
+                                match dispatcher.dispatch_bundle_inner(&mut bundle).await {
+                                    Err(e) => error!("Failed to dispatch bundle: {e}"),
+                                    Ok(DispatchResult::Drop(reason_code)) => {
+                                        if let Err(e) = dispatcher.drop_bundle(bundle, reason_code).await {
+                                            error!("Failed to drop bundle: {e}");
+                                        }
+                                    }
+                                    Ok(DispatchResult::Keep | DispatchResult::Gone) => {}
+                                    Ok(DispatchResult::Delivered) => {
+                                        dispatcher.report_bundle_delivery(&bundle).await;
+                                        if let Err(e) = dispatcher.drop_bundle(bundle, None).await {
+                                            error!("Failed to drop bundle: {e}");
+                                        }
+                                    }
+                                };
+                                drop(permit);
+                            });
                         }
                     },
+                    Some(_) = task_set.join_next(), if !task_set.is_empty() => {},
                     _ = cancel_token.cancelled() => {
                         break;
                     }
                 }
             }
+
+            // Wait for all sub-tasks to complete
+            while let Some(_) = task_set.join_next().await {}
         };
 
         #[cfg(feature = "tracing")]

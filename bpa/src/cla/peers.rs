@@ -117,7 +117,9 @@ impl Peer {
                                     break got_some;
                                 };
 
-                                if bundle.metadata.status == (metadata::BundleStatus::ForwardPending { peer: args_clone.peer, queue }) {
+                                if !bundle.has_expired() &&
+                                    bundle.metadata.status == (metadata::BundleStatus::ForwardPending { peer: args_clone.peer, queue })
+                                {
                                     match args_clone.dispatcher.forward_bundle(bundle,args_clone.controller.as_ref(),queue,args_clone.addr.clone()).await {
                                         Ok(ForwardBundleResult::Sent) => {},
                                         Ok(ForwardBundleResult::NoNeighbour) => {

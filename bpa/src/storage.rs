@@ -27,10 +27,10 @@ pub trait MetadataStorage: Send + Sync {
     /// Reset all bundles ForwardPending { peer, _ } to Waiting so that the dispatcher will re-evaluate
     async fn reset_peer_queue(&self, peer: u32) -> Result<bool>;
 
-    /// Return the next `limit` bundles (ignore Dispatching), ordered by expiry.  The receiver will hangup when it has enough
+    /// Return the next `limit` Waiting bundles, ordered by expiry.  The receiver will hangup when it has enough
     async fn poll_expiry(&self, tx: Sender<bundle::Bundle>, limit: usize) -> Result<()>;
 
-    /// Return all bundles waiting to forward, ordered by received time.  The receiver will hangup when it has enough
+    /// Return all bundles not 'Dispatching', snapshotted at the time of call, ordered by received time.  The receiver will hangup when it has enough
     async fn poll_waiting(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
 
     /// Return the next `limit` bundles waiting in a particular state, ordered by received time.  The receiver will hangup when it has enough

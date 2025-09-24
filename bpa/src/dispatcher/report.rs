@@ -165,15 +165,19 @@ impl Dispatcher {
             // Dispatch the new bundle
             let dispatcher = self.clone();
             let task = async move {
-                if let Ok(dispatch::DispatchResult::Keep) = dispatcher
+                match dispatcher
                     .dispatch_bundle_inner(&mut bundle)
                     .await
                     .inspect_err(|e| error!("Failed to send status report: {e}"))
                 {
-                    dispatcher.reaper.watch_bundle(bundle).await;
-                } else {
-                    // Delete the bundle from the bundle store
-                    _ = dispatcher.delete_bundle(bundle).await;
+                    Ok(dispatch::DispatchResult::Gone) => {}
+                    Ok(dispatch::DispatchResult::Keep) => {
+                        dispatcher.reaper.watch_bundle(bundle).await;
+                    }
+                    _ => {
+                        // Delete the bundle from the bundle store
+                        _ = dispatcher.delete_bundle(bundle).await;
+                    }
                 }
             };
 

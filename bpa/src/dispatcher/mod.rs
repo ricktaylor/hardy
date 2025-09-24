@@ -70,7 +70,7 @@ impl Dispatcher {
     async fn load_data(self: &Arc<Self>, bundle: &bundle::Bundle) -> Result<Option<Bytes>, Error> {
         let Some(storage_name) = bundle.metadata.storage_name.as_ref() else {
             error!("Bad bundle has made it deep into the pipeline");
-            return Ok(None);
+            panic!("Bad bundle has made it deep into the pipeline");
         };
 
         if let Some(data) = self.store.load_data(storage_name).await? {
