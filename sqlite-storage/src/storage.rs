@@ -356,7 +356,7 @@ impl storage::MetadataStorage for Storage {
                         .join(",");                                     
 
                     let bundles = trans
-                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql})"))?
+                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL"))?
                         .query_map(rusqlite::params_from_iter(&ids), |row| row.get(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
 
@@ -482,7 +482,7 @@ impl storage::MetadataStorage for Storage {
                         .join(",");
 
                     let bundles = trans
-                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL;"))?
+                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL"))?
                         .query_map(rusqlite::params_from_iter(&ids), |row| row.get::<_, Vec<u8>>(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
 
