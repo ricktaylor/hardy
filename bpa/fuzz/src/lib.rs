@@ -98,6 +98,9 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             bundle_storage,
             ..Default::default()
         },
+        #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]
+        true,
+        #[cfg(not(all(feature = "localdisk-storage", feature = "sqlite-storage")))]
         false,
     )
     .await
