@@ -309,7 +309,7 @@ impl Dispatcher {
             }
 
             // Wait for all sub-tasks to complete
-            while let Some(_) = task_set.join_next().await {}
+            while task_set.join_next().await.is_some() {}
         };
 
         #[cfg(feature = "tracing")]
