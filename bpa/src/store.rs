@@ -159,7 +159,11 @@ impl Store {
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
         let task = async move {
             // We're going to spawn a bunch of tasks
+            let parallelism = std::thread::available_parallelism()
+                .map(Into::into)
+                .unwrap_or(1);
             let mut task_set = tokio::task::JoinSet::new();
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
             // Give some feedback
             let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
@@ -175,16 +179,17 @@ impl Store {
                             break;
                         }
                         Ok(r) => {
-                            // TODO: Use a semaphore to rate control this
-
-                            //let dispatcher = dispatcher.clone();
-                            //task_set.spawn(async move {
-                            stats.add(dispatcher.restart_bundle(r.0,r.1).await?);
-                            //});
+                            let permit = semaphore.clone().acquire_owned().await.trace_expect("Failed to acquire permit");
+                            let dispatcher = dispatcher.clone();
+                            task_set.spawn(async move {
+                                let r = dispatcher.restart_bundle(r.0,r.1).await;
+                                drop(permit);
+                                r
+                            });
                         }
                     },
                     Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                        stats.add(r?);
+                        stats.add(r??)
                     },
                     _ = cancel_token.cancelled() => {
                         break;
@@ -194,7 +199,7 @@ impl Store {
 
             // Wait for all sub-tasks to complete
             while let Some(r) = task_set.join_next().await {
-                stats.add(r?);
+                stats.add(r??);
             }
 
             stats.trace();
