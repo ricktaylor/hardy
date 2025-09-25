@@ -9,63 +9,9 @@ const MAX_CACHED_BUNDLE_SIZE: usize = 16 * 1024;
 pub(crate) enum RestartResult {
     Missing,
     Duplicate,
-    Restarted,
+    Valid,
     Orphan,
     Junk,
-}
-
-struct RestartStats {
-    lost: u64,
-    duplicates: u64,
-    restarted: u64,
-    orphans: u64,
-    junk: u64,
-}
-
-impl RestartStats {
-    fn new() -> Self {
-        Self {
-            lost: 0,
-            duplicates: 0,
-            restarted: 0,
-            orphans: 0,
-            junk: 0,
-        }
-    }
-
-    fn add(&mut self, r: RestartResult) {
-        match r {
-            RestartResult::Missing => self.lost = self.lost.saturating_add(1),
-            RestartResult::Duplicate => self.duplicates = self.duplicates.saturating_add(1),
-            RestartResult::Restarted => self.restarted = self.restarted.saturating_add(1),
-            RestartResult::Orphan => self.orphans = self.orphans.saturating_add(1),
-            RestartResult::Junk => self.junk = self.junk.saturating_add(1),
-        }
-    }
-
-    fn trace(&self) {
-        tracing::event!(
-            target: "metrics",
-            tracing::Level::TRACE,
-            monotonic_counter.bpa.store.restart.lost_bundles = self.lost,
-            monotonic_counter.bpa.store.restart.duplicate_bundles = self.duplicates,
-            monotonic_counter.bpa.store.restart.restarted_bundles = self.restarted,
-            monotonic_counter.bpa.store.restart.orphan_bundles = self.orphans,
-            monotonic_counter.bpa.store.restart.junk_bundles = self.junk,
-        );
-    }
-}
-
-impl core::fmt::Display for RestartStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} bundles restarted, {} orphan and {} bad bundles found",
-            self.restarted,
-            self.orphans,
-            self.lost + self.junk + self.duplicates
-        )
-    }
 }
 
 pub struct Store {
@@ -104,23 +50,45 @@ impl Store {
                 // Start the store - this can take a while as the store is walked
                 info!("Starting store consistency check...");
 
+                // Set up the metrics
+                metrics::describe_counter!(
+                    "restart_lost_bundles",
+                    metrics::Unit::Count,
+                    "Total number of lost bundles discovered during storage restart"
+                );
+                metrics::describe_counter!(
+                    "restart_duplicate_bundles",
+                    metrics::Unit::Count,
+                    "Total number of duplicate bundles discovered during storage restart"
+                );
+                metrics::describe_counter!(
+                    "restart_valid_bundles",
+                    metrics::Unit::Count,
+                    "Total number of valid bundles discovered during storage restart"
+                );
+                metrics::describe_counter!(
+                    "restart_orphan_bundles",
+                    metrics::Unit::Count,
+                    "Total number of orphaned bundles discovered during storage restart"
+                );
+                metrics::describe_counter!(
+                    "restart_junk_bundles",
+                    metrics::Unit::Count,
+                    "Total number of junk bundles discovered during storage restart"
+                );
+
                 store.start_metadata_storage_recovery().await;
 
-                let stats = store
+                store
                     .bundle_storage_recovery(dispatcher.clone())
                     .await
                     .trace_expect("Bundle storage check failed");
-                let stats = if !store.cancel_token.is_cancelled() {
-                    store
-                        .metadata_storage_recovery(dispatcher, stats)
-                        .await
-                        .trace_expect("Metadata storage check failed")
-                } else {
-                    stats
-                };
 
                 if !store.cancel_token.is_cancelled() {
-                    info!("Store restarted: {stats}");
+                    store
+                        .metadata_storage_recovery(dispatcher)
+                        .await
+                        .trace_expect("Metadata storage check failed")
                 }
             };
 
@@ -150,7 +118,7 @@ impl Store {
     async fn bundle_storage_recovery(
         self: &Arc<Self>,
         dispatcher: Arc<dispatcher::Dispatcher>,
-    ) -> storage::Result<RestartStats> {
+    ) -> storage::Result<()> {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
@@ -162,15 +130,8 @@ impl Store {
             let mut task_set = tokio::task::JoinSet::new();
             let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
-            // Give some feedback
-            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
-            let mut stats = RestartStats::new();
-
             loop {
                 tokio::select! {
-                    _ = timer.tick() => {
-                        stats.trace();
-                    },
                     r = rx.recv_async() => match r {
                         Err(_) => {
                             break;
@@ -179,15 +140,19 @@ impl Store {
                             let permit = semaphore.clone().acquire_owned().await.trace_expect("Failed to acquire permit");
                             let dispatcher = dispatcher.clone();
                             task_set.spawn(async move {
-                                let r = dispatcher.restart_bundle(r.0,r.1).await;
+                                match dispatcher.restart_bundle(r.0,r.1).await {
+                                    Ok(RestartResult::Missing) => metrics::counter!("restart_lost_bundles").increment(1),
+                                    Ok(RestartResult::Duplicate) => metrics::counter!("restart_duplicate_bundles").increment(1),
+                                    Ok(RestartResult::Valid) => metrics::counter!("restart_valid_bundles").increment(1),
+                                    Ok(RestartResult::Orphan) => metrics::counter!("restart_orphan_bundles").increment(1),
+                                    Ok(RestartResult::Junk) => metrics::counter!("restart_junk_bundles").increment(1),
+                                    Err(e) => error!("Failed to restart bundle: {e}")
+                                }
                                 drop(permit);
-                                r
                             });
                         }
                     },
-                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                        stats.add(r??)
-                    },
+                    Some(_) = task_set.join_next(), if !task_set.is_empty() => {},
                     _ = cancel_token.cancelled() => {
                         break;
                     }
@@ -195,12 +160,7 @@ impl Store {
             }
 
             // Wait for all sub-tasks to complete
-            while let Some(r) = task_set.join_next().await {
-                stats.add(r??);
-            }
-
-            stats.trace();
-            Ok(stats)
+            while task_set.join_next().await.is_some() {}
         };
 
         #[cfg(feature = "tracing")]
@@ -217,7 +177,8 @@ impl Store {
             _ = h.await;
             Err(e)
         } else {
-            h.await?
+            _ = h.await;
+            Ok(())
         }
     }
 
@@ -225,24 +186,17 @@ impl Store {
     async fn metadata_storage_recovery(
         self: &Arc<Self>,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        mut stats: RestartStats,
-    ) -> storage::Result<RestartStats> {
+    ) -> storage::Result<()> {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
         let task = async move {
-            // Give some feedback
-            let mut timer = tokio::time::interval(tokio::time::Duration::from_secs(1));
-
             loop {
                 tokio::select! {
-                    _ = timer.tick() => {
-                        stats.trace();
-                    },
                     bundle = rx.recv_async() => match bundle {
                         Err(_) => break,
                         Ok(bundle) => {
-                            stats.add(RestartResult::Orphan);
+                            metrics::counter!("restart_orphan_bundles").increment(1);
 
                             // The data associated with `bundle` has gone!
                             dispatcher.report_bundle_deletion(
@@ -257,9 +211,6 @@ impl Store {
                     }
                 }
             }
-
-            stats.trace();
-            Ok(stats)
         };
 
         #[cfg(feature = "tracing")]
@@ -276,7 +227,8 @@ impl Store {
             _ = h.await;
             Err(e)
         } else {
-            h.await?
+            _ = h.await;
+            Ok(())
         }
     }
 
