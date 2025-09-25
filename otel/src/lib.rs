@@ -5,6 +5,8 @@ use opentelemetry_sdk::{
 use opentelemetry_semantic_conventions::{SCHEMA_URL, resource::SERVICE_VERSION};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod metrics_otel;
+
 fn init_tracer(resource: &Resource) -> SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -46,7 +48,7 @@ fn init_metrics(resource: &Resource, pkg_name: &'static str) -> SdkMeterProvider
         .build();
 
     let meter = meter_provider.meter(pkg_name);
-    let recorder = metrics_exporter_otel::OpenTelemetryRecorder::new(meter);
+    let recorder = metrics_otel::OpenTelemetryRecorder::new(meter);
     metrics::set_global_recorder(recorder).expect("failed to install recorder");
 
     // Set the global meter provider using a clone of the meter_provider.
