@@ -2,6 +2,7 @@ use super::*;
 use lru::LruCache;
 use std::sync::Mutex;
 
+// TODO: Make these config options
 const LRU_CAPACITY: usize = 1024;
 const MAX_CACHED_BUNDLE_SIZE: usize = 16 * 1024;
 
@@ -71,7 +72,6 @@ pub struct Store {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
     metadata_storage: Arc<dyn storage::MetadataStorage>,
-    metadata_cache: Mutex<LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
     bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
 }
@@ -87,9 +87,6 @@ impl Store {
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(metadata_mem::new(&metadata_mem::Config::default())),
-            metadata_cache: Mutex::new(LruCache::new(
-                std::num::NonZero::new(LRU_CAPACITY).unwrap(),
-            )),
             bundle_storage: config
                 .bundle_storage
                 .as_ref()
@@ -369,38 +366,12 @@ impl Store {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
-        if let Some(bundle) = self
-            .metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .get(bundle_id)
-        {
-            return Ok(bundle.clone());
-        }
-
         self.metadata_storage.get(bundle_id).await
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        // Check cache first
-        if self
-            .metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .contains(&bundle.bundle.id)
-        {
-            return Ok(false);
-        }
-
-        let not_found = self.metadata_storage.insert(bundle).await?;
-
-        self.metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .put(bundle.bundle.id.clone(), not_found.then(|| bundle.clone()));
-
-        Ok(not_found)
+        self.metadata_storage.insert(bundle).await
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
@@ -408,11 +379,6 @@ impl Store {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<()> {
-        self.metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .put(bundle_id.clone(), None);
-
         self.metadata_storage.tombstone(bundle_id).await
     }
 
@@ -426,11 +392,6 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
-        self.metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .put(bundle.bundle.id.clone(), Some(bundle.clone()));
-
         self.metadata_storage.replace(bundle).await
     }
 
@@ -450,21 +411,6 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
-        for (_, bundle) in self
-            .metadata_cache
-            .lock()
-            .trace_expect("LRU cache lock error")
-            .iter_mut()
-        {
-            if let Some(bundle) = bundle
-                && let metadata::BundleStatus::ForwardPending { peer: p, queue: _ } =
-                    bundle.metadata.status
-                && p == peer
-            {
-                bundle.metadata.status = metadata::BundleStatus::Waiting;
-            }
-        }
-
         self.metadata_storage.reset_peer_queue(peer).await
     }
 
