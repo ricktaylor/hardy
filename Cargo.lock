@@ -469,12 +469,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
 
 [[package]]
-name = "critical-section"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
-
-[[package]]
 name = "crossbeam"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,6 +583,20 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -1164,8 +1172,8 @@ dependencies = [
 name = "hardy-otel"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "metrics",
- "metrics-exporter-otel",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
@@ -1784,34 +1792,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "metrics-exporter-otel"
-version = "0.1.0-fork.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0784b13a648121aae10d42b56c7e42924fb8c7e4705558bd75a940c1e080bc3e"
-dependencies = [
- "metrics",
- "metrics-util",
- "opentelemetry",
- "portable-atomic",
- "scc",
-]
-
-[[package]]
-name = "metrics-util"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe8db7a05415d0f919ffb905afa37784f71901c9a773188876984b4f769ab986"
-dependencies = [
- "crossbeam-epoch",
- "crossbeam-utils",
- "hashbrown 0.15.5",
- "metrics",
- "rand",
- "rand_xoshiro",
- "sketches-ddsketch",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2051,6 +2031,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "parking_lot_core"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "redox_syscall",
+ "smallvec",
+ "windows-targets 0.52.6",
+]
+
+[[package]]
 name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2171,9 +2164,6 @@ name = "portable-atomic"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
-dependencies = [
- "critical-section",
-]
 
 [[package]]
 name = "potential_utf"
@@ -2369,12 +2359,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_xoshiro"
-version = "0.7.0"
+name = "redox_syscall"
+version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+checksum = "5407465600fb0548f1442edf71dd20683c6ed326200ace4b1ef0763521bb3b77"
 dependencies = [
- "rand_core 0.9.3",
+ "bitflags 2.9.4",
 ]
 
 [[package]]
@@ -2529,25 +2519,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "scc"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
-dependencies = [
- "sdd",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "sdd"
-version = "3.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "serde"
@@ -2698,12 +2673,6 @@ checksum = "b2a4719bff48cee6b39d12c020eeb490953ad2443b7055bd0b21fca26bd8c28b"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "sketches-ddsketch"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1e9a774a6c28142ac54bb25d25562e6bcf957493a184f15ad4eebccb23e410a"
 
 [[package]]
 name = "slab"
