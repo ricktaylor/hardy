@@ -35,7 +35,7 @@ impl Dispatcher {
                             .map(|_| store::RestartResult::Duplicate)
                     } else {
                         // All good, no further action required
-                        Ok(store::RestartResult::Restarted)
+                        Ok(store::RestartResult::Valid)
                     }
                 } else {
                     // Effectively a new bundle

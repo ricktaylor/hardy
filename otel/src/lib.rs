@@ -1,4 +1,4 @@
-use opentelemetry::{KeyValue, global, trace::TracerProvider};
+use opentelemetry::{KeyValue, global, metrics::MeterProvider, trace::TracerProvider};
 use opentelemetry_sdk::{
     Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
 };
@@ -33,7 +33,7 @@ fn init_tracer(resource: &Resource) -> SdkTracerProvider {
     tracer_provider
 }
 
-fn init_metrics(resource: &Resource) -> SdkMeterProvider {
+fn init_metrics(resource: &Resource, pkg_name: &'static str) -> SdkMeterProvider {
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
         //.with_temporality(opentelemetry_sdk::metrics::Temporality::default())
@@ -45,13 +45,17 @@ fn init_metrics(resource: &Resource) -> SdkMeterProvider {
         .with_resource(resource.clone())
         .build();
 
+    let meter = meter_provider.meter(pkg_name);
+    let recorder = metrics_exporter_otel::OpenTelemetryRecorder::new(meter);
+    metrics::set_global_recorder(recorder).expect("failed to install recorder");
+
     // Set the global meter provider using a clone of the meter_provider.
     // Setting global meter provider is required if other parts of the application
     // uses global::meter() or global::meter_with_version() to get a meter.
     // Cloning simply creates a new reference to the same meter provider. It is
     // important to hold on to the meter_provider here, so as to invoke
     // shutdown on it when application ends.
-    global::set_meter_provider(meter_provider.clone());
+    //global::set_meter_provider(meter_provider.clone());
 
     meter_provider
 }
@@ -84,7 +88,7 @@ pub fn init(
             )
             .with_env_var(env_var.unwrap_or(EnvFilter::DEFAULT_ENV))
             .from_env_lossy()
-            .add_directive("metrics=off".parse().unwrap())
+        //.add_directive("metrics=off".parse().unwrap())
     };
 
     let resource = Resource::builder()
@@ -93,7 +97,7 @@ pub fn init(
         .build();
 
     let tracer_provider = init_tracer(&resource);
-    let meter_provider = init_metrics(&resource);
+    let meter_provider = init_metrics(&resource, pkg_name);
     let logger_provider = init_logs(&resource);
 
     // Create a new OpenTelemetryTracingBridge using the above LoggerProvider.
@@ -135,9 +139,9 @@ pub fn init(
     tracing_subscriber::registry()
         .with(otel_layer)
         .with(fmt_layer)
-        .with(tracing_opentelemetry::MetricsLayer::new(
-            meter_provider.clone(),
-        ))
+        // .with(tracing_opentelemetry::MetricsLayer::new(
+        //     meter_provider.clone(),
+        // ))
         .with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer))
         .init();
 
