@@ -79,20 +79,25 @@ fn walk_dirs(
                         continue;
                     }
 
+                    // There is a small race when restarting, whereby bundles expire during walk_dirs,
+                    // So it is perfectly valid for the file to no longer exist
+
+                    let Ok(metadata) = entry.metadata() else {
+                        continue;
+                    };
+
                     // Drop 0-length files
-                    if entry
-                        .metadata()
-                        .trace_expect("Failed to get file metadata")
-                        .len()
-                        == 0
-                    {
-                        std::fs::remove_file(entry.path())
-                            .trace_expect("Failed to remove placeholder file");
+                    if metadata.len() == 0 {
+                        if let Err(e) = std::fs::remove_file(entry.path())
+                            && !matches!(e.kind(), std::io::ErrorKind::NotFound)
+                        {
+                            tracing::error!("Failed to remove placeholder file");
+                            panic!("Failed to remove placeholder file");
+                        }
                         continue;
                     }
 
-                    // We have something useful
-                    let Ok(received_at) = entry.metadata().and_then(|m| m.created()) else {
+                    let Ok(received_at) = metadata.created() else {
                         continue;
                     };
 
