@@ -68,7 +68,7 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        if bundle.bundle.age.is_some() || bundle.bundle.id.timestamp.creation_time.is_none() {
+        if bundle.bundle.age.is_some() || !bundle.bundle.id.timestamp.is_clocked() {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())

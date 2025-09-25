@@ -502,7 +502,7 @@ fn parse_blocks(
     parser.check_blocks(bundle)?;
 
     // Check bundle age exists if needed
-    if bundle.age.is_none() && bundle.id.timestamp.creation_time.is_none() {
+    if bundle.age.is_none() && !bundle.id.timestamp.is_clocked() {
         return Err(Error::MissingBundleAge);
     }
 

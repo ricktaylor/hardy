@@ -1,11 +1,5 @@
 use super::*;
 
-#[cfg(feature = "std")]
-use std::collections::HashMap;
-
-#[cfg(not(feature = "std"))]
-use hashbrown::HashMap;
-
 pub struct Editor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],

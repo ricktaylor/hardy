@@ -10,15 +10,12 @@ pub struct Bundle {
 
 impl Bundle {
     pub fn creation_time(&self) -> time::OffsetDateTime {
-        self.bundle.id.timestamp.creation_time.map_or_else(
-            || {
-                self.metadata
-                    .received_at
-                    // The following unwrap() is safe, as bundle.age is u64::MAX millisecs
-                    .saturating_sub(self.bundle.age.unwrap_or_default().try_into().unwrap())
-            },
-            |creation_time| creation_time.into(),
-        )
+        self.bundle.id.timestamp.as_datetime().unwrap_or_else(|| {
+            self.metadata
+                .received_at
+                // The following unwrap() is safe, as bundle.age is u64::MAX millisecs
+                .saturating_sub(self.bundle.age.unwrap_or_default().try_into().unwrap())
+        })
     }
 
     pub fn expiry(&self) -> time::OffsetDateTime {
