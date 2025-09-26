@@ -18,3 +18,6 @@ tracing-opentelemetry = "0.31.0"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 metrics = "0.24.2"
 dashmap = "6.1.0"
+
+[dev-dependencies]
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }

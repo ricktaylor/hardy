@@ -173,3 +173,32 @@ impl Drop for OtelGuard {
         }
     }
 }
+
+#[test]
+fn test() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let guard = init(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+            None,
+            Some(tracing::Level::INFO),
+        );
+
+        metrics::describe_counter!("test_counter", metrics::Unit::Count, "A test counter");
+
+        for _ in 0..180 {
+            metrics::counter!("test_counter").increment(1);
+
+            tracing::info!("Incrementing counter!");
+
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+
+        drop(guard);
+    });
+}
