@@ -13,9 +13,12 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct OpenTelemetryRecorder {
     meter: Meter,
-    counters: Arc<DashMap<String, OtelCounter<u64>>>,
-    gauges: Arc<DashMap<String, OtelGauge<f64>>>,
-    histograms: Arc<DashMap<String, OtelHistogram<f64>>>,
+    counter_descs: Arc<DashMap<KeyName, (Option<Unit>, SharedString)>>,
+    counters: Arc<DashMap<u64, Arc<InnerCounter>>>,
+    gauge_descs: Arc<DashMap<KeyName, (Option<Unit>, SharedString)>>,
+    gauges: Arc<DashMap<u64, Arc<InnerGauge>>>,
+    histogram_descs: Arc<DashMap<KeyName, (Option<Unit>, SharedString)>>,
+    histograms: Arc<DashMap<u64, Arc<InnerHistogram>>>,
 }
 
 impl OpenTelemetryRecorder {
@@ -24,8 +27,11 @@ impl OpenTelemetryRecorder {
     pub fn new(meter: Meter) -> Self {
         OpenTelemetryRecorder {
             meter,
+            counter_descs: Arc::new(DashMap::new()),
             counters: Arc::new(DashMap::new()),
+            gauge_descs: Arc::new(DashMap::new()),
             gauges: Arc::new(DashMap::new()),
+            histogram_descs: Arc::new(DashMap::new()),
             histograms: Arc::new(DashMap::new()),
         }
     }
@@ -33,104 +39,109 @@ impl OpenTelemetryRecorder {
 
 impl Recorder for OpenTelemetryRecorder {
     fn describe_counter(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
-        // This is called by the `metrics` crate on the first use of a counter.
-        // We eagerly create and cache the OTel counter here.
-        let name = key.as_str().to_string();
-        self.counters.entry(name.clone()).or_insert_with(|| {
-            let mut counter = self.meter.u64_counter(name);
-            if let Some(u) = unit {
-                counter = counter.with_unit(u.as_str());
-            }
-            if !description.is_empty() {
-                counter = counter.with_description(description.to_string());
-            }
-            counter.build()
-        });
+        self.counter_descs.insert(key, (unit, description));
     }
 
     fn describe_gauge(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
-        let name = key.as_str().to_string();
-        self.gauges.entry(name.clone()).or_insert_with(|| {
-            let mut gauge = self.meter.f64_gauge(name);
-            if let Some(u) = unit {
-                gauge = gauge.with_unit(u.as_str());
-            }
-            if !description.is_empty() {
-                gauge = gauge.with_description(description.to_string());
-            }
-            gauge.build()
-        });
+        self.gauge_descs.insert(key, (unit, description));
     }
 
     fn describe_histogram(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
-        let name = key.as_str().to_string();
-        self.histograms.entry(name.clone()).or_insert_with(|| {
-            let mut histogram = self.meter.f64_histogram(name);
-            if let Some(u) = unit {
-                histogram = histogram.with_unit(u.as_str());
-            }
-            if !description.is_empty() {
-                histogram = histogram.with_description(description.to_string());
-            }
-            histogram.build()
-        });
+        self.histogram_descs.insert(key, (unit, description));
     }
 
     fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
-        let name = key.to_string();
-        let counter = self
-            .counters
-            .entry(name.clone())
-            .or_insert_with(|| self.meter.u64_counter(name).build())
-            .value()
-            .clone();
-        let counter = InnerCounter {
-            counter,
-            labels: key
-                .labels()
-                .map(|label| KeyValue::new(label.key().to_string(), label.value().to_string()))
-                .collect(),
-        };
-        Counter::from_arc(Arc::new(counter))
+        Counter::from_arc(
+            self.counters
+                .entry(key.get_hash())
+                .or_insert_with(|| {
+                    let mut counter = self.meter.u64_counter(key.name().to_string());
+                    if let Some(desc) = self.counter_descs.get(key.name()) {
+                        let (unit, description) = desc.value();
+                        if let Some(u) = unit {
+                            counter = counter.with_unit(u.as_str());
+                        }
+                        if !description.is_empty() {
+                            counter = counter.with_description(description.to_string());
+                        }
+                    }
+                    Arc::new(InnerCounter {
+                        counter: counter.build(),
+                        labels: key
+                            .labels()
+                            .map(|label| {
+                                KeyValue::new(label.key().to_string(), label.value().to_string())
+                            })
+                            .collect(),
+                    })
+                })
+                .value()
+                .clone(),
+        )
     }
 
     fn register_gauge(&self, key: &Key, _metadata: &Metadata<'_>) -> Gauge {
-        let name = key.to_string();
-        let gauge = self
-            .gauges
-            .entry(name.clone())
-            .or_insert_with(|| self.meter.f64_gauge(name).build())
-            .value()
-            .clone();
-        let gauge = InnerGauge {
-            gauge,
-            labels: key
-                .labels()
-                .map(|label| KeyValue::new(label.key().to_string(), label.value().to_string()))
-                .collect(),
-        };
-        Gauge::from_arc(Arc::new(gauge))
+        Gauge::from_arc(
+            self.gauges
+                .entry(key.get_hash())
+                .or_insert_with(|| {
+                    let mut gauge = self.meter.f64_gauge(key.name().to_string());
+                    if let Some(desc) = self.gauge_descs.get(key.name()) {
+                        let (unit, description) = desc.value();
+                        if let Some(u) = unit {
+                            gauge = gauge.with_unit(u.as_str());
+                        }
+                        if !description.is_empty() {
+                            gauge = gauge.with_description(description.to_string());
+                        }
+                    }
+                    Arc::new(InnerGauge {
+                        gauge: gauge.build(),
+                        labels: key
+                            .labels()
+                            .map(|label| {
+                                KeyValue::new(label.key().to_string(), label.value().to_string())
+                            })
+                            .collect(),
+                    })
+                })
+                .value()
+                .clone(),
+        )
     }
 
     fn register_histogram(&self, key: &Key, _metadata: &Metadata<'_>) -> Histogram {
-        let name = key.to_string();
-        let histogram = self
-            .histograms
-            .entry(name.clone())
-            .or_insert_with(|| self.meter.f64_histogram(name).build())
-            .value()
-            .clone();
-        let histogram = InnerHistogram {
-            histogram,
-            labels: key
-                .labels()
-                .map(|label| KeyValue::new(label.key().to_string(), label.value().to_string()))
-                .collect(),
-        };
-        Histogram::from_arc(Arc::new(histogram))
+        Histogram::from_arc(
+            self.histograms
+                .entry(key.get_hash())
+                .or_insert_with(|| {
+                    let mut histogram = self.meter.f64_histogram(key.name().to_string());
+                    if let Some(desc) = self.histogram_descs.get(key.name()) {
+                        let (unit, description) = desc.value();
+                        if let Some(u) = unit {
+                            histogram = histogram.with_unit(u.as_str());
+                        }
+                        if !description.is_empty() {
+                            histogram = histogram.with_description(description.to_string());
+                        }
+                    }
+                    Arc::new(InnerHistogram {
+                        histogram: histogram.build(),
+                        labels: key
+                            .labels()
+                            .map(|label| {
+                                KeyValue::new(label.key().to_string(), label.value().to_string())
+                            })
+                            .collect(),
+                    })
+                })
+                .value()
+                .clone(),
+        )
     }
 }
 
+#[derive(Debug)]
 struct InnerCounter {
     counter: OtelCounter<u64>,
     labels: Vec<KeyValue>,
@@ -148,6 +159,7 @@ impl metrics::CounterFn for InnerCounter {
     }
 }
 
+#[derive(Debug)]
 struct InnerGauge {
     gauge: OtelGauge<f64>,
     labels: Vec<KeyValue>,
@@ -167,6 +179,7 @@ impl metrics::GaugeFn for InnerGauge {
     }
 }
 
+#[derive(Debug)]
 struct InnerHistogram {
     histogram: OtelHistogram<f64>,
     labels: Vec<KeyValue>,
