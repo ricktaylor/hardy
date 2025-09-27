@@ -1,7 +1,13 @@
 use super::*;
 use hardy_bpa::{Bytes, async_trait, storage, storage::BundleStorage};
 use rand::prelude::*;
-use std::{io::Write, path::PathBuf, str::FromStr, sync::Arc, time::SystemTime};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+    time::SystemTime,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -22,36 +28,34 @@ impl Storage {
 }
 
 #[cfg_attr(feature = "tracing", instrument(skip_all))]
-fn random_file_path(root: &PathBuf) -> Result<PathBuf, std::io::Error> {
+fn random_file_path(root: &Path) -> Result<PathBuf, std::io::Error> {
     let mut rng = rand::rng();
+
+    // Random subdirectory
+    let dir1 = format!("{:02x}", rng.random::<u8>());
+    let dir2 = format!("{:02x}", rng.random::<u8>());
+    let dir_path = root.join(dir1).join(dir2);
+
+    // Ensure directory exists
+    std::fs::create_dir_all(&dir_path)?;
+
+    let mut file_id = rng.random::<u32>() as u64;
+
     loop {
-        // Random subdirectory
-        let mut file_path = [
-            root,
-            &PathBuf::from(format!("{:02x}", rng.random::<u16>() % 256)),
-            &PathBuf::from(format!("{:02x}", rng.random::<u16>() % 256)),
-        ]
-        .iter()
-        .collect::<PathBuf>();
-
-        // Ensure directory exists
-        std::fs::create_dir_all(&file_path)?;
-
         // Add a random filename
-        file_path.push(PathBuf::from(format!("{:x}", rng.random::<u32>())));
+        let file_path = dir_path.join(format!("{:x}", file_id));
 
         // Stop races between threads by creating a 0-length file
-        if let Err(e) = std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&file_path)
         {
-            if let std::io::ErrorKind::AlreadyExists = e.kind() {
-                continue;
+            Ok(_) => return Ok(file_path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                file_id = file_id.wrapping_add(1);
             }
-            return Err(e);
-        } else {
-            return Ok(file_path);
+            Err(e) => return Err(e),
         }
     }
 }
@@ -89,10 +93,9 @@ fn walk_dirs(
                     // Drop 0-length files
                     if metadata.len() == 0 {
                         if let Err(e) = std::fs::remove_file(entry.path())
-                            && !matches!(e.kind(), std::io::ErrorKind::NotFound)
+                            && e.kind() == std::io::ErrorKind::NotFound
                         {
-                            tracing::error!("Failed to remove placeholder file");
-                            panic!("Failed to remove placeholder file");
+                            Err::<(), _>(e).trace_expect("Failed to remove placeholder file");
                         }
                         continue;
                     }
@@ -111,7 +114,7 @@ fn walk_dirs(
                             entry
                                 .path()
                                 .strip_prefix(root)
-                                .unwrap()
+                                .trace_expect("Failed to strip prefix?!")
                                 .to_string_lossy()
                                 .into(),
                             time::OffsetDateTime::from(received_at),
@@ -192,12 +195,11 @@ impl BundleStorage for Storage {
         cfg_if::cfg_if! {
             if #[cfg(feature = "mmap")] {
                 let file = match tokio::fs::File::open(storage_name).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
                     Err(e) => {
-                        if let std::io::ErrorKind::NotFound = e.kind() {
-                            return Ok(None)
-                        } else {
-                            return Err(e.into())
-                        }
+                        return Err(e.into());
                     }
                     Ok(file) => file,
                 };
@@ -205,12 +207,11 @@ impl BundleStorage for Storage {
                 Ok(Some(Bytes::from_owner(data?)))
             } else {
                 match tokio::fs::read(storage_name).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
                     Err(e) => {
-                        if let std::io::ErrorKind::NotFound = e.kind() {
-                            Ok(None)
-                        } else {
-                            Err(e.into())
-                        }
+                        return Err(e.into());
                     }
                     Ok(data) => Ok(Bytes::from_owner(data))
                 }
@@ -269,7 +270,11 @@ impl BundleStorage for Storage {
                 return Err(e);
             }
 
-            // No idea how to fsync the directory in portable Rust!
+            if let Some(parent_dir) = storage_name.parent()
+                && let Ok(dir_handle) = std::fs::File::open(parent_dir)
+            {
+                _ = dir_handle.sync_all(); // Best effort sync
+            }
 
             Ok(storage_name)
         })
@@ -286,15 +291,12 @@ impl BundleStorage for Storage {
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         match tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?)).await
         {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if let std::io::ErrorKind::NotFound = e.kind() {
-                    warn!("Failed to remove {storage_name}");
-                    Ok(())
-                } else {
-                    Err(e.into())
-                }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                warn!("Failed to remove {storage_name}");
+                Ok(())
             }
+            Err(e) => Err(e.into()),
+            Ok(_) => Ok(()),
         }
     }
 }
