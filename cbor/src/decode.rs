@@ -1,61 +1,170 @@
+//! A canonical CBOR decoder for parsing byte streams.
+//!
+//! This module provides tools for decoding data from the Concise Binary Object
+//! Representation (CBOR) format, as specified in
+//! [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The decoder is
+//! designed to handle both simple and complex CBOR structures, including
+//! definite and indefinite-length items, and semantic tags.
+//!
+//! # Core Concepts
+//!
+//! There are two primary ways to use the decoder:
+//!
+//! 1.  **Direct Deserialization with `FromCbor`:** For straightforward cases, you can
+//!     implement the [`FromCbor`] trait for your types. This allows you to
+//!     convert a CBOR byte slice directly into a Rust struct.
+//!
+//! 2.  **Streaming Parsing with `parse_*` functions:** For more complex or
+//!     performance-sensitive scenarios, you can use the `parse_*` functions
+//!     ([`parse_value`], [`parse_array`], [`parse_map`]) to process the CBOR
+//!     stream piece by piece. This approach gives you fine-grained control and
+//!     avoids intermediate allocations.
+//!
+//! # Usage
+//!
+//! ## 1. Implementing `FromCbor`
+//!
+//! To deserialize a CBOR byte slice into your custom type, implement [`FromCbor`].
+//!
+//! ```
+//! use hardy_cbor::decode::{self, FromCbor, Error};
+//!
+//! struct Point {
+//!     x: i32,
+//!     y: i32,
+//! }
+//!
+//! impl FromCbor for Point {
+//!     type Error = Error;
+//!
+//!     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+//!         decode::parse_array(data, |a, shortest, _| {
+//!             let (x, sx) = a.parse()?;
+//!             let (y, sy) = a.parse()?;
+//!             Ok((Point { x, y }, shortest && sx && sy))
+//!         }).map(|((v, s), len)| (v, s, len))
+//!     }
+//! }
+//!
+//! // CBOR for `[10, -20]`
+//! let bytes = &[0x82, 0x0A, 0x33];
+//! let (point, shortest, len) = Point::from_cbor(bytes).unwrap();
+//!
+//! assert_eq!(point.x, 10);
+//! assert_eq!(point.y, -20);
+//! assert!(shortest);
+//! assert_eq!(len, bytes.len());
+//! ```
+//!
+//! ## 2. Streaming Parsing
+//!
+//! Use [`parse_value`] to inspect a CBOR item without allocating new memory
+//! for its contents (such as strings or byte strings).
+//!
+//! ```
+//! use hardy_cbor::decode::{self, Value};
+//!
+//! // CBOR for `24(h'68656c6c6f')`
+//! let bytes = &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
+//!
+//! let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
+//!     assert_eq!(tags, &[24]); // Semantic tag 24
+//!     assert!(matches!(value, Value::Bytes(range) if &bytes[range.clone()] == b"hello"));
+//!     Ok::<_, decode::Error>(())
+//! }).unwrap();
+//!
+//! assert_eq!(len, bytes.len());
+//! ```
 use super::*;
 use core::{ops::Range, str::Utf8Error};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
+/// An error that can occur during CBOR decoding.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// An encoded item's length exceeds `usize::MAX` or available memory.
     #[error("An encoded item requires more memory than available")]
     TooBig,
 
+    /// The input data is incomplete and more bytes are needed to decode the value.
     #[error("Need at least {0} more bytes to decode value")]
     NeedMoreData(usize),
 
+    /// The input data contains extra, unread items after a sequence has been fully parsed.
+    /// This is often returned when `complete()` is called on a [`Series`] that is not at its end.
     #[error("Additional unread items in sequence")]
     AdditionalItems,
 
+    /// An attempt was made to parse an item from a sequence that has already ended.
     #[error("No more items in sequence")]
     NoMoreItems,
 
+    /// The CBOR item has an invalid minor type value for its major type.
     #[error("Invalid minor-type value {0}")]
     InvalidMinorValue(u8),
 
+    /// The CBOR item's type does not match the expected type.
     #[error("Incorrect type, expecting {0}, found {1}")]
     IncorrectType(String, String),
 
+    /// An indefinite-length string contains an invalid chunk (e.g., not a string type).
     #[error("Chunked string contains an invalid chunk")]
     InvalidChunk,
 
+    /// A simple value was found that is unassigned or reserved.
     #[error("Invalid simple type {0}")]
     InvalidSimpleType(u8),
 
+    /// An indefinite-length map is missing a value for a key.
     #[error("Map has key but no value")]
     PartialMap,
 
+    /// The maximum recursion depth was reached while decoding nested structures.
     #[error("Maximum recursion depth reached")]
     MaxRecursion,
 
+    /// A text string contains invalid UTF-8.
     #[error(transparent)]
     InvalidUtf8(#[from] Utf8Error),
 
+    /// An integer conversion failed, typically due to an out-of-range value.
     #[error(transparent)]
     TryFromIntError(#[from] core::num::TryFromIntError),
 
+    /// A floating-point conversion would result in a loss of precision.
     #[error("Loss of floating-point precision")]
     PrecisionLoss,
 }
 
+/// A trait for types that can be decoded from a CBOR byte slice.
+///
+/// This trait is the foundation of the decoding system. By implementing `FromCbor`
+/// for a type, you define how it can be constructed from a CBOR representation.
+/// The library provides implementations for most primitive types, `String`, `Box<[u8]>`,
+/// and tuples.
 pub trait FromCbor: Sized {
     type Error;
 
+    /// Decodes an instance of the type from the beginning of a CBOR byte slice.
+    ///
+    /// On success, returns a tuple containing:
+    /// - The decoded value.
+    /// - A boolean indicating if the value was encoded in its shortest, canonical form.
+    /// - The number of bytes consumed from the slice.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error>;
 }
 
+/// A type alias for a generic, untyped CBOR sequence.
 pub type Sequence<'a> = super::decode_seq::Series<'a, 0>;
+/// A type alias for a [`Series`] that represents a CBOR array.
 pub type Array<'a> = super::decode_seq::Series<'a, 1>;
+/// A type alias for a [`Series`] that represents a CBOR map.
 pub type Map<'a> = super::decode_seq::Series<'a, 2>;
+/// A stateful iterator for decoding a sequence of CBOR items (e.g., an array or map).
 pub use super::decode_seq::Series;
 
+/// Represents a single, decoded CBOR data item.
 pub enum Value<'a, 'b: 'a> {
     UnsignedInteger(u64),
     NegativeInteger(u64),
@@ -74,6 +183,7 @@ pub enum Value<'a, 'b: 'a> {
 }
 
 impl<'a, 'b: 'a> Value<'a, 'b> {
+    /// Returns a human-readable string describing the type of the CBOR value.
     pub fn type_name(&self, tagged: bool) -> String {
         let prefix = if tagged { "Tagged " } else { "Untagged " }.to_string();
         match self {
@@ -96,6 +206,10 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
         }
     }
 
+    /// Skips over the content of the current value.
+    ///
+    /// For simple types, this does nothing. For arrays and maps, it consumes all
+    /// nested items until the end of the sequence is reached.
     pub fn skip(&mut self, mut max_recursion: usize) -> Result<bool, Error> {
         match self {
             Value::Array(a) => {
@@ -230,6 +344,14 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool
     Err(Error::NeedMoreData(1))
 }
 
+/// Parses a single CBOR value from a byte slice and processes it with a closure.
+///
+/// This is the core low-level parsing function. It handles tags and determines
+/// the major type of the next item in the slice, then passes a [`Value`]
+/// representation to the provided closure `f`.
+///
+/// On success, it returns a tuple containing the result of the closure and the
+/// total number of bytes consumed from the input slice.
 pub fn parse_value<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
@@ -422,6 +544,12 @@ where
     .map(|r| (r, offset))
 }
 
+/// Parses a generic, untyped CBOR sequence from a byte slice.
+///
+/// A CBOR sequence is a series of top-level data items, not enclosed in an
+/// array. This function provides a [`Sequence`] iterator to the closure `f`
+/// to process each item. It is useful for formats that concatenate multiple
+/// CBOR objects.
 pub fn parse_sequence<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(&mut Sequence) -> Result<T, E>,
@@ -433,6 +561,11 @@ where
     s.complete(()).map(|_| (r, offset)).map_err(Into::into)
 }
 
+/// Parses a CBOR array from a byte slice.
+///
+/// This is a convenience wrapper around [`parse_value`] that ensures the next
+/// item in the stream is a CBOR array. It then provides an [`Array`] iterator
+/// to the closure `f` for processing the array's elements.
 pub fn parse_array<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
@@ -446,6 +579,11 @@ where
     })
 }
 
+/// Parses a CBOR map from a byte slice.
+///
+/// This is a convenience wrapper around [`parse_value`] that ensures the next
+/// item in the stream is a CBOR map. It then provides a [`Map`] iterator
+/// to the closure `f` for processing the map's key-value pairs.
 pub fn parse_map<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
@@ -457,6 +595,11 @@ where
     })
 }
 
+/// A convenience function to decode a single value that implements [`FromCbor`].
+///
+/// This function is a shorthand for `T::from_cbor(data).map(|v| v.0)`. It
+/// decodes the value and discards the `shortest` and `len` information,
+/// returning only the decoded object.
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
     T: FromCbor,
