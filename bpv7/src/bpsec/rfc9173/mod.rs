@@ -28,27 +28,25 @@ impl Default for ScopeFlags {
 impl hardy_cbor::decode::FromCbor for ScopeFlags {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
-            o.map(|(value, shortest, len)| {
-                let mut flags = Self {
-                    include_primary_block: false,
-                    include_target_header: false,
-                    include_security_header: false,
-                    unrecognised: value & !7,
-                };
-                for b in 0..=2 {
-                    if value & (1 << b) != 0 {
-                        match b {
-                            0 => flags.include_primary_block = true,
-                            1 => flags.include_target_header = true,
-                            2 => flags.include_security_header = true,
-                            _ => unreachable!(),
-                        }
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            let mut flags = Self {
+                include_primary_block: false,
+                include_target_header: false,
+                include_security_header: false,
+                unrecognised: value & !7,
+            };
+            for b in 0..=2 {
+                if value & (1 << b) != 0 {
+                    match b {
+                        0 => flags.include_primary_block = true,
+                        1 => flags.include_target_header = true,
+                        2 => flags.include_security_header = true,
+                        _ => unreachable!(),
                     }
                 }
-                (flags, shortest, len)
-            })
+            }
+            (flags, shortest, len)
         })
     }
 }

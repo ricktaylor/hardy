@@ -182,8 +182,8 @@ fn ipn_from_cbor(
 impl hardy_cbor::decode::FromCbor for Eid {
     type Error = error::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_array(data, |a, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && a.is_definite();
 
             match a
@@ -240,20 +240,17 @@ impl hardy_cbor::decode::FromCbor for Eid {
                 },
                 scheme => {
                     let start = a.offset();
-                    if a.skip_value(16).map_err(Into::<Error>::into)?.is_none() {
-                        Err(Error::UnsupportedScheme(scheme))
-                    } else {
-                        Ok((
-                            Eid::Unknown {
-                                scheme,
-                                data: data[start..a.offset()].into(),
-                            },
-                            shortest,
-                        ))
-                    }
+                    a.skip_value(16)?;
+                    Ok((
+                        Eid::Unknown {
+                            scheme,
+                            data: data[start..a.offset()].into(),
+                        },
+                        shortest,
+                    ))
                 }
             }
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }

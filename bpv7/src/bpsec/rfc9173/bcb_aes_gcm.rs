@@ -27,19 +27,17 @@ impl hardy_cbor::encode::ToCbor for AesVariant {
 impl hardy_cbor::decode::FromCbor for AesVariant {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
-            o.map(|(value, shortest, len)| {
-                (
-                    match value {
-                        1 => Self::A128GCM,
-                        3 => Self::A256GCM,
-                        v => Self::Unrecognised(v),
-                    },
-                    shortest,
-                    len,
-                )
-            })
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            (
+                match value {
+                    1 => Self::A128GCM,
+                    3 => Self::A256GCM,
+                    v => Self::Unrecognised(v),
+                },
+                shortest,
+                len,
+            )
         })
     }
 }

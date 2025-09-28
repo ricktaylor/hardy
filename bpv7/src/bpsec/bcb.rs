@@ -123,24 +123,21 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
 impl hardy_cbor::decode::FromCbor for OperationSet {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        let Some((asb, shortest, len)) =
-            hardy_cbor::decode::try_parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?
-        else {
-            return Ok(None);
-        };
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        let (asb, shortest, len) =
+            hardy_cbor::decode::parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?;
 
         // Unpack into strong types
         match asb.context {
             #[cfg(feature = "rfc9173")]
             Context::BCB_AES_GCM => {
                 rfc9173::bcb_aes_gcm::parse(asb, data).map(|(source, operations, s)| {
-                    Some((OperationSet { source, operations }, shortest && s, len))
+                    (OperationSet { source, operations }, shortest && s, len)
                 })
             }
             Context::Unrecognised(id) => {
                 parse::UnknownOperation::parse(asb, data).map(|(source, operations)| {
-                    Some((
+                    (
                         OperationSet {
                             source,
                             operations: operations
@@ -150,7 +147,7 @@ impl hardy_cbor::decode::FromCbor for OperationSet {
                         },
                         shortest,
                         len,
-                    ))
+                    )
                 })
             }
             c => Err(Error::InvalidContext(c)),

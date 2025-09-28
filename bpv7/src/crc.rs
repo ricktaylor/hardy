@@ -70,9 +70,9 @@ impl hardy_cbor::encode::ToCbor for CrcType {
 impl hardy_cbor::decode::FromCbor for CrcType {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)
-            .map(|o| o.map(|(v, shortest, len)| (v.into(), shortest, len)))
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
+            .map(|(v, shortest, len)| (v.into(), shortest, len))
             .map_err(Into::into)
     }
 }
@@ -99,7 +99,9 @@ pub(super) fn parse_crc_value(
             ))
         }
     })?;
-    let crc_end = block.end()?.unwrap_or(block.offset());
+    // Check we are at the end
+    block.at_end()?;
+    let crc_end = block.offset();
 
     // Now check CRC
     match (crc_type, crc_value) {

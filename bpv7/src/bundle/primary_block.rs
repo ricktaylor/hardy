@@ -16,8 +16,8 @@ pub struct PrimaryBlock {
 impl hardy_cbor::decode::FromCbor for PrimaryBlock {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |block, s, tags| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_array(data, |block, s, tags| {
             let mut shortest = s && tags.is_empty() && block.is_definite();
 
             // Check version
@@ -133,7 +133,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                 shortest,
             ))
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 

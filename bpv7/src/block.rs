@@ -72,9 +72,9 @@ impl hardy_cbor::encode::ToCbor for Flags {
 impl hardy_cbor::decode::FromCbor for Flags {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)
-            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
+            .map(|(value, shortest, len)| (value.into(), shortest, len))
     }
 }
 
@@ -133,9 +133,9 @@ impl hardy_cbor::encode::ToCbor for Type {
 impl hardy_cbor::decode::FromCbor for Type {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)
-            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
+            .map(|(value, shortest, len)| (value.into(), shortest, len))
     }
 }
 
@@ -204,8 +204,8 @@ pub(crate) struct BlockWithNumber {
 impl hardy_cbor::decode::FromCbor for BlockWithNumber {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |arr, mut shortest, tags| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_array(data, |arr, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && arr.is_definite();
 
             let block_type = arr
@@ -308,11 +308,9 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                 shortest,
             ))
         })
-        .map(|o| {
-            o.map(|((mut block, shortest), len)| {
-                block.block.extent.end = len;
-                (block, shortest, len)
-            })
+        .map(|((mut block, shortest), len)| {
+            block.block.extent.end = len;
+            (block, shortest, len)
         })
     }
 }
