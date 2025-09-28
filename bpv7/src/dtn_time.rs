@@ -31,9 +31,9 @@ impl hardy_cbor::encode::ToCbor for DtnTime {
 impl hardy_cbor::decode::FromCbor for DtnTime {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse(data)
-            .map(|o| o.map(|(millisecs, shortest, len)| (Self(millisecs), shortest, len)))
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse(data)
+            .map(|(millisecs, shortest, len)| (Self(millisecs), shortest, len))
     }
 }
 

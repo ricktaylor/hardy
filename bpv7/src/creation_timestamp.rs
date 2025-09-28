@@ -55,8 +55,8 @@ impl hardy_cbor::encode::ToCbor for CreationTimestamp {
 impl hardy_cbor::decode::FromCbor for CreationTimestamp {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |a, shortest, tags| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
             let (timestamp, s1) = a.parse().map_field_err("bundle creation time")?;
             let (sequence_number, s2) = a.parse().map_field_err("sequence number")?;
             Ok((
@@ -71,6 +71,6 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
                 shortest && tags.is_empty() && a.is_definite() && s1 && s2,
             ))
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }

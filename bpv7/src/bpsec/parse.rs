@@ -7,33 +7,36 @@ fn parse_ranges<const D: usize>(
     shortest: &mut bool,
     mut offset: usize,
 ) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
+    if seq.at_end()? {
+        return Ok(None);
+    }
+
     offset += seq.offset();
-    seq.try_parse_array(|a, s, tags| {
+    seq.parse_array(|a, s, tags| {
         *shortest = *shortest && s && tags.is_empty() && a.is_definite();
         let mut outer_offset = a.offset();
 
         let mut map = HashMap::new();
-        while let Some((id, r)) = a.try_parse_array(|a, s, tags| {
-            *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+        while !a.at_end()? {
+            let (id, r) = a.parse_array(|a, s, tags| {
+                *shortest = *shortest && s && tags.is_empty() && a.is_definite();
 
-            let id = a
-                .parse::<(u64, bool)>()
-                .map(|(v, s)| {
-                    *shortest = *shortest && s;
-                    v
-                })
-                .map_field_err("id")?;
+                let id = a
+                    .parse::<(u64, bool)>()
+                    .map(|(v, s)| {
+                        *shortest = *shortest && s;
+                        v
+                    })
+                    .map_field_err("id")?;
 
-            let data_start = offset + outer_offset + a.offset();
-            if a.skip_value(16).map_field_err("value")?.is_none() {
-                return Err(hardy_cbor::decode::Error::NoMoreItems.into());
-            };
-            Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
-        })? {
+                let data_start = offset + outer_offset + a.offset();
+                a.skip_value(16).map_field_err("value")?;
+                Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
+            })?;
             map.insert(id, r);
             outer_offset = a.offset();
         }
-        Ok(map)
+        Ok(Some(map))
     })
 }
 
@@ -115,8 +118,8 @@ pub struct AbstractSyntaxBlock {
 impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_sequence(data, |seq| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_sequence(data, |seq| {
             let mut shortest = true;
 
             // Targets
@@ -212,7 +215,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                 shortest,
             ))
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 

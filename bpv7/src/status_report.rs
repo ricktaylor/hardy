@@ -121,13 +121,9 @@ impl hardy_cbor::encode::ToCbor for ReasonCode {
 impl hardy_cbor::decode::FromCbor for ReasonCode {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        if let Some((v, shortest, len)) = hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)?
-        {
-            Ok(Some((v.try_into()?, shortest, len)))
-        } else {
-            Ok(None)
-        }
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        let (v, shortest, len) = hardy_cbor::decode::parse::<(u64, bool, usize)>(data)?;
+        Ok((v.try_into()?, shortest, len))
     }
 }
 
@@ -232,8 +228,8 @@ impl hardy_cbor::encode::ToCbor for BundleStatusReport {
 impl hardy_cbor::decode::FromCbor for BundleStatusReport {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_array(data, |a, mut shortest, tags| {
             shortest = shortest && tags.is_empty() && a.is_definite();
 
             let mut report = Self::default();
@@ -291,7 +287,7 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
             }
             Ok((report, shortest))
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 
@@ -313,8 +309,8 @@ impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
 impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
     type Error = Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse_array(data, |a, mut shortest, tags| {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_array(data, |a, mut shortest, tags| {
             shortest = shortest && !tags.is_empty() && a.is_definite();
 
             match a
@@ -332,6 +328,6 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
                 v => Err(Error::UnknownAdminRecordType(v)),
             }
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }

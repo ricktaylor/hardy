@@ -94,7 +94,7 @@ impl Id {
                         None
                     },
                 };
-                if array.end()?.is_none() {
+                if !array.at_end()? {
                     Err(id::Error::BadKey)
                 } else {
                     Ok(s)
@@ -216,9 +216,9 @@ impl hardy_cbor::encode::ToCbor for Flags {
 impl hardy_cbor::decode::FromCbor for Flags {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data)
-            .map(|o| o.map(|(value, shortest, len)| (value.into(), shortest, len)))
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
+            .map(|(value, shortest, len)| (value.into(), shortest, len))
     }
 }
 

@@ -38,20 +38,18 @@ impl hardy_cbor::encode::ToCbor for ShaVariant {
 impl hardy_cbor::decode::FromCbor for ShaVariant {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
-            o.map(|(value, shortest, len)| {
-                (
-                    match value {
-                        5 => Self::HMAC_256_256,
-                        6 => Self::HMAC_384_384,
-                        7 => Self::HMAC_512_512,
-                        v => Self::Unrecognised(v),
-                    },
-                    shortest,
-                    len,
-                )
-            })
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            (
+                match value {
+                    5 => Self::HMAC_256_256,
+                    6 => Self::HMAC_384_384,
+                    7 => Self::HMAC_512_512,
+                    v => Self::Unrecognised(v),
+                },
+                shortest,
+                len,
+            )
         })
     }
 }

@@ -48,7 +48,7 @@ pub enum Error {
 pub trait FromCbor: Sized {
     type Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error>;
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error>;
 }
 
 pub type Sequence<'a> = super::decode_seq::Series<'a, 0>;
@@ -230,18 +230,14 @@ fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool
     Err(Error::NeedMoreData(1))
 }
 
-pub fn try_parse_value<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
+pub fn parse_value<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
     let (tags, mut shortest, mut offset) = parse_tags(data)?;
     let Some(marker) = data.get(offset) else {
-        if !tags.is_empty() {
-            return Err(Error::NeedMoreData(1).into());
-        } else {
-            return Ok(None);
-        }
+        return Err(Error::NeedMoreData(1).into());
     };
     offset += 1;
 
@@ -299,7 +295,7 @@ where
             /* Indefinite length array */
             let mut a = Array::new(data, None, &mut offset);
             let r = f(Value::Array(&mut a), shortest, &tags)?;
-            a.complete().map(|_| r).map_err(Into::into)
+            a.complete(r).map_err(Into::into)
         }
         (4, minor) => {
             /* Known length array */
@@ -310,13 +306,13 @@ where
             }
             let mut a = Array::new(data, Some(count as usize), &mut offset);
             let r = f(Value::Array(&mut a), shortest && s, &tags)?;
-            a.complete().map(|_| r).map_err(Into::into)
+            a.complete(r).map_err(Into::into)
         }
         (5, 31) => {
             /* Indefinite length map */
             let mut m = Map::new(data, None, &mut offset);
             let r = f(Value::Map(&mut m), true, &tags)?;
-            m.complete().map(|_| r).map_err(Into::into)
+            m.complete(r).map_err(Into::into)
         }
         (5, minor) => {
             /* Known length array */
@@ -327,7 +323,7 @@ where
             }
             let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
             let r = f(Value::Map(&mut m), shortest && s, &tags)?;
-            m.complete().map(|_| r).map_err(Into::into)
+            m.complete(r).map_err(Into::into)
         }
         (6, _) => unreachable!(),
         (7, 20) => {
@@ -423,53 +419,18 @@ where
         }
         _ => unreachable!(),
     }
-    .map(|r| Some((r, offset)))
+    .map(|r| (r, offset))
 }
 
-#[inline]
-pub fn parse_value<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
-where
-    F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
-    E: From<Error>,
-{
-    try_parse_value(data, f)?.ok_or(Error::NeedMoreData(1).into())
-}
-
-pub fn try_parse_sequence<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
-where
-    F: FnOnce(&mut Sequence) -> Result<T, E>,
-    E: From<Error>,
-{
-    if data.is_empty() {
-        return Ok(None);
-    }
-
-    let mut offset = 0;
-    let mut s = Sequence::new(data, None, &mut offset);
-    let r = f(&mut s)?;
-    s.complete().map(|_| Some((r, offset))).map_err(Into::into)
-}
-
-#[inline]
 pub fn parse_sequence<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(&mut Sequence) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_sequence(data, f)?.ok_or(Error::NeedMoreData(1).into())
-}
-
-pub fn try_parse_array<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
-where
-    F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
-    E: From<Error>,
-{
-    try_parse_value(data, |value, shortest, tags| match value {
-        Value::Array(a) => f(a, shortest, tags),
-        _ => {
-            Err(Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into())
-        }
-    })
+    let mut offset = 0;
+    let mut s = Sequence::new(data, None, &mut offset);
+    let r = f(&mut s)?;
+    s.complete(()).map(|_| (r, offset)).map_err(Into::into)
 }
 
 pub fn parse_array<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
@@ -477,17 +438,11 @@ where
     F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_array(data, f)?.ok_or(Error::NeedMoreData(1).into())
-}
-
-pub fn try_parse_map<T, F, E>(data: &[u8], f: F) -> Result<Option<(T, usize)>, E>
-where
-    F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
-    E: From<Error>,
-{
-    try_parse_value(data, |value, shortest, tags| match value {
-        Value::Map(m) => f(m, shortest, tags),
-        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into()),
+    parse_value(data, |value, shortest, tags| match value {
+        Value::Array(a) => f(a, shortest, tags),
+        _ => {
+            Err(Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into())
+        }
     })
 }
 
@@ -496,15 +451,10 @@ where
     F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
-    try_parse_map(data, f)?.ok_or(Error::NeedMoreData(1).into())
-}
-
-pub fn try_parse<T>(data: &[u8]) -> Result<Option<T>, T::Error>
-where
-    T: FromCbor,
-    T::Error: From<self::Error>,
-{
-    T::try_from_cbor(data).map(|o| o.map(|v| v.0))
+    parse_value(data, |value, shortest, tags| match value {
+        Value::Map(m) => f(m, shortest, tags),
+        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into()),
+    })
 }
 
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
@@ -512,69 +462,63 @@ where
     T: FromCbor,
     T::Error: From<self::Error>,
 {
-    try_parse::<T>(data)?.ok_or(Error::NeedMoreData(1).into())
+    T::from_cbor(data).map(|v| v.0)
 }
 
-macro_rules! impl_uint_try_from_cbor {
+macro_rules! impl_uint_from_cbor {
     ($($ty:ty),*) => {
         $(
             impl FromCbor for $ty {
                 type Error = self::Error;
 
-                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-                    if let Some((v, shortest, len)) = u64::try_from_cbor(data)? {
-                        Ok(Some((v.try_into()?, shortest, len)))
-                    } else {
-                        Ok(None)
-                    }
+                fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+                    let (v,shortest,len) = u64::from_cbor(data)?;
+                    Ok((v.try_into()?, shortest, len))
                 }
             }
         )*
     };
 }
 
-impl_uint_try_from_cbor!(u8, u16, u32, usize);
+impl_uint_from_cbor!(u8, u16, u32, usize);
 
 impl FromCbor for u64 {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        try_parse_value(data, |value, shortest, tags| match value {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        parse_value(data, |value, shortest, tags| match value {
             Value::UnsignedInteger(n) => Ok((n, shortest && tags.is_empty())),
             value => Err(Error::IncorrectType(
                 "Untagged Unsigned Integer".to_string(),
                 value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 
-macro_rules! impl_int_try_from_cbor {
+macro_rules! impl_int_from_cbor {
     ($($ty:ty),*) => {
         $(
             impl FromCbor for $ty {
                 type Error = self::Error;
 
-                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-                    if let Some((v, shortest, len)) = i64::try_from_cbor(data)? {
-                        Ok(Some((v.try_into()?, shortest, len)))
-                    } else {
-                        Ok(None)
-                    }
+                fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+                    let (v,shortest,len) = i64::from_cbor(data)?;
+                    Ok((v.try_into()?, shortest, len))
                 }
             }
         )*
     };
 }
 
-impl_int_try_from_cbor!(i8, i16, i32, isize);
+impl_int_from_cbor!(i8, i16, i32, isize);
 
 impl FromCbor for i64 {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        try_parse_value(data, |value, shortest, tags| match value {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        parse_value(data, |value, shortest, tags| match value {
             Value::UnsignedInteger(n) => Ok((i64::try_from(n)?, shortest && tags.is_empty())),
             Value::NegativeInteger(n) => {
                 Ok((-1i64 - i64::try_from(n)?, shortest && tags.is_empty()))
@@ -584,33 +528,30 @@ impl FromCbor for i64 {
                 value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 
-macro_rules! impl_float_try_from_cbor {
+macro_rules! impl_float_from_cbor {
     ($(($ty:ty, $convert_expr:expr)),*) => {
         $(
             impl FromCbor for $ty {
                 type Error = self::Error;
 
-                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-                    if let Some((v, shortest, len)) = f64::try_from_cbor(data)? {
-                        Ok(Some((
-                            $convert_expr(v).ok_or(Error::PrecisionLoss)?,
-                            shortest,
-                            len,
-                        )))
-                    } else {
-                        Ok(None)
-                    }
+                fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+                    let (v, shortest, len) = f64::from_cbor(data)?;
+                    Ok((
+                        $convert_expr(v).ok_or(Error::PrecisionLoss)?,
+                        shortest,
+                        len,
+                    ))
                 }
             }
         )*
     };
 }
 
-impl_float_try_from_cbor!(
+impl_float_from_cbor!(
     (half::f16, |v: f64| {
         <half::f16 as num_traits::FromPrimitive>::from_f64(v)
     }),
@@ -620,23 +561,23 @@ impl_float_try_from_cbor!(
 impl FromCbor for f64 {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        try_parse_value(data, |value, shortest, tags| match value {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        parse_value(data, |value, shortest, tags| match value {
             Value::Float(f) => Ok((f, shortest && tags.is_empty())),
             value => Err(Error::IncorrectType(
                 "Untagged Float".to_string(),
                 value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 
 impl FromCbor for bool {
     type Error = self::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        try_parse_value(data, |value, shortest, tags| match value {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        parse_value(data, |value, shortest, tags| match value {
             Value::False => Ok((false, shortest && tags.is_empty())),
             Value::True => Ok((true, shortest && tags.is_empty())),
             value => Err(Error::IncorrectType(
@@ -644,7 +585,7 @@ impl FromCbor for bool {
                 value.type_name(!tags.is_empty()),
             )),
         })
-        .map(|o| o.map(|((v, s), len)| (v, s, len)))
+        .map(|((v, s), len)| (v, s, len))
     }
 }
 
@@ -655,21 +596,18 @@ where
 {
     type Error = T::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        match try_parse_value(data, |value, shortest, tags| match value {
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        match parse_value(data, |value, shortest, tags| match value {
             Value::Undefined => Ok(Some(shortest && tags.is_empty())),
             _ => Ok(None),
         })? {
-            Some((Some(shortest), len)) => Ok(Some((None, shortest, len))),
-            Some((None, _)) => {
-                T::try_from_cbor(data).map(|o| o.map(|(v, shortest, len)| (Some(v), shortest, len)))
-            }
-            None => Ok(None),
+            (Some(shortest), len) => Ok((None, shortest, len)),
+            (None, _) => T::from_cbor(data).map(|(v, shortest, len)| (Some(v), shortest, len)),
         }
     }
 }
 
-macro_rules! impl_tuple_try_from_cbor {
+macro_rules! impl_tuple_from_cbor {
     ($(($tuple_ty:ty, $map_expr:expr)),*) => {
         $(
             impl<T> FromCbor for $tuple_ty
@@ -679,16 +617,15 @@ macro_rules! impl_tuple_try_from_cbor {
             {
                 type Error = T::Error;
 
-                fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-                    T::try_from_cbor(data)
-                        .map(|o| o.map(|(value, shortest, length)| ($map_expr(value, shortest, length), shortest, length)))
+                fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+                    T::from_cbor(data).map(|(value, shortest, length)| ($map_expr(value, shortest, length), shortest, length))
                 }
             }
         )*
     };
 }
 
-impl_tuple_try_from_cbor!(
+impl_tuple_from_cbor!(
     ((T, bool, usize), |value, shortest, length| (
         value, shortest, length
     )),

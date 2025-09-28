@@ -43,21 +43,19 @@ impl hardy_cbor::encode::ToCbor for Context {
 impl hardy_cbor::decode::FromCbor for Context {
     type Error = hardy_cbor::decode::Error;
 
-    fn try_from_cbor(data: &[u8]) -> Result<Option<(Self, bool, usize)>, Self::Error> {
-        hardy_cbor::decode::try_parse::<(u64, bool, usize)>(data).map(|o| {
-            o.map(|(value, shortest, len)| {
-                (
-                    match value {
-                        #[cfg(feature = "rfc9173")]
-                        1 => Self::BIB_HMAC_SHA2,
-                        #[cfg(feature = "rfc9173")]
-                        2 => Self::BCB_AES_GCM,
-                        value => Self::Unrecognised(value),
-                    },
-                    shortest,
-                    len,
-                )
-            })
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            (
+                match value {
+                    #[cfg(feature = "rfc9173")]
+                    1 => Self::BIB_HMAC_SHA2,
+                    #[cfg(feature = "rfc9173")]
+                    2 => Self::BCB_AES_GCM,
+                    value => Self::Unrecognised(value),
+                },
+                shortest,
+                len,
+            )
         })
     }
 }
