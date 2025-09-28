@@ -1,12 +1,97 @@
+//! A canonical CBOR encoder designed for performance and flexibility.
+//!
+//! This module provides tools for encoding Rust data structures into the
+//! Concise Binary Object Representation (CBOR) format, as specified in
+//! [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The encoder
+//! prioritizes canonical output, ensuring that a given data structure always
+//! produces the same, shortest possible byte representation.
+//!
+//! # Core Concepts
+//!
+//! The two primary components of this library are the [`ToCbor`] trait and the
+//! [`Encoder`] struct.
+//!
+//! - **[`ToCbor`] trait:** Implement this trait for your types to make them
+//!   directly encodable. The library provides implementations for most Rust
+//!   primitive types, strings, slices, and tuples.
+//!
+//! - **[`Encoder`] struct:** A stateful encoder that builds the CBOR byte
+//!   stream. It can be used for more complex, procedural encoding scenarios,
+//!   such as building indefinite-length arrays or maps.
+//!
+//! # Usage
+//!
+//! ## 1. Manual `ToCbor` Implementation
+//!
+//! To make a custom type encodable, implement the [`ToCbor`] trait.
+//!
+//! ```
+//! use hardy_cbor::encode::{self, Encoder, ToCbor};
+//!
+//! struct Point {
+//!     x: i32,
+//!     y: i32,
+//! }
+//!
+//! impl ToCbor for Point {
+//!     type Result = ();
+//!
+//!     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+//!         // Encode the struct as a 2-element array.
+//!         encoder.emit_array(Some(2), |a| {
+//!             a.emit(&self.x);
+//!             a.emit(&self.y);
+//!         });
+//!     }
+//! }
+//!
+//! let point = Point { x: 10, y: -20 };
+//! let (bytes, _) = encode::emit(&point);
+//! // Produces CBOR for `[10, -20]`
+//! assert_eq!(bytes, &[0x82, 0x0A, 0x33]);
+//! ```
+//!
+//! ## 2. Using Helper Structs
+//!
+//! The library provides helper structs like [`Tagged`], [`Bytes`], and [`Raw`] to
+//! control the output format.
+//!
+//! ```
+//! use hardy_cbor::encode::{self, Tagged, Bytes};
+//!
+//! // Encode a byte slice with CBOR tag 24 (CBOR-encoded data item)
+//! let data = b"hello";
+//! let tagged_data = Tagged::<24, _>(&Bytes(data));
+//! let (bytes, _) = encode::emit(&tagged_data);
+//!
+//! // Produces CBOR for `24(h'68656c6c6f')`
+//! assert_eq!(bytes, &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+//! ```
 use super::*;
 use core::ops::Range;
 
+/// A trait for types that can be encoded into CBOR format.
+///
+/// This trait is the foundation of the encoding system. By implementing `ToCbor`
+/// for a type, you define how it should be represented as CBOR. The library
+/// provides implementations for most primitive types, `&str`, `String`, slices,
+/// and tuples up to 16 elements.
 pub trait ToCbor {
+    /// The result type returned by the encoding operation.
+    ///
+    /// For most types, this is `()`. For types that wrap a slice or other
+    /// borrowed data (like [`Bytes`] or [`Raw`]), this is typically a `Range<usize>`
+    /// indicating the position of the encoded data within the final byte buffer.
     type Result;
 
+    /// Encodes the value into the given [`Encoder`].
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result;
 }
 
+/// A stateful, streaming encoder for building a CBOR byte stream.
+///
+/// The `Encoder` is used to procedurally construct a CBOR object. It manages
+/// a byte buffer and provides methods to emit various CBOR data types.
 pub struct Encoder {
     data: Vec<u8>,
 }
@@ -18,14 +103,17 @@ impl Default for Encoder {
 }
 
 impl Encoder {
+    /// Creates a new, empty `Encoder`.
     pub fn new() -> Self {
         Self { data: Vec::new() }
     }
 
+    /// Consumes the encoder and returns the generated CBOR byte vector.
     pub fn build(self) -> Vec<u8> {
         self.data
     }
 
+    /// Returns the current length of the encoded data in bytes.
     #[inline]
     pub fn offset(&self) -> usize {
         self.data.len()
@@ -68,6 +156,9 @@ impl Encoder {
         self
     }
 
+    /// Encodes a value that implements the [`ToCbor`] trait.
+    ///
+    /// This is the primary method for writing data to the encoder.
     pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
@@ -111,6 +202,20 @@ impl Encoder {
         self.emit_extend(value)
     }
 
+    /// Emits an indefinite-length byte stream.
+    ///
+    /// The provided closure receives a [`ByteStream`] helper, which can be used
+    /// to emit a sequence of definite-length byte string chunks.
+    ///
+    /// ```
+    /// use hardy_cbor::encode;
+    /// let bytes = encode::emit_byte_stream(|s| {
+    ///     s.emit(&[1, 2]);
+    ///     s.emit(&[3, 4, 5]);
+    /// });
+    /// // Produces CBOR for `(_ h'0102', h'030405')`
+    /// assert_eq!(bytes, &[0x5f, 0x42, 0x01, 0x02, 0x43, 0x03, 0x04, 0x05, 0xff]);
+    /// ```
     pub fn emit_byte_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut ByteStream),
@@ -120,6 +225,9 @@ impl Encoder {
         s.end()
     }
 
+    /// Emits an indefinite-length text stream.
+    ///
+    /// The provided closure receives a [`TextStream`] helper to emit string chunks.
     pub fn emit_text_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut TextStream),
@@ -129,6 +237,11 @@ impl Encoder {
         s.end()
     }
 
+    /// Emits a CBOR array.
+    ///
+    /// If `count` is `Some`, a definite-length array is created.
+    /// If `count` is `None`, an indefinite-length array is created.
+    /// The closure receives an [`Array`] helper to emit the array's elements.
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Array),
@@ -151,6 +264,11 @@ impl Encoder {
         a.end()
     }
 
+    /// Emits a CBOR map.
+    ///
+    /// If `count` is `Some`, a definite-length map with that many key-value pairs is created.
+    /// If `count` is `None`, an indefinite-length map is created.
+    /// The closure receives a [`Map`] helper to emit the map's entries.
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
@@ -161,7 +279,10 @@ impl Encoder {
     }
 }
 
-/// Marker struct to add a tag value to a type, these can be nested to add multiple tags
+/// A wrapper to encode a value with a CBOR tag.
+///
+/// Tags provide additional semantic information about the encoded data.
+/// These can be nested to add multiple tags.
 pub struct Tagged<'a, const TAG: u64, T>(pub &'a T)
 where
     T: ToCbor + ?Sized;
@@ -177,7 +298,10 @@ where
     }
 }
 
-/// Marker struct to ensure that raw bytes are written as raw data, not arrays
+/// A wrapper to write raw bytes directly into the stream without any CBOR encoding.
+///
+/// This is useful for embedding pre-encoded CBOR data or other byte-oriented
+/// formats within a CBOR stream.
 pub struct Raw<'a, V>(pub &'a V)
 where
     V: AsRef<[u8]> + ?Sized;
@@ -193,7 +317,10 @@ where
     }
 }
 
-/// Marker struct to ensure that raw bytes are written as raw data, not arrays
+/// An owned version of [`Raw`].
+///
+/// This wrapper takes ownership of an iterator of bytes and writes its contents
+/// directly into the stream.
 pub struct RawOwned<I>(core::cell::Cell<Option<I>>)
 where
     I: IntoIterator<Item = u8>;
@@ -222,7 +349,10 @@ where
     }
 }
 
-/// Marker struct to ensure that byte slices are written as definite length byte streams, not arrays
+/// A wrapper to encode a byte slice as a definite-length CBOR byte string.
+///
+/// By default, a `&[u8]` is encoded as a CBOR array of integers. Use this
+/// wrapper to encode it as a byte string instead.
 pub struct Bytes<'a, V>(pub &'a V)
 where
     V: AsRef<[u8]> + ?Sized;
@@ -238,6 +368,7 @@ where
     }
 }
 
+/// A helper for building an indefinite-length CBOR byte stream.
 pub struct ByteStream<'a> {
     encoder: &'a mut Encoder,
 }
@@ -248,6 +379,7 @@ impl<'a> ByteStream<'a> {
         Self { encoder }
     }
 
+    /// Emits a single, definite-length chunk of bytes into the stream.
     pub fn emit<V>(&mut self, value: &V)
     where
         V: AsRef<[u8]> + ?Sized,
@@ -260,6 +392,7 @@ impl<'a> ByteStream<'a> {
     }
 }
 
+/// A helper for building an indefinite-length CBOR text stream.
 pub struct TextStream<'a> {
     encoder: &'a mut Encoder,
 }
@@ -270,6 +403,7 @@ impl<'a> TextStream<'a> {
         Self { encoder }
     }
 
+    /// Emits a single, definite-length chunk of text into the stream.
     pub fn emit<V>(&mut self, value: &V)
     where
         V: AsRef<str> + ?Sized,
@@ -282,6 +416,10 @@ impl<'a> TextStream<'a> {
     }
 }
 
+/// A helper for building a CBOR sequence (an array or a map).
+///
+/// This struct is created by [`Encoder::emit_array`] or [`Encoder::emit_map`].
+/// It provides methods to emit elements into the sequence.
 pub struct Sequence<'a, const D: usize> {
     encoder: &'a mut Encoder,
     start: usize,
@@ -289,7 +427,9 @@ pub struct Sequence<'a, const D: usize> {
     idx: usize,
 }
 
+/// A type alias for a [`Sequence`] that represents a CBOR array.
 pub type Array<'a> = Sequence<'a, 1>;
+/// A type alias for a [`Sequence`] that represents a CBOR map.
 pub type Map<'a> = Sequence<'a, 2>;
 
 impl<'a, const D: usize> Sequence<'a, D> {
@@ -308,6 +448,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         }
     }
 
+    /// Returns the number of bytes written for this sequence so far.
     pub fn offset(&self) -> usize {
         self.encoder.offset() - self.start
     }
@@ -335,10 +476,12 @@ impl<'a, const D: usize> Sequence<'a, D> {
         }
     }
 
+    /// Skips emitting a value.
     pub fn skip_value(&mut self) {
         self.next_field();
     }
 
+    /// Emits a value into the sequence.
     pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
@@ -346,6 +489,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit(value)
     }
 
+    /// Emits an indefinite-length byte stream into the sequence.
     pub fn emit_byte_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut ByteStream),
@@ -353,6 +497,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_byte_stream(f)
     }
 
+    /// Emits an indefinite-length text stream into the sequence.
     pub fn emit_text_stream<F>(&mut self, f: F)
     where
         F: FnOnce(&mut TextStream),
@@ -360,6 +505,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_text_stream(f)
     }
 
+    /// Emits a nested array into the sequence.
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Array),
@@ -367,6 +513,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
         self.next_field().emit_array(count, f)
     }
 
+    /// Emits a nested map into the sequence.
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
@@ -375,7 +522,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 }
 
-// Blanket implementation for references
+/// Blanket implementation for references, allowing `&T` to be encoded where `T` is encodable.
 impl<T> ToCbor for &T
 where
     T: ToCbor,
@@ -532,6 +679,10 @@ where
     }
 }
 
+/// A convenience function to encode a single value into a `Vec<u8>`.
+///
+/// This creates an [`Encoder`], encodes the value, and returns the resulting
+/// bytes along with the `ToCbor::Result`.
 pub fn emit<T>(value: &T) -> (Vec<u8>, T::Result)
 where
     T: ToCbor + ?Sized,
@@ -544,6 +695,7 @@ where
 macro_rules! impl_stream_emit_functions {
     ($(( $method:ident,  $stream_type:ty)),*) => {
         $(
+            #[doc = concat!("A convenience function to encode a single ", stringify!($stream_type), " into a `Vec<u8>`.")]
             pub fn $method<F>(f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $stream_type),
@@ -564,6 +716,7 @@ impl_stream_emit_functions!(
 macro_rules! impl_collection_emit_functions {
     ($(( $method:ident, $collection_type:ty)),*) => {
         $(
+            #[doc = concat!("A convenience function to encode a single ", stringify!($collection_type), " into a `Vec<u8>`.")]
             pub fn $method<F>(count: Option<usize>, f: F) -> Vec<u8>
             where
                 F: FnOnce(&mut $collection_type),
