@@ -1,6 +1,13 @@
 use super::{decode::*, *};
 use thiserror::Error;
 
+/// A stateful iterator for decoding a sequence of CBOR items, such as an array or a map.
+///
+/// `Series` provides a cursor-like interface to traverse and parse items within a
+/// CBOR collection. It keeps track of the current position in the byte slice and
+/// handles both definite and indefinite-length sequences.
+///
+/// The const generic `D` indicates the number of items per logical element (1 for arrays, 2 for maps).
 pub struct Series<'a, const D: usize> {
     data: &'a [u8],
     count: Option<usize>,
@@ -18,14 +25,27 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Returns the number of elements in the sequence, if it is definite-length.
+    ///
+    /// For an array, this is the number of items. For a map, it's the number of key-value pairs.
+    /// Returns `None` for indefinite-length sequences until they have been fully parsed.
     pub fn count(&self) -> Option<usize> {
         self.count.map(|c| c / D)
     }
 
+    /// Returns `true` if the sequence has a definite length.
     pub fn is_definite(&self) -> bool {
         self.count.is_some()
     }
 
+    /// Checks if the end of the sequence has been reached.
+    ///
+    /// For definite-length sequences, this checks if the number of parsed items
+    /// equals the declared count.
+    ///
+    /// For indefinite-length sequences, this checks for the `0xFF` break byte.
+    ///
+    /// For a top-level sequence (`D=0`), it checks if all bytes have been consumed.
     pub fn at_end(&mut self) -> Result<bool, Error> {
         if let Some(count) = self.count {
             Ok(self.parsed >= count)
@@ -47,6 +67,7 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Returns the current byte offset from the start of the containing data slice.
     pub fn offset(&self) -> usize {
         *self.offset
     }
@@ -58,6 +79,11 @@ impl<'a, const D: usize> Series<'a, D> {
         Ok(t)
     }
 
+    /// Parses and skips the next value in the sequence without fully decoding it.
+    ///
+    /// This is more efficient than parsing into a `Value` and then calling `skip`
+    /// if you only need to advance the cursor.
+    /// Returns a boolean indicating if the skipped value was in canonical form.
     pub fn skip_value(&mut self, max_recursion: usize) -> Result<bool, Error> {
         self.parse_value(|mut value, shortest, tags| {
             value
@@ -66,6 +92,10 @@ impl<'a, const D: usize> Series<'a, D> {
         })
     }
 
+    /// Skips all remaining values until the end of the sequence is reached.
+    ///
+    /// Returns a boolean indicating if all skipped values were in canonical form.
+    /// The `max_recursion` parameter prevents stack overflows on deeply nested structures.
     pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<bool, Error> {
         let mut shortest = true;
         while !self.at_end()? {
@@ -83,6 +113,11 @@ impl<'a, const D: usize> Series<'a, D> {
         Ok(shortest)
     }
 
+    /// Tries to parse the next value in the sequence using a closure.
+    ///
+    /// If the end of the sequence is reached, it returns `Ok(None)`.
+    /// Otherwise, it parses the next item and passes it as a [`Value`] to the
+    /// closure `f`, returning `Ok(Some(result))`.
     pub fn try_parse_value<T, F, E>(&mut self, f: F) -> Result<Option<T>, E>
     where
         F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
@@ -96,6 +131,10 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Parses the next value in the sequence using a closure.
+    ///
+    /// This is similar to [`try_parse_value`] but returns a `NoMoreItems`
+    /// error if the end of the sequence has been reached, instead of `Ok(None)`.
     pub fn parse_value<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
         F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
@@ -115,6 +154,11 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Parses the next item in the sequence into a type that implements [`FromCbor`].
+    ///
+    /// This is a high-level convenience method. It will return a `NoMoreItems`
+    /// error if the end of the sequence is reached. The `shortest` and `len`
+    /// information from the `from_cbor` call is discarded.
     pub fn parse<T>(&mut self) -> Result<T, T::Error>
     where
         T: FromCbor,
@@ -132,6 +176,10 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Tries to parse the next item in the sequence into a type that implements [`FromCbor`].
+    ///
+    /// If the end of the sequence is reached, this returns `Ok(None)`. Otherwise,
+    /// it attempts to parse the next item and returns `Ok(Some(value))`.
     pub fn try_parse<T>(&mut self) -> Result<Option<T>, T::Error>
     where
         T: FromCbor,
@@ -145,6 +193,11 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Parses the next item in the sequence, expecting it to be an array.
+    ///
+    /// This is a convenience wrapper that validates the item type and provides
+    /// a nested [`Array`] to the closure `f` for processing. Returns an
+    /// `IncorrectType` error if the next item is not an array.
     pub fn parse_array<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
         F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
@@ -158,6 +211,11 @@ impl<'a, const D: usize> Series<'a, D> {
         })
     }
 
+    /// Parses the next item in the sequence, expecting it to be a map.
+    ///
+    /// This is a convenience wrapper that validates the item type and provides
+    /// a nested [`Map`] to the closure `f` for processing. Returns an
+    /// `IncorrectType` error if the next item is not a map.
     pub fn parse_map<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
         F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
