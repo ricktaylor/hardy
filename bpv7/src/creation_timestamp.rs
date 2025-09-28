@@ -4,15 +4,32 @@ use error::CaptureFieldErr;
 #[cfg(not(feature = "std"))]
 static GLOBAL_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
+/// Represents the BPv7 Creation Timestamp, a tuple of creation time and a sequence number.
+///
+/// As defined in RFC 9171, the creation timestamp is a tuple `[time, sequence]`.
+/// The `time` is a DTN Time, which is the number of non-leap milliseconds since the
+/// DTN epoch (2000-01-01 00:00:00 UTC). If a node does not have an accurate clock,
+/// this value is set to 0.
+/// The `sequence` number is a sequence number that is larger than the sequence number
+/// of any previously transmitted bundle from the same node.
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct CreationTimestamp {
+    /// The time the bundle was created. `None` if the source node does not have an accurate clock.
     creation_time: Option<dtn_time::DtnTime>,
+    /// A sequence number that is unique for the source node.
     sequence_number: u64,
 }
 
 impl CreationTimestamp {
+    /// Creates a new `CreationTimestamp` based on the current system time.
+    ///
+    /// The creation time is set to the current UTC time. The sequence number
+    /// is derived from the nanoseconds part of the timestamp to provide uniqueness
+    /// for bundles created in the same millisecond.
+    ///
+    /// This function is only available when the `std` feature is enabled.
     #[cfg(feature = "std")]
     pub fn now() -> Self {
         let timestamp = time::OffsetDateTime::now_utc();
@@ -22,19 +39,32 @@ impl CreationTimestamp {
         }
     }
 
+    /// Creates a new `CreationTimestamp` without a time value.
+    ///
+    /// The creation time is set to `None`, indicating the absence of an accurate clock.
+    /// The sequence number is generated from a globally unique atomic counter.
+    ///
+    /// This function is only available when the `std` feature is *not* enabled.
     #[cfg(not(feature = "std"))]
     pub fn new() -> Self {
         Self {
             creation_time: None,
-            sequence_number: GLOBAL_COUNTER.fetch_add(1, Ordering::Relaxed),
+            sequence_number: GLOBAL_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
         }
     }
 
-    /// Was the CreationTimestamp created by a source with an 'accurate clock'
+    /// Returns `true` if the `CreationTimestamp` was created by a source with an accurate clock.
+    ///
+    /// This is determined by the presence of a `creation_time` value.
     pub fn is_clocked(&self) -> bool {
         self.creation_time.is_some()
     }
 
+    /// Converts the `CreationTimestamp` to a `time::OffsetDateTime`, if possible.
+    ///
+    /// Returns `Some(OffsetDateTime)` if the `creation_time` is present, combining it
+    /// with the sequence number for nanosecond precision. Returns `None` if the
+    /// `creation_time` is not set.
     pub fn as_datetime(&self) -> Option<time::OffsetDateTime> {
         let t: time::OffsetDateTime = self.creation_time?.into();
         Some(t.saturating_add(time::Duration::nanoseconds(self.sequence_number as i64)))
