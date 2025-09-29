@@ -83,9 +83,13 @@ pub(super) fn parse_crc_value(
     crc_type: CrcType,
 ) -> Result<bool, Error> {
     // Parse CRC
-    let shortest = block.try_parse_value(|value, shortest, tags| {
-        if let hardy_cbor::decode::Value::Bytes(_) = value {
-            Ok(shortest && tags.is_empty())
+    let crc_start = block.offset();
+    let crc_value = block.try_parse_value(|value, shortest, tags| {
+        if let hardy_cbor::decode::Value::Bytes(crc) = value {
+            Ok((
+                crc.start + crc_start..crc.end + crc_start,
+                shortest && tags.is_empty(),
+            ))
         } else {
             Err(crc::Error::InvalidCBOR(
                 hardy_cbor::decode::Error::IncorrectType(
@@ -100,24 +104,36 @@ pub(super) fn parse_crc_value(
     let crc_end = block.offset();
 
     // Now check CRC
-    match (crc_type, shortest) {
+    match (crc_type, crc_value) {
         (CrcType::None, None) => Ok(true),
         (CrcType::None, _) => Err(Error::UnexpectedCrcValue),
-        (CrcType::CRC16_X25, Some(shortest)) => {
+        (CrcType::CRC16_X25, Some((crc, shortest))) => {
+            let crc_value = u16::from_be_bytes(
+                data[crc.start..crc.end]
+                    .try_into()
+                    .map_err(|_| Error::InvalidLength(crc.len()))?,
+            );
             let mut digest = X25.digest();
-            digest.update(&data[0..crc_end]);
-            let calculated_crc = digest.finalize();
-            if calculated_crc != 0 {
+            digest.update(&data[0..crc.start]);
+            digest.update(&[0u8; 2]);
+            digest.update(&data[crc.end..crc_end]);
+            if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {
                 Ok(shortest)
             }
         }
-        (CrcType::CRC32_CASTAGNOLI, Some(shortest)) => {
+        (CrcType::CRC32_CASTAGNOLI, Some((crc, shortest))) => {
+            let crc_value = u32::from_be_bytes(
+                data[crc.start..crc.end]
+                    .try_into()
+                    .map_err(|_| Error::InvalidLength(crc.len()))?,
+            );
             let mut digest = CASTAGNOLI.digest();
-            digest.update(&data[0..crc_end]);
-            let calculated_crc = digest.finalize();
-            if calculated_crc != 0 {
+            digest.update(&data[0..crc.start]);
+            digest.update(&[0u8; 4]);
+            digest.update(&data[crc.end..crc_end]);
+            if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {
                 Ok(shortest)
