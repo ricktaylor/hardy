@@ -132,9 +132,8 @@ fn ipn_from_cbor(
     const U32_MAX: u64 = u32::MAX as u64;
 
     match (a, b, c) {
-        (0, 0, Some(0)) => Ok((Eid::Null, false)),
         (0, 0, None) => Ok((Eid::Null, shortest)),
-        (0, 0, Some(s)) | (0, s, None) => Err(Error::IpnInvalidServiceNumber(s)),
+        (0, 0, Some(_)) | (0, _, None) => Ok((Eid::Null, false)),
         (a, _, Some(_)) if a > U32_MAX => Err(Error::IpnInvalidAllocatorId(a)),
         (_, n, Some(_)) if n > U32_MAX => Err(Error::IpnInvalidNodeNumber(n)),
         (_, _, Some(s)) | (_, s, None) if s > U32_MAX => Err(Error::IpnInvalidServiceNumber(s)),
