@@ -19,7 +19,7 @@ impl Builder {
     ///
     /// # Examples
     /// ```
-    /// use hardy_bpv7::{Builder, creation_timestamp::CreationTimestamp};
+    /// use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
     ///
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
