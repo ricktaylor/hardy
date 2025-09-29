@@ -1,5 +1,8 @@
 use super::*;
 
+/// A builder for creating a new [`bundle::Bundle`].
+///
+/// See [`Builder::new()`] for more information.
 pub struct Builder {
     bundle_flags: bundle::Flags,
     crc_type: crc::CrcType,
@@ -12,6 +15,16 @@ pub struct Builder {
 }
 
 impl Builder {
+    /// Creates a new [`Builder`] for creating a [`bundle::Bundle`].
+    ///
+    /// # Examples
+    /// ```
+    /// use hardy_bpv7::{Builder, creation_timestamp::CreationTimestamp};
+    ///
+    /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+    ///     .with_report_to("ipn:3.0".parse().unwrap())
+    ///     .build("Hello", CreationTimestamp::now());
+    /// ```
     pub fn new(source: eid::Eid, destination: eid::Eid) -> Self {
         Self {
             source,
@@ -29,30 +42,36 @@ impl Builder {
         }
     }
 
-    pub fn with_flags(&mut self, flags: bundle::Flags) -> &mut Self {
+    /// Sets the [`bundle::Flags`] for this [`Builder`].
+    pub fn with_flags(mut self, flags: bundle::Flags) -> Self {
         self.bundle_flags = flags;
         self
     }
 
-    pub fn with_crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
+    /// Sets the [`crc::CrcType`] for this [`Builder`].
+    pub fn with_crc_type(mut self, crc_type: crc::CrcType) -> Self {
         self.crc_type = crc_type;
         self
     }
 
-    pub fn with_report_to(&mut self, report_to: eid::Eid) -> &mut Self {
+    /// Sets the report_to [`eid::Eid`] for this [`Builder`].
+    pub fn with_report_to(mut self, report_to: eid::Eid) -> Self {
         self.report_to = Some(report_to);
         self
     }
 
-    pub fn with_lifetime(&mut self, lifetime: core::time::Duration) -> &mut Self {
+    /// Sets the lifetime for this [`Builder`].
+    pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Self {
         self.lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
         self
     }
 
+    /// Adds an extension block to this [`Builder`].
     pub fn add_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'_> {
         BlockBuilder::new(self, block_type)
     }
 
+    /// Builds the [`bundle::Bundle`] with the given payload and timestamp.
     pub fn build<T: AsRef<[u8]>>(
         mut self,
         payload: T,
@@ -96,12 +115,14 @@ impl Builder {
     }
 }
 
+/// A builder for creating a new [`block::Block`].
 pub struct BlockBuilder<'a> {
     builder: &'a mut Builder,
     template: BlockTemplate,
 }
 
 impl<'a> BlockBuilder<'a> {
+    /// Creates a new [`BlockBuilder`] for creating a [`block::Block`].
     fn new(builder: &'a mut Builder, block_type: block::Type) -> Self {
         Self {
             template: BlockTemplate::new(block_type, block::Flags::default(), builder.crc_type),
@@ -109,17 +130,20 @@ impl<'a> BlockBuilder<'a> {
         }
     }
 
-    pub fn with_flags(&mut self, flags: block::Flags) -> &mut Self {
+    /// Sets the [`block::Flags`] for this [`BlockBuilder`].
+    pub fn with_flags(mut self, flags: block::Flags) -> Self {
         self.template.flags = flags;
         self
     }
 
-    pub fn with_crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
+    /// Sets the [`crc::CrcType`] for this [`BlockBuilder`].
+    pub fn with_crc_type(mut self, crc_type: crc::CrcType) -> Self {
         self.template.crc_type = crc_type;
         self
     }
 
-    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> &'a mut Builder {
+    /// Builds the [`block::Block`] with the given data.
+    pub fn build<T: AsRef<[u8]>>(mut self, data: T) {
         self.template.data = Some(data.as_ref().into());
 
         if let block::Type::Payload = self.template.block_type {
@@ -127,10 +151,10 @@ impl<'a> BlockBuilder<'a> {
         } else {
             self.builder.extensions.push(self.template);
         }
-        self.builder
     }
 }
 
+/// A template for creating a new [`block::Block`].
 #[derive(Clone)]
 pub(crate) struct BlockTemplate {
     pub block_type: block::Type,
@@ -140,6 +164,7 @@ pub(crate) struct BlockTemplate {
 }
 
 impl BlockTemplate {
+    /// Creates a new [`BlockTemplate`] for creating a [`block::Block`].
     pub fn new(block_type: block::Type, flags: block::Flags, crc_type: crc::CrcType) -> Self {
         Self {
             block_type,
@@ -149,6 +174,7 @@ impl BlockTemplate {
         }
     }
 
+    /// Builds the [`block::Block`] with the given block number and array.
     pub fn build(self, block_number: u64, array: &mut hardy_cbor::encode::Array) -> block::Block {
         let mut block = block::Block {
             block_type: self.block_type,
@@ -170,14 +196,22 @@ impl BlockTemplate {
     }
 }
 
+/// A template for creating a new [`bundle::Bundle`].
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub struct BundleTemplate {
+    /// The source of the bundle.
     pub source: eid::Eid,
+    /// The destination of the bundle.
     pub destination: eid::Eid,
+    /// The report_to of the bundle.
     pub report_to: Option<eid::Eid>,
+    /// The flags of the bundle.
     pub flags: Option<bundle::Flags>,
+    /// The crc_type of the bundle.
     pub crc_type: Option<crc::CrcType>,
+    /// The lifetime of the bundle.
     pub lifetime: Option<core::time::Duration>,
+    /// The hop_limit of the bundle.
     pub hop_limit: Option<u64>,
 }
 
@@ -186,35 +220,36 @@ impl From<BundleTemplate> for Builder {
         let mut builder = Builder::new(value.source, value.destination);
 
         if let Some(report_to) = value.report_to {
-            builder.with_report_to(report_to);
+            builder = builder.with_report_to(report_to);
         }
 
         if let Some(flags) = value.flags {
-            builder.with_flags(flags);
+            builder = builder.with_flags(flags);
         }
 
         if let Some(crc_type) = value.crc_type {
-            builder.with_crc_type(crc_type);
+            builder = builder.with_crc_type(crc_type);
         }
 
         if let Some(lifetime) = value.lifetime {
-            builder.with_lifetime(lifetime);
+            builder = builder.with_lifetime(lifetime);
         }
 
         if let Some(hop_limit) = value.hop_limit {
-            let mut builder = builder.add_extension_block(block::Type::HopCount);
-            builder.with_flags(block::Flags {
-                must_replicate: true,
-                delete_bundle_on_failure: true,
-                ..Default::default()
-            });
-            builder.build(
-                hardy_cbor::encode::emit(&hop_info::HopInfo {
-                    limit: hop_limit,
-                    count: 0,
+            builder
+                .add_extension_block(block::Type::HopCount)
+                .with_flags(block::Flags {
+                    must_replicate: true,
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
                 })
-                .0,
-            );
+                .build(
+                    hardy_cbor::encode::emit(&hop_info::HopInfo {
+                        limit: hop_limit,
+                        count: 0,
+                    })
+                    .0,
+                );
         }
 
         builder
@@ -223,9 +258,9 @@ impl From<BundleTemplate> for Builder {
 
 #[test]
 fn test_builder() {
-    let mut b = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap());
-    b.with_report_to("ipn:3.0".parse().unwrap());
-    b.build("Hello", creation_timestamp::CreationTimestamp::now());
+    Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_report_to("ipn:3.0".parse().unwrap())
+        .build("Hello", creation_timestamp::CreationTimestamp::now());
 }
 
 #[cfg(feature = "serde")]

@@ -9,25 +9,13 @@ struct Args {
     files: Vec<String>,
 }
 
-struct NoKeys;
-
-impl hardy_bpv7::bpsec::key::KeyStore for NoKeys {
-    fn decrypt_keys<'a>(
-        &'a self,
-        _source: &hardy_bpv7::eid::Eid,
-        _operation: &[hardy_bpv7::bpsec::key::Operation],
-    ) -> impl Iterator<Item = &'a hardy_bpv7::bpsec::key::Key> {
-        None.into_iter()
-    }
-}
-
 fn parse<R: std::io::Read>(filename: Option<String>, mut input: std::io::BufReader<R>) -> bool {
     let mut bundle = Vec::new();
     input
         .read_to_end(&mut bundle)
         .expect("Failed to read from input");
 
-    match hardy_bpv7::bundle::ValidBundle::parse(&bundle, &NoKeys) {
+    match hardy_bpv7::bundle::ValidBundle::parse(&bundle, &hardy_bpv7::bpsec::key::EmptyStore) {
         Ok(hardy_bpv7::bundle::ValidBundle::Valid(_, _)) => true,
         Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(_, _, _, non_canonical)) => {
             if non_canonical {
