@@ -32,7 +32,7 @@ tokio-stream = { version = "0.1.17", optional = true }
 tonic = { version = "0.14.2", optional = true }
 prost-types = { version = "0.14.1", optional = true }
 config = { version = "0.15.16", features = ["toml"] }
-serde = { version = "1.0.226", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
 thiserror = "2.0.16"
