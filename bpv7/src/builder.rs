@@ -77,7 +77,9 @@ impl Builder {
 
         let data = hardy_cbor::encode::emit_array(None, |a| {
             // Emit primary block
-            bundle.emit_primary_block(a);
+            bundle
+                .emit_primary_block(a)
+                .expect("Failed to emit primary block");
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {
@@ -157,11 +159,13 @@ impl BlockTemplate {
             bib: None,
             bcb: None,
         };
-        block.emit(
-            block_number,
-            &self.data.expect("No block specific data set"),
-            array,
-        );
+        block
+            .emit(
+                block_number,
+                &self.data.expect("No block specific data set"),
+                array,
+            )
+            .expect("Failed to emit block");
         block
     }
 }

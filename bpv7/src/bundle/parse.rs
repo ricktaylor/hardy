@@ -413,11 +413,14 @@ impl<'a> BlockParse<'a> {
         block: &mut block::Block,
         block_number: u64,
         array: &mut hardy_cbor::encode::Array,
-    ) {
+    ) -> Result<(), Error> {
         match self.noncanonical_blocks.remove(&block_number) {
             Some(Some(payload)) => block.emit(block_number, &payload, array),
             Some(None) => block.emit(block_number, &self.source_data[block.payload()], array),
-            None => block.r#move(self.source_data, array),
+            None => {
+                block.r#move(self.source_data, array);
+                Ok(())
+            }
         }
     }
 
@@ -456,12 +459,14 @@ impl<'a> BlockParse<'a> {
 
                 // Emit all blocks
                 for (block_number, mut block) in core::mem::take(&mut self.blocks) {
-                    self.emit_block(&mut block, block_number, block_array);
+                    self.emit_block(&mut block, block_number, block_array)
+                        .expect("Failed to emit block");
                     bundle.blocks.insert(block_number, block);
                 }
 
                 // And final payload block
-                self.emit_block(&mut payload_block, 1, block_array);
+                self.emit_block(&mut payload_block, 1, block_array)
+                    .expect("Failed to emit payload block");
                 bundle.blocks.insert(1, payload_block);
             })
             .into(),
@@ -489,7 +494,7 @@ fn parse_blocks(
     if !canonical_bundle {
         parser
             .noncanonical_blocks
-            .insert(0, Some(primary_block::PrimaryBlock::emit(bundle).into()));
+            .insert(0, Some(primary_block::PrimaryBlock::emit(bundle)?.into()));
     }
 
     // Parse the blocks
