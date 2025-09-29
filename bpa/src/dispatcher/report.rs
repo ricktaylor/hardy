@@ -134,16 +134,15 @@ impl Dispatcher {
         if self.status_reports {
             let mut bundle = loop {
                 // Build the bundle
-                let mut b = hardy_bpv7::builder::Builder::new(
+                let (bundle, data) = hardy_bpv7::builder::Builder::new(
                     self.node_ids.get_admin_endpoint(report_to),
                     report_to.clone(),
-                );
-                b.with_flags(hardy_bpv7::bundle::Flags {
+                )
+                .with_flags(hardy_bpv7::bundle::Flags {
                     is_admin_record: true,
                     ..Default::default()
-                });
-
-                let (bundle, data) = b.build(
+                })
+                .build(
                     &payload,
                     hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
                 );

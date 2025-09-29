@@ -19,32 +19,32 @@ impl RandomBundle {
         let mut builder = hardy_bpv7::builder::Builder::new(self.source.0, self.destination.0);
 
         if let Some(report_to) = self.report_to {
-            builder.with_report_to(report_to.0);
+            builder = builder.with_report_to(report_to.0);
         }
 
         if let Some(flags) = self.flags {
-            builder.with_flags((flags as u64).into());
+            builder = builder.with_flags((flags as u64).into());
         }
 
         if let Some(crc_type) = self.crc_type {
-            builder.with_crc_type(match (crc_type as u64).into() {
+            builder = builder.with_crc_type(match (crc_type as u64).into() {
                 hardy_bpv7::crc::CrcType::Unrecognised(_) => hardy_bpv7::crc::CrcType::None,
                 crc_type => crc_type,
             });
         }
 
         if let Some(lifetime) = self.lifetime {
-            builder.with_lifetime(lifetime);
+            builder = builder.with_lifetime(lifetime);
         }
 
         if let Some((limit, count)) = self.hop_limit {
-            let mut builder = builder.add_extension_block(hardy_bpv7::block::Type::HopCount);
-            builder.with_flags(hardy_bpv7::block::Flags {
-                must_replicate: true,
-                delete_bundle_on_failure: true,
-                ..Default::default()
-            });
             builder
+                .add_extension_block(hardy_bpv7::block::Type::HopCount)
+                .with_flags(hardy_bpv7::block::Flags {
+                    must_replicate: true,
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                })
                 .build(hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo { limit, count }).0);
         }
 

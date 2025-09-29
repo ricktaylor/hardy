@@ -12,6 +12,18 @@ pub trait KeyStore {
     ) -> impl Iterator<Item = &'a Key>;
 }
 
+pub struct EmptyStore;
+
+impl KeyStore for EmptyStore {
+    fn decrypt_keys<'a>(
+        &'a self,
+        _source: &eid::Eid,
+        _operation: &[Operation],
+    ) -> impl Iterator<Item = &'a Key> {
+        core::iter::empty()
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", serde_as)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]

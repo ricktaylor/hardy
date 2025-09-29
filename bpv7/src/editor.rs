@@ -77,11 +77,12 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn remove_block(&mut self, block_number: u64) {
+    pub fn remove_block(mut self, block_number: u64) -> Self {
         if block_number == 0 || block_number == 1 {
             panic!("Don't remove primary or payload blocks!");
         }
         self.blocks.remove(&block_number);
+        self
     }
 
     pub fn rebuild(mut self) -> (bundle::Bundle, Box<[u8]>) {
@@ -172,22 +173,21 @@ impl<'a, 'b> BlockBuilder<'a, 'b> {
         }
     }
 
-    pub fn with_flags(&mut self, flags: block::Flags) -> &mut Self {
+    pub fn with_flags(mut self, flags: block::Flags) -> Self {
         self.template.flags = flags;
         self
     }
 
-    pub fn with_crc_type(&mut self, crc_type: crc::CrcType) -> &mut Self {
+    pub fn with_crc_type(mut self, crc_type: crc::CrcType) -> Self {
         self.template.crc_type = crc_type;
         self
     }
 
-    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> &'b mut Editor<'a> {
+    pub fn build<T: AsRef<[u8]>>(mut self, data: T) {
         self.template.data = Some(data.as_ref().into());
 
         self.editor
             .blocks
             .insert(self.block_number, BlockTemplate::Add(self.template));
-        self.editor
     }
 }

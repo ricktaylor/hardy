@@ -42,12 +42,13 @@ impl Dispatcher {
 
         // Build the bundle
         let bundle = loop {
-            let mut b = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone());
-            b.with_lifetime(lifetime);
+            let mut builder =
+                hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
+                    .with_lifetime(lifetime);
 
             // Set flags
             if let Some(flags) = &flags {
-                b.with_flags(hardy_bpv7::bundle::Flags {
+                builder = builder.with_flags(hardy_bpv7::bundle::Flags {
                     do_not_fragment: flags.do_not_fragment,
                     app_ack_requested: flags.request_ack,
                     report_status_time: flags.report_status_time,
@@ -63,11 +64,12 @@ impl Dispatcher {
                     || flags.notify_delivery
                     || flags.notify_deletion
                 {
-                    b.with_report_to(self.node_ids.get_admin_endpoint(&destination));
+                    builder =
+                        builder.with_report_to(self.node_ids.get_admin_endpoint(&destination));
                 }
             }
 
-            let (bundle, data) = b.build(
+            let (bundle, data) = builder.build(
                 data,
                 hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
             );
