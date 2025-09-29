@@ -35,7 +35,7 @@ config = { version = "0.15.16", features = ["toml"] }
 serde = { version = "1.0.226", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
-thiserror = "2.0.16"
+thiserror = "2.0.17"
 time = "0.3.44"
 cfg-if = "1.0.3"
 tracing = "0.1.41"
