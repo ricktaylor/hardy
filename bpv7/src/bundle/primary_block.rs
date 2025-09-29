@@ -228,7 +228,7 @@ impl PrimaryBlock {
         (bundle, e)
     }
 
-    pub fn emit(bundle: &bundle::Bundle) -> Vec<u8> {
+    pub fn emit(bundle: &bundle::Bundle) -> Result<Vec<u8>, Error> {
         crc::append_crc_value(
             bundle.crc_type,
             hardy_cbor::encode::emit_array(
@@ -267,5 +267,6 @@ impl PrimaryBlock {
                 },
             ),
         )
+        .map_err(Into::into)
     }
 }

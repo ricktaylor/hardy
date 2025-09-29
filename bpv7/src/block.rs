@@ -2,16 +2,25 @@ use super::*;
 use core::ops::Range;
 use error::CaptureFieldErr;
 
+/// Represents the processing control flags for a BPv7 block.
+///
+/// These flags, defined in RFC 9171 Section 4.2.2, control how a node should
+/// process the block, especially in cases of failure or fragmentation.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
+    /// If set, the block must be replicated in every fragment of the bundle.
     pub must_replicate: bool,
+    /// If set, a status report should be generated if block processing fails.
     pub report_on_failure: bool,
+    /// If set, the entire bundle should be deleted if block processing fails.
     pub delete_bundle_on_failure: bool,
+    /// If set, this block should be deleted if its processing fails.
     pub delete_block_on_failure: bool,
 
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    /// A bitmask of any unrecognized flags encountered during parsing.
     pub unrecognised: Option<u64>,
 }
 
@@ -36,26 +45,28 @@ impl From<&Flags> for u64 {
 
 impl From<u64> for Flags {
     fn from(value: u64) -> Self {
-        let mut flags = Self {
-            unrecognised: {
-                let u = value & !((2 ^ 6) - 1);
-                if u == 0 { None } else { Some(u) }
-            },
-            ..Default::default()
-        };
+        let mut flags = Self::default();
+        let mut unrecognised = value;
 
-        for b in 0..=6 {
-            if value & (1 << b) != 0 {
-                match b {
-                    0 => flags.must_replicate = true,
-                    1 => flags.report_on_failure = true,
-                    2 => flags.delete_bundle_on_failure = true,
-                    4 => flags.delete_block_on_failure = true,
-                    b => {
-                        flags.unrecognised = Some(flags.unrecognised.unwrap_or_default() | 1 << b);
-                    }
-                }
-            }
+        if (value & 1) != 0 {
+            flags.must_replicate = true;
+            unrecognised &= !1;
+        }
+        if (value & 2) != 0 {
+            flags.report_on_failure = true;
+            unrecognised &= !2;
+        }
+        if (value & 4) != 0 {
+            flags.delete_bundle_on_failure = true;
+            unrecognised &= !4;
+        }
+        if (value & 16) != 0 {
+            flags.delete_block_on_failure = true;
+            unrecognised &= !16;
+        }
+
+        if unrecognised != 0 {
+            flags.unrecognised = Some(unrecognised);
         }
         flags
     }
@@ -78,17 +89,26 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
+/// The type of a BPv7 block, as defined in RFC 9171 Section 4.2.1.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum Type {
+    /// Primary Block (type code 0).
     Primary,
+    /// Payload Block (type code 1).
     Payload,
+    /// Previous Node Block (type code 6).
     PreviousNode,
+    /// Bundle Age Block (type code 7).
     BundleAge,
+    /// Hop Count Block (type code 10).
     HopCount,
+    /// Block Integrity Block (from BPSec, RFC 9172).
     BlockIntegrity,
+    /// Block Confidentiality Block (from BPSec, RFC 9172).
     BlockSecurity,
+    /// An unrecognized block type with its type code.
     Unrecognised(u64),
 }
 
@@ -139,20 +159,34 @@ impl hardy_cbor::decode::FromCbor for Type {
     }
 }
 
+/// Represents a generic BPv7 extension block within a bundle.
+///
+/// This struct holds the common metadata for all blocks, such as the type, flags,
+/// and CRC information. The actual data of the block is not stored directly but
+/// is referenced by the `extent` and `data` ranges, which point to slices
+/// within the full bundle's byte representation.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Block {
+    /// The type of the block.
     pub block_type: Type,
+    /// The block-specific processing control flags.
     pub flags: Flags,
+    /// The type of CRC used for this block's integrity check.
     pub crc_type: crc::CrcType,
+    /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
     pub extent: Range<usize>,
+    /// The range of bytes within the `extent` that represents the block-specific data.
     pub data: Range<usize>,
+    /// The block number of the Block Integrity Block (BIB) that protects this block, if any.
     pub bib: Option<u64>,
+    /// The block number of the Block Confidentiality Block (BCB) that protects this block, if any.
     pub bcb: Option<u64>,
 }
 
 impl Block {
+    /// Calculates the absolute range of the block's payload within the original bundle byte array.
     pub fn payload(&self) -> Range<usize> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
@@ -162,7 +196,7 @@ impl Block {
         block_number: u64,
         data: &[u8],
         array: &mut hardy_cbor::encode::Array,
-    ) {
+    ) -> Result<(), Error> {
         self.extent = array.emit(&hardy_cbor::encode::RawOwned::new(crc::append_crc_value(
             self.crc_type,
             hardy_cbor::encode::emit_array(
@@ -186,7 +220,8 @@ impl Block {
                     }
                 },
             ),
-        )));
+        )?));
+        Ok(())
     }
 
     pub(crate) fn r#move(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {

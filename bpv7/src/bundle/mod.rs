@@ -4,8 +4,16 @@ use base64::prelude::*;
 mod parse;
 mod primary_block;
 
+/// Represents the payload of a block.
+///
+/// The payload can either be a direct slice (`Range`) into the original bundle's
+/// byte array, or an `Owned` byte slice. The `Owned` variant is used when the
+/// payload has been decrypted from a Block Confidentiality Block (BCB) and
+/// therefore does not correspond to a contiguous region of the original data.
 pub enum Payload {
+    /// A range of bytes within the original bundle data.
     Range(core::ops::Range<usize>),
+    /// An owned byte slice, typically holding a decrypted payload.
     Owned(zeroize::Zeroizing<Box<[u8]>>),
 }
 
@@ -18,18 +26,26 @@ impl core::fmt::Debug for Payload {
     }
 }
 
+/// Holds fragmentation information for a bundle.
+///
+/// As defined in RFC 9171 Section 4.2.1, this information is present in the
+/// primary block if the bundle is a fragment of a larger original bundle.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct FragmentInfo {
+    /// The offset of this fragment's payload within the original bundle's payload.
     pub offset: u64,
+    /// The total length of the original bundle's payload.
     pub total_len: u64,
 }
 
+/// Contains the [`Id`] struct for uniquely identifying a bundle and related helpers.
 pub mod id {
     use super::*;
     use thiserror::Error;
 
+    /// Errors that can occur when parsing a bundle [`Id`] from a key.
     #[derive(Error, Debug)]
     pub enum Error {
         #[error("Bad bundle id key")]
@@ -64,16 +80,26 @@ impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldIdErr<T>
     }
 }
 
+/// Represents the unique identifier of a BPv7 bundle.
+///
+/// A bundle ID is a tuple of `(source EID, creation timestamp, fragment info)`.
+/// This combination is guaranteed to be unique across the DTN.
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Id {
+    /// The EID of the node that created the bundle.
     pub source: eid::Eid,
+    /// The creation timestamp, including a sequence number for uniqueness.
     pub timestamp: creation_timestamp::CreationTimestamp,
+    /// Fragmentation information, if this bundle is a fragment.
     pub fragment_info: Option<FragmentInfo>,
 }
 
 impl Id {
+    /// Deserializes a bundle ID from a compact, base64-encoded string representation.
+    ///
+    /// This is useful for using the bundle ID as a key in databases or other systems.
     pub fn from_key(k: &str) -> Result<Self, id::Error> {
         hardy_cbor::decode::parse_array(
             &BASE64_STANDARD_NO_PAD
@@ -104,6 +130,9 @@ impl Id {
         .map(|v| v.0)
     }
 
+    /// Serializes the bundle ID into a compact, base64-encoded string representation.
+    ///
+    /// This is useful for using the bundle ID as a key in databases or other systems.
     pub fn to_key(&self) -> String {
         BASE64_STANDARD_NO_PAD.encode(
             if let Some(fragment_info) = &self.fragment_info {
@@ -121,18 +150,32 @@ impl Id {
     }
 }
 
+/// Represents the processing control flags for a BPv7 bundle.
+///
+/// These flags, defined in RFC 9171 Section 4.2.3, control how a node should
+/// handle the bundle, such as whether it can be fragmented or if status reports
+/// are requested.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
+    /// If set, this bundle is a fragment of a larger bundle.
     pub is_fragment: bool,
+    /// If set, the payload is an administrative record.
     pub is_admin_record: bool,
+    /// If set, the bundle must not be fragmented.
     pub do_not_fragment: bool,
+    /// If set, the destination application is requested to send an acknowledgement.
     pub app_ack_requested: bool,
+    /// If set, status reports should include the time of the reported event.
     pub report_status_time: bool,
+    /// If set, a status report should be generated upon bundle reception.
     pub receipt_report_requested: bool,
+    /// If set, a status report should be generated upon bundle forwarding.
     pub forward_report_requested: bool,
+    /// If set, a status report should be generated upon bundle delivery.
     pub delivery_report_requested: bool,
+    /// If set, a status report should be generated upon bundle deletion.
     pub delete_report_requested: bool,
 
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -141,31 +184,48 @@ pub struct Flags {
 
 impl From<u64> for Flags {
     fn from(value: u64) -> Self {
-        let mut flags = Self {
-            unrecognised: {
-                let u = value & !((2 ^ 20) - 1);
-                if u == 0 { None } else { Some(u) }
-            },
-            ..Default::default()
-        };
+        let mut flags = Self::default();
+        let mut unrecognised = value;
 
-        for b in 0..=20 {
-            if value & (1 << b) != 0 {
-                match b {
-                    0 => flags.is_fragment = true,
-                    1 => flags.is_admin_record = true,
-                    2 => flags.do_not_fragment = true,
-                    5 => flags.app_ack_requested = true,
-                    6 => flags.report_status_time = true,
-                    14 => flags.receipt_report_requested = true,
-                    16 => flags.forward_report_requested = true,
-                    17 => flags.delivery_report_requested = true,
-                    18 => flags.delete_report_requested = true,
-                    b => {
-                        flags.unrecognised = Some(flags.unrecognised.unwrap_or_default() | 1 << b);
-                    }
-                }
-            }
+        if (value & (1 << 0)) != 0 {
+            flags.is_fragment = true;
+            unrecognised &= !(1 << 0);
+        }
+        if (value & (1 << 1)) != 0 {
+            flags.is_admin_record = true;
+            unrecognised &= !(1 << 1);
+        }
+        if (value & (1 << 2)) != 0 {
+            flags.do_not_fragment = true;
+            unrecognised &= !(1 << 2);
+        }
+        if (value & (1 << 5)) != 0 {
+            flags.app_ack_requested = true;
+            unrecognised &= !(1 << 5);
+        }
+        if (value & (1 << 6)) != 0 {
+            flags.report_status_time = true;
+            unrecognised &= !(1 << 6);
+        }
+        if (value & (1 << 14)) != 0 {
+            flags.receipt_report_requested = true;
+            unrecognised &= !(1 << 14);
+        }
+        if (value & (1 << 16)) != 0 {
+            flags.forward_report_requested = true;
+            unrecognised &= !(1 << 16);
+        }
+        if (value & (1 << 17)) != 0 {
+            flags.delivery_report_requested = true;
+            unrecognised &= !(1 << 17);
+        }
+        if (value & (1 << 18)) != 0 {
+            flags.delete_report_requested = true;
+            unrecognised &= !(1 << 18);
+        }
+
+        if unrecognised != 0 {
+            flags.unrecognised = Some(unrecognised);
         }
         flags
     }
@@ -222,38 +282,56 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
+/// A view into a bundle's blocks for BPSec operations.
 struct BlockSet<'a> {
     bundle: &'a Bundle,
     source_data: &'a [u8],
 }
 
 impl<'a> bpsec::BlockSet<'a> for BlockSet<'a> {
+    /// Retrieves a reference to a block by its number.
     fn block(&self, block_number: u64) -> Option<&block::Block> {
         self.bundle.blocks.get(&block_number)
     }
 
+    /// Retrieves the payload of a block as a byte slice.
     fn block_payload(&self, block_number: u64) -> Option<&[u8]> {
         Some(&self.source_data[self.block(block_number)?.payload()])
     }
 }
 
+/// Represents a complete BPv7 bundle.
+///
+/// This struct contains all the information from the primary block, data unpacked
+/// from known extension blocks, and a map of all blocks present in the bundle.
+/// The bundle's raw byte data is stored separately, and this struct provides
+/// methods to access and interpret it.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Bundle {
     // From Primary Block
+    /// The unique identifier for the bundle.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub id: Id,
 
+    /// The bundle-specific processing control flags.
     pub flags: Flags,
+    /// The type of CRC used for the primary block's integrity check.
     pub crc_type: crc::CrcType,
+    /// The EID of the bundle's final destination.
     pub destination: eid::Eid,
+    /// The EID to which status reports should be sent.
     pub report_to: eid::Eid,
+    /// The time duration after which the bundle should be considered expired.
     pub lifetime: core::time::Duration,
 
     // Unpacked from extension blocks
+    /// The EID of the node that last forwarded the bundle.
     pub previous_node: Option<eid::Eid>,
+    /// The age of the bundle, used if the source node has no clock.
     pub age: Option<core::time::Duration>,
+    /// The hop limit and current hop count for the bundle.
     pub hop_count: Option<hop_info::HopInfo>,
 
     // The extension blocks
@@ -261,9 +339,13 @@ pub struct Bundle {
 }
 
 impl Bundle {
-    pub(crate) fn emit_primary_block(&mut self, array: &mut hardy_cbor::encode::Array) {
+    /// Emits the primary block into a CBOR array during bundle creation.
+    pub(crate) fn emit_primary_block(
+        &mut self,
+        array: &mut hardy_cbor::encode::Array,
+    ) -> Result<(), Error> {
         let extent = array.emit(&hardy_cbor::encode::RawOwned::new(
-            primary_block::PrimaryBlock::emit(self),
+            primary_block::PrimaryBlock::emit(self)?,
         ));
 
         // Replace existing block record
@@ -284,8 +366,16 @@ impl Bundle {
                 bcb: None,
             },
         );
+        Ok(())
     }
 
+    /// Retrieves the payload of a specific block by its number.
+    ///
+    /// This method handles the complexity of block-level security. If the target
+    /// block is encrypted with a Block Confidentiality Block (BCB), this method
+    /// will attempt to decrypt it using the provided `key_f` keystore.
+    ///
+    /// Returns `Ok(None)` if the payload is encrypted and cannot be decrypted.
     pub fn block_payload(
         &self,
         block_number: u64,
@@ -343,10 +433,20 @@ impl Bundle {
     }
 }
 
-// For parsing a bundle plus 'minimal viability'
+/// Represents the result of parsing a bundle.
+///
+/// Parsing a bundle can have several outcomes depending on its validity,
+/// canonical form, and the presence of security features.
 #[derive(Debug)]
 pub enum ValidBundle {
+    /// The bundle was parsed successfully and was in canonical form.
+    /// The boolean indicates if an unsupported block was encountered that requests a report.
     Valid(Bundle, bool),
+    /// The bundle was valid but not in canonical CBOR form. A rewritten, canonical
+    /// version of the bundle data is provided. The booleans indicate if a report
+    /// is requested for an unsupported block and if the rewrite was due to non-canonical CBOR.
     Rewritten(Bundle, Box<[u8]>, bool, bool),
+    /// The bundle was invalid. The partially-parsed `Bundle` is provided along with
+    /// a `ReasonCode` for status reports and the specific `Error` that occurred.
     Invalid(Bundle, status_report::ReasonCode, Error),
 }
