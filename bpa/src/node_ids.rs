@@ -1,4 +1,3 @@
-use super::*;
 use hardy_bpv7::eid::Eid;
 use rand::Rng;
 use thiserror::Error;
