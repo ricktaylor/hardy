@@ -39,7 +39,7 @@ pub enum Error {
     #[error("Block {0} has an unsupported block type or block content sub-type")]
     Unsupported(u64),
 
-    #[error("Invalid bundle flag combination")]
+    #[error("Invalid bundle or block flag combination")]
     InvalidFlags,
 
     #[error("Bundle has been altered since parsing")]
