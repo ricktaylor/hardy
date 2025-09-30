@@ -19,11 +19,17 @@ impl Builder {
     ///
     /// # Examples
     /// ```
-    /// use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
+    /// use hardy_bpv7::{block, builder::Builder, creation_timestamp::CreationTimestamp};
     ///
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
-    ///     .build("Hello", CreationTimestamp::now());
+    ///     .add_extension_block(block::Type::Payload)
+    ///     .with_flags(block::Flags {
+    ///        delete_bundle_on_failure: true,
+    ///        ..Default::default()
+    ///     })
+    ///     .build("Hello")
+    ///     .build(CreationTimestamp::now());
     /// ```
     pub fn new(source: eid::Eid, destination: eid::Eid) -> Self {
         Self {

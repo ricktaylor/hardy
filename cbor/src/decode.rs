@@ -1,80 +1,82 @@
-//! A canonical CBOR decoder for parsing byte streams.
-//!
-//! This module provides tools for decoding data from the Concise Binary Object
-//! Representation (CBOR) format, as specified in
-//! [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The decoder is
-//! designed to handle both simple and complex CBOR structures, including
-//! definite and indefinite-length items, and semantic tags.
-//!
-//! # Core Concepts
-//!
-//! There are two primary ways to use the decoder:
-//!
-//! 1.  **Direct Deserialization with `FromCbor`:** For straightforward cases, you can
-//!     implement the [`FromCbor`] trait for your types. This allows you to
-//!     convert a CBOR byte slice directly into a Rust struct.
-//!
-//! 2.  **Streaming Parsing with `parse_*` functions:** For more complex or
-//!     performance-sensitive scenarios, you can use the `parse_*` functions
-//!     ([`parse_value`], [`parse_array`], [`parse_map`]) to process the CBOR
-//!     stream piece by piece. This approach gives you fine-grained control and
-//!     avoids intermediate allocations.
-//!
-//! # Usage
-//!
-//! ## 1. Implementing `FromCbor`
-//!
-//! To deserialize a CBOR byte slice into your custom type, implement [`FromCbor`].
-//!
-//! ```
-//! use hardy_cbor::decode::{self, FromCbor, Error};
-//!
-//! struct Point {
-//!     x: i32,
-//!     y: i32,
-//! }
-//!
-//! impl FromCbor for Point {
-//!     type Error = Error;
-//!
-//!     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-//!         decode::parse_array(data, |a, shortest, _| {
-//!             let (x, sx) = a.parse()?;
-//!             let (y, sy) = a.parse()?;
-//!             Ok((Point { x, y }, shortest && sx && sy))
-//!         }).map(|((v, s), len)| (v, s, len))
-//!     }
-//! }
-//!
-//! // CBOR for `[10, -20]`
-//! let bytes = &[0x82, 0x0A, 0x33];
-//! let (point, shortest, len) = Point::from_cbor(bytes).unwrap();
-//!
-//! assert_eq!(point.x, 10);
-//! assert_eq!(point.y, -20);
-//! assert!(shortest);
-//! assert_eq!(len, bytes.len());
-//! ```
-//!
-//! ## 2. Streaming Parsing
-//!
-//! Use [`parse_value`] to inspect a CBOR item without allocating new memory
-//! for its contents (such as strings or byte strings).
-//!
-//! ```
-//! use hardy_cbor::decode::{self, Value};
-//!
-//! // CBOR for `24(h'68656c6c6f')`
-//! let bytes = &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
-//!
-//! let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
-//!     assert_eq!(tags, &[24]); // Semantic tag 24
-//!     assert!(matches!(value, Value::Bytes(range) if &bytes[range.clone()] == b"hello"));
-//!     Ok::<_, decode::Error>(())
-//! }).unwrap();
-//!
-//! assert_eq!(len, bytes.len());
-//! ```
+/*!
+A canonical CBOR decoder for parsing byte streams.
+
+This module provides tools for decoding data from the Concise Binary Object
+Representation (CBOR) format, as specified in
+[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The decoder is
+designed to handle both simple and complex CBOR structures, including
+definite and indefinite-length items, and semantic tags.
+
+# Core Concepts
+
+There are two primary ways to use the decoder:
+
+1.  **Direct Deserialization with `FromCbor`:** For straightforward cases, you can
+    implement the [`FromCbor`] trait for your types. This allows you to
+    convert a CBOR byte slice directly into a Rust struct.
+
+2.  **Streaming Parsing with `parse_*` functions:** For more complex or
+    performance-sensitive scenarios, you can use the `parse_*` functions
+    ([`parse_value`], [`parse_array`], [`parse_map`]) to process the CBOR
+    stream piece by piece. This approach gives you fine-grained control and
+    avoids intermediate allocations.
+
+# Usage
+
+## 1. Implementing `FromCbor`
+
+To deserialize a CBOR byte slice into your custom type, implement [`FromCbor`].
+
+```
+use hardy_cbor::decode::{self, FromCbor, Error};
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl FromCbor for Point {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        decode::parse_array(data, |a, shortest, _| {
+            let (x, sx) = a.parse()?;
+            let (y, sy) = a.parse()?;
+            Ok((Point { x, y }, shortest && sx && sy))
+        }).map(|((v, s), len)| (v, s, len))
+    }
+}
+
+// CBOR for `[10, -20]`
+let bytes = &[0x82, 0x0A, 0x33];
+let (point, shortest, len) = Point::from_cbor(bytes).unwrap();
+
+assert_eq!(point.x, 10);
+assert_eq!(point.y, -20);
+assert!(shortest);
+assert_eq!(len, bytes.len());
+```
+
+## 2. Streaming Parsing
+
+Use [`parse_value`] to inspect a CBOR item without allocating new memory
+for its contents (such as strings or byte strings).
+
+```
+use hardy_cbor::decode::{self, Value};
+
+// CBOR for `24(h'68656c6c6f')`
+let bytes = &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
+
+let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
+    assert_eq!(tags, &[24]); // Semantic tag 24
+    assert!(matches!(value, Value::Bytes(range) if &bytes[range.clone()] == b"hello"));
+    Ok::<_, decode::Error>(())
+}).unwrap();
+
+assert_eq!(len, bytes.len());
+```
+*/
 use super::*;
 use core::{ops::Range, str::Utf8Error};
 use num_traits::{FromPrimitive, ToPrimitive};
