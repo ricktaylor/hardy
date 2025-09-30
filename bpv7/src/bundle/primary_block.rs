@@ -161,7 +161,8 @@ impl PrimaryBlock {
 
         // Compose something out of what we have!
         let mut e = None;
-        let mut bundle = bundle::Bundle {
+        let crc_type = unpack(self.crc_type, &mut e, "Crc Type");
+        let bundle = bundle::Bundle {
             flags: self.flags,
             report_to: self.report_to,
             destination: unpack(self.destination, &mut e, "Destination EID"),
@@ -171,41 +172,35 @@ impl PrimaryBlock {
                 fragment_info: unpack(self.fragment_info, &mut e, "Fragment Info"),
             },
             lifetime: unpack(self.lifetime, &mut e, "Lifetime"),
-            crc_type: unpack(self.crc_type, &mut e, "Crc Type"),
+            crc_type,
+            blocks: [(
+                0,
+                block::Block {
+                    block_type: block::Type::Primary,
+                    flags: block::Flags {
+                        must_replicate: true,
+                        report_on_failure: true,
+                        delete_bundle_on_failure: true,
+                        ..Default::default()
+                    },
+                    crc_type,
+                    data: extent.clone(),
+                    extent,
+                    bib: None,
+                    bcb: None,
+                },
+            )]
+            .into(),
             ..Default::default()
         };
 
-        if e.is_none()
-            && let Err(e2) = self.crc_result
-        {
-            e = Some(Error::InvalidField {
-                field: "Crc Value",
-                source: e2.into(),
-            });
-        }
-
-        // Add a block 0
-        bundle.blocks.insert(
-            0,
-            block::Block {
-                block_type: block::Type::Primary,
-                flags: block::Flags {
-                    must_replicate: true,
-                    report_on_failure: true,
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                },
-                crc_type: bundle.crc_type,
-                data: extent.clone(),
-                extent,
-                bib: None,
-                bcb: None,
-            },
-        );
-
         if e.is_none() {
-            // Check flags
-            if matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
+            if let Err(e2) = self.crc_result {
+                e = Some(Error::InvalidField {
+                    field: "Crc Value",
+                    source: e2.into(),
+                });
+            } else if matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
                             || !bundle.flags.do_not_fragment
                             || bundle.flags.receipt_report_requested
                             || bundle.flags.forward_report_requested

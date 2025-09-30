@@ -1,5 +1,6 @@
 use super::*;
 use error::CaptureFieldErr;
+use thiserror::Error;
 
 #[derive(Debug, Default)]
 struct BlockParse<'a> {
@@ -50,7 +51,11 @@ impl<'a> BlockParse<'a> {
             .map_err(Into::into)
     }
 
-    fn parse_blocks(&mut self, block_array: &mut hardy_cbor::decode::Array) -> Result<bool, Error> {
+    fn parse_blocks(
+        &mut self,
+        bundle: &Bundle,
+        block_array: &mut hardy_cbor::decode::Array,
+    ) -> Result<bool, Error> {
         let mut last_block_number = 0;
         let mut report_unsupported = false;
         let mut offset = block_array.offset();
@@ -63,6 +68,12 @@ impl<'a> BlockParse<'a> {
             offset = block_array.offset();
 
             // Check the block
+            if (bundle.flags.is_admin_record || bundle.id.source == eid::Eid::Null)
+                && block.block.flags.report_on_failure
+            {
+                return Err(Error::InvalidFlags);
+            }
+
             let mut remove = false;
             match block.block.block_type {
                 block::Type::Primary => unreachable!(),
@@ -498,7 +509,7 @@ fn parse_blocks(
     }
 
     // Parse the blocks
-    let mut report_unsupported = parser.parse_blocks(block_array)?;
+    let mut report_unsupported = parser.parse_blocks(bundle, block_array)?;
 
     // Decrypt all relevant BCB targets first
     parser.parse_bcbs(key_f)?;
@@ -531,81 +542,127 @@ fn parse_blocks(
     Ok((parser.rewrite(bundle), report_unsupported))
 }
 
+#[derive(Error, Debug)]
+enum ValidError {
+    #[error("An invalid bundle")]
+    Invalid(Bundle, status_report::ReasonCode, Error),
+
+    #[error(transparent)]
+    InvalidCBOR(#[from] hardy_cbor::decode::Error),
+
+    #[error(transparent)]
+    Wrapped(#[from] Error),
+}
+
 impl ValidBundle {
+    // Bouncing via ValidError allows us to avoid the array completeness check when a semantic error occurs
+    // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
     pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
-        hardy_cbor::decode::parse_array(data, |block_array, mut canonical, tags| {
-            // Check for shortest/correct form
-            canonical = canonical && !block_array.is_definite();
-            if canonical {
-                // TODO: POLICY CHECK
-                // Appendix B of RFC9171
-                let mut seen_55799 = false;
-                for tag in tags {
-                    match *tag {
-                        255799 if !seen_55799 => seen_55799 = true,
-                        _ => {
-                            canonical = false;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Parse Primary block
-            let block_start = block_array.offset();
-            let primary_block = block_array
-                .parse::<(primary_block::PrimaryBlock, bool)>()
-                .map(|(v, s)| {
-                    canonical = canonical && s;
-                    v
-                })
-                .map_field_err("Primary Block")?;
-
-            let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
-            if let Some(e) = e {
-                block_array.skip_to_end(16)?;
-                return Ok(Self::Invalid(
-                    bundle,
-                    status_report::ReasonCode::BlockUnintelligible,
-                    Error::InvalidField {
-                        field: "Primary Block",
-                        source: e.into(),
-                    },
-                ));
-            }
-
-            // And now parse the blocks
-            match parse_blocks(&mut bundle, canonical, block_array, data, key_f) {
-                Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
-                Ok((Some((new_data, non_canonical)), report_unsupported)) => Ok(Self::Rewritten(
-                    bundle,
-                    new_data,
-                    report_unsupported,
-                    non_canonical,
-                )),
-                Err(Error::Unsupported(n)) => Ok(Self::Invalid(
-                    bundle,
-                    status_report::ReasonCode::BlockUnsupported,
-                    Error::Unsupported(n),
-                )),
-                Err(e) => Ok(Self::Invalid(
-                    bundle,
-                    status_report::ReasonCode::BlockUnintelligible,
-                    e,
-                )),
-            }
-        })
-        .map(|(bundle, len)| match bundle {
-            ValidBundle::Valid(bundle, _) | ValidBundle::Rewritten(bundle, _, _, _)
+        match hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+            Self::parse_inner(data, key_f, a, shortest, tags)
+        }) {
+            Ok((Self::Valid(bundle, _) | Self::Rewritten(bundle, _, _, _), len))
                 if len != data.len() =>
             {
-                Self::Invalid(
+                Ok(Self::Invalid(
                     bundle,
                     status_report::ReasonCode::BlockUnintelligible,
                     Error::AdditionalData,
-                )
+                ))
             }
-            bundle => bundle,
-        })
+            Ok((b, _)) => Ok(b),
+            Err(ValidError::Invalid(bundle, reason, e)) => Ok(Self::Invalid(bundle, reason, e)),
+            Err(ValidError::InvalidCBOR(e)) => Err(e.into()),
+            Err(ValidError::Wrapped(e)) => Err(e),
+        }
+    }
+
+    fn parse_inner(
+        data: &[u8],
+        key_f: &impl bpsec::key::KeyStore,
+        block_array: &mut hardy_cbor::decode::Array,
+        mut canonical: bool,
+        tags: &[u64],
+    ) -> Result<Self, ValidError> {
+        // Check for shortest/correct form
+        canonical = canonical && !block_array.is_definite();
+        if canonical {
+            // TODO: POLICY CHECK
+            // Appendix B of RFC9171
+            let mut seen_55799 = false;
+            for tag in tags {
+                match *tag {
+                    255799 if !seen_55799 => seen_55799 = true,
+                    _ => {
+                        canonical = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Parse Primary block
+        let block_start = block_array.offset();
+        let primary_block = block_array
+            .parse::<(primary_block::PrimaryBlock, bool)>()
+            .map(|(v, s)| {
+                canonical = canonical && s;
+                v
+            })
+            .map_field_err("Primary Block")?;
+
+        let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
+        if let Some(e) = e {
+            block_array.skip_to_end(16)?;
+            return Ok(Self::Invalid(
+                bundle,
+                status_report::ReasonCode::BlockUnintelligible,
+                Error::InvalidField {
+                    field: "Primary Block",
+                    source: e.into(),
+                },
+            ));
+        }
+
+        // And now parse the blocks
+        match parse_blocks(&mut bundle, canonical, block_array, data, key_f) {
+            Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
+            Ok((Some((new_data, non_canonical)), report_unsupported)) => Ok(Self::Rewritten(
+                bundle,
+                new_data,
+                report_unsupported,
+                non_canonical,
+            )),
+            Err(Error::Unsupported(n)) => Err(ValidError::Invalid(
+                bundle,
+                status_report::ReasonCode::BlockUnsupported,
+                Error::Unsupported(n),
+            )),
+            Err(e) => Err(ValidError::Invalid(
+                bundle,
+                status_report::ReasonCode::BlockUnintelligible,
+                e,
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use hex_literal::hex;
+
+    #[test]
+    fn tests() {
+        // From Stephan Havermans testing
+        assert!(matches!(
+            ValidBundle::parse(
+                &hex!(
+                    "9f89071844018202820301820100820100821b000000b5998c982b011a000493e042c9f6850602182700458202820200850704010042183485010101004454455354ff"
+                ),
+                &bpsec::key::EmptyStore,
+            ),
+            Ok(ValidBundle::Invalid(_, _, Error::InvalidFlags))
+        ));
     }
 }
