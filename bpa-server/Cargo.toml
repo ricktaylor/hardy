@@ -31,11 +31,11 @@ tokio-util = { version = "0.7.16", features = ["rt"] }
 tokio-stream = { version = "0.1.17", optional = true }
 tonic = { version = "0.14.2", optional = true }
 prost-types = { version = "0.14.1", optional = true }
-config = { version = "0.15.16", features = ["toml"] }
-serde = { version = "1.0.226", features = ["derive"] }
+config = { version = "0.15.18", features = ["toml"] }
+serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
-thiserror = "2.0.16"
+thiserror = "2.0.17"
 time = "0.3.44"
 cfg-if = "1.0.3"
 tracing = "0.1.41"
