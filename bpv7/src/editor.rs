@@ -189,7 +189,7 @@ impl<'a> BlockBuilder<'a> {
         self.editor
             .blocks
             .insert(self.block_number, BlockTemplate::Add(self.template));
-        
+
         self.editor
     }
 }

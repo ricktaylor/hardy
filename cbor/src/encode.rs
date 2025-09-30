@@ -1,72 +1,74 @@
-//! A canonical CBOR encoder designed for performance and flexibility.
-//!
-//! This module provides tools for encoding Rust data structures into the
-//! Concise Binary Object Representation (CBOR) format, as specified in
-//! [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The encoder
-//! prioritizes canonical output, ensuring that a given data structure always
-//! produces the same, shortest possible byte representation.
-//!
-//! # Core Concepts
-//!
-//! The two primary components of this library are the [`ToCbor`] trait and the
-//! [`Encoder`] struct.
-//!
-//! - **[`ToCbor`] trait:** Implement this trait for your types to make them
-//!   directly encodable. The library provides implementations for most Rust
-//!   primitive types, strings, slices, and tuples.
-//!
-//! - **[`Encoder`] struct:** A stateful encoder that builds the CBOR byte
-//!   stream. It can be used for more complex, procedural encoding scenarios,
-//!   such as building indefinite-length arrays or maps.
-//!
-//! # Usage
-//!
-//! ## 1. Manual `ToCbor` Implementation
-//!
-//! To make a custom type encodable, implement the [`ToCbor`] trait.
-//!
-//! ```
-//! use hardy_cbor::encode::{self, Encoder, ToCbor};
-//!
-//! struct Point {
-//!     x: i32,
-//!     y: i32,
-//! }
-//!
-//! impl ToCbor for Point {
-//!     type Result = ();
-//!
-//!     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-//!         // Encode the struct as a 2-element array.
-//!         encoder.emit_array(Some(2), |a| {
-//!             a.emit(&self.x);
-//!             a.emit(&self.y);
-//!         });
-//!     }
-//! }
-//!
-//! let point = Point { x: 10, y: -20 };
-//! let (bytes, _) = encode::emit(&point);
-//! // Produces CBOR for `[10, -20]`
-//! assert_eq!(bytes, &[0x82, 0x0A, 0x33]);
-//! ```
-//!
-//! ## 2. Using Helper Structs
-//!
-//! The library provides helper structs like [`Tagged`], [`Bytes`], and [`Raw`] to
-//! control the output format.
-//!
-//! ```
-//! use hardy_cbor::encode::{self, Tagged, Bytes};
-//!
-//! // Encode a byte slice with CBOR tag 24 (CBOR-encoded data item)
-//! let data = b"hello";
-//! let tagged_data = Tagged::<24, _>(&Bytes(data));
-//! let (bytes, _) = encode::emit(&tagged_data);
-//!
-//! // Produces CBOR for `24(h'68656c6c6f')`
-//! assert_eq!(bytes, &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
-//! ```
+/*!
+A canonical CBOR encoder designed for performance and flexibility.
+
+This module provides tools for encoding Rust data structures into the
+Concise Binary Object Representation (CBOR) format, as specified in
+[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The encoder
+prioritizes canonical output, ensuring that a given data structure always
+produces the same, shortest possible byte representation.
+
+# Core Concepts
+
+The two primary components of this library are the [`ToCbor`] trait and the
+[`Encoder`] struct.
+
+- **[`ToCbor`] trait:** Implement this trait for your types to make them
+  directly encodable. The library provides implementations for most Rust
+  primitive types, strings, slices, and tuples.
+
+- **[`Encoder`] struct:** A stateful encoder that builds the CBOR byte
+  stream. It can be used for more complex, procedural encoding scenarios,
+  such as building indefinite-length arrays or maps.
+
+# Usage
+
+## 1. Manual `ToCbor` Implementation
+
+To make a custom type encodable, implement the [`ToCbor`] trait.
+
+```
+use hardy_cbor::encode::{self, Encoder, ToCbor};
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl ToCbor for Point {
+    type Result = ();
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        // Encode the struct as a 2-element array.
+        encoder.emit_array(Some(2), |a| {
+            a.emit(&self.x);
+            a.emit(&self.y);
+        });
+    }
+}
+
+let point = Point { x: 10, y: -20 };
+let (bytes, _) = encode::emit(&point);
+// Produces CBOR for `[10, -20]`
+assert_eq!(bytes, &[0x82, 0x0A, 0x33]);
+```
+
+## 2. Using Helper Structs
+
+The library provides helper structs like [`Tagged`], [`Bytes`], and [`Raw`] to
+control the output format.
+
+```
+use hardy_cbor::encode::{self, Tagged, Bytes};
+
+// Encode a byte slice with CBOR tag 24 (CBOR-encoded data item)
+let data = b"hello";
+let tagged_data = Tagged::<24, _>(&Bytes(data));
+let (bytes, _) = encode::emit(&tagged_data);
+
+// Produces CBOR for `24(h'68656c6c6f')`
+assert_eq!(bytes, &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
+```
+*/
 use super::*;
 use core::ops::Range;
 
