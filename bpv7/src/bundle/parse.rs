@@ -582,7 +582,7 @@ fn parse_blocks(
 #[derive(Error, Debug)]
 enum ValidError {
     #[error("An invalid bundle")]
-    Invalid(Bundle, status_report::ReasonCode, Error),
+    Invalid(Box<ValidBundle>),
 
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
@@ -610,7 +610,7 @@ impl ValidBundle {
                 ))
             }
             Ok((b, _)) => Ok(b),
-            Err(ValidError::Invalid(bundle, reason, e)) => Ok(Self::Invalid(bundle, reason, e)),
+            Err(ValidError::Invalid(bundle)) => Ok(*bundle),
             Err(ValidError::InvalidCBOR(e)) => Err(e.into()),
             Err(ValidError::Wrapped(e)) => Err(e),
         }
@@ -675,16 +675,16 @@ impl ValidBundle {
                 report_unsupported,
                 non_canonical,
             )),
-            Err(Error::Unsupported(n)) => Err(ValidError::Invalid(
+            Err(Error::Unsupported(n)) => Err(ValidError::Invalid(Box::new(ValidBundle::Invalid(
                 bundle,
                 status_report::ReasonCode::BlockUnsupported,
                 Error::Unsupported(n),
-            )),
-            Err(e) => Err(ValidError::Invalid(
+            )))),
+            Err(e) => Err(ValidError::Invalid(Box::new(ValidBundle::Invalid(
                 bundle,
                 status_report::ReasonCode::BlockUnintelligible,
                 e,
-            )),
+            )))),
         }
     }
 }
