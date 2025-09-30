@@ -1,3 +1,9 @@
+/*!
+This module defines the structure and components of a BPv7 block, which is the
+fundamental unit of a bundle. It includes definitions for block headers, flags,
+and the generic `Block` struct that represents all extension blocks.
+*/
+
 use super::*;
 use core::ops::Range;
 use error::CaptureFieldErr;
@@ -191,6 +197,8 @@ impl Block {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
 
+    /// Emits the block as a CBOR-encoded byte array.
+    /// This is an internal function used during bundle creation.
     pub(crate) fn emit(
         &mut self,
         block_number: u64,
@@ -224,15 +232,21 @@ impl Block {
         Ok(())
     }
 
+    /// Moves the block from a source byte array to a new CBOR array.
+    /// This is an internal function used when modifying a bundle.
     pub(crate) fn r#move(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
         self.extent = array.emit(&hardy_cbor::encode::Raw(&source_data[self.extent.clone()]));
     }
 }
 
+/// A helper struct used during bundle parsing to associate a block with its block number.
 #[derive(Clone)]
 pub(crate) struct BlockWithNumber {
+    /// The block number.
     pub number: u64,
+    /// The block itself.
     pub block: Block,
+    /// The block's payload, if it was parsed from an indefinite-length byte string.
     pub payload: Option<Box<[u8]>>,
 }
 

@@ -1,3 +1,10 @@
+/*!
+This module defines the core `Bundle` structure and its components, providing the
+primary interface for creating, parsing, and interacting with BPv7 bundles.
+It orchestrates the various parts of a bundle, from the primary block to extension
+blocks and payload, and handles parsing validation and security operations.
+*/
+
 use super::*;
 use base64::prelude::*;
 
@@ -48,18 +55,22 @@ pub mod id {
     /// Errors that can occur when parsing a bundle [`Id`] from a key.
     #[derive(Error, Debug)]
     pub enum Error {
+        /// The key string is malformed and cannot be parsed.
         #[error("Bad bundle id key")]
         BadKey,
 
+        /// The key is not valid Base64.
         #[error("Bad base64 encoding: {0}")]
         BadBase64(base64::DecodeError),
 
+        /// A field within the decoded CBOR data is invalid.
         #[error("Failed to decode {field}: {source}")]
         InvalidField {
             field: &'static str,
             source: Box<dyn core::error::Error + Send + Sync>,
         },
 
+        /// An error occurred during CBOR decoding.
         #[error(transparent)]
         InvalidCBOR(#[from] hardy_cbor::decode::Error),
     }
@@ -178,6 +189,7 @@ pub struct Flags {
     /// If set, a status report should be generated upon bundle deletion.
     pub delete_report_requested: bool,
 
+    /// A bitmask of any unrecognized flags encountered during parsing.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub unrecognised: Option<u64>,
 }
@@ -334,7 +346,7 @@ pub struct Bundle {
     /// The hop limit and current hop count for the bundle.
     pub hop_count: Option<hop_info::HopInfo>,
 
-    // The extension blocks
+    /// A map of all blocks in the bundle, keyed by their block number.
     pub blocks: HashMap<u64, block::Block>,
 }
 

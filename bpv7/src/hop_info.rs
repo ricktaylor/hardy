@@ -1,11 +1,24 @@
+/*!
+This module defines the `HopInfo` struct, which is used to track the hop limit
+and hop count of a bundle as it traverses the network. This information is
+typically part of the bundle's primary block and is used to prevent infinite
+loops and to control the bundle's lifetime in the network.
+*/
+
 use super::*;
 use error::CaptureFieldErr;
 
+/// Contains hop limit and hop count information for a bundle.
+///
+/// The hop limit is the maximum number of hops a bundle is allowed to traverse,
+/// while the hop count is the number of hops it has already traversed.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct HopInfo {
+    /// The maximum number of hops the bundle is allowed to traverse.
     pub limit: u64,
+    /// The number of hops the bundle has already traversed.
     pub count: u64,
 }
 

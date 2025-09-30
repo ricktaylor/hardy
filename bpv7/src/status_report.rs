@@ -1,20 +1,32 @@
+/*!
+This module provides functionality for creating, parsing, and managing BPv7 bundle status reports.
+
+A `BundleStatusReport` is a type of `AdministrativeRecord` used in a Bundle Protocol agent to report
+on the status of a bundle. This can include events like bundle reception, forwarding, delivery, and deletion.
+*/
+
 use super::*;
 use thiserror::Error;
 
+/// Errors that can occur when working with status reports.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Indicates that an unknown administrative record type was encountered.
     #[error("Unknown administrative record type {0}")]
     UnknownAdminRecordType(u64),
 
+    /// Indicates that a reserved and unassigned reason code (255) was used.
     #[error("Reserved Status Report Reason Code (255)")]
     ReservedStatusReportReason,
 
+    /// Error resulting from a failure to parse a field within the status report.
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
         source: Box<dyn core::error::Error + Send + Sync>,
     },
 
+    /// Error resulting from invalid CBOR data.
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
@@ -34,26 +46,47 @@ impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T>
     }
 }
 
+/// Represents the reason for a bundle status report.
+///
+/// These codes are defined in the BPv7 specification and indicate why the status report was generated.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReasonCode {
+    /// No additional information is available.
     #[default]
     NoAdditionalInformation,
+    /// The bundle's lifetime has expired.
     LifetimeExpired,
+    /// The bundle was forwarded over a unidirectional link.
     ForwardedOverUnidirectionalLink,
+    /// The transmission of the bundle was canceled.
     TransmissionCanceled,
+    /// The bundle was deleted due to depleted storage.
     DepletedStorage,
+    /// The destination endpoint ID was unavailable.
     DestinationEndpointIDUnavailable,
+    /// There is no known route to the destination from the reporting node.
     NoKnownRouteToDestinationFromHere,
+    /// There was no timely contact with the next node on the route.
     NoTimelyContactWithNextNodeOnRoute,
+    /// A block in the bundle was unintelligible.
     BlockUnintelligible,
+    /// The bundle's hop limit was exceeded.
     HopLimitExceeded,
+    /// Traffic was pared (i.e., some bundles were dropped).
     TrafficPared,
+    /// A block in the bundle is unsupported.
     BlockUnsupported,
+    /// A required security operation was missing.
     MissingSecurityOperation,
+    /// An unknown security operation was encountered.
     UnknownSecurityOperation,
+    /// An unexpected security operation was encountered.
     UnexpectedSecurityOperation,
+    /// A security operation failed.
     FailedSecurityOperation,
+    /// A conflicting security operation was encountered.
     ConflictingSecurityOperation,
+    /// An unassigned reason code.
     Unassigned(u64),
 }
 
@@ -127,6 +160,10 @@ impl hardy_cbor::decode::FromCbor for ReasonCode {
     }
 }
 
+/// Represents a status assertion, which may include a timestamp.
+///
+/// A `StatusAssertion` is used to indicate that a particular event (e.g., reception, forwarding)
+/// has occurred. It can optionally include the `DtnTime` at which the event happened.
 #[derive(Debug, Clone)]
 pub struct StatusAssertion(pub Option<dtn_time::DtnTime>);
 
@@ -179,13 +216,23 @@ fn parse_status_assertion(
     })
 }
 
+/// Represents a bundle status report.
+///
+/// This struct contains information about the status of a bundle, including which events
+/// have occurred (reception, forwarding, delivery, deletion) and the reason for the report.
 #[derive(Default, Debug, Clone)]
 pub struct BundleStatusReport {
+    /// The ID of the bundle that this report pertains to.
     pub bundle_id: bundle::Id,
+    /// Status assertion for when the bundle was received.
     pub received: Option<StatusAssertion>,
+    /// Status assertion for when the bundle was forwarded.
     pub forwarded: Option<StatusAssertion>,
+    /// Status assertion for when the bundle was delivered.
     pub delivered: Option<StatusAssertion>,
+    /// Status assertion for when the bundle was deleted.
     pub deleted: Option<StatusAssertion>,
+    /// The reason for this status report.
     pub reason: ReasonCode,
 }
 
@@ -291,8 +338,13 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
     }
 }
 
+/// Represents an administrative record.
+///
+/// An administrative record is a special type of bundle payload that is used for network
+/// management purposes. The only type currently supported is the `BundleStatusReport`.
 #[derive(Debug)]
 pub enum AdministrativeRecord {
+    /// A bundle status report.
     BundleStatusReport(BundleStatusReport),
 }
 

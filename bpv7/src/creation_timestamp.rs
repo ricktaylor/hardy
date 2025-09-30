@@ -1,3 +1,9 @@
+/*!
+This module defines the `CreationTimestamp`, a critical component of a bundle's unique identification.
+As per RFC 9171, it combines a timestamp with a sequence number to ensure that each bundle from a
+given source node can be uniquely identified, even if created at the same time.
+*/
+
 use super::*;
 use error::CaptureFieldErr;
 
