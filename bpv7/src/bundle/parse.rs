@@ -1,17 +1,38 @@
+/*!
+This module contains the internal logic for parsing a BPv7 bundle from a byte slice.
+It handles the entire parsing process, including validating the primary block, iterating
+through extension blocks, handling BPSec (BIB and BCB) operations, and dealing with
+canonicalization issues.
+*/
+
 use super::*;
 use error::CaptureFieldErr;
 use thiserror::Error;
 
+/// A state machine for parsing the blocks of a bundle.
+///
+/// This struct holds the state required to parse all blocks, handle inter-block
+/// dependencies (like BPSec), and manage data that might be decrypted or rewritten
+/// for canonicalization.
 #[derive(Debug, Default)]
 struct BlockParse<'a> {
+    /// The raw byte data of the entire bundle.
     source_data: &'a [u8],
+    /// The collection of blocks parsed so far, keyed by block number.
     blocks: HashMap<u64, block::Block>,
+    /// Data that has been decrypted from a BCB.
     decrypted_data: HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
+    /// Blocks that were not in canonical CBOR form and have been rewritten.
     noncanonical_blocks: HashMap<u64, Option<Box<[u8]>>>,
+    /// A map of known block types to their block numbers, used for validation.
     blocks_to_check: HashMap<block::Type, u64>,
+    /// A set of BIBs that need to be checked after all blocks are parsed.
     bibs_to_check: HashSet<u64>,
+    /// A set of blocks that are marked for removal (e.g., unsupported blocks).
     blocks_to_remove: HashSet<u64>,
+    /// A map of BCB block numbers to their parsed operation sets.
     bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
+    /// A set of security blocks (BIB or BCB) that protect the primary block.
     protects_primary_block: HashSet<u64>,
 }
 
@@ -32,6 +53,7 @@ impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
 }
 
 impl<'a> BlockParse<'a> {
+    /// Creates a new `BlockParse` state for a given bundle data slice.
     fn new(source_data: &'a [u8]) -> Self {
         Self {
             source_data,
@@ -39,6 +61,7 @@ impl<'a> BlockParse<'a> {
         }
     }
 
+    /// Parses the payload of a specific block into a given type `T`.
     fn parse_payload<T>(&'a self, block_number: u64) -> Result<(T, bool), Error>
     where
         T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
@@ -51,6 +74,9 @@ impl<'a> BlockParse<'a> {
             .map_err(Into::into)
     }
 
+    /// Parses all extension blocks in the bundle.
+    /// This is the first pass over the blocks, where they are identified and basic
+    /// validation is performed.
     fn parse_blocks(
         &mut self,
         bundle: &Bundle,
@@ -181,6 +207,8 @@ impl<'a> BlockParse<'a> {
         Ok(report_unsupported)
     }
 
+    /// Parses and processes all Block Confidentiality Blocks (BCBs).
+    /// This involves decrypting the payloads of their target blocks.
     fn parse_bcbs(&mut self, key_f: &impl bpsec::key::KeyStore) -> Result<(), Error> {
         let mut decrypted_data = HashMap::new();
         let mut bcb_targets = HashMap::new();
@@ -273,6 +301,7 @@ impl<'a> BlockParse<'a> {
         Ok(())
     }
 
+    /// Parses the content of known extension blocks (like HopCount, BundleAge, etc.).
     fn check_blocks(&mut self, bundle: &mut Bundle) -> Result<(), Error> {
         for (block_type, block_number) in core::mem::take(&mut self.blocks_to_check) {
             if let Some(payload) = match block_type {
@@ -308,6 +337,7 @@ impl<'a> BlockParse<'a> {
         Ok(())
     }
 
+    /// Parses and validates all Block Integrity Blocks (BIBs).
     fn parse_bibs(&mut self) -> Result<bool, Error> {
         let mut report_unsupported = false;
         let mut bib_targets = HashMap::new();
@@ -400,6 +430,7 @@ impl<'a> BlockParse<'a> {
         Ok(report_unsupported)
     }
 
+    /// Reduces the set of BCBs by removing targets that are scheduled for removal.
     fn reduce_bcbs(&mut self) {
         // Remove BCB targets scheduled for removal
         for (bcb_block_number, mut bcb) in core::mem::take(&mut self.bcbs) {
@@ -419,6 +450,7 @@ impl<'a> BlockParse<'a> {
         }
     }
 
+    /// Emits a single block into a CBOR array, handling canonical and non-canonical data.
     fn emit_block(
         &mut self,
         block: &mut block::Block,
@@ -435,6 +467,8 @@ impl<'a> BlockParse<'a> {
         }
     }
 
+    /// Rewrites the entire bundle if any blocks were non-canonical or removed.
+    /// Returns `None` if no rewrite was necessary.
     fn rewrite(mut self, bundle: &mut Bundle) -> Option<(Box<[u8]>, bool)> {
         // If we have nothing to rewrite, get out now
         if self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty() {
@@ -486,6 +520,7 @@ impl<'a> BlockParse<'a> {
     }
 }
 
+/// The main parsing function for the bundle's extension blocks.
 #[allow(clippy::type_complexity)]
 fn parse_blocks(
     bundle: &mut Bundle,
@@ -542,6 +577,8 @@ fn parse_blocks(
     Ok((parser.rewrite(bundle), report_unsupported))
 }
 
+/// An intermediate error type used during parsing to distinguish between
+/// recoverable and non-recoverable errors.
 #[derive(Error, Debug)]
 enum ValidError {
     #[error("An invalid bundle")]
@@ -555,6 +592,8 @@ enum ValidError {
 }
 
 impl ValidBundle {
+    /// Parses a byte slice into a `ValidBundle`.
+    /// This is the main entry point for bundle parsing.
     // Bouncing via ValidError allows us to avoid the array completeness check when a semantic error occurs
     // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
     pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
@@ -577,6 +616,9 @@ impl ValidBundle {
         }
     }
 
+    /// The inner parsing logic, called by `parse`.
+    /// This function is responsible for parsing the primary block and then handing off
+    /// to `parse_blocks` for the extension blocks.
     fn parse_inner(
         data: &[u8],
         key_f: &impl bpsec::key::KeyStore,

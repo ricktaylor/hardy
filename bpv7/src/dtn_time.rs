@@ -1,20 +1,31 @@
+/*!
+This module provides a representation of DTN time, which is defined as the
+number of milliseconds since the DTN epoch (2000-01-01 00:00:00 UTC).
+*/
+
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
+/// Represents a DTN timestamp.
+///
+/// DTN time is the number of milliseconds since the DTN epoch (2000-01-01 00:00:00 UTC).
 #[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct DtnTime(u64);
 
 impl DtnTime {
+    /// Creates a new `DtnTime` instance representing the current time.
     #[cfg(feature = "std")]
     pub fn now() -> Self {
         Self(((time::OffsetDateTime::now_utc() - DTN_EPOCH).whole_milliseconds()) as u64)
     }
 
+    /// Creates a new `DtnTime` instance from the given number of milliseconds since the DTN epoch.
     pub fn new(millisecs: u64) -> Self {
         Self(millisecs)
     }
 
+    /// Returns the number of milliseconds since the DTN epoch.
     pub fn millisecs(&self) -> u64 {
         self.0
     }
@@ -37,6 +48,10 @@ impl hardy_cbor::decode::FromCbor for DtnTime {
     }
 }
 
+/// Converts a `time::OffsetDateTime` to a `DtnTime`.
+///
+/// This conversion can fail if the given `OffsetDateTime` is before the DTN epoch
+/// or if the number of milliseconds is too large to fit in a `u64`.
 impl TryFrom<time::OffsetDateTime> for DtnTime {
     type Error = time::error::ConversionRange;
 
@@ -50,6 +65,7 @@ impl TryFrom<time::OffsetDateTime> for DtnTime {
     }
 }
 
+/// Converts a `DtnTime` to a `time::OffsetDateTime`.
 impl From<DtnTime> for time::OffsetDateTime {
     fn from(dtn_time: DtnTime) -> Self {
         DTN_EPOCH.saturating_add(time::Duration::new(

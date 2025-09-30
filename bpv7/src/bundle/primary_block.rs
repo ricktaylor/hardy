@@ -1,15 +1,37 @@
+/*!
+This internal module handles the parsing and emission of the BPv7 Primary Block.
+It defines an intermediate `PrimaryBlock` struct that is used during the CBOR
+decoding process before the final `Bundle` struct is assembled.
+*/
+
 use super::*;
 use error::CaptureFieldErr;
 
+/// An intermediate representation of the Primary Block used during parsing.
+///
+/// This struct holds the results of parsing each field of the primary block.
+/// Since parsing can fail at any point, most fields are stored as `Result` types
+/// to capture potential errors without halting the entire parsing process immediately.
+/// This allows for more graceful error handling and the ability to construct a partial
+/// `Bundle` for debugging or status reporting even if the primary block is malformed.
 pub struct PrimaryBlock {
+    /// The parsed bundle processing control flags.
     pub flags: bundle::Flags,
+    /// The result of parsing the CRC type.
     pub crc_type: Result<crc::CrcType, Error>,
+    /// The result of parsing the source EID.
     pub source: Result<eid::Eid, Error>,
+    /// The result of parsing the destination EID.
     pub destination: Result<eid::Eid, Error>,
+    /// The parsed report-to EID.
     pub report_to: eid::Eid,
+    /// The result of parsing the creation timestamp.
     pub timestamp: Result<creation_timestamp::CreationTimestamp, Error>,
+    /// The result of parsing the bundle lifetime.
     pub lifetime: Result<core::time::Duration, Error>,
+    /// The result of parsing the fragmentation information.
     pub fragment_info: Result<Option<bundle::FragmentInfo>, Error>,
+    /// The result of the CRC validation.
     pub crc_result: Result<(), Error>,
 }
 
@@ -138,6 +160,11 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
 }
 
 impl PrimaryBlock {
+    /// Converts the intermediate `PrimaryBlock` into a `bundle::Bundle`.
+    ///
+    /// This method constructs a `Bundle` from the parsed fields. If any field
+    /// failed to parse, a default value is used for that field in the `Bundle`,
+    /// and the first error encountered is returned as an `Option<Error>`.
     pub fn into_bundle(self, extent: core::ops::Range<usize>) -> (bundle::Bundle, Option<Error>) {
         // Unpack the value or default
         fn unpack<T: core::default::Default>(
@@ -223,6 +250,10 @@ impl PrimaryBlock {
         (bundle, e)
     }
 
+    /// Emits a `PrimaryBlock` into a CBOR-encoded `Vec<u8>`.
+    ///
+    /// This function is used during bundle creation to serialize the primary block
+    /// based on the data in a `bundle::Bundle` struct.
     pub fn emit(bundle: &bundle::Bundle) -> Result<Vec<u8>, Error> {
         crc::append_crc_value(
             bundle.crc_type,
