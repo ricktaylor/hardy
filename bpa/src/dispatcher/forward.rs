@@ -42,10 +42,8 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         source_data: &[u8],
     ) -> (hardy_bpv7::bundle::Bundle, Box<[u8]>) {
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data);
-
         // Previous Node Block
-        editor
+        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data)
             .replace_block(hardy_bpv7::block::Type::PreviousNode)
             .build(
                 hardy_cbor::encode::emit(
@@ -56,7 +54,7 @@ impl Dispatcher {
 
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
-            editor
+            editor = editor
                 .replace_block(hardy_bpv7::block::Type::HopCount)
                 .build(
                     hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
@@ -75,7 +73,7 @@ impl Dispatcher {
                 .whole_milliseconds()
                 .clamp(0, u64::MAX as i128) as u64;
 
-            editor
+            editor = editor
                 .replace_block(hardy_bpv7::block::Type::BundleAge)
                 .build(hardy_cbor::encode::emit(&bundle_age).0);
         }
