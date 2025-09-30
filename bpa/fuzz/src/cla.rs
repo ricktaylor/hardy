@@ -38,7 +38,7 @@ impl RandomBundle {
         }
 
         if let Some((limit, count)) = self.hop_limit {
-            builder
+            builder = builder
                 .add_extension_block(hardy_bpv7::block::Type::HopCount)
                 .with_flags(hardy_bpv7::block::Flags {
                     must_replicate: true,
@@ -49,10 +49,13 @@ impl RandomBundle {
         }
 
         builder
-            .build(
-                self.payload,
-                hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-            )
+            .add_extension_block(hardy_bpv7::block::Type::Payload)
+            .with_flags(hardy_bpv7::block::Flags {
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
+            .build(self.payload)
+            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
             .1
             .into()
     }

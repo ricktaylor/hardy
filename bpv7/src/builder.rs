@@ -67,19 +67,15 @@ impl Builder {
     }
 
     /// Adds an extension block to this [`Builder`].
-    pub fn add_extension_block(&mut self, block_type: block::Type) -> BlockBuilder<'_> {
+    pub fn add_extension_block(self, block_type: block::Type) -> BlockBuilder {
         BlockBuilder::new(self, block_type)
     }
 
     /// Builds the [`bundle::Bundle`] with the given payload and timestamp.
-    pub fn build<T: AsRef<[u8]>>(
-        mut self,
-        payload: T,
+    pub fn build(
+        self,
         timestamp: creation_timestamp::CreationTimestamp,
     ) -> (bundle::Bundle, Box<[u8]>) {
-        self.add_extension_block(block::Type::Payload)
-            .build(payload);
-
         let mut bundle = bundle::Bundle {
             report_to: self.report_to.unwrap_or(self.source.clone()),
             id: bundle::Id {
@@ -116,14 +112,14 @@ impl Builder {
 }
 
 /// A builder for creating a new [`block::Block`].
-pub struct BlockBuilder<'a> {
-    builder: &'a mut Builder,
+pub struct BlockBuilder {
+    builder: Builder,
     template: BlockTemplate,
 }
 
-impl<'a> BlockBuilder<'a> {
+impl BlockBuilder {
     /// Creates a new [`BlockBuilder`] for creating a [`block::Block`].
-    fn new(builder: &'a mut Builder, block_type: block::Type) -> Self {
+    fn new(builder: Builder, block_type: block::Type) -> Self {
         Self {
             template: BlockTemplate::new(block_type, block::Flags::default(), builder.crc_type),
             builder,
@@ -143,7 +139,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Builds the [`block::Block`] with the given data.
-    pub fn build<T: AsRef<[u8]>>(mut self, data: T) {
+    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> Builder {
         self.template.data = Some(data.as_ref().into());
 
         if let block::Type::Payload = self.template.block_type {
@@ -151,6 +147,7 @@ impl<'a> BlockBuilder<'a> {
         } else {
             self.builder.extensions.push(self.template);
         }
+        self.builder
     }
 }
 
@@ -236,7 +233,7 @@ impl From<BundleTemplate> for Builder {
         }
 
         if let Some(hop_limit) = value.hop_limit {
-            builder
+            builder = builder
                 .add_extension_block(block::Type::HopCount)
                 .with_flags(block::Flags {
                     must_replicate: true,
@@ -260,7 +257,13 @@ impl From<BundleTemplate> for Builder {
 fn test_builder() {
     Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_report_to("ipn:3.0".parse().unwrap())
-        .build("Hello", creation_timestamp::CreationTimestamp::now());
+        .add_extension_block(block::Type::Payload)
+        .with_flags(block::Flags {
+            delete_bundle_on_failure: true,
+            ..Default::default()
+        })
+        .build("Hello")
+        .build(creation_timestamp::CreationTimestamp::now());
 }
 
 #[cfg(feature = "serde")]
@@ -274,5 +277,11 @@ fn test_template() {
     .unwrap()
     .into();
 
-    b.build("Hello", creation_timestamp::CreationTimestamp::now());
+    b.add_extension_block(block::Type::Payload)
+        .with_flags(block::Flags {
+            delete_bundle_on_failure: true,
+            ..Default::default()
+        })
+        .build("Hello")
+        .build(creation_timestamp::CreationTimestamp::now());
 }

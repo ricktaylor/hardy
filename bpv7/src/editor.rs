@@ -11,8 +11,8 @@ enum BlockTemplate {
     Add(builder::BlockTemplate),
 }
 
-pub struct BlockBuilder<'a, 'b> {
-    editor: &'b mut Editor<'a>,
+pub struct BlockBuilder<'a> {
+    editor: Editor<'a>,
     block_number: u64,
     template: builder::BlockTemplate,
 }
@@ -30,7 +30,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn add_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
+    pub fn add_block(self, block_type: block::Type) -> BlockBuilder<'a> {
         if let block::Type::Primary | block::Type::Payload = block_type {
             panic!("Don't add primary or payload blocks!");
         }
@@ -45,7 +45,7 @@ impl<'a> Editor<'a> {
         }
     }
 
-    pub fn replace_block(&mut self, block_type: block::Type) -> BlockBuilder<'a, '_> {
+    pub fn replace_block(self, block_type: block::Type) -> BlockBuilder<'a> {
         if let block::Type::Primary = block_type {
             panic!("Don't replace primary block!");
         }
@@ -148,8 +148,8 @@ impl<'a> Editor<'a> {
     }
 }
 
-impl<'a, 'b> BlockBuilder<'a, 'b> {
-    fn new(editor: &'b mut Editor<'a>, block_number: u64, block_type: block::Type) -> Self {
+impl<'a> BlockBuilder<'a> {
+    fn new(editor: Editor<'a>, block_number: u64, block_type: block::Type) -> Self {
         Self {
             template: builder::BlockTemplate::new(
                 block_type,
@@ -162,7 +162,7 @@ impl<'a, 'b> BlockBuilder<'a, 'b> {
     }
 
     fn new_from_template(
-        editor: &'b mut Editor<'a>,
+        editor: Editor<'a>,
         block_number: u64,
         template: builder::BlockTemplate,
     ) -> Self {
@@ -183,11 +183,13 @@ impl<'a, 'b> BlockBuilder<'a, 'b> {
         self
     }
 
-    pub fn build<T: AsRef<[u8]>>(mut self, data: T) {
+    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> Editor<'a> {
         self.template.data = Some(data.as_ref().into());
 
         self.editor
             .blocks
             .insert(self.block_number, BlockTemplate::Add(self.template));
+        
+        self.editor
     }
 }
