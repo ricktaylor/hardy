@@ -65,6 +65,10 @@ fn tests() {
     expect_error("ipn:1");
     expect_error("ipn:1.2.3.4");
 
+    // From Stephan Havermans testing
+    expect_error("ipn:0.1");
+    expect_error("ipn:0.0.1");
+
     expect_error("ipn:11111111111111111111111111111.222222222222222222222222222222");
     expect_error("ipn:1.222222222222222222222222222222");
     expect_error(

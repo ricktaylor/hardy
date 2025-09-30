@@ -53,6 +53,9 @@ fn tests() {
         expect_error(&hex!("82 02 82 1B 000EE868 00000001 1B 0000000800000001")),
         Error::IpnInvalidServiceNumber(_)
     ));
+
+    // From Stephan Havermans testing
+    null_check(&hex!("82 02 82 00 01"));
 }
 
 fn expect_error(data: &[u8]) -> Error {
