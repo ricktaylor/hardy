@@ -1,6 +1,4 @@
 use super::*;
-use lru::LruCache;
-use std::sync::Mutex;
 
 // TODO: Make these config options
 const LRU_CAPACITY: usize = 1024;
@@ -12,14 +10,6 @@ pub(crate) enum RestartResult {
     Valid,
     Orphan,
     Junk,
-}
-
-pub struct Store {
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
-    metadata_storage: Arc<dyn storage::MetadataStorage>,
-    bundle_storage: Arc<dyn storage::BundleStorage>,
-    bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
 }
 
 impl Store {
@@ -39,6 +29,8 @@ impl Store {
                 .map(|s| s.clone())
                 .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
             bundle_cache: Mutex::new(LruCache::new(std::num::NonZero::new(LRU_CAPACITY).unwrap())),
+            reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
+            reaper_wakeup: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -46,6 +38,7 @@ impl Store {
         if recover_storage {
             // Start the store - this can take a while as the store is walked
             let store = self.clone();
+            let dispatcher = dispatcher.clone();
             let task = async move {
                 // Start the store - this can take a while as the store is walked
                 info!("Starting store consistency check...");
@@ -101,6 +94,19 @@ impl Store {
 
             self.task_tracker.spawn(task);
         }
+
+        // Start the reaper
+        let store = self.clone();
+        let task = async move { store.run_reaper(dispatcher).await };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!("parent: None", "reaper_task");
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        self.task_tracker.spawn(task);
     }
 
     pub async fn shutdown(&self) {
@@ -313,14 +319,6 @@ impl Store {
         self.bundle_storage.delete(storage_name).await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn get_metadata(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<bundle::Bundle>> {
-        self.metadata_storage.get(bundle_id).await
-    }
-
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
         self.metadata_storage.insert(bundle).await
@@ -345,15 +343,6 @@ impl Store {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
         self.metadata_storage.replace(bundle).await
-    }
-
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_expiry(
-        &self,
-        tx: storage::Sender<bundle::Bundle>,
-        limit: usize,
-    ) -> storage::Result<()> {
-        self.metadata_storage.poll_expiry(tx, limit).await
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]

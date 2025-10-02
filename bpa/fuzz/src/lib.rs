@@ -55,8 +55,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 true
             ));
         } else {
-            let metadata_storage = Some(hardy_bpa::metadata_mem::new(
-                &hardy_bpa::metadata_mem::Config {
+            let metadata_storage = Some(hardy_bpa::storage::metadata_mem::new(
+                &hardy_bpa::storage::metadata_mem::Config {
                     max_bundles: std::num::NonZero::new(1024).unwrap(),
                 },
             ));
@@ -73,8 +73,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 true,
             ));
         } else {
-            let bundle_storage = Some(hardy_bpa::bundle_mem::new(
-                &hardy_bpa::bundle_mem::Config {
+            let bundle_storage = Some(hardy_bpa::storage::bundle_mem::new(
+                &hardy_bpa::storage::bundle_mem::Config {
                     capacity: std::num::NonZero::new(524_288).unwrap(),
                     ..Default::default()
                 }

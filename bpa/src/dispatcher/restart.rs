@@ -1,5 +1,6 @@
 use super::*;
 use core::ops::Deref;
+use storage::store::RestartResult;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
@@ -7,10 +8,10 @@ impl Dispatcher {
         self: &Arc<Self>,
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,
-    ) -> Result<store::RestartResult, Error> {
+    ) -> Result<RestartResult, Error> {
         let Some(data) = self.store.load_data(&storage_name).await? else {
             // Data has gone while we were restarting
-            return Ok(store::RestartResult::Missing);
+            return Ok(RestartResult::Missing);
         };
 
         // Parse the bundle (again, just in case we have changed policies etc)
@@ -32,10 +33,10 @@ impl Dispatcher {
                         self.store
                             .delete_data(&storage_name)
                             .await
-                            .map(|_| store::RestartResult::Duplicate)
+                            .map(|_| RestartResult::Duplicate)
                     } else {
                         // All good, no further action required
-                        Ok(store::RestartResult::Valid)
+                        Ok(RestartResult::Valid)
                     }
                 } else {
                     // Effectively a new bundle
@@ -65,7 +66,7 @@ impl Dispatcher {
 
                     self.process_bundle(bundle, None)
                         .await
-                        .map(|_| store::RestartResult::Orphan)
+                        .map(|_| RestartResult::Orphan)
                 }
             }
             Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
@@ -95,7 +96,7 @@ impl Dispatcher {
                             .store
                             .delete_data(&storage_name)
                             .await
-                            .map(|_| store::RestartResult::Duplicate);
+                            .map(|_| RestartResult::Duplicate);
                     }
                     true
                 } else {
@@ -142,7 +143,7 @@ impl Dispatcher {
                 // Report the bundle as an orphan
                 self.process_bundle(bundle, None)
                     .await
-                    .map(|_| store::RestartResult::Orphan)
+                    .map(|_| RestartResult::Orphan)
             }
             Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
                 warn!("Invalid bundle found: {storage_name}, {e}");
@@ -164,7 +165,7 @@ impl Dispatcher {
                             .store
                             .delete_data(&storage_name)
                             .await
-                            .map(|_| store::RestartResult::Duplicate);
+                            .map(|_| RestartResult::Duplicate);
                     }
                     true
                 } else {
@@ -204,7 +205,7 @@ impl Dispatcher {
                 // Process the 'new' bundle
                 self.process_bundle(bundle, Some(reason))
                     .await
-                    .map(|_| store::RestartResult::Orphan)
+                    .map(|_| RestartResult::Orphan)
             }
             Err(e) => {
                 // Parse failed badly, no idea who to report to
@@ -214,7 +215,7 @@ impl Dispatcher {
                 self.store
                     .delete_data(&storage_name)
                     .await
-                    .map(|_| store::RestartResult::Junk)
+                    .map(|_| RestartResult::Junk)
             }
         }
     }

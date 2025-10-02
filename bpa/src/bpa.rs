@@ -3,8 +3,7 @@ use super::*;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct Bpa {
-    store: Arc<store::Store>,
-    reaper: Arc<reaper::Reaper>,
+    store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
     cla_registry: Arc<cla::registry::Registry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
@@ -21,7 +20,7 @@ impl Bpa {
         }
 
         // New store
-        let store = Arc::new(store::Store::new(config));
+        let store = Arc::new(storage::Store::new(config));
 
         // New RIB
         let rib = Arc::new(rib::Rib::new(config, store.clone()));
@@ -35,14 +34,10 @@ impl Bpa {
         let service_registry =
             Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
 
-        // New reaper
-        let reaper = Arc::new(reaper::Reaper::new(store.clone()));
-
         // New dispatcher
         let dispatcher = Arc::new(dispatcher::Dispatcher::new(
             config,
             store.clone(),
-            reaper.clone(),
             cla_registry.clone(),
             service_registry.clone(),
             rib.clone(),
@@ -54,14 +49,10 @@ impl Bpa {
         // Start the RIB
         rib.start(dispatcher.clone());
 
-        // Start the reaper
-        reaper.start(dispatcher.clone());
-
         info!("BPA started");
 
         Ok(Self {
             store,
-            reaper,
             rib,
             cla_registry,
             service_registry,
@@ -77,7 +68,6 @@ impl Bpa {
         self.dispatcher.shutdown().await;
         self.service_registry.shutdown().await;
         self.cla_registry.shutdown().await;
-        self.reaper.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
 

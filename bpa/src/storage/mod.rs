@@ -1,8 +1,18 @@
 use super::*;
+use lru::LruCache;
+use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
 pub type Sender<T> = flume::Sender<T>;
+
+pub mod bundle_mem;
+pub mod metadata_mem;
+
+pub(crate) mod store;
+
+mod reaper;
 
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
@@ -53,4 +63,15 @@ pub trait BundleStorage: Send + Sync {
     async fn save(&self, data: Bytes) -> Result<Arc<str>>;
 
     async fn delete(&self, storage_name: &str) -> Result<()>;
+}
+
+// Storage helper
+pub(crate) struct Store {
+    cancel_token: tokio_util::sync::CancellationToken,
+    task_tracker: tokio_util::task::TaskTracker,
+    metadata_storage: Arc<dyn storage::MetadataStorage>,
+    bundle_storage: Arc<dyn storage::BundleStorage>,
+    bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
+    reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
+    reaper_wakeup: Arc<tokio::sync::Notify>,
 }

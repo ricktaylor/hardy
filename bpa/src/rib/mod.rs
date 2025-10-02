@@ -30,11 +30,11 @@ pub struct Rib {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
     poll_waiting_notify: Arc<tokio::sync::Notify>,
-    store: Arc<store::Store>,
+    store: Arc<storage::Store>,
 }
 
 impl Rib {
-    pub fn new(config: &config::Config, store: Arc<store::Store>) -> Self {
+    pub fn new(config: &config::Config, store: Arc<storage::Store>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(config),

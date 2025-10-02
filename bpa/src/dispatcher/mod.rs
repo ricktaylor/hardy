@@ -15,8 +15,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 pub struct Dispatcher {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
-    store: Arc<store::Store>,
-    reaper: Arc<reaper::Reaper>,
+    store: Arc<storage::Store>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
     rib: Arc<rib::Rib>,
@@ -32,8 +31,7 @@ impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &config::Config,
-        store: Arc<store::Store>,
-        reaper: Arc<reaper::Reaper>,
+        store: Arc<storage::Store>,
         cla_registry: Arc<cla::registry::Registry>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         rib: Arc<rib::Rib>,
@@ -43,7 +41,6 @@ impl Dispatcher {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
             store,
-            reaper,
             service_registry,
             cla_registry,
             rib,
