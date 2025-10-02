@@ -174,7 +174,7 @@ impl Dispatcher {
                 {
                     Ok(dispatch::DispatchResult::Gone) => {}
                     Ok(dispatch::DispatchResult::Keep) => {
-                        dispatcher.reaper.watch_bundle(bundle).await;
+                        dispatcher.store.watch_bundle(bundle).await;
                     }
                     _ => {
                         // Delete the bundle from the bundle store

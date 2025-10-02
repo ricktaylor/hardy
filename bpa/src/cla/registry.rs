@@ -130,12 +130,12 @@ pub struct Registry {
     node_ids: Vec<Eid>,
     clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
-    store: Arc<store::Store>,
+    store: Arc<storage::Store>,
     peers: peers::PeerTable,
 }
 
 impl Registry {
-    pub fn new(config: &config::Config, rib: Arc<rib::Rib>, store: Arc<store::Store>) -> Self {
+    pub fn new(config: &config::Config, rib: Arc<rib::Rib>, store: Arc<storage::Store>) -> Self {
         Self {
             node_ids: (&config.node_ids).into(),
             clas: Default::default(),

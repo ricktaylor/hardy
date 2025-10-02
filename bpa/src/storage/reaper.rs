@@ -1,12 +1,10 @@
 use super::*;
-use std::collections::BTreeSet;
-use std::sync::Mutex;
 
-const CACHE_SIZE: usize = 64;
+const REAPER_CACHE_SIZE: usize = 64;
 
 // CacheEntry stores the expiry and ID for the heap.
 #[derive(Clone, Eq, PartialEq)]
-struct CacheEntry {
+pub struct CacheEntry {
     expiry: time::OffsetDateTime,
     id: hardy_bpv7::bundle::Id,
     destination: hardy_bpv7::eid::Eid,
@@ -27,49 +25,7 @@ impl Ord for CacheEntry {
     }
 }
 
-/// A background component that monitors time-sensitive bundles and triggers
-/// a cleanup action when they expire.
-pub struct Reaper {
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
-    cache: Arc<Mutex<BTreeSet<CacheEntry>>>,
-    store: Arc<store::Store>,
-    max_cache_size: usize,
-    wakeup: Arc<tokio::sync::Notify>,
-}
-
-impl Reaper {
-    /// Creates a new Reaper. Returns the instance and the receiver for route updates.
-    pub fn new(store: Arc<store::Store>) -> Self {
-        let cache = Arc::new(Mutex::new(BTreeSet::new()));
-        let wakeup = Arc::new(tokio::sync::Notify::new());
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-        let task_tracker = tokio_util::task::TaskTracker::new();
-
-        Self {
-            cache,
-            max_cache_size: CACHE_SIZE,
-            task_tracker,
-            store,
-            wakeup,
-            cancel_token,
-        }
-    }
-
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
-        let reaper = self.clone();
-        let task = async move { reaper.run(dispatcher).await };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!("parent: None", "reaper_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
-    }
-
+impl Store {
     /// Adds a bundle to the Reaper's cache to be monitored.
     /// If a new bundle has the soonest expiry, the background task is notified.
     pub async fn watch_bundle(&self, bundle: bundle::Bundle) {
@@ -85,10 +41,13 @@ impl Reaper {
 
         let new_expiry = new_entry.expiry;
         let old_expiry = {
-            let mut cache = self.cache.lock().trace_expect("Failed to acquire lock");
+            let mut cache = self
+                .reaper_cache
+                .lock()
+                .trace_expect("Failed to acquire lock");
             let old_expiry = cache.first().map(|e| e.expiry);
 
-            if !cap || cache.len() < self.max_cache_size {
+            if !cap || cache.len() < REAPER_CACHE_SIZE {
                 // Case 1: Cache is not full, just insert.
                 if !cache.insert(new_entry) {
                     // Just in case we have duplicates
@@ -118,18 +77,18 @@ impl Reaper {
         };
 
         if needs_wakeup {
-            self.wakeup.notify_one();
+            self.reaper_wakeup.notify_one();
         }
     }
 
     /// The background task that waits for the next expiry, a notification, or shutdown.
-    async fn run(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let mut repopulation_task: Option<tokio::task::JoinHandle<()>> = None;
 
         loop {
             let sleep_duration = {
                 if let Some(entry) = self
-                    .cache
+                    .reaper_cache
                     .lock()
                     .trace_expect("Failed to acquire lock")
                     .first()
@@ -151,7 +110,7 @@ impl Reaper {
 
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {},
-                _ = self.wakeup.notified() => {},
+                _ = self.reaper_wakeup.notified() => {},
                 _ = self.cancel_token.cancelled() => {
                     // Shutting down
                     break;
@@ -160,7 +119,10 @@ impl Reaper {
 
             let mut dead_bundle_ids = Vec::new();
             let check_store = {
-                let mut cache = self.cache.lock().trace_expect("Failed to acquire lock");
+                let mut cache = self
+                    .reaper_cache
+                    .lock()
+                    .trace_expect("Failed to acquire lock");
 
                 let now = time::OffsetDateTime::now_utc();
                 while let Some(entry) = cache.first() {
@@ -175,8 +137,8 @@ impl Reaper {
 
             for id in dead_bundle_ids {
                 if let Ok(Some(bundle)) = self
-                    .store
-                    .get_metadata(&id)
+                    .metadata_storage
+                    .get(&id)
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
@@ -215,17 +177,11 @@ impl Reaper {
         }
     }
 
-    pub async fn shutdown(&self) {
-        self.cancel_token.cancel();
-        self.task_tracker.close();
-        self.task_tracker.wait().await;
-    }
-
     async fn refill_cache(self: Arc<Self>) {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let reaper = self.clone();
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.max_cache_size);
+        let (tx, rx) = flume::bounded::<bundle::Bundle>(REAPER_CACHE_SIZE);
         let task = async move {
             loop {
                 tokio::select! {
@@ -254,8 +210,8 @@ impl Reaper {
         let h = tokio::spawn(task);
 
         if self
-            .store
-            .poll_expiry(tx, self.max_cache_size)
+            .metadata_storage
+            .poll_expiry(tx, REAPER_CACHE_SIZE)
             .await
             .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"))
             .is_err()

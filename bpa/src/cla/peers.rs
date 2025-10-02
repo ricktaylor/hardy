@@ -10,7 +10,7 @@ struct Queue {
 struct PollArgs {
     peer: u32,
     addr: ClaAddress,
-    store: Arc<store::Store>,
+    store: Arc<storage::Store>,
     controller: Arc<dyn EgressController>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
@@ -37,7 +37,7 @@ impl Peer {
         &self,
         peer: u32,
         addr: ClaAddress,
-        store: Arc<store::Store>,
+        store: Arc<storage::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
     ) {
         let controller = self.cla.policy.new_controller(self.cla.cla.clone()).await;

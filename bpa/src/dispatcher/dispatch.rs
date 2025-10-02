@@ -187,7 +187,7 @@ impl Dispatcher {
             DispatchResult::Gone => return Ok(()),
             DispatchResult::Drop(reason_code) => reason_code,
             DispatchResult::Keep => {
-                self.reaper.watch_bundle(bundle).await;
+                self.store.watch_bundle(bundle).await;
                 return Ok(());
             }
             DispatchResult::Delivered => {
