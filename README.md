@@ -10,15 +10,15 @@ A performant, compliant, and extensible BPv7 DTN solution for the Cloud.
 
 ## Components
 
-The Hardy project is composed of a number of modular components, written in reliable, accessible, asynchronous Rust.
-
-Every component is designed to be executed independently, and intercommunicate using gRPC APIs, making the solution ideal for hosting in a containerized Cloud environment.
+The Hardy project is composed of a number of modular components, written in reliable, accessible, asynchronous Rust. Many of these components are rigorously tested using fuzzing to ensure they are robust and secure.
 
 The Hardy project provides a set of components and utility libraries, namely:
 
 1. `cbor`: A Rust library for working with CBOR, providing encoding and decoding of generic types via traits.
 
-1. `bpv7`: A Rust library for working with BPv7 bundles in a generic manner.
+1. `bpv7`: A Rust library for working with BPv7 bundles in a generic manner. It also includes a `tools` sub-crate with command-line utilities for bundle manipulation.
+
+1. `eid_pattern`: A Rust library for parsing and matching DTN Endpoint ID (EID) patterns.
 
 1. `proto`: The protobuf v3 specifications of the various gRPC APIs used across the project.
 
@@ -30,7 +30,9 @@ The Hardy project provides a set of components and utility libraries, namely:
 
 1. `sqlite-storage`: A Rust library implementing a 'metadata storage engine' plugin that uses a local SQLite database.
 
-1. `tcpcl`: A Rust library implementing a TCP-CLv4 (RFC9174) convergence layer adaptor.
+1. `tcpclv4`: A Rust library implementing a TCP-CLv4 (RFC9174) convergence layer adaptor.
+
+1. `otel`: A Rust library providing OpenTelemetry integration for metrics and tracing.
 
 ## Contributing
 
