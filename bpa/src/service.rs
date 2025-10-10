@@ -90,4 +90,6 @@ pub trait Sink: Send + Sync {
         lifetime: std::time::Duration,
         flags: Option<SendFlags>,
     ) -> Result<Box<str>>;
+
+    async fn cancel(&self, bundle_id: &str) -> Result<bool>;
 }

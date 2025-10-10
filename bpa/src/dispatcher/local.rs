@@ -94,6 +94,17 @@ impl Dispatcher {
         bundle_id
     }
 
+    pub async fn cancel_local_dispatch(&self, bundle_id: &hardy_bpv7::bundle::Id) -> bool {
+        let Some(bundle) = self.store.get_metadata(bundle_id).await else {
+            return false;
+        };
+
+        // TODO: Need ome access control in the metadata here!
+
+        self.delete_bundle(bundle).await;
+        true
+    }
+
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     pub(super) async fn deliver_bundle(
         self: &Arc<Self>,
