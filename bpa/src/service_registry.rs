@@ -91,6 +91,24 @@ impl service::Sink for Sink {
             .to_key()
             .into())
     }
+
+    async fn cancel(&self, bundle_id: &str) -> service::Result<bool> {
+        let Ok(bundle_id) = hardy_bpv7::bundle::Id::from_key(bundle_id) else {
+            return Ok(false);
+        };
+
+        if bundle_id.source
+            != self
+                .service
+                .upgrade()
+                .ok_or(service::Error::Disconnected)?
+                .service_id
+        {
+            return Ok(false);
+        }
+
+        Ok(self.dispatcher.cancel_local_dispatch(&bundle_id).await)
+    }
 }
 
 impl Drop for Sink {
