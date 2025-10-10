@@ -14,7 +14,7 @@ To complete this PICS, the implementer is to provide the requested information i
 | :---- | :---- |
 | **Supplier** | Aalyria Technologies Inc. |
 | **Contact Point for Queries** | Rick Taylor (rtaylor@aalyria.com) |
-| **Implementation Name(s) and Version(s)** | Hardy, version 0.1.0, commit c6571e4 |
+| **Implementation Name(s) and Version(s)** | Hardy, version 0.1.0, commit bb21b55 |
 | **Hardware/Software Environment** | GCP/KVM, Linux 6.1.0-40-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.153-1 (2025-09-20) x86_64 GNU/Linux |
 | **Other Information** |  |
 
@@ -90,7 +90,7 @@ To complete this PICS, the implementer is to provide the requested information i
 | 43 | Bundle Deletion Report | Generates bundle deletion status report. | RFC 9171 Sec 5.10 | O | Y |
 | 44 | Bundle Deletion Constraints | Removes retention constraints when deleting a bundle. | RFC 9171 Sec 5.10 | M | Y |
 | 45 | Discarding a Bundle | Follows RFC 9171 procedures when discarding a bundle. | RFC 9171 Sec 5.11 | M | Y |
-| 46 | Canceling a Transmission | Follows RFC 9171 procedures when canceling an initial transmission. | RFC 9171 Sec 5.12 | O | N |
+| 46 | Canceling a Transmission | Follows RFC 9171 procedures when canceling an initial transmission. | RFC 9171 Sec 5.12 | O | Y |
 | 47 | Administrative Records | Formats administrative records per RFC 9171\. (Mandatory if item 49 is true). | RFC 9171 sec 6.1 | C | Y |
 | 48 | Bundle Status Reports | Formats status reports per RFC 9171\. (Mandatory if item 49 is true). | RFC 9171 sec 6.1.1 | C | Y |
 | 49 | Generating Admin Records | Follows RFC 9171 procedures when generating an administrative record. | RFC 9171 Sec 6.2 | O | Y |
