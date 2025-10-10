@@ -1,14 +1,13 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
 use std::{
-    collections::HashMap,
     ops::DerefMut,
     sync::{Mutex, RwLock, Weak},
 };
 
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn cla::EgressPolicy>,
+    pub(super) policy: Arc<dyn policy::EgressPolicy>,
 
     name: String,
     peers: Mutex<HashMap<Eid, HashMap<ClaAddress, u32>>>,
@@ -51,35 +50,6 @@ impl std::fmt::Debug for Cla {
     }
 }
 
-struct NullEgressPolicy {}
-
-#[async_trait]
-impl EgressPolicy for NullEgressPolicy {
-    fn classify(&self, _flow_label: u32) -> u32 {
-        0
-    }
-
-    async fn new_controller(&self, cla: Arc<dyn cla::Cla>) -> Arc<dyn EgressController> {
-        Arc::new(NullEgressController { cla })
-    }
-}
-
-struct NullEgressController {
-    cla: Arc<dyn cla::Cla>,
-}
-
-#[async_trait]
-impl EgressController for NullEgressController {
-    async fn forward(
-        &self,
-        queue: u32,
-        cla_addr: ClaAddress,
-        bundle: Bytes,
-    ) -> cla::Result<ForwardBundleResult> {
-        self.cla.forward(queue, cla_addr, bundle).await
-    }
-}
-
 struct Sink {
     cla: Weak<Cla>,
     registry: Arc<Registry>,
@@ -98,21 +68,21 @@ impl cla::Sink for Sink {
         self.dispatcher.receive_bundle(bundle).await
     }
 
-    async fn add_peer(&self, eid: Eid, addr: ClaAddress) -> cla::Result<bool> {
+    async fn add_peer(&self, eid: Eid, cla_addr: ClaAddress) -> cla::Result<bool> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
         Ok(self
             .registry
-            .add_peer(cla, self.dispatcher.clone(), eid, addr)
+            .add_peer(cla, self.dispatcher.clone(), eid, cla_addr)
             .await)
     }
 
-    async fn remove_peer(&self, eid: &Eid, addr: &ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, eid: &Eid, cla_addr: &ClaAddress) -> cla::Result<bool> {
         Ok(self
             .registry
             .remove_peer(
                 self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
                 eid,
-                addr,
+                cla_addr,
             )
             .await)
     }
@@ -165,7 +135,7 @@ impl Registry {
         address_type: Option<ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn cla::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<()> {
         // Scope lock
         let cla = {
@@ -182,7 +152,8 @@ impl Registry {
                         peers: Default::default(),
                         name: name.clone(),
                         address_type,
-                        policy: policy.unwrap_or_else(|| Arc::new(NullEgressPolicy {})),
+                        policy: policy
+                            .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
                     });
 
                     e.insert(cla.clone());
@@ -260,9 +231,9 @@ impl Registry {
         cla: Arc<Cla>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         eid: Eid,
-        addr: ClaAddress,
+        cla_addr: ClaAddress,
     ) -> bool {
-        let peer = Arc::new(peers::Peer::new(cla.clone()));
+        let peer = Arc::new(peers::Peer::new(std::sync::Arc::downgrade(&cla)));
 
         // We search here because it results in better lookups than linear searching the peers table
         let peer_id = {
@@ -273,7 +244,7 @@ impl Registry {
                 .entry(eid.clone())
             {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
-                    match e.get_mut().entry(addr.clone()) {
+                    match e.get_mut().entry(cla_addr.clone()) {
                         std::collections::hash_map::Entry::Occupied(_) => {
                             return false;
                         }
@@ -286,31 +257,34 @@ impl Registry {
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let peer_id = self.peers.insert(peer.clone());
-                    e.insert([(addr.clone(), peer_id)].into());
+                    e.insert([(cla_addr.clone(), peer_id)].into());
                     peer_id
                 }
             }
         };
 
         info!(
-            "Added new peer {peer_id}: {eid} via {addr} for CLA {}",
+            "Added new peer {peer_id}: {eid} via {cla_addr} for CLA {}",
             cla.name
         );
 
         // Start the peer polling the queue
-        peer.start(peer_id, addr, self.store.clone(), dispatcher)
+        peer.start(cla, peer_id, cla_addr, self.store.clone(), dispatcher)
             .await;
+
+        // Add to the RIB
         self.rib.add_forward(eid, peer_id).await;
+
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Cla>, eid: &Eid, addr: &ClaAddress) -> bool {
+    async fn remove_peer(&self, cla: Arc<Cla>, eid: &Eid, cla_addr: &ClaAddress) -> bool {
         let Some(peer_id) = cla
             .peers
             .lock()
             .trace_expect("Failed to lock mutex")
             .get_mut(eid)
-            .and_then(|m| m.remove(addr))
+            .and_then(|m| m.remove(cla_addr))
         else {
             return false;
         };
@@ -323,7 +297,9 @@ impl Registry {
         true
     }
 
-    pub fn map_peer_queue(&self, peer_id: u32, flow_label: u32) -> Option<u32> {
-        self.peers.map_peer_queue(peer_id, flow_label)
+    pub async fn forward(&self, peer_id: u32, bundle: bundle::Bundle) {
+        if let Err(bundle) = self.peers.forward(peer_id, bundle).await {
+            self.store.watch_bundle(bundle).await;
+        }
     }
 }

@@ -5,7 +5,7 @@ use super::*;
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum BundleStatus {
     Dispatching,
-    ForwardPending { peer: u32, queue: u32 },
+    ForwardPending { peer: u32, queue: Option<u32> },
     LocalPending { service: u32 },
     Waiting,
 }
@@ -13,10 +13,24 @@ pub enum BundleStatus {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BundleMetadata {
+    pub(crate) storage_name: Option<Arc<str>>,
+
     pub status: BundleStatus,
-    pub storage_name: Option<Arc<str>>,
     pub received_at: time::OffsetDateTime,
     pub non_canonical: bool,
+    pub flow_label: Option<u32>,
+}
+
+impl Default for BundleMetadata {
+    fn default() -> Self {
+        Self {
+            storage_name: None,
+            status: BundleStatus::Dispatching,
+            received_at: time::OffsetDateTime::now_utc(),
+            non_canonical: false,
+            flow_label: None,
+        }
+    }
 }
 
 #[cfg(feature = "bincode")]
@@ -29,6 +43,7 @@ impl bincode::Encode for BundleMetadata {
         bincode::Encode::encode(&self.storage_name, encoder)?;
         bincode::Encode::encode(&self.received_at.unix_timestamp_nanos(), encoder)?;
         bincode::Encode::encode(&self.non_canonical, encoder)?;
+        bincode::Encode::encode(&self.flow_label, encoder)?;
         Ok(())
     }
 }
@@ -46,6 +61,7 @@ impl<Context> bincode::Decode<Context> for BundleMetadata {
                     .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?
             },
             non_canonical: bincode::Decode::decode(decoder)?,
+            flow_label: bincode::Decode::decode(decoder)?,
         })
     }
 }
@@ -65,6 +81,7 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for BundleMetadata {
                 .map_err(|_| bincode::error::DecodeError::Other("bad timestamp"))?
             },
             non_canonical: bincode::BorrowDecode::borrow_decode(decoder)?,
+            flow_label: bincode::BorrowDecode::borrow_decode(decoder)?,
         })
     }
 }

@@ -415,8 +415,12 @@ impl Bundle {
                     .get(bcb_block.payload())
                     .ok_or(Error::Altered)
                     .and_then(|data| {
-                        hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data)
-                            .map_err(|_| Error::Altered)
+                        hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data).map_err(|e| {
+                            Error::InvalidField {
+                                field: "BCB Abstract Syntax Block",
+                                source: e.into(),
+                            }
+                        })
                     })
             })?;
 

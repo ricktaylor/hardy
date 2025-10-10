@@ -11,11 +11,7 @@ enum InternalFindResult {
 
 impl Rib {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn find(
-        &self,
-        cla_registry: &cla::registry::Registry,
-        bundle: &bundle::Bundle,
-    ) -> Option<FindResult> {
+    pub async fn find(&self, bundle: &bundle::Bundle) -> Option<FindResult> {
         let inner = self.inner.read().trace_expect("Failed to lock mutex");
 
         // TODO: this is where route table switching can occur
@@ -30,7 +26,7 @@ impl Rib {
         )?;
         if !matches!(result, InternalFindResult::Reflect) {
             // Drop the mutex before the mapping
-            return map_result(cla_registry, result, bundle);
+            return map_result(result, bundle);
         };
 
         // Return the bundle to the source via the 'previous_node' or 'bundle.source'
@@ -45,7 +41,7 @@ impl Rib {
             // Ignore double reflection
             None
         } else {
-            map_result(cla_registry, result, bundle)
+            map_result(result, bundle)
         }
     }
 
@@ -66,11 +62,7 @@ impl Rib {
     }
 }
 
-fn map_result(
-    cla_registry: &cla::registry::Registry,
-    result: InternalFindResult,
-    bundle: &bundle::Bundle,
-) -> Option<FindResult> {
+fn map_result(result: InternalFindResult, bundle: &bundle::Bundle) -> Option<FindResult> {
     match result {
         InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
         InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
@@ -91,11 +83,7 @@ fn map_result(
                 *peers.first().expect("Empty CLA result from find?!?")
             };
 
-            // TODO: Flow labelling
-
-            cla_registry
-                .map_peer_queue(peer, 0)
-                .map(|queue| FindResult::Forward { peer, queue })
+            Some(FindResult::Forward(peer))
         }
         InternalFindResult::Reflect => unreachable!(),
     }

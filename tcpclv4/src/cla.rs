@@ -90,13 +90,11 @@ impl hardy_bpa::cla::Cla for Cla {
             self.task_tracker.wait().await;
         }
     }
-}
-#[async_trait]
-impl hardy_bpa::cla::EgressController for Cla {
+
     async fn forward(
         &self,
-        _queue: u32,
-        cla_addr: hardy_bpa::cla::ClaAddress,
+        _queue: Option<u32>,
+        cla_addr: &hardy_bpa::cla::ClaAddress,
         mut bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let Some(inner) = self.inner.get() else {
@@ -111,7 +109,7 @@ impl hardy_bpa::cla::EgressController for Cla {
         // We try this 5 times, because peers can close at random times
         for _ in 0..5 {
             // See if we have an active connection already
-            match inner.registry.forward(&remote_addr, bundle).await {
+            match inner.registry.forward(remote_addr, bundle).await {
                 Ok(r) => return r,
                 Err(b) => {
                     bundle = b;
@@ -131,7 +129,7 @@ impl hardy_bpa::cla::EgressController for Cla {
                 sink: inner.sink.clone(),
                 registry: inner.registry.clone(),
             };
-            match conn.connect(&remote_addr).await {
+            match conn.connect(remote_addr).await {
                 Ok(()) | Err(transport::Error::Timeout) => {}
                 Err(_) => {
                     // No point retrying

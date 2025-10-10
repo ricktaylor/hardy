@@ -72,16 +72,10 @@ impl Store {
 
                 store.start_metadata_storage_recovery().await;
 
-                store
-                    .bundle_storage_recovery(dispatcher.clone())
-                    .await
-                    .trace_expect("Bundle storage check failed");
+                store.bundle_storage_recovery(dispatcher.clone()).await;
 
                 if !store.cancel_token.is_cancelled() {
-                    store
-                        .metadata_storage_recovery(dispatcher)
-                        .await
-                        .trace_expect("Metadata storage check failed")
+                    store.metadata_storage_recovery(dispatcher).await;
                 }
             };
 
@@ -121,21 +115,10 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn bundle_storage_recovery(
-        self: &Arc<Self>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-    ) -> storage::Result<()> {
-        let outer_cancel_token = self.cancel_token.child_token();
-        let cancel_token = outer_cancel_token.clone();
+    async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+        let cancel_token = self.cancel_token.clone();
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
         let task = async move {
-            // We're going to spawn a bunch of tasks
-            let parallelism = std::thread::available_parallelism()
-                .map(Into::into)
-                .unwrap_or(1);
-            let mut task_set = tokio::task::JoinSet::new();
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
-
             loop {
                 tokio::select! {
                     r = rx.recv_async() => match r {
@@ -143,30 +126,20 @@ impl Store {
                             break;
                         }
                         Ok(r) => {
-                            let permit = semaphore.clone().acquire_owned().await.trace_expect("Failed to acquire permit");
-                            let dispatcher = dispatcher.clone();
-                            task_set.spawn(async move {
-                                match dispatcher.restart_bundle(r.0,r.1).await {
-                                    Ok(RestartResult::Missing) => metrics::counter!("restart_lost_bundles").increment(1),
-                                    Ok(RestartResult::Duplicate) => metrics::counter!("restart_duplicate_bundles").increment(1),
-                                    Ok(RestartResult::Valid) => metrics::counter!("restart_valid_bundles").increment(1),
-                                    Ok(RestartResult::Orphan) => metrics::counter!("restart_orphan_bundles").increment(1),
-                                    Ok(RestartResult::Junk) => metrics::counter!("restart_junk_bundles").increment(1),
-                                    Err(e) => error!("Failed to restart bundle: {e}")
-                                }
-                                drop(permit);
-                            });
+                            match dispatcher.restart_bundle(r.0,r.1).await {
+                                RestartResult::Missing => metrics::counter!("restart_lost_bundles").increment(1),
+                                RestartResult::Duplicate => metrics::counter!("restart_duplicate_bundles").increment(1),
+                                RestartResult::Valid => metrics::counter!("restart_valid_bundles").increment(1),
+                                RestartResult::Orphan => metrics::counter!("restart_orphan_bundles").increment(1),
+                                RestartResult::Junk => metrics::counter!("restart_junk_bundles").increment(1),
+                            }
                         }
                     },
-                    Some(_) = task_set.join_next(), if !task_set.is_empty() => {},
                     _ = cancel_token.cancelled() => {
                         break;
                     }
                 }
             }
-
-            // Wait for all sub-tasks to complete
-            while task_set.join_next().await.is_some() {}
         };
 
         #[cfg(feature = "tracing")]
@@ -178,23 +151,17 @@ impl Store {
 
         let h = tokio::spawn(task);
 
-        if let Err(e) = self.bundle_storage.recover(tx).await {
-            outer_cancel_token.cancel();
-            _ = h.await;
-            Err(e)
-        } else {
-            _ = h.await;
-            Ok(())
-        }
+        self.bundle_storage
+            .recover(tx)
+            .await
+            .trace_expect("Bundle storage recover failed");
+
+        _ = h.await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn metadata_storage_recovery(
-        self: &Arc<Self>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
-    ) -> storage::Result<()> {
-        let outer_cancel_token = self.cancel_token.child_token();
-        let cancel_token = outer_cancel_token.clone();
+    async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+        let cancel_token = self.cancel_token.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
         let task = async move {
             loop {
@@ -228,14 +195,12 @@ impl Store {
 
         let h = tokio::spawn(task);
 
-        if let Err(e) = self.metadata_storage.remove_unconfirmed(tx).await {
-            outer_cancel_token.cancel();
-            _ = h.await;
-            Err(e)
-        } else {
-            _ = h.await;
-            Ok(())
-        }
+        self.metadata_storage
+            .remove_unconfirmed(tx)
+            .await
+            .trace_expect("Remove unconfirmed bundles failed");
+
+        _ = h.await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -243,125 +208,138 @@ impl Store {
         &self,
         bundle: hardy_bpv7::bundle::Bundle,
         data: Bytes,
-    ) -> storage::Result<Option<bundle::Bundle>> {
+    ) -> Option<bundle::Bundle> {
         // Write to bundle storage
-        let storage_name = self.save_data(data).await?;
+        let storage_name = self.save_data(data).await;
 
         // Compose metadata
         let bundle = bundle::Bundle {
             metadata: metadata::BundleMetadata {
-                status: metadata::BundleStatus::Dispatching,
                 storage_name: Some(storage_name.clone()),
-                received_at: time::OffsetDateTime::now_utc(),
-                non_canonical: false,
+                ..Default::default()
             },
             bundle,
         };
 
         // Write to metadata store
-        match self.insert_metadata(&bundle).await {
-            Ok(true) => Ok(Some(bundle)),
+        match self.metadata_storage.insert(&bundle).await {
+            Ok(true) => Some(bundle),
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
                 if let Some(storage_name) = &bundle.metadata.storage_name {
-                    self.delete_data(storage_name).await?;
+                    self.delete_data(storage_name).await;
                 }
-                Ok(None)
+                None
             }
             Err(e) => {
+                error!("Failed to insert metadata: {e}");
+
                 // This is just bad, we can't really claim to have stored the bundle,
                 // so just cleanup and get out
                 if let Some(storage_name) = &bundle.metadata.storage_name {
-                    _ = self.delete_data(storage_name).await;
+                    self.delete_data(storage_name).await;
                 }
-                Err(e)
+                panic!("Failed to insert metadata: {e}");
             }
         }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn load_data(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
+    pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
         if let Some(data) = self
             .bundle_cache
             .lock()
             .trace_expect("LRU cache lock error")
             .peek(storage_name)
         {
-            return Ok(Some(data.clone()));
+            return Some(data.clone());
         }
 
-        self.bundle_storage.load(storage_name).await
+        self.bundle_storage
+            .load(storage_name)
+            .await
+            .trace_expect("Failed to load bundle data")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn save_data(&self, data: Bytes) -> storage::Result<Arc<str>> {
-        if data.len() < MAX_CACHED_BUNDLE_SIZE {
-            let storage_name = self.bundle_storage.save(data.clone()).await?;
+    pub async fn save_data(&self, data: Bytes) -> Arc<str> {
+        let storage_name = self
+            .bundle_storage
+            .save(data.clone())
+            .await
+            .trace_expect("Failed to save bundle data");
 
+        if data.len() < MAX_CACHED_BUNDLE_SIZE {
             self.bundle_cache
                 .lock()
                 .trace_expect("LRU cache lock error")
                 .put(storage_name.clone(), data);
-
-            Ok(storage_name)
-        } else {
-            self.bundle_storage.save(data).await
         }
+
+        storage_name
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn delete_data(&self, storage_name: &str) -> storage::Result<()> {
+    pub async fn delete_data(&self, storage_name: &str) {
         self.bundle_cache
             .lock()
             .expect("LRU cache lock failure")
             .pop(storage_name);
 
-        self.bundle_storage.delete(storage_name).await
+        self.bundle_storage
+            .delete(storage_name)
+            .await
+            .trace_expect("Failed to delete bundle data")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        self.metadata_storage.insert(bundle).await
+    pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> bool {
+        self.metadata_storage
+            .insert(bundle)
+            .await
+            .trace_expect("Failed to insert metadata")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn tombstone_metadata(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<()> {
-        self.metadata_storage.tombstone(bundle_id).await
+    pub async fn tombstone_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) {
+        self.metadata_storage
+            .tombstone(bundle_id)
+            .await
+            .trace_expect("Failed to tombstone metadata")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<metadata::BundleMetadata>> {
-        self.metadata_storage.confirm_exists(bundle_id).await
+    ) -> Option<metadata::BundleMetadata> {
+        self.metadata_storage
+            .confirm_exists(bundle_id)
+            .await
+            .trace_expect("Failed to confirm bundle existence")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn update_metadata(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
-        self.metadata_storage.replace(bundle).await
+    pub async fn update_metadata(&self, bundle: &bundle::Bundle) {
+        self.metadata_storage
+            .replace(bundle)
+            .await
+            .trace_expect("Failed to replace metadata")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
-        self.metadata_storage.poll_waiting(tx).await
+    pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) {
+        self.metadata_storage
+            .poll_waiting(tx)
+            .await
+            .trace_expect("Failed to poll for waiting bundles")
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
-        self.metadata_storage.reset_peer_queue(peer).await
-    }
-
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_pending(
-        &self,
-        tx: storage::Sender<bundle::Bundle>,
-        state: &metadata::BundleStatus,
-        limit: usize,
-    ) -> storage::Result<()> {
-        self.metadata_storage.poll_pending(tx, state, limit).await
+    pub async fn reset_peer_queue(&self, peer: u32) -> bool {
+        self.metadata_storage
+            .reset_peer_queue(peer)
+            .await
+            .trace_expect("Failed to reset peer queue")
     }
 }

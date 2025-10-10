@@ -10,7 +10,7 @@ impl Dispatcher {
         data: &[u8],
         lifetime: std::time::Duration,
         flags: Option<service::SendFlags>,
-    ) -> Result<hardy_bpv7::bundle::Id, Error> {
+    ) -> hardy_bpv7::bundle::Id {
         // Check to see if we should use ipn 2-element encoding
         if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
             if let Eid::Ipn {
@@ -79,7 +79,7 @@ impl Dispatcher {
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now());
 
             // Store to store
-            if let Some(bundle) = self.store.store(bundle, data.into()).await? {
+            if let Some(bundle) = self.store.store(bundle, data.into()).await {
                 break bundle;
             }
 
@@ -89,7 +89,9 @@ impl Dispatcher {
 
         // And process
         let bundle_id = bundle.bundle.id.clone();
-        self.dispatch_bundle(bundle).await.map(|_| bundle_id)
+        self.dispatch_bundle(bundle).await;
+
+        bundle_id
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
@@ -98,7 +100,7 @@ impl Dispatcher {
         service: Arc<service_registry::Service>,
         bundle: &bundle::Bundle,
     ) -> Result<dispatch::DispatchResult, Error> {
-        let Some(data) = self.load_data(bundle).await? else {
+        let Some(data) = self.load_data(bundle).await else {
             warn!("At deliver_bundle!");
 
             // Bundle data was deleted sometime during processing
@@ -108,7 +110,7 @@ impl Dispatcher {
         let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {
             None => {
                 // TODO: We are unable to decrypt the payload, what do we do?
-                return Ok(dispatch::DispatchResult::Keep);
+                return Ok(dispatch::DispatchResult::Wait);
             }
             Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
             Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),

@@ -184,12 +184,12 @@ impl Cla {
     async fn add_peer(
         &self,
         eid: String,
-        addr: ClaAddress,
+        cla_addr: ClaAddress,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
         let eid = eid
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
-        let addr = addr
+        let addr = cla_addr
             .try_into()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
         self.sink
@@ -204,12 +204,12 @@ impl Cla {
     async fn remove_peer(
         &self,
         eid: String,
-        addr: ClaAddress,
+        cla_addr: ClaAddress,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
         let eid = eid
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
-        let addr = addr
+        let addr = cla_addr
             .try_into()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
         self.sink
@@ -255,14 +255,11 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_unregister(&self) {
         // We do nothing
     }
-}
 
-#[async_trait]
-impl hardy_bpa::cla::EgressController for Cla {
     async fn forward(
         &self,
-        queue: u32,
-        cla_addr: hardy_bpa::cla::ClaAddress,
+        queue: Option<u32>,
+        cla_addr: &hardy_bpa::cla::ClaAddress,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let (tx, rx) = oneshot::channel();
@@ -287,7 +284,7 @@ impl hardy_bpa::cla::EgressController for Cla {
                 msg: Some(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                     bundle: bundle.to_vec().into(),
                     address: Some(
-                        cla_addr.try_into().map_err(|e: tonic::Status| {
+                        cla_addr.clone().try_into().map_err(|e: tonic::Status| {
                             hardy_bpa::cla::Error::Internal(e.into())
                         })?,
                     ),

@@ -91,7 +91,7 @@ impl Bpa {
         name: String,
         address_type: Option<cla::ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn cla::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<()> {
         self.cla_registry
             .register(name, address_type, cla, &self.dispatcher, policy)

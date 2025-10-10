@@ -13,7 +13,7 @@ mod route;
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Option<Arc<service_registry::Service>>), // Deliver to local service
-    Forward { peer: u32, queue: u32 },               // Forward to peer on queue
+    Forward(u32),                                    // Forward to peer
     Drop(Option<ReasonCode>),                        // Drop with reason code
 }
 
@@ -55,7 +55,7 @@ impl Rib {
             loop {
                 tokio::select! {
                     _ = rib.poll_waiting_notify.notified() => {
-                        dispatcher.poll_waiting(&cancel_token).await;
+                        dispatcher.poll_waiting(cancel_token.clone()).await;
                     },
                     _ = cancel_token.cancelled() => {
                         break;
