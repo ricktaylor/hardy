@@ -1,16 +1,10 @@
 use super::*;
+use std::collections::HashMap;
 use thiserror::Error;
-
-pub mod policy;
 
 pub(crate) mod registry;
 
-// #[cfg(feature = "htb_policy")]
-// pub mod htb_policy;
-
-// #[cfg(feature = "tbf_policy")]
-// pub mod tbf_policy;
-
+mod egress_queue;
 mod peers;
 
 /// A specialized `Result` type for CLA operations.
@@ -115,30 +109,16 @@ pub enum ForwardBundleResult {
     NoNeighbour,
 }
 
-/// A trait for controlling the egress of bundles through a CLA.
-/// This is often implemented by a CLA itself or by a policy manager.
-#[async_trait]
-pub trait EgressController: Send + Sync {
-    /// Forwards a bundle to a specific CLA address over a given queue.
-    async fn forward(
-        &self,
-        queue: u32,
-        cla_addr: ClaAddress,
-        bundle: Bytes,
-    ) -> Result<ForwardBundleResult>;
-}
-
 /// The primary trait for a Convergence Layer Adapter (CLA).
 ///
 /// A CLA is responsible for adapting the Bundle Protocol to a specific underlying
 /// transport, such as TCP, UDP, or a custom link-layer protocol. It handles the
 /// transmission and reception of bundles over its specific medium.
 ///
-/// CLAs also implement [`EgressController`], allowing them to directly forward bundles.
-/// This is often wrapped by an [`EgressPolicy`] to add more complex behaviors like
+/// CLAs are often wrapped by an [`EgressPolicy`] to add more complex behaviors like
 /// rate limiting or prioritization.
 #[async_trait]
-pub trait Cla: EgressController {
+pub trait Cla: Send + Sync {
     /// Called when the CLA is first registered.
     ///
     /// The CLA should perform any necessary initialization, such as opening sockets
@@ -156,30 +136,27 @@ pub trait Cla: EgressController {
     /// The CLA should perform any necessary cleanup, such as closing connections,
     /// stopping background tasks, and releasing resources.
     async fn on_unregister(&self);
-}
 
-/// Defines an egress policy for a CLA, managing how outgoing bundles are prioritized and scheduled.
-///
-/// An `EgressPolicy` allows for sophisticated traffic management, such as implementing
-/// quality of service (QoS) by classifying bundles into different queues.
-#[async_trait]
-pub trait EgressPolicy: Send + Sync {
     /// Returns the number of egress queues this policy manages.
-    /// The default is 1, for simple FIFO behavior.
+    /// The default is 0, for simple FIFO behavior.
+    /// Any value > 0 indicates multiple priority queues with 0 highest
+    ///
+    /// If a CLA implements more than one queue, it is expected to implement strict priority.
+    /// This means it will always transmit all packets from the highest priority queue (e.g., Queue 0)
+    /// before servicing the next one (Queue 1), ensuring minimal latency for critical traffic
     fn queue_count(&self) -> u32 {
-        1
+        0
     }
 
-    /// Classifies a bundle based on its flow label into an egress queue index.
+    /// Forwards a bundle to a specific CLA address over a given queue.
     ///
-    /// The returned queue index should be less than `queue_count()`.
-    fn classify(&self, flow_label: u32) -> u32;
-
-    /// Creates a new [`EgressController`] that implements this policy for a given CLA.
-    ///
-    /// This allows the policy to wrap the CLA's basic `forward` capability with its
-    /// own logic, such as token bucket filtering or prioritized dispatching.
-    async fn new_controller(&self, cla: Arc<dyn Cla>) -> Arc<dyn EgressController>;
+    /// Queue 'None' is the lowest priority Best Effort queue, often the only queue.
+    async fn forward(
+        &self,
+        queue: Option<u32>,
+        cla_addr: &ClaAddress,
+        bundle: Bytes,
+    ) -> Result<ForwardBundleResult>;
 }
 
 /// A communication channel from a CLA back to the main BPA components.
@@ -199,9 +176,9 @@ pub trait Sink: Send + Sync {
 
     /// Notifies the BPA that a new peer has been discovered at a given `ClaAddress`.
     /// The BPA will update its routing information accordingly.
-    async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, addr: ClaAddress) -> Result<bool>;
+    async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, cla_addr: ClaAddress) -> Result<bool>;
 
     /// Notifies the BPA that a peer is no longer reachable at a given `ClaAddress`.
     /// The BPA will update its routing information to remove the path.
-    async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid, addr: &ClaAddress) -> Result<bool>;
+    async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid, cla_addr: &ClaAddress) -> Result<bool>;
 }

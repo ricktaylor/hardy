@@ -4,13 +4,14 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn forward_bundle(
         self: &Arc<Self>,
+        cla: &dyn cla::Cla,
+        peer: u32,
+        queue: Option<u32>,
+        cla_addr: &cla::ClaAddress,
         bundle: bundle::Bundle,
-        controller: &dyn cla::EgressController,
-        queue: u32,
-        addr: cla::ClaAddress,
-    ) -> Result<cla::ForwardBundleResult, Error> {
+    ) {
         // Get bundle data from store, now we know we need it!
-        let Some(data) = self.load_data(&bundle).await? else {
+        let Some(data) = self.load_data(&bundle).await else {
             warn!("At forward_bundle!");
 
             if bundle.has_expired() {
@@ -18,22 +19,34 @@ impl Dispatcher {
             }
 
             // Bundle data was deleted sometime during processing
-            return Ok(cla::ForwardBundleResult::Sent);
+            return;
         };
 
         // Increment Hop Count, etc...
         // We ignore the fact that a new bundle has been created, as it makes no difference below
         let (_, data) = self.update_extension_blocks(&bundle, &data);
 
-        // And pass to flow controller
-        let result = controller.forward(queue, addr, data.into()).await?;
-        if let cla::ForwardBundleResult::Sent = result {
-            // Ensure we report forwarding
-            self.report_bundle_forwarded(&bundle).await;
-
-            self.drop_bundle(bundle, None).await?;
+        // And pass to CLA
+        match cla.forward(queue, cla_addr, data.into()).await {
+            Ok(cla::ForwardBundleResult::Sent) => {
+                self.report_bundle_forwarded(&bundle).await;
+                self.drop_bundle(bundle, None).await;
+                return;
+            }
+            Ok(cla::ForwardBundleResult::NoNeighbour) => {
+                // The neighbour has gone, kill the queue
+                trace!(
+                    "CLA indicates neighbour has gone, clearing queue assignment for peer {}",
+                    peer
+                );
+            }
+            Err(e) => {
+                error!("Failed to forward bundle: {e}");
+                trace!("Clearing queue assignment for peer {}", peer);
+            }
         }
-        Ok(result)
+
+        self.store.reset_peer_queue(peer).await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]

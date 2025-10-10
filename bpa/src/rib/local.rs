@@ -182,14 +182,8 @@ impl Rib {
             return false;
         }
 
-        match self.store.reset_peer_queue(peer).await {
-            Ok(true) => {
-                self.notify_updated().await;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                error!("Failed to reset peer queue: {e}");
-            }
+        if self.store.reset_peer_queue(peer).await {
+            self.notify_updated().await;
         }
         true
     }

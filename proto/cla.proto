@@ -132,7 +132,7 @@ message ForwardBundleRequest {
   // The address to forward the bundle to.
   ClaAddress address = 2;
   // The egress queue to use for forwarding. This is determined by the egress policy.
-  uint32 queue = 3;
+  optional uint32 queue = 3;
 }
 
 // A response to a forward bundle request.

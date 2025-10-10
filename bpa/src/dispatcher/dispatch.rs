@@ -2,10 +2,11 @@ use super::*;
 use core::ops::Deref;
 use hardy_bpv7::status_report::ReasonCode;
 
-pub enum DispatchResult {
+pub(super) enum DispatchResult {
     Gone,
     Drop(Option<ReasonCode>),
-    Keep,
+    Forward(u32),
+    Wait,
     Delivered,
 }
 
@@ -51,10 +52,9 @@ impl Dispatcher {
                 hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => (
                     bundle::Bundle {
                         metadata: BundleMetadata {
-                            status: BundleStatus::Dispatching,
-                            storage_name: Some(self.store.save_data(data).await?),
+                            storage_name: Some(self.store.save_data(data).await),
                             received_at,
-                            non_canonical: false,
+                            ..Default::default()
                         },
                         bundle,
                     },
@@ -71,10 +71,10 @@ impl Dispatcher {
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
-                                status: BundleStatus::Dispatching,
-                                storage_name: Some(self.store.save_data(data.into()).await?),
+                                storage_name: Some(self.store.save_data(data.into()).await),
                                 received_at,
                                 non_canonical,
+                                ..Default::default()
                             },
                             bundle,
                         },
@@ -89,10 +89,8 @@ impl Dispatcher {
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
-                                status: BundleStatus::Dispatching,
-                                storage_name: None,
                                 received_at,
-                                non_canonical: false,
+                                ..Default::default()
                             },
                             bundle,
                         },
@@ -102,25 +100,16 @@ impl Dispatcher {
                 }
             };
 
-        match self.store.insert_metadata(&bundle).await {
-            Ok(false) => {
-                // Bundle with matching id already exists in the metadata store
+        if !self.store.insert_metadata(&bundle).await {
+            // Bundle with matching id already exists in the metadata store
 
-                // TODO: There may be custody transfer signalling that needs to happen here
+            // TODO: There may be custody transfer signalling that needs to happen here
 
-                // Drop the stored data and do not process further
-                if let Some(storage_name) = &bundle.metadata.storage_name {
-                    self.store.delete_data(storage_name).await?;
-                }
-                return Ok(());
+            // Drop the stored data and do not process further
+            if let Some(storage_name) = &bundle.metadata.storage_name {
+                self.store.delete_data(storage_name).await;
             }
-            Err(e) => {
-                if let Some(storage_name) = &bundle.metadata.storage_name {
-                    _ = self.store.delete_data(storage_name).await;
-                }
-                return Err(e.into());
-            }
-            _ => {}
+            return Ok(());
         }
 
         // Report we have received the bundle
@@ -135,9 +124,9 @@ impl Dispatcher {
         .await;
 
         // Check the bundle further
-        self.process_bundle(bundle, reason)
-            .await
-            .map_err(Into::into)
+        self.process_bundle(bundle, reason).await;
+
+        Ok(())
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
@@ -145,7 +134,7 @@ impl Dispatcher {
         self: &Arc<Self>,
         bundle: bundle::Bundle,
         mut reason: Option<ReasonCode>,
-    ) -> Result<(), Error> {
+    ) {
         /* Always check bundles, no matter the state, as after restarting
          * the configured filters or code may have changed, and reprocessing is desired.
          */
@@ -178,39 +167,36 @@ impl Dispatcher {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn dispatch_bundle(
-        self: &Arc<Self>,
-        mut bundle: bundle::Bundle,
-    ) -> Result<(), Error> {
+    pub async fn dispatch_bundle(self: &Arc<Self>, mut bundle: bundle::Bundle) {
         // Now process the bundle
-        let reason_code = match self.dispatch_bundle_inner(&mut bundle).await? {
-            DispatchResult::Gone => return Ok(()),
-            DispatchResult::Drop(reason_code) => reason_code,
-            DispatchResult::Keep => {
+        match self.dispatch_bundle_inner(&mut bundle).await {
+            DispatchResult::Gone => {}
+            DispatchResult::Drop(reason_code) => self.drop_bundle(bundle, reason_code).await,
+            DispatchResult::Forward(peer) => {
+                self.cla_registry.forward(peer, bundle).await;
+            }
+            DispatchResult::Wait => {
                 self.store.watch_bundle(bundle).await;
-                return Ok(());
             }
             DispatchResult::Delivered => {
                 self.report_bundle_delivery(&bundle).await;
-                None
+                self.drop_bundle(bundle, None).await;
             }
-        };
-
-        self.drop_bundle(bundle, reason_code).await
+        }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub(super) async fn dispatch_bundle_inner(
         self: &Arc<Self>,
         bundle: &mut bundle::Bundle,
-    ) -> Result<DispatchResult, Error> {
+    ) -> DispatchResult {
         // TODO: Pluggable Egress filters!
 
         // Perform RIB lookup
-        match self.rib.find(&self.cla_registry, bundle).await {
+        match self.rib.find(bundle).await {
             Some(rib::FindResult::Drop(reason)) => {
                 trace!("Bundle is black-holed");
-                Ok(DispatchResult::Drop(reason))
+                DispatchResult::Drop(reason)
             }
             Some(rib::FindResult::AdminEndpoint) => {
                 if bundle.bundle.id.fragment_info.is_some() {
@@ -225,18 +211,15 @@ impl Dispatcher {
                     self.reassemble(bundle).await
                 } else {
                     // Bundle is for a local service
-                    self.deliver_bundle(service, bundle).await
+                    self.deliver_bundle(service, bundle)
+                        .await
+                        .trace_expect("Failed to deliver bundle")
                 }
             }
-            Some(rib::FindResult::Forward { peer, queue }) => {
-                trace!("Queuing bundle for forwarding to CLA peer {peer} queue {queue}");
+            Some(rib::FindResult::Forward(peer)) => {
+                trace!("Queuing bundle for forwarding to CLA peer {peer}");
 
-                // Bundle is ready to forward
-                if bundle.metadata.status != (BundleStatus::ForwardPending { peer, queue }) {
-                    bundle.metadata.status = BundleStatus::ForwardPending { peer, queue };
-                    self.store.update_metadata(bundle).await?;
-                }
-                Ok(DispatchResult::Keep)
+                DispatchResult::Forward(peer)
             }
             _ => {
                 // Just wait
@@ -244,22 +227,17 @@ impl Dispatcher {
 
                 if bundle.metadata.status != BundleStatus::Waiting {
                     bundle.metadata.status = BundleStatus::Waiting;
-                    self.store.update_metadata(bundle).await?;
+                    self.store.update_metadata(bundle).await;
                 }
-                Ok(DispatchResult::Keep)
+                DispatchResult::Wait
             }
         }
     }
 
-    pub async fn poll_waiting(
-        self: &Arc<Self>,
-        cancel_token: &tokio_util::sync::CancellationToken,
-    ) {
+    pub async fn poll_waiting(self: &Arc<Self>, cancel_token: tokio_util::sync::CancellationToken) {
         // Tuning parameter
         const CHANNEL_DEPTH: usize = 16;
 
-        let outer_cancel_token = cancel_token.child_token();
-        let cancel_token = outer_cancel_token.clone();
         let dispatcher = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(CHANNEL_DEPTH);
         let task = async move {
@@ -283,18 +261,16 @@ impl Dispatcher {
                             task_set.spawn(async move {
                                 // Now process the bundle
                                 match dispatcher.dispatch_bundle_inner(&mut bundle).await {
-                                    Err(e) => error!("Failed to dispatch bundle: {e}"),
-                                    Ok(DispatchResult::Drop(reason_code)) => {
-                                        if let Err(e) = dispatcher.drop_bundle(bundle, reason_code).await {
-                                            error!("Failed to drop bundle: {e}");
-                                        }
+                                    DispatchResult::Drop(reason_code) => {
+                                        dispatcher.drop_bundle(bundle, reason_code).await;
                                     }
-                                    Ok(DispatchResult::Keep | DispatchResult::Gone) => {}
-                                    Ok(DispatchResult::Delivered) => {
+                                    DispatchResult::Forward(peer) => {
+                                        dispatcher.cla_registry.forward(peer, bundle).await;
+                                    }
+                                    DispatchResult::Wait | DispatchResult::Gone => {}
+                                    DispatchResult::Delivered => {
                                         dispatcher.report_bundle_delivery(&bundle).await;
-                                        if let Err(e) = dispatcher.drop_bundle(bundle, None).await {
-                                            error!("Failed to drop bundle: {e}");
-                                        }
+                                        dispatcher.drop_bundle(bundle, None).await;
                                     }
                                 };
                                 drop(permit);
@@ -321,16 +297,7 @@ impl Dispatcher {
 
         let h = tokio::spawn(task);
 
-        if self
-            .store
-            .poll_waiting(tx)
-            .await
-            .inspect_err(|e| error!("Failed to poll store for waiting bundles: {e}"))
-            .is_err()
-        {
-            // Cancel the reader task
-            outer_cancel_token.cancel();
-        }
+        self.store.poll_waiting(tx).await;
 
         _ = h.await;
     }

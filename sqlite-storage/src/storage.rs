@@ -165,7 +165,7 @@ fn from_status(status: &hardy_bpa::metadata::BundleStatus) -> (i64, Option<u32>,
         hardy_bpa::metadata::BundleStatus::Dispatching => (0, None, None),
         hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None),
         hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer), Some(*queue))
+            (2, Some(*peer), *queue)
         }
         hardy_bpa::metadata::BundleStatus::LocalPending { service } => (3, Some(*service), None),
     }
@@ -388,10 +388,16 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         // Ensure status codes match
-        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1);
         assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue: 0 })
-                == (2, Some(peer), Some(0))
+            from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
+            "Status code mismatch"
+        );
+        assert!(
+            from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending {
+                peer,
+                queue: Some(0)
+            }) == (2, Some(peer), Some(0)),
+            "Status code mismatch"
         );
 
         self.write(move |conn| {
@@ -411,7 +417,10 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
-        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 0); // Ensure status codes match
+        assert!(
+            from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 0,
+            "Status code mismatch"
+        ); // Ensure status codes match
 
         let bundles = self
             .read(move |conn| {
@@ -447,7 +456,10 @@ impl storage::MetadataStorage for Storage {
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
-        assert!(from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1); // Ensure status codes match
+        assert!(
+            from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
+            "Status code mismatch"
+        ); // Ensure status codes match
 
         // Refresh the waiting queue
         self.write(move |conn| {

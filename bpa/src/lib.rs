@@ -8,6 +8,7 @@ pub mod cla;
 pub mod config;
 pub mod metadata;
 pub mod node_ids;
+pub mod policy;
 pub mod routes;
 pub mod service;
 pub mod storage;

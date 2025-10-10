@@ -142,13 +142,12 @@ impl Store {
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
-                    _ = dispatcher
+                    dispatcher
                         .drop_bundle(
                             bundle,
                             Some(hardy_bpv7::status_report::ReasonCode::LifetimeExpired),
                         )
-                        .await
-                        .inspect_err(|e| error!("Failed to drop expired bundle: {e}"));
+                        .await;
                 }
             }
 

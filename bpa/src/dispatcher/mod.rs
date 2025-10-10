@@ -64,30 +64,25 @@ impl Dispatcher {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn load_data(self: &Arc<Self>, bundle: &bundle::Bundle) -> Result<Option<Bytes>, Error> {
+    async fn load_data(self: &Arc<Self>, bundle: &bundle::Bundle) -> Option<Bytes> {
         let Some(storage_name) = bundle.metadata.storage_name.as_ref() else {
             error!("Bad bundle has made it deep into the pipeline");
             panic!("Bad bundle has made it deep into the pipeline");
         };
 
-        if let Some(data) = self.store.load_data(storage_name).await? {
-            Ok(Some(data))
+        if let Some(data) = self.store.load_data(storage_name).await {
+            Some(data)
         } else {
             warn!("Bundle data {storage_name} has gone from storage");
 
-            self.store
-                .tombstone_metadata(&bundle.bundle.id)
-                .await
-                .map(|_| None)
+            self.store.tombstone_metadata(&bundle.bundle.id).await;
+
+            None
         }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
-    pub async fn drop_bundle(
-        self: &Arc<Self>,
-        bundle: bundle::Bundle,
-        reason: Option<ReasonCode>,
-    ) -> Result<(), Error> {
+    pub async fn drop_bundle(self: &Arc<Self>, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&bundle, reason).await;
         }
@@ -96,10 +91,10 @@ impl Dispatcher {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
-    pub async fn delete_bundle(&self, bundle: bundle::Bundle) -> Result<(), Error> {
+    pub async fn delete_bundle(&self, bundle: bundle::Bundle) {
         // Delete the bundle from the bundle store
         if let Some(storage_name) = &bundle.metadata.storage_name {
-            self.store.delete_data(storage_name).await?;
+            self.store.delete_data(storage_name).await;
         }
         self.store.tombstone_metadata(&bundle.bundle.id).await
     }

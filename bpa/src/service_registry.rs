@@ -74,7 +74,8 @@ impl service::Sink for Sink {
             return Err(service::Error::InvalidDestination(destination));
         }
 
-        self.dispatcher
+        Ok(self
+            .dispatcher
             .local_dispatch(
                 self.service
                     .upgrade()
@@ -87,8 +88,8 @@ impl service::Sink for Sink {
                 flags,
             )
             .await
-            .map(|bundle_id| bundle_id.to_key().into())
-            .map_err(Into::into)
+            .to_key()
+            .into())
     }
 }
 

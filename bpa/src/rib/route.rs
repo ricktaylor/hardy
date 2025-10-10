@@ -140,14 +140,8 @@ impl Rib {
     async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
         let mut updated = false;
         for p in peers {
-            match self.store.reset_peer_queue(p).await {
-                Ok(true) => {
-                    updated = true;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    error!("Failed to reset peer queue: {e}");
-                }
+            if self.store.reset_peer_queue(p).await {
+                updated = true;
             }
         }
         updated
