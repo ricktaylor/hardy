@@ -72,7 +72,7 @@ To complete this PICS, the implementer is to provide the requested information i
 | 25 | UDP CLA | Implements bundle encapsulation in UDP datagrams. | This doc: B2.1.3 | O.1 | N |
 | 26 | Space Packets CLA | Implements encapsulation of bundles in Space Packets. | This doc: B2.1.5 | O.1 | N |
 | 27 | EPP CLA | Implements encapsulation of bundles in encapsulation packets. | This doc: B2.1.6 | O.1 | N |
-| 28 | BP Managed Information | Implements the BP managed information described in annex C. | This doc, annex C | M | Y |
+| 28 | BP Managed Information | Implements the BP managed information described in annex C. | This doc, annex C | M | N |
 | 29 | BP Data Structures | Follows RFC 9171 rules for data structures. | RFC 9171 Sec 4.2 | M | Y |
 | 30 | Block Structures | Follows RFC 9171 rules for details in blocks. | RFC 9171 Sec 4.3 | M | Y |
 | 31 | Extension Blocks | Follows RFC 9171 rules for details in extension blocks. | RFC 9171 Sec 4.4 | M | Y |
