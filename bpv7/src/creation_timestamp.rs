@@ -65,6 +65,35 @@ impl CreationTimestamp {
         }
     }
 
+    /// Create a new `CreationTimestamp` with the given time and sequence
+    /// number values.
+    pub fn from_parts(creation_time: Option<dtn_time::DtnTime>, sequence_number: u64) -> Self {
+        Self {
+            creation_time,
+            sequence_number,
+        }
+    }
+
+    /// Disassembles the `CreationTimestamp` into its parts, the time value
+    /// and the sequence number.
+    pub fn into_parts(self) -> (Option<dtn_time::DtnTime>, u64) {
+        let Self {
+            creation_time,
+            sequence_number,
+        } = self;
+        (creation_time, sequence_number)
+    }
+
+    /// Access the time value of this timestamp.
+    pub fn time(&self) -> Option<&dtn_time::DtnTime> {
+        self.creation_time.as_ref()
+    }
+
+    /// Access the sequence number of this timestamp.
+    pub fn sequence_number(&self) -> u64 {
+        self.sequence_number
+    }
+
     /// Returns `true` if the `CreationTimestamp` was created by a source with an accurate clock.
     ///
     /// This is determined by the presence of a `creation_time` value.
