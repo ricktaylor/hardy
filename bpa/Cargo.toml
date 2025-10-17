@@ -32,3 +32,13 @@ rustversion = "1.0"
 flume = "0.11.1"
 serde = { version = "1.0.228", features = ["derive","rc"], optional = true }
 bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+hardy-bpa-fuzz = { path = "./fuzz" }
+#hardy-bpa-fuzz = { path = "./fuzz", features = ["sqlite-storage","localdisk-storage"] }
+
+[[bench]]
+name = "bundle_bench"
+harness = false
+
