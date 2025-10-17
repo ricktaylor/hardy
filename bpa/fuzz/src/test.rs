@@ -8,7 +8,7 @@ fn test() {
     {
         let mut buffer = Vec::new();
         if file.read_to_end(&mut buffer).is_ok() {
-            send(&buffer);
+            send_random(&buffer);
         }
     }
 }
@@ -31,7 +31,7 @@ fn test_all() {
                 {
                     let mut buffer = Vec::new();
                     if file.read_to_end(&mut buffer).is_ok() {
-                        send(&buffer);
+                        send_random(&buffer);
 
                         count = count.saturating_add(1);
                     }

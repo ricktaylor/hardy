@@ -184,11 +184,15 @@ impl Msg {
     }
 }
 
-pub fn send(data: &[u8]) -> bool {
+pub fn send_random(data: &[u8]) -> bool {
     if let Ok(msg) = Msg::arbitrary(&mut arbitrary::Unstructured::new(data)) {
         msg.send();
         true
     } else {
         false
     }
+}
+
+pub fn send_bundle(data: &[u8]) {
+    Msg::ClaBytes(data.to_vec()).send()
 }
