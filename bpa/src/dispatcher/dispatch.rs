@@ -1,5 +1,4 @@
 use super::*;
-use core::ops::Deref;
 use hardy_bpv7::status_report::ReasonCode;
 
 pub(super) enum DispatchResult {
@@ -48,7 +47,7 @@ impl Dispatcher {
 
         // Parse the bundle
         let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref())? {
+            match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_store())? {
                 hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => (
                     bundle::Bundle {
                         metadata: BundleMetadata {

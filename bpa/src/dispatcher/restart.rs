@@ -1,5 +1,4 @@
 use super::*;
-use core::ops::Deref;
 use storage::store::RestartResult;
 
 impl Dispatcher {
@@ -15,7 +14,7 @@ impl Dispatcher {
         };
 
         // Parse the bundle (again, just in case we have changed policies etc)
-        match hardy_bpv7::bundle::ValidBundle::parse(&data, self.deref()) {
+        match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_store()) {
             Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
                 // Check if the metadata_storage knows about this bundle
                 if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
