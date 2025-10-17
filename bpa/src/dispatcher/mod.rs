@@ -98,6 +98,10 @@ impl Dispatcher {
         }
         self.store.tombstone_metadata(&bundle.bundle.id).await
     }
+
+    fn key_store(&self) -> &impl hardy_bpv7::bpsec::key::KeyStore {
+        self
+    }
 }
 
 impl hardy_bpv7::bpsec::key::KeyStore for Dispatcher {

@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
-use std::ops::Deref;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -21,7 +20,7 @@ impl Dispatcher {
             return dispatch::DispatchResult::Gone;
         };
 
-        let payload = match bundle.bundle.block_payload(1, &data, self.deref()) {
+        let payload = match bundle.bundle.block_payload(1, &data, self.key_store()) {
             Err(e) => {
                 trace!("Received an invalid administrative record: {e}");
                 return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));

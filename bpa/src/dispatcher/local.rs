@@ -1,5 +1,4 @@
 use super::*;
-use std::ops::Deref;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
@@ -118,7 +117,7 @@ impl Dispatcher {
             return Ok(dispatch::DispatchResult::Gone);
         };
 
-        let payload = match bundle.bundle.block_payload(1, &data, self.deref())? {
+        let payload = match bundle.bundle.block_payload(1, &data, self.key_store())? {
             None => {
                 // TODO: We are unable to decrypt the payload, what do we do?
                 return Ok(dispatch::DispatchResult::Wait);
