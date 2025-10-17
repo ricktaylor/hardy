@@ -1,5 +1,4 @@
 use super::*;
-use std::ops::Deref;
 
 struct Shared {
     cla: Arc<dyn Cla>,
@@ -19,7 +18,7 @@ impl policy::EgressQueue for EgressQueue {
         self.shared
             .dispatcher
             .forward_bundle(
-                self.shared.cla.deref(),
+                &*self.shared.cla,
                 self.shared.peer,
                 self.queue,
                 &self.shared.cla_addr,
