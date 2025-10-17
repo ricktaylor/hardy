@@ -17,19 +17,19 @@ hardy-bpa = { path = "../bpa", features = ["bincode"] }
 hardy-bpv7 = { path = "../bpv7", features = ["std", "bincode"] }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
-tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
+tokio = { version = "1.48.0", features = ["rt-multi-thread"] }
 thiserror = "2.0.17"
 bincode = "2.0.1"
 directories = "6.0.0"
 tracing = "0.1.41"
 base64 = "0.22.1"
 time = "0.3.44"
-cfg-if = "1.0.3"
+cfg-if = "1.0.4"
 trace-err = "0.1.5"
 flume = "0.11.1"
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 [build-dependencies]
-regex = "1.11.3"
+regex = "1.12.2"
 sha1 = "0.10.6"
 base64 = "0.22.1"
