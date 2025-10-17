@@ -376,8 +376,6 @@ where
             reason_code,
             ..Default::default()
         };
-        let mut expected_reply = msg.clone();
-        expected_reply.message_flags.reply = true;
 
         if self
             .transport_send(codec::Message::SessionTerm(msg))
