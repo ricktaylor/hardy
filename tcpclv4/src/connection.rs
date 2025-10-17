@@ -3,7 +3,6 @@ use rand::seq::IteratorRandom;
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    ops::DerefMut,
     sync::{Arc, Mutex},
 };
 
@@ -160,12 +159,7 @@ impl ConnectionRegistry {
 
     pub async fn shutdown(&self) {
         // Unregister peers
-        let peers = std::mem::take(
-            self.peers
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .deref_mut(),
-        );
+        let peers = std::mem::take(&mut *self.peers.lock().trace_expect("Failed to lock mutex"));
 
         for (addr, eid) in peers {
             if let Err(e) = self

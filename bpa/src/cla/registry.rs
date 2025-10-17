@@ -1,9 +1,6 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
-use std::{
-    ops::DerefMut,
-    sync::{Mutex, RwLock, Weak},
-};
+use std::sync::{Mutex, RwLock, Weak};
 
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
@@ -209,12 +206,7 @@ impl Registry {
             self.rib.remove_address_type(address_type);
         }
 
-        let peers = std::mem::take(
-            cla.peers
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .deref_mut(),
-        );
+        let peers = std::mem::take(&mut *cla.peers.lock().trace_expect("Failed to lock mutex"));
 
         for (eid, i) in peers {
             for (_, peer_id) in i {
