@@ -9,7 +9,7 @@ pub mod null_policy;
 // #[cfg(feature = "tbf_policy")]
 // pub mod tbf_policy;
 
-/// The EgressPolicy enum now cleanly separates the type from its configuration.
+/// The EgressPolicy enum separates the type from its configuration.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "lowercase"))]
