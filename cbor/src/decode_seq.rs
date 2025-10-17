@@ -133,7 +133,7 @@ impl<'a, const D: usize> Series<'a, D> {
 
     /// Parses the next value in the sequence using a closure.
     ///
-    /// This is similar to [`try_parse_value`] but returns a `NoMoreItems`
+    /// This is similar to `try_parse_value` but returns a `NoMoreItems`
     /// error if the end of the sequence has been reached, instead of `Ok(None)`.
     pub fn parse_value<T, F, E>(&mut self, f: F) -> Result<T, E>
     where
