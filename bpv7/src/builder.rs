@@ -38,7 +38,7 @@ impl Builder {
             bundle_flags: bundle::Flags::default(),
             crc_type: crc::CrcType::CRC32_CASTAGNOLI,
             report_to: None,
-            lifetime: core::time::Duration::new(24 * 60 * 60 * 60, 0),
+            lifetime: core::time::Duration::new(24 * 60 * 60, 0),
             payload: BlockTemplate::new(
                 block::Type::Payload,
                 block::Flags::default(),
