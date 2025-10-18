@@ -1,5 +1,8 @@
 use criterion::*;
 
+/* TODO:  This whole benchmarking suite is pretty pointless and not statistically significant
+We need to rewrite this into something useful, and not pull in hardy-bpa-fuzz */
+
 fn get_bundle() -> Box<[u8]> {
     let builder: hardy_bpv7::builder::Builder = hardy_bpv7::builder::BundleTemplate {
         source: "ipn:1.1".parse().unwrap(),
