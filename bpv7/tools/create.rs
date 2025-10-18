@@ -1,36 +1,52 @@
-use clap::Parser;
+use super::*;
 use hardy_bpv7::eid::Eid;
-use std::{
-    io::{BufRead, BufWriter, Write},
-    path::PathBuf,
-};
+use std::io::{BufRead, BufWriter, Write};
 
+/// Holds the arguments for the `create` subcommand.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[arg(short, long)]
+#[command(about, long_about = None)]
+pub struct Command {
+    #[arg(short, long, long_help = "The source Endpoint ID (EID) of the bundle")]
     source: Eid,
 
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        long_help = "The destination Endpoint ID (EID) of the bundle"
+    )]
     destination: Eid,
 
-    #[arg(short, long = "report-to")]
+    #[arg(
+        short,
+        long = "report-to",
+        long_help = "The optional 'Report To' Endpoint ID (EID) of the bundle"
+    )]
     report_to: Option<Eid>,
 
-    #[arg(short, long)]
-    input: Option<PathBuf>,
+    #[arg(
+        short,
+        long,
+        long_help = "Path to the file to use as payload, or stdin if not supplied"
+    )]
+    payload: Option<PathBuf>,
 
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        long_help = "Path to the location to write the bundle to, or stdout if not supplied"
+    )]
     output: Option<PathBuf>,
 
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        long_help = "The lifetime of the bundle, or 24 hours if not supplied"
+    )]
     lifetime: Option<humantime::Duration>,
 }
 
-fn main() {
-    let args = Args::parse();
-
-    let input: &mut dyn BufRead = if let Some(input) = args.input {
+pub fn exec(args: Command) -> ExitCode {
+    let input: &mut dyn BufRead = if let Some(input) = args.payload {
         &mut std::io::BufReader::new(std::fs::File::open(input).expect("Failed to open input file"))
     } else {
         &mut std::io::BufReader::new(std::io::stdin())
@@ -55,7 +71,8 @@ fn main() {
 
     if let Some(lifetime) = args.lifetime {
         if lifetime.as_millis() > u64::MAX as u128 {
-            panic!("Lifetime too long!")
+            eprintln!("Lifetime too long!");
+            return ExitCode::FAILURE;
         }
         builder = builder.with_lifetime(lifetime.into());
     }
@@ -72,5 +89,7 @@ fn main() {
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .1,
         )
-        .expect("Failed to write bundle")
+        .expect("Failed to write bundle");
+
+    ExitCode::SUCCESS
 }
