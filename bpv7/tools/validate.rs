@@ -1,11 +1,11 @@
-use clap::Parser;
-use std::{io::Read, process::ExitCode};
+use super::*;
+use std::io::Read;
 
+/// Holds the arguments for the `show` subcommand.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// The list of additional arguments/files
-    /// Clap automatically collects all positional arguments here.
+#[command(about, long_about = None)]
+pub struct Command {
+    /// The list of bundle files to validate, or stdin if not supplied.
     files: Vec<String>,
 }
 
@@ -45,19 +45,18 @@ fn parse<R: std::io::Read>(filename: Option<String>, mut input: std::io::BufRead
     }
 }
 
-fn main() -> ExitCode {
-    let args = Args::parse();
+pub fn exec(args: Command) -> ExitCode {
     let mut count_failed: usize = 0;
     if args.files.is_empty() {
         if !parse(None, std::io::BufReader::new(std::io::stdin())) {
-            count_failed = count_failed.saturating_add(1);
+            count_failed = 1;
         }
     } else {
         for f in args.files {
-            if !parse(
-                Some(f.clone()),
-                std::io::BufReader::new(std::fs::File::open(f).expect("Failed to open input file")),
-            ) {
+            let input = std::io::BufReader::new(
+                std::fs::File::open(&f).expect("Failed to open input file"),
+            );
+            if !parse(Some(f), input) {
                 count_failed = count_failed.saturating_add(1);
             }
         }
