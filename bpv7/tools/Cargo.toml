@@ -11,6 +11,3 @@ path = "bundle.rs"
 hardy-bpv7 = { path = "..", features = ["std"] }
 clap = { version = "4.5.49", features = ["derive","cargo"] }
 humantime = "2.3.0"
-
-[dev-dependencies]
-#hex-literal = "1.0.0"
