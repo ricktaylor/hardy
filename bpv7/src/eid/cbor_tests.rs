@@ -14,7 +14,23 @@ fn tests() {
     null_check(&hex!("82 02 82 00 00"));
     null_check(&hex!("82 02 83 00 00 00"));
 
-    // TODO: Add dtn tests
+    // From Stephan Havermans testing
+    null_check(&hex!("82 02 82 00 01"));
+    null_check(&hex!("82 02 83 00 00 01"));
+
+    dtn_check(&hex!("82 01 67 2f2f6e6f64652f"), "node", "");
+    dtn_check(
+        &hex!("82 01 6f 2f2f6c6f6e676e6f64656e616d652f"),
+        "longnodename",
+        "",
+    );
+    dtn_check(
+        &hex!("82 01 76 2f2f6c6f6e676e6f64656e616d652f73657276696365"),
+        "longnodename",
+        "service",
+    );
+
+    null_check(&hex!("82 01 64 6e6f6e65"));
 
     // Negative tests
     assert!(matches!(
@@ -53,9 +69,6 @@ fn tests() {
         expect_error(&hex!("82 02 82 1B 000EE868 00000001 1B 0000000800000001")),
         Error::IpnInvalidServiceNumber(_)
     ));
-
-    // From Stephan Havermans testing
-    null_check(&hex!("82 02 82 00 01"));
 }
 
 fn expect_error(data: &[u8]) -> Error {
@@ -67,6 +80,16 @@ fn null_check(data: &[u8]) {
         hardy_cbor::decode::parse::<Eid>(data).expect("Failed to parse"),
         Eid::Null
     );
+}
+
+fn dtn_check(data: &[u8], expected_node_name: &str, expected_demux: &str) {
+    match hardy_cbor::decode::parse(data).expect("Failed to parse") {
+        Eid::Dtn { node_name, demux } => {
+            assert_eq!(node_name.as_ref(), expected_node_name);
+            assert_eq!(demux.as_ref(), expected_demux);
+        }
+        _ => panic!("Not a dtn EID!"),
+    };
 }
 
 fn ipn_check_legacy(
