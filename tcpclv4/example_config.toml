@@ -7,7 +7,7 @@
 
 # The MRU for a total bundle transfer, in bytes. This is the largest
 # bundle that can be received over this CLA.
-#transfer_mru = 9007199254740992
+#transfer_mru = 562949953421312 # (2^49)
 
 # The maximum number of idle incoming connections to keep open per remote IP address.
 #max_idle_connections = 6
