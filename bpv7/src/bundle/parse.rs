@@ -627,21 +627,7 @@ impl ValidBundle {
         tags: &[u64],
     ) -> Result<Self, ValidError> {
         // Check for shortest/correct form
-        canonical = canonical && !block_array.is_definite();
-        if canonical {
-            // TODO: POLICY CHECK
-            // Appendix B of RFC9171
-            let mut seen_55799 = false;
-            for tag in tags {
-                match *tag {
-                    255799 if !seen_55799 => seen_55799 = true,
-                    _ => {
-                        canonical = false;
-                        break;
-                    }
-                }
-            }
-        }
+        canonical = canonical && !block_array.is_definite() && tags.is_empty();
 
         // Parse Primary block
         let block_start = block_array.offset();
