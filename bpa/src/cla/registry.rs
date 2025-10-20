@@ -110,7 +110,7 @@ impl Registry {
             rib,
             store,
             peers: peers::PeerTable::new(),
-            poll_channel_depth: config.poll_channel_depth,
+            poll_channel_depth: config.poll_channel_depth.into(),
         }
     }
 

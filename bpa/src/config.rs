@@ -1,13 +1,12 @@
 use super::*;
 
-#[derive(Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub status_reports: bool,
 
     #[cfg_attr(feature = "serde", serde(default = "default_poll_channel_depth"))]
-    pub poll_channel_depth: usize,
+    pub poll_channel_depth: std::num::NonZeroUsize,
 
     #[cfg_attr(feature = "serde", serde(default, rename = "storage"))]
     pub storage_config: storage::Config,
@@ -22,9 +21,22 @@ pub struct Config {
     pub ipn_2_element: Vec<hardy_eid_pattern::EidPattern>,
 }
 
-#[cfg(feature = "serde")]
-fn default_poll_channel_depth() -> usize {
-    16
+fn default_poll_channel_depth() -> std::num::NonZeroUsize {
+    std::num::NonZeroUsize::new(16).unwrap()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            poll_channel_depth: default_poll_channel_depth(),
+            status_reports: false,
+            storage_config: storage::Config::default(),
+            metadata_storage: None,
+            bundle_storage: None,
+            node_ids: node_ids::NodeIds::default(),
+            ipn_2_element: Vec::new(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Config {
