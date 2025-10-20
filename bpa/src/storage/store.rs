@@ -16,13 +16,11 @@ impl Store {
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
-            bundle_cache: Mutex::new(LruCache::new(
-                std::num::NonZero::new(config.storage_config.lru_capacity).unwrap(),
-            )),
+            bundle_cache: Mutex::new(LruCache::new(config.storage_config.lru_capacity)),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(tokio::sync::Notify::new()),
-            max_cached_bundle_size: config.storage_config.max_cached_bundle_size,
-            reaper_cache_size: config.poll_channel_depth,
+            max_cached_bundle_size: config.storage_config.max_cached_bundle_size.into(),
+            reaper_cache_size: config.poll_channel_depth.into(),
         }
     }
 

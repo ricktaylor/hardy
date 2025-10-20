@@ -18,15 +18,15 @@ mod reaper;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
-    pub lru_capacity: usize,
-    pub max_cached_bundle_size: usize,
+    pub lru_capacity: std::num::NonZeroUsize,
+    pub max_cached_bundle_size: std::num::NonZeroUsize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            lru_capacity: 1024,
-            max_cached_bundle_size: 16 * 1024,
+            lru_capacity: std::num::NonZeroUsize::new(1024).unwrap(),
+            max_cached_bundle_size: std::num::NonZeroUsize::new(16 * 1024).unwrap(),
         }
     }
 }
