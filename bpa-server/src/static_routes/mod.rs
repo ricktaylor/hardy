@@ -51,15 +51,16 @@ impl StaticRoutes {
         mut self,
         cancel_token: &tokio_util::sync::CancellationToken,
         task_tracker: &tokio_util::task::TaskTracker,
-    ) {
+    ) -> bool {
         info!(
             "Loading static routes from '{}'",
             self.config.routes_file.to_string_lossy()
         );
 
-        self.refresh_routes(false)
-            .await
-            .trace_expect("Failed to process static routes file");
+        if let Err(e) = self.refresh_routes(false).await {
+            error!("Failed to load static routes: {e}");
+            return false;
+        }
 
         if self.config.watch {
             info!("Monitoring static routes file for changes");
@@ -67,6 +68,8 @@ impl StaticRoutes {
             // Set up file watcher
             self.watch(cancel_token, task_tracker);
         }
+
+        true
     }
 
     async fn refresh_routes(&mut self, ignore_errors: bool) -> Result<(), Error> {
@@ -182,7 +185,7 @@ pub async fn init(
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
     cancel_token: &tokio_util::sync::CancellationToken,
     task_tracker: &tokio_util::task::TaskTracker,
-) {
+) -> bool {
     // Try to create canonical file path
     if let Ok(r) = config.routes_file.canonicalize() {
         config.routes_file = r;

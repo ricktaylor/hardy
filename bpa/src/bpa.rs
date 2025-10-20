@@ -8,7 +8,6 @@ pub struct Bpa {
     cla_registry: Arc<cla::registry::Registry>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
-    is_shutdown: std::sync::atomic::AtomicBool,
 }
 
 impl Bpa {
@@ -58,26 +57,20 @@ impl Bpa {
             cla_registry,
             service_registry,
             dispatcher,
-            is_shutdown: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
-        if !self
-            .is_shutdown
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            trace!("Shutting down BPA");
+        trace!("Shutting down BPA");
 
-            self.dispatcher.shutdown().await;
-            self.service_registry.shutdown().await;
-            self.cla_registry.shutdown().await;
-            self.rib.shutdown().await;
-            self.store.shutdown().await;
+        self.dispatcher.shutdown().await;
+        self.service_registry.shutdown().await;
+        self.cla_registry.shutdown().await;
+        self.rib.shutdown().await;
+        self.store.shutdown().await;
 
-            trace!("BPA stopped");
-        }
+        trace!("BPA stopped");
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
@@ -124,17 +117,5 @@ impl Bpa {
         priority: u32,
     ) -> bool {
         self.rib.remove(pattern, source, action, priority).await
-    }
-}
-
-impl Drop for Bpa {
-    fn drop(&mut self) {
-        if !self
-            .is_shutdown
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            // If you get a tokio runtime panic here, then you need to call bpa.shutdown() or drop(bpa) earlier!
-            tokio::runtime::Handle::current().block_on(self.shutdown());
-        }
     }
 }
