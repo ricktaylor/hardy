@@ -6,6 +6,12 @@ use super::*;
 pub struct Config {
     pub status_reports: bool,
 
+    #[cfg_attr(feature = "serde", serde(default = "default_poll_channel_depth"))]
+    pub poll_channel_depth: usize,
+
+    #[cfg_attr(feature = "serde", serde(default, rename = "storage"))]
+    pub storage_config: storage::Config,
+
     #[cfg_attr(feature = "serde", serde(skip))]
     pub metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
 
@@ -14,6 +20,11 @@ pub struct Config {
 
     pub node_ids: node_ids::NodeIds,
     pub ipn_2_element: Vec<hardy_eid_pattern::EidPattern>,
+}
+
+#[cfg(feature = "serde")]
+fn default_poll_channel_depth() -> usize {
+    16
 }
 
 impl std::fmt::Debug for Config {

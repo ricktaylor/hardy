@@ -25,6 +25,7 @@ pub struct Dispatcher {
     // Config options
     status_reports: bool,
     node_ids: node_ids::NodeIds,
+    poll_channel_depth: usize,
 }
 
 impl Dispatcher {
@@ -54,6 +55,7 @@ impl Dispatcher {
             //keys: keys.unwrap_or(Box<NoKeys>::new()),
             status_reports: config.status_reports,
             node_ids: config.node_ids.clone(),
+            poll_channel_depth: config.poll_channel_depth,
         }
     }
 

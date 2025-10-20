@@ -1,7 +1,5 @@
 use super::*;
 
-const REAPER_CACHE_SIZE: usize = 64;
-
 // CacheEntry stores the expiry and ID for the heap.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CacheEntry {
@@ -47,7 +45,7 @@ impl Store {
                 .trace_expect("Failed to acquire lock");
             let old_expiry = cache.first().map(|e| e.expiry);
 
-            if !cap || cache.len() < REAPER_CACHE_SIZE {
+            if !cap || cache.len() < self.reaper_cache_size {
                 // Case 1: Cache is not full, just insert.
                 if !cache.insert(new_entry) {
                     // Just in case we have duplicates
@@ -180,7 +178,7 @@ impl Store {
         let outer_cancel_token = self.cancel_token.child_token();
         let cancel_token = outer_cancel_token.clone();
         let reaper = self.clone();
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(REAPER_CACHE_SIZE);
+        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.reaper_cache_size);
         let task = async move {
             loop {
                 tokio::select! {
@@ -210,7 +208,7 @@ impl Store {
 
         if self
             .metadata_storage
-            .poll_expiry(tx, REAPER_CACHE_SIZE)
+            .poll_expiry(tx, self.reaper_cache_size)
             .await
             .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"))
             .is_err()

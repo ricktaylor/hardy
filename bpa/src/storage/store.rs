@@ -1,9 +1,5 @@
 use super::*;
 
-// TODO: Make these config options
-const LRU_CAPACITY: usize = 1024;
-const MAX_CACHED_BUNDLE_SIZE: usize = 16 * 1024;
-
 pub(crate) enum RestartResult {
     Missing,
     Duplicate,
@@ -28,9 +24,13 @@ impl Store {
                 .as_ref()
                 .map(|s| s.clone())
                 .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
-            bundle_cache: Mutex::new(LruCache::new(std::num::NonZero::new(LRU_CAPACITY).unwrap())),
+            bundle_cache: Mutex::new(LruCache::new(
+                std::num::NonZero::new(config.storage_config.lru_capacity).unwrap(),
+            )),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(tokio::sync::Notify::new()),
+            max_cached_bundle_size: config.storage_config.max_cached_bundle_size,
+            reaper_cache_size: config.poll_channel_depth,
         }
     }
 
@@ -269,7 +269,7 @@ impl Store {
             .await
             .trace_expect("Failed to save bundle data");
 
-        if data.len() < MAX_CACHED_BUNDLE_SIZE {
+        if data.len() < self.max_cached_bundle_size {
             self.bundle_cache
                 .lock()
                 .trace_expect("LRU cache lock error")

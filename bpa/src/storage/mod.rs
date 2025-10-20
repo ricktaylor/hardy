@@ -15,6 +15,21 @@ pub(crate) mod store;
 
 mod reaper;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Config {
+    pub lru_capacity: usize,
+    pub max_cached_bundle_size: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            lru_capacity: 1024,
+            max_cached_bundle_size: 16 * 1024,
+        }
+    }
+}
+
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<Option<bundle::Bundle>>;
@@ -75,4 +90,8 @@ pub(crate) struct Store {
     bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
     reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
     reaper_wakeup: Arc<tokio::sync::Notify>,
+
+    // Config
+    max_cached_bundle_size: usize,
+    reaper_cache_size: usize,
 }
