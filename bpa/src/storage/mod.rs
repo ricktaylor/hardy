@@ -11,6 +11,7 @@ pub mod bundle_mem;
 pub mod metadata_mem;
 
 pub(crate) mod channel;
+pub(crate) mod recover;
 pub(crate) mod store;
 
 mod reaper;
