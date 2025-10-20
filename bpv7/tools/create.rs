@@ -47,18 +47,35 @@ pub struct Command {
 
 pub fn exec(args: Command) -> ExitCode {
     let input: &mut dyn BufRead = if let Some(input) = args.payload {
-        &mut std::io::BufReader::new(std::fs::File::open(input).expect("Failed to open input file"))
+        &mut std::io::BufReader::new({
+            match std::fs::File::open(input) {
+                Err(e) => {
+                    eprintln!("Failed to open input file: {e}");
+                    return ExitCode::FAILURE;
+                }
+                Ok(f) => f,
+            }
+        })
     } else {
         &mut std::io::BufReader::new(std::io::stdin())
     };
 
     let mut payload = Vec::new();
-    input
-        .read_to_end(&mut payload)
-        .expect("Failed to read from input");
+    if let Err(e) = input.read_to_end(&mut payload) {
+        eprintln!("Failed to read from input: {e}");
+        return ExitCode::FAILURE;
+    }
 
     let output: &mut dyn Write = if let Some(output) = args.output {
-        &mut BufWriter::new(std::fs::File::create(output).expect("Failed to create output file"))
+        &mut BufWriter::new({
+            match std::fs::File::create(output) {
+                Err(e) => {
+                    eprintln!("Failed to open output file: {e}");
+                    return ExitCode::FAILURE;
+                }
+                Ok(f) => f,
+            }
+        })
     } else {
         &mut BufWriter::new(std::io::stdout())
     };
@@ -77,19 +94,20 @@ pub fn exec(args: Command) -> ExitCode {
         builder = builder.with_lifetime(lifetime.into());
     }
 
-    output
-        .write_all(
-            &builder
-                .add_extension_block(hardy_bpv7::block::Type::Payload)
-                .with_flags(hardy_bpv7::block::Flags {
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .build(&payload)
-                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-                .1,
-        )
-        .expect("Failed to write bundle");
-
-    ExitCode::SUCCESS
+    if let Err(e) = output.write_all(
+        &builder
+            .add_extension_block(hardy_bpv7::block::Type::Payload)
+            .with_flags(hardy_bpv7::block::Flags {
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
+            .build(&payload)
+            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .1,
+    ) {
+        eprintln!("Failed to write to output: {e}");
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
