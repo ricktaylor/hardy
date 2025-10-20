@@ -162,6 +162,7 @@ impl std::fmt::Display for IpnInterval {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IpnInterval::Number(n) => write!(f, "{n}"),
+            IpnInterval::Range(r) if r.end() == &u32::MAX => write!(f, "{}+", r.start()),
             IpnInterval::Range(r) => write!(f, "{}-{}", r.start(), r.end()),
         }
     }
