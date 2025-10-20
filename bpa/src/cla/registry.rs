@@ -99,6 +99,7 @@ pub struct Registry {
     rib: Arc<rib::Rib>,
     store: Arc<storage::Store>,
     peers: peers::PeerTable,
+    poll_channel_depth: usize,
 }
 
 impl Registry {
@@ -109,6 +110,7 @@ impl Registry {
             rib,
             store,
             peers: peers::PeerTable::new(),
+            poll_channel_depth: config.poll_channel_depth,
         }
     }
 
@@ -261,8 +263,15 @@ impl Registry {
         );
 
         // Start the peer polling the queue
-        peer.start(cla, peer_id, cla_addr, self.store.clone(), dispatcher)
-            .await;
+        peer.start(
+            self.poll_channel_depth,
+            cla,
+            peer_id,
+            cla_addr,
+            self.store.clone(),
+            dispatcher,
+        )
+        .await;
 
         // Add to the RIB
         self.rib.add_forward(eid, peer_id).await;

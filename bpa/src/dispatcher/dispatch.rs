@@ -234,11 +234,8 @@ impl Dispatcher {
     }
 
     pub async fn poll_waiting(self: &Arc<Self>, cancel_token: tokio_util::sync::CancellationToken) {
-        // Tuning parameter
-        const CHANNEL_DEPTH: usize = 16;
-
         let dispatcher = self.clone();
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(CHANNEL_DEPTH);
+        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
         let task = async move {
             // We're going to spawn a bunch of tasks
             let parallelism = std::thread::available_parallelism()

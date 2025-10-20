@@ -21,12 +21,26 @@
 # Whether this node should generate and dispatch bundle status reports.
 #status_reports = false
 
+# The depth of the channel used for polling for new bundles.
+#poll_channel_depth = 16
+
+
 # A list of EID patterns that require a 2-element IPN encoding scheme
 # for compatibility with older or constrained nodes.
 #ipn_2_element = [
 #    "ipn:1.[7-10].*",
 #    "ipn:*.[1-100].3",
 #]
+
+# Configuration for the BPA's internal bundle caching and storage management.
+[bpa.storage]
+# The maximum number of bundles to hold in the in-memory LRU cache.
+# This cache speeds up access to frequently used bundles.
+#lru_capacity = 1024
+
+# The maximum size (in bytes) of a bundle that can be stored in the LRU cache.
+# Bundles larger than this will not be cached in memory.
+#max_cached_bundle_size = 16384
 
 # Configuration for the metadata storage backend.
 # This section is optional. If not provided, an in-memory store is used.

@@ -21,6 +21,7 @@ impl Peer {
 
     pub async fn start(
         &self,
+        poll_channel_depth: usize,
         cla: Arc<Cla>,
         peer: u32,
         cla_addr: ClaAddress,
@@ -41,13 +42,25 @@ impl Peer {
         let mut queues = HashMap::new();
         queues.insert(
             None,
-            Self::start_queue_poller(controller.clone(), store.clone(), peer, None),
+            Self::start_queue_poller(
+                poll_channel_depth,
+                controller.clone(),
+                store.clone(),
+                peer,
+                None,
+            ),
         );
 
         for q in 0..cla.policy.queue_count() {
             queues.insert(
                 Some(q),
-                Self::start_queue_poller(controller.clone(), store.clone(), peer, Some(q)),
+                Self::start_queue_poller(
+                    poll_channel_depth,
+                    controller.clone(),
+                    store.clone(),
+                    peer,
+                    Some(q),
+                ),
             );
         }
 
@@ -55,12 +68,16 @@ impl Peer {
     }
 
     fn start_queue_poller(
+        poll_channel_depth: usize,
         controller: Arc<dyn policy::EgressController>,
         store: Arc<storage::Store>,
         peer: u32,
         queue: Option<u32>,
     ) -> storage::channel::Sender {
-        let (tx, rx) = store.channel(metadata::BundleStatus::ForwardPending { peer, queue }, 16);
+        let (tx, rx) = store.channel(
+            metadata::BundleStatus::ForwardPending { peer, queue },
+            poll_channel_depth,
+        );
 
         let task = async move {
             Self::poll_queue(controller, queue, rx).await;
