@@ -7,7 +7,7 @@ mod grpc;
 // This is the generic Error type used almost everywhere
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-use std::sync::Arc;
+use std::{process::ExitCode, sync::Arc};
 use trace_err::*;
 use tracing::{error, info, trace, warn};
 
@@ -104,10 +104,10 @@ fn start_logging(config: &config::Config, config_source: String) {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     // Parse command line
     let Some((mut config, config_source)) = config::init() else {
-        return;
+        return ExitCode::SUCCESS;
     };
 
     // Start logging
@@ -135,7 +135,9 @@ async fn main() {
 
     // Load static routes
     if let Some(config) = config.static_routes {
-        static_routes::init(config, &bpa, &cancel_token, &task_tracker).await;
+        if !static_routes::init(config, &bpa, &cancel_token, &task_tracker).await {
+            return ExitCode::FAILURE;
+        }
     }
 
     // And wait for shutdown signal
@@ -146,11 +148,13 @@ async fn main() {
     // And wait for cancel token
     cancel_token.cancelled().await;
 
-    // Shut down bpa
-    bpa.shutdown().await;
-
     // Wait for all tasks to finish
     task_tracker.wait().await;
 
+    // Shut down bpa
+    bpa.shutdown().await;
+
     info!("Stopped");
+
+    ExitCode::SUCCESS
 }

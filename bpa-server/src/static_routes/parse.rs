@@ -2,7 +2,7 @@ use super::*;
 use winnow::{
     ModalResult, Parser,
     ascii::{Caseless, dec_uint, line_ending, space0, space1, till_line_ending},
-    combinator::{alt, fail, opt, preceded, separated, terminated},
+    combinator::{alt, cut_err, eof, opt, preceded, separated, terminated, trace},
     stream::AsChar,
     token::{rest, take_till},
 };
@@ -29,7 +29,7 @@ fn parse_via(input: &mut &[u8]) -> ModalResult<Action> {
     .parse_next(input)
 }
 
-fn parse_store(input: &mut &[u8]) -> ModalResult<Action> {
+fn parse_reflect(input: &mut &[u8]) -> ModalResult<Action> {
     Caseless("reflect")
         .map(|_| Action::Reflect)
         .parse_next(input)
@@ -37,7 +37,7 @@ fn parse_store(input: &mut &[u8]) -> ModalResult<Action> {
 
 fn parse_action(input: &mut &[u8]) -> ModalResult<StaticRoute> {
     (
-        alt((parse_drop, parse_via, parse_store, fail)),
+        alt((parse_drop, parse_via, parse_reflect)),
         opt(preceded(space1, parse_priority)),
     )
         .map(|(action, priority)| StaticRoute { priority, action })
@@ -51,14 +51,18 @@ fn parse_pattern(input: &mut &[u8]) -> ModalResult<eid_pattern::EidPattern> {
 }
 
 fn parse_route(input: &mut &[u8]) -> ModalResult<(eid_pattern::EidPattern, StaticRoute)> {
-    (parse_pattern, preceded(space1, parse_action)).parse_next(input)
+    cut_err((parse_pattern, preceded(space1, parse_action))).parse_next(input)
 }
 
 fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(eid_pattern::EidPattern, StaticRoute)>> {
-    alt((
-        preceded(space0, opt(terminated(parse_route, space0))),
-        ('#', rest).map(|_| None),
-    ))
+    preceded(
+        space0,
+        alt((
+            eof.map(|_| None),
+            ('#', rest).map(|_| None),
+            terminated(parse_route, space0).map(Some),
+        )),
+    )
     .parse_next(input)
 }
 
@@ -91,17 +95,21 @@ pub async fn load_routes(
             );
             Ok(Vec::new())
         }
-        r => match parse_routes.parse(r?.as_ref()) {
-            Err(e) if ignore_errors => {
-                error!(
-                    "Failed to parse static routes file '{}': {e}",
-                    routes_file.to_string_lossy()
-                );
-                Ok(Vec::new())
+        r => {
+            let input = r?;
+            // Using the `trace` combinator for powerful debugging
+            match trace("parse_routes", parse_routes).parse(input.as_ref()) {
+                Err(e) if ignore_errors => {
+                    error!(
+                        "Failed to parse static routes file '{}': {e}",
+                        routes_file.to_string_lossy()
+                    );
+                    Ok(Vec::new())
+                }
+                Err(e) => Err(anyhow::format_err!("{e}").into()),
+                Ok(v) => Ok(v),
             }
-            Err(e) => Err(anyhow::format_err!("{e}").into()),
-            Ok(v) => Ok(v),
-        },
+        }
     }
 }
 
@@ -113,26 +121,53 @@ mod test {
     fn test() {
         parse_routes
             .parse(b"ipn:*.*.* via ipn:0.1.0")
-            .expect("Failed");
+            .expect("Should parse a simple valid route");
 
         parse_routes
-            .parse(b"dtn://**/** store until 2025-01-02T11:12:13Z priority 1200")
-            .expect("Failed");
-
-        parse_routes.parse(b"#").expect("Failed");
-        parse_routes.parse(b"#\n").expect("Failed");
-        parse_routes.parse(b"#      ").expect("Failed");
-        parse_routes.parse(b"#      \n").expect("Failed");
-
-        parse_routes.parse(b"").expect("Failed");
-        parse_routes.parse(b"\n").expect("Failed");
-        parse_routes.parse(b"      ").expect("Failed");
-        parse_routes.parse(b"      \n").expect("Failed");
-
-        parse_routes.parse(b"   \n   \n   ").expect("Failed");
+            .parse(b"dtn://**/** reflect priority 1200")
+            .expect("Should parse a route with action and priority");
 
         parse_routes
-            .parse(b"ipn:*.*.* via ipn:0.1.0\ndtn://**/** store 2025-01-02T11:12:13Z priority 1200")
-            .expect("Failed");
+            .parse(b"Broken")
+            .expect_err("Parsing 'Broken' should have failed");
+        parse_routes
+            .parse(b"ipn:*.*.* Broken")
+            .expect_err("Parsing 'ipn:*.*.* Broken' should have failed");
+        parse_routes
+            .parse(b"ipn:*.*.* via Broken")
+            .expect_err("Parsing 'ipn:*.*.* via Broken' should have failed");
+
+        parse_routes
+            .parse(b"#")
+            .expect("Should parse a comment-only line");
+        parse_routes
+            .parse(b"#\n")
+            .expect("Should parse a comment with a newline");
+        parse_routes
+            .parse(b"#      ")
+            .expect("Should parse a comment with trailing spaces");
+        parse_routes
+            .parse(b"#      \n")
+            .expect("Should parse a comment with trailing spaces and a newline");
+
+        parse_routes
+            .parse(b"")
+            .expect("Should parse an empty string");
+        parse_routes
+            .parse(b"\n")
+            .expect("Should parse a newline character");
+        parse_routes
+            .parse(b"      ")
+            .expect("Should parse a line with only spaces");
+        parse_routes
+            .parse(b"      \n")
+            .expect("Should parse a line with only spaces and a newline");
+        parse_routes
+            .parse(b"   \n   \n   ")
+            .expect("Should parse multiple blank/whitespace lines");
+
+        parse_routes
+            .parse(b"ipn:*.*.* via ipn:0.1.0\ndtn://**/** reflect priority 1200")
+            .expect("Should parse multiple valid route lines");
     }
 }
