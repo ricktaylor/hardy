@@ -1,0 +1,102 @@
+# Top-level configuration for the hardy-bpa-server.
+
+# The logging level for the application.
+# Can be one of: trace, debug, info, warn, error
+# log_level: "info"
+
+# Configuration for the gRPC management interface. This section is optional.
+grpc:
+  # The local IP address and port to listen on for gRPC requests.
+  # If not specified, the gRPC server will not be started.
+  grpc_address: "[::1]:50051"
+
+# Core Bundle Protocol Agent (BPA) configuration.
+bpa:
+  # The Endpoint IDs (EIDs) that identify this node.
+  # This can be a single string or a list of strings.
+  # If not provided, a random IPN-formatted node ID will be generated.
+  # node_ids: "ipn:1.0"
+  # node_ids: ["ipn:1.0", "dtn://my-node/"]
+
+  # Whether this node should generate and dispatch bundle status reports.
+  # status_reports: false
+
+  # A list of EID patterns that require a 2-element IPN encoding scheme
+  # for compatibility with older or constrained nodes.
+  ipn_2_element:
+    # - "ipn:1.[7-10].*"
+    # - "ipn:*.[1-100].3"
+
+# Configuration for the metadata storage backend.
+# This section is optional. If not provided, an in-memory store is used.
+metadata_storage:
+  # Specifies the type of storage engine to use for bundle metadata.
+  # Supported types depend on compiled features.
+  type: "sqlite" # or "memory"
+
+  # Configuration specific to the chosen storage type.
+  config:
+    # --- SQLite Configuration (`type: "sqlite"`) ---
+    # The directory where the SQLite database file will be stored.
+    # db_dir: "/var/lib/hardy-bpa-server/db" # Default varies by OS
+    # The name of the SQLite database file.
+    # db_name: "metadata.db"
+
+# Configuration for the bundle data storage backend.
+# This section is optional. If not provided, an in-memory store is used.
+bundle_storage:
+  # Specifies the type of storage engine to use for bundle data.
+  # Supported types depend on compiled features.
+  type: "localdisk" # or "memory"
+
+  # Configuration specific to the chosen storage type.
+  config:
+    # --- Local Disk Configuration (`type: "localdisk"`) ---
+    # The root directory where bundle files will be stored.
+    # store_dir: "/var/spool/hardy-bpa-server/bundles" # Default varies by OS
+
+# Configuration for the static routing module. This section is optional.
+static_routes:
+  # The path to the file containing static route definitions.
+  routes_file: "/etc/hardy-bpa-server/static_routes.yaml"
+  # Whether to monitor the routes file for changes and automatically reload it.
+  # watch: true
+
+# A list of Convergence Layer Adapters (CLAs) to enable.
+# Each item in the list defines a CLA instance.
+clas:
+  - # A user-defined name for this CLA instance. Used for logging and identification.
+    name: "tcp-cla-1"
+
+    # Specifies the type of CLA to configure.
+    type: "tcpclv4"
+
+    # Configuration specific to the chosen CLA type.
+    config:
+      # --- TCPCLv4 Configuration (`type: "tcpclv4"`) ---
+      # The local IP address and port for the CLA to listen on for incoming connections.
+      # address: "[::]:4556"
+
+      # The Maximum Receive Unit (MRU) for a single TCP segment payload, in bytes.
+      # This defines the largest single block of data that can be received in one go.
+      # segment_mru: 16384
+
+      # The MRU for a total bundle transfer, in bytes. This is the largest
+      # bundle that can be received over this CLA.
+      # transfer_mru: 562949953421312 # (2^49)
+
+      # The maximum number of idle incoming connections to keep open per remote IP address.
+      # max_idle_connections: 6
+
+      # --- Default Session Parameters for TCPCLv4 ---
+      # These settings apply to all sessions unless overridden by a specific peer configuration.
+
+      # The time in seconds to wait for a CONTACT header from a connecting peer.
+      # contact_timeout: 15
+
+      # The interval in seconds for sending keepalive signals on an idle connection.
+      # A value of `null` or `0` disables keepalives.
+      # keepalive_interval: 60
+
+      # Whether to use TLS for encrypting the connection.
+      # use_tls: true
