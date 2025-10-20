@@ -13,6 +13,9 @@ mod str_tests;
 #[cfg(test)]
 mod cbor_tests;
 
+#[cfg(test)]
+mod roundtrip_tests;
+
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
