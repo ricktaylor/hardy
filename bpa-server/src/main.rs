@@ -134,10 +134,10 @@ async fn main() -> ExitCode {
     }
 
     // Load static routes
-    if let Some(config) = config.static_routes {
-        if !static_routes::init(config, &bpa, &cancel_token, &task_tracker).await {
-            return ExitCode::FAILURE;
-        }
+    if let Some(config) = config.static_routes
+        && !static_routes::init(config, &bpa, &cancel_token, &task_tracker).await
+    {
+        return ExitCode::FAILURE;
     }
 
     // And wait for shutdown signal
