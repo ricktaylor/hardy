@@ -1,5 +1,5 @@
 use super::*;
-use storage::store::RestartResult;
+use storage::recover::RestartResult;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
