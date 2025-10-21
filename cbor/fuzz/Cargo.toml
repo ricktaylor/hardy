@@ -15,10 +15,11 @@ hardy-cbor = { path = ".." }
 name = "decode"
 path = "fuzz_targets/decode.rs"
 test = false
-doc = false
 bench = false
+doc = false
 
 [lib]
 name = "test"
 path = "test.rs"
 test = true
+doc = false

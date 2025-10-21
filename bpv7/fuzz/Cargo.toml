@@ -19,21 +19,25 @@ base64 = "0.22.1"
 name = "common"
 path = "src/lib.rs"
 test = true
+doc = false
 
 [[bin]]
 name = "eid_str"
 path = "fuzz_targets/eid_str.rs"
 test = false
 bench = false
+doc = false
 
 [[bin]]
 name = "eid_cbor"
 path = "fuzz_targets/eid_cbor.rs"
 test = false
 bench = false
+doc = false
 
 [[bin]]
 name = "bundle"
 path = "fuzz_targets/bundle.rs"
 test = false
 bench = false
+doc = false
