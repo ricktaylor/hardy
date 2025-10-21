@@ -44,7 +44,7 @@ pub struct FragmentInfo {
     /// The offset of this fragment's payload within the original bundle's payload.
     pub offset: u64,
     /// The total length of the original bundle's payload.
-    pub total_len: u64,
+    pub total_adu_length: u64,
 }
 
 /// Contains the [`Id`] struct for uniquely identifying a bundle and related helpers.
@@ -123,7 +123,7 @@ impl Id {
                     fragment_info: if array.count() == Some(4) {
                         Some(FragmentInfo {
                             offset: array.parse().map_field_id_err("fragment offset")?,
-                            total_len: array
+                            total_adu_length: array
                                 .parse()
                                 .map_field_id_err("total application data unit Length")?,
                         })
@@ -151,7 +151,7 @@ impl Id {
                     &self.source,
                     &self.timestamp,
                     fragment_info.offset,
-                    fragment_info.total_len,
+                    fragment_info.total_adu_length,
                 ))
             } else {
                 hardy_cbor::encode::emit(&(&self.source, &self.timestamp))

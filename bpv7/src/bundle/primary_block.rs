@@ -118,12 +118,15 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                 Ok(None)
             } else {
                 match (block.parse(), block.parse()) {
-                    (Ok((offset, s1)), Ok((total_len, s2))) => {
-                        if offset >= total_len {
-                            Err(Error::InvalidFragmentInfo(offset, total_len))
+                    (Ok((offset, s1)), Ok((total_adu_length, s2))) => {
+                        if offset >= total_adu_length {
+                            Err(Error::InvalidFragmentInfo(offset, total_adu_length))
                         } else {
                             shortest = shortest && s1 && s2;
-                            Ok(Some(bundle::FragmentInfo { offset, total_len }))
+                            Ok(Some(bundle::FragmentInfo {
+                                offset,
+                                total_adu_length,
+                            }))
                         }
                     }
                     (Err(e), _) | (_, Err(e)) => Err(e.into()),
@@ -282,7 +285,7 @@ impl PrimaryBlock {
                     // Fragment info
                     if let Some(fragment_info) = &bundle.id.fragment_info {
                         a.emit(&fragment_info.offset);
-                        a.emit(&fragment_info.total_len);
+                        a.emit(&fragment_info.total_adu_length);
                     }
 
                     // CRC
