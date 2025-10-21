@@ -265,7 +265,7 @@ impl hardy_cbor::encode::ToCbor for BundleStatusReport {
                 if let Some(fragment_info) = &self.bundle_id.fragment_info {
                     // Add fragment info
                     a.emit(&fragment_info.offset);
-                    a.emit(&fragment_info.total_len);
+                    a.emit(&fragment_info.total_adu_length);
                 }
             },
         )
@@ -329,7 +329,7 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
             if let Some(offset) = a.try_parse().map_field_err("fragment offset")? {
                 report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
                     offset,
-                    total_len: a.parse().map_field_err("fragment length")?,
+                    total_adu_length: a.parse().map_field_err("fragment total ADU length")?,
                 });
             }
             Ok((report, shortest))
