@@ -122,53 +122,128 @@ impl Dispatcher {
         )
         .await;
 
-        // Check the bundle further
-        self.process_bundle(bundle, reason).await;
-
-        Ok(())
-    }
-
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    pub async fn process_bundle(
-        self: &Arc<Self>,
-        bundle: bundle::Bundle,
-        mut reason: Option<ReasonCode>,
-    ) {
-        /* Always check bundles, no matter the state, as after restarting
-         * the configured filters or code may have changed, and reprocessing is desired.
-         */
-
-        if let Some(u) = bundle.bundle.flags.unrecognised {
-            trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
-        }
-
-        if reason.is_none() {
-            // Check some basic semantic validity, lifetime first
-            if bundle.has_expired() {
-                trace!("Bundle lifetime has expired");
-                reason = Some(ReasonCode::LifetimeExpired);
-            } else if let Some(hop_info) = bundle.bundle.hop_count.as_ref() {
-                // Check hop count exceeded
-                if hop_info.count >= hop_info.limit {
-                    trace!("Bundle hop-limit {} exceeded", hop_info.limit);
-                    reason = Some(ReasonCode::HopLimitExceeded);
-                }
-            }
-        }
-
         if reason.is_some() {
             // Not valid, drop it
-            return self.drop_bundle(bundle, reason).await;
+            self.drop_bundle(bundle, reason).await;
+        } else {
+            // Now process the bundle
+            self.dispatch_bundle(bundle).await;
         }
-
-        // Now process the bundle
-        self.dispatch_bundle(bundle).await
+        Ok(())
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn dispatch_bundle(self: &Arc<Self>, mut bundle: bundle::Bundle) {
+        if let Some(u) = bundle.bundle.flags.unrecognised {
+            trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
+        }
+
+        // We loop here because of reassembly
+        loop {
+            // Check some basic semantic validity, lifetime first
+            if bundle.has_expired() {
+                trace!("Bundle lifetime has expired");
+                return self
+                    .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
+                    .await;
+            }
+
+            // Check hop count exceeded
+            if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
+                && hop_info.count >= hop_info.limit
+            {
+                trace!("Bundle hop-limit {} exceeded", hop_info.limit);
+                return self
+                    .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
+                    .await;
+            }
+
+            // TODO: Pluggable ingress filters!
+
+            // Check for reassembly
+            if bundle.bundle.id.fragment_info.is_some() {
+                let reassemble = false;
+
+                // TODO: Pluggable reassembly filters
+
+                if reassemble
+                    || match &bundle.bundle.id.source {
+                        Eid::LocalNode { .. } => true,
+                        Eid::LegacyIpn {
+                            allocator_id,
+                            node_number,
+                            ..
+                        }
+                        | Eid::Ipn {
+                            allocator_id,
+                            node_number,
+                            ..
+                        } => {
+                            if let Some((a, n)) = &self.node_ids.ipn {
+                                a == allocator_id && n == node_number
+                            } else {
+                                false
+                            }
+                        }
+                        Eid::Dtn { node_name, .. } => {
+                            if let Some(n) = &self.node_ids.dtn {
+                                node_name == n
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    }
+                {
+                    let Some((mut new_bundle, data)) = self.store.adu_reassemble(bundle).await
+                    else {
+                        // Nothing more to do, the store has done the work
+                        return;
+                    };
+
+                    // Reparse the reconstituted bundle, for sanity
+                    match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_store()) {
+                        Ok(hardy_bpv7::bundle::ValidBundle::Valid(..)) => {}
+                        Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
+                            bundle,
+                            data,
+                            _,
+                            non_canonical,
+                        )) => {
+                            trace!("Reassembled bundle has been rewritten");
+
+                            // Update the metadata
+                            new_bundle.metadata.non_canonical = non_canonical;
+                            let old_storage_name = new_bundle
+                                .metadata
+                                .storage_name
+                                .replace(self.store.save_data(data.into()).await)
+                                .unwrap();
+                            new_bundle.bundle = bundle;
+                            self.store.update_metadata(&new_bundle).await;
+
+                            // And drop the original bundle data
+                            self.store.delete_data(&old_storage_name).await;
+                        }
+                        Ok(hardy_bpv7::bundle::ValidBundle::Invalid(_, _, e)) | Err(e) => {
+                            // Reconstituted bundle is garbage
+                            trace!("Reassembled bundle is invalid: {e}");
+                            return self.delete_bundle(new_bundle).await;
+                        }
+                    }
+
+                    // Dispatch the reassembled bundle
+                    bundle = new_bundle;
+                    continue;
+                }
+            }
+
+            // By the time we get here, we've reassembled or the bundle isn't an ADU fragment
+            break;
+        }
+
         // Now process the bundle
-        match self.dispatch_bundle_inner(&mut bundle).await {
+        match self.process_bundle(&mut bundle).await {
             DispatchResult::Gone => {}
             DispatchResult::Drop(reason_code) => self.drop_bundle(bundle, reason_code).await,
             DispatchResult::Forward(peer) => {
@@ -185,12 +260,10 @@ impl Dispatcher {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub(super) async fn dispatch_bundle_inner(
+    pub(super) async fn process_bundle(
         self: &Arc<Self>,
         bundle: &mut bundle::Bundle,
     ) -> DispatchResult {
-        // TODO: Pluggable Egress filters!
-
         // Perform RIB lookup
         match self.rib.find(bundle).await {
             Some(rib::FindResult::Drop(reason)) => {
@@ -198,26 +271,19 @@ impl Dispatcher {
                 DispatchResult::Drop(reason)
             }
             Some(rib::FindResult::AdminEndpoint) => {
-                if bundle.bundle.id.fragment_info.is_some() {
-                    self.reassemble(bundle).await
-                } else {
-                    // The bundle is for the Administrative Endpoint
-                    self.administrative_bundle(bundle).await
-                }
+                // The bundle is for the Administrative Endpoint
+                self.administrative_bundle(bundle).await
             }
             Some(rib::FindResult::Deliver(Some(service))) => {
-                if bundle.bundle.id.fragment_info.is_some() {
-                    self.reassemble(bundle).await
-                } else {
-                    // Bundle is for a local service
-                    self.deliver_bundle(service, bundle)
-                        .await
-                        .trace_expect("Failed to deliver bundle")
-                }
+                // TODO:  This needs to move to a storage::channel
+
+                // Bundle is for a local service
+                self.deliver_bundle(service, bundle)
+                    .await
+                    .trace_expect("Failed to deliver bundle")
             }
             Some(rib::FindResult::Forward(peer)) => {
                 trace!("Queuing bundle for forwarding to CLA peer {peer}");
-
                 DispatchResult::Forward(peer)
             }
             _ => {
@@ -256,7 +322,7 @@ impl Dispatcher {
                             let dispatcher = dispatcher.clone();
                             task_set.spawn(async move {
                                 // Now process the bundle
-                                match dispatcher.dispatch_bundle_inner(&mut bundle).await {
+                                match dispatcher.process_bundle(&mut bundle).await {
                                     DispatchResult::Drop(reason_code) => {
                                         dispatcher.drop_bundle(bundle, reason_code).await;
                                     }

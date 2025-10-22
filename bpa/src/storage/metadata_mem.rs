@@ -159,6 +159,34 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    async fn poll_adu_fragments(
+        &self,
+        tx: storage::Sender<bundle::Bundle>,
+        status: &metadata::BundleStatus,
+    ) -> storage::Result<()> {
+        let mut entries = BTreeMap::new();
+        for (_, v) in self
+            .entries
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .iter()
+        {
+            if let Some(v) = v
+                && &v.metadata.status == status
+                && let Some(fi) = &v.bundle.id.fragment_info
+            {
+                entries.insert(fi.offset, v.clone());
+            }
+        }
+
+        for (_, e) in entries {
+            if tx.send_async(e).await.is_err() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     async fn poll_pending(
         &self,
         tx: storage::Sender<bundle::Bundle>,

@@ -60,7 +60,10 @@ impl Dispatcher {
                     )
                     .await;
 
-                    self.process_bundle(bundle, None).await;
+                    // Dispatch the 'new' bundle
+                    self.dispatch_bundle(bundle).await;
+
+                    // Report the bundle as an orphan
                     RestartResult::Orphan
                 }
             }
@@ -132,8 +135,10 @@ impl Dispatcher {
                     self.store.update_metadata(&bundle).await;
                 }
 
+                // Dispatch the 'new' bundle
+                self.dispatch_bundle(bundle).await;
+
                 // Report the bundle as an orphan
-                self.process_bundle(bundle, None).await;
                 RestartResult::Orphan
             }
             Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
@@ -188,8 +193,10 @@ impl Dispatcher {
                     self.store.update_metadata(&bundle).await;
                 }
 
-                // Process the 'new' bundle
-                self.process_bundle(bundle, Some(reason)).await;
+                // Drop the 'new' bundle
+                self.drop_bundle(bundle, Some(reason)).await;
+
+                // Report the bundle as an orphan
                 RestartResult::Orphan
             }
             Err(e) => {
