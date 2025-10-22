@@ -46,6 +46,8 @@ impl<'a> Editor<'a> {
     }
 
     pub fn replace_block(self, block_type: block::Type) -> BlockBuilder<'a> {
+        // TODO:  This is a pretty bad API
+
         if let block::Type::Primary = block_type {
             panic!("Don't replace primary block!");
         }

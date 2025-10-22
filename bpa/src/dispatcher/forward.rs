@@ -12,12 +12,6 @@ impl Dispatcher {
     ) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
-            warn!("At forward_bundle!");
-
-            if bundle.has_expired() {
-                warn!("Because it expired!");
-            }
-
             // Bundle data was deleted sometime during processing
             return;
         };

@@ -111,8 +111,6 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
     ) -> Result<dispatch::DispatchResult, Error> {
         let Some(data) = self.load_data(bundle).await else {
-            warn!("At deliver_bundle!");
-
             // Bundle data was deleted sometime during processing
             return Ok(dispatch::DispatchResult::Gone);
         };
