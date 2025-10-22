@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 mod admin;
 mod dispatch;
 mod forward;
-mod fragment;
 mod local;
 mod report;
 mod restart;

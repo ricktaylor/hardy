@@ -9,6 +9,7 @@ CREATE TABLE bundles (
     status_code INTEGER,
     status_param1 INTEGER,
     status_param2 INTEGER,
+    status_param3 TEXT,
     bundle BLOB 
 ) 
 STRICT;

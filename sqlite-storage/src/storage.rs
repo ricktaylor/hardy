@@ -160,14 +160,24 @@ impl Storage {
     }
 }
 
-fn from_status(status: &hardy_bpa::metadata::BundleStatus) -> (i64, Option<u32>, Option<u32>) {
+fn from_status(
+    status: &hardy_bpa::metadata::BundleStatus,
+) -> (i64, Option<u64>, Option<u64>, Option<String>) {
     match status {
-        hardy_bpa::metadata::BundleStatus::Dispatching => (0, None, None),
-        hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None),
+        hardy_bpa::metadata::BundleStatus::Dispatching => (0, None, None, None),
+        hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None, None),
         hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer), *queue)
+            (2, Some(*peer as u64), queue.map(|q| q as u64), None)
         }
-        hardy_bpa::metadata::BundleStatus::LocalPending { service } => (3, Some(*service), None),
+        hardy_bpa::metadata::BundleStatus::LocalPending { service } => {
+            (3, Some(*service as u64), None, None)
+        }
+        hardy_bpa::metadata::BundleStatus::AduFragment { source, timestamp } => (
+            4,
+            Some(timestamp.time().map_or(0, |t| t.millisecs())),
+            Some(timestamp.sequence_number()),
+            Some(source.to_string()),
+        ),
     }
 }
 
@@ -202,15 +212,16 @@ impl storage::MetadataStorage for Storage {
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.received_at;
-        let (status_code, status_param1, status_param2) = from_status(&bundle.metadata.status);
+        let (status_code, status_param1, status_param2, status_param3) =
+            from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
-                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT OR IGNORE INTO bundles (bundle_id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             )?
-            .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2))
+            .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
             .map(|c| c == 1)
             .map_err(Into::into)
         })
@@ -221,16 +232,17 @@ impl storage::MetadataStorage for Storage {
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.received_at;
-        let (status_code, status_param1, status_param2) = from_status(&bundle.metadata.status);
+        let (status_code, status_param1, status_param2, status_param3) =
+            from_status(&bundle.metadata.status);
         let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
         let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
         if self
             .write(move |conn| {
                 // Update bundle
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7 WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7, status_param3 = ?8 WHERE bundle_id = ?1",
                 )?
-                .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2))
+                .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
                 .map_err(Into::into)
             })
             .await?
@@ -247,7 +259,7 @@ impl storage::MetadataStorage for Storage {
         if self
             .write(move |conn| {
                 conn.prepare_cached(
-                    "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL WHERE bundle_id = ?1",
+                    "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE bundle_id = ?1",
                 )?
                 .execute((id,))
                 .map_err(Into::into)
@@ -361,7 +373,7 @@ impl storage::MetadataStorage for Storage {
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
 
                     trans.execute(
-                        &format!("UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL WHERE id IN ({sql})"),
+                        &format!("UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE id IN ({sql})"),
                         rusqlite::params_from_iter(&ids),
                     )?;
 
@@ -388,15 +400,15 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         // Ensure status codes match
-        assert!(
+        debug_assert!(
             from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
         );
-        assert!(
+        debug_assert!(
             from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending {
                 peer,
                 queue: Some(0)
-            }) == (2, Some(peer), Some(0)),
+            }) == (2, Some(peer as u64), Some(0), None),
             "Status code mismatch"
         );
 
@@ -411,13 +423,13 @@ impl storage::MetadataStorage for Storage {
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
     async fn poll_expiry(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
-        assert!(
+        debug_assert!(
             from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 0,
             "Status code mismatch"
         ); // Ensure status codes match
@@ -456,7 +468,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
-        assert!(
+        debug_assert!(
             from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
         ); // Ensure status codes match
@@ -522,24 +534,62 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    async fn poll_pending(
+    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    async fn poll_adu_fragments(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
-        state: &hardy_bpa::metadata::BundleStatus,
-        limit: usize,
+        status: &hardy_bpa::metadata::BundleStatus,
     ) -> storage::Result<()> {
-        let (status, status_param1, status_param2) = from_status(state);
+        let (status, status_param1, status_param2, status_param3) = from_status(status);
 
         let bundles = self
             .read(move |conn| {
                 conn.prepare_cached(
                     "SELECT bundle FROM bundles 
-                        WHERE status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3
-                        ORDER BY received_at ASC
-                        LIMIT ?4",
+                        WHERE status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+                        ORDER BY received_at ASC",
                 )?
-                .query_map((status, status_param1, status_param2, limit), |row| {
+                .query_map((status, status_param1, status_param2,status_param3), |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })?
+                .collect::<Result<Vec<Vec<u8>>, _>>()
+                .map_err(Into::into)
+            })
+            .await?;
+
+        for bundle in bundles {
+            match bincode::decode_from_slice(&bundle, self.bincode_config) {
+                Ok((bundle, _)) => {
+                    if tx.send_async(bundle).await.is_err() {
+                        // The other end is shutting down - get out
+                        break;
+                    }
+                }
+                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    async fn poll_pending(
+        &self,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+        status: &hardy_bpa::metadata::BundleStatus,
+        limit: usize,
+    ) -> storage::Result<()> {
+        let (status, status_param1, status_param2, status_param3) = from_status(status);
+
+        let bundles = self
+            .read(move |conn| {
+                conn.prepare_cached(
+                    "SELECT bundle FROM bundles 
+                        WHERE status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+                        ORDER BY received_at ASC
+                        LIMIT ?5",
+                )?
+                .query_map((status, status_param1, status_param2,status_param3, limit), |row| {
                     row.get::<_, Vec<u8>>(0)
                 })?
                 .collect::<Result<Vec<Vec<u8>>, _>>()

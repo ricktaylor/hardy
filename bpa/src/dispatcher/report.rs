@@ -162,7 +162,7 @@ impl Dispatcher {
             // Dispatch the new bundle
             let dispatcher = self.clone();
             let task = async move {
-                match dispatcher.dispatch_bundle_inner(&mut bundle).await {
+                match dispatcher.process_bundle(&mut bundle).await {
                     dispatch::DispatchResult::Gone => {}
                     dispatch::DispatchResult::Forward(peer) => {
                         dispatcher.cla_registry.forward(peer, bundle).await;

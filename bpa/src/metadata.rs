@@ -1,12 +1,22 @@
 use super::*;
+use hardy_bpv7::{creation_timestamp::CreationTimestamp, eid::Eid};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum BundleStatus {
     Dispatching,
-    ForwardPending { peer: u32, queue: Option<u32> },
-    LocalPending { service: u32 },
+    ForwardPending {
+        peer: u32,
+        queue: Option<u32>,
+    },
+    LocalPending {
+        service: u32,
+    },
+    AduFragment {
+        source: Eid,
+        timestamp: CreationTimestamp,
+    },
     Waiting,
 }
 

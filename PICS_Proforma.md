@@ -86,7 +86,7 @@ To complete this PICS, the implementer is to provide the requested information i
 | 39 | Local Bundle Delivery | Follows RFC 9171 procedures when delivering a bundle to the AA. | RFC 9171 Sec 5.7 | M | Y |
 | 40 | Bundle Fragmentation | Implementation supports fragmentation of bundles per RFC 9171\. | RFC 9171 Sec 5.8 | O | N |
 | 41 | Fragmentation Procedures | Follows RFC 9171 procedures when fragmenting a bundle. (Mandatory if Item 31 is true). | RFC 9171 Sec 5.8 | C | N |
-| 42 | ADU Reassembly | Follows RFC 9171 procedures when reassembling an ADU. | RFC 9171 Sec 5.9 | M | N |
+| 42 | ADU Reassembly | Follows RFC 9171 procedures when reassembling an ADU. | RFC 9171 Sec 5.9 | M | Y |
 | 43 | Bundle Deletion Report | Generates bundle deletion status report. | RFC 9171 Sec 5.10 | O | Y |
 | 44 | Bundle Deletion Constraints | Removes retention constraints when deleting a bundle. | RFC 9171 Sec 5.10 | M | Y |
 | 45 | Discarding a Bundle | Follows RFC 9171 procedures when discarding a bundle. | RFC 9171 Sec 5.11 | M | Y |
