@@ -161,6 +161,20 @@ impl Id {
     }
 }
 
+impl core::fmt::Display for Id {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(fi) = &self.fragment_info {
+            write!(
+                f,
+                "{}/{} fragment {}/{}",
+                self.source, self.timestamp, fi.offset, fi.total_adu_length
+            )
+        } else {
+            write!(f, "{}/{}", self.source, self.timestamp)
+        }
+    }
+}
+
 /// Represents the processing control flags for a BPv7 bundle.
 ///
 /// These flags, defined in RFC 9171 Section 4.2.3, control how a node should

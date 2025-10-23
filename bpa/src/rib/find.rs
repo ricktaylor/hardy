@@ -10,7 +10,7 @@ enum InternalFindResult {
 }
 
 impl Rib {
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn find(&self, bundle: &bundle::Bundle) -> Option<FindResult> {
         let inner = self.inner.read().trace_expect("Failed to lock mutex");
 
@@ -45,7 +45,7 @@ impl Rib {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
     pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
         let inner = self.inner.read().trace_expect("Failed to lock mutex");
 
@@ -91,7 +91,7 @@ fn map_result(result: InternalFindResult, bundle: &bundle::Bundle) -> Option<Fin
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(inner)))]
+#[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
 fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult> {
     let mut peers: Option<HashSet<u32>> = None;
     for action in inner.locals.actions.get(to).into_iter().flatten() {
@@ -114,7 +114,7 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
     peers.map(InternalFindResult::Forward)
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(inner, trail)))]
+#[cfg_attr(feature = "tracing", instrument(skip(inner, table, to, trail),fields(to = %to)))]
 fn find_recurse<'a>(
     inner: &'a RibInner,
     table: &'a RouteTable,

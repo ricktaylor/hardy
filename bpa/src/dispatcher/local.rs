@@ -104,7 +104,7 @@ impl Dispatcher {
         true
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn deliver_bundle(
         self: &Arc<Self>,
         service: Arc<service_registry::Service>,

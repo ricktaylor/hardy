@@ -55,7 +55,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "store_check_task");
+            let span = tracing::trace_span!(parent: None, "store_check_task");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
@@ -98,7 +98,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "bundle_storage_recovery_reader");
+            let span = tracing::trace_span!(parent: None, "bundle_storage_recovery_reader");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
@@ -142,7 +142,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "metadata_storage_check_reader");
+            let span = tracing::trace_span!(parent: None, "metadata_storage_check_reader");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };

@@ -273,3 +273,14 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
         deserializer.deserialize_any(AdminEndpointsVisitor)
     }
 }
+
+impl std::fmt::Display for NodeIds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.ipn, &self.dtn) {
+            (None, None) => write!(f, "[]"),
+            (None, Some(d)) => write!(f, "[ dtn://{d}/_ ]"),
+            (Some((a, n)), None) => write!(f, "[ ipn:{a}.{n}._ ]"),
+            (Some((a, n)), Some(d)) => write!(f, "[ ipn:{a}.{n}._, dtn://{d}/_ ]"),
+        }
+    }
+}

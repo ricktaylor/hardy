@@ -272,7 +272,7 @@ impl hardy_bpa::service::Service for Application {
     async fn on_receive(&self, bundle: hardy_bpa::service::Bundle) {
         if let Err(e) = self
             .rpc(bpa_to_app::Msg::Receive(ReceiveBundleRequest {
-                bundle_id: bundle.id.to_string(),
+                bundle_id: bundle.id,
                 ack_requested: bundle.ack_requested,
                 expiry: Some(to_timestamp(bundle.expiry)),
                 payload: bundle.payload,

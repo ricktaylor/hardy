@@ -1,6 +1,5 @@
 use super::*;
 use hardy_bpa::{async_trait, storage};
-use rusqlite::OptionalExtension;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -183,7 +182,7 @@ fn from_status(
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn get(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -208,7 +207,7 @@ impl storage::MetadataStorage for Storage {
             .map_err(Into::into)
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.received_at;
@@ -228,7 +227,7 @@ impl storage::MetadataStorage for Storage {
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.received_at;
@@ -253,7 +252,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
         if self
@@ -285,7 +284,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -397,7 +396,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         // Ensure status codes match
         debug_assert!(

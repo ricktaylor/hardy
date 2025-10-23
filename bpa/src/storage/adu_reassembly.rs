@@ -164,7 +164,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "poll_adu_fragments_reader");
+            let span = tracing::trace_span!(parent: None, "poll_adu_fragments_reader");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };

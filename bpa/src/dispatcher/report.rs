@@ -5,7 +5,7 @@ use hardy_bpv7::{
 };
 
 impl Dispatcher {
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_reception(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -40,7 +40,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_forwarded(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} forwarded", &bundle.bundle.id);
 
@@ -69,7 +69,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_delivery(self: &Arc<Self>, bundle: &bundle::Bundle) {
         trace!("Bundle {:?} delivered", &bundle.bundle.id);
 
@@ -96,7 +96,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn report_bundle_deletion(
         self: &Arc<Self>,
         bundle: &bundle::Bundle,
@@ -128,7 +128,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, payload)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, payload),fields(report_to = %report_to)))]
     async fn dispatch_status_report(self: &Arc<Self>, payload: Box<[u8]>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {
@@ -179,7 +179,7 @@ impl Dispatcher {
 
             #[cfg(feature = "tracing")]
             let task = {
-                let span = tracing::trace_span!("parent: None", "dispatch_status_report_task");
+                let span = tracing::trace_span!(parent: None, "dispatch_status_report_task");
                 span.follows_from(tracing::Span::current());
                 task.instrument(span)
             };

@@ -10,6 +10,8 @@ use tracing::{error, info, warn};
 #[cfg(feature = "tracing")]
 use tracing::instrument;
 
+use rusqlite::OptionalExtension;
+
 pub fn new(
     config: &config::Config,
     upgrade: bool,

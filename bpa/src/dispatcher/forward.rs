@@ -1,7 +1,7 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn forward_bundle(
         self: &Arc<Self>,
         cla: &dyn cla::Cla,
@@ -43,7 +43,7 @@ impl Dispatcher {
         self.store.reset_peer_queue(peer).await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
