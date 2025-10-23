@@ -45,37 +45,26 @@ pub struct Command {
     lifetime: Option<humantime::Duration>,
 }
 
-pub fn exec(args: Command) -> ExitCode {
+pub fn exec(args: Command) -> anyhow::Result<()> {
     let input: &mut dyn BufRead = if let Some(input) = args.payload {
-        &mut std::io::BufReader::new({
-            match std::fs::File::open(input) {
-                Err(e) => {
-                    eprintln!("Failed to open input file: {e}");
-                    return ExitCode::FAILURE;
-                }
-                Ok(f) => f,
-            }
-        })
+        &mut std::io::BufReader::new(
+            std::fs::File::open(input)
+                .map_err(|e| anyhow::anyhow!("Failed to open input file: {e}"))?,
+        )
     } else {
         &mut std::io::BufReader::new(std::io::stdin())
     };
 
     let mut payload = Vec::new();
-    if let Err(e) = input.read_to_end(&mut payload) {
-        eprintln!("Failed to read from input: {e}");
-        return ExitCode::FAILURE;
-    }
+    input
+        .read_to_end(&mut payload)
+        .map_err(|e| anyhow::anyhow!("Failed to read from input: {e}"))?;
 
     let output: &mut dyn Write = if let Some(output) = args.output {
-        &mut BufWriter::new({
-            match std::fs::File::create(output) {
-                Err(e) => {
-                    eprintln!("Failed to open output file: {e}");
-                    return ExitCode::FAILURE;
-                }
-                Ok(f) => f,
-            }
-        })
+        &mut BufWriter::new(
+            std::fs::File::create(output)
+                .map_err(|e| anyhow::anyhow!("Failed to open output file: {e}"))?,
+        )
     } else {
         &mut BufWriter::new(std::io::stdout())
     };
@@ -87,27 +76,24 @@ pub fn exec(args: Command) -> ExitCode {
     }
 
     if let Some(lifetime) = args.lifetime {
-        if lifetime.as_millis() > u64::MAX as u128 {
-            eprintln!("Lifetime too long!");
-            return ExitCode::FAILURE;
-        }
+        (lifetime.as_millis() > u64::MAX as u128)
+            .then_some(())
+            .ok_or(anyhow::anyhow!("Lifetime too long: {lifetime}!"))?;
+
         builder = builder.with_lifetime(lifetime.into());
     }
 
-    if let Err(e) = output.write_all(
-        &builder
-            .add_extension_block(hardy_bpv7::block::Type::Payload)
-            .with_flags(hardy_bpv7::block::Flags {
-                delete_bundle_on_failure: true,
-                ..Default::default()
-            })
-            .build(&payload)
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-            .1,
-    ) {
-        eprintln!("Failed to write to output: {e}");
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    output
+        .write_all(
+            &builder
+                .add_extension_block(hardy_bpv7::block::Type::Payload)
+                .with_flags(hardy_bpv7::block::Flags {
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                })
+                .build(&payload)
+                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .1,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to write to output: {e}"))
 }

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::{path::PathBuf, process::ExitCode};
+use std::path::PathBuf;
 
 mod create;
 mod validate;
@@ -23,13 +23,10 @@ enum Commands {
     Validate(validate::Command),
 }
 
-fn main() -> ExitCode {
-    // Parse command-line arguments into our Cli struct.
-    let cli = Cli::parse();
-
+fn main() -> anyhow::Result<()> {
     // Match on the parsed subcommand and call the appropriate handler function.
     // This is the core of the dispatch logic.
-    match cli.command {
+    match Cli::parse().command {
         Commands::Create(args) => create::exec(args),
         Commands::Validate(args) => validate::exec(args),
     }
