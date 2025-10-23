@@ -70,11 +70,13 @@ fn map_result(result: InternalFindResult, bundle: &bundle::Bundle) -> Option<Fin
         InternalFindResult::Forward(peers) => {
             let peers = peers.into_iter().collect::<Vec<_>>();
             let peer = if peers.len() > 1 {
-                // Use a hash of source+destination as the hash input
-                // TODO: Look at other flow labels here as well
-                // TODO: This is an open research topic - is this really the correct behavior with bundles?
                 let mut hasher = std::hash::DefaultHasher::default();
-                (&bundle.bundle.id.source, &bundle.bundle.destination).hash(&mut hasher);
+                (
+                    &bundle.bundle.id.source,
+                    &bundle.bundle.destination,
+                    &bundle.metadata.flow_label,
+                )
+                    .hash(&mut hasher);
 
                 *peers
                     .get((hasher.finish() % (peers.len() as u64)) as usize)
