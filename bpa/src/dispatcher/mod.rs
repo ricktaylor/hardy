@@ -74,10 +74,7 @@ impl Dispatcher {
         if let Some(data) = self.store.load_data(storage_name).await {
             Some(data)
         } else {
-            warn!("Bundle data {storage_name} has gone from storage");
-
             self.store.tombstone_metadata(&bundle.bundle.id).await;
-
             None
         }
     }
