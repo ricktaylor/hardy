@@ -1,4 +1,4 @@
-use rusqlite::OptionalExtension;
+use super::*;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -19,7 +19,7 @@ pub enum Error {
     UpdateRequired,
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip_all))]
+#[cfg_attr(feature = "tracing", instrument(skip(conn)))]
 pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Error> {
     let migrations = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 

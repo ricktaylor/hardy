@@ -112,6 +112,16 @@ impl CreationTimestamp {
     }
 }
 
+impl core::fmt::Display for CreationTimestamp {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(ct) = self.creation_time {
+            write!(f, "{}/{}", ct, self.sequence_number)
+        } else {
+            write!(f, "(No clock)/{}", self.sequence_number)
+        }
+    }
+}
+
 impl hardy_cbor::encode::ToCbor for CreationTimestamp {
     type Result = ();
 

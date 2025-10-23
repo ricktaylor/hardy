@@ -66,7 +66,7 @@ impl Rib {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "poll_waiting_task");
+            let span = tracing::trace_span!(parent: None, "poll_waiting_task");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };

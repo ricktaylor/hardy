@@ -74,3 +74,16 @@ impl From<DtnTime> for time::OffsetDateTime {
         ))
     }
 }
+
+impl core::fmt::Display for DtnTime {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{}",
+            DTN_EPOCH.saturating_add(time::Duration::new(
+                (self.0 / 1000) as i64,
+                (self.0 % 1000 * 1_000_000) as i32,
+            ))
+        )
+    }
+}

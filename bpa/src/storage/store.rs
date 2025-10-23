@@ -35,7 +35,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "reaper_task");
+            let span = tracing::trace_span!(parent: None, "reaper_task");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
@@ -49,7 +49,7 @@ impl Store {
         self.task_tracker.wait().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.id)))]
     pub async fn store(
         &self,
         bundle: hardy_bpv7::bundle::Bundle,
@@ -138,7 +138,7 @@ impl Store {
             .trace_expect("Failed to delete bundle data")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> bool {
         self.metadata_storage
             .insert(bundle)
@@ -146,7 +146,7 @@ impl Store {
             .trace_expect("Failed to insert metadata")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     pub async fn get_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Option<bundle::Bundle> {
         let m = self
             .metadata_storage
@@ -165,7 +165,7 @@ impl Store {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     pub async fn tombstone_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) {
         self.metadata_storage
             .tombstone(bundle_id)
@@ -173,7 +173,7 @@ impl Store {
             .trace_expect("Failed to tombstone metadata")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -184,7 +184,7 @@ impl Store {
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) {
         self.metadata_storage
             .replace(bundle)

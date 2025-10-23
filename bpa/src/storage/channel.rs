@@ -93,7 +93,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "channel_queue_poll", status);
+            let span = tracing::trace_span!(parent: None, "channel_queue_poll", ?status);
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
@@ -173,7 +173,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "poll_queue_reader", peer, queue);
+            let span = tracing::trace_span!(parent: None, "poll_pending_once");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };

@@ -164,7 +164,7 @@ impl Store {
 
                 #[cfg(feature = "tracing")]
                 let task = {
-                    let span = tracing::trace_span!("parent: None", "refill_cache_task");
+                    let span = tracing::trace_span!(parent: None, "refill_cache_task");
                     span.follows_from(tracing::Span::current());
                     task.instrument(span)
                 };
@@ -199,7 +199,7 @@ impl Store {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "poll_expiry_reader");
+            let span = tracing::trace_span!(parent: None, "poll_expiry_reader");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };

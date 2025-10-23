@@ -85,7 +85,12 @@ impl Peer {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "egress_queue_poller", peer, queue);
+            let span = tracing::trace_span!(
+                parent: None,
+                "egress_queue_poller",
+                peer = peer,
+                queue = queue
+            );
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };

@@ -84,7 +84,7 @@ impl Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, cla)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self, cla, policy)))]
     pub async fn register_cla(
         &self,
         name: String,
@@ -97,7 +97,10 @@ impl Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(
+        feature = "tracing",
+        instrument(skip(self, pattern, action), fields(pattern = %pattern, action = %action))
+    )]
     pub async fn add_route(
         &self,
         source: String,
@@ -108,7 +111,10 @@ impl Bpa {
         self.rib.add(pattern, source, action, priority).await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(
+        feature = "tracing",
+        instrument(skip(self, pattern, action), fields(pattern = %pattern, action = %action))
+    )]
     pub async fn remove_route(
         &self,
         source: &str,

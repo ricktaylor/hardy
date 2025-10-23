@@ -132,7 +132,7 @@ impl Dispatcher {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn dispatch_bundle(self: &Arc<Self>, mut bundle: bundle::Bundle) {
         if let Some(u) = bundle.bundle.flags.unrecognised {
             trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
@@ -259,7 +259,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn process_bundle(
         self: &Arc<Self>,
         bundle: &mut bundle::Bundle,
@@ -352,7 +352,7 @@ impl Dispatcher {
 
         #[cfg(feature = "tracing")]
         let task = {
-            let span = tracing::trace_span!("parent: None", "poll_waiting_reader");
+            let span = tracing::trace_span!(parent: None, "poll_waiting_reader");
             span.follows_from(tracing::Span::current());
             task.instrument(span)
         };
