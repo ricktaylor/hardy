@@ -4,10 +4,7 @@ mod static_routes;
 #[cfg(feature = "grpc")]
 mod grpc;
 
-// This is the generic Error type used almost everywhere
-type Error = Box<dyn std::error::Error + Send + Sync>;
-
-use std::{process::ExitCode, sync::Arc};
+use std::sync::Arc;
 use trace_err::*;
 use tracing::{error, info, trace, warn};
 
@@ -104,10 +101,10 @@ fn start_logging(config: &config::Config, config_source: String) {
 }
 
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn main() -> anyhow::Result<()> {
     // Parse command line
     let Some((mut config, config_source)) = config::init() else {
-        return ExitCode::SUCCESS;
+        return Ok(());
     };
 
     // Start logging
@@ -120,7 +117,10 @@ async fn main() -> ExitCode {
     let bpa = Arc::new(
         hardy_bpa::bpa::Bpa::start(&config.bpa, config.recover_storage)
             .await
-            .trace_expect("Failed to start BPA"),
+            .map_err(|e| {
+                error!("Failed to start BPA: {e}");
+                anyhow::anyhow!("Failed to start BPA: {e}")
+            })?,
     );
 
     // Prepare for graceful shutdown
@@ -134,10 +134,13 @@ async fn main() -> ExitCode {
     }
 
     // Load static routes
-    if let Some(config) = config.static_routes
-        && !static_routes::init(config, &bpa, &cancel_token, &task_tracker).await
-    {
-        return ExitCode::FAILURE;
+    if let Some(config) = config.static_routes {
+        static_routes::init(config, &bpa, &cancel_token, &task_tracker)
+            .await
+            .map_err(|e| {
+                error!("Failed to load static routes: {e}");
+                anyhow::anyhow!("Failed to load static routes: {e}")
+            })?;
     }
 
     // And wait for shutdown signal
@@ -156,5 +159,5 @@ async fn main() -> ExitCode {
 
     info!("Stopped");
 
-    ExitCode::SUCCESS
+    Ok(())
 }
