@@ -51,16 +51,13 @@ impl StaticRoutes {
         mut self,
         cancel_token: &tokio_util::sync::CancellationToken,
         task_tracker: &tokio_util::task::TaskTracker,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         info!(
             "Loading static routes from '{}'",
             self.config.routes_file.to_string_lossy()
         );
 
-        if let Err(e) = self.refresh_routes(false).await {
-            error!("Failed to load static routes: {e}");
-            return false;
-        }
+        self.refresh_routes(false).await?;
 
         if self.config.watch {
             info!("Monitoring static routes file for changes");
@@ -69,10 +66,10 @@ impl StaticRoutes {
             self.watch(cancel_token, task_tracker);
         }
 
-        true
+        Ok(())
     }
 
-    async fn refresh_routes(&mut self, ignore_errors: bool) -> Result<(), Error> {
+    async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
         // Reload the routes
         let mut drop_routes = Vec::new();
         let mut add_routes = Vec::new();
@@ -185,7 +182,7 @@ pub async fn init(
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
     cancel_token: &tokio_util::sync::CancellationToken,
     task_tracker: &tokio_util::task::TaskTracker,
-) -> bool {
+) -> anyhow::Result<()> {
     // Try to create canonical file path
     if let Ok(r) = config.routes_file.canonicalize() {
         config.routes_file = r;
@@ -193,7 +190,8 @@ pub async fn init(
 
     // Ensure it's absolute
     if config.routes_file.is_relative() {
-        let mut path = std::env::current_dir().trace_expect("Failed to get current directory");
+        let mut path = std::env::current_dir()
+            .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
         path.push(&config.routes_file);
         config.routes_file = path;
     }
