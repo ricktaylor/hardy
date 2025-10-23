@@ -148,10 +148,21 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn get_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Option<bundle::Bundle> {
-        self.metadata_storage
+        let m = self
+            .metadata_storage
             .get(bundle_id)
             .await
-            .trace_expect("Failed to get metadata")
+            .trace_expect("Failed to get metadata")?;
+
+        if &m.bundle.id != bundle_id {
+            error!(
+                "Metadata store failed to return correct bundle: {:?} != {:?}",
+                m.bundle.id, bundle_id
+            );
+            None
+        } else {
+            Some(m)
+        }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
