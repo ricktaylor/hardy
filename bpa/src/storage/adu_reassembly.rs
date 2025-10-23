@@ -218,11 +218,20 @@ impl Store {
             .into();
 
         let mut next_offset = first.2.end as u64;
+        let total_adu_length = first.0.fragment_info.as_ref().unwrap().total_adu_length;
         for (bundle_id, storage_name, payload) in results.adus.values() {
-            if bundle_id.fragment_info.as_ref().unwrap().offset != next_offset {
+            let fi = bundle_id.fragment_info.as_ref().unwrap();
+            if fi.total_adu_length != total_adu_length {
+                info!(
+                    "Total ADU length mismatch during fragment reassembly detected: {bundle_id:?}"
+                );
+                return None;
+            }
+            if fi.offset != next_offset {
                 info!("Misalignment in offsets during fragment reassembly detected: {bundle_id:?}");
                 return None;
             }
+
             next_offset = next_offset.saturating_add(payload.len() as u64);
 
             let adu = self.load_data(storage_name).await?.slice(payload.clone());
