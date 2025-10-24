@@ -127,6 +127,24 @@ impl Msg {
 
                 bpa.add_route(
                     "fuzz".to_string(),
+                    "dtn://drop/**".parse().unwrap(),
+                    hardy_bpa::routes::Action::Drop(Some(
+                        hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
+                    )),
+                    50,
+                )
+                .await;
+
+                bpa.add_route(
+                    "fuzz".to_string(),
+                    "dtn://drop2/**".parse().unwrap(),
+                    hardy_bpa::routes::Action::Drop(None),
+                    50,
+                )
+                .await;
+
+                bpa.add_route(
+                    "fuzz".to_string(),
                     "dtn://**/**".parse().unwrap(),
                     hardy_bpa::routes::Action::Reflect,
                     100,
