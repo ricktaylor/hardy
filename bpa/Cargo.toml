@@ -41,4 +41,3 @@ hardy-bpa-fuzz = { path = "./fuzz" }
 [[bench]]
 name = "bundle_bench"
 harness = false
-

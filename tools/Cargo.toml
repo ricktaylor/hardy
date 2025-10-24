@@ -1,0 +1,23 @@
+[package]
+name = "hardy-tools"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "lib/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow = "1.0.100"
+
+# --- Linux-specific dependencies ---
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = "0.5.6"
+
+# --- Windows-specific dependencies ---
+[target.'cfg(target_os = "windows")'.dependencies]
+check_elevation = "0.2.7"
+
+# --- Other Unix (e.g., macOS, BSD) dependencies ---
+[target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
+libc = "0.2.177"
