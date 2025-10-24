@@ -461,7 +461,7 @@ impl<'a> BlockParse<'a> {
             Some(Some(payload)) => block.emit(block_number, &payload, array),
             Some(None) => block.emit(block_number, &self.source_data[block.payload()], array),
             None => {
-                block.r#move(self.source_data, array);
+                block.copy_payload(self.source_data, array);
                 Ok(())
             }
         }

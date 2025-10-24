@@ -142,7 +142,7 @@ impl<'a> Editor<'a> {
                     .get(&block_number)
                     .expect("Mismatched block in bundle!")
                     .clone();
-                block.r#move(self.source_data, array);
+                block.copy_payload(self.source_data, array);
                 block
             }
             BlockTemplate::Add(template) => template.build(block_number, array),
