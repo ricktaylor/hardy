@@ -200,6 +200,7 @@ impl BlockTemplate {
 }
 
 /// A template for creating a new [`bundle::Bundle`].
+#[derive(Default)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub struct BundleTemplate {
     /// The source of the bundle.
