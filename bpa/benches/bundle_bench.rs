@@ -8,10 +8,7 @@ fn get_bundle() -> Box<[u8]> {
         source: "ipn:1.1".parse().unwrap(),
         destination: "ipn:2.1".parse().unwrap(),
         report_to: Some("ipn:1.0".parse().unwrap()),
-        flags: None,
-        crc_type: None,
-        lifetime: None,
-        hop_limit: None,
+        ..Default::default()
     }
     .into();
 
@@ -30,8 +27,8 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("bundle-throughput");
 
     group.throughput(Throughput::Bytes(get_bundle().len() as u64));
-    group.bench_with_input("bundle", &*get_bundle(), |b, bundle| {
-        b.iter(|| hardy_bpa_fuzz::send_bundle(bundle))
+    group.bench_function("bundle", |b| {
+        b.iter(|| hardy_bpa_fuzz::send_bundle(&*get_bundle()))
     });
     group.finish();
 }
