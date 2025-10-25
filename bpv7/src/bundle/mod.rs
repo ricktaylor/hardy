@@ -458,6 +458,64 @@ impl Bundle {
             .map(Payload::Owned)
             .map_err(Error::InvalidBPSec)
     }
+
+    /// Verifies the payload of a specific block by its number.
+    ///
+    /// This method handles the complexity of block-level security. If the target
+    /// block is encrypted with a Block Integrity Block (BIB), this method
+    /// will attempt to verify it using the provided `key_f` keystore.
+    pub fn verify_block(
+        &self,
+        block_number: u64,
+        source_data: &[u8],
+        key_f: &impl bpsec::key::KeyStore,
+    ) -> Result<(), Error> {
+        let payload_block = self
+            .blocks
+            .get(&block_number)
+            .ok_or(Error::MissingBlock(block_number))?;
+
+        // Check for BIB
+        let Some(bib_block_number) = &payload_block.bib else {
+            return Ok(());
+        };
+
+        let bib = self
+            .blocks
+            .get(bib_block_number)
+            .ok_or(Error::Altered)
+            .and_then(|bib_block| {
+                source_data
+                    .get(bib_block.payload())
+                    .ok_or(Error::Altered)
+                    .and_then(|data| {
+                        hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(data).map_err(|e| {
+                            Error::InvalidField {
+                                field: "BIB Abstract Syntax Block",
+                                source: e.into(),
+                            }
+                        })
+                    })
+            })?;
+
+        // Confirm we can verify if we have keys
+        bib.operations
+            .get(&block_number)
+            .ok_or(Error::Altered)?
+            .verify(
+                key_f,
+                bpsec::bib::OperationArgs {
+                    bpsec_source: &bib.source,
+                    target: block_number,
+                    source: *bib_block_number,
+                    blocks: &BlockSet {
+                        bundle: self,
+                        source_data,
+                    },
+                },
+            )
+            .map_err(Error::InvalidBPSec)
+    }
 }
 
 /// Represents the result of parsing a bundle.
