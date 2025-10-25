@@ -42,23 +42,11 @@ impl Operation {
         Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()))
     }
 
-    pub fn verify_any(
-        &self,
-        key_f: &impl key::KeyStore,
-        args: OperationArgs,
-    ) -> Result<Option<bool>, Error> {
+    pub fn verify(&self, key_f: &impl key::KeyStore, args: OperationArgs) -> Result<(), Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify_any(key_f, args),
-            Self::Unrecognised(..) => Ok(None),
-        }
-    }
-
-    pub fn verify(&self, jwk: &Key, args: OperationArgs) -> Result<bool, Error> {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(jwk, args),
-            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
+            Self::HMAC_SHA2(o) => o.verify(key_f, args),
+            Self::Unrecognised(..) => Err(Error::NoValidKey),
         }
     }
 
