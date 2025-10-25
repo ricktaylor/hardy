@@ -400,15 +400,16 @@ impl Bundle {
     /// This method handles the complexity of block-level security. If the target
     /// block is encrypted with a Block Confidentiality Block (BCB), this method
     /// will attempt to decrypt it using the provided `key_f` keystore.
-    ///
-    /// Returns `Ok(None)` if the payload is encrypted and cannot be decrypted.
-    pub fn block_payload(
+    pub fn decrypt_block(
         &self,
         block_number: u64,
         source_data: &[u8],
         key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<Option<Payload>, Error> {
-        let payload_block = self.blocks.get(&block_number).ok_or(Error::Altered)?;
+    ) -> Result<Payload, Error> {
+        let payload_block = self
+            .blocks
+            .get(&block_number)
+            .ok_or(Error::MissingBlock(block_number))?;
 
         // Check for BCB
         let Some(bcb_block_number) = &payload_block.bcb else {
@@ -417,7 +418,7 @@ impl Bundle {
                 .get(payload_block.payload())
                 .ok_or(Error::Altered)?;
 
-            return Ok(Some(Payload::Range(payload_block.payload())));
+            return Ok(Payload::Range(payload_block.payload()));
         };
 
         let bcb = self
@@ -439,11 +440,10 @@ impl Bundle {
             })?;
 
         // Confirm we can decrypt if we have keys
-        if let Some(plaintext) = bcb
-            .operations
+        bcb.operations
             .get(&block_number)
             .ok_or(Error::Altered)?
-            .decrypt_any(
+            .decrypt(
                 key_f,
                 bpsec::bcb::OperationArgs {
                     bpsec_source: &bcb.source,
@@ -454,12 +454,9 @@ impl Bundle {
                         source_data,
                     },
                 },
-            )?
-        {
-            Ok(Some(Payload::Owned(plaintext)))
-        } else {
-            Ok(None)
-        }
+            )
+            .map(Payload::Owned)
+            .map_err(Error::InvalidBPSec)
     }
 }
 
