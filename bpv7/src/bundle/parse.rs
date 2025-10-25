@@ -694,7 +694,7 @@ mod test {
                 &hex!(
                     "9f89071844018202820301820100820100821b000000b5998c982b011a000493e042c9f6850602182700458202820200850704010042183485010101004454455354ff"
                 ),
-                &bpsec::key::EmptyStore,
+                &bpsec::key::KeySet::new(vec![]),
             ),
             Ok(ValidBundle::Invalid(_, _, Error::InvalidFlags))
         ));

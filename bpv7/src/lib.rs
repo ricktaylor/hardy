@@ -64,7 +64,7 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .build(CreationTimestamp::now());
 
 // Parse the bundle from the CBOR data.
-let parsed_bundle = ValidBundle::parse(&cbor, &hardy_bpv7::bpsec::key::EmptyStore).unwrap();
+let parsed_bundle = ValidBundle::parse(&cbor, &hardy_bpv7::bpsec::key::KeySet::new(vec![])).unwrap();
 
 if let ValidBundle::Valid(bundle, _) = parsed_bundle {
     assert_eq!(bundle.id, original_bundle.id);
