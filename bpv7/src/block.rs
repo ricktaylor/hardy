@@ -181,14 +181,15 @@ pub struct Block {
     pub flags: Flags,
     /// The type of CRC used for this block's integrity check.
     pub crc_type: crc::CrcType,
-    /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
-    pub extent: Range<usize>,
-    /// The range of bytes within the `extent` that represents the block-specific data.
-    pub data: Range<usize>,
     /// The block number of the Block Integrity Block (BIB) that protects this block, if any.
     pub bib: Option<u64>,
     /// The block number of the Block Confidentiality Block (BCB) that protects this block, if any.
     pub bcb: Option<u64>,
+
+    /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
+    pub(crate) extent: Range<usize>,
+    /// The range of bytes within the `extent` that represents the block-specific data.
+    pub(crate) data: Range<usize>,
 }
 
 impl Block {
