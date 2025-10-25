@@ -269,7 +269,7 @@ impl<'a> BlockParse<'a> {
                     }
                 } {
                     // Try to decrypt if we have keys
-                    if let Some(plaintext) = op.decrypt_any(
+                    match op.decrypt(
                         key_f,
                         bpsec::bcb::OperationArgs {
                             bpsec_source: &bcb.source,
@@ -277,14 +277,20 @@ impl<'a> BlockParse<'a> {
                             source: *bcb_block_number,
                             blocks: self,
                         },
-                    )? {
-                        decrypted_data.insert(*target_number, plaintext);
-                    } else if target_block.block_type == block::Type::BlockIntegrity {
-                        // We can't decrypt the BIB, therefore we cannot check the BIB
-                        self.bibs_to_check.remove(target_number);
-                    } else {
-                        // We can't decrypt the block, therefore we cannot check it
-                        self.blocks_to_check.remove(&target_block.block_type);
+                    ) {
+                        Ok(plaintext) => {
+                            decrypted_data.insert(*target_number, plaintext);
+                        }
+                        Err(bpsec::Error::NoValidKey) => {
+                            if target_block.block_type == block::Type::BlockIntegrity {
+                                // We can't decrypt the BIB, therefore we cannot check the BIB
+                                self.bibs_to_check.remove(target_number);
+                            } else {
+                                // We can't decrypt the block, therefore we cannot check it
+                                self.blocks_to_check.remove(&target_block.block_type);
+                            }
+                        }
+                        Err(e) => return Err(Error::InvalidBPSec(e)),
                     }
                 }
             }

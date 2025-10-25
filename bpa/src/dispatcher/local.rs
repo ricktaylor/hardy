@@ -115,13 +115,19 @@ impl Dispatcher {
             return Ok(dispatch::DispatchResult::Gone);
         };
 
-        let payload = match bundle.bundle.block_payload(1, &data, self.key_store())? {
-            None => {
+        let payload = match bundle.bundle.decrypt_block(1, &data, self.key_store()) {
+            Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoValidKey)) => {
                 // TODO: We are unable to decrypt the payload, what do we do?
                 return Ok(dispatch::DispatchResult::Wait);
             }
-            Some(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
-            Some(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
+            Err(e) => {
+                trace!("Received an invalid payload: {e}");
+                return Ok(dispatch::DispatchResult::Drop(Some(
+                    ReasonCode::BlockUnintelligible,
+                )));
+            }
+            Ok(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
+            Ok(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
         };
 
         // Pass the bundle and data to the service

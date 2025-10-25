@@ -65,6 +65,9 @@ pub enum Error {
     #[error("Decryption failed")]
     DecryptionFailed,
 
+    #[error("None of the supplied keys were valid for the operation")]
+    NoValidKey,
+
     /// This type is deliberately opaque as to avoid potential side-channel
     /// leakage (e.g. padding oracle).
     #[error("Encryption failed")]

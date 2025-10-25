@@ -67,6 +67,11 @@ pub enum Error {
     #[error("Bundle has been altered since parsing")]
     Altered,
 
+    /// Indicates that a bundle does not contain a block
+    /// Usually returned from an accessor function, such as decrypt_block
+    #[error("Bundle does not contain block {0}")]
+    MissingBlock(u64),
+
     /// An error related to BPSec processing.
     #[error(transparent)]
     InvalidBPSec(#[from] bpsec::Error),

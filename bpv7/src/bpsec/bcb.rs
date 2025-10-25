@@ -42,27 +42,15 @@ impl Operation {
         Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()))
     }
 
-    pub fn decrypt_any(
-        &self,
-        key_f: &impl key::KeyStore,
-        args: OperationArgs,
-    ) -> Result<Option<zeroize::Zeroizing<Box<[u8]>>>, Error> {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt_any(key_f, args),
-            Self::Unrecognised(..) => Ok(None),
-        }
-    }
-
     pub fn decrypt(
         &self,
-        jwk: &Key,
+        key_f: &impl key::KeyStore,
         args: OperationArgs,
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt(jwk, args),
-            Self::Unrecognised(v, _) => Err(Error::UnrecognisedContext(*v)),
+            Self::AES_GCM(op) => op.decrypt(key_f, args),
+            Self::Unrecognised(..) => Err(Error::NoValidKey),
         }
     }
 

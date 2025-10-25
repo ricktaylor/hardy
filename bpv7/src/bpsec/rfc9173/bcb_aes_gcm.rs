@@ -370,11 +370,11 @@ impl Operation {
         }
     }
 
-    pub fn decrypt_any(
+    pub fn decrypt(
         &self,
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
-    ) -> Result<Option<zeroize::Zeroizing<Box<[u8]>>>, Error> {
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
         let (aad, data) = build_data(&self.parameters.flags, &args)?;
 
         if let Some(cek) = &self.parameters.key {
@@ -419,7 +419,7 @@ impl Operation {
                         _ => None,
                     }
                 {
-                    return Ok(Some(plaintext));
+                    return Ok(plaintext);
                 }
             }
         } else {
@@ -448,73 +448,12 @@ impl Operation {
                         _ => None,
                     }
                 {
-                    return Ok(Some(plaintext));
+                    return Ok(plaintext);
                 }
             }
         }
 
-        Ok(None)
-    }
-
-    pub fn decrypt(
-        &self,
-        jwk: &Key,
-        args: bcb::OperationArgs,
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-        let (aad, data) = build_data(&self.parameters.flags, &args)?;
-
-        if let Some(cek) = &self.parameters.key {
-            let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-                return Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone()));
-            };
-
-            let cek = match &jwk.key_algorithm {
-                Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                Some(key::KeyAlgorithm::A192KW) => aes_kw::KekAes192::try_from(kek.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                _ => Err(Error::InvalidKey(key::Operation::UnwrapKey, jwk.clone())),
-            }
-            .map(|v| zeroize::Zeroizing::from(Box::from(v)))?;
-
-            match (self.parameters.variant, &jwk.enc_algorithm) {
-                (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                    aes_gcm::Aes128Gcm::new_from_slice(&cek)
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                        .and_then(|cek| self.decrypt_inner(cek, &aad, data))
-                }
-                (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                    aes_gcm::Aes256Gcm::new_from_slice(&cek)
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                        .and_then(|cek| self.decrypt_inner(cek, &aad, data))
-                }
-                _ => Err(Error::UnsupportedOperation),
-            }
-        } else {
-            let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
-                return Err(Error::InvalidKey(key::Operation::Decrypt, jwk.clone()));
-            };
-
-            match (self.parameters.variant, &jwk.enc_algorithm) {
-                (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
-                    aes_gcm::Aes128Gcm::new_from_slice(cek)
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                        .and_then(|cek| self.decrypt_inner(cek, &aad, data))
-                }
-                (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                    aes_gcm::Aes256Gcm::new_from_slice(cek)
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                        .and_then(|cek| self.decrypt_inner(cek, &aad, data))
-                }
-                (AesVariant::Unrecognised(_), _) => Err(Error::UnsupportedOperation),
-                _ => Err(Error::InvalidKey(key::Operation::Decrypt, jwk.clone())),
-            }
-        }
+        Err(Error::NoValidKey)
     }
 
     fn decrypt_inner<C: aes_gcm::aead::Aead + aes_gcm::aead::AeadInPlace>(
