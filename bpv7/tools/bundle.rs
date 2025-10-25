@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod create;
+mod io;
+mod keys;
 mod validate;
 
 /// A CLI tool for creating and managing BPv7 bundles.
