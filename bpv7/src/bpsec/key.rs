@@ -12,15 +12,35 @@ pub trait KeyStore {
     ) -> impl Iterator<Item = &'a Key>;
 }
 
-pub struct EmptyStore;
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+pub struct KeySet {
+    keys: Vec<Key>,
+}
 
-impl KeyStore for EmptyStore {
+impl KeySet {
+    pub fn new(keys: Vec<Key>) -> Self {
+        Self { keys }
+    }
+}
+
+impl KeyStore for KeySet {
     fn decrypt_keys<'a>(
         &'a self,
         _source: &eid::Eid,
-        _operation: &[Operation],
+        operations: &[Operation],
     ) -> impl Iterator<Item = &'a Key> {
-        core::iter::empty()
+        self.keys.iter().filter(move |k| {
+            let Some(key_operations) = &k.operations else {
+                return true;
+            };
+            for op in operations {
+                if key_operations.contains(op) {
+                    return true;
+                }
+            }
+            false
+        })
     }
 }
 
