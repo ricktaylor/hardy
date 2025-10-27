@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod create;
+mod dump;
 mod io;
 mod keys;
 mod validate;
@@ -23,6 +24,9 @@ enum Commands {
 
     /// Check one or more bundles for validity.
     Validate(validate::Command),
+
+    /// Dump the json serialization of a bundle
+    Dump(dump::Command),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -30,6 +34,7 @@ fn main() -> anyhow::Result<()> {
     // This is the core of the dispatch logic.
     match Cli::parse().command {
         Commands::Create(args) => create::exec(args),
+        Commands::Dump(args) => dump::exec(args),
         Commands::Validate(args) => validate::exec(args),
     }
 }

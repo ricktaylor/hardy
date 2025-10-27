@@ -17,12 +17,28 @@ use error::CaptureFieldErr;
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
     /// If set, the block must be replicated in every fragment of the bundle.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub must_replicate: bool,
     /// If set, a status report should be generated if block processing fails.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub report_on_failure: bool,
     /// If set, the entire bundle should be deleted if block processing fails.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub delete_bundle_on_failure: bool,
     /// If set, this block should be deleted if its processing fails.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub delete_block_on_failure: bool,
 
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -176,16 +192,18 @@ impl hardy_cbor::decode::FromCbor for Type {
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Block {
     /// The type of the block.
+    #[cfg_attr(feature = "serde", serde(rename = "type"))]
     pub block_type: Type,
     /// The block-specific processing control flags.
     pub flags: Flags,
     /// The type of CRC used for this block's integrity check.
     pub crc_type: crc::CrcType,
     /// The block number of the Block Integrity Block (BIB) that protects this block, if any.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub bib: Option<u64>,
     /// The block number of the Block Confidentiality Block (BCB) that protects this block, if any.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub bcb: Option<u64>,
-
     /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
     pub extent: Range<usize>,
     /// The range of bytes within the `extent` that represents the block-specific data.
@@ -343,7 +361,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
             })?;
 
             // Check CRC
-            shortest = crc::parse_crc_value(data, arr, crc_type)? && shortest;
+            shortest = crc::parse_crc_value(data, arr, crc_type)?.1 && shortest;
 
             Ok((
                 BlockWithNumber {
