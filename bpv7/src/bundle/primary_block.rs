@@ -32,7 +32,7 @@ pub struct PrimaryBlock {
     /// The result of parsing the fragmentation information.
     pub fragment_info: Result<Option<bundle::FragmentInfo>, Error>,
     /// The result of the CRC validation.
-    pub crc_result: Result<(), Error>,
+    pub crc_result: Result<core::ops::Range<usize>, Error>,
 }
 
 impl hardy_cbor::decode::FromCbor for PrimaryBlock {
@@ -136,11 +136,12 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             // Try to parse and check CRC
             let crc_result = match &crc_type {
                 Ok(crc_type) => crc::parse_crc_value(data, block, *crc_type)
-                    .map(|s| {
+                    .map(|(r, s)| {
                         shortest = shortest && s;
+                        r
                     })
                     .map_err(Into::into),
-                Err(_) => Ok(()),
+                Err(_) => Ok(0..0),
             };
 
             Ok((
@@ -214,7 +215,7 @@ impl PrimaryBlock {
                         ..Default::default()
                     },
                     crc_type,
-                    data: extent.clone(),
+                    data: unpack(self.crc_result, &mut e, "Crc Value"),
                     extent,
                     bib: None,
                     bcb: None,
@@ -225,12 +226,7 @@ impl PrimaryBlock {
         };
 
         if e.is_none() {
-            if let Err(e2) = self.crc_result {
-                e = Some(Error::InvalidField {
-                    field: "Crc Value",
-                    source: e2.into(),
-                });
-            } else if matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
+            if matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
                             || !bundle.flags.do_not_fragment
                             || bundle.flags.receipt_report_requested
                             || bundle.flags.forward_report_requested

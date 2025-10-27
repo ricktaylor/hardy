@@ -23,6 +23,7 @@ static GLOBAL_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct CreationTimestamp {
     /// The time the bundle was created. `None` if the source node does not have an accurate clock.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     creation_time: Option<dtn_time::DtnTime>,
     /// A sequence number that is unique for the source node.
     sequence_number: u64,

@@ -104,6 +104,7 @@ pub struct Id {
     /// The creation timestamp, including a sequence number for uniqueness.
     pub timestamp: creation_timestamp::CreationTimestamp,
     /// Fragmentation information, if this bundle is a fragment.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub fragment_info: Option<FragmentInfo>,
 }
 
@@ -185,22 +186,66 @@ impl core::fmt::Display for Id {
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
     /// If set, this bundle is a fragment of a larger bundle.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub is_fragment: bool,
+
     /// If set, the payload is an administrative record.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub is_admin_record: bool,
+
     /// If set, the bundle must not be fragmented.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub do_not_fragment: bool,
+
     /// If set, the destination application is requested to send an acknowledgement.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub app_ack_requested: bool,
+
     /// If set, status reports should include the time of the reported event.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub report_status_time: bool,
+
     /// If set, a status report should be generated upon bundle reception.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub receipt_report_requested: bool,
+
     /// If set, a status report should be generated upon bundle forwarding.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub forward_report_requested: bool,
+
     /// If set, a status report should be generated upon bundle delivery.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub delivery_report_requested: bool,
+
     /// If set, a status report should be generated upon bundle deletion.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+    )]
     pub delete_report_requested: bool,
 
     /// A bitmask of any unrecognized flags encountered during parsing.
@@ -354,10 +399,15 @@ pub struct Bundle {
 
     // Unpacked from extension blocks
     /// The EID of the node that last forwarded the bundle.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub previous_node: Option<eid::Eid>,
+
     /// The age of the bundle, used if the source node has no clock.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub age: Option<core::time::Duration>,
+
     /// The hop limit and current hop count for the bundle.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub hop_count: Option<hop_info::HopInfo>,
 
     /// A map of all blocks in the bundle, keyed by their block number.
