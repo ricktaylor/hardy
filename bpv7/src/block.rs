@@ -187,9 +187,9 @@ pub struct Block {
     pub bcb: Option<u64>,
 
     /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
-    pub(crate) extent: Range<usize>,
+    pub extent: Range<usize>,
     /// The range of bytes within the `extent` that represents the block-specific data.
-    pub(crate) data: Range<usize>,
+    pub data: Range<usize>,
 }
 
 impl Block {
