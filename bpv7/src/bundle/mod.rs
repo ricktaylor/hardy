@@ -429,14 +429,9 @@ impl Bundle {
             0,
             block::Block {
                 block_type: block::Type::Primary,
-                flags: block::Flags {
-                    must_replicate: true,
-                    report_on_failure: true,
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                },
+                flags: block::Flags::default(),
                 crc_type: self.crc_type,
-                data: extent.clone(),
+                data: 0..0,
                 extent,
                 bib: None,
                 bcb: None,

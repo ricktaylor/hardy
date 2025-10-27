@@ -361,7 +361,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
             })?;
 
             // Check CRC
-            shortest = crc::parse_crc_value(data, arr, crc_type)?.1 && shortest;
+            shortest = crc::parse_crc_value(data, arr, crc_type)? && shortest;
 
             Ok((
                 BlockWithNumber {
