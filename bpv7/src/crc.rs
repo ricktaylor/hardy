@@ -113,7 +113,7 @@ pub(super) fn parse_crc_value(
     data: &[u8],
     block: &mut hardy_cbor::decode::Array,
     crc_type: CrcType,
-) -> Result<(core::ops::Range<usize>, bool), Error> {
+) -> Result<bool, Error> {
     // Parse CRC
     let crc_start = block.offset();
     let crc_value = block.try_parse_value(|value, shortest, tags| {
@@ -137,7 +137,7 @@ pub(super) fn parse_crc_value(
 
     // Now check CRC
     match (crc_type, crc_value) {
-        (CrcType::None, None) => Ok((0..0, true)),
+        (CrcType::None, None) => Ok(true),
         (CrcType::None, _) => Err(Error::UnexpectedCrcValue),
         (CrcType::CRC16_X25, Some((crc, shortest))) => {
             let crc_value = u16::from_be_bytes(
@@ -152,7 +152,7 @@ pub(super) fn parse_crc_value(
             if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {
-                Ok((crc.start..crc.end, shortest))
+                Ok(shortest)
             }
         }
         (CrcType::CRC32_CASTAGNOLI, Some((crc, shortest))) => {
@@ -168,7 +168,7 @@ pub(super) fn parse_crc_value(
             if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {
-                Ok((crc.start..crc.end, shortest))
+                Ok(shortest)
             }
         }
         (CrcType::Unrecognised(t), _) => Err(Error::InvalidType(t)),

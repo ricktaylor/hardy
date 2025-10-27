@@ -18,7 +18,7 @@ pub struct Command {
     )]
     output: Option<PathBuf>,
 
-    /// The list of bundle files to dump, '-' to use stdin.
+    /// The file to dump, '-' to use stdin.
     input: io::Input,
 }
 
