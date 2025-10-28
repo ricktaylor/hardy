@@ -47,8 +47,11 @@ impl Dispatcher {
 
         // Parse the bundle
         let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_store())? {
-                hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported) => (
+            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store())? {
+                hardy_bpv7::bundle::RewrittenBundle::Valid {
+                    bundle,
+                    report_unsupported,
+                } => (
                     bundle::Bundle {
                         metadata: BundleMetadata {
                             storage_name: Some(self.store.save_data(data).await),
@@ -60,17 +63,17 @@ impl Dispatcher {
                     None,
                     report_unsupported,
                 ),
-                hardy_bpv7::bundle::ValidBundle::Rewritten(
+                hardy_bpv7::bundle::RewrittenBundle::Rewritten {
                     bundle,
-                    data,
+                    new_data,
                     report_unsupported,
                     non_canonical,
-                ) => {
+                } => {
                     trace!("Received bundle has been rewritten");
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
-                                storage_name: Some(self.store.save_data(data.into()).await),
+                                storage_name: Some(self.store.save_data(new_data.into()).await),
                                 received_at,
                                 non_canonical,
                                 ..Default::default()
@@ -81,8 +84,12 @@ impl Dispatcher {
                         report_unsupported,
                     )
                 }
-                hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e) => {
-                    trace!("Invalid bundle received: {e}");
+                hardy_bpv7::bundle::RewrittenBundle::Invalid {
+                    bundle,
+                    reason,
+                    error,
+                } => {
+                    trace!("Invalid bundle received: {error}");
 
                     // Don't bother saving the bundle data, it's garbage
                     (
@@ -202,14 +209,14 @@ impl Dispatcher {
                     };
 
                     // Reparse the reconstituted bundle, for sanity
-                    match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_store()) {
-                        Ok(hardy_bpv7::bundle::ValidBundle::Valid(..)) => {}
-                        Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
+                    match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store()) {
+                        Ok(hardy_bpv7::bundle::RewrittenBundle::Valid { .. }) => {}
+                        Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
                             bundle,
-                            data,
-                            _,
+                            new_data,
                             non_canonical,
-                        )) => {
+                            ..
+                        }) => {
                             trace!("Reassembled bundle has been rewritten");
 
                             // Update the metadata
@@ -217,7 +224,7 @@ impl Dispatcher {
                             let old_storage_name = new_bundle
                                 .metadata
                                 .storage_name
-                                .replace(self.store.save_data(data.into()).await)
+                                .replace(self.store.save_data(new_data.into()).await)
                                 .unwrap();
                             new_bundle.bundle = bundle;
                             self.store.update_metadata(&new_bundle).await;
@@ -225,9 +232,10 @@ impl Dispatcher {
                             // And drop the original bundle data
                             self.store.delete_data(&old_storage_name).await;
                         }
-                        Ok(hardy_bpv7::bundle::ValidBundle::Invalid(_, _, e)) | Err(e) => {
+                        Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. })
+                        | Err(error) => {
                             // Reconstituted bundle is garbage
-                            trace!("Reassembled bundle is invalid: {e}");
+                            trace!("Reassembled bundle is invalid: {error}");
                             return self.delete_bundle(new_bundle).await;
                         }
                     }

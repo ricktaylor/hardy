@@ -46,7 +46,7 @@ The following example demonstrates how to parse a BPv7 bundle from its CBOR repr
 
 ```rust,cfg(feature = "std")
 use hardy_bpv7::builder::Builder;
-use hardy_bpv7::bundle::ValidBundle;
+use hardy_bpv7::bundle::RewrittenBundle;
 use hardy_bpv7::block;
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
@@ -64,9 +64,9 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .build(CreationTimestamp::now());
 
 // Parse the bundle from the CBOR data.
-let parsed_bundle = ValidBundle::parse(&cbor, &hardy_bpv7::bpsec::key::KeySet::new(vec![])).unwrap();
+let parsed_bundle = RewrittenBundle::parse(&cbor, &hardy_bpv7::bpsec::key::KeySet::new(vec![])).unwrap();
 
-if let ValidBundle::Valid(bundle, _) = parsed_bundle {
+if let RewrittenBundle::Valid{bundle, ..} = parsed_bundle {
     assert_eq!(bundle.id, original_bundle.id);
     assert_eq!(bundle.destination, original_bundle.destination);
 } else {

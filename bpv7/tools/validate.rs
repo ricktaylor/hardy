@@ -25,13 +25,13 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
             .read_all()
             .map_err(|e| anyhow::anyhow!("Failed to read input from {}: {e}", input.filepath()))?;
 
-        match hardy_bpv7::bundle::ValidBundle::parse(&bundle, &key_store) {
+        match hardy_bpv7::bundle::RewrittenBundle::parse(&bundle, &key_store) {
             Err(e) => {
                 eprintln!("{}: Failed to parse bundle: {e}", input.filepath());
                 count_failed = count_failed.saturating_add(1);
             }
-            Ok(hardy_bpv7::bundle::ValidBundle::Valid(_, _)) => {}
-            Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(_, _, _, non_canonical)) => {
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Valid { .. }) => {}
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten { non_canonical, .. }) => {
                 if !non_canonical {
                     eprintln!(
                         "{}: Non-canonical, but semantically valid bundle",
@@ -40,7 +40,7 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
                     count_failed = count_failed.saturating_add(1);
                 }
             }
-            Ok(hardy_bpv7::bundle::ValidBundle::Invalid(_, _, error)) => {
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. }) => {
                 eprint!(
                     "{}: Parser has had to guess at the content, but basically garbage: {error}",
                     input.filepath()

@@ -107,13 +107,7 @@ mod test {
     }
 
     fn do_test(data: &[u8], keys: &[key::Key]) {
-        match bundle::ValidBundle::parse(data, &Keys(keys)).expect("Failed to parse") {
-            bundle::ValidBundle::Valid(..) => {}
-            bundle::ValidBundle::Rewritten(..) => {
-                panic!("Non-canonical bundle")
-            }
-            bundle::ValidBundle::Invalid(_, _, e) => panic!("Invalid bundle: {e}"),
-        }
+        bundle::ParsedBundle::parse(data, &Keys(keys)).expect("Failed to parse");
     }
 
     #[test]

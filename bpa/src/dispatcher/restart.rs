@@ -14,8 +14,11 @@ impl Dispatcher {
         };
 
         // Parse the bundle (again, just in case we have changed policies etc)
-        match hardy_bpv7::bundle::ValidBundle::parse(&data, self.key_store()) {
-            Ok(hardy_bpv7::bundle::ValidBundle::Valid(bundle, report_unsupported)) => {
+        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store()) {
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
+                bundle,
+                report_unsupported,
+            }) => {
                 // Check if the metadata_storage knows about this bundle
                 if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
                     if metadata.storage_name.as_ref() != Some(&storage_name) {
@@ -67,12 +70,12 @@ impl Dispatcher {
                     RestartResult::Orphan
                 }
             }
-            Ok(hardy_bpv7::bundle::ValidBundle::Rewritten(
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
                 bundle,
-                data,
+                new_data,
                 report_unsupported,
                 non_canonical,
-            )) => {
+            }) => {
                 warn!("Bundle in non-canonical format found: {storage_name}");
 
                 // Check if the metadata_storage knows about this bundle
@@ -99,7 +102,7 @@ impl Dispatcher {
                 };
 
                 // Write the rewritten bundle now for safety
-                let new_storage_name = self.store.save_data(data.into()).await;
+                let new_storage_name = self.store.save_data(new_data.into()).await;
 
                 // Remove the previous from bundle_storage
                 self.store.delete_data(&storage_name).await;
@@ -141,8 +144,12 @@ impl Dispatcher {
                 // Report the bundle as an orphan
                 RestartResult::Orphan
             }
-            Ok(hardy_bpv7::bundle::ValidBundle::Invalid(bundle, reason, e)) => {
-                warn!("Invalid bundle found: {storage_name}, {e}");
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
+                bundle,
+                reason,
+                error,
+            }) => {
+                warn!("Invalid bundle found: {storage_name}, {error}");
 
                 // Check if the metadata_storage knows about this bundle
                 let exists = if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
