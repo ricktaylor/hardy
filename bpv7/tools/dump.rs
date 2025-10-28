@@ -30,30 +30,20 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
         .read_all()
         .map_err(|e| anyhow::anyhow!("Failed to read input from {}: {e}", args.input.filepath()))?;
 
-    let bundle = match hardy_bpv7::bundle::ValidBundle::parse(&bundle, &key_store)
-        .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-    {
-        hardy_bpv7::bundle::ValidBundle::Valid(bundle, _) => bundle,
-        hardy_bpv7::bundle::ValidBundle::Rewritten(bundle, _, _, _) => {
-            eprintln!(
-                "{}: Non-canonical, but semantically valid bundle",
-                args.input.filepath()
-            );
-            bundle
-        }
-        hardy_bpv7::bundle::ValidBundle::Invalid(bundle, _, error) => {
-            eprint!(
-                "{}: Parser has had to guess at the content, but basically garbage: {error}",
-                args.input.filepath()
-            );
-            bundle
-        }
-    };
+    let p = hardy_bpv7::bundle::ParsedBundle::parse(&bundle, &key_store)
+        .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
+
+    if p.non_canonical {
+        eprintln!(
+            "{}: Non-canonical, but semantically valid bundle",
+            args.input.filepath()
+        );
+    }
 
     let mut json = if args.pretty {
-        serde_json::to_string_pretty(&bundle)
+        serde_json::to_string_pretty(&p.bundle)
     } else {
-        serde_json::to_string(&bundle)
+        serde_json::to_string(&p.bundle)
     }
     .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
     json.push('\n');

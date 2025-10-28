@@ -563,20 +563,43 @@ impl Bundle {
     }
 }
 
-/// Represents the result of parsing a bundle.
+/// Represents the result of parsing and rewriting a bundle.
 ///
 /// Parsing a bundle can have several outcomes depending on its validity,
 /// canonical form, and the presence of security features.
 #[derive(Debug)]
-pub enum ValidBundle {
+pub enum RewrittenBundle {
     /// The bundle was parsed successfully and was in canonical form.
     /// The boolean indicates if an unsupported block was encountered that requests a report.
-    Valid(Bundle, bool),
+    Valid {
+        bundle: Bundle,
+        report_unsupported: bool,
+    },
     /// The bundle was valid but not in canonical CBOR form. A rewritten, canonical
     /// version of the bundle data is provided. The booleans indicate if a report
     /// is requested for an unsupported block and if the rewrite was due to non-canonical CBOR.
-    Rewritten(Bundle, Box<[u8]>, bool, bool),
+    Rewritten {
+        bundle: Bundle,
+        new_data: Box<[u8]>,
+        report_unsupported: bool,
+        non_canonical: bool,
+    },
     /// The bundle was invalid. The partially-parsed `Bundle` is provided along with
     /// a `ReasonCode` for status reports and the specific `Error` that occurred.
-    Invalid(Bundle, status_report::ReasonCode, Error),
+    Invalid {
+        bundle: Bundle,
+        reason: status_report::ReasonCode,
+        error: Error,
+    },
+}
+
+/// Represents the result of parsing a bundle without rewriting.
+///
+/// Parsing a bundle can have several outcomes depending on its validity,
+/// canonical form, and the presence of security features.
+#[derive(Debug)]
+pub struct ParsedBundle {
+    pub bundle: Bundle,
+    pub report_unsupported: bool,
+    pub non_canonical: bool,
 }

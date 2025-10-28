@@ -34,6 +34,8 @@ struct BlockParse<'a> {
     bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
     /// A set of security blocks (BIB or BCB) that protect the primary block.
     protects_primary_block: HashSet<u64>,
+    /// Should we rewrite
+    rewrite: bool,
 }
 
 impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
@@ -54,9 +56,10 @@ impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
 
 impl<'a> BlockParse<'a> {
     /// Creates a new `BlockParse` state for a given bundle data slice.
-    fn new(source_data: &'a [u8]) -> Self {
+    fn new(source_data: &'a [u8], rewrite: bool) -> Self {
         Self {
             source_data,
+            rewrite,
             ..Default::default()
         }
     }
@@ -180,7 +183,7 @@ impl<'a> BlockParse<'a> {
                 return Err(Error::DuplicateBlockNumber(block.number));
             }
 
-            if remove {
+            if remove && self.rewrite {
                 self.blocks_to_remove.insert(block.number);
             } else if block.payload.is_some() || !canonical {
                 self.noncanonical_blocks.insert(block.number, block.payload);
@@ -350,7 +353,7 @@ impl<'a> BlockParse<'a> {
         for bib_block_number in core::mem::take(&mut self.bibs_to_check) {
             let bib_block = self.blocks.get(&bib_block_number).expect("Missing BIB!");
 
-            let (mut bib, canonical) = self
+            let (mut bib, mut canonical) = self
                 .parse_payload::<bpsec::bib::OperationSet>(bib_block_number)
                 .map_field_err("BPSec integrity extension block")?;
 
@@ -363,7 +366,7 @@ impl<'a> BlockParse<'a> {
                     report_unsupported = true;
                 }
 
-                if bib_block.flags.delete_block_on_failure {
+                if bib_block.flags.delete_block_on_failure && self.rewrite {
                     self.noncanonical_blocks.remove(&bib_block_number);
                     self.blocks_to_remove.insert(bib_block_number);
                     continue;
@@ -409,15 +412,24 @@ impl<'a> BlockParse<'a> {
                 }
             }
 
-            // Remove targets scheduled for removal
-            let old_len = bib.operations.len();
-            bib.operations
-                .retain(|k, _| !self.blocks_to_remove.contains(k));
-            if bib.operations.is_empty() {
-                self.noncanonical_blocks.remove(&bib_block_number);
-                self.protects_primary_block.remove(&bib_block_number);
-                self.blocks_to_remove.insert(bib_block_number);
-            } else if !canonical || bib.operations.len() != old_len {
+            if self.rewrite {
+                // Remove targets scheduled for removal
+                let old_len = bib.operations.len();
+                bib.operations
+                    .retain(|k, _| !self.blocks_to_remove.contains(k));
+                if bib.operations.is_empty() {
+                    self.noncanonical_blocks.remove(&bib_block_number);
+                    self.protects_primary_block.remove(&bib_block_number);
+                    self.blocks_to_remove.insert(bib_block_number);
+                    continue;
+                }
+
+                if bib.operations.len() != old_len {
+                    canonical = false;
+                }
+            }
+
+            if !canonical {
                 self.noncanonical_blocks.insert(
                     bib_block_number,
                     Some(hardy_cbor::encode::emit(&bib).0.into()),
@@ -475,11 +487,13 @@ impl<'a> BlockParse<'a> {
 
     /// Rewrites the entire bundle if any blocks were non-canonical or removed.
     /// Returns `None` if no rewrite was necessary.
-    fn rewrite(mut self, bundle: &mut Bundle) -> Option<(Box<[u8]>, bool)> {
+    fn finish(mut self, bundle: &mut Bundle) -> (Option<Box<[u8]>>, bool) {
         // If we have nothing to rewrite, get out now
-        if self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty() {
+        if !self.rewrite
+            || (self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty())
+        {
             bundle.blocks = self.blocks;
-            return None;
+            return (None, !self.noncanonical_blocks.is_empty());
         }
 
         let non_canonical = !self.noncanonical_blocks.is_empty();
@@ -489,40 +503,42 @@ impl<'a> BlockParse<'a> {
             .retain(|block_number, _| !self.blocks_to_remove.contains(block_number));
 
         // Write out the new bundle
-        Some((
-            hardy_cbor::encode::emit_array(None, |block_array| {
-                // Primary block first
-                let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
+        (
+            Some(
+                hardy_cbor::encode::emit_array(None, |block_array| {
+                    // Primary block first
+                    let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
 
-                primary_block.extent =
-                    if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
-                        block_array.emit(&hardy_cbor::encode::RawOwned::new(payload))
-                    } else {
-                        block_array.emit(&hardy_cbor::encode::Raw(
-                            &self.source_data[primary_block.extent],
-                        ))
-                    };
-                primary_block.data = primary_block.extent.clone();
-                bundle.blocks.insert(0, primary_block);
+                    primary_block.extent =
+                        if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
+                            block_array.emit(&hardy_cbor::encode::RawOwned::new(payload))
+                        } else {
+                            block_array.emit(&hardy_cbor::encode::Raw(
+                                &self.source_data[primary_block.extent],
+                            ))
+                        };
+                    primary_block.data = primary_block.extent.clone();
+                    bundle.blocks.insert(0, primary_block);
 
-                // Stash payload block
-                let mut payload_block = self.blocks.remove(&1).expect("Missing payload block!");
+                    // Stash payload block
+                    let mut payload_block = self.blocks.remove(&1).expect("Missing payload block!");
 
-                // Emit all blocks
-                for (block_number, mut block) in core::mem::take(&mut self.blocks) {
-                    self.emit_block(&mut block, block_number, block_array)
-                        .expect("Failed to emit block");
-                    bundle.blocks.insert(block_number, block);
-                }
+                    // Emit all blocks
+                    for (block_number, mut block) in core::mem::take(&mut self.blocks) {
+                        self.emit_block(&mut block, block_number, block_array)
+                            .expect("Failed to emit block");
+                        bundle.blocks.insert(block_number, block);
+                    }
 
-                // And final payload block
-                self.emit_block(&mut payload_block, 1, block_array)
-                    .expect("Failed to emit payload block");
-                bundle.blocks.insert(1, payload_block);
-            })
-            .into(),
+                    // And final payload block
+                    self.emit_block(&mut payload_block, 1, block_array)
+                        .expect("Failed to emit payload block");
+                    bundle.blocks.insert(1, payload_block);
+                })
+                .into(),
+            ),
             non_canonical,
-        ))
+        )
     }
 }
 
@@ -534,8 +550,9 @@ fn parse_blocks(
     block_array: &mut hardy_cbor::decode::Array,
     source_data: &[u8],
     key_f: &impl bpsec::key::KeyStore,
-) -> Result<(Option<(Box<[u8]>, bool)>, bool), Error> {
-    let mut parser = BlockParse::new(source_data);
+    rewrite: bool,
+) -> Result<(Option<Box<[u8]>>, bool, bool), Error> {
+    let mut parser = BlockParse::new(source_data, rewrite);
 
     // Steal the primary block, we put it back later
     parser
@@ -569,8 +586,10 @@ fn parse_blocks(
     // We are done with all decrypted content
     parser.decrypted_data.clear();
 
-    // Reduce BCB targets scheduled for removal
-    parser.reduce_bcbs();
+    if parser.rewrite {
+        // Reduce BCB targets scheduled for removal
+        parser.reduce_bcbs();
+    }
 
     // Check we have at least some primary block protection
     if let crc::CrcType::None = bundle.crc_type
@@ -580,15 +599,16 @@ fn parse_blocks(
     }
 
     // Now rewrite blocks (if required)
-    Ok((parser.rewrite(bundle), report_unsupported))
+    let (b, non_canonical) = parser.finish(bundle);
+    Ok((b, non_canonical, report_unsupported))
 }
 
 /// An intermediate error type used during parsing to distinguish between
 /// recoverable and non-recoverable errors.
 #[derive(Error, Debug)]
-enum ValidError {
+enum RewriteError {
     #[error("An invalid bundle")]
-    Invalid(Box<ValidBundle>),
+    Invalid(Box<RewrittenBundle>),
 
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
@@ -597,28 +617,27 @@ enum ValidError {
     Wrapped(#[from] Error),
 }
 
-impl ValidBundle {
-    /// Parses a byte slice into a `ValidBundle`.
-    /// This is the main entry point for bundle parsing.
-    // Bouncing via ValidError allows us to avoid the array completeness check when a semantic error occurs
+impl RewrittenBundle {
+    /// Parses a byte slice into a `RewrittenBundle`.
+    // Bouncing via RewriteError allows us to avoid the array completeness check when a semantic error occurs
     // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
     pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
         match hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
             Self::parse_inner(data, key_f, a, shortest, tags)
         }) {
-            Ok((Self::Valid(bundle, _) | Self::Rewritten(bundle, _, _, _), len))
+            Ok((Self::Valid { bundle, .. } | Self::Rewritten { bundle, .. }, len))
                 if len != data.len() =>
             {
-                Ok(Self::Invalid(
+                Ok(Self::Invalid {
                     bundle,
-                    status_report::ReasonCode::BlockUnintelligible,
-                    Error::AdditionalData,
-                ))
+                    reason: status_report::ReasonCode::BlockUnintelligible,
+                    error: Error::AdditionalData,
+                })
             }
             Ok((b, _)) => Ok(b),
-            Err(ValidError::Invalid(bundle)) => Ok(*bundle),
-            Err(ValidError::InvalidCBOR(e)) => Err(e.into()),
-            Err(ValidError::Wrapped(e)) => Err(e),
+            Err(RewriteError::Invalid(bundle)) => Ok(*bundle),
+            Err(RewriteError::InvalidCBOR(e)) => Err(e.into()),
+            Err(RewriteError::Wrapped(e)) => Err(e),
         }
     }
 
@@ -631,7 +650,7 @@ impl ValidBundle {
         block_array: &mut hardy_cbor::decode::Array,
         mut canonical: bool,
         tags: &[u64],
-    ) -> Result<Self, ValidError> {
+    ) -> Result<Self, RewriteError> {
         // Check for shortest/correct form
         canonical = canonical && !block_array.is_definite() && tags.is_empty();
 
@@ -648,36 +667,97 @@ impl ValidBundle {
         let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
         if let Some(e) = e {
             block_array.skip_to_end(16)?;
-            return Ok(Self::Invalid(
+            return Ok(Self::Invalid {
                 bundle,
-                status_report::ReasonCode::BlockUnintelligible,
-                Error::InvalidField {
+                reason: status_report::ReasonCode::BlockUnintelligible,
+                error: Error::InvalidField {
                     field: "Primary Block",
                     source: e.into(),
                 },
-            ));
+            });
         }
 
         // And now parse the blocks
-        match parse_blocks(&mut bundle, canonical, block_array, data, key_f) {
-            Ok((None, report_unsupported)) => Ok(Self::Valid(bundle, report_unsupported)),
-            Ok((Some((new_data, non_canonical)), report_unsupported)) => Ok(Self::Rewritten(
+        match parse_blocks(&mut bundle, canonical, block_array, data, key_f, true) {
+            Ok((None, _, report_unsupported)) => Ok(Self::Valid {
+                bundle,
+                report_unsupported,
+            }),
+            Ok((Some(new_data), non_canonical, report_unsupported)) => Ok(Self::Rewritten {
                 bundle,
                 new_data,
                 report_unsupported,
                 non_canonical,
-            )),
-            Err(Error::Unsupported(n)) => Err(ValidError::Invalid(Box::new(ValidBundle::Invalid(
+            }),
+            Err(Error::Unsupported(n)) => {
+                Err(RewriteError::Invalid(Box::new(RewrittenBundle::Invalid {
+                    bundle,
+                    reason: status_report::ReasonCode::BlockUnsupported,
+                    error: Error::Unsupported(n),
+                })))
+            }
+            Err(error) => Err(RewriteError::Invalid(Box::new(RewrittenBundle::Invalid {
                 bundle,
-                status_report::ReasonCode::BlockUnsupported,
-                Error::Unsupported(n),
-            )))),
-            Err(e) => Err(ValidError::Invalid(Box::new(ValidBundle::Invalid(
-                bundle,
-                status_report::ReasonCode::BlockUnintelligible,
-                e,
-            )))),
+                reason: status_report::ReasonCode::BlockUnintelligible,
+                error,
+            }))),
         }
+    }
+}
+
+impl ParsedBundle {
+    /// Parses a byte slice into a `ParsedBundle`.
+    // Bouncing via RewriteError allows us to avoid the array completeness check when a semantic error occurs
+    // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
+    pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
+        let (b, len) = hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+            Self::parse_inner(data, key_f, a, shortest, tags)
+        })?;
+
+        if len != data.len() {
+            Err(Error::AdditionalData)
+        } else {
+            Ok(b)
+        }
+    }
+
+    /// The inner parsing logic, called by `parse`.
+    /// This function is responsible for parsing the primary block and then handing off
+    /// to `parse_blocks` for the extension blocks.
+    fn parse_inner(
+        data: &[u8],
+        key_f: &impl bpsec::key::KeyStore,
+        block_array: &mut hardy_cbor::decode::Array,
+        mut canonical: bool,
+        tags: &[u64],
+    ) -> Result<Self, Error> {
+        // Check for shortest/correct form
+        canonical = canonical && !block_array.is_definite() && tags.is_empty();
+
+        // Parse Primary block
+        let block_start = block_array.offset();
+        let primary_block = block_array
+            .parse::<(primary_block::PrimaryBlock, bool)>()
+            .map(|(v, s)| {
+                canonical = canonical && s;
+                v
+            })
+            .map_field_err("Primary Block")?;
+
+        let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
+        if let Some(e) = e {
+            block_array.skip_to_end(16)?;
+            return Err(e);
+        }
+
+        // And now parse the blocks
+        parse_blocks(&mut bundle, canonical, block_array, data, key_f, false).map(
+            |(_, non_canonical, report_unsupported)| Self {
+                bundle,
+                report_unsupported,
+                non_canonical,
+            },
+        )
     }
 }
 
@@ -690,13 +770,16 @@ mod test {
     fn tests() {
         // From Stephan Havermans testing
         assert!(matches!(
-            ValidBundle::parse(
+            RewrittenBundle::parse(
                 &hex!(
                     "9f89071844018202820301820100820100821b000000b5998c982b011a000493e042c9f6850602182700458202820200850704010042183485010101004454455354ff"
                 ),
                 &bpsec::key::KeySet::new(vec![]),
             ),
-            Ok(ValidBundle::Invalid(_, _, Error::InvalidFlags))
+            Ok(RewrittenBundle::Invalid {
+                error: Error::InvalidFlags,
+                ..
+            })
         ));
     }
 }

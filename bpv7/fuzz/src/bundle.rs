@@ -1,5 +1,5 @@
 use base64::prelude::*;
-use hardy_bpv7::{bpsec::key, bundle::ValidBundle, eid::Eid};
+use hardy_bpv7::{bpsec::key, bundle::RewrittenBundle, eid::Eid};
 
 struct Keys(Vec<key::Key>);
 
@@ -110,23 +110,23 @@ pub fn test_bundle(orig_data: &[u8]) {
         )
     });
 
-    if let Ok(ValidBundle::Rewritten(_, rewritten_data, _, _)) = ValidBundle::parse(orig_data, keys)
+    if let Ok(RewrittenBundle::Rewritten { new_data, .. }) = RewrittenBundle::parse(orig_data, keys)
     {
-        match ValidBundle::parse(&rewritten_data, keys) {
-            Ok(ValidBundle::Valid(..)) => {}
-            Ok(ValidBundle::Rewritten(..)) => {
+        match RewrittenBundle::parse(&new_data, keys) {
+            Ok(RewrittenBundle::Valid { .. }) => {}
+            Ok(RewrittenBundle::Rewritten { .. }) => {
                 eprintln!("Original: {orig_data:02x?}");
-                eprintln!("Rewrite: {rewritten_data:02x?}");
+                eprintln!("Rewrite: {new_data:02x?}");
                 panic!("Rewrite produced non-canonical results")
             }
-            Ok(ValidBundle::Invalid(_, _, e)) => {
+            Ok(RewrittenBundle::Invalid { error, .. }) => {
                 eprintln!("Original: {orig_data:02x?}");
-                eprintln!("Rewrite: {rewritten_data:02x?}");
-                panic!("Rewrite produced invalid results: {e}")
+                eprintln!("Rewrite: {new_data:02x?}");
+                panic!("Rewrite produced invalid results: {error}")
             }
             Err(_) => {
                 eprintln!("Original: {orig_data:02x?}");
-                eprintln!("Rewrite: {rewritten_data:02x?}");
+                eprintln!("Rewrite: {new_data:02x?}");
                 panic!("Rewrite errored");
             }
         };
