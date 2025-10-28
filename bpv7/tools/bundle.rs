@@ -5,6 +5,7 @@ mod create;
 mod dump;
 mod io;
 mod keys;
+mod rewrite;
 mod validate;
 
 /// A CLI tool for creating and managing BPv7 bundles.
@@ -22,6 +23,9 @@ enum Commands {
     /// Create a new BPv7 bundle from a payload file.
     Create(create::Command),
 
+    /// Rewrite a bundle, removing unsupported blocks and canonicalizing as appropriate
+    Rewrite(rewrite::Command),
+
     /// Check one or more bundles for validity.
     Validate(validate::Command),
 
@@ -34,6 +38,7 @@ fn main() -> anyhow::Result<()> {
     // This is the core of the dispatch logic.
     match Cli::parse().command {
         Commands::Create(args) => create::exec(args),
+        Commands::Rewrite(args) => rewrite::exec(args),
         Commands::Dump(args) => dump::exec(args),
         Commands::Validate(args) => validate::exec(args),
     }
