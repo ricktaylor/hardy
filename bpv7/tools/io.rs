@@ -11,14 +11,17 @@ pub enum Input {
 }
 
 impl Input {
-    pub fn read_all(&self) -> std::io::Result<Vec<u8>> {
+    pub fn read_all(&self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::StdIn => {
                 let mut buffer = Vec::new();
-                std::io::BufReader::new(std::io::stdin()).read_to_end(&mut buffer)?;
+                std::io::BufReader::new(std::io::stdin())
+                    .read_to_end(&mut buffer)
+                    .map_err(|e| anyhow::anyhow!("Failed to read from stdin: {e}"))?;
                 Ok(buffer)
             }
-            Self::Path(path) => std::fs::read(path),
+            Self::Path(f) => std::fs::read(f)
+                .map_err(|e| anyhow::anyhow!("Failed to read from '{}': {e}", f.display())),
         }
     }
 
@@ -50,17 +53,23 @@ impl Output {
         Self(path)
     }
 
-    pub fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+    pub fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()> {
         match &self.0 {
-            Some(f) => std::io::BufWriter::new(std::fs::File::create(f)?).write_all(buf),
-            None => std::io::BufWriter::new(std::io::stdout()).write_all(buf),
+            Some(f) => std::io::BufWriter::new(std::fs::File::create(f).map_err(|e| {
+                anyhow::anyhow!("Failed to open output file '{}': {e}", f.display())
+            })?)
+            .write_all(buf)
+            .map_err(|e| anyhow::anyhow!("Failed to write to output file '{}': {e}", f.display())),
+            None => std::io::BufWriter::new(std::io::stdout())
+                .write_all(buf)
+                .map_err(|e| anyhow::anyhow!("Failed to write to stdout: {e}")),
         }
     }
 
-    pub fn filepath<'a>(&'a self) -> Cow<'a, str> {
-        match &self.0 {
-            None => "stdout".into(),
-            Some(p) => p.to_string_lossy(),
-        }
-    }
+    // pub fn filepath<'a>(&'a self) -> Cow<'a, str> {
+    //     match &self.0 {
+    //         None => "stdout".into(),
+    //         Some(p) => p.to_string_lossy(),
+    //     }
+    // }
 }

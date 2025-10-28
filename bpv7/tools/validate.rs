@@ -21,9 +21,7 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
 
     let mut count_failed: usize = 0;
     for input in args.files {
-        let bundle = input
-            .read_all()
-            .map_err(|e| anyhow::anyhow!("Failed to read input from {}: {e}", input.filepath()))?;
+        let bundle = input.read_all()?;
 
         match hardy_bpv7::bundle::ParsedBundle::parse(&bundle, &key_store) {
             Err(e) => {
