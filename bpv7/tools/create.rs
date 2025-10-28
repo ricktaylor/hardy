@@ -59,24 +59,15 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
         builder = builder.with_lifetime(lifetime.into());
     }
 
-    let mut output = io::Output::new(args.output);
-
-    output
-        .write_all(
-            &builder
-                .add_extension_block(hardy_bpv7::block::Type::Payload)
-                .with_flags(hardy_bpv7::block::Flags {
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .build(&args.payload.read_all().map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to read payload from {}: {e}",
-                        args.payload.filepath()
-                    )
-                })?)
-                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-                .1,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to write output to {}: {e}", output.filepath()))
+    io::Output::new(args.output).write_all(
+        &builder
+            .add_extension_block(hardy_bpv7::block::Type::Payload)
+            .with_flags(hardy_bpv7::block::Flags {
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
+            .build(&args.payload.read_all()?)
+            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .1,
+    )
 }

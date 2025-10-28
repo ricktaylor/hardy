@@ -22,10 +22,7 @@ pub struct Command {
 pub fn exec(args: Command) -> anyhow::Result<()> {
     let key_store: hardy_bpv7::bpsec::key::KeySet = args.key_args.try_into()?;
 
-    let data = args
-        .input
-        .read_all()
-        .map_err(|e| anyhow::anyhow!("Failed to read input from {}: {e}", args.input.filepath()))?;
+    let data = args.input.read_all()?;
 
     let data = match hardy_bpv7::bundle::RewrittenBundle::parse(&data, &key_store)
         .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
@@ -37,8 +34,5 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
         }
     };
 
-    let mut output = io::Output::new(args.output);
-    output
-        .write_all(&data)
-        .map_err(|e| anyhow::anyhow!("Failed to write output to {}: {e}", output.filepath()))
+    io::Output::new(args.output).write_all(&data)
 }
