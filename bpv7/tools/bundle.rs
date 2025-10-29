@@ -7,6 +7,7 @@ mod io;
 mod keys;
 mod rewrite;
 mod validate;
+mod verify;
 
 /// A CLI tool for creating and managing BPv7 bundles.
 #[derive(Parser, Debug)]
@@ -20,20 +21,23 @@ struct Cli {
 /// Defines the available subcommands for the 'bundle' tool.
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Create a new BPv7 bundle from a payload file.
+    /// Create a new bundle with payload
     Create(create::Command),
 
     /// Rewrite a bundle, removing unsupported blocks and canonicalizing as appropriate
     Rewrite(rewrite::Command),
 
-    /// Check one or more bundles for validity.
+    /// Check one or more bundles for validity
     Validate(validate::Command),
 
     /// Dump the json serialization of a bundle
     Dump(dump::Command),
 
-    /// Extract the data of a block in the bundle
+    /// Extract the data of a block in a bundle
     Extract(extract::Command),
+
+    /// Verify the integrity of a block in a bundle
+    Verify(verify::Command),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,8 +49,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Dump(args) => args.exec(),
         Commands::Validate(args) => args.exec(),
         Commands::Extract(args) => args.exec(),
-        // Extend,
+        Commands::Verify(args) => args.exec(),
         // Sign,
-        // Verify,
     }
 }
