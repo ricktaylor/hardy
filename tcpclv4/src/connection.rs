@@ -164,7 +164,7 @@ impl ConnectionRegistry {
         for (addr, eid) in peers {
             if let Err(e) = self
                 .sink
-                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::TcpClv4Address(addr))
+                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::Tcp(addr))
                 .await
             {
                 error!("Failed to unregister peer: {e:?}");
@@ -210,7 +210,7 @@ impl ConnectionRegistry {
                 .is_none()
             && let Err(e) = self
                 .sink
-                .add_peer(eid, hardy_bpa::cla::ClaAddress::TcpClv4Address(remote_addr))
+                .add_peer(eid, hardy_bpa::cla::ClaAddress::Tcp(remote_addr))
                 .await
         {
             error!("add_peer failed: {e:?}");
@@ -236,7 +236,7 @@ impl ConnectionRegistry {
         if let Some((addr, eid)) = peer
             && let Err(e) = self
                 .sink
-                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::TcpClv4Address(addr))
+                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::Tcp(addr))
                 .await
         {
             error!("Failed to unregister peer: {e:?}");

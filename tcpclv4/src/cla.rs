@@ -102,7 +102,7 @@ impl hardy_bpa::cla::Cla for Cla {
             return Err(hardy_bpa::cla::Error::Disconnected);
         };
 
-        let hardy_bpa::cla::ClaAddress::TcpClv4Address(remote_addr) = cla_addr else {
+        let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr else {
             return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
         };
 

@@ -5,7 +5,7 @@ pub mod cla {
         fn from(value: ClaAddressType) -> Self {
             match value {
                 ClaAddressType::Unknown => Self::Unknown(0),
-                ClaAddressType::TcpClV4 => Self::TcpClv4,
+                ClaAddressType::Tcp => Self::Tcp,
             }
         }
     }
@@ -15,7 +15,7 @@ pub mod cla {
 
         fn try_from(value: hardy_bpa::cla::ClaAddressType) -> Result<Self, Self::Error> {
             match value {
-                hardy_bpa::cla::ClaAddressType::TcpClv4 => Ok(ClaAddressType::TcpClV4),
+                hardy_bpa::cla::ClaAddressType::Tcp => Ok(ClaAddressType::Tcp),
                 hardy_bpa::cla::ClaAddressType::Unknown(0) => Ok(ClaAddressType::Unknown),
                 hardy_bpa::cla::ClaAddressType::Unknown(s) => Err(tonic::Status::invalid_argument(
                     format!("Unknown cla address type {s}"),
@@ -33,7 +33,7 @@ pub mod cla {
 
             Ok(Self {
                 address_type: match address_type {
-                    hardy_bpa::cla::ClaAddressType::TcpClv4 => ClaAddressType::TcpClV4.into(),
+                    hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp.into(),
                     hardy_bpa::cla::ClaAddressType::Unknown(0) => ClaAddressType::Unknown.into(),
                     hardy_bpa::cla::ClaAddressType::Unknown(s) => s as i32,
                 },
@@ -49,7 +49,7 @@ pub mod cla {
             (
                 match value.address_type.try_into() {
                     Ok(ClaAddressType::Unknown) => hardy_bpa::cla::ClaAddressType::Unknown(0),
-                    Ok(ClaAddressType::TcpClV4) => hardy_bpa::cla::ClaAddressType::TcpClv4,
+                    Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
                     Err(_) => hardy_bpa::cla::ClaAddressType::Unknown(value.address_type as u32),
                 },
                 value.address,

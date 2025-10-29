@@ -22,7 +22,8 @@ service Cla {
 
 // A message sent from the CLA to the BPA.
 message ClaToBpa {
-  // A unique identifier for the message, used to correlate requests and responses.
+  // A unique identifier for the message, used to correlate requests and
+  // responses.
   uint32 msg_id = 1;
   // The message content.
   oneof msg {
@@ -34,7 +35,8 @@ message ClaToBpa {
     DispatchBundleRequest dispatch = 4;
     // A request to add a peer. This is used to inform the BPA of a new peer.
     AddPeerRequest add_peer = 5;
-    // A request to remove a peer. This is used to inform the BPA that a peer is no longer available.
+    // A request to remove a peer. This is used to inform the BPA that a peer is
+    // no longer available.
     RemovePeerRequest remove_peer = 6;
     // A response to a forward bundle request.
     ForwardBundleResponse forward = 7;
@@ -43,7 +45,8 @@ message ClaToBpa {
 
 // A message sent from the BPA to the CLA.
 message BpaToCla {
-  // A unique identifier for the message, used to correlate requests and responses.
+  // A unique identifier for the message, used to correlate requests and
+  // responses.
   uint32 msg_id = 1;
   // The message content.
   oneof msg {
@@ -68,8 +71,8 @@ message BpaToCla {
 enum ClaAddressType {
   // The address type is unknown.
   CLA_ADDRESS_TYPE_UNKNOWN = 0;
-  // TCP Convergence Layer, version 4.
-  CLA_ADDRESS_TYPE_TCP_CL_V4 = 1;
+  // IPv4 or IPv6 address and TCP port.
+  CLA_ADDRESS_TYPE_TCP = 1;
 }
 
 // Represents a network address for a specific Convergence Layer Adapter.
@@ -77,7 +80,8 @@ enum ClaAddressType {
 message ClaAddress {
   // The type of the CLA address.
   ClaAddressType address_type = 1;
-  // The raw address bytes. The format of this field is dependent on the `address_type`.
+  // The raw address bytes. The format of this field is dependent on the
+  // `address_type`.
   bytes address = 2;
 }
 
@@ -85,9 +89,9 @@ message ClaAddress {
 message RegisterClaRequest {
   // The name of the CLA. This should be unique among all registered CLAs.
   string name = 1;
-  // The address type of the CLA. This is used to identify the protocol associated
-  // with the CLA. If not provided, the CLA will not be registered as a handler for
-  // any address type.
+  // The address type of the CLA. This is used to identify the protocol
+  // associated with the CLA. If not provided, the CLA will not be registered as
+  // a handler for any address type.
   optional ClaAddressType address_type = 2;
 }
 
@@ -131,7 +135,8 @@ message ForwardBundleRequest {
   bytes bundle = 1;
   // The address to forward the bundle to.
   ClaAddress address = 2;
-  // The egress queue to use for forwarding. This is determined by the egress policy.
+  // The egress queue to use for forwarding. This is determined by the egress
+  // policy.
   optional uint32 queue = 3;
 }
 
