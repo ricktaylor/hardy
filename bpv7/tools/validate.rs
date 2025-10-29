@@ -1,6 +1,5 @@
 use super::*;
 
-/// Holds the arguments for the `show` subcommand.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
@@ -8,7 +7,7 @@ pub struct Command {
     #[command(flatten)]
     key_args: keys::KeyLoaderArgs,
 
-    /// The list of bundle files to validate, '-' to use stdin.
+    /// The list of bundle files to validate, can include '-' to use stdin.
     files: Vec<io::Input>,
 }
 

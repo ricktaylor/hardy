@@ -1,6 +1,5 @@
 use super::*;
 
-/// Holds the arguments for the `show` subcommand.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
@@ -8,17 +7,15 @@ pub struct Command {
     #[command(flatten)]
     key_args: keys::KeyLoaderArgs,
 
-    #[arg(short, long, long_help = "Pretty-print the output")]
+    /// Pretty-print the output
+    #[arg(short, long)]
     pretty: bool,
 
-    #[arg(
-        short,
-        long,
-        long_help = "Path to the location to write the bundle to, or stdout if not supplied"
-    )]
-    output: Option<PathBuf>,
+    /// Path to the location to write the bundle to, or stdout if not supplied
+    #[arg(short, long, default_value = "")]
+    output: io::Output,
 
-    /// The file to dump, '-' to use stdin.
+    /// The bundle file to dump, '-' to use stdin.
     input: io::Input,
 }
 
@@ -46,6 +43,6 @@ impl Command {
         .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
         json.push('\n');
 
-        io::Output::new(self.output).write_all(json.as_bytes())
+        self.output.write_all(json.as_bytes())
     }
 }
