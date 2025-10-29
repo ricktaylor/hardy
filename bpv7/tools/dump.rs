@@ -22,28 +22,30 @@ pub struct Command {
     input: io::Input,
 }
 
-pub fn exec(args: Command) -> anyhow::Result<()> {
-    let key_store: hardy_bpv7::bpsec::key::KeySet = args.key_args.try_into()?;
+impl Command {
+    pub fn exec(self) -> anyhow::Result<()> {
+        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
 
-    let bundle = args.input.read_all()?;
+        let bundle = self.input.read_all()?;
 
-    let p = hardy_bpv7::bundle::ParsedBundle::parse(&bundle, &key_store)
-        .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
+        let p = hardy_bpv7::bundle::ParsedBundle::parse(&bundle, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-    if p.non_canonical {
-        eprintln!(
-            "{}: Non-canonical, but semantically valid bundle",
-            args.input.filepath()
-        );
+        if p.non_canonical {
+            eprintln!(
+                "{}: Non-canonical, but semantically valid bundle",
+                self.input.filepath()
+            );
+        }
+
+        let mut json = if self.pretty {
+            serde_json::to_string_pretty(&p.bundle)
+        } else {
+            serde_json::to_string(&p.bundle)
+        }
+        .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
+        json.push('\n');
+
+        io::Output::new(self.output).write_all(json.as_bytes())
     }
-
-    let mut json = if args.pretty {
-        serde_json::to_string_pretty(&p.bundle)
-    } else {
-        serde_json::to_string(&p.bundle)
-    }
-    .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
-    json.push('\n');
-
-    io::Output::new(args.output).write_all(json.as_bytes())
 }

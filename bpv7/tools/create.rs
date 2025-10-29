@@ -44,30 +44,32 @@ pub struct Command {
     lifetime: Option<humantime::Duration>,
 }
 
-pub fn exec(args: Command) -> anyhow::Result<()> {
-    let mut builder = hardy_bpv7::builder::Builder::new(args.source, args.destination);
+impl Command {
+    pub fn exec(self) -> anyhow::Result<()> {
+        let mut builder = hardy_bpv7::builder::Builder::new(self.source, self.destination);
 
-    if let Some(report_to) = args.report_to {
-        builder = builder.with_report_to(report_to);
+        if let Some(report_to) = self.report_to {
+            builder = builder.with_report_to(report_to);
+        }
+
+        if let Some(lifetime) = self.lifetime {
+            (lifetime.as_millis() > u64::MAX as u128)
+                .then_some(())
+                .ok_or(anyhow::anyhow!("Lifetime too long: {lifetime}!"))?;
+
+            builder = builder.with_lifetime(lifetime.into());
+        }
+
+        io::Output::new(self.output).write_all(
+            &builder
+                .add_extension_block(hardy_bpv7::block::Type::Payload)
+                .with_flags(hardy_bpv7::block::Flags {
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                })
+                .build(&self.payload.read_all()?)
+                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .1,
+        )
     }
-
-    if let Some(lifetime) = args.lifetime {
-        (lifetime.as_millis() > u64::MAX as u128)
-            .then_some(())
-            .ok_or(anyhow::anyhow!("Lifetime too long: {lifetime}!"))?;
-
-        builder = builder.with_lifetime(lifetime.into());
-    }
-
-    io::Output::new(args.output).write_all(
-        &builder
-            .add_extension_block(hardy_bpv7::block::Type::Payload)
-            .with_flags(hardy_bpv7::block::Flags {
-                delete_bundle_on_failure: true,
-                ..Default::default()
-            })
-            .build(&args.payload.read_all()?)
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-            .1,
-    )
 }

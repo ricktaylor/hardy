@@ -37,9 +37,9 @@ fn main() -> anyhow::Result<()> {
     // Match on the parsed subcommand and call the appropriate handler function.
     // This is the core of the dispatch logic.
     match Cli::parse().command {
-        Commands::Create(args) => create::exec(args),
-        Commands::Rewrite(args) => rewrite::exec(args),
-        Commands::Dump(args) => dump::exec(args),
-        Commands::Validate(args) => validate::exec(args),
+        Commands::Create(args) => args.exec(),
+        Commands::Rewrite(args) => args.exec(),
+        Commands::Dump(args) => args.exec(),
+        Commands::Validate(args) => args.exec(),
     }
 }
