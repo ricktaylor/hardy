@@ -1,46 +1,31 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
 
-/// Holds the arguments for the `create` subcommand.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    #[arg(short, long, long_help = "The source Endpoint ID (EID) of the bundle")]
+    /// The source Endpoint ID (EID) of the bundle
+    #[arg(short, long)]
     source: Eid,
 
-    #[arg(
-        short,
-        long,
-        long_help = "The destination Endpoint ID (EID) of the bundle"
-    )]
+    /// The destination Endpoint ID (EID) of the bundle
+    #[arg(short, long)]
     destination: Eid,
 
-    #[arg(
-        short,
-        long = "report-to",
-        long_help = "The optional 'Report To' Endpoint ID (EID) of the bundle"
-    )]
+    /// The optional 'Report To' Endpoint ID (EID) of the bundle
+    #[arg(short, long = "report-to")]
     report_to: Option<Eid>,
 
-    #[arg(
-        short,
-        long,
-        long_help = "Path to the file to use as payload, use '-' for stdin"
-    )]
+    /// The file to use as payload, use '-' for stdin
+    #[arg(short, long)]
     payload: io::Input,
 
-    #[arg(
-        short,
-        long,
-        long_help = "Path to the location to write the bundle to, or stdout if not supplied"
-    )]
-    output: Option<PathBuf>,
+    /// Path to the location to write the bundle to, or stdout if not supplied
+    #[arg(short, long, default_value = "")]
+    output: io::Output,
 
-    #[arg(
-        short,
-        long,
-        long_help = "The optional lifetime of the bundle, or 24 hours if not supplied"
-    )]
+    /// The optional lifetime of the bundle, or 24 hours if not supplied
+    #[arg(short, long)]
     lifetime: Option<humantime::Duration>,
 }
 
@@ -60,7 +45,7 @@ impl Command {
             builder = builder.with_lifetime(lifetime.into());
         }
 
-        io::Output::new(self.output).write_all(
+        self.output.write_all(
             &builder
                 .add_extension_block(hardy_bpv7::block::Type::Payload)
                 .with_flags(hardy_bpv7::block::Flags {

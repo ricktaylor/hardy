@@ -21,14 +21,9 @@ impl JwkInput {
 /// Any subcommand can include this using `#[command(flatten)]`.
 #[derive(clap::Args, Debug)]
 pub struct KeyLoaderArgs {
-    /// The key or key set.
+    /// The optional key or key set.
     /// Can be a file path or a raw JSON string.
-    #[arg(
-        short,
-        long,
-        long_help("The key or key set. Can be a file path or a raw JSON string."),
-        value_name = "KEY_OR_KEY_SET_SOURCE"
-    )]
+    #[arg(short, long, value_name = "KEY_OR_KEY_SET_SOURCE")]
     pub key: Option<String>,
 }
 

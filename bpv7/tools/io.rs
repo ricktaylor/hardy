@@ -1,7 +1,7 @@
-use super::*;
 use std::{
     borrow::Cow,
     io::{Read, Write},
+    path::PathBuf,
 };
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ impl Input {
 }
 
 impl std::str::FromStr for Input {
-    type Err = std::io::Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "-" {
@@ -45,15 +45,20 @@ impl std::str::FromStr for Input {
     }
 }
 
-#[derive(Debug, Clone)]
+impl std::fmt::Display for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            Self::StdIn => write!(f, "stdin"),
+            Self::Path(p) => write!(f, "{}", p.display()),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct Output(Option<PathBuf>);
 
 impl Output {
-    pub fn new(path: Option<PathBuf>) -> Self {
-        Self(path)
-    }
-
-    pub fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()> {
+    pub fn write_all(&self, buf: &[u8]) -> anyhow::Result<()> {
         match &self.0 {
             Some(f) => std::io::BufWriter::new(std::fs::File::create(f).map_err(|e| {
                 anyhow::anyhow!("Failed to open output file '{}': {e}", f.display())
@@ -65,11 +70,25 @@ impl Output {
                 .map_err(|e| anyhow::anyhow!("Failed to write to stdout: {e}")),
         }
     }
+}
 
-    // pub fn filepath<'a>(&'a self) -> Cow<'a, str> {
-    //     match &self.0 {
-    //         None => "stdout".into(),
-    //         Some(p) => p.to_string_lossy(),
-    //     }
-    // }
+impl std::str::FromStr for Output {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            Ok(Self(None))
+        } else {
+            Ok(Self(Some(PathBuf::from(s))))
+        }
+    }
+}
+
+impl std::fmt::Display for Output {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            None => write!(f, "stdout"),
+            Some(p) => write!(f, "{}", p.display()),
+        }
+    }
 }
