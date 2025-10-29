@@ -19,20 +19,22 @@ pub struct Command {
     input: io::Input,
 }
 
-pub fn exec(args: Command) -> anyhow::Result<()> {
-    let key_store: hardy_bpv7::bpsec::key::KeySet = args.key_args.try_into()?;
+impl Command {
+    pub fn exec(self) -> anyhow::Result<()> {
+        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
 
-    let data = args.input.read_all()?;
+        let data = self.input.read_all()?;
 
-    let data = match hardy_bpv7::bundle::RewrittenBundle::parse(&data, &key_store)
-        .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-    {
-        hardy_bpv7::bundle::RewrittenBundle::Valid { .. } => data,
-        hardy_bpv7::bundle::RewrittenBundle::Rewritten { new_data, .. } => new_data.into(),
-        hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. } => {
-            return Err(anyhow::anyhow!("Failed to parse bundle: {error}"));
-        }
-    };
+        let data = match hardy_bpv7::bundle::RewrittenBundle::parse(&data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
+        {
+            hardy_bpv7::bundle::RewrittenBundle::Valid { .. } => data,
+            hardy_bpv7::bundle::RewrittenBundle::Rewritten { new_data, .. } => new_data.into(),
+            hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. } => {
+                return Err(anyhow::anyhow!("Failed to parse bundle: {error}"));
+            }
+        };
 
-    io::Output::new(args.output).write_all(&data)
+        io::Output::new(self.output).write_all(&data)
+    }
 }
