@@ -39,8 +39,8 @@ pub enum Error {
 /// This is used to identify the protocol associated with a `ClaAddress`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClaAddressType {
-    /// TCP Convergence Layer, version 4.
-    TcpClv4,
+    /// IPv4 and IPv6 address + port.
+    Tcp,
     /// An unknown or custom address type, identified by a numeric code.
     Unknown(u32),
 }
@@ -48,8 +48,8 @@ pub enum ClaAddressType {
 /// Represents a network address for a specific Convergence Layer Adapter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClaAddress {
-    /// An address for the TCP Convergence Layer (v4), represented as a standard socket address.
-    TcpClv4Address(core::net::SocketAddr),
+    /// An TCP address, represented as a standard socket address.
+    Tcp(core::net::SocketAddr),
     /// An address for an unknown or custom CLA, containing the type identifier and the raw address bytes.
     Unknown(u32, Bytes),
 }
@@ -58,7 +58,7 @@ impl ClaAddress {
     /// Returns the `ClaAddressType` corresponding to this address.
     pub fn address_type(&self) -> ClaAddressType {
         match self {
-            ClaAddress::TcpClv4Address(_) => ClaAddressType::TcpClv4,
+            ClaAddress::Tcp(_) => ClaAddressType::Tcp,
             ClaAddress::Unknown(t, _) => ClaAddressType::Unknown(*t),
         }
     }
@@ -69,7 +69,7 @@ impl TryFrom<(ClaAddressType, Bytes)> for ClaAddress {
 
     fn try_from((addr_type, addr): (ClaAddressType, Bytes)) -> Result<Self> {
         match addr_type {
-            ClaAddressType::TcpClv4 => Ok(ClaAddress::TcpClv4Address(
+            ClaAddressType::Tcp => Ok(ClaAddress::Tcp(
                 String::from_utf8(addr.into())
                     .map_err(|e| Error::Internal(Box::new(e)))?
                     .parse()
@@ -83,8 +83,8 @@ impl TryFrom<(ClaAddressType, Bytes)> for ClaAddress {
 impl From<ClaAddress> for (ClaAddressType, Bytes) {
     fn from(value: ClaAddress) -> Self {
         match value {
-            ClaAddress::TcpClv4Address(socket_addr) => (
-                ClaAddressType::TcpClv4,
+            ClaAddress::Tcp(socket_addr) => (
+                ClaAddressType::Tcp,
                 socket_addr.to_string().as_bytes().to_vec().into(),
             ),
             ClaAddress::Unknown(t, bytes) => (ClaAddressType::Unknown(t), bytes),
@@ -95,7 +95,7 @@ impl From<ClaAddress> for (ClaAddressType, Bytes) {
 impl std::fmt::Display for ClaAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClaAddress::TcpClv4Address(socket_addr) => write!(f, "{socket_addr}"),
+            ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
             ClaAddress::Unknown(t, bytes) => write!(f, "raw({t}):{bytes:?}"),
         }
     }
