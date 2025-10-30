@@ -1322,7 +1322,14 @@ dependencies = [
  "anyhow",
  "caps",
  "check_elevation",
+ "clap",
+ "hardy-bpa",
+ "hardy-bpv7",
+ "humantime",
  "libc",
+ "rand",
+ "time",
+ "tokio",
 ]
 
 [[package]]
