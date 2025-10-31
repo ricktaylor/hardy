@@ -69,8 +69,8 @@ message BpaToCla {
 // This is used to identify the protocol associated with a `ClaAddress`.
 // See `bpa::cla::ClaAddressType` for the Rust implementation.
 enum ClaAddressType {
-  // The address type is unknown.
-  CLA_ADDRESS_TYPE_UNKNOWN = 0;
+  // The address type is private.
+  CLA_ADDRESS_TYPE_PRIVATE = 0;
   // IPv4 or IPv6 address and TCP port.
   CLA_ADDRESS_TYPE_TCP = 1;
 }

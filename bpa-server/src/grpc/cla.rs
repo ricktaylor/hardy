@@ -45,28 +45,28 @@ impl Cla {
                         });
 
                         if tx
-                        .send(
-                            bpa.register_cla(
-                                msg.name,
+                            .send(
+                                bpa.register_cla(
+                                    msg.name,
                                 msg.address_type.map(|o| match <i32 as std::convert::TryInto<ClaAddressType>>::try_into(o) {
                                     Ok(t) => t.into(),
-                                    Err(_) => hardy_bpa::cla::ClaAddressType::Unknown(o as u32),
+                                    Err(_) => hardy_bpa::cla::ClaAddressType::Private,
                                 }),
-                                cla.clone(),
-                                None,
+                                    cla.clone(),
+                                    None,
+                                )
+                                .await
+                                .map(|_| BpaToCla {
+                                    msg_id,
+                                    msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {})),
+                                })
+                                .map_err(|e| tonic::Status::from_error(e.into())),
                             )
                             .await
-                            .map(|_| BpaToCla {
-                                msg_id,
-                                msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {})),
-                            })
-                            .map_err(|e| tonic::Status::from_error(e.into())),
-                        )
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
+                            .is_err()
+                        {
+                            return;
+                        }
                         cla
                     }
                     Some(msg) => {
@@ -283,11 +283,7 @@ impl hardy_bpa::cla::Cla for Cla {
             .send(Ok(BpaToCla {
                 msg: Some(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                     bundle: bundle.to_vec().into(),
-                    address: Some(
-                        cla_addr.clone().try_into().map_err(|e: tonic::Status| {
-                            hardy_bpa::cla::Error::Internal(e.into())
-                        })?,
-                    ),
+                    address: Some(cla_addr.clone().into()),
                     queue,
                 })),
                 msg_id,

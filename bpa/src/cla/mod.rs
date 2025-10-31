@@ -41,8 +41,8 @@ pub enum Error {
 pub enum ClaAddressType {
     /// IPv4 and IPv6 address + port.
     Tcp,
-    /// An unknown or custom address type, identified by a numeric code.
-    Unknown(u32),
+    /// A private address type.
+    Private,
 }
 
 /// Represents a network address for a specific Convergence Layer Adapter.
@@ -51,7 +51,7 @@ pub enum ClaAddress {
     /// An TCP address, represented as a standard socket address.
     Tcp(core::net::SocketAddr),
     /// An address for an unknown or custom CLA, containing the type identifier and the raw address bytes.
-    Unknown(u32, Bytes),
+    Private(Bytes),
 }
 
 impl ClaAddress {
@@ -59,7 +59,7 @@ impl ClaAddress {
     pub fn address_type(&self) -> ClaAddressType {
         match self {
             ClaAddress::Tcp(_) => ClaAddressType::Tcp,
-            ClaAddress::Unknown(t, _) => ClaAddressType::Unknown(*t),
+            ClaAddress::Private(_) => ClaAddressType::Private,
         }
     }
 }
@@ -75,7 +75,7 @@ impl TryFrom<(ClaAddressType, Bytes)> for ClaAddress {
                     .parse()
                     .map_err(|e| Error::Internal(Box::new(e)))?,
             )),
-            ClaAddressType::Unknown(s) => Ok(ClaAddress::Unknown(s, addr)),
+            ClaAddressType::Private => Ok(ClaAddress::Private(addr)),
         }
     }
 }
@@ -87,7 +87,7 @@ impl From<ClaAddress> for (ClaAddressType, Bytes) {
                 ClaAddressType::Tcp,
                 socket_addr.to_string().as_bytes().to_vec().into(),
             ),
-            ClaAddress::Unknown(t, bytes) => (ClaAddressType::Unknown(t), bytes),
+            ClaAddress::Private(bytes) => (ClaAddressType::Private, bytes),
         }
     }
 }
@@ -96,7 +96,15 @@ impl std::fmt::Display for ClaAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
-            ClaAddress::Unknown(t, bytes) => write!(f, "raw({t}):{bytes:?}"),
+            ClaAddress::Private(bytes) => {
+                if let Ok(s) = str::from_utf8(bytes)
+                    && !s.contains(|c: char| !c.is_alphanumeric())
+                {
+                    write!(f, "private:'{s}'")
+                } else {
+                    write!(f, "private:{bytes:#x?}")
+                }
+            }
         }
     }
 }

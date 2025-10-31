@@ -4,41 +4,33 @@ pub mod cla {
     impl From<ClaAddressType> for hardy_bpa::cla::ClaAddressType {
         fn from(value: ClaAddressType) -> Self {
             match value {
-                ClaAddressType::Unknown => Self::Unknown(0),
+                ClaAddressType::Private => Self::Private,
                 ClaAddressType::Tcp => Self::Tcp,
             }
         }
     }
 
-    impl TryFrom<hardy_bpa::cla::ClaAddressType> for ClaAddressType {
-        type Error = tonic::Status;
-
-        fn try_from(value: hardy_bpa::cla::ClaAddressType) -> Result<Self, Self::Error> {
+    impl From<hardy_bpa::cla::ClaAddressType> for ClaAddressType {
+        fn from(value: hardy_bpa::cla::ClaAddressType) -> Self {
             match value {
-                hardy_bpa::cla::ClaAddressType::Tcp => Ok(ClaAddressType::Tcp),
-                hardy_bpa::cla::ClaAddressType::Unknown(0) => Ok(ClaAddressType::Unknown),
-                hardy_bpa::cla::ClaAddressType::Unknown(s) => Err(tonic::Status::invalid_argument(
-                    format!("Unknown cla address type {s}"),
-                )),
+                hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
+                hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,
             }
         }
     }
 
-    impl TryFrom<hardy_bpa::cla::ClaAddress> for ClaAddress {
-        type Error = tonic::Status;
-
-        fn try_from(value: hardy_bpa::cla::ClaAddress) -> Result<Self, Self::Error> {
+    impl From<hardy_bpa::cla::ClaAddress> for ClaAddress {
+        fn from(value: hardy_bpa::cla::ClaAddress) -> Self {
             let (address_type, address): (hardy_bpa::cla::ClaAddressType, hardy_bpa::Bytes) =
                 value.into();
 
-            Ok(Self {
+            Self {
                 address_type: match address_type {
                     hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp.into(),
-                    hardy_bpa::cla::ClaAddressType::Unknown(0) => ClaAddressType::Unknown.into(),
-                    hardy_bpa::cla::ClaAddressType::Unknown(s) => s as i32,
+                    hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private.into(),
                 },
                 address,
-            })
+            }
         }
     }
 
@@ -48,9 +40,9 @@ pub mod cla {
         fn try_from(value: ClaAddress) -> hardy_bpa::cla::Result<Self> {
             (
                 match value.address_type.try_into() {
-                    Ok(ClaAddressType::Unknown) => hardy_bpa::cla::ClaAddressType::Unknown(0),
+                    Ok(ClaAddressType::Private) => hardy_bpa::cla::ClaAddressType::Private,
                     Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
-                    Err(_) => hardy_bpa::cla::ClaAddressType::Unknown(value.address_type as u32),
+                    Err(_) => hardy_bpa::cla::ClaAddressType::Private,
                 },
                 value.address,
             )
