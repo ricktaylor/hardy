@@ -162,15 +162,15 @@ pub struct OtelGuard {
 
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        if let Err(err) = self.tracer_provider.shutdown() {
-            eprintln!("{err:?}");
-        }
-        if let Err(err) = self.meter_provider.shutdown() {
-            eprintln!("{err:?}");
-        }
-        if let Err(err) = self.logger_provider.shutdown() {
-            eprintln!("{err:?}");
-        }
+        self.tracer_provider
+            .shutdown()
+            .unwrap_or_else(|e| eprintln!("Failed to shutdown tracer provider: {e}"));
+        self.meter_provider
+            .shutdown()
+            .unwrap_or_else(|e| eprintln!("Failed to shutdown meter provider: {e}"));
+        self.logger_provider
+            .shutdown()
+            .unwrap_or_else(|e| eprintln!("Failed to shutdown logger provider: {e}"));
     }
 }
 

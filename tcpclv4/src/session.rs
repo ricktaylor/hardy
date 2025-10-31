@@ -156,10 +156,10 @@ where
             let bundle = self.ingress_bundle.take().unwrap();
 
             // Send the bundle to the BPA
-            if let Err(e) = self.sink.dispatch(bundle.freeze()).await {
+            self.sink.dispatch(bundle.freeze()).await.map_err(|e| {
                 warn!("CLA dispatch failed: {e:?}");
-                return Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown));
-            }
+                Error::Shutdown(codec::SessionTermReasonCode::Unknown)
+            })?;
         }
 
         // Acknowledge the transfer
@@ -581,27 +581,26 @@ where
                 Err(e) => Err(e),
             };
 
-            if let Err(e) = result {
-                match e {
-                    Error::Terminate(session_term_message) => {
-                        return self.on_terminate(session_term_message).await;
-                    }
-                    Error::Shutdown(session_term_reason_code) => {
-                        return self.shutdown(session_term_reason_code).await;
-                    }
-                    Error::Codec(e) => {
-                        // The other end is sending us garbage
-                        info!("Peer sent invalid data: {e:?}, shutting down session");
-                        return self.shutdown(codec::SessionTermReasonCode::Unknown).await;
-                    }
-                    Error::Hangup => {
-                        info!("Peer hung up, ending session");
-                        return self.close().await;
-                    }
-                    Error::Io(e) => {
-                        info!("Session I/O failure: {e:?}, ending session");
-                        return self.close().await;
-                    }
+            match result {
+                Ok(_) => {}
+                Err(Error::Terminate(session_term_message)) => {
+                    return self.on_terminate(session_term_message).await;
+                }
+                Err(Error::Shutdown(session_term_reason_code)) => {
+                    return self.shutdown(session_term_reason_code).await;
+                }
+                Err(Error::Codec(e)) => {
+                    // The other end is sending us garbage
+                    info!("Peer sent invalid data: {e:?}, shutting down session");
+                    return self.shutdown(codec::SessionTermReasonCode::Unknown).await;
+                }
+                Err(Error::Hangup) => {
+                    info!("Peer hung up, ending session");
+                    return self.close().await;
+                }
+                Err(Error::Io(e)) => {
+                    info!("Session I/O failure: {e:?}, ending session");
+                    return self.close().await;
                 }
             }
         }

@@ -95,6 +95,7 @@ fn walk_dirs(
                         if let Err(e) = std::fs::remove_file(entry.path())
                             && e.kind() == std::io::ErrorKind::NotFound
                         {
+                            // This is fatal as we need to abort early if there are restart issues
                             Err::<(), _>(e).trace_expect("Failed to remove placeholder file");
                         }
                         continue;
@@ -251,24 +252,25 @@ impl BundleStorage for Storage {
             }
             let mut file = options.open(&storage_name)?;
 
-            if let Err(e) = {
-                // Write all data to file
-                file.write_all(&data)?;
-
-                // Sync everything
-                file.sync_all()
-            } {
+            // Write all data to file
+            file.write_all(&data).inspect_err(|e| {
+                error!("Failed to write bundle data: {e}");
                 _ = std::fs::remove_file(&storage_name);
-                return Err(e);
-            }
+            })?;
+
+            // Sync everything
+            file.sync_all().inspect_err(|e| {
+                error!("Failed to sync bundle file data: {e}");
+                _ = std::fs::remove_file(&storage_name);
+            })?;
 
             // Rename the file
             let old_path = storage_name.clone();
             storage_name.set_extension("");
-            if let Err(e) = std::fs::rename(&old_path, &storage_name) {
+            std::fs::rename(&old_path, &storage_name).inspect_err(|e| {
+                error!("Failed to rename temporary bundle data file to final name: {e}");
                 _ = std::fs::remove_file(&old_path);
-                return Err(e);
-            }
+            })?;
 
             if let Some(parent_dir) = storage_name.parent()
                 && let Ok(dir_handle) = std::fs::File::open(parent_dir)
@@ -276,7 +278,7 @@ impl BundleStorage for Storage {
                 _ = dir_handle.sync_all(); // Best effort sync
             }
 
-            Ok(storage_name)
+            storage::Result::Ok(storage_name)
         })
         .await
         .trace_expect("Failed to spawn write_atomic thread")?;

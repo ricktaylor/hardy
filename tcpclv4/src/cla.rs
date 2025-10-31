@@ -109,12 +109,10 @@ impl hardy_bpa::cla::Cla for Cla {
         // We try this 5 times, because peers can close at random times
         for _ in 0..5 {
             // See if we have an active connection already
-            match inner.registry.forward(remote_addr, bundle).await {
+            bundle = match inner.registry.forward(remote_addr, bundle).await {
                 Ok(r) => return r,
-                Err(b) => {
-                    bundle = b;
-                }
-            }
+                Err(bundle) => bundle,
+            };
 
             // Do a new active connect
             let conn = connect::Connector {

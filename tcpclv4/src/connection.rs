@@ -162,13 +162,13 @@ impl ConnectionRegistry {
         let peers = std::mem::take(&mut *self.peers.lock().trace_expect("Failed to lock mutex"));
 
         for (addr, eid) in peers {
-            if let Err(e) = self
-                .sink
+            self.sink
                 .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::Tcp(addr))
                 .await
-            {
-                error!("Failed to unregister peer: {e:?}");
-            }
+                .unwrap_or_else(|e| {
+                    error!("Failed to unregister peer: {e}");
+                    false
+                });
         }
 
         // This will close the tx end of the channels, which should cause the session::run tasks to exit
@@ -201,6 +201,7 @@ impl ConnectionRegistry {
             }
         }
 
+        // TODO:  Make this a utility function that can be called from the outer CLA
         if let Some(eid) = eid
             && self
                 .peers

@@ -161,8 +161,7 @@ impl Registry {
             }
         };
 
-        if let Err(e) = cla
-            .cla
+        cla.cla
             .on_register(
                 Box::new(Sink {
                     cla: Arc::downgrade(&cla),
@@ -172,14 +171,13 @@ impl Registry {
                 &self.node_ids,
             )
             .await
-        {
-            // Remove the CLA
-            self.clas
-                .write()
-                .trace_expect("Failed to lock mutex")
-                .remove(&name);
-            return Err(e);
-        }
+            .inspect_err(|_| {
+                // Remove the CLA
+                self.clas
+                    .write()
+                    .trace_expect("Failed to lock mutex")
+                    .remove(&name);
+            })?;
 
         // Register that the CLA is a handler for the address type
         if let Some(address_type) = address_type {
@@ -227,6 +225,8 @@ impl Registry {
         eid: Eid,
         cla_addr: ClaAddress,
     ) -> bool {
+        // TODO: This should ideally do a replace and return the previous
+
         let peer = Arc::new(peers::Peer::new(std::sync::Arc::downgrade(&cla)));
 
         // We search here because it results in better lookups than linear searching the peers table

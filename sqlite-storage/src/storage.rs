@@ -273,15 +273,15 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn start_recovery(&self) {
-        if let Err(e) = self
+        self
             .write(move |conn| {
                 conn.execute_batch("INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL")
                 .map_err(Into::into)
             })
-            .await
+            .await.unwrap_or_else(|e|
         {
             error!("Failed to mark unconfirmed bundles!: {e}");
-        }
+        })
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]

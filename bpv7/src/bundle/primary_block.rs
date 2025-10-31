@@ -219,31 +219,35 @@ impl PrimaryBlock {
             ..Default::default()
         };
 
-        if e.is_none() {
-            if let Err(e2) = self.crc_result {
-                e = Some(Error::InvalidField {
-                    field: "Crc Value",
-                    source: e2.into(),
-                });
-            } else if matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
+        let e = e
+            .or_else(|| {
+                self.crc_result
+                    .map_err(|e| Error::InvalidField {
+                        field: "Crc Value",
+                        source: e.into(),
+                    })
+                    .err()
+            })
+            .or_else(|| {
+                (
+                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
+                    matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
                             || !bundle.flags.do_not_fragment
                             || bundle.flags.receipt_report_requested
                             || bundle.flags.forward_report_requested
                             || bundle.flags.delivery_report_requested
                             || bundle.flags.delete_report_requested)
-            {
-                // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                e = Some(Error::InvalidFlags);
-            } else if bundle.flags.is_admin_record
-                && (bundle.flags.receipt_report_requested
-                    || bundle.flags.forward_report_requested
-                    || bundle.flags.delivery_report_requested
-                    || bundle.flags.delete_report_requested)
-            {
-                // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                e = Some(Error::InvalidFlags);
-            }
-        }
+
+                ||
+                    // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
+                    (bundle.flags.is_admin_record
+                        && (bundle.flags.receipt_report_requested
+                            || bundle.flags.forward_report_requested
+                            || bundle.flags.delivery_report_requested
+                            || bundle.flags.delete_report_requested))
+                )
+                    .then_some(Error::InvalidFlags)
+            });
 
         (bundle, e)
     }

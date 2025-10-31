@@ -41,9 +41,14 @@ pub async fn terminate<T>(
     expected_reply.message_flags.reply = true;
 
     // Send the SESS_TERM message
-    if let Err(e) = transport.send(codec::Message::SessionTerm(msg)).await {
-        info!("Failed to send session terminate message: {e:?}");
-    } else {
+    if transport
+        .send(codec::Message::SessionTerm(msg))
+        .await
+        .inspect_err(|e| {
+            info!("Failed to send session terminate message: {e:?}");
+        })
+        .is_ok()
+    {
         // Read the SESS_TERM reply message with timeout
         loop {
             match next_with_timeout(&mut transport, timeout, cancel_token).await {
@@ -55,9 +60,12 @@ pub async fn terminate<T>(
                     if !msg.message_flags.reply {
                         // Terminations pass in the night...
                         msg.message_flags.reply = true;
-                        if let Err(e) = transport.send(codec::Message::SessionTerm(msg)).await {
-                            info!("Failed to send termination message to peer: {e:?}");
-                        }
+                        transport
+                            .send(codec::Message::SessionTerm(msg))
+                            .await
+                            .unwrap_or_else(|e| {
+                                info!("Failed to send termination message to peer: {e:?}");
+                            });
                     } else if msg != expected_reply {
                         info!(
                             "Mismatched SESS_TERM message: {:?}, expected {:?}",
@@ -85,9 +93,9 @@ pub async fn terminate<T>(
         }
     }
 
-    if let Err(e) = transport.close().await {
+    transport.close().await.unwrap_or_else(|e| {
         info!("Failed to cleanly close transport: {e:?}");
-    }
+    })
 }
 
 pub async fn next_with_timeout<T>(

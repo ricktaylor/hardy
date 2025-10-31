@@ -270,17 +270,14 @@ impl hardy_bpa::service::Service for Application {
     }
 
     async fn on_receive(&self, bundle: hardy_bpa::service::Bundle) {
-        if let Err(e) = self
-            .rpc(bpa_to_app::Msg::Receive(ReceiveBundleRequest {
-                bundle_id: bundle.id,
-                ack_requested: bundle.ack_requested,
-                expiry: Some(to_timestamp(bundle.expiry)),
-                payload: bundle.payload,
-            }))
-            .await
-        {
-            info!("Service refused notification: {e}");
-        }
+        self.rpc(bpa_to_app::Msg::Receive(ReceiveBundleRequest {
+            bundle_id: bundle.id,
+            ack_requested: bundle.ack_requested,
+            expiry: Some(to_timestamp(bundle.expiry)),
+            payload: bundle.payload,
+        }))
+        .await
+        .unwrap_or_else(|e| info!("Service refused notification: {e}"))
     }
 
     async fn on_status_notify(
@@ -290,33 +287,30 @@ impl hardy_bpa::service::Service for Application {
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
     ) {
-        if let Err(e) = self
-            .rpc(bpa_to_app::Msg::StatusNotify(StatusNotifyRequest {
-                bundle_id: bundle_id.into(),
-                kind: match kind {
-                    hardy_bpa::service::StatusNotify::Received => {
-                        status_notify_request::StatusKind::Received
-                    }
-                    hardy_bpa::service::StatusNotify::Forwarded => {
-                        status_notify_request::StatusKind::Forwarded
-                    }
-                    hardy_bpa::service::StatusNotify::Delivered => {
-                        status_notify_request::StatusKind::Delivered
-                    }
-                    hardy_bpa::service::StatusNotify::Deleted => {
-                        status_notify_request::StatusKind::Deleted
-                    }
-                } as i32,
-                reason: reason.into(),
-                timestamp: timestamp.map(|t| prost_types::Timestamp {
-                    seconds: (t.millisecs() / 1000) as i64,
-                    nanos: (t.millisecs() % 1000 * 1_000_000) as i32,
-                }),
-            }))
-            .await
-        {
-            info!("Service refused notification: {e}");
-        }
+        self.rpc(bpa_to_app::Msg::StatusNotify(StatusNotifyRequest {
+            bundle_id: bundle_id.into(),
+            kind: match kind {
+                hardy_bpa::service::StatusNotify::Received => {
+                    status_notify_request::StatusKind::Received
+                }
+                hardy_bpa::service::StatusNotify::Forwarded => {
+                    status_notify_request::StatusKind::Forwarded
+                }
+                hardy_bpa::service::StatusNotify::Delivered => {
+                    status_notify_request::StatusKind::Delivered
+                }
+                hardy_bpa::service::StatusNotify::Deleted => {
+                    status_notify_request::StatusKind::Deleted
+                }
+            } as i32,
+            reason: reason.into(),
+            timestamp: timestamp.map(|t| prost_types::Timestamp {
+                seconds: (t.millisecs() / 1000) as i64,
+                nanos: (t.millisecs() % 1000 * 1_000_000) as i32,
+            }),
+        }))
+        .await
+        .unwrap_or_else(|e| info!("Service refused notification: {e}"))
     }
 }
 
