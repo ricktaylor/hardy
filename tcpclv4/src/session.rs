@@ -1,5 +1,5 @@
 use super::*;
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
 use thiserror::Error;
 use tokio_util::bytes::{Bytes, BytesMut};
 

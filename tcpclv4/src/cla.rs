@@ -1,8 +1,7 @@
 use super::*;
 use hardy_bpa::async_trait;
-use std::sync::{Arc, OnceLock};
 
-struct ClaInner {
+pub(crate) struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     node_ids: Arc<[Eid]>,
     registry: Arc<connection::ConnectionRegistry>,
@@ -31,24 +30,6 @@ impl ClaInner {
             })
             .listen(config.address),
         );
-    }
-}
-
-pub struct Cla {
-    inner: OnceLock<ClaInner>,
-    config: config::Config,
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
-}
-
-impl Cla {
-    pub fn new(config: config::Config) -> Self {
-        Self {
-            inner: OnceLock::new(),
-            config,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            task_tracker: tokio_util::task::TaskTracker::new(),
-        }
     }
 }
 

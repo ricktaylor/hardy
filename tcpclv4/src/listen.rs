@@ -2,7 +2,6 @@ use super::*;
 use std::{
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::{

@@ -1,3 +1,4 @@
+mod clas;
 mod config;
 mod static_routes;
 
@@ -103,13 +104,17 @@ fn start_logging(config: &config::Config, config_source: String) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command line
-    let Some((mut config, config_source)) = config::init() else {
+    let Some((config, config_source)) = config::init() else {
         return Ok(());
     };
 
     // Start logging
     start_logging(&config, config_source);
 
+    inner_main(config).await.inspect_err(|e| error!("{e}"))
+}
+
+async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     // Start storage backends
     start_storage(&mut config);
 
@@ -117,15 +122,15 @@ async fn main() -> anyhow::Result<()> {
     let bpa = Arc::new(
         hardy_bpa::bpa::Bpa::start(&config.bpa, config.recover_storage)
             .await
-            .map_err(|e| {
-                error!("Failed to start BPA: {e}");
-                anyhow::anyhow!("Failed to start BPA: {e}")
-            })?,
+            .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?,
     );
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let task_tracker = tokio_util::task::TaskTracker::new();
+
+    // Start CLAs
+    clas::init(config.clas, &bpa).await?;
 
     // Start gRPC server
     #[cfg(feature = "grpc")]
@@ -135,12 +140,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load static routes
     if let Some(config) = config.static_routes {
-        static_routes::init(config, &bpa, &cancel_token, &task_tracker)
-            .await
-            .map_err(|e| {
-                error!("Failed to load static routes: {e}");
-                anyhow::anyhow!("Failed to load static routes: {e}")
-            })?;
+        static_routes::init(config, &bpa, &cancel_token, &task_tracker).await?;
     }
 
     // And wait for shutdown signal

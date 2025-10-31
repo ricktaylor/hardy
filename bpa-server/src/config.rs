@@ -30,24 +30,6 @@ pub enum BundleStorage {
     // S3(S3Config),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Cla {
-    pub name: String,
-
-    #[serde(flatten)]
-    pub cla: ClaConfig,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", content = "config")]
-pub enum ClaConfig {
-    #[cfg(feature = "tcpclv4")]
-    #[serde(rename = "tcpclv4")]
-    TcpClv4(hardy_tcpclv4::config::Config),
-    //UdpCl(UdpclConfig),
-    //Btpu-Ethernet(BtpuEthernetConfig),
-}
-
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
     // Logging level
@@ -75,7 +57,7 @@ pub struct Config {
 
     // Convergence Layer Adaptors (CLAs)
     #[serde(default)]
-    pub clas: Vec<Cla>,
+    pub clas: Vec<clas::Cla>,
 
     #[serde(skip)]
     pub upgrade_storage: bool,

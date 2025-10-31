@@ -1,6 +1,5 @@
 use super::*;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,

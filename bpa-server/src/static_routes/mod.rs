@@ -25,7 +25,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            routes_file: crate::config::config_dir().join("static_routes"),
+            routes_file: config::config_dir().join("static_routes"),
             priority: 100,
             watch: true,
             protocol_id: "static_routes".to_string(),
@@ -184,9 +184,12 @@ pub async fn init(
     task_tracker: &tokio_util::task::TaskTracker,
 ) -> anyhow::Result<()> {
     // Try to create canonical file path
-    if let Ok(r) = config.routes_file.canonicalize() {
-        config.routes_file = r;
-    }
+    config.routes_file = config.routes_file.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to canonicalise routes_file '{}': {e}'",
+            config.routes_file.to_string_lossy()
+        )
+    })?;
 
     // Ensure it's absolute
     if config.routes_file.is_relative() {
