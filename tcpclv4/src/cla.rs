@@ -52,12 +52,10 @@ impl hardy_bpa::cla::Cla for Cla {
 
         inner.start_listeners(&self.config, &self.cancel_token, &self.task_tracker);
 
-        if self.inner.set(inner).is_err() {
+        self.inner.set(inner).map_err(|_| {
             error!("CLA on_register called twice!");
-            Err(hardy_bpa::cla::Error::AlreadyConnected)
-        } else {
-            Ok(())
-        }
+            hardy_bpa::cla::Error::AlreadyConnected
+        })
     }
 
     async fn on_unregister(&self) {
@@ -78,45 +76,43 @@ impl hardy_bpa::cla::Cla for Cla {
         cla_addr: &hardy_bpa::cla::ClaAddress,
         mut bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        let Some(inner) = self.inner.get() else {
+        let inner = self.inner.get().ok_or_else(|| {
             error!("forward called before on_register!");
-            return Err(hardy_bpa::cla::Error::Disconnected);
-        };
+            hardy_bpa::cla::Error::Disconnected
+        })?;
 
-        let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr else {
-            return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
-        };
+        if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
+            // We try this 5 times, because peers can close at random times
+            for _ in 0..5 {
+                // See if we have an active connection already
+                bundle = match inner.registry.forward(remote_addr, bundle).await {
+                    Ok(r) => return r,
+                    Err(bundle) => bundle,
+                };
 
-        // We try this 5 times, because peers can close at random times
-        for _ in 0..5 {
-            // See if we have an active connection already
-            bundle = match inner.registry.forward(remote_addr, bundle).await {
-                Ok(r) => return r,
-                Err(bundle) => bundle,
-            };
-
-            // Do a new active connect
-            let conn = connect::Connector {
-                cancel_token: self.cancel_token.clone(),
-                task_tracker: self.task_tracker.clone(),
-                contact_timeout: self.config.session_defaults.contact_timeout,
-                use_tls: self.config.session_defaults.use_tls,
-                keepalive_interval: self.config.session_defaults.keepalive_interval,
-                segment_mru: self.config.segment_mru,
-                transfer_mru: self.config.transfer_mru,
-                node_ids: inner.node_ids.clone(),
-                sink: inner.sink.clone(),
-                registry: inner.registry.clone(),
-            };
-            match conn.connect(remote_addr).await {
-                Ok(()) | Err(transport::Error::Timeout) => {}
-                Err(_) => {
-                    // No point retrying
-                    break;
+                // Do a new active connect
+                let conn = connect::Connector {
+                    cancel_token: self.cancel_token.clone(),
+                    task_tracker: self.task_tracker.clone(),
+                    contact_timeout: self.config.session_defaults.contact_timeout,
+                    use_tls: self.config.session_defaults.use_tls,
+                    keepalive_interval: self.config.session_defaults.keepalive_interval,
+                    segment_mru: self.config.segment_mru,
+                    transfer_mru: self.config.transfer_mru,
+                    node_ids: inner.node_ids.clone(),
+                    sink: inner.sink.clone(),
+                    registry: inner.registry.clone(),
+                };
+                match conn.connect(remote_addr).await {
+                    Ok(()) | Err(transport::Error::Timeout) => {}
+                    Err(_) => {
+                        // No point retrying
+                        break;
+                    }
                 }
             }
         }
 
-        return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
+        Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
     }
 }

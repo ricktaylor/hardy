@@ -14,7 +14,7 @@ use trace_err::*;
 use tracing::{error, info, trace, warn};
 
 pub struct Cla {
-    name: String,
+    _name: String,
     config: config::Config,
     inner: std::sync::OnceLock<cla::ClaInner>,
     cancel_token: tokio_util::sync::CancellationToken,
@@ -40,25 +40,10 @@ impl Cla {
 
         Self {
             config,
-            name,
+            _name: name,
             inner: std::sync::OnceLock::new(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
         }
-    }
-
-    pub async fn start(
-        self: &Arc<Self>,
-        bpa: &Arc<hardy_bpa::bpa::Bpa>,
-        policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
-    ) -> hardy_bpa::cla::Result<()> {
-        bpa.register_cla(
-            self.name.clone(),
-            Some(hardy_bpa::cla::ClaAddressType::Tcp),
-            self.clone(),
-            policy,
-        )
-        .await
-        .inspect_err(|e| error!("Failed to register CLA '{}': {e}", self.name))
     }
 }

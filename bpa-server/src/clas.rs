@@ -7,6 +7,7 @@ pub struct Cla {
 
     #[serde(flatten)]
     pub cla: ClaConfig,
+    // TODO Policy!!
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,12 +32,18 @@ pub async fn init(config: Vec<Cla>, bpa: &Arc<hardy_bpa::bpa::Bpa>) -> anyhow::R
             }
             #[cfg(feature = "tcpclv4")]
             ClaConfig::TcpClv4(config) => {
-                Arc::new(hardy_tcpclv4::Cla::new(cla_config.name.clone(), config))
-                    .start(bpa, None)
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_config.name)
-                    })?;
+                let cla = Arc::new(hardy_tcpclv4::Cla::new(cla_config.name.clone(), config));
+
+                bpa.register_cla(
+                    cla_config.name.clone(),
+                    Some(hardy_bpa::cla::ClaAddressType::Tcp),
+                    cla,
+                    None,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_config.name))?;
+
+                // TODO: Resolver...
             }
         };
     }
