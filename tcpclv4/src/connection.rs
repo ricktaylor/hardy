@@ -209,12 +209,14 @@ impl ConnectionRegistry {
                 .trace_expect("Failed to lock mutex")
                 .insert(remote_addr, eid.clone())
                 .is_none()
-            && let Err(e) = self
-                .sink
+        {
+            self.sink
                 .add_peer(eid, hardy_bpa::cla::ClaAddress::Tcp(remote_addr))
                 .await
-        {
-            error!("add_peer failed: {e:?}");
+                .unwrap_or_else(|e| {
+                    error!("add_peer failed: {e:?}");
+                    false
+                });
         }
     }
 
@@ -234,13 +236,14 @@ impl ConnectionRegistry {
             .trace_expect("Failed to lock mutex")
             .remove_entry(remote_addr);
 
-        if let Some((addr, eid)) = peer
-            && let Err(e) = self
-                .sink
+        if let Some((addr, eid)) = peer {
+            self.sink
                 .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::Tcp(addr))
                 .await
-        {
-            error!("Failed to unregister peer: {e:?}");
+                .unwrap_or_else(|e| {
+                    error!("Failed to unregister peer: {e:?}");
+                    false
+                });
         }
     }
 

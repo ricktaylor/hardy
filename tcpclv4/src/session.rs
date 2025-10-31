@@ -444,7 +444,7 @@ where
                     Ok(codec::Message::TransferSegment(msg)) => {
                         if msg.message_flags.start {
                             // Peer has started a new transfer in the 'Ending' state
-                            let Err(e) = self
+                            if self
                                 .transport_send(codec::Message::TransferRefuse(
                                     codec::TransferRefuseMessage {
                                         transfer_id: msg.transfer_id,
@@ -453,16 +453,17 @@ where
                                     },
                                 ))
                                 .await
-                            else {
+                                .is_ok()
+                            {
                                 continue;
-                            };
-                            Err(e)
-                        } else {
-                            self.on_transfer(msg).await
+                            } else {
+                                break;
+                            }
                         }
+                        self.on_transfer(msg).await
                     }
                     Ok(msg) => self.unexpected_msg(msg.message_type()).await,
-                    Err(e) => Err(e),
+                    Err(_) => break,
                 }
                 .is_err()
                 {
