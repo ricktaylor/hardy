@@ -97,13 +97,7 @@ impl std::fmt::Display for ClaAddress {
         match self {
             ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
             ClaAddress::Private(bytes) => {
-                if let Ok(s) = str::from_utf8(bytes)
-                    && !s.contains(|c: char| !c.is_alphanumeric())
-                {
-                    write!(f, "private:'{s}'")
-                } else {
-                    write!(f, "private:{bytes:#x?}")
-                }
+                write!(f, "private:{bytes:#x?}")
             }
         }
     }
