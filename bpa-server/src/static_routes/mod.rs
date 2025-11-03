@@ -199,12 +199,18 @@ pub async fn init(
         .join(&config.routes_file);
 
     // Try to create canonical file path
-    config.routes_file = config.routes_file.canonicalize().map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to canonicalise routes_file '{}': {e}'",
-            config.routes_file.display()
-        )
-    })?;
+    config.routes_file = match config.routes_file.canonicalize() {
+        Ok(path) => path,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(anyhow::anyhow!(
+                    "Failed to canonicalise routes_file '{}': {e}'",
+                    config.routes_file.display()
+                ));
+            }
+            config.routes_file
+        }
+    };
 
     StaticRoutes {
         config,
