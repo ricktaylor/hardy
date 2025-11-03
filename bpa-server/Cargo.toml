@@ -17,6 +17,7 @@ s3-storage = []
 packaged-installation = []
 grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic","dep:prost-types"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
+file-cla = ["dep:hardy-file-cla"]
 
 [dependencies]
 hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
@@ -26,6 +27,7 @@ hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", features = ["serde"], optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
+hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 tokio = { version = "1.48.0", features = ["macros","rt-multi-thread","signal"] }
 tokio-util = { version = "0.7.16", features = ["rt"] }
 tokio-stream = { version = "0.1.17", optional = true }
@@ -46,3 +48,4 @@ notify = { version = "8.2.0", default-features = false, features = ["macos_kqueu
 trace-err = "0.1.5"
 winnow = "0.7.13"
 anyhow = "1.0.100"
+flume = "0.11.1"

@@ -11,6 +11,7 @@ members = [
     "cbor/fuzz",
     "eid_pattern",
     "eid_pattern/fuzz",
+    "file-cla",
     "localdisk-storage",
     "otel",
     "proto",
