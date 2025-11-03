@@ -32,6 +32,8 @@ The Hardy project provides a set of components and utility libraries, namely:
 
 1. `tcpclv4`: A Rust library implementing a TCP-CLv4 (RFC9174) convergence layer adaptor.
 
+1. `file-cla`: A Rust library implementing a simple file-system-based convergence layer adaptor.
+
 1. `otel`: A Rust library providing OpenTelemetry integration for metrics and tracing.
 
 ## Contributing
