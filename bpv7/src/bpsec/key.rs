@@ -19,6 +19,8 @@ pub struct KeySet {
 }
 
 impl KeySet {
+    pub const EMPTY: Self = Self { keys: Vec::new() };
+
     pub fn new(keys: Vec<Key>) -> Self {
         Self { keys }
     }
