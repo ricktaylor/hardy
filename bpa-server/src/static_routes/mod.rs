@@ -71,7 +71,7 @@ impl StaticRoutes {
 
     async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
         // TODO: This doesn't seem to drop routes properly
-        
+
         // Reload the routes
         let mut drop_routes = Vec::new();
         let mut add_routes = Vec::new();
@@ -163,18 +163,17 @@ impl StaticRoutes {
                     res = rx.recv_async() => match res {
                         Err(_) => break,
                         Ok(DebouncedEvent{ event, .. }) => {
-                                if match event.kind {
-                                    EventKind::Create(CreateKind::File)|
-                                    EventKind::Modify(_)|
-                                    EventKind::Remove(RemoveKind::File) => {
-                                        event.paths.iter().any(|p| p == &routes_file)
-                                    }
-                                    _ => false
-                                } {
-                                    info!("Reloading static routes from '{}'",routes_file.display());
-                                    self_cloned.refresh_routes(false).await.trace_expect("Failed to process static routes file");
+                            if match event.kind {
+                                EventKind::Create(CreateKind::File)|
+                                EventKind::Modify(_)|
+                                EventKind::Remove(RemoveKind::File) => {
+                                    event.paths.iter().any(|p| p == &routes_file)
                                 }
-                            
+                                _ => false
+                            } {
+                                info!("Reloading static routes from '{}'",routes_file.display());
+                                self_cloned.refresh_routes(false).await.trace_expect("Failed to process static routes file");
+                            }
                         },
                     },
                     _ = cancel_token.cancelled() => {
@@ -193,9 +192,8 @@ pub async fn init(
     task_tracker: &tokio_util::task::TaskTracker,
 ) -> anyhow::Result<()> {
     // Ensure it's absolute
-    config.routes_file = 
-        std::env::current_dir()
-            .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?
+    config.routes_file = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?
         .join(&config.routes_file);
 
     // Try to create canonical file path
