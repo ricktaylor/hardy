@@ -6,11 +6,11 @@ use std::path::PathBuf;
 #[serde(tag = "type", content = "config")]
 pub enum MetadataStorage {
     #[serde(rename = "memory")]
-    Memory(hardy_bpa::storage::metadata_mem::Config),
+    Memory(Option<hardy_bpa::storage::metadata_mem::Config>),
 
     #[cfg(feature = "sqlite-storage")]
     #[serde(rename = "sqlite")]
-    Sqlite(hardy_sqlite_storage::Config),
+    Sqlite(Option<hardy_sqlite_storage::Config>),
     // #[cfg(feature = "postgres-storage")]
     // #[serde(rename = "postgres")]
     // Postgres(PostgresConfig),
@@ -20,11 +20,11 @@ pub enum MetadataStorage {
 #[serde(tag = "type", content = "config")]
 pub enum BundleStorage {
     #[serde(rename = "memory")]
-    Memory(hardy_bpa::storage::bundle_mem::Config),
+    Memory(Option<hardy_bpa::storage::bundle_mem::Config>),
 
     #[cfg(feature = "localdisk-storage")]
     #[serde(rename = "localdisk")]
-    LocalDisk(hardy_localdisk_storage::Config),
+    LocalDisk(Option<hardy_localdisk_storage::Config>),
     // #[cfg(feature = "s3-storage")]
     // #[serde(rename = "s3")]
     // S3(S3Config),
