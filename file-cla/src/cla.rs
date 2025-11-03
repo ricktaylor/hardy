@@ -60,13 +60,21 @@ impl hardy_bpa::cla::Cla for Cla {
             inboxes.insert(path);
         }
 
-        self.inner.set(ClaInner { inboxes }).map_err(|_| {
-            error!("CLA on_register called twice!");
-            hardy_bpa::cla::Error::AlreadyConnected
-        })?;
+        let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
+        self.inner
+            .set(ClaInner {
+                _sink: sink.clone(),
+                inboxes,
+            })
+            .map_err(|_| {
+                error!("CLA on_register called twice!");
+                hardy_bpa::cla::Error::AlreadyConnected
+            })?;
 
-        self.start_watcher(sink.into(), check_path(&cwd, &self.config.outbox)?)
-            .await;
+        if let Some(outbox) = &self.config.outbox {
+            let outbox = check_path(&cwd, outbox)?;
+            self.start_watcher(sink, outbox).await;
+        }
 
         Ok(())
     }

@@ -113,7 +113,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         std::sync::Arc::new(hardy_file_cla::Cla::new(
             "file-cla".to_string(),
             hardy_file_cla::Config {
-                outbox: path.join("outbox"),
+                outbox: None,
                 peers: [("ipn:0.3.0".parse().unwrap(), path.join("inbox"))].into(),
             },
         )),
