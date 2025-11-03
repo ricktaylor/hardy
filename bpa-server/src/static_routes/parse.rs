@@ -82,22 +82,19 @@ pub async fn load_routes(
 ) -> anyhow::Result<Vec<(eid_pattern::EidPattern, StaticRoute)>> {
     match tokio::fs::read(routes_file).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
-            trace!(
-                "Static routes file: '{}' not found",
-                routes_file.to_string_lossy()
-            );
+            trace!("Static routes file: '{}' not found", routes_file.display());
             Ok(Vec::new())
         }
         Err(e) if ignore_errors => {
             error!(
                 "Failed to read from static routes file '{}': {e}",
-                routes_file.to_string_lossy(),
+                routes_file.display(),
             );
             Ok(Vec::new())
         }
         Err(e) => Err(anyhow::anyhow!(
             "Failed to read from static routes file '{}': {e}",
-            routes_file.to_string_lossy()
+            routes_file.display()
         )),
         Ok(input) => {
             // Using the `trace` combinator for powerful debugging
@@ -105,13 +102,13 @@ pub async fn load_routes(
                 Err(e) if ignore_errors => {
                     error!(
                         "Failed to parse static routes file '{}': {e}",
-                        routes_file.to_string_lossy()
+                        routes_file.display()
                     );
                     Ok(Vec::new())
                 }
                 Err(e) => Err(anyhow::anyhow!(
                     "Failed to parse static routes file '{}': {e}",
-                    routes_file.to_string_lossy()
+                    routes_file.display()
                 )),
                 Ok(v) => Ok(v),
             }

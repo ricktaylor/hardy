@@ -54,7 +54,7 @@ impl StaticRoutes {
     ) -> anyhow::Result<()> {
         info!(
             "Loading static routes from '{}'",
-            self.config.routes_file.to_string_lossy()
+            self.config.routes_file.display()
         );
 
         self.refresh_routes(false).await?;
@@ -157,7 +157,7 @@ impl StaticRoutes {
                                     }
                                     _ => false
                                 } {
-                                    info!("Reloading static routes from '{}'",routes_file.to_string_lossy());
+                                    info!("Reloading static routes from '{}'",routes_file.display());
                                     self_cloned.refresh_routes(false).await.trace_expect("Failed to process static routes file");
                                 }
                             }
@@ -183,21 +183,19 @@ pub async fn init(
     cancel_token: &tokio_util::sync::CancellationToken,
     task_tracker: &tokio_util::task::TaskTracker,
 ) -> anyhow::Result<()> {
+    // Ensure it's absolute
+    config.routes_file = 
+        std::env::current_dir()
+            .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?
+        .join(&config.routes_file);
+
     // Try to create canonical file path
     config.routes_file = config.routes_file.canonicalize().map_err(|e| {
         anyhow::anyhow!(
             "Failed to canonicalise routes_file '{}': {e}'",
-            config.routes_file.to_string_lossy()
+            config.routes_file.display()
         )
     })?;
-
-    // Ensure it's absolute
-    if config.routes_file.is_relative() {
-        let mut path = std::env::current_dir()
-            .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?;
-        path.push(&config.routes_file);
-        config.routes_file = path;
-    }
 
     StaticRoutes {
         config,
