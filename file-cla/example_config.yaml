@@ -1,0 +1,22 @@
+# A list of Convergence Layer Adapters (CLAs) to enable.
+clas:
+  - # A user-defined name for this CLA instance.
+    name: "my-file-cla"
+
+    # Specifies the type of CLA. For this case, it's "file-cla".
+    type: "file-cla"
+
+    # Configuration specific to the file-cla.
+    config:
+      # The directory to watch for new files to be sent as bundles.
+      # Each file in this directory is treated as a complete bundle and will be
+      # dispatched to the BPA. After dispatch, the file is deleted.
+      # This is optional. If not specified, the CLA will only be able to receive bundles.
+      outbox: "/var/spool/hardy/outbox"
+
+      # A map of peer Endpoint IDs (EIDs) to their corresponding inbox directories.
+      # When a bundle is to be forwarded to a peer, it will be written as a file
+      # in the directory associated with that peer's EID.
+      peers:
+        "ipn:0.1.0": "/var/spool/hardy/peer1-inbox"
+        "ipn:0.2.0": "/var/spool/hardy/peer2-inbox"
