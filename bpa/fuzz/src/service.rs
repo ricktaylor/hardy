@@ -54,10 +54,6 @@ impl PipeService {
             .send(destination, data, lifetime, flags)
             .await
     }
-
-    pub async fn unregister(&self) {
-        self.sink.get().unwrap().unregister().await
-    }
 }
 
 #[async_trait]

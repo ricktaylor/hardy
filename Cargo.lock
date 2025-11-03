@@ -1074,6 +1074,7 @@ dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-cbor",
+ "hardy-file-cla",
  "hardy-localdisk-storage",
  "hardy-otel",
  "hardy-sqlite-storage",
@@ -1092,10 +1093,12 @@ dependencies = [
  "cfg-if",
  "config",
  "directories",
+ "flume",
  "getopts",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-eid-pattern",
+ "hardy-file-cla",
  "hardy-localdisk-storage",
  "hardy-proto",
  "hardy-sqlite-storage",
@@ -1204,6 +1207,23 @@ dependencies = [
  "hardy-bpv7",
  "hardy-eid-pattern",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "hardy-file-cla"
+version = "0.1.0"
+dependencies = [
+ "flume",
+ "hardy-bpa",
+ "hardy-bpv7",
+ "notify",
+ "notify-debouncer-full",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "trace-err",
+ "tracing",
 ]
 
 [[package]]

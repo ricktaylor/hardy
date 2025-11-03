@@ -83,7 +83,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     }
 
     // New BPA
-    hardy_bpa::bpa::Bpa::start(
+    let bpa = hardy_bpa::bpa::Bpa::start(
         &hardy_bpa::config::Config {
             status_reports: true,
             node_ids: [hardy_bpv7::eid::Eid::Ipn {
@@ -104,7 +104,25 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         false,
     )
     .await
-    .expect("Failed to start BPA")
+    .expect("Failed to start BPA");
+
+    #[cfg(feature = "file-cla")]
+    bpa.register_cla(
+        "file-cla".to_string(),
+        None,
+        std::sync::Arc::new(hardy_file_cla::Cla::new(
+            "file-cla".to_string(),
+            hardy_file_cla::Config {
+                outbox: path.join("outbox"),
+                peers: [("ipn:0.3.0".parse().unwrap(), path.join("inbox"))].into(),
+            },
+        )),
+        None,
+    )
+    .await
+    .expect("Failed to register CLA");
+
+    bpa
 }
 
 impl Msg {
@@ -116,12 +134,17 @@ impl Msg {
             get_runtime().spawn(async move {
                 let bpa = new_bpa("fuzz").await;
 
+                let cla = std::sync::Arc::new(cla::NullCla::default());
+                bpa.register_cla("fuzz".to_string(), None, cla.clone(), None)
+                    .await
+                    .expect("Failed to register CLA");
+
                 // Load static routes
                 bpa.add_route(
                     "fuzz".to_string(),
                     "ipn:*.*".parse().unwrap(),
                     hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
-                    1,
+                    30,
                 )
                 .await;
 
@@ -151,45 +174,31 @@ impl Msg {
                 )
                 .await;
 
-                {
-                    let service = Arc::new(service::PipeService::default());
+                let service = Arc::new(service::PipeService::default());
+                bpa.register_service(None, service.clone())
+                    .await
+                    .expect("Failed to register service");
 
-                    bpa.register_service(None, service.clone())
-                        .await
-                        .expect("Failed to register service");
-
-                    {
-                        let cla = std::sync::Arc::new(cla::NullCla::default());
-                        bpa.register_cla("fuzz".to_string(), None, cla.clone(), None)
-                            .await
-                            .expect("Failed to register CLA");
-
-                        // Now pull from the channel
-                        while let Ok(msg) = rx.recv_async().await {
-                            match msg {
-                                Msg::Cla(bundle) => {
-                                    _ = cla.dispatch(bundle.into_bundle()).await;
-                                }
-                                Msg::ClaBytes(bytes) => {
-                                    _ = cla.dispatch(bytes.into()).await;
-                                }
-                                Msg::Service(msg) => {
-                                    _ = service
-                                        .send(
-                                            msg.destination.0,
-                                            &msg.payload,
-                                            msg.lifetime,
-                                            msg.flags.map(Into::into),
-                                        )
-                                        .await;
-                                }
-                            }
+                // Now pull from the channel
+                while let Ok(msg) = rx.recv_async().await {
+                    match msg {
+                        Msg::Cla(bundle) => {
+                            _ = cla.dispatch(bundle.into_bundle()).await;
                         }
-
-                        cla.unregister().await;
+                        Msg::ClaBytes(bytes) => {
+                            _ = cla.dispatch(bytes.into()).await;
+                        }
+                        Msg::Service(msg) => {
+                            _ = service
+                                .send(
+                                    msg.destination.0,
+                                    &msg.payload,
+                                    msg.lifetime,
+                                    msg.flags.map(Into::into),
+                                )
+                                .await;
+                        }
                     }
-
-                    service.unregister().await;
                 }
 
                 bpa.shutdown().await;

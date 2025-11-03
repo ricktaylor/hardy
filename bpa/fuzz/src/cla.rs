@@ -70,10 +70,6 @@ impl NullCla {
     pub async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
         self.sink.get().unwrap().dispatch(bundle).await
     }
-
-    pub async fn unregister(&self) {
-        self.sink.get().unwrap().unregister().await
-    }
 }
 
 #[async_trait]

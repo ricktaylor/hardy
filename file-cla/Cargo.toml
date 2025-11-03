@@ -1,0 +1,27 @@
+[package]
+name = "hardy-file-cla"
+description = "A File-based convergence layer"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+serde = ["dep:serde","hardy-bpa/serde","hardy-bpv7/serde"]
+tracing = ["hardy-bpa/tracing"]
+
+[dependencies]
+hardy-bpa = { path = "../bpa" }
+hardy-bpv7 = { path = "../bpv7" }
+tracing = "0.1.41"
+tokio = { version = "1.48.0", features = ["rt", "macros", "fs"] }
+tokio-util = { version = "0.7.16", features = ["rt"] }
+trace-err = "0.1.5"
+thiserror = "2.0.17"
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+notify-debouncer-full = "0.6.0"
+notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+flume = "0.11.1"
