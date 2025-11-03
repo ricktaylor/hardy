@@ -17,11 +17,12 @@ mod watcher;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
-    pub outbox: PathBuf,
+    pub outbox: Option<PathBuf>,
     pub peers: HashMap<Eid, PathBuf>,
 }
 
 struct ClaInner {
+    _sink: Arc<dyn hardy_bpa::cla::Sink>,
     inboxes: HashSet<String>,
 }
 
