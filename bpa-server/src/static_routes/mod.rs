@@ -70,6 +70,8 @@ impl StaticRoutes {
     }
 
     async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
+        // TODO: This doesn't seem to drop routes properly
+        
         // Reload the routes
         let mut drop_routes = Vec::new();
         let mut add_routes = Vec::new();
@@ -130,13 +132,27 @@ impl StaticRoutes {
         let mut self_cloned = self.clone();
         let cancel_token = cancel_token.clone();
         task_tracker.spawn(async move {
-            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-
-            let mut debouncer = new_debouncer(std::time::Duration::from_secs(1), None, move |res| {
-                tx.blocking_send(res)
-                    .trace_expect("Failed to send notification")
-            })
-            .trace_expect("Failed to create file watcher");
+            let (tx, rx) = flume::unbounded();
+            let mut debouncer =
+                new_debouncer(
+                    std::time::Duration::from_secs(1),
+                    None,
+                    move |res| match res {
+                        Ok(events) => {
+                            for e in events {
+                                if tx.send(e).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            for e in e {
+                                error!("Watch error: {e}")
+                            }
+                        }
+                    },
+                )
+                .trace_expect("Failed to create directory watcher");
 
             debouncer
                 .watch(&routes_dir, RecursiveMode::NonRecursive)
@@ -144,15 +160,13 @@ impl StaticRoutes {
 
             loop {
                 tokio::select! {
-                    res = rx.recv() => match res {
-                        None => break,
-                        Some(Ok(events)) => {
-                            for DebouncedEvent{ event, .. } in events {
+                    res = rx.recv_async() => match res {
+                        Err(_) => break,
+                        Ok(DebouncedEvent{ event, .. }) => {
                                 if match event.kind {
                                     EventKind::Create(CreateKind::File)|
                                     EventKind::Modify(_)|
                                     EventKind::Remove(RemoveKind::File) => {
-                                        info!("Detected change in static routes file: {:?}, looking for {:?}", event.paths, routes_file);
                                         event.paths.iter().any(|p| p == &routes_file)
                                     }
                                     _ => false
@@ -160,16 +174,11 @@ impl StaticRoutes {
                                     info!("Reloading static routes from '{}'",routes_file.display());
                                     self_cloned.refresh_routes(false).await.trace_expect("Failed to process static routes file");
                                 }
-                            }
+                            
                         },
-                        Some(Err(errors)) => {
-                            for err in errors {
-                                error!("Watch error: {:?}", err)
-                            }
-                        }
                     },
                     _ = cancel_token.cancelled() => {
-                        rx.close();
+                        break;
                     }
                 }
             }
