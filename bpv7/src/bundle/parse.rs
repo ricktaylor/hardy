@@ -666,7 +666,7 @@ impl RewrittenBundle {
 
         let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
         if let Some(e) = e {
-            block_array.skip_to_end(16)?;
+            _ = block_array.skip_to_end(16);
             return Ok(Self::Invalid {
                 bundle,
                 reason: status_report::ReasonCode::BlockUnintelligible,
@@ -746,7 +746,7 @@ impl ParsedBundle {
 
         let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
         if let Some(e) = e {
-            block_array.skip_to_end(16)?;
+            _ = block_array.skip_to_end(16);
             return Err(e);
         }
 
@@ -758,6 +758,56 @@ impl ParsedBundle {
                 non_canonical,
             },
         )
+    }
+}
+
+impl Id {
+    /// Parses a byte slice into an `Id`.
+    // Bouncing via RewriteError allows us to avoid the array completeness check when a semantic error occurs
+    // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
+    pub fn parse(data: &[u8]) -> Result<Self, Error> {
+        let (b, len) = hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+            Self::parse_inner(a, shortest, tags)
+        })?;
+
+        if len != data.len() {
+            Err(Error::AdditionalData)
+        } else {
+            Ok(b)
+        }
+    }
+
+    /// The inner parsing logic, called by `parse`.
+    /// This function is responsible for parsing the primary block and then handing off
+    /// to `parse_blocks` for the extension blocks.
+    fn parse_inner(
+        block_array: &mut hardy_cbor::decode::Array,
+        mut canonical: bool,
+        tags: &[u64],
+    ) -> Result<Self, Error> {
+        // Check for shortest/correct form
+        canonical = canonical && !block_array.is_definite() && tags.is_empty();
+
+        // Parse Primary block
+        let block_start = block_array.offset();
+        let primary_block = block_array
+            .parse::<(primary_block::PrimaryBlock, bool)>()
+            .map(|(v, s)| {
+                canonical = canonical && s;
+                v
+            })
+            .map_field_err("Primary Block")?;
+
+        let (bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
+        if let Some(e) = e {
+            _ = block_array.skip_to_end(16);
+            return Err(e);
+        }
+
+        // Skip all the blocks
+        block_array.skip_to_end(16)?;
+
+        Ok(bundle.id)
     }
 }
 
