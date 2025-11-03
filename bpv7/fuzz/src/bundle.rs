@@ -156,7 +156,7 @@ mod test {
             Err(e) => {
                 eprintln!(
                     "Failed to open dir: {e}, curr dir: {}",
-                    std::env::current_dir().unwrap().to_string_lossy()
+                    std::env::current_dir().unwrap().display()
                 );
             }
             Ok(dir) => {
