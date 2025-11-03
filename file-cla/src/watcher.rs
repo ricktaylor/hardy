@@ -5,6 +5,18 @@ use notify_debouncer_full::{
 };
 
 impl Cla {
+    /// Starts the file watcher for the outbox directory.
+    ///
+    /// This function spawns two background tasks:
+    /// 1. `watcher_task`: Monitors the `outbox` directory for new files. When a new
+    ///    file is created, its path is sent to the `forwarder_task`.
+    /// 2. `forwarder_task`: Receives file paths, reads the file content as a bundle,
+    ///    dispatches it to the BPA via the `sink`, and then deletes the file.
+    ///
+    /// # Arguments
+    ///
+    /// * `sink` - The sink to dispatch bundles to the BPA.
+    /// * `outbox` - The path to the directory to watch for outgoing bundles.
     pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::Sink>, outbox: String) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
