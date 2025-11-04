@@ -63,7 +63,7 @@ impl hardy_bpa::cla::Cla for Cla {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
         self.inner
             .set(ClaInner {
-                _sink: sink.clone(),
+                sink: sink.clone(),
                 inboxes,
             })
             .map_err(|_| {
