@@ -104,7 +104,7 @@ impl Bpa {
     pub async fn add_route(
         &self,
         source: String,
-        pattern: hardy_eid_pattern::EidPattern,
+        pattern: hardy_eid_patterns::EidPattern,
         action: routes::Action,
         priority: u32,
     ) -> bool {
@@ -118,7 +118,7 @@ impl Bpa {
     pub async fn remove_route(
         &self,
         source: &str,
-        pattern: &hardy_eid_pattern::EidPattern,
+        pattern: &hardy_eid_patterns::EidPattern,
         action: &routes::Action,
         priority: u32,
     ) -> bool {

@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpa::routes::Action;
-use hardy_eid_pattern as eid_pattern;
+use hardy_eid_patterns as eid_patterns;
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{
@@ -43,7 +43,7 @@ struct StaticRoute {
 pub struct StaticRoutes {
     config: Config,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
-    routes: HashMap<eid_pattern::EidPattern, StaticRoute>,
+    routes: HashMap<eid_patterns::EidPattern, StaticRoute>,
 }
 
 impl StaticRoutes {

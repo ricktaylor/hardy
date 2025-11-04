@@ -18,7 +18,7 @@ pub struct Dispatcher {
     service_registry: Arc<service_registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
     rib: Arc<rib::Rib>,
-    ipn_2_element: Arc<BTreeSet<hardy_eid_pattern::EidPattern>>,
+    ipn_2_element: Arc<BTreeSet<hardy_eid_patterns::EidPattern>>,
     //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
 
     // Config options

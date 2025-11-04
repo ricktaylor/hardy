@@ -18,7 +18,7 @@ The Hardy project provides a set of components and utility libraries, namely:
 
 1. `bpv7`: A Rust library for working with BPv7 bundles in a generic manner. It also includes a `tools` sub-crate with command-line utilities for bundle manipulation.
 
-1. `eid_pattern`: A Rust library for parsing and matching DTN Endpoint ID (EID) patterns.
+1. `eid-patterns`: A Rust library for parsing and matching DTN Endpoint ID (EID) patterns.
 
 1. `proto`: The protobuf v3 specifications of the various gRPC APIs used across the project.
 

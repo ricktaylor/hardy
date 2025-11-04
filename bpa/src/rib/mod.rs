@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
-use hardy_eid_pattern::EidPattern;
+use hardy_eid_patterns::EidPattern;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::RwLock,

@@ -4,14 +4,14 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        _ = s.parse::<hardy_eid_pattern::EidPattern>();
+        _ = s.parse::<hardy_eid_patterns::EidPattern>();
 
         // Leave this out for now, as it is too strict, for the current parser
 
-        // if let Ok(pattern) = s.parse::<hardy_eid_pattern::EidPattern>() {
+        // if let Ok(pattern) = s.parse::<hardy_eid_patterns::EidPattern>() {
         // let s2 = pattern.to_string();
         // let pattern2 = s2
-        //     .parse::<hardy_eid_pattern::EidPattern>()
+        //     .parse::<hardy_eid_patterns::EidPattern>()
         //     .expect(&format!("Failed to round-trip {s} and {s2}"));
 
         // if pattern2 != pattern {

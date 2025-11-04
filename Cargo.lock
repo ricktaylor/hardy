@@ -1050,7 +1050,7 @@ dependencies = [
  "hardy-bpa-fuzz",
  "hardy-bpv7",
  "hardy-cbor",
- "hardy-eid-pattern",
+ "hardy-eid-patterns",
  "lru",
  "metrics",
  "rand",
@@ -1097,7 +1097,7 @@ dependencies = [
  "getopts",
  "hardy-bpa",
  "hardy-bpv7",
- "hardy-eid-pattern",
+ "hardy-eid-patterns",
  "hardy-file-cla",
  "hardy-localdisk-storage",
  "hardy-proto",
@@ -1152,7 +1152,7 @@ dependencies = [
  "base64 0.22.1",
  "hardy-bpv7",
  "hardy-cbor",
- "hardy-eid-pattern",
+ "hardy-eid-patterns",
  "hex-literal",
  "libfuzzer-sys",
 ]
@@ -1188,7 +1188,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-eid-pattern"
+name = "hardy-eid-patterns"
 version = "0.1.0"
 dependencies = [
  "glob",
@@ -1201,11 +1201,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-eid_pattern-fuzz"
+name = "hardy-eid-patterns-fuzz"
 version = "0.0.0"
 dependencies = [
  "hardy-bpv7",
- "hardy-eid-pattern",
+ "hardy-eid-patterns",
  "libfuzzer-sys",
 ]
 

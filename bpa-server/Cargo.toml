@@ -22,7 +22,7 @@ file-cla = ["dep:hardy-file-cla"]
 [dependencies]
 hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
 hardy-bpa = { path = "../bpa", features = ["serde"] }
-hardy-eid-pattern = { path = "../eid_pattern", features = ["serde"] }
+hardy-eid-patterns = { path = "../eid-patterns", features = ["serde"] }
 hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", features = ["serde"], optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }

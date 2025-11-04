@@ -1,5 +1,5 @@
 [package]
-name = "hardy-eid_pattern-fuzz"
+name = "hardy-eid-patterns-fuzz"
 version = "0.0.0"
 publish = false
 edition.workspace = true
@@ -9,11 +9,11 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-eid-pattern = { path = ".." }
+hardy-eid-patterns = { path = ".." }
 hardy-bpv7 = { path = "../../bpv7" }
 
 [[bin]]
-name = "eid_pattern_str"
+name = "eid-pattern-str"
 path = "fuzz_targets/eid_pattern_str.rs"
 test = false
 bench = false

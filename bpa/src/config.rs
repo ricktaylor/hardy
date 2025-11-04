@@ -18,7 +18,7 @@ pub struct Config {
     pub bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
 
     pub node_ids: node_ids::NodeIds,
-    pub ipn_2_element: Vec<hardy_eid_pattern::EidPattern>,
+    pub ipn_2_element: Vec<hardy_eid_patterns::EidPattern>,
 }
 
 fn default_poll_channel_depth() -> std::num::NonZeroUsize {
