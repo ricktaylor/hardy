@@ -29,7 +29,7 @@ pub struct Config {
 }
 
 struct ClaInner {
-    _sink: Arc<dyn hardy_bpa::cla::Sink>,
+    sink: Arc<dyn hardy_bpa::cla::Sink>,
     inboxes: HashSet<String>,
 }
 
@@ -57,5 +57,14 @@ impl Cla {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
         }
+    }
+
+    /// Unregisters the CLA instance from the BPA.
+    pub async fn unregister(&self) -> bool {
+        let Some(inner) = self.inner.get() else {
+            return false;
+        };
+        inner.sink.unregister().await;
+        true
     }
 }
