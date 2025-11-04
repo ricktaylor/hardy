@@ -116,3 +116,14 @@ impl hardy_bpa::cla::Cla for Cla {
         Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
     }
 }
+
+impl Cla {
+    // Unregisters the CLA instance from the BPA.
+    pub async fn unregister(&self) -> bool {
+        let Some(inner) = self.inner.get() else {
+            return false;
+        };
+        inner.sink.unregister().await;
+        true
+    }
+}
