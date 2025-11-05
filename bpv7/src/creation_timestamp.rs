@@ -156,3 +156,14 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
         .map(|((v, s), len)| (v, s, len))
     }
 }
+
+impl TryFrom<time::OffsetDateTime> for CreationTimestamp {
+    type Error = <dtn_time::DtnTime as TryFrom<time::OffsetDateTime>>::Error;
+
+    fn try_from(value: time::OffsetDateTime) -> Result<Self, Self::Error> {
+        Ok(Self {
+            creation_time: Some(value.try_into()?),
+            sequence_number: (value.nanosecond() % 1_000_000) as u64,
+        })
+    }
+}
