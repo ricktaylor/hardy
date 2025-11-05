@@ -202,21 +202,8 @@ impl ConnectionRegistry {
         }
 
         // TODO:  Make this a utility function that can be called from the outer CLA
-        if let Some(eid) = eid
-            && self
-                .peers
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .insert(remote_addr, eid.clone())
-                .is_none()
-        {
-            self.sink
-                .add_peer(eid, hardy_bpa::cla::ClaAddress::Tcp(remote_addr))
-                .await
-                .unwrap_or_else(|e| {
-                    error!("add_peer failed: {e:?}");
-                    false
-                });
+        if let Some(eid) = eid {
+            self.add_peer(remote_addr, eid).await;
         }
     }
 
@@ -230,21 +217,54 @@ impl ConnectionRegistry {
             }
         }
 
+        self.remove_peer(remote_addr).await;
+    }
+
+    pub async fn add_peer(&self, remote_addr: SocketAddr, eid: Eid) -> bool {
+        if self
+            .peers
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .insert(remote_addr, eid.clone())
+            .is_none()
+            && !self
+                .sink
+                .add_peer(eid, hardy_bpa::cla::ClaAddress::Tcp(remote_addr))
+                .await
+                .unwrap_or_else(|e| {
+                    error!("add_peer failed: {e:?}");
+                    false
+                })
+        {
+            self.peers
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .remove_entry(&remote_addr);
+
+            false
+        } else {
+            true
+        }
+    }
+
+    pub async fn remove_peer(&self, remote_addr: &SocketAddr) -> bool {
         let peer = self
             .peers
             .lock()
             .trace_expect("Failed to lock mutex")
             .remove_entry(remote_addr);
 
-        if let Some((addr, eid)) = peer {
-            self.sink
-                .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::Tcp(addr))
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Failed to unregister peer: {e:?}");
-                    false
-                });
-        }
+        let Some((addr, eid)) = peer else {
+            return false;
+        };
+
+        self.sink
+            .remove_peer(&eid, &hardy_bpa::cla::ClaAddress::Tcp(addr))
+            .await
+            .unwrap_or_else(|e| {
+                error!("Failed to unregister peer: {e:?}");
+                false
+            })
     }
 
     pub async fn forward(

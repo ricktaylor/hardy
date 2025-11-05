@@ -13,10 +13,16 @@ use std::sync::Arc;
 use trace_err::*;
 use tracing::{error, info, trace, warn};
 
+struct ClaInner {
+    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    node_ids: Arc<[Eid]>,
+    registry: Arc<connection::ConnectionRegistry>,
+}
+
 pub struct Cla {
     _name: String,
     config: config::Config,
-    inner: std::sync::OnceLock<cla::ClaInner>,
+    inner: std::sync::OnceLock<ClaInner>,
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
 }
@@ -45,5 +51,32 @@ impl Cla {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
         }
+    }
+
+    // Unregisters the CLA instance from the BPA.
+    pub async fn unregister(&self) -> bool {
+        let Some(inner) = self.inner.get() else {
+            return false;
+        };
+        inner.sink.unregister().await;
+        true
+    }
+
+    pub async fn add_peer(&self, remote_addr: std::net::SocketAddr, eid: Eid) -> bool {
+        self.inner
+            .get()
+            .trace_expect("CLA not registered")
+            .registry
+            .add_peer(remote_addr, eid)
+            .await
+    }
+
+    pub async fn remove_peer(&self, remote_addr: &std::net::SocketAddr) -> bool {
+        self.inner
+            .get()
+            .trace_expect("CLA not registered")
+            .registry
+            .remove_peer(remote_addr)
+            .await
     }
 }

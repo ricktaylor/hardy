@@ -1,12 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
 
-pub(crate) struct ClaInner {
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
-    node_ids: Arc<[Eid]>,
-    registry: Arc<connection::ConnectionRegistry>,
-}
-
 impl ClaInner {
     fn start_listeners(
         &self,
@@ -15,21 +9,21 @@ impl ClaInner {
         task_tracker: &tokio_util::task::TaskTracker,
     ) {
         // Start the listeners
-        task_tracker.spawn(
-            Arc::new(listen::Listener {
-                cancel_token: cancel_token.clone(),
-                task_tracker: task_tracker.clone(),
-                contact_timeout: config.session_defaults.contact_timeout,
-                use_tls: config.session_defaults.use_tls,
-                keepalive_interval: config.session_defaults.keepalive_interval,
-                segment_mru: config.segment_mru,
-                transfer_mru: config.transfer_mru,
-                node_ids: self.node_ids.clone(),
-                sink: self.sink.clone(),
-                registry: self.registry.clone(),
-            })
+            task_tracker.spawn(
+                Arc::new(listen::Listener {
+                    cancel_token: cancel_token.clone(),
+                    task_tracker: task_tracker.clone(),
+                    contact_timeout: config.session_defaults.contact_timeout,
+                    use_tls: config.session_defaults.use_tls,
+                    keepalive_interval: config.session_defaults.keepalive_interval,
+                    segment_mru: config.segment_mru,
+                    transfer_mru: config.transfer_mru,
+                    node_ids: self.node_ids.clone(),
+                    sink: self.sink.clone(),
+                    registry: self.registry.clone(),
+                })
             .listen(config.address),
-        );
+            );
     }
 }
 
@@ -114,16 +108,5 @@ impl hardy_bpa::cla::Cla for Cla {
         }
 
         Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
-    }
-}
-
-impl Cla {
-    // Unregisters the CLA instance from the BPA.
-    pub async fn unregister(&self) -> bool {
-        let Some(inner) = self.inner.get() else {
-            return false;
-        };
-        inner.sink.unregister().await;
-        true
     }
 }
