@@ -30,7 +30,6 @@ pub enum Error {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ServiceId<'a> {
-    // TODO: Anonymous
     DtnService(&'a str),
     IpnService(u32),
 }
@@ -45,7 +44,7 @@ pub enum StatusNotify {
 
 #[derive(Debug)]
 pub struct Bundle {
-    pub id: String,
+    pub source: Eid,
     pub expiry: time::OffsetDateTime,
     pub ack_requested: bool,
     pub payload: Bytes,
@@ -68,7 +67,7 @@ pub trait Service: Send + Sync {
     );
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SendFlags {
     pub do_not_fragment: bool,
     pub request_ack: bool,
