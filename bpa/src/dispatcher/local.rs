@@ -134,7 +134,7 @@ impl Dispatcher {
         service
             .service
             .on_receive(service::Bundle {
-                id: bundle.bundle.id.to_key(),
+                source: bundle.bundle.id.source.clone(),
                 expiry: bundle.expiry(),
                 ack_requested: bundle.bundle.flags.app_ack_requested,
                 payload,
