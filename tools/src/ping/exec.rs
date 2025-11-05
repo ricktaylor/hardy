@@ -1,42 +1,5 @@
 use super::*;
 
-fn build_payload(args: &Command, seq_no: u32) -> anyhow::Result<Box<[u8]>> {
-    let mut builder = hardy_bpv7::builder::Builder::new(
-        args.source.as_ref().unwrap().clone(),
-        args.destination.clone(),
-    );
-
-    if let Some(report_to) = &args.report_to {
-        builder = builder.with_report_to(report_to.clone());
-    }
-
-    if let Some(lifetime) = &args.lifetime() {
-        (lifetime.as_millis() > u64::MAX as u128)
-            .then_some(())
-            .ok_or(anyhow::anyhow!(
-                "Lifetime too long: {}!",
-                humantime::format_duration(*lifetime)
-            ))?;
-
-        builder = builder.with_lifetime(*lifetime);
-    }
-
-    let payload = match args.format {
-        Format::Text => payload::Payload::new(seq_no).to_text_fmt().into(),
-        Format::Binary => payload::Payload::new(seq_no).to_bin_fmt(),
-    };
-
-    Ok(builder
-        .add_extension_block(hardy_bpv7::block::Type::Payload)
-        .with_flags(hardy_bpv7::block::Flags {
-            delete_bundle_on_failure: true,
-            ..Default::default()
-        })
-        .build(&payload)
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .1)
-}
-
 async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
     let node_id = match args.source.as_ref().unwrap() {
         Eid::LegacyIpn {
@@ -58,13 +21,15 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
             demux: "".into(),
         },
         eid => {
-            return Err(anyhow::anyhow!("Invalid source EID '{eid}'"));
+            return Err(anyhow::anyhow!(
+                "Invalid source EID '{eid}' for ping service"
+            ));
         }
     };
 
     let bpa = hardy_bpa::bpa::Bpa::start(
         &hardy_bpa::config::Config {
-            status_reports: true,
+            status_reports: args.report_to.is_some(),
             node_ids: [node_id].as_slice().try_into().unwrap(),
             ..Default::default()
         },
@@ -73,16 +38,114 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
     .await
     .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?;
 
-    // Try to add some kind of routes
+    // Register TCPCLv4 CLA
+    let cla_name = "tcp0".to_string();
+    let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(
+        cla_name.clone(),
+        hardy_tcpclv4::config::Config {
+            // TODO: Allow passive mode from args
+            address: None,
+            ..Default::default()
+        },
+    ));
 
-    Ok(bpa)
+    bpa.register_cla(cla_name.clone(), None, cla.clone(), None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_name))?;
+
+    let Some(address) = &args.address else {
+        // TODO: DNS resolution for EIDs
+        // https://datatracker.ietf.org/doc/draft-ek-dtn-ipn-arpa/
+        return Err(anyhow::anyhow!(
+            "No CLA address specified for destination EID, and no DNS support currently available"
+        ));
+    };
+    cla.add_peer(
+        address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse CLA address: {e}"))?,
+        args.destination.clone(),
+    )
+    .await
+    .then_some(bpa)
+    .ok_or(anyhow::anyhow!("Failed to add peer to CLA"))
 }
 
-async fn exec_async(args: Command) -> anyhow::Result<()> {
-    for seq_no in 0..args.count {
-        let payload = build_payload(&args, seq_no)?;
+async fn exec_async(args: &Command) -> anyhow::Result<()> {
+    let bpa = start_bpa(args).await?;
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    cancel::listen_for_cancel(&cancel_token);
+
+    let r = exec_inner(args, &bpa, &cancel_token).await;
+
+    // Stop waiting for cancel
+    cancel_token.cancel();
+
+    bpa.shutdown().await;
+
+    r
+}
+
+async fn exec_inner(
+    args: &Command,
+    bpa: &hardy_bpa::bpa::Bpa,
+    cancel_token: &tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
+    let service_id = match args.source.as_ref().unwrap() {
+        Eid::LegacyIpn {
+            allocator_id: _,
+            node_number: _,
+            service_number,
+        }
+        | Eid::Ipn {
+            allocator_id: _,
+            node_number: _,
+            service_number,
+        } => hardy_bpa::service::ServiceId::IpnService(*service_number),
+        Eid::Dtn {
+            node_name: _,
+            demux,
+        } => hardy_bpa::service::ServiceId::DtnService(demux),
+        eid => {
+            return Err(anyhow::anyhow!(
+                "Invalid source EID '{eid}' for ping service"
+            ));
+        }
+    };
+
+    let service = std::sync::Arc::new(service::Service::new(args));
+    bpa.register_service(Some(service_id), service.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+
+    for seq_no in 0..args.count.unwrap_or(u32::MAX) {
+        service.send(args, seq_no).await?;
+
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(args.interval),
+            cancel_token.cancelled(),
+        )
+        .await
+        .is_ok()
+        {
+            // Cancelled
+            break;
+        }
     }
 
+    if !cancel_token.is_cancelled() && args.count.is_some() && args.wait != 0 {
+        if args.wait < 0 {
+            service.wait_for_responses(cancel_token).await;
+        } else {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(args.wait as u64),
+                service.wait_for_responses(cancel_token),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Timeout waiting for responses"))?;
+        }
+    }
     Ok(())
 }
 
@@ -91,5 +154,5 @@ pub fn exec(args: Command) -> anyhow::Result<()> {
         .enable_all()
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build tokio runtime: {e}"))?
-        .block_on(exec_async(args))
+        .block_on(exec_async(&args))
 }
