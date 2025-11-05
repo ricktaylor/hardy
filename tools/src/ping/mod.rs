@@ -2,8 +2,10 @@ use super::*;
 use hardy_bpv7::eid::Eid;
 use rand::Rng;
 
+mod cancel;
 mod exec;
 mod payload;
+mod service;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Format {
@@ -13,6 +15,34 @@ enum Format {
     /// Use binary format
     #[value(name = "binary")]
     Binary,
+}
+
+fn parse_flags(s: &str) -> anyhow::Result<hardy_bpa::service::SendFlags> {
+    let mut flags = hardy_bpa::service::SendFlags::default();
+    for flag in s.split(',') {
+        match flag {
+            "rcv" => {
+                flags.report_status_time = true;
+                flags.notify_reception = true;
+            }
+            "ct" => eprintln!("Ignoring 'ct' flag"),
+            "ctr" => eprintln!("Ignoring 'ctr' flag"),
+            "fwd" => {
+                flags.report_status_time = true;
+                flags.notify_forwarding = true;
+            }
+            "dlv" => {
+                flags.report_status_time = true;
+                flags.notify_delivery = true;
+            }
+            "del" => {
+                flags.report_status_time = true;
+                flags.notify_deletion = true;
+            }
+            _ => return Err(anyhow::anyhow!("invalid flag: {}", flag)),
+        }
+    }
+    Ok(flags)
 }
 
 #[derive(Parser, Debug)]
@@ -28,46 +58,49 @@ pub struct Command {
 
     /// The number of bundles to send
     #[arg(short, long)]
-    count: u32,
+    count: Option<u32>,
 
     /// The time interval (in seconds) to wait between sending bundles
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "1")]
     interval: u64,
 
     /// The priority of the bundles (ignored)
     #[arg(short, long)]
-    priority: i32,
+    priority: Option<i32>,
 
-    /// The time (in seconds) to wait for responses after sending the last bundle
-    #[arg(short, long)]
-    wait: u64,
+    /// The time (in seconds) to wait for responses after sending the last bundle, -1 means forever
+    #[arg(short, long, default_value = "10")]
+    wait: i64,
+
+    /// Status reporting flags, can be any combination of rcv,dnf,fwd,dlv,del delimited by ',' (without spaces)
+    #[arg(short('r'), long, value_parser = parse_flags)]
+    flags: Option<hardy_bpa::service::SendFlags>,
+
+    /// The optional 'Report To' Endpoint ID (EID) of the bundle
+    #[arg(short('R'), long = "report-to")]
+    report_to: Option<Eid>,
+
+    /// Set the output format
+    #[arg(short, long, default_value = "text")]
+    format: Format,
 
     /// The source Endpoint ID (EID) of the bundle
     #[arg(short, long)]
     source: Option<Eid>,
 
     /// The destination Endpoint ID (EID) of the bundle
-    #[arg(short, long)]
     destination: Eid,
 
-    /// The optional 'Report To' Endpoint ID (EID) of the bundle
-    #[arg(short, long = "report-to")]
-    report_to: Option<Eid>,
-
     /// The CLA address of the next hop.
-    #[arg(short, long)]
-    address: String,
-
-    /// Set the output format
-    #[arg(short, long, default_value = "text")]
-    format: Format,
+    address: Option<String>,
 }
 
 impl Command {
-    pub fn lifetime(&self) -> Option<std::time::Duration> {
+    pub fn lifetime(&self) -> std::time::Duration {
         self.lifetime
             .map(|l| l.into())
             .or_else(|| self.ttl.map(std::time::Duration::from_secs))
+            .unwrap_or(std::time::Duration::from_hours(1))
     }
 
     pub fn exec(mut self) -> anyhow::Result<()> {
@@ -79,6 +112,10 @@ impl Command {
                 node_number: rng.random_range(1..=16383),
                 service_number: rng.random_range(1..=127),
             })
+        }
+
+        if self.flags.is_some() && self.report_to.is_none() {
+            self.report_to = self.source.clone();
         }
 
         exec::exec(self)
