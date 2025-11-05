@@ -26,7 +26,7 @@ impl Default for SessionConfig {
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     // The TCP address:port to listen for TCP connections
-    pub address: std::net::SocketAddr, // default = [::]:4556
+    pub address: Option<std::net::SocketAddr>, // default = [::]:4556
 
     // Largest allowable single-segment data payload size to be received
     pub segment_mru: u64,
@@ -44,10 +44,10 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            address: std::net::SocketAddr::new(
+            address: Some(std::net::SocketAddr::new(
                 std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
                 4556,
-            ),
+            )),
             segment_mru: 16384,
             transfer_mru: 0x2_0000_0000_0000,
             max_idle_connections: 6,

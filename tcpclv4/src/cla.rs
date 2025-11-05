@@ -9,6 +9,7 @@ impl ClaInner {
         task_tracker: &tokio_util::task::TaskTracker,
     ) {
         // Start the listeners
+        if let Some(address) = config.address {
             task_tracker.spawn(
                 Arc::new(listen::Listener {
                     cancel_token: cancel_token.clone(),
@@ -22,8 +23,9 @@ impl ClaInner {
                     sink: self.sink.clone(),
                     registry: self.registry.clone(),
                 })
-            .listen(config.address),
+                .listen(address),
             );
+        }
     }
 }
 
