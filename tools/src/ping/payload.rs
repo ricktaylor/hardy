@@ -130,7 +130,7 @@ pub fn build_payload(
         builder = builder.with_report_to(report_to.clone());
     }
 
-    (args.lifetime().as_millis() > u64::MAX as u128)
+    (args.lifetime().as_millis() <= u64::MAX as u128)
         .then_some(())
         .ok_or(anyhow::anyhow!(
             "Lifetime too long: {}!",
