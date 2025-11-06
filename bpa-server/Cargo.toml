@@ -15,7 +15,7 @@ postgres-storage = []
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = []
 packaged-installation = []
-grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic","dep:prost-types"]
+grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic", "dep:prost-types"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 
@@ -28,7 +28,7 @@ hardy-sqlite-storage = { path = "../sqlite-storage", features = ["serde"], optio
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
-tokio = { version = "1.48.0", features = ["macros","rt-multi-thread","signal"] }
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "signal"] }
 tokio-util = { version = "0.7.16", features = ["rt"] }
 tokio-stream = { version = "0.1.17", optional = true }
 tonic = { version = "0.14.2", optional = true }
