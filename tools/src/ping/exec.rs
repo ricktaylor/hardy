@@ -72,6 +72,12 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
 }
 
 async fn exec_async(args: &Command) -> anyhow::Result<()> {
+    println!(
+        "Pinging {} from {}",
+        args.destination,
+        args.source.as_ref().unwrap()
+    );
+
     let bpa = start_bpa(args).await?;
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -135,6 +141,8 @@ async fn exec_inner(
     }
 
     if !cancel_token.is_cancelled() && args.count.is_some() && args.wait != 0 {
+        println!("Waiting for responses...");
+
         if args.wait < 0 {
             service.wait_for_responses(cancel_token).await;
         } else {
