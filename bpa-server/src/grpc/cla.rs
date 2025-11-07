@@ -174,7 +174,7 @@ impl Cla {
     async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> Result<bpa_to_cla::Msg, tonic::Status> {
         self.sink
             .get()
-            .expect("CLA registration not complete!")
+            .trace_expect("CLA registration not complete!")
             .dispatch(bundle)
             .await
             .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
@@ -194,7 +194,7 @@ impl Cla {
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
         self.sink
             .get()
-            .expect("CLA registration not complete!")
+            .trace_expect("CLA registration not complete!")
             .add_peer(eid, addr)
             .await
             .map(|_| bpa_to_cla::Msg::AddPeer(AddPeerResponse {}))
@@ -214,7 +214,7 @@ impl Cla {
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
         self.sink
             .get()
-            .expect("CLA registration not complete!")
+            .trace_expect("CLA registration not complete!")
             .remove_peer(&eid, &addr)
             .await
             .map(|_| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse {}))

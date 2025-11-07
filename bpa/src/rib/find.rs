@@ -82,7 +82,7 @@ fn map_result(result: InternalFindResult, bundle: &bundle::Bundle) -> Option<Fin
                     .get((hasher.finish() % (peers.len() as u64)) as usize)
                     .trace_expect("ECMP hash has picked an invalid entry")
             } else {
-                *peers.first().expect("Empty CLA result from find?!?")
+                *peers.first().trace_expect("Empty CLA result from find?!?")
             };
 
             Some(FindResult::Forward(peer))

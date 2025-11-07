@@ -129,7 +129,7 @@ impl Store {
     pub async fn delete_data(&self, storage_name: &str) {
         self.bundle_cache
             .lock()
-            .expect("LRU cache lock failure")
+            .trace_expect("LRU cache lock failure")
             .pop(storage_name);
 
         self.bundle_storage

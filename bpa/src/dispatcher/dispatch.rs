@@ -224,13 +224,14 @@ impl Dispatcher {
                             let old_storage_name = new_bundle
                                 .metadata
                                 .storage_name
-                                .replace(self.store.save_data(new_data.into()).await)
-                                .unwrap();
+                                .replace(self.store.save_data(new_data.into()).await);
                             new_bundle.bundle = bundle;
                             self.store.update_metadata(&new_bundle).await;
 
                             // And drop the original bundle data
-                            self.store.delete_data(&old_storage_name).await;
+                            if let Some(old_storage_name) = old_storage_name {
+                                self.store.delete_data(&old_storage_name).await;
+                            }
                         }
                         Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. })
                         | Err(error) => {

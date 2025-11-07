@@ -125,7 +125,7 @@ impl StaticRoutes {
             .config
             .routes_file
             .parent()
-            .expect("Failed to get 'routes_file' parent directory!")
+            .trace_expect("Failed to get 'routes_file' parent directory!")
             .to_path_buf();
         let routes_file = self.config.routes_file.clone();
 

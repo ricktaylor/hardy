@@ -54,7 +54,12 @@ impl ConnectionPool {
         &'a self,
         guard: Option<&tokio::sync::MutexGuard<'a, ()>>,
     ) -> rusqlite::Connection {
-        if let Some(conn) = self.connections.lock().expect("Failed to lock mutex").pop() {
+        if let Some(conn) = self
+            .connections
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .pop()
+        {
             conn
         } else {
             self.new_connection(guard).await
@@ -64,7 +69,7 @@ impl ConnectionPool {
     fn put(&self, conn: rusqlite::Connection) {
         self.connections
             .lock()
-            .expect("Failed to lock mutex")
+            .trace_expect("Failed to lock mutex")
             .push(conn)
     }
 }
