@@ -40,12 +40,12 @@ impl Service {
     pub async fn send(&self, args: &Command, seq_no: u32) -> anyhow::Result<()> {
         let (payload, creation) = ping::payload::build_payload(args, seq_no)?;
 
-        println!("Sending ping seq={} ... ", seq_no);
+        println!("Sending ping {}... ", seq_no);
 
         let id = self
             .sink
             .get()
-            .unwrap()
+            .trace_expect("Service not registered!")
             .send(
                 self.destination.clone(),
                 payload.as_ref(),
@@ -139,7 +139,7 @@ impl hardy_bpa::service::Service for Service {
             .remove(&payload.seqno);
         let Some(sent_time) = sent_time else {
             eprintln!(
-                "Ignoring unexpected ping response with seqno {}",
+                "Ignoring unexpected ping response with sequence number {}",
                 payload.seqno
             );
             return;
@@ -147,13 +147,16 @@ impl hardy_bpa::service::Service for Service {
 
         if let Ok(rtt) = (payload.creation - sent_time).try_into() {
             println!(
-                "Reply from {}: seq={} rtt={}",
+                "Reply from {}: ping {}, rtt {}",
                 &bundle.source,
                 payload.seqno,
                 humantime::format_duration(rtt)
             );
         } else {
-            eprintln!("Failed to compute RTT for seqno {}", payload.seqno);
+            eprintln!(
+                "Failed to compute round-trip time for ping {}",
+                payload.seqno
+            );
         }
 
         // Indicate that we have received a response
@@ -182,10 +185,10 @@ impl hardy_bpa::service::Service for Service {
                 reason,
                 hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation
             ) {
-                println!("Status report for seq {seq_no}: {kind:?}, timestamp: {timestamp}",)
+                println!("Status report for ping {seq_no}: {kind:?}, timestamp: {timestamp}",)
             } else {
                 println!(
-                    "Status report for seq {seq_no}: {kind:?}, reason: {reason:?}, timestamp: {timestamp}",
+                    "Status report for ping  {seq_no}: {kind:?}, reason: {reason:?}, timestamp: {timestamp}",
                 )
             }
         } else {
