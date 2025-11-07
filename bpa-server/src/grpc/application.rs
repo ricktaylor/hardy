@@ -178,7 +178,7 @@ impl Application {
 
         self.sink
             .get()
-            .expect("Service registration not complete!")
+            .trace_expect("Service registration not complete!")
             .send(
                 request
                     .destination
