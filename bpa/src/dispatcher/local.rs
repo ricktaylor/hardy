@@ -121,7 +121,7 @@ impl Dispatcher {
                 return Ok(dispatch::DispatchResult::Wait);
             }
             Err(e) => {
-                trace!("Received an invalid payload: {e}");
+                debug!("Received an invalid payload: {e}");
                 return Ok(dispatch::DispatchResult::Drop(Some(
                     ReasonCode::BlockUnintelligible,
                 )));

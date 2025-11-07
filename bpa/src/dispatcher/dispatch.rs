@@ -24,7 +24,7 @@ impl Dispatcher {
                 .into());
             }
             Some(0x06) => {
-                trace!("Data looks like a BPv6 bundle");
+                debug!("Data looks like a BPv6 bundle");
                 return Err(hardy_bpv7::Error::InvalidCBOR(
                     hardy_cbor::decode::Error::IncorrectType(
                         "BPv7 bundle".to_string(),
@@ -69,7 +69,7 @@ impl Dispatcher {
                     report_unsupported,
                     non_canonical,
                 } => {
-                    trace!("Received bundle has been rewritten");
+                    debug!("Received bundle has been rewritten");
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
@@ -89,7 +89,7 @@ impl Dispatcher {
                     reason,
                     error,
                 } => {
-                    trace!("Invalid bundle received: {error}");
+                    debug!("Invalid bundle received: {error}");
 
                     // Don't bother saving the bundle data, it's garbage
                     (
@@ -142,14 +142,14 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn dispatch_bundle(self: &Arc<Self>, mut bundle: bundle::Bundle) {
         if let Some(u) = bundle.bundle.flags.unrecognised {
-            trace!("Bundle primary block has unrecognised flag bits set: {u:#x}");
+            debug!("Bundle primary block has unrecognised flag bits set: {u:#x}");
         }
 
         // We loop here because of reassembly
         loop {
             // Check some basic semantic validity, lifetime first
             if bundle.has_expired() {
-                trace!("Bundle lifetime has expired");
+                debug!("Bundle lifetime has expired");
                 return self
                     .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
                     .await;
@@ -159,7 +159,7 @@ impl Dispatcher {
             if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
                 && hop_info.count >= hop_info.limit
             {
-                trace!("Bundle hop-limit {} exceeded", hop_info.limit);
+                debug!("Bundle hop-limit {} exceeded", hop_info.limit);
                 return self
                     .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
                     .await;
@@ -217,7 +217,7 @@ impl Dispatcher {
                             non_canonical,
                             ..
                         }) => {
-                            trace!("Reassembled bundle has been rewritten");
+                            debug!("Reassembled bundle has been rewritten");
 
                             // Update the metadata
                             new_bundle.metadata.non_canonical = non_canonical;
@@ -236,7 +236,7 @@ impl Dispatcher {
                         Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. })
                         | Err(error) => {
                             // Reconstituted bundle is garbage
-                            trace!("Reassembled bundle is invalid: {error}");
+                            debug!("Reassembled bundle is invalid: {error}");
                             return self.delete_bundle(new_bundle).await;
                         }
                     }
@@ -276,7 +276,7 @@ impl Dispatcher {
         // Perform RIB lookup
         match self.rib.find(bundle).await {
             Some(rib::FindResult::Drop(reason)) => {
-                trace!("Bundle is black-holed");
+                debug!("Bundle is black-holed");
                 DispatchResult::Drop(reason)
             }
             Some(rib::FindResult::AdminEndpoint) => {
@@ -292,12 +292,12 @@ impl Dispatcher {
                     .trace_expect("Failed to deliver bundle")
             }
             Some(rib::FindResult::Forward(peer)) => {
-                trace!("Queuing bundle for forwarding to CLA peer {peer}");
+                debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 DispatchResult::Forward(peer)
             }
             _ => {
                 // Just wait
-                trace!("Delaying bundle until a forwarding opportunity arises");
+                debug!("Delaying bundle until a forwarding opportunity arises");
 
                 if bundle.metadata.status != BundleStatus::Waiting {
                     bundle.metadata.status = BundleStatus::Waiting;

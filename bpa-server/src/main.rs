@@ -7,7 +7,7 @@ mod grpc;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 fn listen_for_cancel(
     cancel_token: &tokio_util::sync::CancellationToken,

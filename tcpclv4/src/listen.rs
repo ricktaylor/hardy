@@ -123,29 +123,29 @@ impl Listener {
         {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
-                trace!("Read failed: {e}");
+                debug!("Read failed: {e}");
                 return;
             }
             Err(_) => {
-                trace!("Connection timed out");
+                debug!("Connection timed out");
                 return;
             }
         }
 
         // Parse contact header
         if buffer[0..4] != *b"dtn!" {
-            trace!("Contact header isn't: 'dtn!'");
+            debug!("Contact header isn't: 'dtn!'");
             return;
         }
 
-        trace!("Contact header received from {}", remote_addr);
+        debug!("Contact header received from {}", remote_addr);
 
         // Always send our contact header in reply!
         if let Err(e) = stream
             .write_all(&[b'd', b't', b'n', b'!', 4, if self.use_tls { 1 } else { 0 }])
             .await
         {
-            trace!("Failed to send contact header: {e}");
+            debug!("Failed to send contact header: {e}");
             return;
         }
 
@@ -309,7 +309,7 @@ impl Listener {
 
         session.run().await;
 
-        trace!("Session with {remote_addr} closed");
+        debug!("Session with {remote_addr} closed");
 
         // Unregister the session for addr, whatever happens
         self.registry

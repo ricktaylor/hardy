@@ -82,7 +82,7 @@ pub async fn load_routes(
 ) -> anyhow::Result<Vec<(eid_patterns::EidPattern, StaticRoute)>> {
     match tokio::fs::read(routes_file).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
-            trace!("Static routes file: '{}' not found", routes_file.display());
+            debug!("Static routes file: '{}' not found", routes_file.display());
             Ok(Vec::new())
         }
         Err(e) if ignore_errors => {

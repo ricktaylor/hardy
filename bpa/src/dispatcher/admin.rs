@@ -9,7 +9,7 @@ impl Dispatcher {
     ) -> dispatch::DispatchResult {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
-            trace!(
+            debug!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
             return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
@@ -26,7 +26,7 @@ impl Dispatcher {
                 return dispatch::DispatchResult::Wait;
             }
             Err(e) => {
-                trace!("Received an invalid administrative record: {e}");
+                debug!("Received an invalid administrative record: {e}");
                 return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
             }
             Ok(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
@@ -35,7 +35,7 @@ impl Dispatcher {
 
         match hardy_cbor::decode::parse(&payload) {
             Err(e) => {
-                trace!("Failed to parse administrative record: {e}");
+                debug!("Failed to parse administrative record: {e}");
                 dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible))
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {

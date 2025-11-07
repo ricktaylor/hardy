@@ -15,7 +15,7 @@ pub mod storage;
 
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "tracing")]
 use tracing::{Instrument, instrument};

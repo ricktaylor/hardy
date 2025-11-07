@@ -196,7 +196,7 @@ impl From<u8> for SessionInitExtensionFlags {
 
         flags.reserved = value & 0xFE;
         if flags.reserved != 0 {
-            trace!(
+            debug!(
                 "Parsing session initialization extension with reserved flag bits set: {:#x}",
                 flags.reserved
             );
@@ -266,7 +266,7 @@ impl From<u8> for SessionTermMessageFlags {
 
         flags.reserved = value & 0xFE;
         if flags.reserved != 0 {
-            trace!(
+            debug!(
                 "Parsing session term message with reserved flag bits set: {:#x}",
                 flags.reserved
             );
@@ -308,11 +308,11 @@ impl From<u8> for SessionTermReasonCode {
             4 => Self::ContactFailure,
             5 => Self::ResourceExhaustion,
             n @ 6..=0xEF => {
-                trace!("Parsing session term message with unassigned reason code: {n}");
+                debug!("Parsing session term message with unassigned reason code: {n}");
                 Self::Unassigned(n)
             }
             n @ 0xF0..=0xFF => {
-                trace!("Parsing session term message with private reason code: {n}");
+                debug!("Parsing session term message with private reason code: {n}");
                 Self::Private(n)
             }
         }
@@ -386,11 +386,11 @@ impl From<u8> for MessageRejectionReasonCode {
             2 => Self::Unsupported,
             3 => Self::Unexpected,
             n @ 0 | n @ 4..=0xEF => {
-                trace!("Parsing rejection message with unassigned reason code: {n}");
+                debug!("Parsing rejection message with unassigned reason code: {n}");
                 Self::Unassigned(n)
             }
             n @ 0xF0..=0xFF => {
-                trace!("Parsing rejection message with private reason code: {n}");
+                debug!("Parsing rejection message with private reason code: {n}");
                 Self::Private(n)
             }
         }
@@ -468,11 +468,11 @@ impl From<u8> for TransferRefuseReasonCode {
             5 => Self::ExtensionFailure,
             6 => Self::SessionTerminating,
             n @ 7..=0xEF => {
-                trace!("Parsing transfer refuse message with unassigned reason code: {n}");
+                debug!("Parsing transfer refuse message with unassigned reason code: {n}");
                 Self::Unassigned(n)
             }
             n @ 0xF0..=0xFF => {
-                trace!("Parsing transfer refuse message with private reason code: {n}");
+                debug!("Parsing transfer refuse message with private reason code: {n}");
                 Self::Private(n)
             }
         }
@@ -684,7 +684,7 @@ impl From<u8> for TransferSegmentMessageFlags {
 
         flags.reserved = value & 0xFC;
         if flags.reserved != 0 {
-            trace!(
+            debug!(
                 "Parsing transfer segment message with reserved flag bits set: {:#x}",
                 flags.reserved
             );
@@ -738,7 +738,7 @@ impl From<u8> for TransferSegmentExtensionFlags {
 
         flags.reserved = value & 0xFE;
         if flags.reserved != 0 {
-            trace!(
+            debug!(
                 "Parsing transfer segment extension with reserved flag bits set: {:#x}",
                 flags.reserved
             );
