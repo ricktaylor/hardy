@@ -56,14 +56,25 @@ impl Connector {
         if buffer[4] != 4 {
             warn!("Unsupported protocol version {}", buffer[4]);
 
-            // Terminate session
-            transport::terminate(
-                codec::MessageCodec::new_framed(stream),
-                codec::SessionTermReasonCode::VersionMismatch,
-                self.contact_timeout,
-                &self.cancel_token,
-            )
-            .await;
+            if buffer[4] == 3 {
+                debug!("Sending TCPCLv3 SHUTDOWN message to {}", remote_addr);
+
+                // Send a TCPCLv3 SHUTDOWN message
+                stream
+                    .write_all(&[0x45, 0x01])
+                    .await
+                    .inspect_err(|e| debug!("Failed to send TCPv3 SHUTDOWN message: {e}"))?;
+                stream.shutdown().await?;
+            } else {
+                // Terminate session
+                transport::terminate(
+                    codec::MessageCodec::new_framed(stream),
+                    codec::SessionTermReasonCode::VersionMismatch,
+                    self.contact_timeout,
+                    &self.cancel_token,
+                )
+                .await;
+            }
             return Err(transport::Error::InvalidProtocol);
         }
 
