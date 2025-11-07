@@ -357,6 +357,8 @@ impl Dispatcher {
 
             // Wait for all sub-tasks to complete
             while task_set.join_next().await.is_some() {}
+
+            debug!("Dispatch waiting task complete");
         };
 
         #[cfg(feature = "tracing")]

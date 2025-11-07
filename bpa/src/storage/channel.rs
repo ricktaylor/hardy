@@ -128,7 +128,10 @@ impl Store {
                 match self.poll_once(&shared, cap).await {
                     Ok(true) => {}
                     Ok(false) => break,
-                    Err(_) => return,
+                    Err(_) => {
+                        debug!("Poll queue {:?} complete", shared.status);
+                        return;
+                    }
                 }
             }
 

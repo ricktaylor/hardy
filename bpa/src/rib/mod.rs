@@ -62,6 +62,8 @@ impl Rib {
                     }
                 }
             }
+
+            debug!("Poll waiting task complete");
         };
 
         #[cfg(feature = "tracing")]
