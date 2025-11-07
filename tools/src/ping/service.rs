@@ -57,12 +57,12 @@ impl Service {
 
         self.sent_bundles
             .lock()
-            .expect("Failed to lock sent_bundles mutex")
+            .trace_expect("Failed to lock sent_bundles mutex")
             .insert(id, seq_no);
 
         self.expected_responses
             .lock()
-            .expect("Failed to lock expected_responses mutex")
+            .trace_expect("Failed to lock expected_responses mutex")
             .insert(seq_no, creation);
 
         Ok(())
@@ -75,7 +75,7 @@ impl Service {
             tokio::select! {
                 _ = cancel_token.cancelled() => {},
                 r = semaphore.acquire_many(count) => {
-                    _ = r.expect("Failed to acquire semaphore permits");
+                    _ = r.trace_expect("Failed to acquire semaphore permits");
                 },
             };
         }
@@ -135,7 +135,7 @@ impl hardy_bpa::service::Service for Service {
         let sent_time = self
             .expected_responses
             .lock()
-            .expect("Failed to lock expected_responses mutex")
+            .trace_expect("Failed to lock expected_responses mutex")
             .remove(&payload.seqno);
         let Some(sent_time) = sent_time else {
             eprintln!(
@@ -172,7 +172,7 @@ impl hardy_bpa::service::Service for Service {
         if let Some(seq_no) = self
             .sent_bundles
             .lock()
-            .expect("Failed to lock sent_bundles mutex")
+            .trace_expect("Failed to lock sent_bundles mutex")
             .get(bundle_id)
         {
             let timestamp = timestamp.map_or("<not reported>".to_string(), |t| {

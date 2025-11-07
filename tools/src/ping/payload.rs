@@ -157,7 +157,7 @@ pub fn build_payload(
                 payload
                     .creation
                     .try_into()
-                    .expect("Failed to convert creation time"),
+                    .trace_expect("Failed to convert creation time"),
             )
             .1,
         payload.creation,
