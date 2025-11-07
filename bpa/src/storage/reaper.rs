@@ -111,6 +111,7 @@ impl Store {
                 _ = self.reaper_wakeup.notified() => {},
                 _ = self.cancel_token.cancelled() => {
                     // Shutting down
+                    debug!("Reaper task complete");
                     break;
                 }
             }
