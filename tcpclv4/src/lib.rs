@@ -11,7 +11,7 @@ pub mod config;
 use hardy_bpv7::eid::Eid;
 use std::sync::Arc;
 use trace_err::*;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,

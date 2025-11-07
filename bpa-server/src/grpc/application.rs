@@ -132,7 +132,7 @@ impl Application {
                     })
                 }),
                 Ok(None) => {
-                    trace!("Service disconnected");
+                    debug!("Service disconnected");
                     break;
                 }
                 Err(status) => {

@@ -26,13 +26,13 @@ impl Connector {
     ) -> Result<(), transport::Error> {
         let mut stream = TcpStream::connect(remote_addr)
             .await
-            .inspect_err(|e| trace!("Failed to TCP connect to {remote_addr}: {e}"))?;
+            .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
         // Send contact header
         stream
             .write_all(&[b'd', b't', b'n', b'!', 4, if self.use_tls { 1 } else { 0 }])
             .await
-            .inspect_err(|e| trace!("Failed to send contact header: {e}"))?;
+            .inspect_err(|e| debug!("Failed to send contact header: {e}"))?;
 
         // Receive contact header
         let mut buffer = [0u8; 6];
@@ -42,16 +42,16 @@ impl Connector {
         )
         .await
         .map_err(|_| transport::Error::Timeout)
-        .inspect_err(|_| trace!("Connection timed out"))?
-        .inspect_err(|e| trace!("Read failed: {e}"))?;
+        .inspect_err(|_| debug!("Connection timed out"))?
+        .inspect_err(|e| debug!("Read failed: {e}"))?;
 
         // Parse contact header
         if buffer[0..4] != *b"dtn!" {
-            trace!("Contact header isn't: 'dtn!'");
+            debug!("Contact header isn't: 'dtn!'");
             return Err(transport::Error::InvalidProtocol);
         }
 
-        trace!("Contact header received from {}", remote_addr);
+        debug!("Contact header received from {}", remote_addr);
 
         if buffer[4] != 4 {
             warn!("Unsupported protocol version {}", buffer[4]);
@@ -200,7 +200,7 @@ impl Connector {
 
             session.run().await;
 
-            trace!("Session with {remote_addr} closed");
+            debug!("Session with {remote_addr} closed");
 
             // Unregister the session for addr, whatever happens
             registry.unregister_session(&local_addr, &remote_addr).await

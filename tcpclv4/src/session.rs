@@ -211,7 +211,7 @@ where
                 biased;
                 r = self.recv_from_peer() => match r? {
                     codec::Message::SessionTerm(msg) => {
-                        trace!("Peer has started to end the session: {msg:?}");
+                        debug!("Peer has started to end the session: {msg:?}");
                         return Err(Error::Terminate(msg))
                     },
                     codec::Message::TransferSegment(msg) => {

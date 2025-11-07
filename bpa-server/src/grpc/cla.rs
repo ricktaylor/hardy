@@ -149,7 +149,7 @@ impl Cla {
                     })
                 }),
                 Ok(None) => {
-                    trace!("CLA disconnected");
+                    debug!("CLA disconnected");
                     break;
                 }
                 Err(status) => {

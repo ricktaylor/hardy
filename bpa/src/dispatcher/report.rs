@@ -11,11 +11,11 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         reason: ReasonCode,
     ) {
-        trace!("Bundle {:?} received", &bundle.bundle.id);
+        debug!("Bundle {:?} received", &bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.receipt_report_requested {
-            trace!("Reporting bundle reception to {}", &bundle.bundle.report_to);
+            debug!("Reporting bundle reception to {}", &bundle.bundle.report_to);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
@@ -42,11 +42,11 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_forwarded(self: &Arc<Self>, bundle: &bundle::Bundle) {
-        trace!("Bundle {:?} forwarded", &bundle.bundle.id);
+        debug!("Bundle {:?} forwarded", &bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.forward_report_requested {
-            trace!(
+            debug!(
                 "Reporting bundle as forwarded to {}",
                 &bundle.bundle.report_to
             );
@@ -71,11 +71,11 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_delivery(self: &Arc<Self>, bundle: &bundle::Bundle) {
-        trace!("Bundle {:?} delivered", &bundle.bundle.id);
+        debug!("Bundle {:?} delivered", &bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.delivery_report_requested {
-            trace!("Reporting bundle delivery to {}", &bundle.bundle.report_to);
+            debug!("Reporting bundle delivery to {}", &bundle.bundle.report_to);
 
             // Create a bundle report
             self.dispatch_status_report(
@@ -102,11 +102,11 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         reason: ReasonCode,
     ) {
-        trace!("Bundle {:?} deleted", &bundle.bundle.id);
+        debug!("Bundle {:?} deleted", &bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.delete_report_requested {
-            trace!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
+            debug!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
 
             // Create a bundle report
             self.dispatch_status_report(
