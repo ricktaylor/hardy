@@ -62,7 +62,7 @@ impl Bpa {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
-        debug!("Shutting down BPA");
+        info!("Shutting down BPA");
 
         self.dispatcher.shutdown().await;
         self.service_registry.shutdown().await;
@@ -70,7 +70,7 @@ impl Bpa {
         self.rib.shutdown().await;
         self.store.shutdown().await;
 
-        debug!("BPA stopped");
+        info!("BPA stopped");
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
