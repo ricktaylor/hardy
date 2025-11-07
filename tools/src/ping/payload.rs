@@ -78,12 +78,12 @@ impl Payload {
             return Err(anyhow::anyhow!("Payload too short"));
         }
 
-        let timeval_sec = u32::from_be_bytes(data[5..9].try_into().unwrap());
-        let timeval_msec = u32::from_be_bytes(data[9..13].try_into().unwrap()) * 1000;
+        let timeval_sec = u32::from_be_bytes(data[5..9].try_into()?);
+        let timeval_msec = u32::from_be_bytes(data[9..13].try_into()?) * 1000;
 
         Ok(Self {
             service_flag: data[0],
-            seqno: u32::from_be_bytes(data[1..5].try_into().unwrap()),
+            seqno: u32::from_be_bytes(data[1..5].try_into()?),
             creation: time::OffsetDateTime::from_unix_timestamp(timeval_sec as i64)?
                 + time::Duration::microseconds(timeval_msec as i64),
         })
