@@ -1,6 +1,7 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
 use rand::Rng;
+use trace_err::*;
 
 mod cancel;
 mod exec;
@@ -48,6 +49,10 @@ fn parse_flags(s: &str) -> anyhow::Result<hardy_bpa::service::SendFlags> {
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
+    /// Verbosity level
+    #[arg(short, long, num_args = 0..=1)]
+    verbose: Option<Option<tracing::Level>>,
+
     /// The optional lifetime of the bundle, or 24 hours if not supplied
     #[arg(short, long)]
     lifetime: Option<humantime::Duration>,
@@ -104,6 +109,15 @@ impl Command {
     }
 
     pub fn exec(mut self) -> anyhow::Result<()> {
+        if let Some(level) = self.verbose.map(|o| o.unwrap_or(tracing::Level::INFO)) {
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(level)
+                .with_target(level > tracing::Level::INFO)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .map_err(|e| anyhow::anyhow!("Failed to set global default subscriber: {e}"))?;
+        }
+
         if self.source.is_none() {
             // Create a random EID
             let mut rng = rand::rng();

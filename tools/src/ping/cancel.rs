@@ -1,8 +1,10 @@
+use super::*;
+
 pub fn listen_for_cancel(cancel_token: &tokio_util::sync::CancellationToken) {
     #[cfg(unix)]
     let mut term_handler =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("Failed to register signal handlers");
+            .trace_expect("Failed to register signal handlers");
     #[cfg(not(unix))]
     let mut term_handler = std::future::pending();
 
