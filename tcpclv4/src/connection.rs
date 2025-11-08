@@ -183,7 +183,7 @@ impl ConnectionRegistry {
         conn: Connection,
         remote_addr: SocketAddr,
         eid: Option<Eid>,
-    ) {
+    ) -> bool {
         match self
             .pools
             .lock()
@@ -201,9 +201,10 @@ impl ConnectionRegistry {
             }
         }
 
-        // TODO:  Make this a utility function that can be called from the outer CLA
         if let Some(eid) = eid {
-            self.add_peer(remote_addr, eid).await;
+            self.add_peer(remote_addr, eid).await
+        } else {
+            true
         }
     }
 
@@ -221,20 +222,38 @@ impl ConnectionRegistry {
     }
 
     pub async fn add_peer(&self, remote_addr: SocketAddr, eid: Eid) -> bool {
-        if self
-            .peers
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .insert(remote_addr, eid.clone())
-            .is_none()
-            && !self
-                .sink
-                .add_peer(eid, hardy_bpa::cla::ClaAddress::Tcp(remote_addr))
-                .await
-                .unwrap_or_else(|e| {
-                    error!("add_peer failed: {e:?}");
-                    false
-                })
+        {
+            match self
+                .peers
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .entry(remote_addr)
+            {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(eid.clone());
+                }
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    // Do a quick safety check to avoid spoofing
+                    let orig_eid = e.get();
+                    if orig_eid != &eid {
+                        warn!(
+                            "Peer at {remote_addr} attempted to register with a different EID ({eid} != {orig_eid})"
+                        );
+                        return false;
+                    } else {
+                        return true;
+                    }
+                }
+            }
+        }
+        if !self
+            .sink
+            .add_peer(eid, hardy_bpa::cla::ClaAddress::Tcp(remote_addr))
+            .await
+            .unwrap_or_else(|e| {
+                error!("add_peer failed: {e:?}");
+                false
+            })
         {
             self.peers
                 .lock()
