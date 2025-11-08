@@ -276,7 +276,7 @@ impl Dispatcher {
         // Perform RIB lookup
         match self.rib.find(bundle).await {
             Some(rib::FindResult::Drop(reason)) => {
-                debug!("Bundle is black-holed");
+                debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
                 DispatchResult::Drop(reason)
             }
             Some(rib::FindResult::AdminEndpoint) => {
@@ -357,8 +357,6 @@ impl Dispatcher {
 
             // Wait for all sub-tasks to complete
             while task_set.join_next().await.is_some() {}
-
-            debug!("Dispatch waiting task complete");
         };
 
         #[cfg(feature = "tracing")]

@@ -102,8 +102,6 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         reason: ReasonCode,
     ) {
-        debug!("Bundle {:?} deleted", &bundle.bundle.id);
-
         // Check if a report is requested
         if bundle.bundle.flags.delete_report_requested {
             debug!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
