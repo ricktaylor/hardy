@@ -297,7 +297,7 @@ impl Dispatcher {
             }
             _ => {
                 // Just wait
-                debug!("Delaying bundle until a forwarding opportunity arises");
+                debug!("Storing bundle until a forwarding opportunity arises");
 
                 if bundle.metadata.status != BundleStatus::Waiting {
                     bundle.metadata.status = BundleStatus::Waiting;

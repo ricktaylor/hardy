@@ -299,15 +299,17 @@ impl Listener {
         );
 
         // Register the client for addr
-        self.registry
+        if self
+            .registry
             .register_session(
                 connection::Connection { tx, local_addr },
                 remote_addr,
                 peer_init.node_id,
             )
-            .await;
-
-        session.run().await;
+            .await
+        {
+            session.run().await;
+        }
 
         debug!("Session with {remote_addr} closed");
 
