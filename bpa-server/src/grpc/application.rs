@@ -162,7 +162,7 @@ impl Application {
                 f &= !(f2 as u32);
                 b
             };
-            flags = Some(hardy_bpa::service::SendFlags {
+            flags = Some(hardy_bpa::service::SendOptions {
                 do_not_fragment: test_bit(send_request::SendFlags::DoNotFragment),
                 request_ack: test_bit(send_request::SendFlags::RequestAck),
                 report_status_time: test_bit(send_request::SendFlags::ReportStatusTime),

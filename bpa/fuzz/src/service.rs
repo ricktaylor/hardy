@@ -13,9 +13,9 @@ pub struct SendFlags {
     notify_deletion: bool,
 }
 
-impl From<SendFlags> for hardy_bpa::service::SendFlags {
+impl From<SendFlags> for hardy_bpa::service::SendOptions {
     fn from(val: SendFlags) -> Self {
-        hardy_bpa::service::SendFlags {
+        hardy_bpa::service::SendOptions {
             do_not_fragment: val.do_not_fragment,
             request_ack: val.request_ack,
             report_status_time: val.report_status_time,
@@ -46,7 +46,7 @@ impl PipeService {
         destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
-        flags: Option<hardy_bpa::service::SendFlags>,
+        flags: Option<hardy_bpa::service::SendOptions>,
     ) -> hardy_bpa::service::Result<Box<str>> {
         self.sink
             .get()

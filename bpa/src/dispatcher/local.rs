@@ -8,7 +8,7 @@ impl Dispatcher {
         mut destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
-        flags: Option<service::SendFlags>,
+        flags: Option<service::SendOptions>,
     ) -> hardy_bpv7::bundle::Id {
         // Check to see if we should use ipn 2-element encoding
         if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
