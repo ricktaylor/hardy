@@ -38,6 +38,17 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
     .await
     .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?;
 
+    // Add a default 'drop' route, we don't want to cache locally
+    bpa.add_route(
+        "ping".to_string(),
+        "*:**".parse().unwrap(),
+        hardy_bpa::routes::Action::Drop(Some(
+            hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
+        )),
+        1000,
+    )
+    .await;
+
     // Register TCPCLv4 CLA
     let cla_name = "tcp0".to_string();
     let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(
