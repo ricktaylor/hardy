@@ -7,6 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 
 pub struct Service {
     sink: std::sync::OnceLock<Box<dyn hardy_bpa::service::Sink>>,
+    node_id: String,
     destination: Eid,
     lifetime: std::time::Duration,
     flags: hardy_bpa::service::SendOptions,
@@ -21,6 +22,7 @@ impl Service {
     pub fn new(args: &Command) -> Self {
         Self {
             sink: std::sync::OnceLock::new(),
+            node_id: args.node_id().unwrap().to_string(),
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
             flags: {
@@ -179,17 +181,23 @@ impl hardy_bpa::service::Service for Service {
             .trace_expect("Failed to lock sent_bundles mutex")
             .get(bundle_id)
         {
-            let mut output = format!("Ping {seq_no} {kind:?} by {from}");
+            let mut output = format!("Ping {seq_no} {kind:?}");
+            if from != self.node_id {
+                output = format!("{output} by {from}");
+            } else {
+                output = format!("{output} locally");
+            }
+
             if !matches!(
                 reason,
                 hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation
             ) {
-                output = format!("{output}, {reason:?}");
+                output = format!("{output}, {reason:?},");
             }
 
             if let Some(timestamp) = timestamp {
                 let timestamp: time::OffsetDateTime = timestamp.into();
-                output = format!("{output}, timestamp: {timestamp}");
+                output = format!("{output} at {timestamp}");
             }
 
             println!("{output}");
