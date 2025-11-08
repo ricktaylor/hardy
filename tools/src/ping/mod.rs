@@ -18,8 +18,8 @@ enum Format {
     Binary,
 }
 
-fn parse_flags(s: &str) -> anyhow::Result<hardy_bpa::service::SendFlags> {
-    let mut flags = hardy_bpa::service::SendFlags::default();
+fn parse_flags(s: &str) -> anyhow::Result<hardy_bpa::service::SendOptions> {
+    let mut flags = hardy_bpa::service::SendOptions::default();
     for flag in s.split(',') {
         match flag {
             "rcv" => {
@@ -79,7 +79,7 @@ pub struct Command {
 
     /// Status reporting flags, can be any combination of rcv,dnf,fwd,dlv,del delimited by ',' (without spaces)
     #[arg(short('r'), long, value_parser = parse_flags)]
-    flags: Option<hardy_bpa::service::SendFlags>,
+    flags: Option<hardy_bpa::service::SendOptions>,
 
     /// The optional 'Report To' Endpoint ID (EID) of the bundle
     #[arg(short('R'), long = "report-to")]

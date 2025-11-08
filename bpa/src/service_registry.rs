@@ -67,7 +67,7 @@ impl service::Sink for Sink {
         destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
-        flags: Option<service::SendFlags>,
+        flags: Option<service::SendOptions>,
     ) -> service::Result<Box<str>> {
         // Sanity check
         if let Eid::Null = &destination {

@@ -68,7 +68,7 @@ pub trait Service: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SendFlags {
+pub struct SendOptions {
     pub do_not_fragment: bool,
     pub request_ack: bool,
     pub report_status_time: bool,
@@ -87,7 +87,7 @@ pub trait Sink: Send + Sync {
         destination: Eid,
         data: &[u8],
         lifetime: std::time::Duration,
-        flags: Option<SendFlags>,
+        flags: Option<SendOptions>,
     ) -> Result<Box<str>>;
 
     async fn cancel(&self, bundle_id: &str) -> Result<bool>;

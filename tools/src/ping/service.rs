@@ -9,7 +9,7 @@ pub struct Service {
     sink: std::sync::OnceLock<Box<dyn hardy_bpa::service::Sink>>,
     destination: Eid,
     lifetime: std::time::Duration,
-    flags: hardy_bpa::service::SendFlags,
+    flags: hardy_bpa::service::SendOptions,
     semaphore: Option<Arc<tokio::sync::Semaphore>>,
     count: Option<u32>,
     sent_bundles: std::sync::Mutex<HashMap<Box<str>, u32>>,
