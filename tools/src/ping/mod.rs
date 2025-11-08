@@ -108,6 +108,34 @@ impl Command {
             .unwrap_or(std::time::Duration::from_hours(1))
     }
 
+    pub fn node_id(&self) -> anyhow::Result<Eid> {
+        Ok(match self.source.as_ref().unwrap() {
+            Eid::LegacyIpn {
+                allocator_id,
+                node_number,
+                ..
+            }
+            | Eid::Ipn {
+                allocator_id,
+                node_number,
+                ..
+            } => Eid::Ipn {
+                allocator_id: *allocator_id,
+                node_number: *node_number,
+                service_number: 0,
+            },
+            Eid::Dtn { node_name, .. } => Eid::Dtn {
+                node_name: node_name.clone(),
+                demux: "".into(),
+            },
+            eid => {
+                return Err(anyhow::anyhow!(
+                    "Invalid source EID '{eid}' for ping service"
+                ));
+            }
+        })
+    }
+
     pub fn exec(mut self) -> anyhow::Result<()> {
         if let Some(level) = self.verbose.map(|o| o.unwrap_or(tracing::Level::INFO)) {
             let subscriber = tracing_subscriber::fmt()

@@ -1,36 +1,10 @@
 use super::*;
 
 async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
-    let node_id = match args.source.as_ref().unwrap() {
-        Eid::LegacyIpn {
-            allocator_id,
-            node_number,
-            ..
-        }
-        | Eid::Ipn {
-            allocator_id,
-            node_number,
-            ..
-        } => Eid::Ipn {
-            allocator_id: *allocator_id,
-            node_number: *node_number,
-            service_number: 0,
-        },
-        Eid::Dtn { node_name, .. } => Eid::Dtn {
-            node_name: node_name.clone(),
-            demux: "".into(),
-        },
-        eid => {
-            return Err(anyhow::anyhow!(
-                "Invalid source EID '{eid}' for ping service"
-            ));
-        }
-    };
-
     let bpa = hardy_bpa::bpa::Bpa::start(
         &hardy_bpa::config::Config {
             status_reports: args.report_to.is_some(),
-            node_ids: [node_id].as_slice().try_into().unwrap(),
+            node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
             ..Default::default()
         },
         false,
