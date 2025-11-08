@@ -168,6 +168,7 @@ impl hardy_bpa::service::Service for Service {
     async fn on_status_notify(
         &self,
         bundle_id: &str,
+        from: &str,
         kind: hardy_bpa::service::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
@@ -178,19 +179,20 @@ impl hardy_bpa::service::Service for Service {
             .trace_expect("Failed to lock sent_bundles mutex")
             .get(bundle_id)
         {
-            let timestamp = timestamp.map_or("<not reported>".to_string(), |t| {
-                time::OffsetDateTime::from(t).to_string()
-            });
-            if matches!(
+            let mut output = format!("Ping {seq_no} {kind:?} by {from}");
+            if !matches!(
                 reason,
                 hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation
             ) {
-                println!("Status report for ping {seq_no}: {kind:?}, timestamp: {timestamp}",)
-            } else {
-                println!(
-                    "Status report for ping  {seq_no}: {kind:?}, reason: {reason:?}, timestamp: {timestamp}",
-                )
+                output = format!("{output}, {reason:?}");
             }
+
+            if let Some(timestamp) = timestamp {
+                let timestamp: time::OffsetDateTime = timestamp.into();
+                output = format!("{output}, timestamp: {timestamp}");
+            }
+
+            println!("{output}");
         } else {
             eprintln!("Spurious status report received!");
         }

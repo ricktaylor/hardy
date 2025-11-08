@@ -155,24 +155,24 @@ impl Application {
     }
 
     async fn send(&self, request: SendRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
-        let mut flags = None;
-        if let Some(mut f) = request.flags {
+        let mut options = None;
+        if let Some(mut f) = request.options {
             let mut test_bit = |f2| {
                 let b = (f & (f2 as u32)) != 0;
                 f &= !(f2 as u32);
                 b
             };
-            flags = Some(hardy_bpa::service::SendOptions {
-                do_not_fragment: test_bit(send_request::SendFlags::DoNotFragment),
-                request_ack: test_bit(send_request::SendFlags::RequestAck),
-                report_status_time: test_bit(send_request::SendFlags::ReportStatusTime),
-                notify_reception: test_bit(send_request::SendFlags::NotifyReception),
-                notify_forwarding: test_bit(send_request::SendFlags::NotifyForwarding),
-                notify_delivery: test_bit(send_request::SendFlags::NotifyDelivery),
-                notify_deletion: test_bit(send_request::SendFlags::NotifyDeletion),
+            options = Some(hardy_bpa::service::SendOptions {
+                do_not_fragment: test_bit(send_request::SendOptions::DoNotFragment),
+                request_ack: test_bit(send_request::SendOptions::RequestAck),
+                report_status_time: test_bit(send_request::SendOptions::ReportStatusTime),
+                notify_reception: test_bit(send_request::SendOptions::NotifyReception),
+                notify_forwarding: test_bit(send_request::SendOptions::NotifyForwarding),
+                notify_delivery: test_bit(send_request::SendOptions::NotifyDelivery),
+                notify_deletion: test_bit(send_request::SendOptions::NotifyDeletion),
             });
             if f != 0 {
-                return Err(tonic::Status::invalid_argument("Invalid SendFlags"));
+                return Err(tonic::Status::invalid_argument("Invalid SendOptions"));
             }
         }
 
@@ -188,7 +188,7 @@ impl Application {
                     })?,
                 &request.payload,
                 std::time::Duration::from_millis(request.lifetime),
-                flags,
+                options,
             )
             .await
             .map(|bundle_id| {
@@ -283,12 +283,14 @@ impl hardy_bpa::service::Service for Application {
     async fn on_status_notify(
         &self,
         bundle_id: &str,
+        from: &str,
         kind: hardy_bpa::service::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
     ) {
         self.rpc(bpa_to_app::Msg::StatusNotify(StatusNotifyRequest {
             bundle_id: bundle_id.into(),
+            from: from.into(),
             kind: match kind {
                 hardy_bpa::service::StatusNotify::Received => {
                     status_notify_request::StatusKind::Received
