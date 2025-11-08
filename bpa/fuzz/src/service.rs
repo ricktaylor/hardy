@@ -3,7 +3,7 @@ use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 
 #[derive(Arbitrary)]
-pub struct SendFlags {
+pub struct SendOptions {
     do_not_fragment: bool,
     request_ack: bool,
     report_status_time: bool,
@@ -13,8 +13,8 @@ pub struct SendFlags {
     notify_deletion: bool,
 }
 
-impl From<SendFlags> for hardy_bpa::service::SendOptions {
-    fn from(val: SendFlags) -> Self {
+impl From<SendOptions> for hardy_bpa::service::SendOptions {
+    fn from(val: SendOptions) -> Self {
         hardy_bpa::service::SendOptions {
             do_not_fragment: val.do_not_fragment,
             request_ack: val.request_ack,
@@ -31,7 +31,7 @@ impl From<SendFlags> for hardy_bpa::service::SendOptions {
 pub struct Msg {
     pub destination: eid::ArbitraryEid,
     pub lifetime: std::time::Duration,
-    pub flags: Option<SendFlags>,
+    pub flags: Option<SendOptions>,
     pub payload: Vec<u8>,
 }
 
@@ -77,6 +77,7 @@ impl hardy_bpa::service::Service for PipeService {
     async fn on_status_notify(
         &self,
         _bundle_id: &str,
+        _from: &str,
         _kind: hardy_bpa::service::StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,

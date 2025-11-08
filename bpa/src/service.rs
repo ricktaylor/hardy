@@ -61,6 +61,7 @@ pub trait Service: Send + Sync {
     async fn on_status_notify(
         &self,
         bundle_id: &str,
+        from: &str,
         kind: StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,

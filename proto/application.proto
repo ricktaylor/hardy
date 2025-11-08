@@ -79,25 +79,25 @@ message RegisterApplicationResponse {
 
 // SendRequest is a request to send a bundle.
 message SendRequest {
-  // Flags for sending a bundle. These are based on the Bundle Protocol Version 7
+  // Options for sending a bundle. These are based on the Bundle Protocol Version 7
   // status report request flags.
-  enum SendFlags {
+  enum SendOptions {
     // Unused.
-    SEND_FLAGS_UNUSED = 0;
+    SEND_OPTIONS_UNUSED = 0;
     // Do not fragment the bundle.
-    SEND_FLAGS_DO_NOT_FRAGMENT = 4;
+    SEND_OPTIONS_DO_NOT_FRAGMENT = 4;
     // Request an acknowledgement for the bundle.
-    SEND_FLAGS_REQUEST_ACK = 0x20;
+    SEND_OPTIONS_REQUEST_ACK = 0x20;
     // Report the status time for the bundle.
-    SEND_FLAGS_REPORT_STATUS_TIME = 0x40;
+    SEND_OPTIONS_REPORT_STATUS_TIME = 0x40;
     // Notify on reception of the bundle.
-    SEND_FLAGS_NOTIFY_RECEPTION = 0x4000;
+    SEND_OPTIONS_NOTIFY_RECEPTION = 0x4000;
     // Notify on forwarding of the bundle.
-    SEND_FLAGS_NOTIFY_FORWARDING = 0x10000;
+    SEND_OPTIONS_NOTIFY_FORWARDING = 0x10000;
     // Notify on delivery of the bundle.
-    SEND_FLAGS_NOTIFY_DELIVERY = 0x20000;
+    SEND_OPTIONS_NOTIFY_DELIVERY = 0x20000;
     // Notify on deletion of the bundle.
-    SEND_FLAGS_NOTIFY_DELETION = 0x40000;
+    SEND_OPTIONS_NOTIFY_DELETION = 0x40000;
   }
   // The destination of the bundle. This should be a valid EID.
   string destination = 1;
@@ -105,8 +105,8 @@ message SendRequest {
   bytes payload = 2;
   // The lifetime of the bundle in milliseconds.
   uint64 lifetime = 3;
-  // The flags for the bundle. This is a bitmask of the SendFlags enum.
-  optional uint32 flags = 4;
+  // The options for the bundle. This is a bitmask of the SendOptions enum.
+  optional uint32 options = 4;
 }
 
 // SendResponse is a response to a send request.
@@ -151,12 +151,14 @@ message StatusNotifyRequest {
   }
   // The ID of the bundle.
   string bundle_id = 1;
+  // The source of the report.
+  string from = 2;
   // The kind of bundle status change.
-  StatusKind kind = 2;
+  StatusKind kind = 3;
   // The RFC9171 reason-code for the bundle status change.
-  uint64 reason = 3;
+  uint64 reason = 4;
   // The timestamp of the status change.
-  optional google.protobuf.Timestamp timestamp = 4;
+  optional google.protobuf.Timestamp timestamp = 5;
 }
 
 // StatusNotifyResponse is a response to a status notification. The application
