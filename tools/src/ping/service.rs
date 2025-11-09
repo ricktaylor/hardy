@@ -175,13 +175,13 @@ impl hardy_bpa::service::Service for Service {
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
     ) {
-        if let Some(seq_no) = self
+        if let Some(seqno) = self
             .sent_bundles
             .lock()
             .trace_expect("Failed to lock sent_bundles mutex")
             .get(bundle_id)
         {
-            let mut output = format!("Ping {seq_no} {kind:?}");
+            let mut output = format!("Ping {seqno} {kind:?}");
             if from != self.node_id {
                 output = format!("{output} by {from}");
             } else {

@@ -126,11 +126,11 @@ async fn exec_inner(
     }
 
     if !cancel_token.is_cancelled() && args.count.is_some() && args.wait != 0 {
-        println!("Waiting for responses...");
-
         if args.wait < 0 {
+            println!("Waiting for responses...");
             service.wait_for_responses(cancel_token).await;
         } else {
+            println!("Waiting up to {} seconds for responses...", args.wait);
             tokio::time::timeout(
                 std::time::Duration::from_secs(args.wait as u64),
                 service.wait_for_responses(cancel_token),
