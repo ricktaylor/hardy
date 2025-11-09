@@ -210,7 +210,7 @@ impl Registry {
 
         for (eid, i) in peers {
             for (_, peer_id) in i {
-                self.peers.remove(peer_id);
+                self.peers.remove(peer_id).await;
                 self.rib.remove_forward(&eid, peer_id).await;
             }
         }
@@ -290,7 +290,7 @@ impl Registry {
             return false;
         };
 
-        self.peers.remove(peer_id);
+        self.peers.remove(peer_id).await;
         self.rib.remove_forward(eid, peer_id).await;
 
         info!("Removed peer {peer_id}");

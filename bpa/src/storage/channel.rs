@@ -5,6 +5,7 @@ enum ChannelState {
     Open,      // Fast path is available
     Draining,  // Fast path is closed. Poller should take over
     Congested, // Bundles arrive while draining
+    Closing,   // Channel is closing down
 }
 
 struct Shared {
@@ -62,11 +63,27 @@ impl Sender {
             // The channel is already congested. We don't need to do anything further;
             // the notification will ensure the poller runs again.
             ChannelState::Congested => {}
+            // The channel is closing down. We cannot accept new bundles.
+            ChannelState::Closing => {
+                return Err(SendError(bundle));
+            }
         }
 
         // Notify the poll_queue task that it has work to do on the slow path.
         self.shared.notify.notify_one();
         Ok(())
+    }
+
+    pub async fn close(&self) {
+        // MArk the channel as closing
+        *self
+            .shared
+            .use_tx
+            .lock()
+            .trace_expect("Failed to lock mutex") = ChannelState::Closing;
+
+        // Wake up the poller task so it can exit
+        self.shared.notify.notify_one();
     }
 }
 
@@ -120,7 +137,14 @@ impl Store {
 
             // 2. Set the state to Draining. This acts as a baseline for detecting any
             //    new senders that arrive while we are busy draining the store.
-            *shared.use_tx.lock().trace_expect("Failed to lock mutex") = ChannelState::Draining;
+            let old_state = {
+                let mut state = shared.use_tx.lock().trace_expect("Failed to lock mutex");
+                std::mem::replace(&mut *state, ChannelState::Draining)
+            };
+            if let ChannelState::Closing = old_state {
+                // If we were notified because we are closing down, exit the loop.
+                break;
+            }
 
             // 3. Drain the store completely by repeatedly calling poll_once.
             loop {
