@@ -137,6 +137,12 @@ impl Peer {
             Err(storage::channel::SendError(b)) => Err(b),
         }
     }
+
+    async fn close(&self) {
+        for tx in self.inner.get().trace_expect("No queues?").queues.values() {
+            tx.close().await;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -169,12 +175,17 @@ impl PeerTable {
         peer_id
     }
 
-    pub fn remove(&self, peer_id: u32) -> Option<Arc<Peer>> {
-        self.inner
+    pub async fn remove(&self, peer_id: u32) {
+        let peer = self
+            .inner
             .write()
             .trace_expect("Failed to lock mutex")
             .peers
-            .remove(&peer_id)
+            .remove(&peer_id);
+
+        if let Some(peer) = peer {
+            peer.close().await;
+        }
     }
 
     pub async fn forward(
