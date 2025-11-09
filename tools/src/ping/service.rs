@@ -181,11 +181,31 @@ impl hardy_bpa::service::Service for Service {
             .trace_expect("Failed to lock sent_bundles mutex")
             .get(bundle_id)
         {
-            let mut output = format!("Ping {seqno} {kind:?}");
+            let mut output = format!("Ping {seqno}");
+
+            match kind {
+                hardy_bpa::service::StatusNotify::Received => {
+                    output.push_str(" received");
+                }
+                hardy_bpa::service::StatusNotify::Forwarded => {
+                    output.push_str(" forwarded");
+                }
+                hardy_bpa::service::StatusNotify::Delivered => {
+                    output.push_str(" delivered");
+                }
+                hardy_bpa::service::StatusNotify::Deleted => {
+                    output.push_str(" deleted");
+                    // We're never going to receive a response now
+                    if let Some(semaphore) = &self.semaphore {
+                        semaphore.add_permits(1);
+                    }
+                }
+            }
+
             if from != self.node_id {
                 output = format!("{output} by {from}");
             } else {
-                output = format!("{output} locally");
+                output.push_str(" locally");
             }
 
             if !matches!(
