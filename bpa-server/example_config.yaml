@@ -67,6 +67,8 @@ bundle_storage:
     # --- Local Disk Configuration (`type: "localdisk"`) ---
     # The root directory where bundle files will be stored.
     # store_dir: "/var/spool/hardy-bpa-server/bundles" # Default varies by OS
+    # Whether to do a full fsync on each write
+    # fsync: true
 
 # Configuration for the static routing module. This section is optional.
 static_routes:

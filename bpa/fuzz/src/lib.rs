@@ -69,6 +69,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             let bundle_storage = Some(hardy_localdisk_storage::new(
                 &hardy_localdisk_storage::Config {
                     store_dir: path.join("localdisk"),
+                    fsync: false,
                 },
                 true,
             ));

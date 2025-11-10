@@ -17,12 +17,14 @@ use std::os::windows::fs::OpenOptionsExt;
 
 pub struct Storage {
     store_root: PathBuf,
+    fsync: bool,
 }
 
 impl Storage {
     pub fn new(config: &Config, _upgrade: bool) -> Self {
         Self {
             store_root: config.store_dir.clone(),
+            fsync: config.fsync,
         }
     }
 }
@@ -193,95 +195,109 @@ impl BundleStorage for Storage {
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
 
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "mmap")] {
-                let file = match tokio::fs::File::open(storage_name).await {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(None);
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                    Ok(file) => file,
-                };
-                let data = unsafe { memmap2::Mmap::map(&file) };
-                Ok(Some(Bytes::from_owner(data?)))
-            } else {
-                match tokio::fs::read(storage_name).await {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(None);
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                    Ok(data) => Ok(Bytes::from_owner(data))
+        #[cfg(feature = "mmap")]
+        {
+            let file = match tokio::fs::File::open(storage_name).await {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(None);
                 }
+                Err(e) => {
+                    return Err(e.into());
+                }
+                Ok(file) => file,
+            };
+            let data = unsafe { memmap2::Mmap::map(&file) };
+            Ok(Some(Bytes::from_owner(data?)))
+        }
+
+        #[cfg(not(feature = "mmap"))]
+        match tokio::fs::read(storage_name).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
             }
+            Err(e) => {
+                return Err(e.into());
+            }
+            Ok(data) => Ok(Bytes::from_owner(data)),
         }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
-        let root = self.store_root.clone();
+        let storage_name = if self.fsync {
+            let root = self.store_root.clone();
+            tokio::task::spawn_blocking(move || {
+                // Create random filename
+                let mut storage_name = random_file_path(&root)?;
 
-        // Spawn a thread to try to maintain linearity
-        let storage_name = tokio::task::spawn_blocking(move || {
-            // Create random filename
-            let mut storage_name = random_file_path(&root)?;
+                /*
+                create a new temp file (alongside the original)
+                write data to the temp file
+                fsync() the temp file
+                rename the temp file to the original name
+                fsync() the containing directory
+                */
 
-            /*
-            create a new temp file (alongside the original)
-            write data to the temp file
-            fsync() the temp file
-            rename the temp file to the original name
-            fsync() the containing directory
-            */
+                // Use a temporary extension
+                storage_name.set_extension("tmp");
 
-            // Use a temporary extension
-            storage_name.set_extension("tmp");
+                // Open the file as direct as possible
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
 
-            // Open the file as direct as possible
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    options.custom_flags(libc::O_SYNC);
-                } else if #[cfg(windows)] {
-                    options.custom_flags(winapi::um::winbase::FILE_FLAG_WRITE_THROUGH);
+                #[cfg(unix)]
+                options.custom_flags(libc::O_SYNC);
+
+                #[cfg(windows)]
+                options.custom_flags(winapi::um::winbase::FILE_FLAG_WRITE_THROUGH);
+
+                let mut file = options.open(&storage_name)?;
+
+                // Write all data to file
+                file.write_all(&data).inspect_err(|e| {
+                    error!("Failed to write bundle data: {e}");
+                    _ = std::fs::remove_file(&storage_name);
+                })?;
+
+                // Sync the data (we sync the directory after the rename)
+                file.sync_data().inspect_err(|e| {
+                    error!("Failed to sync bundle file data: {e}");
+                    _ = std::fs::remove_file(&storage_name);
+                })?;
+
+                // Rename the file
+                let old_path = storage_name.clone();
+                storage_name.set_extension("");
+                std::fs::rename(&old_path, &storage_name).inspect_err(|e| {
+                    error!("Failed to rename temporary bundle data file to final name: {e}");
+                    _ = std::fs::remove_file(&old_path);
+                })?;
+
+                // And now sync the parent directory, i.e. metadata
+                if let Some(parent_dir) = storage_name.parent()
+                    && let Ok(dir_handle) = std::fs::File::open(parent_dir)
+                    && let Err(e) = dir_handle.sync_all()
+                {
+                    warn!("Failed to sync parent directory: {e}");
                 }
-            }
-            let mut file = options.open(&storage_name)?;
 
-            // Write all data to file
-            file.write_all(&data).inspect_err(|e| {
-                error!("Failed to write bundle data: {e}");
-                _ = std::fs::remove_file(&storage_name);
-            })?;
+                storage::Result::Ok(storage_name)
+            })
+            .await
+            .trace_expect("Failed to spawn write_atomic thread")?
+        } else {
+            let storage_name = random_file_path(&self.store_root)?;
 
-            // Sync everything
-            file.sync_all().inspect_err(|e| {
-                error!("Failed to sync bundle file data: {e}");
-                _ = std::fs::remove_file(&storage_name);
-            })?;
+            // Just use tokio write and hope for the best
+            tokio::fs::write(&storage_name, &data)
+                .await
+                .inspect_err(|e| {
+                    error!("Failed to write bundle data: {e}");
+                    _ = std::fs::remove_file(&storage_name);
+                })?;
 
-            // Rename the file
-            let old_path = storage_name.clone();
-            storage_name.set_extension("");
-            std::fs::rename(&old_path, &storage_name).inspect_err(|e| {
-                error!("Failed to rename temporary bundle data file to final name: {e}");
-                _ = std::fs::remove_file(&old_path);
-            })?;
-
-            if let Some(parent_dir) = storage_name.parent()
-                && let Ok(dir_handle) = std::fs::File::open(parent_dir)
-            {
-                _ = dir_handle.sync_all(); // Best effort sync
-            }
-
-            storage::Result::Ok(storage_name)
-        })
-        .await
-        .trace_expect("Failed to spawn write_atomic thread")?;
+            storage_name
+        };
 
         Ok(storage_name
             .strip_prefix(&self.store_root)?
