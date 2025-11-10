@@ -4,14 +4,11 @@ clas:
   - name: "uplink"                     # Logical name for the CLA
     type: tcpclv4                      # Convergence Layer Type
     config:
-      local_port: 4556                 # Port to listen on for TCP connections
-      peers:
-        - host: "node1.example.com"    # Remote peer address
-          port: 4556                   # Remote peer port
+      address: "[::]:4556"             # Port to listen on for TCP connections
 
     # This interface uses the HTB (Hierarchical Token Bucket) policy.
     # The policy's configuration is nested under a 'config' key.
-    egress_policy:
+    policy:
       type: htb
       config:
         channels:
@@ -44,7 +41,7 @@ clas:
       ethertype: 0x88B5                         # Custom Ethertype for BPA frames
 
     # This interface uses a simpler TBF (Token Bucket Filter) policy.
-    egress_policy:
+    policy:
       type: tbf
       config:
         rate: 25mbit
@@ -60,5 +57,5 @@ clas:
 
     # This interface has no specific policy defined. The system should
     # apply a default, simple FIFO (First-In, First-Out) queue.
-    # The `egress_policy` key is intentionally omitted.
+    # The `policy` key is intentionally omitted.
 

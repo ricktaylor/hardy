@@ -11,6 +11,13 @@ impl policy::EgressController for EgressController {
     }
 }
 
+#[async_trait]
+impl policy::EgressQueue for EgressController {
+    async fn forward(&self, bundle: bundle::Bundle) {
+        self.queue.forward(bundle).await
+    }
+}
+
 #[derive(Default)]
 pub struct EgressPolicy {}
 

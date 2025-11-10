@@ -9,18 +9,6 @@ pub mod null_policy;
 // #[cfg(feature = "tbf_policy")]
 // pub mod tbf_policy;
 
-/// The EgressPolicy enum separates the type from its configuration.
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "lowercase"))]
-pub enum EgressPolicyConfig {
-    // #[cfg(feature = "htb_policy")]
-    // Htb { config: htb_policy::HtbConfig },
-
-    // #[cfg(feature = "tbf_policy")]
-    // Tbf { config: tbf_policy::TbfConfig },
-}
-
 /// A trait for controlling the egress of bundles through a CLA.
 /// This is often implemented by a CLA itself or by a policy manager.
 #[async_trait]
