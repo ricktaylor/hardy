@@ -27,6 +27,10 @@ pub struct Command {
     /// The optional lifetime of the bundle, or 24 hours if not supplied
     #[arg(short, long)]
     lifetime: Option<humantime::Duration>,
+
+    /// The optional hop_limit of the bundle.
+    #[arg(short, long = "hop-limit")]
+    hop_limit: Option<u64>,
 }
 
 impl Command {
@@ -43,6 +47,13 @@ impl Command {
                 .ok_or(anyhow::anyhow!("Lifetime too long: {lifetime}!"))?;
 
             builder = builder.with_lifetime(lifetime.into());
+        }
+
+        if let Some(hop_limit) = self.hop_limit {
+            builder = builder.with_hop_count(&hardy_bpv7::hop_info::HopInfo {
+                limit: hop_limit,
+                count: 0,
+            });
         }
 
         self.output.write_all(

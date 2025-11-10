@@ -80,7 +80,7 @@ impl<'a> Editor<'a> {
                 .iter()
                 .find_map(|(block_number, template)| match template {
                     BlockTemplate::Keep(t) if &block_type == t => {
-                        let block = self.original.blocks.get(&block_number)?;
+                        let block = self.original.blocks.get(block_number)?;
                         Some((
                             *block_number,
                             builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
