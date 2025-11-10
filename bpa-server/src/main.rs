@@ -49,12 +49,10 @@ fn start_storage(config: &mut config::Config) {
                 .map(|metadata_storage| hardy_bpa::storage::metadata_mem::new(metadata_storage)),
 
             #[cfg(feature = "sqlite-storage")]
-            config::MetadataStorage::Sqlite(Some(metadata_storage)) => Some(
-                hardy_sqlite_storage::new(metadata_storage, config.upgrade_storage),
-            ),
-            #[cfg(feature = "sqlite-storage")]
-            config::MetadataStorage::Sqlite(None) => Some(hardy_sqlite_storage::new(
-                &hardy_sqlite_storage::Config::default(),
+            config::MetadataStorage::Sqlite(metadata_storage) => Some(hardy_sqlite_storage::new(
+                metadata_storage
+                    .as_ref()
+                    .unwrap_or(&hardy_sqlite_storage::Config::default()),
                 config.upgrade_storage,
             )),
             // #[cfg(feature = "postgres-storage")]
@@ -69,12 +67,10 @@ fn start_storage(config: &mut config::Config) {
                 .map(|bundle_storage| hardy_bpa::storage::bundle_mem::new(bundle_storage)),
 
             #[cfg(feature = "localdisk-storage")]
-            config::BundleStorage::LocalDisk(Some(bundle_storage)) => Some(
-                hardy_localdisk_storage::new(bundle_storage, config.upgrade_storage),
-            ),
-            #[cfg(feature = "localdisk-storage")]
-            config::BundleStorage::LocalDisk(None) => Some(hardy_localdisk_storage::new(
-                &hardy_localdisk_storage::Config::default(),
+            config::BundleStorage::LocalDisk(bundle_storage) => Some(hardy_localdisk_storage::new(
+                bundle_storage
+                    .as_ref()
+                    .unwrap_or(&hardy_localdisk_storage::Config::default()),
                 config.upgrade_storage,
             )),
             // #[cfg(feature = "s3-storage")]
