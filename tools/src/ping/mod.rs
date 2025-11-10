@@ -21,7 +21,8 @@ enum Format {
 fn parse_flags(s: &str) -> anyhow::Result<hardy_bpa::service::SendOptions> {
     let mut flags = hardy_bpa::service::SendOptions::default();
     for flag in s.split(',') {
-        match flag {
+        match flag.trim() {
+            "" => continue,
             "rcv" => {
                 flags.report_status_time = true;
                 flags.notify_reception = true;
@@ -77,7 +78,7 @@ pub struct Command {
     #[arg(short, long, default_value = "10")]
     wait: i64,
 
-    /// Status reporting flags, can be any combination of rcv,dnf,fwd,dlv,del delimited by ',' (without spaces)
+    /// Status reporting flags, can be any combination of rcv,dnf,fwd,dlv,del delimited by ','
     #[arg(short('r'), long, value_parser = parse_flags)]
     flags: Option<hardy_bpa::service::SendOptions>,
 
