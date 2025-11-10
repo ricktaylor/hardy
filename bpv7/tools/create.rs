@@ -35,26 +35,24 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let mut builder = hardy_bpv7::builder::Builder::new(self.source, self.destination);
-
-        if let Some(report_to) = self.report_to {
-            builder = builder.with_report_to(report_to);
+        let builder: hardy_bpv7::builder::Builder = hardy_bpv7::builder::BundleTemplate {
+            source: self.source,
+            destination: self.destination,
+            report_to: self.report_to,
+            lifetime: {
+                if let Some(lifetime) = self.lifetime {
+                    if lifetime.as_millis() > u64::MAX as u128 {
+                        return Err(anyhow::anyhow!("Lifetime too long: {lifetime}!"));
+                    }
+                    Some(lifetime.into())
+                } else {
+                    None
+                }
+            },
+            hop_limit: self.hop_limit,
+            ..Default::default()
         }
-
-        if let Some(lifetime) = self.lifetime {
-            (lifetime.as_millis() > u64::MAX as u128)
-                .then_some(())
-                .ok_or(anyhow::anyhow!("Lifetime too long: {lifetime}!"))?;
-
-            builder = builder.with_lifetime(lifetime.into());
-        }
-
-        if let Some(hop_limit) = self.hop_limit {
-            builder = builder.with_hop_count(&hardy_bpv7::hop_info::HopInfo {
-                limit: hop_limit,
-                count: 0,
-            });
-        }
+        .into();
 
         self.output.write_all(
             &builder
