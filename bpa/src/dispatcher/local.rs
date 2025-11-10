@@ -69,12 +69,7 @@ impl Dispatcher {
             }
 
             let (bundle, data) = builder
-                .add_extension_block(hardy_bpv7::block::Type::Payload)
-                .with_flags(hardy_bpv7::block::Flags {
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .build(data)
+                .with_payload(data)
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now());
 
             // Store to store

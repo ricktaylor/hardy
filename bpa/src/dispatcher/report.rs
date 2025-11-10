@@ -140,12 +140,7 @@ impl Dispatcher {
                     is_admin_record: true,
                     ..Default::default()
                 })
-                .add_extension_block(hardy_bpv7::block::Type::Payload)
-                .with_flags(hardy_bpv7::block::Flags {
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .build(&payload)
+                .with_payload(&payload)
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now());
 
                 // Store to store

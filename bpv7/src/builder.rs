@@ -23,12 +23,7 @@ impl Builder {
     ///
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
-    ///     .add_extension_block(block::Type::Payload)
-    ///     .with_flags(block::Flags {
-    ///        delete_bundle_on_failure: true,
-    ///        ..Default::default()
-    ///     })
-    ///     .build("Hello")
+    ///     .with_payload("Hello")
     ///     .build(CreationTimestamp::now());
     /// ```
     pub fn new(source: eid::Eid, destination: eid::Eid) -> Self {
@@ -74,10 +69,34 @@ impl Builder {
 
     /// Adds an extension block to this [`Builder`].
     pub fn add_extension_block(self, block_type: block::Type) -> BlockBuilder {
+        if let block::Type::Primary = block_type {
+            panic!("Don't add primary blocks!");
+        }
         BlockBuilder::new(self, block_type)
     }
 
-    /// Builds the [`bundle::Bundle`] with the given payload and timestamp.
+    /// Adds the payload block to this [`Builder`].
+    pub fn with_payload<T: AsRef<[u8]>>(self, data: T) -> Self {
+        self.add_extension_block(block::Type::Payload)
+            .with_flags(block::Flags {
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
+            .build(data)
+    }
+
+    /// Adds the HopCount block to this [`Builder`].
+    pub fn with_hop_count(self, hop_info: &hop_info::HopInfo) -> Self {
+        self.add_extension_block(block::Type::HopCount)
+            .with_flags(block::Flags {
+                report_on_failure: true,
+                must_replicate: true,
+                ..Default::default()
+            })
+            .build(hardy_cbor::encode::emit(hop_info).0)
+    }
+
+    /// Builds the [`bundle::Bundle`] with the given timestamp.
     pub fn build(
         self,
         timestamp: creation_timestamp::CreationTimestamp,
@@ -240,20 +259,10 @@ impl From<BundleTemplate> for Builder {
         }
 
         if let Some(hop_limit) = value.hop_limit {
-            builder = builder
-                .add_extension_block(block::Type::HopCount)
-                .with_flags(block::Flags {
-                    must_replicate: true,
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .build(
-                    hardy_cbor::encode::emit(&hop_info::HopInfo {
-                        limit: hop_limit,
-                        count: 0,
-                    })
-                    .0,
-                );
+            builder = builder.with_hop_count(&hop_info::HopInfo {
+                limit: hop_limit,
+                count: 0,
+            });
         }
 
         builder
@@ -264,12 +273,7 @@ impl From<BundleTemplate> for Builder {
 fn test_builder() {
     Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_report_to("ipn:3.0".parse().unwrap())
-        .add_extension_block(block::Type::Payload)
-        .with_flags(block::Flags {
-            delete_bundle_on_failure: true,
-            ..Default::default()
-        })
-        .build("Hello")
+        .with_payload("Hello")
         .build(creation_timestamp::CreationTimestamp::now());
 }
 
@@ -284,11 +288,6 @@ fn test_template() {
     .unwrap()
     .into();
 
-    b.add_extension_block(block::Type::Payload)
-        .with_flags(block::Flags {
-            delete_bundle_on_failure: true,
-            ..Default::default()
-        })
-        .build("Hello")
+    b.with_payload("Hello")
         .build(creation_timestamp::CreationTimestamp::now());
 }

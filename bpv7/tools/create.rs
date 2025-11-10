@@ -47,12 +47,7 @@ impl Command {
 
         self.output.write_all(
             &builder
-                .add_extension_block(hardy_bpv7::block::Type::Payload)
-                .with_flags(hardy_bpv7::block::Flags {
-                    delete_bundle_on_failure: true,
-                    ..Default::default()
-                })
-                .build(&self.payload.read_all()?)
+                .with_payload(&self.payload.read_all()?)
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .1,
         )

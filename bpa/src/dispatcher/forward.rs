@@ -51,7 +51,11 @@ impl Dispatcher {
     ) -> (hardy_bpv7::bundle::Bundle, Box<[u8]>) {
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data)
-            .replace_block(hardy_bpv7::block::Type::PreviousNode)
+            .insert_block(hardy_bpv7::block::Type::PreviousNode)
+            .with_flags(hardy_bpv7::block::Flags {
+                report_on_failure: true,
+                ..Default::default()
+            })
             .build(
                 hardy_cbor::encode::emit(
                     &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
@@ -62,7 +66,12 @@ impl Dispatcher {
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
             editor = editor
-                .replace_block(hardy_bpv7::block::Type::HopCount)
+                .insert_block(hardy_bpv7::block::Type::HopCount)
+                .with_flags(hardy_bpv7::block::Flags {
+                    report_on_failure: true,
+                    must_replicate: true,
+                    ..Default::default()
+                })
                 .build(
                     hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
                         limit: hop_count.limit,
@@ -81,7 +90,12 @@ impl Dispatcher {
                 .clamp(0, u64::MAX as i128) as u64;
 
             editor = editor
-                .replace_block(hardy_bpv7::block::Type::BundleAge)
+                .insert_block(hardy_bpv7::block::Type::BundleAge)
+                .with_flags(hardy_bpv7::block::Flags {
+                    report_on_failure: true,
+                    must_replicate: true,
+                    ..Default::default()
+                })
                 .build(hardy_cbor::encode::emit(&bundle_age).0);
         }
 
