@@ -42,7 +42,7 @@ impl ConnectionPool {
 
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
-            PRAGMA optimize = 0x10002",
+            PRAGMA optimize = 0x10002;",
         )
         .trace_expect("Failed to optimize");
 
@@ -117,21 +117,20 @@ impl Storage {
         }
         .trace_expect("Failed to open metadata store database");
 
-        // Migrate the database to the latest schema
-        migrate::migrate(&mut connection, upgrade)
-            .trace_expect("Failed to migrate metadata store database");
-
         // connection
         //     .busy_timeout(std::time::Duration::ZERO)
         //     .trace_expect("Failed to set timeout");
 
-        // Mark all existing non-Tombstone bundles as unconfirmed
         connection
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
                 PRAGMA optimize = 0x10002;",
             )
             .trace_expect("Failed to prepare metadata store database");
+
+        // Migrate the database to the latest schema
+        migrate::migrate(&mut connection, upgrade)
+            .trace_expect("Failed to migrate metadata store database");
 
         Self {
             pool: Arc::new(ConnectionPool::new(path, connection)),
