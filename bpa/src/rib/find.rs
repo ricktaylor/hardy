@@ -49,7 +49,7 @@ impl Rib {
     pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
         let inner = self.inner.read().trace_expect("Failed to lock mutex");
 
-        // TODO: this is where route table switching can occur
+        // TODO: this is should be for *all* tables
         let table = &inner.routes;
 
         if let Some(InternalFindResult::Forward(peers)) =

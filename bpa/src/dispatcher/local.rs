@@ -98,7 +98,7 @@ impl Dispatcher {
             return false;
         };
 
-        // TODO: Need ome access control in the metadata here!
+        // TODO: Need some access control in the metadata here!
 
         self.delete_bundle(bundle).await;
         true

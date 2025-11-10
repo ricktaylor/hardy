@@ -28,7 +28,6 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
     let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(
         cla_name.clone(),
         hardy_tcpclv4::config::Config {
-            // TODO: Allow passive mode from args
             address: None,
             ..Default::default()
         },

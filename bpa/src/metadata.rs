@@ -29,6 +29,7 @@ pub struct BundleMetadata {
     pub received_at: time::OffsetDateTime,
     pub non_canonical: bool,
     pub flow_label: Option<u32>,
+    // TODO: Add a 'trace' mark that will trigger local feedback
 }
 
 impl Default for BundleMetadata {
