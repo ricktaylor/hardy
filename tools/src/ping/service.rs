@@ -15,7 +15,6 @@ pub struct Service {
     count: Option<u32>,
     sent_bundles: std::sync::Mutex<HashMap<Box<str>, u32>>,
     expected_responses: std::sync::Mutex<HashMap<u32, time::OffsetDateTime>>,
-    format: Format,
 }
 
 impl Service {
@@ -26,16 +25,32 @@ impl Service {
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
             flags: {
-                let mut flags = args.flags.clone().unwrap_or_default();
-                flags.do_not_fragment = true;
-                flags.request_ack = true;
+                let mut flags = hardy_bpa::service::SendOptions::default();
+                if !args.flags.is_empty() {
+                    flags.report_status_time = true;
+                }
+                for f in args.flags.iter() {
+                    match f {
+                        Flags::Reception => {
+                            flags.notify_reception = true;
+                        }
+                        Flags::Forwarded => {
+                            flags.notify_forwarding = true;
+                        }
+                        Flags::Delivered => {
+                            flags.notify_delivery = true;
+                        }
+                        Flags::Deleted => {
+                            flags.notify_deletion = true;
+                        }
+                    }
+                }
                 flags
             },
             count: args.count,
             semaphore: args.count.map(|_| Arc::new(tokio::sync::Semaphore::new(0))),
             sent_bundles: std::sync::Mutex::new(HashMap::new()),
             expected_responses: std::sync::Mutex::new(HashMap::new()),
-            format: args.format,
         }
     }
 
@@ -107,17 +122,12 @@ impl hardy_bpa::service::Service for Service {
         }
 
         // Try to unpack the payload
-        let payload = match self.format {
-            Format::Text => {
-                let Ok(s) = str::from_utf8(&bundle.payload) else {
-                    eprintln!("Failed to parse ping payload as UTF-8 text");
-                    return;
-                };
-                Payload::from_text_fmt(s)
-            }
-            Format::Binary => Payload::from_bin_fmt(&bundle.payload),
+        let Ok(payload) = str::from_utf8(&bundle.payload) else {
+            eprintln!("Failed to parse ping payload as UTF-8 text");
+            return;
         };
-        let payload = match payload {
+
+        let payload = match Payload::from_text_fmt(payload) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Failed to parse ping payload: {e}");

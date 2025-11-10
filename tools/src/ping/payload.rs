@@ -44,20 +44,20 @@ impl Payload {
         }
     }
 
-    /// This is the microsDTN and DTN2 format
-    pub fn to_bin_fmt(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        let timeval_sec = self.creation.unix_timestamp() as u32;
-        let timeval_msec = self.creation.microsecond();
+    // /// This is the microsDTN and DTN2 format
+    // pub fn to_bin_fmt(&self) -> Vec<u8> {
+    //     let mut buf = Vec::new();
+    //     let timeval_sec = self.creation.unix_timestamp() as u32;
+    //     let timeval_msec = self.creation.microsecond();
 
-        buf.push(self.service_flag);
-        buf.extend_from_slice(&self.seqno.to_be_bytes());
-        // (4 bytes, unsigned integer)
-        buf.extend_from_slice(&timeval_sec.to_be_bytes());
-        // (4 bytes, unsigned integer)
-        buf.extend_from_slice(&timeval_msec.to_be_bytes());
-        buf
-    }
+    //     buf.push(self.service_flag);
+    //     buf.extend_from_slice(&self.seqno.to_be_bytes());
+    //     // (4 bytes, unsigned integer)
+    //     buf.extend_from_slice(&timeval_sec.to_be_bytes());
+    //     // (4 bytes, unsigned integer)
+    //     buf.extend_from_slice(&timeval_msec.to_be_bytes());
+    //     buf
+    // }
 
     /// This is the ION format
     pub fn to_text_fmt(&self) -> String {
@@ -73,21 +73,21 @@ impl Payload {
         )
     }
 
-    pub fn from_bin_fmt(data: &[u8]) -> anyhow::Result<Self> {
-        if data.len() < 12 {
-            return Err(anyhow::anyhow!("Payload too short"));
-        }
+    // pub fn from_bin_fmt(data: &[u8]) -> anyhow::Result<Self> {
+    //     if data.len() < 12 {
+    //         return Err(anyhow::anyhow!("Payload too short"));
+    //     }
 
-        let timeval_sec = u32::from_be_bytes(data[5..9].try_into()?);
-        let timeval_msec = u32::from_be_bytes(data[9..13].try_into()?) * 1000;
+    //     let timeval_sec = u32::from_be_bytes(data[5..9].try_into()?);
+    //     let timeval_msec = u32::from_be_bytes(data[9..13].try_into()?) * 1000;
 
-        Ok(Self {
-            service_flag: data[0],
-            seqno: u32::from_be_bytes(data[1..5].try_into()?),
-            creation: time::OffsetDateTime::from_unix_timestamp(timeval_sec as i64)?
-                + time::Duration::microseconds(timeval_msec as i64),
-        })
-    }
+    //     Ok(Self {
+    //         service_flag: data[0],
+    //         seqno: u32::from_be_bytes(data[1..5].try_into()?),
+    //         creation: time::OffsetDateTime::from_unix_timestamp(timeval_sec as i64)?
+    //             + time::Duration::microseconds(timeval_msec as i64),
+    //     })
+    // }
 
     pub fn from_text_fmt(data: &str) -> anyhow::Result<Self> {
         let data = data.trim_matches('\0');
@@ -140,10 +140,6 @@ pub fn build_payload(
     builder = builder.with_lifetime(args.lifetime());
 
     let payload = Payload::new(seq_no);
-    let data = match args.format {
-        Format::Text => payload.to_text_fmt().into(),
-        Format::Binary => payload.to_bin_fmt(),
-    };
 
     Ok((
         builder
@@ -152,7 +148,7 @@ pub fn build_payload(
                 delete_bundle_on_failure: true,
                 ..Default::default()
             })
-            .build(&data)
+            .build(payload.to_text_fmt().as_bytes())
             .build(
                 payload
                     .creation

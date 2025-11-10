@@ -9,86 +9,85 @@ mod payload;
 mod service;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Format {
-    /// Use text format
-    #[value(name = "text")]
-    Text,
-    /// Use binary format
-    #[value(name = "binary")]
-    Binary,
+enum Flags {
+    /// Request reception status reports
+    #[value(name = "rcv")]
+    Reception,
+    /// Request forwarding status reports
+    #[value(name = "fwd")]
+    Forwarded,
+    /// Request delivery status reports
+    #[value(name = "dlv")]
+    Delivered,
+    /// Request deletion status reports
+    #[value(name = "del")]
+    Deleted,
 }
 
-fn parse_flags(s: &str) -> anyhow::Result<hardy_bpa::service::SendOptions> {
-    let mut flags = hardy_bpa::service::SendOptions::default();
-    for flag in s.split(',') {
-        match flag.trim() {
-            "" => continue,
-            "rcv" => {
-                flags.report_status_time = true;
-                flags.notify_reception = true;
-            }
-            "ct" => eprintln!("Ignoring 'ct' flag"),
-            "ctr" => eprintln!("Ignoring 'ctr' flag"),
-            "fwd" => {
-                flags.report_status_time = true;
-                flags.notify_forwarding = true;
-            }
-            "dlv" => {
-                flags.report_status_time = true;
-                flags.notify_delivery = true;
-            }
-            "del" => {
-                flags.report_status_time = true;
-                flags.notify_deletion = true;
-            }
-            _ => return Err(anyhow::anyhow!("invalid flag: {}", flag)),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Verbosity {
+    /// Designates very low priority, often extremely verbose, information.
+    #[value(name = "trace")]
+    Trace,
+
+    /// Designates lower priority information.
+    #[value(name = "debug")]
+    Debug,
+
+    /// Designates useful information.
+    #[value(name = "info")]
+    Info,
+    /// Designates hazardous situations.
+    #[value(name = "warn")]
+    Warn,
+
+    /// Designates very serious errors.
+    #[value(name = "error")]
+    Error,
+}
+
+impl From<Verbosity> for tracing::Level {
+    fn from(value: Verbosity) -> Self {
+        match value {
+            Verbosity::Trace => tracing::Level::TRACE,
+            Verbosity::Debug => tracing::Level::DEBUG,
+            Verbosity::Info => tracing::Level::INFO,
+            Verbosity::Warn => tracing::Level::WARN,
+            Verbosity::Error => tracing::Level::ERROR,
         }
     }
-    Ok(flags)
 }
 
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    /// Verbosity level
-    #[arg(short, long, num_args = 0..=1)]
-    verbose: Option<Option<tracing::Level>>,
+    /// Output additional information, default 'info'.
+    #[arg(short, long, num_args = 0..=1, require_equals = true, default_missing_value = "info")]
+    verbose: Option<Verbosity>,
 
-    /// The optional lifetime of the bundle, or 24 hours if not supplied
+    /// The optional lifetime of the bundle, or calculated based on --interval and --wait if not supplied
     #[arg(short, long)]
     lifetime: Option<humantime::Duration>,
-
-    /// The Time-to-Live (in seconds) for the bundles
-    #[arg(short, long)]
-    ttl: Option<u64>,
 
     /// The number of bundles to send
     #[arg(short, long)]
     count: Option<u32>,
 
-    /// The time interval (in seconds) to wait between sending bundles
-    #[arg(short, long, default_value = "1")]
-    interval: u64,
+    /// The time interval to wait between sending bundles
+    #[arg(short, long, default_value = "1s")]
+    interval: humantime::Duration,
 
-    /// The priority of the bundles (ignored)
-    #[arg(short, long)]
-    priority: Option<i32>,
+    /// The optional time to wait for responses after sending the last bundle, no value means forever
+    #[arg(short, long, num_args = 0..=1, require_equals = true)]
+    wait: Option<Option<humantime::Duration>>,
 
-    /// The time (in seconds) to wait for responses after sending the last bundle, -1 means forever
-    #[arg(short, long, default_value = "10")]
-    wait: i64,
+    /// One or more status reporting flags, seperated by ','
+    #[arg(short('r'), long, value_delimiter = ',')]
+    flags: Vec<Flags>,
 
-    /// Status reporting flags, can be any combination of rcv,dnf,fwd,dlv,del delimited by ','
-    #[arg(short('r'), long, value_parser = parse_flags)]
-    flags: Option<hardy_bpa::service::SendOptions>,
-
-    /// The optional 'Report To' Endpoint ID (EID) of the bundle
+    /// The optional "Report To" Endpoint ID (EID) of the bundle
     #[arg(short('R'), long = "report-to")]
     report_to: Option<Eid>,
-
-    /// Set the output format
-    #[arg(short, long, default_value = "text")]
-    format: Format,
 
     /// The source Endpoint ID (EID) of the bundle
     #[arg(short, long)]
@@ -103,10 +102,19 @@ pub struct Command {
 
 impl Command {
     pub fn lifetime(&self) -> std::time::Duration {
-        self.lifetime
-            .map(|l| l.into())
-            .or_else(|| self.ttl.map(std::time::Duration::from_secs))
-            .unwrap_or(std::time::Duration::from_hours(1))
+        self.lifetime.map_or_else(
+            || {
+                if let Some(Some(wait)) = &self.wait
+                    && let Some(count) = &self.count
+                {
+                    let interval: std::time::Duration = self.interval.into();
+                    interval.saturating_mul(*count) + **wait
+                } else {
+                    std::time::Duration::from_hours(24)
+                }
+            },
+            |l| l.into(),
+        )
     }
 
     pub fn node_id(&self) -> anyhow::Result<Eid> {
@@ -138,7 +146,7 @@ impl Command {
     }
 
     pub fn exec(mut self) -> anyhow::Result<()> {
-        if let Some(level) = self.verbose.map(|o| o.unwrap_or(tracing::Level::INFO)) {
+        if let Some(level) = self.verbose.map(tracing::Level::from) {
             let subscriber = tracing_subscriber::fmt()
                 .with_max_level(level)
                 .with_target(level > tracing::Level::INFO)
@@ -157,7 +165,7 @@ impl Command {
             })
         }
 
-        if self.flags.is_some() && self.report_to.is_none() {
+        if !self.flags.is_empty() && self.report_to.is_none() {
             self.report_to = self.source.clone();
         }
 

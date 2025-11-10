@@ -112,30 +112,30 @@ async fn exec_inner(
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;
 
-        if tokio::time::timeout(
-            std::time::Duration::from_secs(args.interval),
-            cancel_token.cancelled(),
-        )
-        .await
-        .is_ok()
+        if tokio::time::timeout(*args.interval, cancel_token.cancelled())
+            .await
+            .is_ok()
         {
             // Cancelled
             break;
         }
     }
 
-    if !cancel_token.is_cancelled() && args.count.is_some() && args.wait != 0 {
-        if args.wait < 0 {
+    if !cancel_token.is_cancelled()
+        && args.count.is_some()
+        && let Some(wait) = args.wait
+    {
+        if let Some(wait) = wait {
+            println!(
+                "Waiting up to {} for responses...",
+                humantime::format_duration(*wait)
+            );
+            tokio::time::timeout(*wait, service.wait_for_responses(cancel_token))
+                .await
+                .map_err(|_| anyhow::anyhow!("Timeout waiting for responses"))?;
+        } else {
             println!("Waiting for responses...");
             service.wait_for_responses(cancel_token).await;
-        } else {
-            println!("Waiting up to {} seconds for responses...", args.wait);
-            tokio::time::timeout(
-                std::time::Duration::from_secs(args.wait as u64),
-                service.wait_for_responses(cancel_token),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("Timeout waiting for responses"))?;
         }
     }
     Ok(())
