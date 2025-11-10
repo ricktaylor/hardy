@@ -1069,7 +1069,6 @@ name = "hardy-bpa-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "cfg-if",
  "flume",
  "hardy-bpa",
  "hardy-bpv7",
@@ -1090,7 +1089,6 @@ name = "hardy-bpa-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cfg-if",
  "config",
  "directories",
  "flume",
@@ -1230,7 +1228,6 @@ dependencies = [
 name = "hardy-localdisk-storage"
 version = "0.1.0"
 dependencies = [
- "cfg-if",
  "directories",
  "flume",
  "hardy-bpa",
@@ -1280,7 +1277,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bincode",
- "cfg-if",
  "directories",
  "flume",
  "hardy-bpa",

@@ -45,43 +45,37 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             .join(testname);
 
     // Metadata storage configuration
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "sqlite-storage")] {
-            let metadata_storage = Some(hardy_sqlite_storage::new(
-                &hardy_sqlite_storage::Config {
-                    db_dir: path.clone(),
-                    db_name: "sqlite-storage.db".to_string(),
-                },
-                true
-            ));
-        } else {
-            let metadata_storage = Some(hardy_bpa::storage::metadata_mem::new(
-                &hardy_bpa::storage::metadata_mem::Config {
-                    max_bundles: std::num::NonZero::new(1024).unwrap(),
-                },
-            ));
-        }
-    }
+    #[cfg(feature = "sqlite-storage")]
+    let metadata_storage = Some(hardy_sqlite_storage::new(
+        &hardy_sqlite_storage::Config {
+            db_dir: path.clone(),
+            db_name: "sqlite-storage.db".to_string(),
+        },
+        true,
+    ));
+    #[cfg(not(feature = "sqlite-storage"))]
+    let metadata_storage = Some(hardy_bpa::storage::metadata_mem::new(
+        &hardy_bpa::storage::metadata_mem::Config {
+            max_bundles: std::num::NonZero::new(1024).unwrap(),
+        },
+    ));
 
     // Bundle storage configuration
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "localdisk-storage")] {
-            let bundle_storage = Some(hardy_localdisk_storage::new(
-                &hardy_localdisk_storage::Config {
-                    store_dir: path.join("localdisk"),
-                    fsync: false,
-                },
-                true,
-            ));
-        } else {
-            let bundle_storage = Some(hardy_bpa::storage::bundle_mem::new(
-                &hardy_bpa::storage::bundle_mem::Config {
-                    capacity: std::num::NonZero::new(524_288).unwrap(),
-                    ..Default::default()
-                }
-            ));
-        }
-    }
+    #[cfg(feature = "localdisk-storage")]
+    let bundle_storage = Some(hardy_localdisk_storage::new(
+        &hardy_localdisk_storage::Config {
+            store_dir: path.join("localdisk"),
+            fsync: false,
+        },
+        true,
+    ));
+    #[cfg(not(feature = "localdisk-storage"))]
+    let bundle_storage = Some(hardy_bpa::storage::bundle_mem::new(
+        &hardy_bpa::storage::bundle_mem::Config {
+            capacity: std::num::NonZero::new(524_288).unwrap(),
+            ..Default::default()
+        },
+    ));
 
     // New BPA
     let bpa = hardy_bpa::bpa::Bpa::start(

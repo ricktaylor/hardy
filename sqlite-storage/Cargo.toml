@@ -24,7 +24,6 @@ directories = "6.0.0"
 tracing = "0.1.41"
 base64 = "0.22.1"
 time = "0.3.44"
-cfg-if = "1.0.4"
 trace-err = "0.1.5"
 flume = "0.11.1"
 serde = { version = "1.0.228", features = ["derive"], optional = true }

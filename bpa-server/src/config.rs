@@ -87,20 +87,22 @@ fn options() -> getopts::Options {
 pub fn config_dir() -> PathBuf {
     directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME")).map_or_else(
         || {
-            cfg_if::cfg_if! {
-                if #[cfg(all(
-                    target_os = "linux",
-                    not(feature = "packaged-installation")
-                ))] {
-                    std::path::Path::new("/etc/opt").join(env!("CARGO_PKG_NAME"))
-                } else if #[cfg(unix)] {
-                    std::path::Path::new("/etc").join(env!("CARGO_PKG_NAME"))
-                } else if #[cfg(windows)] {
-                    std::env::current_exe().trace_expect("Failed to get current executable path").join(env!("CARGO_PKG_NAME"))
-                } else {
-                    compile_error!("No idea how to determine default config directory for target platform")
-                }
-            }
+            #[cfg(all(target_os = "linux", not(feature = "packaged-installation")))]
+            return std::path::Path::new("/etc/opt").join(env!("CARGO_PKG_NAME"));
+
+            #[cfg(all(
+                unix,
+                not(all(target_os = "linux", not(feature = "packaged-installation")))
+            ))]
+            return std::path::Path::new("/etc").join(env!("CARGO_PKG_NAME"));
+
+            #[cfg(windows)]
+            return std::env::current_exe()
+                .trace_expect("Failed to get current executable path")
+                .join(env!("CARGO_PKG_NAME"));
+
+            #[cfg(not(any(unix, windows)))]
+            compile_error!("No idea how to determine default config directory for target platform");
         },
         |proj_dirs| {
             proj_dirs.config_local_dir().to_path_buf()

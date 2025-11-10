@@ -12,15 +12,14 @@ impl Default for Config {
             db_dir:  directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME"))
             .map_or_else(
                 || {
-                    cfg_if::cfg_if! {
-                        if #[cfg(unix)] {
-                            std::path::Path::new("/var/spool").join(env!("CARGO_PKG_NAME"))
-                        } else if #[cfg(windows)] {
-                            std::env::current_exe().expect("Failed to get current executable path").join(env!("CARGO_PKG_NAME"))
-                        } else {
-                            compile_error!("No idea how to determine default sqlite metadata store directory for target platform")
-                        }
-                    }
+                    #[cfg(unix)]
+                    return std::path::Path::new("/var/spool").join(env!("CARGO_PKG_NAME"));
+
+                    #[cfg(windows)]
+                    return std::env::current_exe().expect("Failed to get current executable path").join(env!("CARGO_PKG_NAME"));
+
+                    #[cfg(not(any(unix,windows)))]
+                    compile_error!("No idea how to determine default sqlite metadata store directory for target platform");
                 },
                 |project_dirs| {
                     project_dirs.cache_dir().into()
