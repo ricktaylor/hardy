@@ -2,12 +2,12 @@ use super::*;
 use core::ops::Range;
 use rand::{TryRngCore, rngs::OsRng};
 
-pub mod bcb_aes_gcm;
-pub mod bib_hmac_sha2;
+pub(crate) mod bcb_aes_gcm;
+pub(crate) mod bib_hmac_sha2;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Hash, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
-struct ScopeFlags {
+pub struct ScopeFlags {
     include_primary_block: bool,
     include_target_header: bool,
     include_security_header: bool,

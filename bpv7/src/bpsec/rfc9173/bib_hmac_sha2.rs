@@ -245,7 +245,11 @@ impl Operation {
         self.parameters.flags.include_primary_block
     }
 
-    pub fn sign(jwk: &Key, args: bib::OperationArgs) -> Result<Self, Error> {
+    pub fn sign(
+        jwk: &Key,
+        scope_flags: ScopeFlags,
+        args: bib::OperationArgs,
+    ) -> Result<Self, Error> {
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Sign)
         {
@@ -301,7 +305,6 @@ impl Operation {
             return Err(Error::NoValidKey);
         };
 
-        let flags = ScopeFlags::default();
         let (results, key) = if let Some(cek) = cek {
             let key = match &jwk.key_algorithm {
                 Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
@@ -325,13 +328,13 @@ impl Operation {
             (
                 Results(match variant {
                     ShaVariant::HMAC_256_256 => {
-                        (*calculate_hmac::<sha2::Sha256>(&flags, &cek, &args)?).into()
+                        (*calculate_hmac::<sha2::Sha256>(&scope_flags, &cek, &args)?).into()
                     }
                     ShaVariant::HMAC_384_384 => {
-                        (*calculate_hmac::<sha2::Sha384>(&flags, &cek, &args)?).into()
+                        (*calculate_hmac::<sha2::Sha384>(&scope_flags, &cek, &args)?).into()
                     }
                     ShaVariant::HMAC_512_512 => {
-                        (*calculate_hmac::<sha2::Sha512>(&flags, &cek, &args)?).into()
+                        (*calculate_hmac::<sha2::Sha512>(&scope_flags, &cek, &args)?).into()
                     }
                     ShaVariant::Unrecognised(_) => unreachable!(),
                 }),
@@ -341,13 +344,13 @@ impl Operation {
             (
                 Results(match variant {
                     ShaVariant::HMAC_256_256 => {
-                        (*calculate_hmac::<sha2::Sha256>(&flags, kek, &args)?).into()
+                        (*calculate_hmac::<sha2::Sha256>(&scope_flags, kek, &args)?).into()
                     }
                     ShaVariant::HMAC_384_384 => {
-                        (*calculate_hmac::<sha2::Sha384>(&flags, kek, &args)?).into()
+                        (*calculate_hmac::<sha2::Sha384>(&scope_flags, kek, &args)?).into()
                     }
                     ShaVariant::HMAC_512_512 => {
-                        (*calculate_hmac::<sha2::Sha512>(&flags, kek, &args)?).into()
+                        (*calculate_hmac::<sha2::Sha512>(&scope_flags, kek, &args)?).into()
                     }
                     ShaVariant::Unrecognised(_) => unreachable!(),
                 }),
@@ -359,7 +362,7 @@ impl Operation {
             parameters: Rc::new(Parameters {
                 variant,
                 key,
-                flags,
+                flags: scope_flags,
             }),
             results,
         })

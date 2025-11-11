@@ -9,7 +9,7 @@ mod error;
 mod parse;
 
 #[cfg(feature = "rfc9173")]
-mod rfc9173;
+pub mod rfc9173;
 
 use error::CaptureFieldErr;
 

@@ -1,11 +1,21 @@
 use super::*;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("No such block number {0}")]
+    NoSuchBlock(u64),
+
+    #[error("Invalid block target {0}, either BCB or BIB block")]
+    InvalidTarget(u64),
+}
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub enum Context {
     #[cfg(feature = "rfc9173")]
-    HMAC_SHA2,
+    HMAC_SHA2(rfc9173::ScopeFlags),
 }
 
 struct BlockTemplate {
@@ -35,7 +45,15 @@ impl<'a> Signer<'a> {
         context: Context,
         source: eid::Eid,
         key: key::Key,
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        let Some(block) = self.original.blocks.get(&block_number) else {
+            return Err(Error::NoSuchBlock(block_number));
+        };
+
+        if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
+            return Err(Error::InvalidTarget(block_number));
+        }
+
         self.templates.insert(
             block_number,
             BlockTemplate {
@@ -44,7 +62,7 @@ impl<'a> Signer<'a> {
                 key,
             },
         );
-        self
+        Ok(self)
     }
 
     pub fn rebuild(self) -> Result<(bundle::Bundle, Box<[u8]>), bpsec::Error> {
@@ -56,7 +74,7 @@ impl<'a> Signer<'a> {
         // Reorder and accumulate BIB operations
         let mut blocks = HashMap::new();
         for (block_number, template) in &self.templates {
-            match blocks.entry((template.source.clone(), template.context)) {
+            match blocks.entry((template.source.clone(), template.context.clone())) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(vec![(block_number, &template.key)]);
                 }
@@ -87,7 +105,13 @@ impl<'a> Signer<'a> {
             for (target_block, key) in contexts {
                 operation_set.operations.insert(
                     *target_block,
-                    self.build_bib_data(&source, &context, source_block, *target_block, key)?,
+                    self.build_bib_data(
+                        &source,
+                        context.clone(),
+                        source_block,
+                        *target_block,
+                        key,
+                    )?,
                 );
             }
 
@@ -105,16 +129,17 @@ impl<'a> Signer<'a> {
     fn build_bib_data(
         &self,
         source: &eid::Eid,
-        context: &Context,
+        context: Context,
         source_block: u64,
         target_block: u64,
         key: &key::Key,
     ) -> Result<bib::Operation, bpsec::Error> {
         #[cfg(feature = "rfc9173")]
-        if let Context::HMAC_SHA2 = context {
+        if let Context::HMAC_SHA2(scope_flags) = context {
             return Ok(bib::Operation::HMAC_SHA2(
                 rfc9173::bib_hmac_sha2::Operation::sign(
                     key,
+                    scope_flags,
                     bib::OperationArgs {
                         bpsec_source: source,
                         target: target_block,
