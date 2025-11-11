@@ -259,13 +259,14 @@ impl Store {
         bundle.bundle.id.fragment_info = None;
 
         // Now rebuild
-        let Some((bundle, new_data)) = hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data)
-            .replace_block(1)
-            .map(|b| b.build(new_data).rebuild())
-        else {
-            info!("Missing payload block?");
-            return None;
-        };
+        let (bundle, new_data) =
+            match hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data).update_block(1) {
+                Err(e) => {
+                    info!("Missing payload block?: {e}");
+                    return None;
+                }
+                Ok(b) => b.build(new_data).rebuild(),
+            };
 
         // Write the rewritten bundle now for safety
         let new_data: Bytes = new_data.into();

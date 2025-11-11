@@ -33,15 +33,6 @@ impl Operation {
         }
     }
 
-    pub fn sign(jwk: &Key, args: OperationArgs) -> Result<Operation, Error> {
-        #[cfg(feature = "rfc9173")]
-        if let Some(op) = rfc9173::bib_hmac_sha2::Operation::sign(jwk, args)? {
-            return Ok(Self::HMAC_SHA2(op));
-        }
-
-        Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()))
-    }
-
     pub fn verify(&self, key_f: &impl key::KeyStore, args: OperationArgs) -> Result<(), Error> {
         match self {
             #[cfg(feature = "rfc9173")]

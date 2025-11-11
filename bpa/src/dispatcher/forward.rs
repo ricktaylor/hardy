@@ -52,6 +52,7 @@ impl Dispatcher {
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
+            .trace_expect("Failed to insert PreviousNode block")
             .with_flags(hardy_bpv7::block::Flags {
                 report_on_failure: true,
                 ..Default::default()
@@ -67,6 +68,7 @@ impl Dispatcher {
         if let Some(hop_count) = &bundle.bundle.hop_count {
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::HopCount)
+                .trace_expect("Failed to insert HopCount block")
                 .with_flags(hardy_bpv7::block::Flags {
                     report_on_failure: true,
                     must_replicate: true,
@@ -91,6 +93,7 @@ impl Dispatcher {
 
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::BundleAge)
+                .trace_expect("Failed to insert BundleAge block")
                 .with_flags(hardy_bpv7::block::Flags {
                     report_on_failure: true,
                     must_replicate: true,

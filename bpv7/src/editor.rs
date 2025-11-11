@@ -1,4 +1,26 @@
 use super::*;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Attempt to add duplicate block of type {0:?}")]
+    IllegalDuplicate(block::Type),
+
+    #[error("No more available block numbers")]
+    OutOfBlockNumbers,
+
+    #[error("Cannot edit the primary block")]
+    PrimaryBlock,
+
+    #[error("Cannot remove the payload block")]
+    PayloadBlock,
+
+    #[error("No such block number {0}")]
+    NoSuchBlock(u64),
+
+    #[error(transparent)]
+    Builder(#[from] builder::Error),
+}
 
 /// The `Editor` provides an interface for modifying a bundle.
 ///
@@ -43,25 +65,35 @@ impl<'a> Editor<'a> {
     ///
     /// The new block will be assigned the next available block
     /// number.  Be very careful about add duplicate blocks that should not be duplicated
-    pub fn add_block(self, block_type: block::Type) -> BlockBuilder<'a> {
+    pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
         if let block::Type::Primary
         | block::Type::Payload
         | block::Type::BundleAge
         | block::Type::HopCount
         | block::Type::PreviousNode = block_type
         {
-            panic!(
-                "Don't add multiple primary, payload, bundle age, hop count or previous node blocks!"
-            );
+            for template in self.blocks.values() {
+                match template {
+                    BlockTemplate::Keep(t) if t == &block_type => {
+                        return Err(Error::IllegalDuplicate(block_type));
+                    }
+                    BlockTemplate::Replace(template) if template.block_type == block_type => {
+                        return Err(Error::IllegalDuplicate(block_type));
+                    }
+                    _ => {}
+                }
+            }
         }
 
         // Find the lowest unused block_number
         let mut block_number = 2u64;
         loop {
             if !self.blocks.contains_key(&block_number) {
-                return BlockBuilder::new(self, block_number, block_type);
+                return Ok(BlockBuilder::new(self, block_number, block_type));
             }
-            block_number += 1;
+            block_number = block_number
+                .checked_add(1)
+                .ok_or(Error::OutOfBlockNumbers)?;
         }
     }
 
@@ -70,9 +102,9 @@ impl<'a> Editor<'a> {
     /// If a block of the same type already exists, the new block will replace
     /// it. Otherwise, the new block will be assigned the next available block
     /// number.
-    pub fn insert_block(self, block_type: block::Type) -> BlockBuilder<'a> {
+    pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
         if let block::Type::Primary = block_type {
-            panic!("Don't add primary blocks!");
+            return Err(Error::PrimaryBlock);
         }
 
         if let Some((block_number, template)) =
@@ -92,36 +124,50 @@ impl<'a> Editor<'a> {
                     _ => None,
                 })
         {
-            return BlockBuilder::new_from_template(self, block_number, template);
+            return Ok(BlockBuilder::new_from_template(
+                self,
+                block_number,
+                template,
+            ));
         }
 
         // Find the lowest unused block_number
         let mut block_number = 2u64;
         loop {
             if !self.blocks.contains_key(&block_number) {
-                return BlockBuilder::new(self, block_number, block_type);
+                return Ok(BlockBuilder::new(self, block_number, block_type));
             }
-            block_number += 1;
+            block_number = block_number
+                .checked_add(1)
+                .ok_or(Error::OutOfBlockNumbers)?;
         }
     }
 
-    /// Replace an existing block in the bundle.
+    /// Update an existing block in the bundle.
     ///
-    /// This will return a `BlockBuilder` that can be used to construct the
-    /// replacement block.
-    pub fn replace_block(self, block_number: u64) -> Option<BlockBuilder<'a>> {
-        let template = match self.blocks.get(&block_number)? {
+    /// This will return a `BlockBuilder` that can be used to manipulate the
+    /// existing block.
+    pub fn update_block(self, block_number: u64) -> Result<BlockBuilder<'a>, Error> {
+        let template = match self
+            .blocks
+            .get(&block_number)
+            .ok_or(Error::NoSuchBlock(block_number))?
+        {
             BlockTemplate::Keep(t) => {
                 if let &block::Type::Primary = t {
-                    panic!("Don't replace primary block!");
+                    return Err(Error::PrimaryBlock);
                 }
-                let block = self.original.blocks.get(&block_number)?;
+                let block = self
+                    .original
+                    .blocks
+                    .get(&block_number)
+                    .ok_or(Error::NoSuchBlock(block_number))?;
                 builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type)
             }
             BlockTemplate::Replace(template) => template.clone(),
         };
 
-        Some(BlockBuilder::new_from_template(
+        Ok(BlockBuilder::new_from_template(
             self,
             block_number,
             template,
@@ -131,12 +177,23 @@ impl<'a> Editor<'a> {
     /// Remove a block from the bundle.
     ///
     /// Note that the primary and payload blocks cannot be removed.
-    pub fn remove_block(mut self, block_number: u64) -> Self {
-        if block_number == 0 || block_number == 1 {
-            panic!("Don't remove primary or payload blocks!");
+    pub fn remove_block(mut self, block_number: u64) -> Result<Self, Error> {
+        if block_number == 0 {
+            return Err(Error::PrimaryBlock);
+        }
+        if block_number == 1 {
+            return Err(Error::PayloadBlock);
         }
         self.blocks.remove(&block_number);
-        self
+        Ok(self)
+    }
+
+    /// Create a `Signer` to sign blocks in the bundle.
+    ///
+    /// Note that this consumes the `Editor`, so any modifications made to the
+    /// bundle prior to calling this method will be completed prior to signing.
+    pub fn signer(self) -> bpsec::signer::Signer<'a> {
+        bpsec::signer::Signer::new(self.original, self.source_data)
     }
 
     /// Rebuild the bundle, applying all of the modifications.
@@ -159,9 +216,11 @@ impl<'a> Editor<'a> {
         let data = hardy_cbor::encode::emit_array(None, |a| {
             // Emit primary block
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
-            bundle
-                .blocks
-                .insert(0, self.build_block(0, primary_block, a));
+            bundle.blocks.insert(
+                0,
+                self.build_block(0, primary_block, a)
+                    .expect("Failed to build primary block"),
+            );
 
             // Stash payload block
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
@@ -170,14 +229,17 @@ impl<'a> Editor<'a> {
             for (block_number, block_template) in core::mem::take(&mut self.blocks) {
                 bundle.blocks.insert(
                     block_number,
-                    self.build_block(block_number, block_template, a),
+                    self.build_block(block_number, block_template, a)
+                        .expect("Failed to build block"),
                 );
             }
 
             // Emit payload block
-            bundle
-                .blocks
-                .insert(1, self.build_block(1, payload_block, a));
+            bundle.blocks.insert(
+                1,
+                self.build_block(1, payload_block, a)
+                    .expect("Failed to build payload block"),
+            );
         });
 
         (bundle, data.into())
@@ -188,7 +250,7 @@ impl<'a> Editor<'a> {
         block_number: u64,
         template: BlockTemplate,
         array: &mut hardy_cbor::encode::Array,
-    ) -> block::Block {
+    ) -> Result<block::Block, Error> {
         match template {
             BlockTemplate::Keep(_) => {
                 let mut block = self
@@ -198,9 +260,11 @@ impl<'a> Editor<'a> {
                     .expect("Mismatched block in bundle!")
                     .clone();
                 block.copy_payload(self.source_data, array);
-                block
+                Ok(block)
             }
-            BlockTemplate::Replace(template) => template.build(block_number, array),
+            BlockTemplate::Replace(template) => {
+                template.build(block_number, array).map_err(Into::into)
+            }
         }
     }
 }
@@ -249,7 +313,9 @@ impl<'a> BlockBuilder<'a> {
 
     /// Build the block and return the modified `Editor`.
     pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> Editor<'a> {
-        self.template.data = Some(data.as_ref().into());
+        if !data.as_ref().is_empty() {
+            self.template.data = Some(data.as_ref().into());
+        }
 
         self.editor
             .blocks

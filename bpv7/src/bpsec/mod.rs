@@ -3,6 +3,7 @@ use super::*;
 pub mod bcb;
 pub mod bib;
 pub mod key;
+pub mod signer;
 
 mod error;
 mod parse;

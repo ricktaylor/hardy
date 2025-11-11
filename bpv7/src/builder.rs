@@ -1,5 +1,19 @@
 use super::*;
 
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Cannot add a primary block")]
+    PrimaryBlock,
+
+    #[error("No block specific data set")]
+    NoBlockData,
+
+    #[error(transparent)]
+    InternalError(#[from] error::Error),
+}
+
 /// A builder for creating a new [`bundle::Bundle`].
 ///
 /// See [`Builder::new()`] for more information.
@@ -68,16 +82,18 @@ impl Builder {
     }
 
     /// Adds an extension block to this [`Builder`].
-    pub fn add_extension_block(self, block_type: block::Type) -> BlockBuilder {
+    pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder, Error> {
         if let block::Type::Primary = block_type {
-            panic!("Don't add primary blocks!");
+            Err(Error::PrimaryBlock)
+        } else {
+            Ok(BlockBuilder::new(self, block_type))
         }
-        BlockBuilder::new(self, block_type)
     }
 
     /// Adds the payload block to this [`Builder`].
     pub fn with_payload<T: AsRef<[u8]>>(self, data: T) -> Self {
         self.add_extension_block(block::Type::Payload)
+            .expect("Failed to add payload block")
             .with_flags(block::Flags {
                 delete_bundle_on_failure: true,
                 ..Default::default()
@@ -88,6 +104,7 @@ impl Builder {
     /// Adds the HopCount block to this [`Builder`].
     pub fn with_hop_count(self, hop_info: &hop_info::HopInfo) -> Self {
         self.add_extension_block(block::Type::HopCount)
+            .expect("Failed to add HopCount block")
             .with_flags(block::Flags {
                 report_on_failure: true,
                 must_replicate: true,
@@ -123,13 +140,19 @@ impl Builder {
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {
-                bundle
-                    .blocks
-                    .insert(block_number as u64, block.build(block_number as u64 + 2, a));
+                bundle.blocks.insert(
+                    block_number as u64,
+                    block
+                        .build(block_number as u64 + 2, a)
+                        .expect("Failed to build block"),
+                );
             }
 
             // Emit payload
-            bundle.blocks.insert(1, self.payload.build(1, a));
+            bundle.blocks.insert(
+                1,
+                self.payload.build(1, a).expect("Failed to build payload"),
+            );
         });
 
         (bundle, data.into())
@@ -197,7 +220,11 @@ impl BlockTemplate {
     }
 
     /// Builds the [`block::Block`] with the given block number and array.
-    pub fn build(self, block_number: u64, array: &mut hardy_cbor::encode::Array) -> block::Block {
+    pub fn build(
+        self,
+        block_number: u64,
+        array: &mut hardy_cbor::encode::Array,
+    ) -> Result<block::Block, Error> {
         let mut block = block::Block {
             block_type: self.block_type,
             flags: self.flags,
@@ -207,14 +234,8 @@ impl BlockTemplate {
             bib: None,
             bcb: None,
         };
-        block
-            .emit(
-                block_number,
-                &self.data.expect("No block specific data set"),
-                array,
-            )
-            .expect("Failed to emit block");
-        block
+        block.emit(block_number, &self.data.ok_or(Error::NoBlockData)?, array)?;
+        Ok(block)
     }
 }
 

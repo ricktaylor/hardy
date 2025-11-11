@@ -245,11 +245,11 @@ impl Operation {
         self.parameters.flags.include_primary_block
     }
 
-    pub fn sign(jwk: &Key, args: bib::OperationArgs) -> Result<Option<Self>, Error> {
+    pub fn sign(jwk: &Key, args: bib::OperationArgs) -> Result<Self, Error> {
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Sign)
         {
-            return Ok(None);
+            return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
         }
 
         let (cek, variant) = match &jwk.key_algorithm {
@@ -257,7 +257,7 @@ impl Operation {
                 if let Some(ops) = &jwk.operations
                     && !ops.contains(&key::Operation::WrapKey)
                 {
-                    return Ok(None);
+                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                 }
                 (
                     Some(rand_key(Box::from([0u8; 32]))?),
@@ -271,7 +271,7 @@ impl Operation {
                 if let Some(ops) = &jwk.operations
                     && !ops.contains(&key::Operation::WrapKey)
                 {
-                    return Ok(None);
+                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                 }
                 (
                     Some(rand_key(Box::from([0u8; 48]))?),
@@ -282,7 +282,7 @@ impl Operation {
                 if let Some(ops) = &jwk.operations
                     && !ops.contains(&key::Operation::WrapKey)
                 {
-                    return Ok(None);
+                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                 }
                 (
                     Some(rand_key(Box::from([0u8; 64]))?),
@@ -293,12 +293,12 @@ impl Operation {
             Some(key::KeyAlgorithm::HS384) => (None, ShaVariant::HMAC_384_384),
             Some(key::KeyAlgorithm::HS512) => (None, ShaVariant::HMAC_512_512),
             _ => {
-                return Ok(None);
+                return Err(Error::NoValidKey);
             }
         };
 
         let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-            return Ok(None);
+            return Err(Error::NoValidKey);
         };
 
         let flags = ScopeFlags::default();
@@ -319,7 +319,7 @@ impl Operation {
                         .and_then(|kek| kek.wrap_vec(&cek))
                         .map_err(|e| Error::Algorithm(e.to_string()))
                 }
-                _ => return Ok(None),
+                _ => return Err(Error::NoValidKey),
             }?;
 
             (
@@ -355,14 +355,14 @@ impl Operation {
             )
         };
 
-        Ok(Some(Self {
+        Ok(Self {
             parameters: Rc::new(Parameters {
                 variant,
                 key,
                 flags,
             }),
             results,
-        }))
+        })
     }
 
     pub fn verify(
