@@ -28,12 +28,7 @@ let destination: Eid = "ipn:2.0".parse().unwrap();
 // Use the builder to construct a bundle.
 let (bundle, cbor) = Builder::new(source.clone(), destination.clone())
     .with_report_to(source)
-    .add_extension_block(block::Type::Payload)
-    .with_flags(block::Flags {
-        delete_bundle_on_failure: true,
-        ..Default::default()
-    })
-    .build("Hello, world!")
+    .with_payload("Hello, world!")
     .build( CreationTimestamp::now());
 
 assert_eq!(bundle.destination, destination);
@@ -55,12 +50,7 @@ use hardy_bpv7::eid::Eid;
 let source: Eid = "ipn:1.0".parse().unwrap();
 let destination: Eid = "ipn:2.0".parse().unwrap();
 let (original_bundle, cbor) = Builder::new(source, destination.clone())
-    .add_extension_block(block::Type::Payload)
-    .with_flags(block::Flags {
-       delete_bundle_on_failure: true,
-       ..Default::default()
-    })
-    .build("Hello, world!")
+    .with_payload("Hello, world!")
     .build(CreationTimestamp::now());
 
 // Parse the bundle from the CBOR data.

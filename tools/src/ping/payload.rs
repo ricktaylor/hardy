@@ -143,12 +143,7 @@ pub fn build_payload(
 
     Ok((
         builder
-            .add_extension_block(hardy_bpv7::block::Type::Payload)
-            .with_flags(hardy_bpv7::block::Flags {
-                delete_bundle_on_failure: true,
-                ..Default::default()
-            })
-            .build(payload.to_text_fmt().as_bytes())
+            .with_payload(payload.to_text_fmt().as_bytes())
             .build(
                 payload
                     .creation
