@@ -70,7 +70,7 @@ impl<'a> BlockParse<'a> {
         T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
     {
         let payload = <Self as bpsec::BlockSet>::block_payload(self, block_number)
-            .expect("Missing block payload!");
+            .ok_or(Error::MissingPayload)?;
 
         hardy_cbor::decode::parse::<(T, bool, usize)>(payload)
             .map(|(v, s, len)| (v, s && len == payload.len()))
