@@ -4,30 +4,42 @@ use super::*;
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    // Use #[command(flatten)] to include the --key argument
-    #[command(flatten)]
-    key: keys::KeyLoaderArgs,
-
     /// The number of the block to verify
-    #[arg(short, long, default_value = "1")]
+    #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]
     block: u64,
 
     /// Path to the location to write the bundle to, or stdout if not supplied
-    #[arg(short, long, default_value = "")]
+    #[arg(short, long, required = false)]
     output: io::Output,
 
-    /// The security source to use for signing
-    source: hardy_bpv7::eid::Eid,
+    /// The security source Endpoint ID (EID) to use for signing, uses the bundle source if omitted
+    #[arg(short, long)]
+    source: Option<hardy_bpv7::eid::Eid>,
 
-    /// The bundle file in which to verify a block, '-' to use stdin.
+    /// The signing key.
+    /// Can be a file path or a raw JSON string.
+    #[arg(value_name = "KEY_OR_KEY_SOURCE")]
+    key: String,
+
+    /// The bundle file containing the block to sign, '-' to use stdin.
     input: io::Input,
 }
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let Some(key) = self.key.try_into()? else {
-            return Err(anyhow::anyhow!("A key must be provided for signing"));
+        // Get the JSON content string
+        let key = if self.key.starts_with('{') {
+            // Source is a raw JSON string
+            self.key
+        } else {
+            // Source is a file path
+            std::fs::read_to_string(self.key)
+                .map_err(|e| anyhow::anyhow!("Failed to read key file: {e}"))?
         };
+
+        // Parse into the enum
+        let key =
+            serde_json::from_str(&key).map_err(|e| anyhow::anyhow!("Failed to parse key: {e}"))?;
 
         let data = self.input.read_all()?;
 
@@ -42,7 +54,7 @@ impl Command {
                 hardy_bpv7::bpsec::signer::Context::HMAC_SHA2(
                     hardy_bpv7::bpsec::rfc9173::ScopeFlags::default(),
                 ),
-                self.source,
+                self.source.unwrap_or(bundle.id.source.clone()),
                 key,
             )
             .map_err(|e| anyhow::anyhow!("Failed to sign block: {e}"))?;
