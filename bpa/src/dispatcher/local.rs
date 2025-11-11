@@ -105,22 +105,20 @@ impl Dispatcher {
         self: &Arc<Self>,
         service: Arc<service_registry::Service>,
         bundle: &bundle::Bundle,
-    ) -> Result<dispatch::DispatchResult, Error> {
+    ) -> dispatch::DispatchResult {
         let Some(data) = self.load_data(bundle).await else {
             // Bundle data was deleted sometime during processing
-            return Ok(dispatch::DispatchResult::Gone);
+            return dispatch::DispatchResult::Gone;
         };
 
         let payload = match bundle.bundle.decrypt_block(1, &data, self.key_store()) {
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoValidKey)) => {
                 // TODO: We are unable to decrypt the payload, what do we do?
-                return Ok(dispatch::DispatchResult::Wait);
+                return dispatch::DispatchResult::Wait;
             }
             Err(e) => {
                 debug!("Received an invalid payload: {e}");
-                return Ok(dispatch::DispatchResult::Drop(Some(
-                    ReasonCode::BlockUnintelligible,
-                )));
+                return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
             }
             Ok(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
             Ok(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
@@ -138,6 +136,6 @@ impl Dispatcher {
             .await;
 
         // And we are done with the bundle
-        Ok(dispatch::DispatchResult::Delivered)
+        dispatch::DispatchResult::Delivered
     }
 }

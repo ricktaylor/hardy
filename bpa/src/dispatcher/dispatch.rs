@@ -287,9 +287,7 @@ impl Dispatcher {
                 // TODO:  This needs to move to a storage::channel
 
                 // Bundle is for a local service
-                self.deliver_bundle(service, bundle)
-                    .await
-                    .trace_expect("Failed to deliver bundle")
+                self.deliver_bundle(service, bundle).await
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");

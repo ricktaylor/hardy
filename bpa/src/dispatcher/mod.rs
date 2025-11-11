@@ -9,8 +9,6 @@ mod local;
 mod report;
 mod restart;
 
-type Error = Box<dyn std::error::Error + Send + Sync>;
-
 pub struct Dispatcher {
     cancel_token: tokio_util::sync::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
@@ -103,6 +101,7 @@ impl Dispatcher {
 }
 
 impl hardy_bpv7::bpsec::key::KeyStore for Dispatcher {
+    // TODO: Dispatcher keys!
     fn decrypt_keys<'a>(
         &'a self,
         _source: &Eid,
