@@ -21,7 +21,7 @@ pub struct Command {
     payload: io::Input,
 
     /// Path to the location to write the bundle to, or stdout if not supplied
-    #[arg(short, long, default_value = "")]
+    #[arg(short, long, required = false)]
     output: io::Output,
 
     /// The optional lifetime of the bundle, or 24 hours if not supplied

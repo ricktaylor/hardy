@@ -8,7 +8,7 @@ pub struct Command {
     key_args: keys::KeySetLoaderArgs,
 
     /// Path to the location to write the bundle to, or stdout if not supplied
-    #[arg(short, long, default_value = "")]
+    #[arg(short, long, required = false)]
     output: io::Output,
 
     /// The bundle file to dump, '-' to use stdin.

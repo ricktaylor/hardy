@@ -9,11 +9,11 @@ pub struct Command {
     key_args: keys::KeySetLoaderArgs,
 
     /// The number of the block to extract
-    #[arg(short, long, default_value = "1")]
+    #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]
     block: u64,
 
     /// Path to the location to write the extracted data to, or stdout if not supplied
-    #[arg(short, long, default_value = "")]
+    #[arg(short, long, required = false)]
     output: io::Output,
 
     /// The bundle file from which to extract a block, '-' to use stdin.
