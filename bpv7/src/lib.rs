@@ -29,7 +29,8 @@ let destination: Eid = "ipn:2.0".parse().unwrap();
 let (bundle, cbor) = Builder::new(source.clone(), destination.clone())
     .with_report_to(source)
     .with_payload("Hello, world!")
-    .build( CreationTimestamp::now());
+    .build(CreationTimestamp::now())
+    .unwrap();
 
 assert_eq!(bundle.destination, destination);
 assert!(!cbor.is_empty());
@@ -51,7 +52,8 @@ let source: Eid = "ipn:1.0".parse().unwrap();
 let destination: Eid = "ipn:2.0".parse().unwrap();
 let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .with_payload("Hello, world!")
-    .build(CreationTimestamp::now());
+    .build(CreationTimestamp::now())
+    .unwrap();
 
 // Parse the bundle from the CBOR data.
 let parsed_bundle = RewrittenBundle::parse(&cbor, &hardy_bpv7::bpsec::key::KeySet::new(vec![])).unwrap();

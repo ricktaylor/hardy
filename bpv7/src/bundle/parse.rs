@@ -487,13 +487,14 @@ impl<'a> BlockParse<'a> {
 
     /// Rewrites the entire bundle if any blocks were non-canonical or removed.
     /// Returns `None` if no rewrite was necessary.
-    fn finish(mut self, bundle: &mut Bundle) -> (Option<Box<[u8]>>, bool) {
+    #[allow(clippy::type_complexity)]
+    fn finish(mut self, bundle: &mut Bundle) -> Result<(Option<Box<[u8]>>, bool), Error> {
         // If we have nothing to rewrite, get out now
         if !self.rewrite
             || (self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty())
         {
             bundle.blocks = self.blocks;
-            return (None, !self.noncanonical_blocks.is_empty());
+            return Ok((None, !self.noncanonical_blocks.is_empty()));
         }
 
         let non_canonical = !self.noncanonical_blocks.is_empty();
@@ -503,9 +504,9 @@ impl<'a> BlockParse<'a> {
             .retain(|block_number, _| !self.blocks_to_remove.contains(block_number));
 
         // Write out the new bundle
-        (
+        Ok((
             Some(
-                hardy_cbor::encode::emit_array(None, |block_array| {
+                hardy_cbor::encode::try_emit_array(None, |block_array| {
                     // Primary block first
                     let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
 
@@ -525,20 +526,20 @@ impl<'a> BlockParse<'a> {
 
                     // Emit all blocks
                     for (block_number, mut block) in core::mem::take(&mut self.blocks) {
-                        self.emit_block(&mut block, block_number, block_array)
-                            .expect("Failed to emit block");
+                        self.emit_block(&mut block, block_number, block_array)?;
                         bundle.blocks.insert(block_number, block);
                     }
 
                     // And final payload block
-                    self.emit_block(&mut payload_block, 1, block_array)
-                        .expect("Failed to emit payload block");
+                    self.emit_block(&mut payload_block, 1, block_array)?;
                     bundle.blocks.insert(1, payload_block);
-                })
+
+                    Ok::<_, Error>(())
+                })?
                 .into(),
             ),
             non_canonical,
-        )
+        ))
     }
 }
 
@@ -599,7 +600,7 @@ fn parse_blocks(
     }
 
     // Now rewrite blocks (if required)
-    let (b, non_canonical) = parser.finish(bundle);
+    let (b, non_canonical) = parser.finish(bundle)?;
     Ok((b, non_canonical, report_unsupported))
 }
 

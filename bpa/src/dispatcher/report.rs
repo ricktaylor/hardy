@@ -141,7 +141,8 @@ impl Dispatcher {
                     ..Default::default()
                 })
                 .with_payload(&payload)
-                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now());
+                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .trace_expect("Failed to create new bundle");
 
                 // Store to store
                 if let Some(bundle) = self.store.store(bundle, data.into()).await {

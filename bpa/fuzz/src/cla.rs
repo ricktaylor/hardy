@@ -15,7 +15,7 @@ pub struct RandomBundle {
 }
 
 impl RandomBundle {
-    pub fn into_bundle(self) -> hardy_bpa::Bytes {
+    pub fn into_bundle(self) -> Result<hardy_bpa::Bytes, hardy_bpv7::builder::Error> {
         let mut builder = hardy_bpv7::builder::Builder::new(self.source.0, self.destination.0);
 
         if let Some(report_to) = self.report_to {
@@ -44,8 +44,7 @@ impl RandomBundle {
         builder
             .with_payload(self.payload)
             .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-            .1
-            .into()
+            .map(|b| b.1.into())
     }
 }
 

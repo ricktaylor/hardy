@@ -8,6 +8,12 @@ pub enum Error {
 
     #[error("Invalid block target {0}, either BCB or BIB block")]
     InvalidTarget(u64),
+
+    #[error(transparent)]
+    Editor(#[from] editor::Error),
+
+    #[error(transparent)]
+    Security(#[from] bpsec::Error),
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -65,10 +71,12 @@ impl<'a> Signer<'a> {
         Ok(self)
     }
 
-    pub fn rebuild(self) -> Result<(bundle::Bundle, Box<[u8]>), bpsec::Error> {
+    pub fn rebuild(self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
         if self.templates.is_empty() {
             // No signing to do
-            return Ok(editor::Editor::new(self.original, self.source_data).rebuild());
+            return editor::Editor::new(self.original, self.source_data)
+                .rebuild()
+                .map_err(Into::into);
         }
 
         // Reorder and accumulate BIB operations
@@ -122,7 +130,7 @@ impl<'a> Signer<'a> {
                 .build(hardy_cbor::encode::emit(&operation_set).0);
         }
 
-        Ok(editor.rebuild())
+        editor.rebuild().map_err(Into::into)
     }
 
     #[allow(irrefutable_let_patterns)]

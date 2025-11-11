@@ -87,7 +87,7 @@ impl service::Sink for Sink {
                 lifetime,
                 flags,
             )
-            .await
+            .await?
             .to_key()
             .into())
     }

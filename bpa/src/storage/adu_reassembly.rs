@@ -265,7 +265,13 @@ impl Store {
                     info!("Missing payload block?: {e}");
                     return None;
                 }
-                Ok(b) => b.build(new_data).rebuild(),
+                Ok(b) => match b.build(new_data).rebuild() {
+                    Err(e) => {
+                        info!("Failed to rebuild bundle: {e}");
+                        return None;
+                    }
+                    Ok((bundle, new_data)) => (bundle, new_data),
+                },
             };
 
         // Write the rewritten bundle now for safety

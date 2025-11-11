@@ -178,7 +178,9 @@ impl Msg {
                 while let Ok(msg) = rx.recv_async().await {
                     match msg {
                         Msg::Cla(bundle) => {
-                            _ = cla.dispatch(bundle.into_bundle()).await;
+                            if let Ok(b) = bundle.into_bundle() {
+                                _ = cla.dispatch(b).await;
+                            }
                         }
                         Msg::ClaBytes(bytes) => {
                             _ = cla.dispatch(bytes.into()).await;

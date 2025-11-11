@@ -58,6 +58,7 @@ impl Command {
             &builder
                 .with_payload(&self.payload.read_all()?)
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .map_err(|e| anyhow::anyhow!("Failed to build bundle: {e}"))?
                 .1,
         )
     }

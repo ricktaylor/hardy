@@ -38,7 +38,7 @@ impl Builder {
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
     ///     .with_payload("Hello")
-    ///     .build(CreationTimestamp::now());
+    ///     .build(CreationTimestamp::now()).unwrap();
     /// ```
     pub fn new(source: eid::Eid, destination: eid::Eid) -> Self {
         Self {
@@ -117,7 +117,7 @@ impl Builder {
     pub fn build(
         self,
         timestamp: creation_timestamp::CreationTimestamp,
-    ) -> (bundle::Bundle, Box<[u8]>) {
+    ) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
         let mut bundle = bundle::Bundle {
             report_to: self.report_to.unwrap_or(self.source.clone()),
             id: bundle::Id {
@@ -132,30 +132,24 @@ impl Builder {
             ..Default::default()
         };
 
-        let data = hardy_cbor::encode::emit_array(None, |a| {
+        let data = hardy_cbor::encode::try_emit_array(None, |a| {
             // Emit primary block
-            bundle
-                .emit_primary_block(a)
-                .expect("Failed to emit primary block");
+            bundle.emit_primary_block(a)?;
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {
                 bundle.blocks.insert(
                     block_number as u64,
-                    block
-                        .build(block_number as u64 + 2, a)
-                        .expect("Failed to build block"),
+                    block.build(block_number as u64 + 2, a)?,
                 );
             }
 
             // Emit payload
-            bundle.blocks.insert(
-                1,
-                self.payload.build(1, a).expect("Failed to build payload"),
-            );
-        });
+            bundle.blocks.insert(1, self.payload.build(1, a)?);
+            Ok::<_, Error>(())
+        })?;
 
-        (bundle, data.into())
+        Ok((bundle, data.into()))
     }
 }
 
@@ -295,7 +289,8 @@ fn test_builder() {
     Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_report_to("ipn:3.0".parse().unwrap())
         .with_payload("Hello")
-        .build(creation_timestamp::CreationTimestamp::now());
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
 }
 
 #[cfg(feature = "serde")]
@@ -310,5 +305,6 @@ fn test_template() {
     .into();
 
     b.with_payload("Hello")
-        .build(creation_timestamp::CreationTimestamp::now());
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
 }

@@ -9,7 +9,7 @@ impl Dispatcher {
         data: &[u8],
         lifetime: std::time::Duration,
         flags: Option<service::SendOptions>,
-    ) -> hardy_bpv7::bundle::Id {
+    ) -> Result<hardy_bpv7::bundle::Id, service::Error> {
         // Check to see if we should use ipn 2-element encoding
         if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
             if let Eid::Ipn {
@@ -70,7 +70,8 @@ impl Dispatcher {
 
             let (bundle, data) = builder
                 .with_payload(data)
-                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now());
+                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .map_err(|e| service::Error::Internal(e.into()))?;
 
             // Store to store
             if let Some(bundle) = self.store.store(bundle, data.into()).await {
@@ -85,7 +86,7 @@ impl Dispatcher {
         let bundle_id = bundle.bundle.id.clone();
         self.dispatch_bundle(bundle).await;
 
-        bundle_id
+        Ok(bundle_id)
     }
 
     pub async fn cancel_local_dispatch(&self, bundle_id: &hardy_bpv7::bundle::Id) -> bool {

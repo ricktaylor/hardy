@@ -199,7 +199,7 @@ impl<'a> Editor<'a> {
     /// Rebuild the bundle, applying all of the modifications.
     ///
     /// This will return the new `Bundle` and its serialized representation.
-    pub fn rebuild(mut self) -> (bundle::Bundle, Box<[u8]>) {
+    pub fn rebuild(mut self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
         let mut bundle = bundle::Bundle {
             id: self.original.id.clone(),
             flags: self.original.flags.clone(),
@@ -213,14 +213,12 @@ impl<'a> Editor<'a> {
             blocks: HashMap::new(),
         };
 
-        let data = hardy_cbor::encode::emit_array(None, |a| {
+        let data = hardy_cbor::encode::try_emit_array(None, |a| {
             // Emit primary block
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
-            bundle.blocks.insert(
-                0,
-                self.build_block(0, primary_block, a)
-                    .expect("Failed to build primary block"),
-            );
+            bundle
+                .blocks
+                .insert(0, self.build_block(0, primary_block, a)?);
 
             // Stash payload block
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
@@ -229,20 +227,19 @@ impl<'a> Editor<'a> {
             for (block_number, block_template) in core::mem::take(&mut self.blocks) {
                 bundle.blocks.insert(
                     block_number,
-                    self.build_block(block_number, block_template, a)
-                        .expect("Failed to build block"),
+                    self.build_block(block_number, block_template, a)?,
                 );
             }
 
             // Emit payload block
-            bundle.blocks.insert(
-                1,
-                self.build_block(1, payload_block, a)
-                    .expect("Failed to build payload block"),
-            );
-        });
+            bundle
+                .blocks
+                .insert(1, self.build_block(1, payload_block, a)?);
 
-        (bundle, data.into())
+            Ok::<_, Error>(())
+        })?;
+
+        Ok((bundle, data.into()))
     }
 
     fn build_block(

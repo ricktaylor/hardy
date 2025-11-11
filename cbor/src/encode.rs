@@ -250,7 +250,22 @@ impl Encoder {
     {
         let mut a = Array::new(self, count);
         f(&mut a);
-        a.end()
+        a.end();
+    }
+
+    /// Emits a CBOR array.
+    ///
+    /// If `count` is `Some`, a definite-length array is created.
+    /// If `count` is `None`, an indefinite-length array is created.
+    /// The closure receives an [`Array`] helper to emit the array's elements.
+    pub fn try_emit_array<F, E>(&mut self, count: Option<usize>, f: F) -> Result<(), E>
+    where
+        F: FnOnce(&mut Array) -> Result<(), E>,
+    {
+        let mut a = Array::new(self, count);
+        f(&mut a)?;
+        a.end();
+        Ok(())
     }
 
     fn emit_array_slice<V, T>(&mut self, values: &V)
@@ -277,7 +292,22 @@ impl Encoder {
     {
         let mut m = Map::new(self, count);
         f(&mut m);
-        m.end()
+        m.end();
+    }
+
+    /// Emits a CBOR map.
+    ///
+    /// If `count` is `Some`, a definite-length map with that many key-value pairs is created.
+    /// If `count` is `None`, an indefinite-length map is created.
+    /// The closure receives a [`Map`] helper to emit the map's entries.
+    pub fn try_emit_map<F, E>(&mut self, count: Option<usize>, f: F) -> Result<(), E>
+    where
+        F: FnOnce(&mut Map) -> Result<(), E>,
+    {
+        let mut m = Map::new(self, count);
+        f(&mut m)?;
+        m.end();
+        Ok(())
     }
 }
 
@@ -508,7 +538,6 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     /// Emits a nested array into the sequence.
-    // TODO: This really ought to return an Error template type
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Array),
@@ -517,12 +546,27 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     /// Emits a nested map into the sequence.
-    // TODO: This really ought to return an Error template type
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
     {
         self.next_field().emit_map(count, f)
+    }
+
+    /// Emits a nested array into the sequence.
+    pub fn try_emit_array<F, E>(&mut self, count: Option<usize>, f: F) -> Result<(), E>
+    where
+        F: FnOnce(&mut Array) -> Result<(), E>,
+    {
+        self.next_field().try_emit_array(count, f)
+    }
+
+    /// Emits a nested map into the sequence.
+    pub fn try_emit_map<F, E>(&mut self, count: Option<usize>, f: F) -> Result<(), E>
+    where
+        F: FnOnce(&mut Map) -> Result<(), E>,
+    {
+        self.next_field().try_emit_map(count, f)
     }
 }
 
@@ -718,7 +762,7 @@ impl_stream_emit_functions!(
 );
 
 macro_rules! impl_collection_emit_functions {
-    ($(( $method:ident, $collection_type:ty)),*) => {
+    ($(( $method:ident, $try_method:ident,$collection_type:ty)),*) => {
         $(
             #[doc = concat!("A convenience function to encode a single ", stringify!($collection_type), " into a `Vec<u8>`.")]
             pub fn $method<F>(count: Option<usize>, f: F) -> Vec<u8>
@@ -729,11 +773,24 @@ macro_rules! impl_collection_emit_functions {
                 e.$method(count, f);
                 e.build()
             }
+
+            #[doc = concat!("A convenience function to encode a single ", stringify!($collection_type), " into a `Vec<u8>` with a Result type.")]
+            pub fn $try_method<F,E>(count: Option<usize>, f: F) -> Result<Vec<u8>,E>
+            where
+                F: FnOnce(&mut $collection_type) -> Result<(),E>,
+            {
+                let mut e = Encoder::new();
+                e.$try_method(count, f)?;
+                Ok(e.build())
+            }
         )*
     };
 }
 
-impl_collection_emit_functions!((emit_array, Array), (emit_map, Map));
+impl_collection_emit_functions!(
+    (emit_array, try_emit_array, Array),
+    (emit_map, try_emit_map, Map)
+);
 
 macro_rules! impl_tuple_emit_functions {
     // The first argument `$len:expr` captures the tuple's length.
