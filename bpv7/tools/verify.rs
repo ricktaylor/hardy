@@ -8,11 +8,11 @@ pub struct Command {
     #[command(flatten)]
     key_args: keys::KeyLoaderArgs,
 
-    /// The number of the block to extract
+    /// The number of the block to verify
     #[arg(short, long, default_value = "1")]
     block: u64,
 
-    /// The bundle file from which to extract a block, '-' to use stdin.
+    /// The bundle file in which to verify a block, '-' to use stdin.
     input: io::Input,
 }
 
