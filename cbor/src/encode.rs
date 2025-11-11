@@ -508,6 +508,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     /// Emits a nested array into the sequence.
+    // TODO: This really ought to return an Error template type
     pub fn emit_array<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Array),
@@ -516,6 +517,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     /// Emits a nested map into the sequence.
+    // TODO: This really ought to return an Error template type
     pub fn emit_map<F>(&mut self, count: Option<usize>, f: F)
     where
         F: FnOnce(&mut Map),
