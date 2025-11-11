@@ -6,7 +6,7 @@ use super::*;
 pub struct Command {
     // Use #[command(flatten)] to include the --key argument
     #[command(flatten)]
-    key_args: keys::KeyLoaderArgs,
+    key_args: keys::KeySetLoaderArgs,
 
     /// The number of the block to verify
     #[arg(short, long, default_value = "1")]

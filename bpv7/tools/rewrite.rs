@@ -5,7 +5,7 @@ use super::*;
 pub struct Command {
     // Use #[command(flatten)] to include the --key argument
     #[command(flatten)]
-    key_args: keys::KeyLoaderArgs,
+    key_args: keys::KeySetLoaderArgs,
 
     /// Path to the location to write the bundle to, or stdout if not supplied
     #[arg(short, long, default_value = "")]

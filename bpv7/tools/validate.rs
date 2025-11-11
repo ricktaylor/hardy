@@ -5,7 +5,7 @@ use super::*;
 pub struct Command {
     // Use #[command(flatten)] to include the --key argument
     #[command(flatten)]
-    key_args: keys::KeyLoaderArgs,
+    key_args: keys::KeySetLoaderArgs,
 
     /// The list of bundle files to validate, can include '-' to use stdin.
     files: Vec<io::Input>,

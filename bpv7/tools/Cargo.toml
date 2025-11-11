@@ -8,7 +8,7 @@ name = "bundle"
 path = "bundle.rs"
 
 [dependencies]
-hardy-bpv7 = { path = "..", features = ["std","serde"] }
+hardy-bpv7 = { path = "..", features = ["std","serde","rfc9173"] }
 clap = { version = "4.5.51", features = ["derive"] }
 humantime = "2.3.0"
 anyhow = "1.0.100"
