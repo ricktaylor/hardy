@@ -33,15 +33,6 @@ impl Operation {
         }
     }
 
-    pub fn encrypt(jwk: &Key, args: OperationArgs) -> Result<(Operation, Box<[u8]>), Error> {
-        #[cfg(feature = "rfc9173")]
-        if let Some((op, r)) = rfc9173::bcb_aes_gcm::Operation::encrypt(jwk, args)? {
-            return Ok((Self::AES_GCM(op), r));
-        }
-
-        Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()))
-    }
-
     pub fn decrypt(
         &self,
         key_f: &impl key::KeyStore,

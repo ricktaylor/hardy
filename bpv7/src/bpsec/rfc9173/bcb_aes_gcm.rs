@@ -261,12 +261,13 @@ impl Operation {
     #[allow(clippy::type_complexity)]
     pub fn encrypt(
         jwk: &Key,
+        scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
-    ) -> Result<Option<(Self, Box<[u8]>)>, Error> {
+    ) -> Result<(Self, Box<[u8]>), Error> {
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Encrypt)
         {
-            return Ok(None);
+            return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()));
         }
 
         let (cek, variant) = match &jwk.key_algorithm {
@@ -276,7 +277,7 @@ impl Operation {
                 if let Some(ops) = &jwk.operations
                     && !ops.contains(&key::Operation::WrapKey)
                 {
-                    return Ok(None);
+                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                 }
                 match &jwk.enc_algorithm {
                     Some(key::EncAlgorithm::A128GCM) => {
@@ -285,7 +286,7 @@ impl Operation {
                     None | Some(key::EncAlgorithm::A256GCM) => {
                         (Some(rand_key(Box::from([0u8; 64]))?), AesVariant::A256GCM)
                     }
-                    _ => return Ok(None),
+                    _ => return Err(Error::NoValidKey),
                 }
             }
             Some(key::KeyAlgorithm::Direct) | None => (
@@ -293,20 +294,19 @@ impl Operation {
                 match &jwk.enc_algorithm {
                     Some(key::EncAlgorithm::A128GCM) => AesVariant::A128GCM,
                     None | Some(key::EncAlgorithm::A256GCM) => AesVariant::A256GCM,
-                    _ => return Ok(None),
+                    _ => return Err(Error::NoValidKey),
                 },
             ),
             _ => {
-                return Ok(None);
+                return Err(Error::NoValidKey);
             }
         };
 
         let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-            return Ok(None);
+            return Err(Error::NoValidKey);
         };
 
-        let flags = ScopeFlags::default();
-        let (aad, data) = build_data(&flags, &args)?;
+        let (aad, data) = build_data(&scope_flags, &args)?;
 
         if let Some(cek) = cek {
             let cek = match &jwk.key_algorithm {
@@ -332,18 +332,18 @@ impl Operation {
                 AesVariant::Unrecognised(_) => unreachable!(),
             }?;
 
-            Ok(Some((
+            Ok((
                 Self {
                     parameters: Rc::new(Parameters {
                         iv,
                         variant,
                         key: Some(cek.into()),
-                        flags,
+                        flags: scope_flags,
                     }),
                     results: Results(None),
                 },
                 ciphertext,
-            )))
+            ))
         } else {
             let (ciphertext, iv) = match variant {
                 AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(kek)
@@ -355,18 +355,18 @@ impl Operation {
                 AesVariant::Unrecognised(_) => unreachable!(),
             }?;
 
-            Ok(Some((
+            Ok((
                 Self {
                     parameters: Rc::new(Parameters {
                         iv,
                         variant,
                         key: None,
-                        flags,
+                        flags: scope_flags,
                     }),
                     results: Results(None),
                 },
                 ciphertext,
-            )))
+            ))
         }
     }
 

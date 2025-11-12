@@ -2,6 +2,7 @@ use super::*;
 
 pub mod bcb;
 pub mod bib;
+pub mod encryptor;
 pub mod key;
 pub mod signer;
 
