@@ -108,6 +108,8 @@ mod test {
     }
 
     fn do_test(data: &[u8], keys: &[key::Key]) {
+        //println!("{}", serde_json::to_string_pretty(keys).unwrap());
+
         bundle::ParsedBundle::parse(data, &Keys(keys)).expect("Failed to parse");
     }
 
@@ -122,18 +124,17 @@ mod test {
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
             ),
-            &[key::Key {
-                id: Some("ipn:2.1".into()),
-                key_algorithm: Some(key::KeyAlgorithm::HS512),
-                operations: Some([key::Operation::Verify].into()),
-                key_type: key::Type::OctetSequence {
-                    key: BASE64_URL_SAFE_NO_PAD
-                        .decode(b"GisaKxorGisaKxorGisaKw")
-                        .unwrap()
-                        .into(),
-                },
-                ..Default::default()
-            }],
+            &[serde_json::from_str::<key::Key>(
+                &serde_json::json!({
+                            "kid": "ipn:2.1",
+                            "kty": "oct",
+                            "alg": "HS512",
+                            "key_ops": ["verify"],
+                            "k": "GisaKxorGisaKxorGisaKw"
+                })
+                .to_string(),
+            )
+            .unwrap()],
         )
     }
 
