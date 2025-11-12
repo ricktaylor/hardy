@@ -196,6 +196,14 @@ impl<'a> Editor<'a> {
         bpsec::signer::Signer::new(self.original, self.source_data)
     }
 
+    /// Create an `Encryptor` to encrypt blocks in the bundle.
+    ///
+    /// Note that this consumes the `Editor`, so any modifications made to the
+    /// bundle prior to calling this method will be completed prior to signing.
+    pub fn encryptor(self) -> bpsec::encryptor::Encryptor<'a> {
+        bpsec::encryptor::Encryptor::new(self.original, self.source_data)
+    }
+
     /// Rebuild the bundle, applying all of the modifications.
     ///
     /// This will return the new `Bundle` and its serialized representation.

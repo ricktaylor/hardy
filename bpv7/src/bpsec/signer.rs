@@ -71,6 +71,14 @@ impl<'a> Signer<'a> {
         Ok(self)
     }
 
+    /// Create an `Encryptor` to encrypt blocks in the bundle.
+    ///
+    /// Note that this consumes the `Siner`, so any modifications made to the
+    /// bundle prior to calling this method will be completed prior to signing.
+    pub fn encryptor(self) -> encryptor::Encryptor<'a> {
+        encryptor::Encryptor::new(self.original, self.source_data)
+    }
+
     pub fn rebuild(self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
         if self.templates.is_empty() {
             // No signing to do
@@ -142,19 +150,17 @@ impl<'a> Signer<'a> {
         target_block: u64,
         key: &key::Key,
     ) -> Result<bib::Operation, bpsec::Error> {
+        let op_args = bib::OperationArgs {
+            bpsec_source: source,
+            target: target_block,
+            source: source_block,
+            blocks: self,
+        };
+
         #[cfg(feature = "rfc9173")]
         if let Context::HMAC_SHA2(scope_flags) = context {
             return Ok(bib::Operation::HMAC_SHA2(
-                rfc9173::bib_hmac_sha2::Operation::sign(
-                    key,
-                    scope_flags,
-                    bib::OperationArgs {
-                        bpsec_source: source,
-                        target: target_block,
-                        source: source_block,
-                        blocks: self,
-                    },
-                )?,
+                rfc9173::bib_hmac_sha2::Operation::sign(key, scope_flags, op_args)?,
             ));
         }
 
