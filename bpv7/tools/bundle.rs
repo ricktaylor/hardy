@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod create;
 mod dump;
+mod encrypt;
 mod extract;
 mod io;
 mod keys;
@@ -34,6 +35,9 @@ enum Commands {
     /// Dump the json serialization of a bundle
     Dump(dump::Command),
 
+    /// Encrypt the data of a block in a bundle
+    Encrypt(encrypt::Command),
+
     /// Extract the data of a block in a bundle
     Extract(extract::Command),
 
@@ -52,6 +56,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Rewrite(args) => args.exec(),
         Commands::Dump(args) => args.exec(),
         Commands::Validate(args) => args.exec(),
+        Commands::Encrypt(args) => args.exec(),
         Commands::Extract(args) => args.exec(),
         Commands::Sign(args) => args.exec(),
         Commands::Verify(args) => args.exec(),

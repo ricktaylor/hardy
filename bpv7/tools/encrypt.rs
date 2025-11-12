@@ -3,7 +3,7 @@ use super::*;
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    /// The number of the block to sign
+    /// The number of the block to encrypt
     #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]
     block: u64,
 
@@ -47,18 +47,18 @@ impl Command {
                 .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
                 .bundle;
 
-        let signer = hardy_bpv7::bpsec::signer::Signer::new(&bundle, &data)
-            .sign_block(
+        let encryptor = hardy_bpv7::bpsec::encryptor::Encryptor::new(&bundle, &data)
+            .encrypt_block(
                 self.block,
-                hardy_bpv7::bpsec::signer::Context::HMAC_SHA2(
+                hardy_bpv7::bpsec::encryptor::Context::AES_GCM(
                     hardy_bpv7::bpsec::rfc9173::ScopeFlags::default(),
                 ),
                 self.source.unwrap_or(bundle.id.source.clone()),
                 key,
             )
-            .map_err(|e| anyhow::anyhow!("Failed to sign block: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to encrypt block: {e}"))?;
 
-        let data = signer
+        let data = encryptor
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?
             .1;

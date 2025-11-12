@@ -1,6 +1,5 @@
 use super::*;
 
-/// Holds the arguments for the `show` subcommand.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
