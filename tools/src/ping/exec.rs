@@ -44,11 +44,38 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
             "No CLA address specified for destination EID, and no DNS support currently available"
         ));
     };
+
+    let peer = match &args.destination {
+        Eid::LegacyIpn {
+            allocator_id,
+            node_number,
+            ..
+        }
+        | Eid::Ipn {
+            allocator_id,
+            node_number,
+            ..
+        } => Eid::Ipn {
+            allocator_id: *allocator_id,
+            node_number: *node_number,
+            service_number: 0,
+        },
+        Eid::Dtn { node_name, .. } => Eid::Dtn {
+            node_name: node_name.clone(),
+            demux: "".into(),
+        },
+        eid => {
+            return Err(anyhow::anyhow!(
+                "Invalid source EID '{eid}' for ping service"
+            ));
+        }
+    };
+
     cla.add_peer(
         address
             .parse()
             .map_err(|e| anyhow::anyhow!("Failed to parse CLA address: {e}"))?,
-        args.destination.clone(),
+        peer,
     )
     .await
     .then_some(bpa)
