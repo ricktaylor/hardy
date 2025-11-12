@@ -123,6 +123,8 @@ impl Connector {
         session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
         <T as futures::Sink<codec::Message>>::Error: Into<transport::Error> + std::fmt::Debug,
     {
+        debug!("Sending SESS_INIT to {remote_addr}");
+
         // Send our SESS_INIT message
         transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
@@ -135,6 +137,8 @@ impl Connector {
             .await
             .inspect_err(|e| info!("Failed to send SESS_INIT message: {e:?}"))
             .map_err(Into::into)?;
+
+        debug!("Reading SESS_INIT from {remote_addr}");
 
         // Read the SESS_INIT message with timeout
         let peer_init = loop {
@@ -162,6 +166,8 @@ impl Connector {
                 }
             };
         };
+
+        debug!("Received SESS_INIT {peer_init:?} from {remote_addr}");
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
         let keepalive_interval = self

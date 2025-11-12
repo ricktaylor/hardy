@@ -201,6 +201,8 @@ impl ConnectionRegistry {
             }
         }
 
+        debug!("Registering new peer at {remote_addr} with EID {eid:?}");
+
         if let Some(eid) = eid {
             self.add_peer(remote_addr, eid).await
         } else {

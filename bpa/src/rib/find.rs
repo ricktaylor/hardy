@@ -122,6 +122,8 @@ fn find_recurse<'a>(
     reflect: bool,
     trail: &mut HashSet<&'a Eid>,
 ) -> Option<InternalFindResult> {
+    debug!("Looking for route for {to}");
+
     // Always check locals first
     let mut result = find_local(inner, to);
     if result.is_some() {
