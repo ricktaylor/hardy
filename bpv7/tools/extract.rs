@@ -12,7 +12,7 @@ pub struct Command {
     block: u64,
 
     /// Path to the location to write the extracted data to, or stdout if not supplied
-    #[arg(short, long, required = false)]
+    #[arg(short, long, required = false, default_value = "")]
     output: io::Output,
 
     /// The bundle file from which to extract a block, '-' to use stdin.

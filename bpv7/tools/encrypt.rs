@@ -8,7 +8,7 @@ pub struct Command {
     block: u64,
 
     /// Path to the location to write the bundle to, or stdout if not supplied
-    #[arg(short, long, required = false)]
+    #[arg(short, long, required = false, default_value = "")]
     output: io::Output,
 
     /// The security source Endpoint ID (EID) to use for signing, uses the bundle source if omitted
