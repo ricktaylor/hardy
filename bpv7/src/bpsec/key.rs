@@ -1,7 +1,5 @@
 use super::*;
-
-#[cfg(feature = "serde")]
-use serde_with::serde_as;
+use base64::prelude::*;
 
 pub trait KeyStore {
     /// Get an iterator for keys suitable for decryption, verification, or unwrapping
@@ -13,7 +11,7 @@ pub trait KeyStore {
 }
 
 #[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct KeySet {
     keys: Vec<Key>,
 }
@@ -47,8 +45,7 @@ impl KeyStore for KeySet {
 }
 
 #[derive(Default, Debug, Clone)]
-#[cfg_attr(feature = "serde", serde_as)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Key {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub key_type: Type,
@@ -65,16 +62,17 @@ pub struct Key {
     /* The following members are standard, but unused in the implementation
      * but here for use by crate users */
     #[cfg_attr(feature = "serde", serde(rename = "kid"))]
-    #[cfg_attr(feature = "serde", serde_as(as = "serde_with::NoneAsEmptyString"))]
     pub id: Option<String>,
 
-    #[cfg_attr(feature = "serde", serde(rename = "use"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "use", skip_serializing_if = "Option::is_none")
+    )]
     pub key_use: Option<Use>,
 }
 
 #[derive(Default, Debug, Clone)]
-#[cfg_attr(feature = "serde", serde_as)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kty"))]
 pub enum Type {
     #[cfg_attr(feature = "serde", serde(rename = "EC"))]
@@ -85,9 +83,7 @@ pub enum Type {
         #[cfg_attr(feature = "serde", serde(rename = "k"))]
         #[cfg_attr(
             feature = "serde",
-            serde_as(
-                as = "serde_with::base64::Base64<serde_with::base64::UrlSafe, serde_with::formats::Unpadded>"
-            )
+            serde(serialize_with = "serialize_key", deserialize_with = "deserialize_key")
         )]
         key: Box<[u8]>,
     },
@@ -96,8 +92,28 @@ pub enum Type {
     Unknown,
 }
 
+fn serialize_key<S>(k: &Box<[u8]>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(BASE64_URL_SAFE_NO_PAD.encode(k).as_str())
+}
+
+fn deserialize_key<'de, D>(deserializer: D) -> core::result::Result<Box<[u8]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // First, deserialize the YAML value as a simple String.
+    let s: String = serde::Deserialize::deserialize(deserializer)?;
+
+    BASE64_URL_SAFE_NO_PAD
+        .decode(s.as_bytes())
+        .map_err(serde::de::Error::custom)
+        .map(Into::into)
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Use {
     #[cfg_attr(feature = "serde", serde(rename = "sig"))]
     Signature,
@@ -108,7 +124,7 @@ pub enum Use {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum Operation {
     #[cfg_attr(feature = "serde", serde(rename = "sign"))]
     Sign,
@@ -132,7 +148,7 @@ pub enum Operation {
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "alg"))]
 pub enum KeyAlgorithm {
     #[cfg_attr(feature = "serde", serde(rename = "dir"))]
@@ -154,7 +170,7 @@ pub enum KeyAlgorithm {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "enc"))]
 pub enum EncAlgorithm {
     A128GCM,

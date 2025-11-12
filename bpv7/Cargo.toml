@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 default = ["rfc9173"]
 std = ["time/std"]
 rfc9173 = ["dep:hmac", "dep:aes-gcm", "dep:aes-kw"]
-serde = ["dep:serde","dep:serde_with","hashbrown/serde"]
+serde = ["dep:serde","hashbrown/serde"]
 bincode = ["dep:bincode"]
 
 [dependencies]
@@ -30,7 +30,6 @@ hmac = { version = "0.12.1", optional = true }
 aes-gcm = { version = "0.10.3", features = ["zeroize"], optional = true }
 aes-kw = { version = "0.2.1", default-features = false, features = ["alloc"], optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc","derive"], optional = true }
-serde_with = { version = "3.15.1", default-features = false, features = ["base64","macros"], optional = true }
 bincode = { version = "2.0.1", default-features = false, features = ["alloc","derive"], optional = true }
 
 [dev-dependencies]
