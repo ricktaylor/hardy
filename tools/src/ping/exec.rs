@@ -75,11 +75,22 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
         address
             .parse()
             .map_err(|e| anyhow::anyhow!("Failed to parse CLA address: {e}"))?,
-        peer,
+        peer.clone(),
+    )
+    .await
+    .then_some(())
+    .ok_or(anyhow::anyhow!("Failed to add peer to CLA"))?;
+
+    // Now add a route
+    bpa.add_route(
+        "ping".to_string(),
+        args.destination.clone().into(),
+        hardy_bpa::routes::Action::Via(peer),
+        1,
     )
     .await
     .then_some(bpa)
-    .ok_or(anyhow::anyhow!("Failed to add peer to CLA"))
+    .ok_or(anyhow::anyhow!("Failed to add route"))
 }
 
 async fn exec_async(args: &Command) -> anyhow::Result<()> {
