@@ -45,7 +45,7 @@ impl<'a> Encryptor<'a> {
         }
     }
 
-    pub fn sign_block(
+    pub fn encrypt_block(
         mut self,
         block_number: u64,
         context: Context,
