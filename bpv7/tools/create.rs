@@ -29,7 +29,7 @@ pub struct Command {
     lifetime: Option<humantime::Duration>,
 
     /// The optional hop_limit of the bundle.
-    #[arg(short, long = "hop-limit")]
+    #[arg(short('H'), long = "hop-limit")]
     hop_limit: Option<u64>,
 }
 
