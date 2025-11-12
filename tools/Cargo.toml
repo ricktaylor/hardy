@@ -11,6 +11,9 @@ crate-type = ["rlib"]
 name = "bp"
 path = "src/bp.rs"
 
+[features]
+tracing = ["hardy-bpa/tracing"]
+
 [dependencies]
 anyhow = "1.0.100"
 hardy-bpa = { path = "../bpa" }
