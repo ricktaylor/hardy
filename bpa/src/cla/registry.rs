@@ -300,6 +300,7 @@ impl Registry {
 
     pub async fn forward(&self, peer_id: u32, bundle: bundle::Bundle) {
         if let Err(bundle) = self.peers.forward(peer_id, bundle).await {
+            info!("CLA Failed to forward bundle");
             self.store.watch_bundle(bundle).await;
         }
     }
