@@ -340,7 +340,7 @@ impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
     fn block(&'a self, block_number: u64) -> Option<&'a block::Block> {
         match self.editor.blocks.get(&block_number)? {
             BlockTemplate::Keep(_) => self.editor.original.blocks.get(&block_number),
-            BlockTemplate::Replace(template) if block_number == self.new_block_number => {
+            BlockTemplate::Replace(_) if block_number == self.new_block_number => {
                 Some(&self.new_block)
             }
             _ => None,
