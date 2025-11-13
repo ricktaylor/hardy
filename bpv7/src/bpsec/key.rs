@@ -92,7 +92,7 @@ pub enum Type {
     Unknown,
 }
 
-fn serialize_key<S>(k: &Box<[u8]>, s: S) -> Result<S::Ok, S::Error>
+fn serialize_key<S>(k: &[u8], s: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {

@@ -105,13 +105,31 @@ impl<'a> Signer<'a> {
         // Now build BIB blocks
         for ((source, context), contexts) in blocks {
             // Reserve a block number for the BIB block
-            let b = editor
-                .push_block(block::Type::BlockIntegrity)
-                .expect("Failed to reserve block");
+            let new_block = block::Block {
+                block_type: block::Type::BlockIntegrity,
+                // TODO: set flags, crc, etc
+                flags: block::Flags::default(),
+                crc_type: crc::CrcType::None,
+                extent: 0..0,
+                data: 0..0,
+                bib: None,
+                bcb: None,
+            };
 
-            // TODO: set flags, crc, etc
+            let b = editor
+                .push_block(new_block.block_type)
+                .expect("Failed to reserve block")
+                .with_crc_type(new_block.crc_type)
+                .with_flags(new_block.flags.clone());
+
             let source_block = b.block_number();
             editor = b.build([]);
+
+            let editor_bs = editor::EditorBlockSet {
+                editor,
+                new_block,
+                new_block_number: source_block,
+            };
 
             let mut operation_set = bib::OperationSet {
                 source: source.clone(),
@@ -121,7 +139,8 @@ impl<'a> Signer<'a> {
             for (target_block, key) in contexts {
                 operation_set.operations.insert(
                     *target_block,
-                    self.build_bib_data(
+                    build_bib_data(
+                        &editor_bs,
                         &source,
                         context.clone(),
                         source_block,
@@ -132,7 +151,8 @@ impl<'a> Signer<'a> {
             }
 
             // Rewrite with the real data
-            editor = editor
+            editor = editor_bs
+                .editor
                 .update_block(source_block)
                 .expect("Failed to update block")
                 .build(hardy_cbor::encode::emit(&operation_set).0);
@@ -140,40 +160,30 @@ impl<'a> Signer<'a> {
 
         editor.rebuild().map_err(Into::into)
     }
-
-    #[allow(irrefutable_let_patterns)]
-    fn build_bib_data(
-        &self,
-        source: &eid::Eid,
-        context: Context,
-        source_block: u64,
-        target_block: u64,
-        key: &key::Key,
-    ) -> Result<bib::Operation, bpsec::Error> {
-        let op_args = bib::OperationArgs {
-            bpsec_source: source,
-            target: target_block,
-            source: source_block,
-            blocks: self,
-        };
-
-        #[cfg(feature = "rfc9173")]
-        if let Context::HMAC_SHA2(scope_flags) = context {
-            return Ok(bib::Operation::HMAC_SHA2(
-                rfc9173::bib_hmac_sha2::Operation::sign(key, scope_flags, op_args)?,
-            ));
-        }
-
-        panic!("Unsupported BIB context!");
-    }
 }
 
-impl<'a> bpsec::BlockSet<'a> for Signer<'a> {
-    fn block(&'a self, block_number: u64) -> Option<&'a block::Block> {
-        self.original.blocks.get(&block_number)
+#[allow(irrefutable_let_patterns)]
+fn build_bib_data(
+    editor: &editor::EditorBlockSet,
+    source: &eid::Eid,
+    context: Context,
+    source_block: u64,
+    target_block: u64,
+    key: &key::Key,
+) -> Result<bib::Operation, bpsec::Error> {
+    let op_args = bib::OperationArgs {
+        bpsec_source: source,
+        target: target_block,
+        source: source_block,
+        blocks: editor,
+    };
+
+    #[cfg(feature = "rfc9173")]
+    if let Context::HMAC_SHA2(scope_flags) = context {
+        return Ok(bib::Operation::HMAC_SHA2(
+            rfc9173::bib_hmac_sha2::Operation::sign(key, scope_flags, op_args)?,
+        ));
     }
 
-    fn block_payload(&'a self, block_number: u64) -> Option<&'a [u8]> {
-        Some(&self.source_data[self.original.blocks.get(&block_number)?.payload()])
-    }
+    panic!("Unsupported BIB context!");
 }

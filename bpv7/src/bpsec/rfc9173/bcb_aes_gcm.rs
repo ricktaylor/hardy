@@ -485,7 +485,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
-        encoder.emit(&Context::BIB_HMAC_SHA2);
+        encoder.emit(&Context::BCB_AES_GCM);
         encoder.emit(&1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());

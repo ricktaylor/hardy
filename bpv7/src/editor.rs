@@ -329,3 +329,31 @@ impl<'a> BlockBuilder<'a> {
         self.editor
     }
 }
+
+pub(crate) struct EditorBlockSet<'a> {
+    pub editor: Editor<'a>,
+    pub new_block: block::Block,
+    pub new_block_number: u64,
+}
+
+impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
+    fn block(&'a self, block_number: u64) -> Option<&'a block::Block> {
+        match self.editor.blocks.get(&block_number)? {
+            BlockTemplate::Keep(_) => self.editor.original.blocks.get(&block_number),
+            BlockTemplate::Replace(template) if block_number == self.new_block_number => {
+                Some(&self.new_block)
+            }
+            _ => None,
+        }
+    }
+
+    fn block_payload(&'a self, block_number: u64) -> Option<&'a [u8]> {
+        if let BlockTemplate::Keep(_) = self.editor.blocks.get(&block_number)? {
+            Some(
+                &self.editor.source_data[self.editor.original.blocks.get(&block_number)?.payload()],
+            )
+        } else {
+            None
+        }
+    }
+}
