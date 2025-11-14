@@ -349,38 +349,6 @@ where
     }
 }
 
-/// An owned version of [`Raw`].
-///
-/// This wrapper takes ownership of an iterator of bytes and writes its contents
-/// directly into the stream.
-pub struct RawOwned<I>(core::cell::Cell<Option<I>>)
-where
-    I: IntoIterator<Item = u8>;
-
-impl<I> RawOwned<I>
-where
-    I: IntoIterator<Item = u8>,
-{
-    pub fn new(iter: I) -> Self {
-        Self(core::cell::Cell::new(Some(iter)))
-    }
-}
-
-impl<I> ToCbor for RawOwned<I>
-where
-    I: IntoIterator<Item = u8>,
-{
-    type Result = Range<usize>;
-
-    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        encoder.emit_raw_owned(
-            self.0
-                .take()
-                .expect("to_cbor called on an already consumed RawOwned value"),
-        )
-    }
-}
-
 /// A wrapper to encode a byte slice as a definite-length CBOR byte string.
 ///
 /// By default, a `&[u8]` is encoded as a CBOR array of integers. Use this

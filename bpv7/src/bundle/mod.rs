@@ -420,8 +420,8 @@ impl Bundle {
         &mut self,
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<(), Error> {
-        let extent = array.emit(&hardy_cbor::encode::RawOwned::new(
-            primary_block::PrimaryBlock::emit(self)?,
+        let extent = array.emit(&hardy_cbor::encode::Raw(
+            &primary_block::PrimaryBlock::emit(self)?,
         ));
 
         // Replace existing block record

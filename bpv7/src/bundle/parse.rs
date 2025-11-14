@@ -512,7 +512,7 @@ impl<'a> BlockParse<'a> {
 
                     primary_block.extent =
                         if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
-                            block_array.emit(&hardy_cbor::encode::RawOwned::new(payload))
+                            block_array.emit(&hardy_cbor::encode::Raw(&payload))
                         } else {
                             block_array.emit(&hardy_cbor::encode::Raw(
                                 &self.source_data[primary_block.extent],

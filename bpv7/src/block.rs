@@ -224,7 +224,7 @@ impl Block {
         data: &[u8],
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<(), Error> {
-        self.extent = array.emit(&hardy_cbor::encode::RawOwned::new(crc::append_crc_value(
+        self.extent = array.emit(&hardy_cbor::encode::Raw(&crc::append_crc_value(
             self.crc_type,
             hardy_cbor::encode::emit_array(
                 Some(if let crc::CrcType::None = self.crc_type {
