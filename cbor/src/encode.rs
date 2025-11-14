@@ -168,16 +168,7 @@ impl Encoder {
         value.to_cbor(self)
     }
 
-    fn emit_raw_owned<I>(&mut self, data: I) -> Range<usize>
-    where
-        I: IntoIterator<Item = u8>,
-    {
-        let start = self.offset();
-        self.data.extend(data);
-        start..self.offset()
-    }
-
-    fn emit_raw_slice<V>(&mut self, data: &V) -> Range<usize>
+    fn emit_raw<V>(&mut self, data: &V) -> Range<usize>
     where
         V: AsRef<[u8]> + ?Sized,
     {
@@ -345,7 +336,7 @@ where
     type Result = Range<usize>;
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        encoder.emit_raw_slice(self.0)
+        encoder.emit_raw(self.0)
     }
 }
 
