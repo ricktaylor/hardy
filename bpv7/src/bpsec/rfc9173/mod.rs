@@ -1,6 +1,5 @@
 use super::*;
 use core::ops::Range;
-use rand::{TryRngCore, rngs::OsRng};
 
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
@@ -67,13 +66,6 @@ impl hardy_cbor::encode::ToCbor for ScopeFlags {
         }
         encoder.emit(&flags)
     }
-}
-
-fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-    OsRng
-        .try_fill_bytes(&mut cek)
-        .map_err(|e| Error::Algorithm(e.to_string()))?;
-    Ok(zeroize::Zeroizing::from(cek))
 }
 
 #[cfg(test)]

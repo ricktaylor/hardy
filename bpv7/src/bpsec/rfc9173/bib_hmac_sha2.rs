@@ -10,6 +10,7 @@ use hmac::{
         typenum,
     },
 };
+use rand::{TryRngCore, rngs::OsRng};
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -230,6 +231,13 @@ where
     Ok(mac.finalize().into_bytes())
 }
 
+fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+    OsRng
+        .try_fill_bytes(&mut cek)
+        .map_err(|e| Error::Algorithm(e.to_string()))?;
+    Ok(zeroize::Zeroizing::from(cek))
+}
+
 #[derive(Debug)]
 pub struct Operation {
     parameters: Rc<Parameters>,
@@ -305,7 +313,26 @@ impl Operation {
             return Err(Error::NoValidKey);
         };
 
-        let (results, key) = if let Some(cek) = cek {
+        let active_cek = cek
+            .as_ref()
+            .map_or(kek.as_ref(), |cek: &zeroize::Zeroizing<Box<[u8]>>| {
+                cek.as_ref()
+            });
+
+        let results = Results(match variant {
+            ShaVariant::HMAC_256_256 => {
+                Box::from(calculate_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?.as_ref())
+            }
+            ShaVariant::HMAC_384_384 => {
+                Box::from(calculate_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?.as_ref())
+            }
+            ShaVariant::HMAC_512_512 => {
+                Box::from(calculate_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?.as_ref())
+            }
+            ShaVariant::Unrecognised(_) => unreachable!(),
+        });
+
+        let key = if let Some(cek) = cek {
             let key = match &jwk.key_algorithm {
                 Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
                     aes_kw::KekAes128::try_from(kek.as_ref())
@@ -324,38 +351,9 @@ impl Operation {
                 }
                 _ => return Err(Error::NoValidKey),
             }?;
-
-            (
-                Results(match variant {
-                    ShaVariant::HMAC_256_256 => {
-                        (*calculate_hmac::<sha2::Sha256>(&scope_flags, &cek, &args)?).into()
-                    }
-                    ShaVariant::HMAC_384_384 => {
-                        (*calculate_hmac::<sha2::Sha384>(&scope_flags, &cek, &args)?).into()
-                    }
-                    ShaVariant::HMAC_512_512 => {
-                        (*calculate_hmac::<sha2::Sha512>(&scope_flags, &cek, &args)?).into()
-                    }
-                    ShaVariant::Unrecognised(_) => unreachable!(),
-                }),
-                Some(key.into()),
-            )
+            Some(key.into())
         } else {
-            (
-                Results(match variant {
-                    ShaVariant::HMAC_256_256 => {
-                        (*calculate_hmac::<sha2::Sha256>(&scope_flags, kek, &args)?).into()
-                    }
-                    ShaVariant::HMAC_384_384 => {
-                        (*calculate_hmac::<sha2::Sha384>(&scope_flags, kek, &args)?).into()
-                    }
-                    ShaVariant::HMAC_512_512 => {
-                        (*calculate_hmac::<sha2::Sha512>(&scope_flags, kek, &args)?).into()
-                    }
-                    ShaVariant::Unrecognised(_) => unreachable!(),
-                }),
-                None,
-            )
+            None
         };
 
         Ok(Self {

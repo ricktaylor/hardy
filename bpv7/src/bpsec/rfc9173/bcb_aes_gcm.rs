@@ -1,5 +1,5 @@
 use super::*;
-use aes_gcm::KeyInit;
+use aes_gcm::{AeadCore, KeyInit};
 use alloc::rc::Rc;
 
 #[allow(clippy::upper_case_acronyms)]
@@ -228,18 +228,13 @@ fn build_data<'a>(
 #[allow(clippy::type_complexity)]
 fn encrypt_inner(
     cipher: impl aes_gcm::aead::Aead,
+    iv: Box<[u8]>,
     aad: &[u8],
     msg: &[u8],
 ) -> Result<(Box<[u8]>, Box<[u8]>), Error> {
-    // Generate IV
-    let mut iv = [0u8; 12];
-    OsRng
-        .try_fill_bytes(&mut iv)
-        .map_err(|e| Error::Algorithm(e.to_string()))?;
-
     cipher
         .encrypt(iv.as_ref().into(), aes_gcm::aead::Payload { msg, aad })
-        .map(|r| (r.into(), iv.into()))
+        .map(|r| (r.into(), iv))
         .map_err(|_| Error::EncryptionFailed)
 }
 
@@ -280,12 +275,18 @@ impl Operation {
                     return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                 }
                 match &jwk.enc_algorithm {
-                    Some(key::EncAlgorithm::A128GCM) => {
-                        (Some(rand_key(Box::from([0u8; 32]))?), AesVariant::A128GCM)
-                    }
-                    None | Some(key::EncAlgorithm::A256GCM) => {
-                        (Some(rand_key(Box::from([0u8; 64]))?), AesVariant::A256GCM)
-                    }
+                    Some(key::EncAlgorithm::A128GCM) => (
+                        Some(zeroize::Zeroizing::from(Box::from(
+                            aes_gcm::Aes128Gcm::generate_key(aes_gcm::aead::OsRng).as_ref(),
+                        ))),
+                        AesVariant::A128GCM,
+                    ),
+                    None | Some(key::EncAlgorithm::A256GCM) => (
+                        Some(zeroize::Zeroizing::from(Box::from(
+                            aes_gcm::Aes256Gcm::generate_key(aes_gcm::aead::OsRng).as_ref(),
+                        ))),
+                        AesVariant::A256GCM,
+                    ),
                     _ => return Err(Error::NoValidKey),
                 }
             }
@@ -308,66 +309,68 @@ impl Operation {
 
         let (aad, data) = build_data(&scope_flags, &args)?;
 
-        if let Some(cek) = cek {
-            let cek = match &jwk.key_algorithm {
-                Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
-                    .and_then(|kek| kek.wrap_vec(&cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                Some(key::KeyAlgorithm::A192KW) => aes_kw::KekAes192::try_from(kek.as_ref())
-                    .and_then(|kek| kek.wrap_vec(&cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
-                    .and_then(|kek| kek.wrap_vec(&cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                _ => unreachable!(),
-            }?;
+        let active_cek = cek
+            .as_ref()
+            .map_or(kek.as_ref(), |cek: &zeroize::Zeroizing<Box<[u8]>>| {
+                cek.as_ref()
+            });
 
-            let (ciphertext, iv) = match variant {
-                AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(&cek)
-                    .map_err(|e| Error::Algorithm(e.to_string()))
-                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
-                AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(&cek)
-                    .map_err(|e| Error::Algorithm(e.to_string()))
-                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
-                AesVariant::Unrecognised(_) => unreachable!(),
-            }?;
+        let (ciphertext, iv) = match variant {
+            AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(active_cek)
+                .map_err(|e| Error::Algorithm(e.to_string()))
+                .and_then(|cipher| {
+                    encrypt_inner(
+                        cipher,
+                        (*aes_gcm::Aes128Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
+                        &aad,
+                        data,
+                    )
+                }),
+            AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(active_cek)
+                .map_err(|e| Error::Algorithm(e.to_string()))
+                .and_then(|cipher| {
+                    encrypt_inner(
+                        cipher,
+                        (*aes_gcm::Aes256Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
+                        &aad,
+                        data,
+                    )
+                }),
+            AesVariant::Unrecognised(_) => unreachable!(),
+        }?;
 
-            Ok((
-                Self {
-                    parameters: Rc::new(Parameters {
-                        iv,
-                        variant,
-                        key: Some(cek.into()),
-                        flags: scope_flags,
-                    }),
-                    results: Results(None),
-                },
-                ciphertext,
-            ))
+        let key = if let Some(cek) = cek {
+            Some(
+                match &jwk.key_algorithm {
+                    Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
+                        .and_then(|kek| kek.wrap_vec(&cek))
+                        .map_err(|e| Error::Algorithm(e.to_string())),
+                    Some(key::KeyAlgorithm::A192KW) => aes_kw::KekAes192::try_from(kek.as_ref())
+                        .and_then(|kek| kek.wrap_vec(&cek))
+                        .map_err(|e| Error::Algorithm(e.to_string())),
+                    Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
+                        .and_then(|kek| kek.wrap_vec(&cek))
+                        .map_err(|e| Error::Algorithm(e.to_string())),
+                    _ => unreachable!(),
+                }?
+                .into(),
+            )
         } else {
-            let (ciphertext, iv) = match variant {
-                AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(kek)
-                    .map_err(|e| Error::Algorithm(e.to_string()))
-                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
-                AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(kek)
-                    .map_err(|e| Error::Algorithm(e.to_string()))
-                    .and_then(|cipher| encrypt_inner(cipher, &aad, data)),
-                AesVariant::Unrecognised(_) => unreachable!(),
-            }?;
+            None
+        };
 
-            Ok((
-                Self {
-                    parameters: Rc::new(Parameters {
-                        iv,
-                        variant,
-                        key: None,
-                        flags: scope_flags,
-                    }),
-                    results: Results(None),
-                },
-                ciphertext,
-            ))
-        }
+        Ok((
+            Self {
+                parameters: Rc::new(Parameters {
+                    iv,
+                    variant,
+                    key,
+                    flags: scope_flags,
+                }),
+                results: Results(None),
+            },
+            ciphertext,
+        ))
     }
 
     pub fn decrypt(
