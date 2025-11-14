@@ -222,11 +222,14 @@ where
         mac.update(&encoder.build());
     }
 
-    mac.update(
-        args.blocks
-            .block_payload(args.target)
-            .ok_or(Error::MissingSecurityTarget)?,
-    );
+    let payload = args
+        .blocks
+        .block_payload(args.target)
+        .ok_or(Error::MissingSecurityTarget)?;
+
+    // Reduce copying here
+    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(payload)).0);
+    mac.update(payload);
 
     Ok(mac.finalize().into_bytes())
 }
