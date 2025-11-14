@@ -9,7 +9,7 @@ crate-type = ["rlib"]
 
 [features]
 default = ["rfc9173"]
-std = ["time/std"]
+std = ["time/std","bincode/std","serde/std"]
 rfc9173 = ["dep:hmac", "dep:aes-gcm", "dep:aes-kw"]
 serde = ["dep:serde","hashbrown/serde"]
 bincode = ["dep:bincode"]
