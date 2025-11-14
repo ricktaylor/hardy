@@ -264,7 +264,7 @@ impl<'a> Editor<'a> {
                     .get(&block_number)
                     .expect("Mismatched block in bundle!")
                     .clone();
-                block.copy_payload(self.source_data, array);
+                block.copy_whole(self.source_data, array);
                 Ok(block)
             }
             BlockTemplate::Replace(template) => {
