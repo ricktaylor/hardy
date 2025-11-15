@@ -29,12 +29,11 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
             .bundle;
 
-        match bundle
-            .decrypt_block(self.block, &data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
-        {
-            hardy_bpv7::bundle::Payload::Range(range) => self.output.write_all(&data[range]),
-            hardy_bpv7::bundle::Payload::Owned(data) => self.output.write_all(&data),
-        }
+        self.output.write_all(
+            bundle
+                .decrypt_block(self.block, &data, &key_store)
+                .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
+                .as_ref(),
+        )
     }
 }

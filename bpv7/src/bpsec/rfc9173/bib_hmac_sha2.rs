@@ -72,12 +72,10 @@ impl Parameters {
         for (id, range) in parameters {
             match id {
                 1 => {
-                    result.variant = hardy_cbor::decode::parse(&data[range.start..range.end]).map(
-                        |(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        },
-                    )?;
+                    result.variant = hardy_cbor::decode::parse(&data[range]).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?;
                 }
                 2 => {
                     result.key = Some(parse::decode_box(range, data).map(|(v, s)| {
@@ -86,12 +84,10 @@ impl Parameters {
                     })?);
                 }
                 3 => {
-                    result.flags = hardy_cbor::decode::parse(&data[range.start..range.end]).map(
-                        |(v, s)| {
-                            shortest = shortest && s;
-                            v
-                        },
-                    )?;
+                    result.flags = hardy_cbor::decode::parse(&data[range]).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?;
                 }
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
@@ -197,7 +193,12 @@ where
 
     if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
-            mac.update(args.blocks.block_payload(0).expect("No primary block!"));
+            mac.update(
+                args.blocks
+                    .block_payload(0)
+                    .expect("No primary block!")
+                    .as_ref(),
+            );
         }
 
         if flags.include_target_header {
@@ -228,8 +229,8 @@ where
         .ok_or(Error::MissingSecurityTarget)?;
 
     // Reduce copying here
-    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(payload)).0);
-    mac.update(payload);
+    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(&payload)).0);
+    mac.update(payload.as_ref());
 
     Ok(mac.finalize().into_bytes())
 }
@@ -374,6 +375,8 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bib::OperationArgs,
     ) -> Result<(), Error> {
+        let mut tried_to_verify = false;
+
         if let Some(cek) = &self.parameters.key {
             for jwk in key_f.decrypt_keys(
                 args.bpsec_source,
@@ -422,17 +425,26 @@ impl Operation {
                             ShaVariant::HMAC_256_256 => {
                                 calculate_hmac::<sha2::Sha256>(&self.parameters.flags, &cek, &args)
                                     .ok()
-                                    .map(|mac| *mac == *self.results.0)
+                                    .map(|mac| {
+                                        tried_to_verify = true;
+                                        *mac == *self.results.0
+                                    })
                             }
                             ShaVariant::HMAC_384_384 => {
                                 calculate_hmac::<sha2::Sha384>(&self.parameters.flags, &cek, &args)
                                     .ok()
-                                    .map(|mac| *mac == *self.results.0)
+                                    .map(|mac| {
+                                        tried_to_verify = true;
+                                        *mac == *self.results.0
+                                    })
                             }
                             ShaVariant::HMAC_512_512 => {
                                 calculate_hmac::<sha2::Sha512>(&self.parameters.flags, &cek, &args)
                                     .ok()
-                                    .map(|mac| *mac == *self.results.0)
+                                    .map(|mac| {
+                                        tried_to_verify = true;
+                                        *mac == *self.results.0
+                                    })
                             }
                             ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
                         } == Some(true)
@@ -448,17 +460,26 @@ impl Operation {
                         (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
                             calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, &args)
                                 .ok()
-                                .map(|mac| *mac == *self.results.0)
+                                .map(|mac| {
+                                    tried_to_verify = true;
+                                    *mac == *self.results.0
+                                })
                         }
                         (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
                             calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, &args)
                                 .ok()
-                                .map(|mac| *mac == *self.results.0)
+                                .map(|mac| {
+                                    tried_to_verify = true;
+                                    *mac == *self.results.0
+                                })
                         }
                         (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
                             calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, &args)
                                 .ok()
-                                .map(|mac| *mac == *self.results.0)
+                                .map(|mac| {
+                                    tried_to_verify = true;
+                                    *mac == *self.results.0
+                                })
                         }
                         (ShaVariant::Unrecognised(_), _) => {
                             return Err(Error::UnsupportedOperation);
@@ -471,7 +492,11 @@ impl Operation {
             }
         }
 
-        Err(Error::NoValidKey)
+        if tried_to_verify {
+            Err(Error::IntegrityCheckFailed)
+        } else {
+            Err(Error::NoValidKey)
+        }
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {

@@ -100,7 +100,7 @@ impl Store {
             .blocks
             .get(&1)
             .trace_expect("Bundle without payload?!")
-            .payload();
+            .payload_range();
 
         let mut adu_totals = payload.len() as u64;
         let mut results = ReassemblyResult {
@@ -139,7 +139,7 @@ impl Store {
                                 .blocks
                                 .get(&1)
                                 .trace_expect("Bundle fragment without payload?!")
-                                .payload();
+                                .payload_range();
 
                             adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
@@ -213,7 +213,7 @@ impl Store {
                     .blocks
                     .get(&1)
                     .trace_expect("Bundle without payload?!")
-                    .payload(),
+                    .payload_range(),
             )
             .into();
 

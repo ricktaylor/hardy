@@ -181,6 +181,35 @@ impl hardy_cbor::decode::FromCbor for Type {
     }
 }
 
+/// Represents the payload of a block.
+///
+/// The payload can either be a direct slice (`Borrowed`) into the original bundle's
+/// byte array, or an `Owned` byte slice. The `Owned` variant is used when the
+/// payload has been decrypted from a Block Confidentiality Block (BCB) and
+/// therefore does not correspond to a contiguous region of the original data.
+pub enum Payload<'a> {
+    /// A slice within the original bundle data.
+    Borrowed(&'a [u8]),
+    /// An owned byte slice, typically holding a decrypted payload.
+    Owned(zeroize::Zeroizing<Box<[u8]>>),
+}
+
+impl core::fmt::Debug for Payload<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Just delegate to the underlying slice formatter
+        self.as_ref().fmt(f)
+    }
+}
+
+impl AsRef<[u8]> for Payload<'_> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(arg0) => arg0,
+            Self::Owned(arg0) => arg0.as_ref(),
+        }
+    }
+}
+
 /// Represents a generic BPv7 extension block within a bundle.
 ///
 /// This struct holds the common metadata for all blocks, such as the type, flags,
@@ -212,7 +241,7 @@ pub struct Block {
 
 impl Block {
     /// Calculates the absolute range of the block's payload within the original bundle byte array.
-    pub fn payload(&self) -> Range<usize> {
+    pub fn payload_range(&self) -> Range<usize> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
 

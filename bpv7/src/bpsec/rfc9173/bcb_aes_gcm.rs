@@ -69,14 +69,10 @@ impl Parameters {
                     })?);
                 }
                 2 => {
-                    variant = Some(
-                        hardy_cbor::decode::parse(&data[range.start..range.end]).map(
-                            |(v, s)| {
-                                shortest = shortest && s;
-                                v
-                            },
-                        )?,
-                    );
+                    variant = Some(hardy_cbor::decode::parse(&data[range]).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
                 }
                 3 => {
                     key = Some(parse::decode_box(range, data).map(|(v, s)| {
@@ -85,14 +81,10 @@ impl Parameters {
                     })?);
                 }
                 4 => {
-                    flags = Some(
-                        hardy_cbor::decode::parse(&data[range.start..range.end]).map(
-                            |(v, s)| {
-                                shortest = shortest && s;
-                                v
-                            },
-                        )?,
-                    );
+                    flags = Some(hardy_cbor::decode::parse(&data[range]).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
                 }
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
@@ -175,15 +167,7 @@ impl hardy_cbor::encode::ToCbor for Results {
     }
 }
 
-fn build_data<'a>(
-    flags: &ScopeFlags,
-    args: &'a bcb::OperationArgs,
-) -> Result<(Vec<u8>, &'a [u8]), Error> {
-    let data = args
-        .blocks
-        .block_payload(args.target)
-        .ok_or(Error::MissingSecurityTarget)?;
-
+fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, Error> {
     let mut encoder = hardy_cbor::encode::Encoder::new();
     encoder.emit(&ScopeFlags {
         include_primary_block: flags.include_primary_block,
@@ -195,8 +179,9 @@ fn build_data<'a>(
     if flags.include_primary_block {
         encoder.emit(&hardy_cbor::encode::Raw(
             args.blocks
-                .block_payload(args.target)
-                .expect("Missing primary block!"),
+                .block_payload(0)
+                .expect("Missing primary block!")
+                .as_ref(),
         ));
     }
 
@@ -222,7 +207,7 @@ fn build_data<'a>(
         encoder.emit(&source_block.flags);
     }
 
-    Ok((encoder.build(), data))
+    Ok(encoder.build())
 }
 
 #[allow(clippy::type_complexity)]
@@ -307,7 +292,12 @@ impl Operation {
             return Err(Error::NoValidKey);
         };
 
-        let (aad, data) = build_data(&scope_flags, &args)?;
+        let data = args
+            .blocks
+            .block_payload(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+
+        let aad = build_data(&scope_flags, &args)?;
 
         let active_cek = cek
             .as_ref()
@@ -323,7 +313,7 @@ impl Operation {
                         cipher,
                         (*aes_gcm::Aes128Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
                         &aad,
-                        data,
+                        data.as_ref(),
                     )
                 }),
             AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(active_cek)
@@ -333,7 +323,7 @@ impl Operation {
                         cipher,
                         (*aes_gcm::Aes256Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
                         &aad,
-                        data,
+                        data.as_ref(),
                     )
                 }),
             AesVariant::Unrecognised(_) => unreachable!(),
@@ -378,7 +368,12 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-        let (aad, data) = build_data(&self.parameters.flags, &args)?;
+        let data = args
+            .blocks
+            .block_payload(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+
+        let aad = build_data(&self.parameters.flags, &args)?;
 
         let mut tried_to_decrypt = false;
         if let Some(cek) = &self.parameters.key {
@@ -412,7 +407,7 @@ impl Operation {
                                 .ok()
                                 .and_then(|cek| {
                                     tried_to_decrypt = true;
-                                    self.decrypt_inner(cek, &aad, data).ok()
+                                    self.decrypt_inner(cek, &aad, data.as_ref()).ok()
                                 })
                         }
                         (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
@@ -420,7 +415,7 @@ impl Operation {
                                 .ok()
                                 .and_then(|cek| {
                                     tried_to_decrypt = true;
-                                    self.decrypt_inner(cek, &aad, data).ok()
+                                    self.decrypt_inner(cek, &aad, data.as_ref()).ok()
                                 })
                         }
                         (AesVariant::Unrecognised(_), _) => {
@@ -447,7 +442,7 @@ impl Operation {
                                 .ok()
                                 .and_then(|cek| {
                                     tried_to_decrypt = true;
-                                    self.decrypt_inner(cek, &aad, data).ok()
+                                    self.decrypt_inner(cek, &aad, data.as_ref()).ok()
                                 })
                         }
                         (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
@@ -455,7 +450,7 @@ impl Operation {
                                 .ok()
                                 .and_then(|cek| {
                                     tried_to_decrypt = true;
-                                    self.decrypt_inner(cek, &aad, data).ok()
+                                    self.decrypt_inner(cek, &aad, data.as_ref()).ok()
                                 })
                         }
                         (AesVariant::Unrecognised(_), _) => {

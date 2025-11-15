@@ -68,6 +68,9 @@ pub enum Error {
     #[error("None of the supplied keys were valid for the operation")]
     NoValidKey,
 
+    #[error("Integrity check failed")]
+    IntegrityCheckFailed,
+
     /// This type is deliberately opaque as to avoid potential side-channel
     /// leakage (e.g. padding oracle).
     #[error("Encryption failed")]

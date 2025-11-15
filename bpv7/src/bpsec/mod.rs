@@ -63,7 +63,7 @@ impl hardy_cbor::decode::FromCbor for Context {
 }
 
 pub trait BlockSet<'a> {
-    fn block(&'a self, block_number: u64) -> Option<&'a block::Block>;
+    fn block(&self, block_number: u64) -> Option<&block::Block>;
 
-    fn block_payload(&'a self, block_number: u64) -> Option<&'a [u8]>;
+    fn block_payload(&'a self, block_number: u64) -> Option<block::Payload<'a>>;
 }

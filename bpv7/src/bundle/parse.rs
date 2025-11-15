@@ -39,17 +39,20 @@ struct BlockParse<'a> {
 }
 
 impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
-    fn block(&'a self, block_number: u64) -> Option<&'a block::Block> {
+    fn block(&self, block_number: u64) -> Option<&block::Block> {
         self.blocks.get(&block_number)
     }
 
-    fn block_payload(&self, block_number: u64) -> Option<&[u8]> {
+    fn block_payload(&'a self, block_number: u64) -> Option<block::Payload<'a>> {
         if let Some(b) = self.decrypted_data.get(&block_number) {
-            Some(b.as_ref())
+            Some(block::Payload::Borrowed(b.as_ref()))
         } else if let Some(Some(b)) = self.noncanonical_blocks.get(&block_number) {
-            Some(b.as_ref())
+            Some(block::Payload::Borrowed(b.as_ref()))
         } else {
-            Some(&self.source_data[self.block(block_number)?.payload()])
+            Some(block::Payload::Borrowed(
+                self.source_data
+                    .get(self.block(block_number)?.payload_range())?,
+            ))
         }
     }
 }
@@ -72,8 +75,8 @@ impl<'a> BlockParse<'a> {
         let payload = <Self as bpsec::BlockSet>::block_payload(self, block_number)
             .ok_or(Error::MissingPayload)?;
 
-        hardy_cbor::decode::parse::<(T, bool, usize)>(payload)
-            .map(|(v, s, len)| (v, s && len == payload.len()))
+        hardy_cbor::decode::parse::<(T, bool, usize)>(payload.as_ref())
+            .map(|(v, s, len)| (v, s && len == payload.as_ref().len()))
             .map_err(Into::into)
     }
 
@@ -132,7 +135,7 @@ impl<'a> BlockParse<'a> {
                     let block_data = if let Some(payload) = &block.payload {
                         payload.as_ref()
                     } else {
-                        &self.source_data[block.block.payload()]
+                        &self.source_data[block.block.payload_range()]
                     };
 
                     // Parse the BCB
@@ -213,7 +216,6 @@ impl<'a> BlockParse<'a> {
     /// Parses and processes all Block Confidentiality Blocks (BCBs).
     /// This involves decrypting the payloads of their target blocks.
     fn parse_bcbs(&mut self, key_f: &impl bpsec::key::KeyStore) -> Result<(), Error> {
-        let mut decrypted_data = HashMap::new();
         let mut bcb_targets = HashMap::new();
         for (bcb_block_number, bcb) in &self.bcbs {
             let bcb_block = self
@@ -282,7 +284,7 @@ impl<'a> BlockParse<'a> {
                         },
                     ) {
                         Ok(plaintext) => {
-                            decrypted_data.insert(*target_number, plaintext);
+                            self.decrypted_data.insert(*target_number, plaintext);
                         }
                         Err(bpsec::Error::NoValidKey) => {
                             if target_block.block_type == block::Type::BlockIntegrity {
@@ -477,7 +479,11 @@ impl<'a> BlockParse<'a> {
     ) -> Result<(), Error> {
         match self.noncanonical_blocks.remove(&block_number) {
             Some(Some(payload)) => block.emit(block_number, &payload, array),
-            Some(None) => block.emit(block_number, &self.source_data[block.payload()], array),
+            Some(None) => block.emit(
+                block_number,
+                &self.source_data[block.payload_range()],
+                array,
+            ),
             None => {
                 block.copy_whole(self.source_data, array);
                 Ok(())

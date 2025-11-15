@@ -120,8 +120,10 @@ impl Dispatcher {
                 debug!("Received an invalid payload: {e}");
                 return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
             }
-            Ok(hardy_bpv7::bundle::Payload::Range(range)) => data.slice(range),
-            Ok(hardy_bpv7::bundle::Payload::Owned(data)) => Bytes::from_owner(data),
+            Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
+                data.slice(bundle.bundle.blocks.get(&1).unwrap().payload_range())
+            }
+            Ok(hardy_bpv7::block::Payload::Owned(data)) => Bytes::from_owner(data),
         };
 
         // Pass the bundle and data to the service

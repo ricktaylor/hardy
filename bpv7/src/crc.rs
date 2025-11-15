@@ -146,9 +146,13 @@ pub(super) fn parse_crc_value(
                     .map_err(|_| Error::InvalidLength(crc.len()))?,
             );
             let mut digest = X25.digest();
-            digest.update(&data[0..crc.start]);
+            if crc.start > 0 {
+                digest.update(&data[0..crc.start]);
+            }
             digest.update(&[0u8; 2]);
-            digest.update(&data[crc.end..crc_end]);
+            if crc_end > crc.end {
+                digest.update(&data[crc.end..crc_end]);
+            }
             if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {
@@ -162,9 +166,13 @@ pub(super) fn parse_crc_value(
                     .map_err(|_| Error::InvalidLength(crc.len()))?,
             );
             let mut digest = CASTAGNOLI.digest();
-            digest.update(&data[0..crc.start]);
+            if crc.start > 0 {
+                digest.update(&data[0..crc.start]);
+            }
             digest.update(&[0u8; 4]);
-            digest.update(&data[crc.end..crc_end]);
+            if crc_end > crc.end {
+                digest.update(&data[crc.end..crc_end]);
+            }
             if crc_value != digest.finalize() {
                 Err(Error::IncorrectCrc)
             } else {

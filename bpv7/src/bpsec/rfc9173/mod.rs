@@ -179,6 +179,9 @@ mod test {
             .verify_block(2, &data, &keys)
             .expect("Failed to verify");
         bundle
+            .verify_block(0, &data, &keys)
+            .expect("Failed to verify");
+        bundle
             .decrypt_block(1, &data, &keys)
             .expect("Failed to decrypt");
     }
