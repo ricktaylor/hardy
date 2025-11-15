@@ -427,15 +427,7 @@ impl Bundle {
         // Replace existing block record
         self.blocks.insert(
             0,
-            block::Block {
-                block_type: block::Type::Primary,
-                flags: block::Flags::default(),
-                crc_type: self.crc_type,
-                data: 0..0,
-                extent,
-                bib: None,
-                bcb: None,
-            },
+            primary_block::PrimaryBlock::as_block(self.crc_type, extent),
         );
         Ok(())
     }

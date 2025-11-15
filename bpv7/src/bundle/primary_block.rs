@@ -163,6 +163,17 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
 }
 
 impl PrimaryBlock {
+    pub fn as_block(crc_type: crc::CrcType, extent: core::ops::Range<usize>) -> block::Block {
+        block::Block {
+            block_type: block::Type::Primary,
+            flags: block::Flags::default(),
+            crc_type,
+            data: 0..extent.len(),
+            extent,
+            bib: None,
+            bcb: None,
+        }
+    }
     /// Converts the intermediate `PrimaryBlock` into a `bundle::Bundle`.
     ///
     /// This method constructs a `Bundle` from the parsed fields. If any field
@@ -203,19 +214,7 @@ impl PrimaryBlock {
             },
             lifetime: unpack(self.lifetime, &mut e, "Lifetime"),
             crc_type,
-            blocks: [(
-                0,
-                block::Block {
-                    block_type: block::Type::Primary,
-                    flags: block::Flags::default(),
-                    crc_type,
-                    data: 0..0,
-                    extent,
-                    bib: None,
-                    bcb: None,
-                },
-            )]
-            .into(),
+            blocks: [(0, Self::as_block(crc_type, extent))].into(),
             ..Default::default()
         };
 
