@@ -174,6 +174,7 @@ impl PrimaryBlock {
             bcb: None,
         }
     }
+
     /// Converts the intermediate `PrimaryBlock` into a `bundle::Bundle`.
     ///
     /// This method constructs a `Bundle` from the parsed fields. If any field
