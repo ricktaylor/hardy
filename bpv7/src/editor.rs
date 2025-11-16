@@ -347,17 +347,11 @@ impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
         }
     }
 
-    fn block_payload(&self, block_number: u64) -> Option<block::Payload<'a>> {
+    fn block_payload(&self, block_number: u64, block: &block::Block) -> Option<block::Payload<'a>> {
         if let BlockTemplate::Keep(_) = self.editor.blocks.get(&block_number)? {
-            Some(block::Payload::Borrowed(
-                self.editor.source_data.get(
-                    self.editor
-                        .original
-                        .blocks
-                        .get(&block_number)?
-                        .payload_range(),
-                )?,
-            ))
+            block
+                .payload(self.editor.source_data)
+                .map(block::Payload::Borrowed)
         } else {
             None
         }

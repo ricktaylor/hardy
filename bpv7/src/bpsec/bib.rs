@@ -12,7 +12,9 @@ pub enum Operation {
 pub struct OperationArgs<'a> {
     pub bpsec_source: &'a eid::Eid,
     pub target: u64,
+    pub target_block: &'a block::Block,
     pub source: u64,
+    pub source_block: &'a block::Block,
     pub blocks: &'a dyn BlockSet<'a>,
 }
 

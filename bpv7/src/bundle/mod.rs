@@ -331,32 +331,64 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
-/// A view into a bundle's blocks for BPSec operations.
-struct BlockSet<'a, K: bpsec::key::KeyStore> {
+// A view into a bundle's blocks for BPSec operations.
+struct VerifyBlockSet<'a, K: bpsec::key::KeyStore> {
     bundle: &'a Bundle,
     source_data: &'a [u8],
     keys: &'a K,
-    except: Option<u64>,
 }
 
-impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for BlockSet<'a, K> {
+impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> {
     /// Retrieves a reference to a block by its number.
     fn block(&self, block_number: u64) -> Option<&block::Block> {
         self.bundle.blocks.get(&block_number)
     }
 
     /// Retrieves the payload of a block as a byte slice.
-    fn block_payload(&self, block_number: u64) -> Option<block::Payload<'a>> {
-        if let Some(except) = self.except
-            && except == block_number
-        {
-            self.source_data
-                .get(self.bundle.blocks.get(&block_number)?.payload_range())
+    fn block_payload(&self, block_number: u64, block: &block::Block) -> Option<block::Payload<'a>> {
+        // Check for BCB
+        if let Some(bcb_block_number) = &block.bcb {
+            self.bundle
+                .decrypt_block_inner(
+                    block_number,
+                    block,
+                    *bcb_block_number,
+                    self.source_data,
+                    self.keys,
+                )
+                .ok()
+        } else {
+            block
+                .payload(self.source_data)
+                .map(block::Payload::Borrowed)
+        }
+    }
+}
+
+// A view into a bundle's blocks for BPSec operations.
+struct EncryptBlockSet<'a, K: bpsec::key::KeyStore> {
+    inner: VerifyBlockSet<'a, K>,
+    except: u64,
+}
+
+impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for EncryptBlockSet<'a, K> {
+    /// Retrieves a reference to a block by its number.
+    fn block(&self, block_number: u64) -> Option<&block::Block> {
+        self.inner.block(block_number)
+    }
+
+    /// Retrieves the payload of a block as a byte slice.
+    fn block_payload(
+        &'a self,
+        block_number: u64,
+        block: &block::Block,
+    ) -> Option<block::Payload<'a>> {
+        if self.except == block_number {
+            block
+                .payload(self.inner.source_data)
                 .map(block::Payload::Borrowed)
         } else {
-            self.bundle
-                .decrypt_block(block_number, self.source_data, self.keys)
-                .ok()
+            self.inner.block_payload(block_number, block)
         }
     }
 }
@@ -427,34 +459,75 @@ impl Bundle {
     /// This method handles the complexity of block-level security. If the target
     /// block is encrypted with a Block Confidentiality Block (BCB), this method
     /// will attempt to decrypt it using the provided `key_f` keystore.
-    pub fn decrypt_block<'a>(
+    pub fn block_data<'a>(
         &self,
         block_number: u64,
         source_data: &'a [u8],
         key_f: &impl bpsec::key::KeyStore,
     ) -> Result<block::Payload<'a>, Error> {
-        let payload_block = self
+        let target_block = self
             .blocks
             .get(&block_number)
             .ok_or(Error::MissingBlock(block_number))?;
 
         // Check for BCB
-        let Some(bcb_block_number) = &payload_block.bcb else {
-            return source_data
-                .get(payload_block.payload_range())
+        if let Some(bcb_block_number) = &target_block.bcb {
+            self.decrypt_block_inner(
+                block_number,
+                target_block,
+                *bcb_block_number,
+                source_data,
+                key_f,
+            )
+        } else {
+            target_block
+                .payload(source_data)
                 .map(block::Payload::Borrowed)
-                .ok_or(Error::Altered);
-        };
+                .ok_or(Error::Altered)
+        }
+    }
+
+    /// Retrieves the payload of a specific block by its number.
+    ///
+    /// This method handles the complexity of block-level security. If the target
+    /// block is encrypted with a Block Confidentiality Block (BCB), this method
+    /// will attempt to decrypt it using the provided `key_f` keystore.
+    pub fn decrypt_block_data<'a>(
+        &self,
+        block_number: u64,
+        source_data: &'a [u8],
+        key_f: &impl bpsec::key::KeyStore,
+    ) -> Result<block::Payload<'a>, Error> {
+        let target_block = self
+            .blocks
+            .get(&block_number)
+            .ok_or(Error::MissingBlock(block_number))?;
+
+        let bcb_block_number = &target_block
+            .bcb
+            .ok_or(Error::InvalidBPSec(bpsec::Error::NotEncrypted))?;
+
+        self.decrypt_block_inner(
+            block_number,
+            target_block,
+            *bcb_block_number,
+            source_data,
+            key_f,
+        )
+    }
+
+    fn decrypt_block_inner<'a>(
+        &self,
+        target: u64,
+        target_block: &block::Block,
+        bcb_block_number: u64,
+        source_data: &'a [u8],
+        key_f: &impl bpsec::key::KeyStore,
+    ) -> Result<block::Payload<'a>, Error> {
+        let bcb_block = self.blocks.get(&bcb_block_number).ok_or(Error::Altered)?;
 
         let bcb = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(
-            source_data
-                .get(
-                    self.blocks
-                        .get(bcb_block_number)
-                        .ok_or(Error::Altered)?
-                        .payload_range(),
-                )
-                .ok_or(Error::Altered)?,
+            bcb_block.payload(source_data).ok_or(Error::Altered)?,
         )
         .map_err(|e| Error::InvalidField {
             field: "BCB Abstract Syntax Block",
@@ -463,23 +536,27 @@ impl Bundle {
 
         // Confirm we can decrypt if we have keys
         bcb.operations
-            .get(&block_number)
+            .get(&target)
             .ok_or(Error::Altered)?
             .decrypt(
                 key_f,
                 bpsec::bcb::OperationArgs {
                     bpsec_source: &bcb.source,
-                    target: block_number,
-                    source: *bcb_block_number,
-                    blocks: &BlockSet {
-                        bundle: self,
-                        source_data,
-                        keys: key_f,
-                        except: Some(block_number),
+                    target,
+                    target_block,
+                    source: bcb_block_number,
+                    source_block: bcb_block,
+                    blocks: &EncryptBlockSet {
+                        inner: VerifyBlockSet {
+                            bundle: self,
+                            source_data,
+                            keys: key_f,
+                        },
+                        except: target,
                     },
                 },
             )
-            .map(block::Payload::Owned)
+            .map(block::Payload::Decrypted)
             .map_err(Error::InvalidBPSec)
     }
 
@@ -494,24 +571,39 @@ impl Bundle {
         source_data: &[u8],
         key_f: &impl bpsec::key::KeyStore,
     ) -> Result<(), Error> {
-        let payload_block = self
+        let target_block = self
             .blocks
             .get(&block_number)
             .ok_or(Error::MissingBlock(block_number))?;
 
         // Check for BIB
-        let Some(bib_block_number) = &payload_block.bib else {
+        let Some(bib_block_number) = &target_block.bib else {
             return Ok(());
         };
 
-        let bib = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(
-            self.decrypt_block(*bib_block_number, source_data, key_f)?
-                .as_ref(),
-        )
-        .map_err(|e| Error::InvalidField {
-            field: "BIB Abstract Syntax Block",
-            source: e.into(),
-        })?;
+        let bib_block = self.blocks.get(bib_block_number).ok_or(Error::Altered)?;
+
+        // Check for BCB
+        let bib_data = if let Some(bcb_block_number) = &bib_block.bcb {
+            self.decrypt_block_inner(
+                *bib_block_number,
+                bib_block,
+                *bcb_block_number,
+                source_data,
+                key_f,
+            )?
+        } else {
+            bib_block
+                .payload(source_data)
+                .map(block::Payload::Borrowed)
+                .ok_or(Error::Altered)?
+        };
+
+        let bib = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_data.as_ref())
+            .map_err(|e| Error::InvalidField {
+                field: "BIB Abstract Syntax Block",
+                source: e.into(),
+            })?;
 
         // Confirm we can verify if we have keys
         bib.operations
@@ -522,12 +614,13 @@ impl Bundle {
                 bpsec::bib::OperationArgs {
                     bpsec_source: &bib.source,
                     target: block_number,
+                    target_block,
                     source: *bib_block_number,
-                    blocks: &BlockSet {
+                    source_block: bib_block,
+                    blocks: &VerifyBlockSet {
                         bundle: self,
                         source_data,
                         keys: key_f,
-                        except: None,
                     },
                 },
             )

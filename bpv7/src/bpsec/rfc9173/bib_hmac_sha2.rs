@@ -186,46 +186,31 @@ where
         .0,
     );
 
-    let target_block = args
-        .blocks
-        .block(args.target)
-        .ok_or(Error::MissingSecurityTarget)?;
-
-    if !matches!(target_block.block_type, block::Type::Primary) {
+    if !matches!(args.target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
-            mac.update(
-                args.blocks
-                    .block_payload(0)
-                    .expect("No primary block!")
-                    .as_ref(),
-            );
+            mac.update(args.blocks.primary_block().as_ref());
         }
 
         if flags.include_target_header {
             let mut encoder = hardy_cbor::encode::Encoder::new();
-            encoder.emit(&target_block.block_type);
+            encoder.emit(&args.target_block.block_type);
             encoder.emit(&args.target);
-            encoder.emit(&target_block.flags);
+            encoder.emit(&args.target_block.flags);
             mac.update(&encoder.build());
         }
     }
 
     if flags.include_security_header {
-        let source_block = args
-            .blocks
-            .block(args.source)
-            .ok_or(Error::MissingSecurityTarget)?;
-
         let mut encoder = hardy_cbor::encode::Encoder::new();
-        encoder.emit(&source_block.block_type);
+        encoder.emit(&args.source_block.block_type);
         encoder.emit(&args.source);
-        encoder.emit(&source_block.flags);
+        encoder.emit(&args.source_block.flags);
         mac.update(&encoder.build());
     }
 
     let payload = args
         .blocks
-        .block_payload(args.target)
+        .block_payload(args.target, args.target_block)
         .ok_or(Error::MissingSecurityTarget)?;
 
     // Reduce copying here

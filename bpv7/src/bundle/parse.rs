@@ -43,17 +43,19 @@ impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
         self.blocks.get(&block_number)
     }
 
-    fn block_payload(&'a self, block_number: u64) -> Option<block::Payload<'a>> {
+    fn block_payload(
+        &'a self,
+        block_number: u64,
+        block: &block::Block,
+    ) -> Option<block::Payload<'a>> {
         if let Some(b) = self.decrypted_data.get(&block_number) {
-            Some(block::Payload::Borrowed(b.as_ref()))
+            Some(b.as_ref())
         } else if let Some(Some(b)) = self.noncanonical_blocks.get(&block_number) {
-            Some(block::Payload::Borrowed(b.as_ref()))
+            Some(b.as_ref())
         } else {
-            Some(block::Payload::Borrowed(
-                self.source_data
-                    .get(self.block(block_number)?.payload_range())?,
-            ))
+            block.payload(self.source_data)
         }
+        .map(block::Payload::Borrowed)
     }
 }
 
@@ -72,11 +74,19 @@ impl<'a> BlockParse<'a> {
     where
         T: hardy_cbor::decode::FromCbor<Error: From<hardy_cbor::decode::Error> + Into<Error>>,
     {
-        let payload = <Self as bpsec::BlockSet>::block_payload(self, block_number)
-            .ok_or(Error::MissingPayload)?;
+        let payload = if let Some(b) = self.decrypted_data.get(&block_number) {
+            b.as_ref()
+        } else if let Some(Some(b)) = self.noncanonical_blocks.get(&block_number) {
+            b.as_ref()
+        } else {
+            self.blocks
+                .get(&block_number)
+                .and_then(|block| block.payload(self.source_data))
+                .ok_or(Error::MissingPayload)?
+        };
 
-        hardy_cbor::decode::parse::<(T, bool, usize)>(payload.as_ref())
-            .map(|(v, s, len)| (v, s && len == payload.as_ref().len()))
+        hardy_cbor::decode::parse::<(T, bool, usize)>(payload)
+            .map(|(v, s, len)| (v, s && len == payload.len()))
             .map_err(Into::into)
     }
 
@@ -279,7 +289,9 @@ impl<'a> BlockParse<'a> {
                         bpsec::bcb::OperationArgs {
                             bpsec_source: &bcb.source,
                             target: *target_number,
+                            target_block,
                             source: *bcb_block_number,
+                            source_block: bcb_block,
                             blocks: self,
                         },
                     ) {

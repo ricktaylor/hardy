@@ -95,7 +95,7 @@ impl<'a> Encryptor<'a> {
         let mut editor = editor::Editor::new(self.original, self.source_data);
 
         // Now build BCB blocks
-        for ((source, context), contexts) in blocks {
+        for ((bpsec_source, context), contexts) in blocks {
             // Reserve a block number for the BCB block
             let new_block = block::Block {
                 block_type: block::Type::BlockSecurity,
@@ -117,44 +117,48 @@ impl<'a> Encryptor<'a> {
                 .with_crc_type(new_block.crc_type)
                 .with_flags(new_block.flags.clone());
 
-            let source_block = b.block_number();
+            let source = b.block_number();
             editor = b.build([]);
 
             let mut editor_bs = editor::EditorBlockSet {
                 editor,
                 new_block,
-                new_block_number: source_block,
+                new_block_number: source,
             };
 
             let mut operation_set = bcb::OperationSet {
-                source: source.clone(),
+                source: bpsec_source.clone(),
                 operations: HashMap::new(),
             };
 
-            for (target_block, key) in contexts {
+            for (target, key) in contexts {
                 let (op, data) = build_bcb_data(
-                    &editor_bs,
-                    &source,
                     context.clone(),
-                    source_block,
-                    *target_block,
+                    bcb::OperationArgs {
+                        bpsec_source: &bpsec_source,
+                        target: *target,
+                        target_block: editor_bs.block(*target).expect("Missing target block"),
+                        source,
+                        source_block: &editor_bs.new_block,
+                        blocks: &editor_bs,
+                    },
                     key,
                 )?;
 
                 // Rewrite the target block
                 editor_bs.editor = editor_bs
                     .editor
-                    .update_block(*target_block)
+                    .update_block(*target)
                     .expect("Failed to update target block")
                     .build(data);
 
-                operation_set.operations.insert(*target_block, op);
+                operation_set.operations.insert(*target, op);
             }
 
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
-                .update_block(source_block)
+                .update_block(source)
                 .expect("Failed to update block")
                 .build(hardy_cbor::encode::emit(&operation_set).0);
         }
@@ -165,23 +169,13 @@ impl<'a> Encryptor<'a> {
 
 #[allow(irrefutable_let_patterns)]
 fn build_bcb_data(
-    editor: &editor::EditorBlockSet,
-    source: &eid::Eid,
     context: Context,
-    source_block: u64,
-    target_block: u64,
+    args: bcb::OperationArgs,
     key: &key::Key,
 ) -> Result<(bcb::Operation, Box<[u8]>), bpsec::Error> {
-    let op_args = bcb::OperationArgs {
-        bpsec_source: source,
-        target: target_block,
-        source: source_block,
-        blocks: editor,
-    };
-
     #[cfg(feature = "rfc9173")]
     if let Context::AES_GCM(scope_flags) = context {
-        let (op, data) = rfc9173::bcb_aes_gcm::Operation::encrypt(key, scope_flags, op_args)?;
+        let (op, data) = rfc9173::bcb_aes_gcm::Operation::encrypt(key, scope_flags, args)?;
         return Ok((bcb::Operation::AES_GCM(op), data));
     }
 

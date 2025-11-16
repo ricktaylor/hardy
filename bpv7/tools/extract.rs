@@ -31,7 +31,7 @@ impl Command {
 
         self.output.write_all(
             bundle
-                .decrypt_block(self.block, &data, &key_store)
+                .block_data(self.block, &data, &key_store)
                 .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
                 .as_ref(),
         )

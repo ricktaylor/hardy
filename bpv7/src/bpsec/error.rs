@@ -3,6 +3,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("Block is not the target of a BCB")]
+    NotEncrypted,
+
     #[error("Mismatch Target and Results arrays")]
     MismatchedTargetResult,
 

@@ -103,7 +103,7 @@ impl<'a> Signer<'a> {
         let mut editor = editor::Editor::new(self.original, self.source_data);
 
         // Now build BIB blocks
-        for ((source, context), contexts) in blocks {
+        for ((bpsec_source, context), contexts) in blocks {
             // Reserve a block number for the BIB block
             let new_block = block::Block {
                 block_type: block::Type::BlockIntegrity,
@@ -122,29 +122,33 @@ impl<'a> Signer<'a> {
                 .with_crc_type(new_block.crc_type)
                 .with_flags(new_block.flags.clone());
 
-            let source_block = b.block_number();
+            let source = b.block_number();
             editor = b.build([]);
 
             let editor_bs = editor::EditorBlockSet {
                 editor,
                 new_block,
-                new_block_number: source_block,
+                new_block_number: source,
             };
 
             let mut operation_set = bib::OperationSet {
-                source: source.clone(),
+                source: bpsec_source.clone(),
                 operations: HashMap::new(),
             };
 
-            for (target_block, key) in contexts {
+            for (target, key) in contexts {
                 operation_set.operations.insert(
-                    *target_block,
+                    *target,
                     build_bib_data(
-                        &editor_bs,
-                        &source,
                         context.clone(),
-                        source_block,
-                        *target_block,
+                        bib::OperationArgs {
+                            bpsec_source: &bpsec_source,
+                            target: *target,
+                            target_block: editor_bs.block(*target).expect("Missing target block"),
+                            source,
+                            source_block: &editor_bs.new_block,
+                            blocks: &editor_bs,
+                        },
                         key,
                     )?,
                 );
@@ -153,7 +157,7 @@ impl<'a> Signer<'a> {
             // Rewrite with the real data
             editor = editor_bs
                 .editor
-                .update_block(source_block)
+                .update_block(source)
                 .expect("Failed to update block")
                 .build(hardy_cbor::encode::emit(&operation_set).0);
         }
@@ -164,24 +168,14 @@ impl<'a> Signer<'a> {
 
 #[allow(irrefutable_let_patterns)]
 fn build_bib_data(
-    editor: &editor::EditorBlockSet,
-    source: &eid::Eid,
     context: Context,
-    source_block: u64,
-    target_block: u64,
+    args: bib::OperationArgs,
     key: &key::Key,
 ) -> Result<bib::Operation, bpsec::Error> {
-    let op_args = bib::OperationArgs {
-        bpsec_source: source,
-        target: target_block,
-        source: source_block,
-        blocks: editor,
-    };
-
     #[cfg(feature = "rfc9173")]
     if let Context::HMAC_SHA2(scope_flags) = context {
         return Ok(bib::Operation::HMAC_SHA2(
-            rfc9173::bib_hmac_sha2::Operation::sign(key, scope_flags, op_args)?,
+            rfc9173::bib_hmac_sha2::Operation::sign(key, scope_flags, args)?,
         ));
     }
 

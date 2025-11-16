@@ -178,33 +178,20 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
 
     if flags.include_primary_block {
         encoder.emit(&hardy_cbor::encode::Raw(
-            args.blocks
-                .block_payload(0)
-                .expect("Missing primary block!")
-                .as_ref(),
+            args.blocks.primary_block().as_ref(),
         ));
     }
 
     if flags.include_target_header {
-        let target_block = args
-            .blocks
-            .block(args.target)
-            .ok_or(Error::MissingSecurityTarget)?;
-
-        encoder.emit(&target_block.block_type);
+        encoder.emit(&args.target_block.block_type);
         encoder.emit(&args.target);
-        encoder.emit(&target_block.flags);
+        encoder.emit(&args.target_block.flags);
     }
 
     if flags.include_security_header {
-        let source_block = args
-            .blocks
-            .block(args.source)
-            .ok_or(Error::MissingSecurityTarget)?;
-
-        encoder.emit(&source_block.block_type);
+        encoder.emit(&args.source_block.block_type);
         encoder.emit(&args.source);
-        encoder.emit(&source_block.flags);
+        encoder.emit(&args.source_block.flags);
     }
 
     Ok(encoder.build())
@@ -294,7 +281,7 @@ impl Operation {
 
         let data = args
             .blocks
-            .block_payload(args.target)
+            .block_payload(args.target, args.target_block)
             .ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&scope_flags, &args)?;
@@ -370,7 +357,7 @@ impl Operation {
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
         let data = args
             .blocks
-            .block_payload(args.target)
+            .block_payload(args.target, args.target_block)
             .ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&self.parameters.flags, &args)?;

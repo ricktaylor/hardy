@@ -130,7 +130,7 @@ mod test {
         bundle::ParsedBundle::parse(&data, &keys)
             .unwrap()
             .bundle
-            .decrypt_block(1, &data, &keys)
+            .decrypt_block_data(1, &data, &keys)
             .expect("Failed to decrypt");
     }
 
@@ -182,7 +182,7 @@ mod test {
             .verify_block(0, &data, &keys)
             .expect("Failed to verify");
         bundle
-            .decrypt_block(1, &data, &keys)
+            .decrypt_block_data(1, &data, &keys)
             .expect("Failed to decrypt");
     }
 
@@ -227,7 +227,7 @@ mod test {
 
         let bundle = bundle::ParsedBundle::parse(&data, &keys).unwrap().bundle;
         bundle
-            .decrypt_block(1, &data, &keys)
+            .decrypt_block_data(1, &data, &keys)
             .expect("Failed to decrypt");
         bundle
             .verify_block(1, &data, &keys)

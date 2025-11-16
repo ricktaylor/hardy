@@ -191,7 +191,7 @@ pub enum Payload<'a> {
     /// A slice within the original bundle data.
     Borrowed(&'a [u8]),
     /// An owned byte slice, typically holding a decrypted payload.
-    Owned(zeroize::Zeroizing<Box<[u8]>>),
+    Decrypted(zeroize::Zeroizing<Box<[u8]>>),
 }
 
 impl core::fmt::Debug for Payload<'_> {
@@ -205,7 +205,7 @@ impl AsRef<[u8]> for Payload<'_> {
     fn as_ref(&self) -> &[u8] {
         match self {
             Self::Borrowed(arg0) => arg0,
-            Self::Owned(arg0) => arg0.as_ref(),
+            Self::Decrypted(arg0) => arg0.as_ref(),
         }
     }
 }
@@ -243,6 +243,11 @@ impl Block {
     /// Calculates the absolute range of the block's payload within the original bundle byte array.
     pub fn payload_range(&self) -> Range<usize> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
+    }
+
+    /// Calculates the absolute range of the block's payload within the original bundle byte array.
+    pub fn payload<'a>(&self, source: &'a [u8]) -> Option<&'a [u8]> {
+        source.get(self.payload_range())
     }
 
     /// Emits the block as a CBOR-encoded byte array.
