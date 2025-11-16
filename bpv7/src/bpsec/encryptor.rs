@@ -83,10 +83,10 @@ impl<'a> Encryptor<'a> {
         let mut blocks = HashMap::new();
         for (block_number, template) in &self.templates {
             match blocks.entry((template.source.clone(), template.context.clone())) {
-                std::collections::hash_map::Entry::Vacant(e) => {
+                hash_map::Entry::Vacant(e) => {
                     e.insert(vec![(block_number, &template.key)]);
                 }
-                std::collections::hash_map::Entry::Occupied(mut e) => {
+                hash_map::Entry::Occupied(mut e) => {
                     e.get_mut().push((block_number, &template.key));
                 }
             }

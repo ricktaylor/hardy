@@ -73,14 +73,15 @@ use alloc::{
     boxed::Box,
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
 #[cfg(feature = "std")]
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map};
 
 #[cfg(not(feature = "std"))]
-use hashbrown::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet, hash_map};
 
 pub mod block;
 pub mod bpsec;

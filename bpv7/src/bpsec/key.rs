@@ -1,5 +1,4 @@
 use super::*;
-use base64::prelude::*;
 
 pub trait KeyStore {
     /// Get an iterator for keys suitable for decryption, verification, or unwrapping
@@ -92,6 +91,10 @@ pub enum Type {
     Unknown,
 }
 
+#[cfg(feature = "serde")]
+use base64::prelude::*;
+
+#[cfg(feature = "serde")]
 fn serialize_key<S>(k: &[u8], s: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -99,6 +102,7 @@ where
     s.serialize_str(BASE64_URL_SAFE_NO_PAD.encode(k).as_str())
 }
 
+#[cfg(feature = "serde")]
 fn deserialize_key<'de, D>(deserializer: D) -> core::result::Result<Box<[u8]>, D::Error>
 where
     D: serde::Deserializer<'de>,
