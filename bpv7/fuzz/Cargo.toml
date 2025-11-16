@@ -36,7 +36,7 @@ bench = false
 doc = false
 
 [[bin]]
-name = "bundle"
+name = "random_bundles"
 path = "fuzz_targets/bundle.rs"
 test = false
 bench = false
