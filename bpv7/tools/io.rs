@@ -58,7 +58,7 @@ impl std::fmt::Display for Input {
 pub struct Output(Option<PathBuf>);
 
 impl Output {
-    pub fn write_all(&self, buf: &[u8]) -> anyhow::Result<()> {
+    pub fn write(&self, buf: &[u8]) -> anyhow::Result<()> {
         match &self.0 {
             Some(f) => std::io::BufWriter::new(std::fs::File::create(f).map_err(|e| {
                 anyhow::anyhow!("Failed to open output file '{}': {e}", f.display())

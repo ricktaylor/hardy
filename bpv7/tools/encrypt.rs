@@ -63,6 +63,6 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?
             .1;
 
-        self.output.write_all(&data)
+        self.output.write(&data)
     }
 }

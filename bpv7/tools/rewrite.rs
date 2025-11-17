@@ -31,6 +31,6 @@ impl Command {
             }
         };
 
-        self.output.write_all(&data)
+        self.output.write(&data)
     }
 }

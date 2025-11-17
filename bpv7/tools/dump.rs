@@ -11,7 +11,7 @@ pub struct Command {
     #[arg(short, long)]
     pretty: bool,
 
-    /// Path to the location to write the bundle to, or stdout if not supplied
+    /// Path to the location to write the output to, or stdout if not supplied
     #[arg(short, long, required = false, default_value = "")]
     output: io::Output,
 
@@ -43,6 +43,6 @@ impl Command {
         .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
         json.push('\n');
 
-        self.output.write_all(json.as_bytes())
+        self.output.write(json.as_bytes())
     }
 }
