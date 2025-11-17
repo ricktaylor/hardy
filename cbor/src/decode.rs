@@ -238,8 +238,8 @@ impl<'a, 'b: 'a> core::fmt::Debug for Value<'a, 'b> {
         match self {
             Value::UnsignedInteger(n) => write!(f, "{n:?}"),
             Value::NegativeInteger(n) => write!(f, "-{n:?}"),
-            Value::Bytes(b) => write!(f, "{b:?}"),
-            Value::ByteStream(b) => write!(f, "{b:?}"),
+            Value::Bytes(b) => write!(f, "bytes[{b:?}]"),
+            Value::ByteStream(b) => write!(f, "byte_stream{b:?}"),
             Value::Text(s) => write!(f, "{s:?}"),
             Value::TextStream(s) => write!(f, "{s:?}"),
             Value::Array(a) => write!(f, "{a:?}"),
