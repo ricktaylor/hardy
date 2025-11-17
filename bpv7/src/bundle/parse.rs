@@ -110,7 +110,7 @@ impl<'a> BlockParse<'a> {
             offset = block_array.offset();
 
             // Check the block
-            if (bundle.flags.is_admin_record || bundle.id.source == eid::Eid::Null)
+            if (bundle.flags.is_admin_record || bundle.id.source.is_null())
                 && block.block.flags.report_on_failure
             {
                 return Err(Error::InvalidFlags);

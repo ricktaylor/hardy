@@ -47,6 +47,13 @@ pub enum Eid {
     },
 }
 
+impl Eid {
+    /// Returns `true` the Eid is the 'null endpoint' as defined in RFC 9171.
+    pub fn is_null(&self) -> bool {
+        matches!(self, Eid::Null)
+    }
+}
+
 impl TryFrom<Cow<'_, str>> for Eid {
     type Error = Error;
 

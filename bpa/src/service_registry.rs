@@ -70,7 +70,7 @@ impl service::Sink for Sink {
         flags: Option<service::SendOptions>,
     ) -> service::Result<Box<str>> {
         // Sanity check
-        if let Eid::Null = &destination {
+        if destination.is_null() {
             return Err(service::Error::InvalidDestination(destination));
         }
 

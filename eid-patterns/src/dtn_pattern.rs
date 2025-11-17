@@ -20,7 +20,7 @@ pub enum DtnPatternItem {
 impl DtnPatternItem {
     pub(super) fn matches(&self, eid: &Eid) -> bool {
         match self {
-            DtnPatternItem::None => matches!(eid, Eid::Null),
+            DtnPatternItem::None => eid.is_null(),
             DtnPatternItem::Any => matches!(eid, Eid::Dtn { .. } | Eid::Unknown { scheme: 1, .. }),
             DtnPatternItem::Exact(n1, d1) => {
                 matches!(eid, Eid::Dtn { node_name, demux } if n1 == node_name && d1 == demux)

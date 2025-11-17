@@ -228,26 +228,28 @@ impl PrimaryBlock {
                     })
                     .err()
             })
-            .or_else(|| {
+            .or_else(|| 
                 (
+                    // TODO: Null Report-To EID ?!?!
+
                     // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-5
-                    matches!(&bundle.id.source,&eid::Eid::Null if bundle.flags.is_fragment
+                    (bundle.id.source.is_null()
+                        && (bundle.flags.is_fragment
                             || !bundle.flags.do_not_fragment
                             || bundle.flags.receipt_report_requested
                             || bundle.flags.forward_report_requested
                             || bundle.flags.delivery_report_requested
-                            || bundle.flags.delete_report_requested)
-
-                ||
+                            || bundle.flags.delete_report_requested))
+                
                     // Invalid flag combination https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.3-4
-                    (bundle.flags.is_admin_record
+                    || (bundle.flags.is_admin_record
                         && (bundle.flags.receipt_report_requested
                             || bundle.flags.forward_report_requested
                             || bundle.flags.delivery_report_requested
                             || bundle.flags.delete_report_requested))
                 )
-                    .then_some(Error::InvalidFlags)
-            });
+                .then_some(Error::InvalidFlags)
+            );
 
         (bundle, e)
     }
