@@ -12,7 +12,7 @@ use error::CaptureFieldErr;
 ///
 /// These flags, defined in RFC 9171 Section 4.2.2, control how a node should
 /// process the block, especially in cases of failure or fragmentation.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {

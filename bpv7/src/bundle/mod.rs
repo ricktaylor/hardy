@@ -159,7 +159,7 @@ impl core::fmt::Display for Id {
 /// These flags, defined in RFC 9171 Section 4.2.3, control how a node should
 /// handle the bundle, such as whether it can be fragmented or if status reports
 /// are requested.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
