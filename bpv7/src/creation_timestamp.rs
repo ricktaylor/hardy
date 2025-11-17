@@ -7,7 +7,6 @@ given source node can be uniquely identified, even if created at the same time.
 use super::*;
 use error::CaptureFieldErr;
 
-#[cfg(not(feature = "std"))]
 static GLOBAL_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
 /// Represents the BPv7 Creation Timestamp, a tuple of creation time and a sequence number.
@@ -49,7 +48,7 @@ impl CreationTimestamp {
     // Just to make life easier
     #[cfg(all(not(feature = "std"), test))]
     pub fn now() -> Self {
-        Self::new()
+        Self::new_sequential()
     }
 
     /// Creates a new `CreationTimestamp` without a time value.
@@ -58,8 +57,7 @@ impl CreationTimestamp {
     /// The sequence number is generated from a globally unique atomic counter.
     ///
     /// This function is only available when the `std` feature is *not* enabled.
-    #[cfg(not(feature = "std"))]
-    pub fn new() -> Self {
+    pub fn new_sequential() -> Self {
         Self {
             creation_time: None,
             sequence_number: GLOBAL_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
@@ -85,8 +83,8 @@ impl CreationTimestamp {
         (creation_time, sequence_number)
     }
 
-    /// Access the time value of this timestamp.
-    pub fn time(&self) -> Option<&dtn_time::DtnTime> {
+    /// Access the creation_time value of this timestamp.
+    pub fn creation_time(&self) -> Option<&dtn_time::DtnTime> {
         self.creation_time.as_ref()
     }
 
@@ -107,6 +105,11 @@ impl CreationTimestamp {
     /// Returns `Some(OffsetDateTime)` if the `creation_time` is present, combining it
     /// with the sequence number for nanosecond precision. Returns `None` if the
     /// `creation_time` is not set.
+    ///
+    /// This may not always be accurate as the `sequence_number` may not be true nanoseconds,
+    /// but instead some incrementing number.
+    ///
+    /// However, for checking against 'now' it should be fine
     pub fn as_datetime(&self) -> Option<time::OffsetDateTime> {
         let t: time::OffsetDateTime = self.creation_time?.into();
         Some(t.saturating_add(time::Duration::nanoseconds(self.sequence_number as i64)))
@@ -116,9 +119,9 @@ impl CreationTimestamp {
 impl core::fmt::Display for CreationTimestamp {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(ct) = self.creation_time {
-            write!(f, "{}/{}", ct, self.sequence_number)
+            write!(f, "{} seq {}", ct, self.sequence_number)
         } else {
-            write!(f, "(No clock)/{}", self.sequence_number)
+            write!(f, "(No clock) {}", self.sequence_number)
         }
     }
 }

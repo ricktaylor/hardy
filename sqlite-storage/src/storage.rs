@@ -177,7 +177,7 @@ fn from_status(
         }
         hardy_bpa::metadata::BundleStatus::AduFragment { source, timestamp } => (
             4,
-            Some(timestamp.time().map_or(0, |t| t.millisecs())),
+            Some(timestamp.creation_time().map_or(0, |t| t.millisecs())),
             Some(timestamp.sequence_number()),
             Some(source.to_string()),
         ),
