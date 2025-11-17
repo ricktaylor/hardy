@@ -1,5 +1,21 @@
 use super::*;
+use hardy_bpv7::crc::CrcType;
 use hardy_bpv7::eid::Eid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ArgCrcType {
+    /// no Cyclic Redundancy Check (CRC)
+    #[clap(alias = "none")]
+    None,
+
+    /// Standard X-25 CRC-16 [aliases: crc16_x25, 16]
+    #[clap(alias = "crc16_x25", alias = "16")]
+    Crc16,
+
+    /// Standard CRC32C (Castagnoli) CRC-32 [aliases: crc32_castagnoli, 32]
+    #[clap(alias = "crc32_castagnoli", alias = "32")]
+    Crc32,
+}
 
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
@@ -24,6 +40,10 @@ pub struct Command {
     #[arg(short, long, required = false, default_value = "")]
     output: io::Output,
 
+    /// The CRC type of the bundle
+    #[arg(short, long = "crc-type")]
+    crc_type: Option<ArgCrcType>,
+
     /// The optional lifetime of the bundle, or 24 hours if not supplied
     #[arg(short, long)]
     lifetime: Option<humantime::Duration>,
@@ -35,10 +55,13 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
+        let crc_val = self.crc_type.map(|crc| crc as u64);
+
         let builder: hardy_bpv7::builder::Builder = hardy_bpv7::builder::BundleTemplate {
             source: self.source,
             destination: self.destination,
             report_to: self.report_to,
+            crc_type: crc_val.map(CrcType::from),
             lifetime: {
                 if let Some(lifetime) = self.lifetime {
                     if lifetime.as_millis() > u64::MAX as u128 {
