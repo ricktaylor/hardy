@@ -97,7 +97,7 @@ impl std::fmt::Display for ClaAddress {
         match self {
             ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
             ClaAddress::Private(bytes) => {
-                write!(f, "private:{bytes:#x?}")
+                write!(f, "private:{bytes:02x?}")
             }
         }
     }
