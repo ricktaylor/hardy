@@ -368,33 +368,34 @@ impl Operation {
                 args.bpsec_source,
                 &[key::Operation::UnwrapKey, key::Operation::Decrypt],
             ) {
-                let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-                    continue;
-                };
-
-                let Some(cek): Option<zeroize::Zeroizing<Box<[u8]>>> = match &jwk.key_algorithm {
-                    Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
-                        .and_then(|kek| kek.unwrap_vec(cek))
-                        .ok(),
-                    Some(key::KeyAlgorithm::A192KW) => aes_kw::KekAes192::try_from(kek.as_ref())
-                        .and_then(|kek| kek.unwrap_vec(cek))
-                        .ok(),
-                    Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
-                        .and_then(|kek| kek.unwrap_vec(cek))
-                        .ok(),
-                    _ => None,
-                }
-                .map(|v| zeroize::Zeroizing::from(Box::from(v))) else {
-                    continue;
-                };
-
-                if let Some(plaintext) = self.decrypt_middle(
-                    &mut tried_to_decrypt,
-                    &jwk.enc_algorithm,
-                    cek.as_ref(),
-                    &aad,
-                    data.as_ref(),
-                )? {
+                if let key::Type::OctetSequence { key: kek } = &jwk.key_type
+                    && let Some(cek) = (match &jwk.key_algorithm {
+                        Some(key::KeyAlgorithm::A128KW) => {
+                            aes_kw::KekAes128::try_from(kek.as_ref())
+                                .and_then(|kek| kek.unwrap_vec(cek))
+                                .ok()
+                        }
+                        Some(key::KeyAlgorithm::A192KW) => {
+                            aes_kw::KekAes192::try_from(kek.as_ref())
+                                .and_then(|kek| kek.unwrap_vec(cek))
+                                .ok()
+                        }
+                        Some(key::KeyAlgorithm::A256KW) => {
+                            aes_kw::KekAes256::try_from(kek.as_ref())
+                                .and_then(|kek| kek.unwrap_vec(cek))
+                                .ok()
+                        }
+                        _ => None,
+                    })
+                    .map(|v: Vec<u8>| zeroize::Zeroizing::from(Box::<[u8]>::from(v)))
+                    && let Some(plaintext) = self.decrypt_middle(
+                        &mut tried_to_decrypt,
+                        &jwk.enc_algorithm,
+                        cek.as_ref(),
+                        &aad,
+                        data.as_ref(),
+                    )?
+                {
                     return Ok(plaintext);
                 }
             }
@@ -406,17 +407,15 @@ impl Operation {
                     continue;
                 };
 
-                let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
-                    continue;
-                };
-
-                if let Some(plaintext) = self.decrypt_middle(
-                    &mut tried_to_decrypt,
-                    &jwk.enc_algorithm,
-                    cek.as_ref(),
-                    &aad,
-                    data.as_ref(),
-                )? {
+                if let key::Type::OctetSequence { key: cek } = &jwk.key_type
+                    && let Some(plaintext) = self.decrypt_middle(
+                        &mut tried_to_decrypt,
+                        &jwk.enc_algorithm,
+                        cek.as_ref(),
+                        &aad,
+                        data.as_ref(),
+                    )?
+                {
                     return Ok(plaintext);
                 }
             }
@@ -441,13 +440,13 @@ impl Operation {
             (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
                 if let Ok(cek) = aes_gcm::Aes128Gcm::new_from_slice(cek) {
                     *tried_to_decrypt = true;
-                    return Ok(self.decrypt_inner(cek, aad, data).ok());
+                    return Ok(self.decrypt_inner(cek, aad, data));
                 }
             }
             (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
                 if let Ok(cek) = aes_gcm::Aes256Gcm::new_from_slice(cek) {
                     *tried_to_decrypt = true;
-                    return Ok(self.decrypt_inner(cek, aad, data).ok());
+                    return Ok(self.decrypt_inner(cek, aad, data));
                 }
             }
             (AesVariant::Unrecognised(_), _) => {
@@ -463,7 +462,7 @@ impl Operation {
         cipher: C,
         aad: &[u8],
         msg: &[u8],
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+    ) -> Option<zeroize::Zeroizing<Box<[u8]>>> {
         if let Some(tag) = self.results.0.as_ref() {
             let mut msg = zeroize::Zeroizing::new(Box::from(msg));
             cipher
@@ -482,7 +481,7 @@ impl Operation {
                 )
                 .map(|r| zeroize::Zeroizing::new(r.into()))
         }
-        .map_err(|_| Error::DecryptionFailed)
+        .ok()
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
