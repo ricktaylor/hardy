@@ -367,111 +367,99 @@ impl Operation {
                 args.bpsec_source,
                 &[key::Operation::UnwrapKey, key::Operation::Verify],
             ) {
-                if let key::Type::OctetSequence { key: kek } = &jwk.key_type {
-                    match &jwk.key_algorithm {
-                        Some(key::KeyAlgorithm::HS256_A128KW)
-                            if self.parameters.variant != ShaVariant::HMAC_256_256 =>
-                        {
-                            continue;
-                        }
-                        Some(key::KeyAlgorithm::HS384_A192KW)
-                            if self.parameters.variant != ShaVariant::HMAC_384_384 =>
-                        {
-                            continue;
-                        }
-                        Some(key::KeyAlgorithm::HS512_A256KW)
-                            if self.parameters.variant != ShaVariant::HMAC_512_512 =>
-                        {
-                            continue;
-                        }
-                        _ => {}
-                    }
+                let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
+                    continue;
+                };
 
-                    if let Some(cek) = match &jwk.key_algorithm {
-                        Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
-                            aes_kw::KekAes128::try_from(kek.as_ref())
-                                .and_then(|kek| kek.unwrap_vec(cek))
-                                .ok()
-                        }
-                        Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
-                            aes_kw::KekAes192::try_from(kek.as_ref())
-                                .and_then(|kek| kek.unwrap_vec(cek))
-                                .ok()
-                        }
-                        Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
-                            aes_kw::KekAes256::try_from(kek.as_ref())
-                                .and_then(|kek| kek.unwrap_vec(cek))
-                                .ok()
-                        }
-                        _ => None,
-                    }
-                    .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-                        && match self.parameters.variant {
-                            ShaVariant::HMAC_256_256 => {
-                                calculate_hmac::<sha2::Sha256>(&self.parameters.flags, &cek, &args)
-                                    .ok()
-                                    .map(|mac| {
-                                        tried_to_verify = true;
-                                        *mac == *self.results.0
-                                    })
-                            }
-                            ShaVariant::HMAC_384_384 => {
-                                calculate_hmac::<sha2::Sha384>(&self.parameters.flags, &cek, &args)
-                                    .ok()
-                                    .map(|mac| {
-                                        tried_to_verify = true;
-                                        *mac == *self.results.0
-                                    })
-                            }
-                            ShaVariant::HMAC_512_512 => {
-                                calculate_hmac::<sha2::Sha512>(&self.parameters.flags, &cek, &args)
-                                    .ok()
-                                    .map(|mac| {
-                                        tried_to_verify = true;
-                                        *mac == *self.results.0
-                                    })
-                            }
-                            ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
-                        } == Some(true)
+                match &jwk.key_algorithm {
+                    Some(key::KeyAlgorithm::HS256_A128KW)
+                        if self.parameters.variant != ShaVariant::HMAC_256_256 =>
                     {
-                        return Ok(());
+                        continue;
                     }
+                    Some(key::KeyAlgorithm::HS384_A192KW)
+                        if self.parameters.variant != ShaVariant::HMAC_384_384 =>
+                    {
+                        continue;
+                    }
+                    Some(key::KeyAlgorithm::HS512_A256KW)
+                        if self.parameters.variant != ShaVariant::HMAC_512_512 =>
+                    {
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                let Some(cek) = match &jwk.key_algorithm {
+                    Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
+                        aes_kw::KekAes128::try_from(kek.as_ref())
+                            .and_then(|kek| kek.unwrap_vec(cek))
+                            .ok()
+                    }
+                    Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
+                        aes_kw::KekAes192::try_from(kek.as_ref())
+                            .and_then(|kek| kek.unwrap_vec(cek))
+                            .ok()
+                    }
+                    Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
+                        aes_kw::KekAes256::try_from(kek.as_ref())
+                            .and_then(|kek| kek.unwrap_vec(cek))
+                            .ok()
+                    }
+                    _ => None,
+                }
+                .map(|v| zeroize::Zeroizing::from(Box::from(v))) else {
+                    continue;
+                };
+
+                if let Some(true) = self.verify_inner(&mut tried_to_verify, &cek, &args)? {
+                    return Ok(());
                 }
             }
         } else {
             for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Verify]) {
-                if let key::Type::OctetSequence { key: cek } = &jwk.key_type
-                    && match (self.parameters.variant, &jwk.key_algorithm) {
-                        (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
+                let key::Type::OctetSequence { key: cek } = &jwk.key_type else {
+                    continue;
+                };
+
+                match (self.parameters.variant, &jwk.key_algorithm) {
+                    (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256)) => {
+                        if let Ok(mac) =
                             calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, &args)
-                                .ok()
-                                .map(|mac| {
-                                    tried_to_verify = true;
-                                    *mac == *self.results.0
-                                })
+                        {
+                            tried_to_verify = true;
+                            if *mac == *self.results.0 {
+                                return Ok(());
+                            }
                         }
-                        (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
+                    }
+                    (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384)) => {
+                        if let Ok(mac) =
                             calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, &args)
-                                .ok()
-                                .map(|mac| {
-                                    tried_to_verify = true;
-                                    *mac == *self.results.0
-                                })
+                        {
+                            tried_to_verify = true;
+                            if *mac == *self.results.0 {
+                                return Ok(());
+                            }
                         }
-                        (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
+                    }
+                    (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512)) => {
+                        if let Ok(mac) =
                             calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, &args)
-                                .ok()
-                                .map(|mac| {
-                                    tried_to_verify = true;
-                                    *mac == *self.results.0
-                                })
+                        {
+                            tried_to_verify = true;
+                            if *mac == *self.results.0 {
+                                return Ok(());
+                            }
                         }
-                        (ShaVariant::Unrecognised(_), _) => {
-                            return Err(Error::UnsupportedOperation);
-                        }
-                        _ => None,
-                    } == Some(true)
-                {
+                    }
+                    (ShaVariant::Unrecognised(_), _) => {
+                        return Err(Error::UnsupportedOperation);
+                    }
+                    _ => {}
+                }
+
+                if let Some(true) = self.verify_inner(&mut tried_to_verify, cek, &args)? {
                     return Ok(());
                 }
             }
@@ -482,6 +470,38 @@ impl Operation {
         } else {
             Err(Error::NoValidKey)
         }
+    }
+
+    fn verify_inner(
+        &self,
+        tried_to_verify: &mut bool,
+        cek: &[u8],
+        args: &bib::OperationArgs,
+    ) -> Result<Option<bool>, Error> {
+        match self.parameters.variant {
+            ShaVariant::HMAC_256_256 => {
+                if let Ok(mac) = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args) {
+                    *tried_to_verify = true;
+                    return Ok(Some(*mac == *self.results.0));
+                }
+            }
+            ShaVariant::HMAC_384_384 => {
+                if let Ok(mac) = calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args) {
+                    *tried_to_verify = true;
+                    return Ok(Some(*mac == *self.results.0));
+                }
+            }
+            ShaVariant::HMAC_512_512 => {
+                if let Ok(mac) = calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args) {
+                    *tried_to_verify = true;
+                    return Ok(Some(*mac == *self.results.0));
+                }
+            }
+            ShaVariant::Unrecognised(_) => {
+                return Err(Error::UnsupportedOperation);
+            }
+        }
+        Ok(None)
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
