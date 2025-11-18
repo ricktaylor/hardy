@@ -465,7 +465,7 @@ impl Operation {
         msg: &[u8],
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
         if let Some(tag) = self.results.0.as_ref() {
-            let mut msg = Vec::from(msg);
+            let mut msg = zeroize::Zeroizing::new(Box::from(msg));
             cipher
                 .decrypt_in_place_detached(
                     self.parameters.iv.as_ref().into(),
@@ -473,17 +473,16 @@ impl Operation {
                     &mut msg,
                     tag.as_ref().into(),
                 )
-                .map_err(|_| Error::DecryptionFailed)?;
-            Ok(msg)
+                .map(|_| msg)
         } else {
             cipher
                 .decrypt(
                     self.parameters.iv.as_ref().into(),
                     aes_gcm::aead::Payload { aad, msg },
                 )
-                .map_err(|_| Error::DecryptionFailed)
+                .map(|r| zeroize::Zeroizing::new(r.into()))
         }
-        .map(|r| zeroize::Zeroizing::new(r.into()))
+        .map_err(|_| Error::DecryptionFailed)
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
