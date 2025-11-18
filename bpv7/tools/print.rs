@@ -68,9 +68,9 @@ fn dump_bundle(
     dump_crc(bundle.bundle.crc_type, &output)?;
 
     if bundle.bundle.flags == bundle::Flags::default() {
-        output.write_str("Flags: None\n")?;
+        output.write_str("Bundle Flags: None\n")?;
     } else {
-        output.write_str("Flags:\n")?;
+        output.write_str("Bundle Flags:\n")?;
 
         if bundle.bundle.flags.is_fragment {
             output.write_str("  * Is a fragment\n")?;
@@ -95,7 +95,7 @@ fn dump_bundle(
                     || !bundle.bundle.flags.delivery_report_requested
                     || !bundle.bundle.flags.delete_report_requested
                 {
-                    notes.push("Flags request status time to be included with status reports, but no reports are requested.".to_string());
+                    notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.".to_string());
                 }
             }
 
@@ -187,9 +187,9 @@ fn dump_block(
     dump_crc(block.crc_type, output)?;
 
     if block.flags == block::Flags::default() {
-        output.write_str("Flags: None\n")?;
+        output.write_str("Block Flags: None\n")?;
     } else {
-        output.write_str("Flags:\n")?;
+        output.write_str("Block Flags:\n")?;
 
         if block.flags.must_replicate {
             output.write_str("  * Must replicate\n")?;
@@ -464,7 +464,10 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     for (target, op) in ops.operations {
         match op {
             bpsec::bib::Operation::HMAC_SHA2(op) => {
-                output.write_str(format!("Target Block {target} HMAC: {:?}\n", op.results.0))?;
+                output.write_str(format!(
+                    "Target Block {target} HMAC: {}\n",
+                    dump_bytes(&op.results.0)
+                ))?;
             }
             bpsec::bib::Operation::Unrecognised(_u, op) => {
                 output.write_str(format!("Target Block: {target}\n"))?;
