@@ -42,8 +42,8 @@ fn parse_ranges<const D: usize>(
 
 #[derive(Debug)]
 pub struct UnknownOperation {
-    parameters: Rc<HashMap<u64, Box<[u8]>>>,
-    results: HashMap<u64, Box<[u8]>>,
+    pub parameters: Rc<HashMap<u64, Box<[u8]>>>,
+    pub results: HashMap<u64, Box<[u8]>>,
 }
 
 impl UnknownOperation {

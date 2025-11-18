@@ -5,7 +5,7 @@ use alloc::rc::Rc;
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum AesVariant {
+pub enum AesVariant {
     A128GCM,
     #[default]
     A256GCM,
@@ -43,11 +43,11 @@ impl hardy_cbor::decode::FromCbor for AesVariant {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Parameters {
-    iv: Box<[u8]>,
-    variant: AesVariant,
-    key: Option<Box<[u8]>>,
-    flags: ScopeFlags,
+pub struct Parameters {
+    pub iv: Box<[u8]>,
+    pub variant: AesVariant,
+    pub key: Option<Box<[u8]>>,
+    pub flags: ScopeFlags,
 }
 
 impl Parameters {
@@ -133,7 +133,7 @@ impl hardy_cbor::encode::ToCbor for Parameters {
 }
 
 #[derive(Debug)]
-struct Results(Option<Box<[u8]>>);
+pub struct Results(pub Option<Box<[u8]>>);
 
 impl Results {
     fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<(Self, bool), Error> {
@@ -212,8 +212,8 @@ fn encrypt_inner(
 
 #[derive(Debug)]
 pub struct Operation {
-    parameters: Rc<Parameters>,
-    results: Results,
+    pub parameters: Rc<Parameters>,
+    pub results: Results,
 }
 
 impl Operation {

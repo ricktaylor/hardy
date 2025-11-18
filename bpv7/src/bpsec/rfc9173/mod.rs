@@ -7,10 +7,10 @@ pub(crate) mod bib_hmac_sha2;
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct ScopeFlags {
-    include_primary_block: bool,
-    include_target_header: bool,
-    include_security_header: bool,
-    unrecognised: u64,
+    pub include_primary_block: bool,
+    pub include_target_header: bool,
+    pub include_security_header: bool,
+    pub unrecognised: Option<u64>,
 }
 
 impl Default for ScopeFlags {
@@ -19,7 +19,7 @@ impl Default for ScopeFlags {
             include_primary_block: true,
             include_target_header: true,
             include_security_header: true,
-            unrecognised: 0,
+            unrecognised: None,
         }
     }
 }
@@ -33,17 +33,25 @@ impl hardy_cbor::decode::FromCbor for ScopeFlags {
                 include_primary_block: false,
                 include_target_header: false,
                 include_security_header: false,
-                unrecognised: value & !7,
+                unrecognised: None,
             };
-            for b in 0..=2 {
-                if value & (1 << b) != 0 {
-                    match b {
-                        0 => flags.include_primary_block = true,
-                        1 => flags.include_target_header = true,
-                        2 => flags.include_security_header = true,
-                        _ => unreachable!(),
-                    }
-                }
+            let mut unrecognised = value;
+
+            if (value & (1 << 0)) != 0 {
+                flags.include_primary_block = true;
+                unrecognised &= !(1 << 0);
+            }
+            if (value & (1 << 1)) != 0 {
+                flags.include_target_header = true;
+                unrecognised &= !(1 << 1);
+            }
+            if (value & (1 << 2)) != 0 {
+                flags.include_security_header = true;
+                unrecognised &= !(1 << 2);
+            }
+
+            if unrecognised != 0 {
+                flags.unrecognised = Some(unrecognised);
             }
             (flags, shortest, len)
         })
@@ -54,7 +62,7 @@ impl hardy_cbor::encode::ToCbor for ScopeFlags {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
-        let mut flags = self.unrecognised;
+        let mut flags = self.unrecognised.unwrap_or(0);
         if self.include_primary_block {
             flags |= 1 << 0;
         }

@@ -15,7 +15,7 @@ use rand::{TryRngCore, rngs::OsRng};
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ShaVariant {
+pub enum ShaVariant {
     HMAC_256_256,
     #[default]
     HMAC_384_384,
@@ -56,10 +56,10 @@ impl hardy_cbor::decode::FromCbor for ShaVariant {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Parameters {
-    variant: ShaVariant,
-    key: Option<Box<[u8]>>,
-    flags: ScopeFlags,
+pub struct Parameters {
+    pub variant: ShaVariant,
+    pub key: Option<Box<[u8]>>,
+    pub flags: ScopeFlags,
 }
 
 impl Parameters {
@@ -126,7 +126,7 @@ impl hardy_cbor::encode::ToCbor for Parameters {
 }
 
 #[derive(Debug)]
-struct Results(Box<[u8]>);
+pub struct Results(pub Box<[u8]>);
 
 impl Results {
     fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<(Self, bool), Error> {
@@ -229,8 +229,8 @@ fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> 
 
 #[derive(Debug)]
 pub struct Operation {
-    parameters: Rc<Parameters>,
-    results: Results,
+    pub parameters: Rc<Parameters>,
+    pub results: Results,
 }
 
 impl Operation {

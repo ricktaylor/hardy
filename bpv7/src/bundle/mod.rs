@@ -282,7 +282,7 @@ impl From<u64> for Flags {
 
 impl From<&Flags> for u64 {
     fn from(value: &Flags) -> Self {
-        let mut flags = value.unrecognised.unwrap_or_default();
+        let mut flags = value.unrecognised.unwrap_or(0);
         if value.is_fragment {
             flags |= 1 << 0;
         }

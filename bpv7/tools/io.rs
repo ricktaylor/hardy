@@ -70,6 +70,10 @@ impl Output {
                 .map_err(|e| anyhow::anyhow!("Failed to write to stdout: {e}")),
         }
     }
+
+    pub fn write_str<T: AsRef<str>>(&self, buf: T) -> anyhow::Result<()> {
+        self.write(buf.as_ref().as_bytes())
+    }
 }
 
 impl std::str::FromStr for Output {

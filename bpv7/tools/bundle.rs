@@ -6,6 +6,7 @@ mod encrypt;
 mod extract;
 mod io;
 mod keys;
+mod print;
 mod rewrite;
 mod sign;
 mod validate;
@@ -46,6 +47,9 @@ enum Commands {
 
     /// Verify the integrity of a block in a bundle
     Verify(verify::Command),
+
+    /// Print the content of a bundle
+    Print(print::Command),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -60,5 +64,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Extract(args) => args.exec(),
         Commands::Sign(args) => args.exec(),
         Commands::Verify(args) => args.exec(),
+        Commands::Print(args) => args.exec(),
     }
 }
