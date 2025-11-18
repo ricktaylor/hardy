@@ -291,8 +291,10 @@ fn dump_block(
 }
 
 fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
+    output.write_str("Block Specific Data: ")?;
+
     if data.is_empty() {
-        return output.write_str("Block Specific Data: None\n");
+        return output.write_str("None\n");
     }
 
     let mut results = Vec::new();
@@ -319,25 +321,29 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         }
     }
 
-    if results.is_empty() {
-        output.write_str(format!(
-            "Block Specific Data: {} bytes of data in an unrecognized format\n",
-            data.len()
-        ))
-    } else {
-        output.write_str("Block Specific Data: (probably CBOR)\n")?;
+    if !results.is_empty() {
+        output.write_str("Probably CBOR\n")?;
         for s in results {
             output.write_str(format!("`{s}`\n"))?;
         }
 
-        if !data.is_empty() {
-            output.write_str(format!(
-                "Followed by {} bytes of unknown data\n",
-                data.len()
-            ))?;
+        if data.is_empty() {
+            return Ok(());
         }
-        Ok(())
+
+        output.write_str("Followed by ")?;
     }
+
+    if let Ok(s) = str::from_utf8(data)
+        && !s.contains(|c: char| c.is_control())
+    {
+        return output.write_str(format!("\n`{s}`\n"));
+    }
+
+    output.write_str(format!(
+        "{} bytes of data in an unrecognized format\n",
+        data.len()
+    ))
 }
 
 fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
