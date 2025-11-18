@@ -140,7 +140,6 @@ fn dump_bundle(
             output.write_str(format!("  {idx}. {note}\n"))?;
         }
     }
-    output.write_str("\n")?;
 
     let mut blocks = bundle.bundle.blocks.keys().cloned().collect::<Vec<_>>();
     blocks.sort();
@@ -172,7 +171,7 @@ fn dump_block(
 ) -> anyhow::Result<()> {
     let block = bundle.blocks.get(&block_number).unwrap();
 
-    output.write_str(format!("## Block {block_number}: "))?;
+    output.write_str(format!("\n## Block {block_number}: "))?;
     match &block.block_type {
         block::Type::Primary => unreachable!(),
         block::Type::Payload => output.write_str("Payload\n\n"),
@@ -251,50 +250,40 @@ fn dump_block(
     if let Some(payload) = payload {
         match block.block_type {
             block::Type::Primary => unreachable!(),
-            block::Type::PreviousNode => {
-                output.write_str(format!(
-                    "Previous Node: {}\n",
-                    bundle.previous_node.as_ref().unwrap()
-                ))?;
-            }
-            block::Type::BundleAge => {
-                output.write_str(format!(
-                    "Bundle Age: {}\n",
-                    humantime::format_duration(bundle.age.unwrap())
-                ))?;
-            }
+            block::Type::PreviousNode => output.write_str(format!(
+                "Previous Node: {}\n",
+                bundle.previous_node.as_ref().unwrap()
+            )),
+            block::Type::BundleAge => output.write_str(format!(
+                "Bundle Age: {}\n",
+                humantime::format_duration(bundle.age.unwrap())
+            )),
             block::Type::HopCount => {
                 let hop_count = bundle.hop_count.as_ref().unwrap();
                 output.write_str(format!(
                     "Hop Count: {} of {}\n",
                     hop_count.count, hop_count.limit
-                ))?;
+                ))
             }
-            block::Type::BlockIntegrity => {
-                dump_bib(payload.as_ref(), output)?;
-            }
-            block::Type::BlockSecurity => {
-                dump_bcb(payload.as_ref(), output)?;
-            }
+            block::Type::BlockIntegrity => dump_bib(payload.as_ref(), output),
+            block::Type::BlockSecurity => dump_bcb(payload.as_ref(), output),
             block::Type::Payload | block::Type::Unrecognised(_) => {
-                dump_unknown(payload.as_ref(), output)?;
+                dump_unknown(payload.as_ref(), output)
             }
         }
     } else {
         output.write_str(format!(
             "Block Specific Data: {} bytes of encrypted data\n",
             block.data.len()
-        ))?;
+        ))
     }
-
-    output.write_str("\n")
 }
 
 fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
-    output.write_str("Block Specific Data: ")?;
+    output.write_str("Block Specific Data:")?;
 
     if data.is_empty() {
-        return output.write_str("None\n");
+        return output.write_str(" None\n");
     }
 
     let mut results = Vec::new();
@@ -322,7 +311,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     }
 
     if !results.is_empty() {
-        output.write_str("Probably CBOR\n")?;
+        output.write_str(" Probably CBOR\n")?;
         for s in results {
             output.write_str(format!("`{s}`\n"))?;
         }
@@ -331,7 +320,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        output.write_str("Followed by ")?;
+        output.write_str("Followed by")?;
     }
 
     if let Ok(s) = str::from_utf8(data)
@@ -341,7 +330,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     }
 
     output.write_str(format!(
-        "{} bytes of data in an unrecognized format\n",
+        " {} bytes of data in an unrecognized format\n",
         data.len()
     ))
 }

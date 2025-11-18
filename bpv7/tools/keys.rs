@@ -36,7 +36,7 @@ impl TryFrom<KeySetLoaderArgs> for KeySet {
         };
 
         // Get the JSON content string
-        let json_content = if source.trim_ascii_start().starts_with(['{', '[']) {
+        let json_content = if source.trim_ascii_start().starts_with('{') {
             // Source is a raw JSON string
             source.to_string()
         } else {
@@ -47,7 +47,7 @@ impl TryFrom<KeySetLoaderArgs> for KeySet {
 
         // Parse into the enum
         let input: JwkSetInput = serde_json::from_str(&json_content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse key: {e}"))?;
+            .map_err(|_| anyhow::anyhow!("Failed to parse key, expecting JWK or JWKS format"))?;
 
         // Normalize to a KeySet and return
         Ok(input.into_key_set())
