@@ -27,7 +27,7 @@ pub struct Command {
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
         // Get the JSON content string
-        let key = if self.key.starts_with('{') {
+        let key = if self.key.trim_ascii_start().starts_with('{') {
             // Source is a raw JSON string
             self.key
         } else {

@@ -24,19 +24,19 @@ pub struct KeySetLoaderArgs {
     /// The optional key or key set.
     /// Can be a file path or a raw JSON string.
     #[arg(short, long, value_name = "KEY_OR_KEY_SET_SOURCE")]
-    pub key: Option<String>,
+    pub keys: Option<String>,
 }
 
 impl TryFrom<KeySetLoaderArgs> for KeySet {
     type Error = anyhow::Error;
 
     fn try_from(args: KeySetLoaderArgs) -> Result<Self, Self::Error> {
-        let Some(source) = args.key else {
+        let Some(source) = args.keys else {
             return Ok(KeySet::EMPTY);
         };
 
         // Get the JSON content string
-        let json_content = if source.starts_with(['{', '[']) {
+        let json_content = if source.trim_ascii_start().starts_with(['{', '[']) {
             // Source is a raw JSON string
             source.to_string()
         } else {
