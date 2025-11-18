@@ -58,7 +58,7 @@ impl std::fmt::Display for Input {
 pub struct Output(Option<PathBuf>);
 
 impl Output {
-    pub fn write(&self, buf: &[u8]) -> anyhow::Result<()> {
+    pub fn write_all(&self, buf: &[u8]) -> anyhow::Result<()> {
         match &self.0 {
             Some(f) => std::io::BufWriter::new(std::fs::File::create(f).map_err(|e| {
                 anyhow::anyhow!("Failed to open output file '{}': {e}", f.display())
@@ -72,7 +72,25 @@ impl Output {
     }
 
     pub fn write_str<T: AsRef<str>>(&self, buf: T) -> anyhow::Result<()> {
-        self.write(buf.as_ref().as_bytes())
+        self.write_all(buf.as_ref().as_bytes())
+    }
+
+    pub fn append_str<T: AsRef<str>>(&self, buf: T) -> anyhow::Result<()> {
+        let buf = buf.as_ref().as_bytes();
+        match &self.0 {
+            Some(f) => {
+                std::io::BufWriter::new(std::fs::OpenOptions::new().append(true).open(f).map_err(
+                    |e| anyhow::anyhow!("Failed to open output file '{}': {e}", f.display()),
+                )?)
+                .write_all(buf)
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to write to output file '{}': {e}", f.display())
+                })
+            }
+            None => std::io::BufWriter::new(std::io::stdout())
+                .write_all(buf)
+                .map_err(|e| anyhow::anyhow!("Failed to write to stdout: {e}")),
+        }
     }
 }
 

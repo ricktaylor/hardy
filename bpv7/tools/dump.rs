@@ -43,6 +43,6 @@ impl Command {
         .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
         json.push('\n');
 
-        self.output.write(json.as_bytes())
+        self.output.write_all(json.as_bytes())
     }
 }

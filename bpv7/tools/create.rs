@@ -54,7 +54,7 @@ impl Command {
         }
         .into();
 
-        self.output.write(
+        self.output.write_all(
             &builder
                 .with_payload(&self.payload.read_all()?)
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())

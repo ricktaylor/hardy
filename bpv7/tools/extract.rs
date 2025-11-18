@@ -29,7 +29,7 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
             .bundle;
 
-        self.output.write(
+        self.output.write_all(
             bundle
                 .block_data(self.block, &data, &key_store)
                 .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
