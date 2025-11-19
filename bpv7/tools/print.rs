@@ -394,7 +394,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 if let Some(tag) = &op.results.0 {
                     output.append_str(format!(
                         "Target Block {target} Authentication Tag: {}\n",
-                        dump_bytes(&tag)
+                        dump_bytes(tag)
                     ))?;
                 } else {
                     output
