@@ -286,6 +286,12 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         return output.append_str(" None\n");
     }
 
+    if let Ok(s) = str::from_utf8(data)
+        && !s.contains(|c: char| c.is_control())
+    {
+        return output.append_str(format!("\n`{s}`\n"));
+    }
+
     let mut results = Vec::new();
     while let Ok((s, len)) = hardy_cbor::decode::parse_value(data, |v, _, _| {
         let s = format!("{v:?}");
@@ -323,12 +329,6 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         output.append_str("Followed by")?;
     }
 
-    if let Ok(s) = str::from_utf8(data)
-        && !s.contains(|c: char| c.is_control())
-    {
-        return output.append_str(format!("\n`{s}`\n"));
-    }
-
     output.append_str(format!(
         " {} bytes of data in an unrecognized format\n",
         data.len()
@@ -354,7 +354,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 output.append_str(format!("Wrapped Key: {}\n", dump_bytes(key),))?;
             }
 
-            if op.parameters.flags == bpsec::rfc9173::ScopeFlags::default() {
+            if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
                 output.append_str("Scope Flags: None\n")?;
             } else {
                 output.append_str("Scope Flags:\n")?;
@@ -391,10 +391,15 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     for (target, op) in ops.operations {
         match op {
             bpsec::bcb::Operation::AES_GCM(op) => {
-                output.append_str(format!(
-                    "Target Block {target} Authentication Tag: {:?}\n",
-                    op.results.0
-                ))?;
+                if let Some(tag) = &op.results.0 {
+                    output.append_str(format!(
+                        "Target Block {target} Authentication Tag: {}\n",
+                        dump_bytes(&tag)
+                    ))?;
+                } else {
+                    output
+                        .write_str(format!("Target Block {target} Authentication Tag: None\n"))?;
+                }
             }
             bpsec::bcb::Operation::Unrecognised(_u, op) => {
                 output.append_str(format!("Target Block: {target}\n"))?;
@@ -425,7 +430,7 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 output.append_str(format!("Wrapped Key: {}\n", dump_bytes(key),))?;
             }
 
-            if op.parameters.flags == bpsec::rfc9173::ScopeFlags::default() {
+            if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
                 output.append_str("Scope Flags: None\n")?;
             } else {
                 output.append_str("Scope Flags:\n")?;

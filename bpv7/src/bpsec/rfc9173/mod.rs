@@ -13,6 +13,15 @@ pub struct ScopeFlags {
     pub unrecognised: Option<u64>,
 }
 
+impl ScopeFlags {
+    pub const NONE: Self = Self {
+        include_primary_block: false,
+        include_target_header: false,
+        include_security_header: false,
+        unrecognised: None,
+    };
+}
+
 impl Default for ScopeFlags {
     fn default() -> Self {
         Self {

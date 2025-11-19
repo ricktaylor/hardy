@@ -227,6 +227,58 @@ fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> 
     Ok(zeroize::Zeroizing::from(cek))
 }
 
+enum KeyWrap {
+    Aes128,
+    Aes192,
+    Aes256,
+}
+
+fn as_key_wrap(alg: &Option<key::KeyAlgorithm>) -> Option<KeyWrap> {
+    match alg {
+        Some(key::KeyAlgorithm::A128KW)
+        | Some(key::KeyAlgorithm::HS256_A128KW)
+        | Some(key::KeyAlgorithm::HS384_A128KW)
+        | Some(key::KeyAlgorithm::HS512_A128KW) => Some(KeyWrap::Aes128),
+
+        Some(key::KeyAlgorithm::A192KW)
+        | Some(key::KeyAlgorithm::HS256_A192KW)
+        | Some(key::KeyAlgorithm::HS384_A192KW)
+        | Some(key::KeyAlgorithm::HS512_A192KW) => Some(KeyWrap::Aes192),
+
+        Some(key::KeyAlgorithm::A256KW)
+        | Some(key::KeyAlgorithm::HS256_A256KW)
+        | Some(key::KeyAlgorithm::HS384_A256KW)
+        | Some(key::KeyAlgorithm::HS512_A256KW) => Some(KeyWrap::Aes256),
+
+        _ => None,
+    }
+}
+
+fn as_variant(alg: &Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
+    match alg {
+        Some(key::KeyAlgorithm::HS256)
+        | Some(key::KeyAlgorithm::HS256_A128KW)
+        | Some(key::KeyAlgorithm::HS256_A192KW)
+        | Some(key::KeyAlgorithm::HS256_A256KW) => Some(ShaVariant::HMAC_256_256),
+
+        None
+        | Some(key::KeyAlgorithm::HS384)
+        | Some(key::KeyAlgorithm::HS384_A128KW)
+        | Some(key::KeyAlgorithm::HS384_A192KW)
+        | Some(key::KeyAlgorithm::HS384_A256KW)
+        | Some(key::KeyAlgorithm::A128KW)
+        | Some(key::KeyAlgorithm::A192KW)
+        | Some(key::KeyAlgorithm::A256KW) => Some(ShaVariant::HMAC_384_384),
+
+        Some(key::KeyAlgorithm::HS512)
+        | Some(key::KeyAlgorithm::HS512_A128KW)
+        | Some(key::KeyAlgorithm::HS512_A192KW)
+        | Some(key::KeyAlgorithm::HS512_A256KW) => Some(ShaVariant::HMAC_512_512),
+
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 pub struct Operation {
     pub parameters: Rc<Parameters>,
@@ -253,49 +305,38 @@ impl Operation {
             return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
         }
 
-        let (cek, variant) = match &jwk.key_algorithm {
-            Some(key::KeyAlgorithm::HS256_A128KW) => {
-                if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey)
-                {
-                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+        let variant = as_variant(&jwk.key_algorithm).ok_or(Error::NoValidKey)?;
+        let key_wrap = as_key_wrap(&jwk.key_algorithm);
+
+        let cek = if let Some(key_wrap) = &key_wrap {
+            match key_wrap {
+                KeyWrap::Aes128 => {
+                    if let Some(ops) = &jwk.operations
+                        && !ops.contains(&key::Operation::WrapKey)
+                    {
+                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+                    }
+                    Some(rand_key(Box::from([0u8; 32]))?)
                 }
-                (
-                    Some(rand_key(Box::from([0u8; 32]))?),
-                    ShaVariant::HMAC_256_256,
-                )
-            }
-            Some(key::KeyAlgorithm::A128KW)
-            | Some(key::KeyAlgorithm::A192KW)
-            | Some(key::KeyAlgorithm::A256KW)
-            | Some(key::KeyAlgorithm::HS384_A192KW) => {
-                if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey)
-                {
-                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+                KeyWrap::Aes192 => {
+                    if let Some(ops) = &jwk.operations
+                        && !ops.contains(&key::Operation::WrapKey)
+                    {
+                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+                    }
+                    Some(rand_key(Box::from([0u8; 48]))?)
                 }
-                (
-                    Some(rand_key(Box::from([0u8; 48]))?),
-                    ShaVariant::HMAC_384_384,
-                )
-            }
-            Some(key::KeyAlgorithm::HS512_A256KW) => {
-                if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey)
-                {
-                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+                KeyWrap::Aes256 => {
+                    if let Some(ops) = &jwk.operations
+                        && !ops.contains(&key::Operation::WrapKey)
+                    {
+                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+                    }
+                    Some(rand_key(Box::from([0u8; 64]))?)
                 }
-                (
-                    Some(rand_key(Box::from([0u8; 64]))?),
-                    ShaVariant::HMAC_512_512,
-                )
             }
-            Some(key::KeyAlgorithm::HS256) => (None, ShaVariant::HMAC_256_256),
-            Some(key::KeyAlgorithm::HS384) => (None, ShaVariant::HMAC_384_384),
-            Some(key::KeyAlgorithm::HS512) => (None, ShaVariant::HMAC_512_512),
-            _ => {
-                return Err(Error::NoValidKey);
-            }
+        } else {
+            None
         };
 
         let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
@@ -321,24 +362,17 @@ impl Operation {
             ShaVariant::Unrecognised(_) => unreachable!(),
         });
 
-        let key = if let Some(cek) = cek {
-            let key = match &jwk.key_algorithm {
-                Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
-                    aes_kw::KekAes128::try_from(kek.as_ref())
-                        .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                }
-                Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
-                    aes_kw::KekAes192::try_from(kek.as_ref())
-                        .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                }
-                Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
-                    aes_kw::KekAes256::try_from(kek.as_ref())
-                        .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.to_string()))
-                }
-                _ => return Err(Error::NoValidKey),
+        let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {
+            let key = match key_wrap {
+                KeyWrap::Aes128 => aes_kw::KekAes128::try_from(kek.as_ref())
+                    .and_then(|kek| kek.wrap_vec(&cek))
+                    .map_err(|e| Error::Algorithm(e.to_string())),
+                KeyWrap::Aes192 => aes_kw::KekAes192::try_from(kek.as_ref())
+                    .and_then(|kek| kek.wrap_vec(&cek))
+                    .map_err(|e| Error::Algorithm(e.to_string())),
+                KeyWrap::Aes256 => aes_kw::KekAes256::try_from(kek.as_ref())
+                    .and_then(|kek| kek.wrap_vec(&cek))
+                    .map_err(|e| Error::Algorithm(e.to_string())),
             }?;
             Some(key.into())
         } else {
@@ -367,39 +401,31 @@ impl Operation {
                 args.bpsec_source,
                 &[key::Operation::UnwrapKey, key::Operation::Verify],
             ) {
-                if let key::Type::OctetSequence { key: kek } = &jwk.key_type
-                    && let Some(cek) = (match &jwk.key_algorithm {
-                        Some(key::KeyAlgorithm::A128KW) | Some(key::KeyAlgorithm::HS256_A128KW) => {
-                            aes_kw::KekAes128::try_from(kek.as_ref())
-                                .and_then(|kek| kek.unwrap_vec(cek))
-                                .ok()
-                        }
-                        Some(key::KeyAlgorithm::A192KW) | Some(key::KeyAlgorithm::HS384_A192KW) => {
-                            aes_kw::KekAes192::try_from(kek.as_ref())
-                                .and_then(|kek| kek.unwrap_vec(cek))
-                                .ok()
-                        }
-                        Some(key::KeyAlgorithm::A256KW) | Some(key::KeyAlgorithm::HS512_A256KW) => {
-                            aes_kw::KekAes256::try_from(kek.as_ref())
-                                .and_then(|kek| kek.unwrap_vec(cek))
-                                .ok()
-                        }
+                if Some(self.parameters.variant) == as_variant(&jwk.key_algorithm)
+                    && let key::Type::OctetSequence { key } = &jwk.key_type
+                    && let Some(cek) = (match as_key_wrap(&jwk.key_algorithm) {
+                        Some(KeyWrap::Aes128) => aes_kw::KekAes128::try_from(key.as_ref())
+                            .and_then(|key| key.unwrap_vec(cek))
+                            .ok(),
+                        Some(KeyWrap::Aes192) => aes_kw::KekAes192::try_from(key.as_ref())
+                            .and_then(|key| key.unwrap_vec(cek))
+                            .ok(),
+                        Some(KeyWrap::Aes256) => aes_kw::KekAes256::try_from(key.as_ref())
+                            .and_then(|key| key.unwrap_vec(cek))
+                            .ok(),
                         _ => None,
                     })
                     .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-                    && let Some(true) = self.verify_inner(&mut tried_to_verify, &cek, &args)?
+                    && self.verify_inner(&mut tried_to_verify, &cek, &args)? == Some(true)
                 {
                     return Ok(());
                 }
             }
         } else {
             for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Verify]) {
-                if let (ShaVariant::HMAC_256_256, Some(key::KeyAlgorithm::HS256) | None)
-                | (ShaVariant::HMAC_384_384, Some(key::KeyAlgorithm::HS384) | None)
-                | (ShaVariant::HMAC_512_512, Some(key::KeyAlgorithm::HS512) | None) =
-                    (self.parameters.variant, &jwk.key_algorithm)
-                    && let key::Type::OctetSequence { key: cek } = &jwk.key_type
-                    && let Some(true) = self.verify_inner(&mut tried_to_verify, cek, &args)?
+                if Some(self.parameters.variant) == as_variant(&jwk.key_algorithm)
+                    && let key::Type::OctetSequence { key } = &jwk.key_type
+                    && self.verify_inner(&mut tried_to_verify, key, &args)? == Some(true)
                 {
                     return Ok(());
                 }

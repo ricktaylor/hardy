@@ -165,8 +165,20 @@ pub enum KeyAlgorithm {
     HS512,
     #[cfg_attr(feature = "serde", serde(rename = "HS256+A128KW"))]
     HS256_A128KW,
+    #[cfg_attr(feature = "serde", serde(rename = "HS256+A192KW"))]
+    HS256_A192KW,
+    #[cfg_attr(feature = "serde", serde(rename = "HS256+A256KW"))]
+    HS256_A256KW,
+    #[cfg_attr(feature = "serde", serde(rename = "HS384+A128KW"))]
+    HS384_A128KW,
     #[cfg_attr(feature = "serde", serde(rename = "HS384+A192KW"))]
     HS384_A192KW,
+    #[cfg_attr(feature = "serde", serde(rename = "HS384+A256KW"))]
+    HS384_A256KW,
+    #[cfg_attr(feature = "serde", serde(rename = "HS512+A128KW"))]
+    HS512_A128KW,
+    #[cfg_attr(feature = "serde", serde(rename = "HS512+A192KW"))]
+    HS512_A192KW,
     #[cfg_attr(feature = "serde", serde(rename = "HS512+A256KW"))]
     HS512_A256KW,
     #[cfg_attr(feature = "serde", serde(other))]
