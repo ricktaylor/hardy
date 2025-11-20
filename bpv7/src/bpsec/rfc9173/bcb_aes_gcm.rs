@@ -437,7 +437,7 @@ impl Operation {
         data: &[u8],
     ) -> Result<Option<zeroize::Zeroizing<Box<[u8]>>>, Error> {
         match (self.parameters.variant, enc_algorithm) {
-            (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM) | None) => {
+            (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM)) => {
                 if let Ok(cek) = aes_gcm::Aes128Gcm::new_from_slice(cek) {
                     *tried_to_decrypt = true;
                     return Ok(self.decrypt_inner(cek, aad, data));

@@ -134,6 +134,7 @@ mod test {
         let keys = key::KeySet::new(vec![key::Key {
             id: Some("ipn:2.1".into()),
             key_algorithm: Some(key::KeyAlgorithm::A128KW),
+            enc_algorithm: Some(key::EncAlgorithm::A128GCM),
             operations: Some([key::Operation::UnwrapKey, key::Operation::Decrypt].into()),
             key_type: key::Type::OctetSequence {
                 key: BASE64_URL_SAFE_NO_PAD
