@@ -1,8 +1,8 @@
 # Route all IPN bundles to a specific node
-ipn:1.2.3 via ipn:0.1.0
+ipn:1.*.* via ipn:0.1.0
 # Drop bundles matching a specific pattern
 ipn:4.5.6 drop
-# Reflect DTN bundles with a specific priority
+# Low priority rule to reflect bundles that match the pattern
 dtn://test/* reflect priority 1200
 # Route to another node
 ipn:7.8.9 via ipn:0.2.0
