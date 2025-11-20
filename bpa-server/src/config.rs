@@ -2,6 +2,10 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
 pub enum MetadataStorage {
@@ -30,9 +34,10 @@ pub enum BundleStorage {
     // S3(S3Config),
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     // Logging level
+    #[serde(default = "default_log_level")]
     pub log_level: String,
 
     // Static Routes Configuration

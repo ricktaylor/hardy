@@ -40,6 +40,9 @@ The `hardy-bpa-server` router uses a configuration file in TOML format to specif
 Here is a minimal example of a `hardy-bpa-server` configuration file:
 
 ```toml
+# Can be one of: trace, debug, info, warn, error
+log_level = "info"
+
 # The administrative endpoint - You *MUST* change this
 administrative_endpoints = "ipn:977000.1.0"
 
@@ -59,7 +62,7 @@ store_dir="<fully qualified directory path>"
 # static routes options
 [static_routes]
 # Filepath of static routes file
-routes_file = "./static_routes"
+routes_file = "./static_routes_example"
 ```
 
 By default a configuration file named `hardy-bpa-server.toml` is read from:
