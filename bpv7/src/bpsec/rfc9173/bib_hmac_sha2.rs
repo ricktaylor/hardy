@@ -299,6 +299,10 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bib::OperationArgs,
     ) -> Result<Self, Error> {
+        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+            return Err(Error::CrcPresent);
+        }
+
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Sign)
         {
@@ -394,6 +398,10 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bib::OperationArgs,
     ) -> Result<(), Error> {
+        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+            return Err(Error::CrcPresent);
+        }
+
         let mut tried_to_verify = false;
 
         if let Some(cek) = &self.parameters.key {

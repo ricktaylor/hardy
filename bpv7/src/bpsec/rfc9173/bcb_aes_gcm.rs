@@ -231,6 +231,10 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {
+        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+            return Err(Error::CrcPresent);
+        }
+
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Encrypt)
         {
@@ -355,6 +359,11 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+            return Err(Error::CrcPresent);
+        }
+
+        // This will always be Payload::Borrowed because we are decrypting now!
         let data = args
             .blocks
             .block_payload(args.target, args.target_block)

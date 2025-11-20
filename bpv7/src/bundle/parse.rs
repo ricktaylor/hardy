@@ -32,6 +32,8 @@ struct BlockParse<'a> {
     blocks_to_remove: HashSet<u64>,
     /// A map of BCB block numbers to their parsed operation sets.
     bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
+    /// Indicates if the bundle originally protected the primary block
+    primary_block_was_protected: bool,
     /// A set of security blocks (BIB or BCB) that protect the primary block.
     protects_primary_block: HashSet<u64>,
     /// Should we rewrite
@@ -257,6 +259,7 @@ impl<'a> BlockParse<'a> {
                             return Err(bpsec::Error::BCBMustReplicate.into());
                         }
                         if op.protects_primary_block() {
+                            self.primary_block_was_protected = true;
                             self.protects_primary_block.insert(*bcb_block_number);
                         }
                         false
@@ -269,6 +272,7 @@ impl<'a> BlockParse<'a> {
                             false
                         } else {
                             if op.protects_primary_block() {
+                                self.primary_block_was_protected = true;
                                 self.protects_primary_block.insert(*bcb_block_number);
                             }
                             true
@@ -278,6 +282,7 @@ impl<'a> BlockParse<'a> {
                         if !self.blocks_to_remove.contains(target_number)
                             && op.protects_primary_block()
                         {
+                            self.primary_block_was_protected = true;
                             self.protects_primary_block.insert(*bcb_block_number);
                         }
                         false
@@ -422,6 +427,7 @@ impl<'a> BlockParse<'a> {
                     || (!self.blocks_to_remove.contains(target_number)
                         && op.protects_primary_block())
                 {
+                    self.primary_block_was_protected = true;
                     self.protects_primary_block.insert(bib_block_number);
                 }
             }
@@ -605,16 +611,28 @@ fn parse_blocks(
     // We are done with all decrypted content
     parser.decrypted_data.clear();
 
+    // Check we have at least some primary block protection
+    if let crc::CrcType::None = bundle.crc_type
+        && !parser.primary_block_was_protected
+    {
+        return Err(Error::MissingIntegrityCheck);
+    }
+
     if parser.rewrite {
         // Reduce BCB targets scheduled for removal
         parser.reduce_bcbs();
-    }
 
-    // Check we have at least some primary block protection
-    if let crc::CrcType::None = bundle.crc_type
-        && parser.protects_primary_block.is_empty()
-    {
-        return Err(Error::MissingIntegrityCheck);
+        // Check to see if we need to add a CRC because we have removed all protection
+        if parser.protects_primary_block.is_empty()
+            && let crc::CrcType::None = bundle.crc_type
+        {
+            bundle.crc_type = crc::CrcType::CRC32_CASTAGNOLI;
+
+            // Rewrite the Primary Block
+            parser
+                .noncanonical_blocks
+                .insert(0, Some(primary_block::PrimaryBlock::emit(bundle)?.into()));
+        }
     }
 
     // Now rewrite blocks (if required)

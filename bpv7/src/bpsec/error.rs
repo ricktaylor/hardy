@@ -21,6 +21,9 @@ pub enum Error {
     #[error("Unrecognised BPSec context")]
     UnrecognisedContext(u64),
 
+    #[error("The target block has a CRC")]
+    CrcPresent,
+
     #[error("BCBs must not target other BCBs, the primary block, or BIBs that don't share targets")]
     InvalidBCBTarget,
 
