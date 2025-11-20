@@ -12,7 +12,7 @@ pub trait KeyStore {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct KeySet {
-    keys: Vec<Key>,
+    pub keys: Vec<Key>,
 }
 
 impl KeySet {

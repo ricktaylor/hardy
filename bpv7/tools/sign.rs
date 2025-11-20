@@ -15,10 +15,8 @@ pub struct Command {
     #[arg(short, long)]
     source: Option<hardy_bpv7::eid::Eid>,
 
-    /// The signing key.
-    /// Can be a file path or a raw JSON string.
-    #[arg(value_name = "KEY_OR_KEY_SOURCE")]
-    key: String,
+    #[clap(flatten)]
+    key_input: keys::KeyInput,
 
     /// The bundle file containing the block to sign, '-' to use stdin.
     input: io::Input,
@@ -26,20 +24,7 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        // Get the JSON content string
-        let key = if self.key.trim_ascii_start().starts_with('{') {
-            // Source is a raw JSON string
-            self.key
-        } else {
-            // Source is a file path
-            std::fs::read_to_string(self.key)
-                .map_err(|e| anyhow::anyhow!("Failed to read key file: {e}"))?
-        };
-
-        // Parse into the enum
-        let key =
-            serde_json::from_str(&key).map_err(|e| anyhow::anyhow!("Failed to parse key: {e}"))?;
-
+        let key = self.key_input.try_into()?;
         let data = self.input.read_all()?;
 
         let bundle =

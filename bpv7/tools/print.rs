@@ -4,8 +4,7 @@ use hardy_bpv7::*;
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    // Use #[command(flatten)] to include the --key argument
-    #[command(flatten)]
+    #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,
 
     /// Path to the location to write the output to, or stdout if not supplied
@@ -141,12 +140,17 @@ fn dump_bundle(
         }
     }
 
-    let mut blocks = bundle.bundle.blocks.keys().cloned().collect::<Vec<_>>();
-    blocks.sort();
+    let blocks = bundle.bundle.blocks.keys().cloned().collect::<Vec<_>>();
+    let mut blocks = blocks
+        .into_iter()
+        .map(|n| (n, bundle.bundle.blocks.get(&n).unwrap()))
+        .collect::<Vec<_>>();
 
-    for block_number in blocks {
+    blocks.sort_by(|a, b| a.1.extent.start.cmp(&b.1.extent.start));
+
+    for (block_number, block) in blocks {
         if block_number != 0 {
-            dump_block(&bundle.bundle, block_number, data, &output, &keys)?;
+            dump_block(&bundle.bundle, block_number, block, data, &output, &keys)?;
         }
     }
 
@@ -165,12 +169,11 @@ fn dump_crc(crc: crc::CrcType, output: &io::Output) -> anyhow::Result<()> {
 fn dump_block(
     bundle: &bundle::Bundle,
     block_number: u64,
+    block: &block::Block,
     data: &[u8],
     output: &io::Output,
     keys: &bpsec::key::KeySet,
 ) -> anyhow::Result<()> {
-    let block = bundle.blocks.get(&block_number).unwrap();
-
     output.append_str(format!("\n## Block {block_number}: "))?;
     match &block.block_type {
         block::Type::Primary => unreachable!(),
@@ -398,7 +401,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                     ))?;
                 } else {
                     output
-                        .write_str(format!("Target Block {target} Authentication Tag: None\n"))?;
+                        .append_str(format!("Target Block {target} Authentication Tag: None\n"))?;
                 }
             }
             bpsec::bcb::Operation::Unrecognised(_u, op) => {

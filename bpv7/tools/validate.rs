@@ -3,8 +3,7 @@ use super::*;
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    // Use #[command(flatten)] to include the --key argument
-    #[command(flatten)]
+    #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,
 
     /// The list of bundle files to validate, can include '-' to use stdin.
