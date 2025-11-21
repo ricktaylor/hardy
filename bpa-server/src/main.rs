@@ -80,12 +80,15 @@ fn start_storage(config: &mut config::Config) {
 }
 
 fn start_logging(config: &config::Config, config_source: String) {
-    let log_level = config
-        .log_level
-        .parse::<tracing_subscriber::filter::LevelFilter>()
-        .expect("Invalid 'log_level' value in configuration");
+    let log_level = tracing_subscriber::filter::LevelFilter::from_level(config.log_level.0);
+
+    let timer = tracing_subscriber::fmt::time::OffsetTime::new(
+        time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
+        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
+    );
 
     tracing_subscriber::fmt()
+        .with_timer(timer)
         .with_max_level(log_level)
         .with_target(
             log_level > tracing_subscriber::filter::LevelFilter::from_level(tracing::Level::INFO),
