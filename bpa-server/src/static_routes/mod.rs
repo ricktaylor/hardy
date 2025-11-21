@@ -69,24 +69,41 @@ impl StaticRoutes {
         Ok(())
     }
 
-    async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
-        // TODO: This doesn't seem to drop routes properly
+    fn compute_routes_changes(
+        &self,
+        new_routes: &HashMap<eid_patterns::EidPattern, StaticRoute>,
+    ) -> (
+        Vec<(eid_patterns::EidPattern, StaticRoute)>,
+        Vec<(eid_patterns::EidPattern, StaticRoute)>,
+    ) {
+        // Calculate routes to drop (present in current but missing or changed in new)
+        let drop_routes: Vec<_> = self
+            .routes
+            .iter()
+            .filter(|(k, v)| new_routes.get(k) != Some(v))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
+        // Calculate routes to add (present in new but missing or changed in current)
+        let add_routes: Vec<_> = new_routes
+            .iter()
+            .filter(|(k, v)| self.routes.get(k) != Some(v))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        (drop_routes, add_routes)
+    }
+
+    async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
         // Reload the routes
-        let mut drop_routes = Vec::new();
-        let mut add_routes = Vec::new();
-        for (pattern, r) in
-            parse::load_routes(&self.config.routes_file, ignore_errors, self.config.watch).await?
-        {
-            if let Some(v2) = self.routes.get(&pattern) {
-                if &r != v2 {
-                    drop_routes.push((pattern.clone(), r.clone()));
-                    add_routes.push((pattern, r));
-                }
-            } else {
-                add_routes.push((pattern, r));
-            }
-        }
+        let new_routes: HashMap<_, _> =
+            parse::load_routes(&self.config.routes_file, ignore_errors, self.config.watch)
+                .await?
+                .into_iter()
+                .collect();
+
+        // Calculate routes to drop and add
+        let (drop_routes, add_routes) = self.compute_routes_changes(&new_routes);
 
         // Drop routes
         for (k, v) in drop_routes {
@@ -171,7 +188,7 @@ impl StaticRoutes {
                                 }
                                 _ => false
                             } {
-                                info!("Reloading static routes from '{}'",routes_file.display());
+                                info!("Reloading static routes from '{}' (event: {:?})", routes_file.display(), event.kind);
                                 self_cloned.refresh_routes(false).await.trace_expect("Failed to process static routes file");
                             }
                         },

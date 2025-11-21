@@ -75,7 +75,7 @@
 # The path to the file containing static route definitions.
 #routes_file = "/etc/hardy-bpa-server/static_routes.yaml"
 # Whether to monitor the routes file for changes and automatically reload it.
-#watch = true
+#watch = false # By default watcher is enabled.
 
 # A list of Convergence Layer Adapters (CLAs) to enable.
 # Each item in the list defines a CLA instance.
