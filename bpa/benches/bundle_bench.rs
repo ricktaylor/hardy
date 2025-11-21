@@ -13,7 +13,7 @@ fn get_bundle() -> Box<[u8]> {
     .into();
 
     builder
-        .with_payload([42; 4096])
+        .with_payload((&[42u8; 4096]).into())
         .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
         .expect("Failed to build bundle")
         .1
