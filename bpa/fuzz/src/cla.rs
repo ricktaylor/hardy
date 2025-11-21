@@ -42,7 +42,7 @@ impl RandomBundle {
         }
 
         builder
-            .with_payload(self.payload)
+            .with_payload(self.payload.into())
             .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
             .map(|b| b.1.into())
     }

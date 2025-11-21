@@ -1,5 +1,5 @@
 use super::*;
-
+use alloc::borrow::Cow;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,18 +17,18 @@ pub enum Error {
 /// A builder for creating a new [`bundle::Bundle`].
 ///
 /// See [`Builder::new()`] for more information.
-pub struct Builder {
+pub struct Builder<'a> {
     bundle_flags: bundle::Flags,
     crc_type: crc::CrcType,
     source: eid::Eid,
     destination: eid::Eid,
     report_to: Option<eid::Eid>,
     lifetime: core::time::Duration,
-    payload: BlockTemplate,
-    extensions: Vec<BlockTemplate>,
+    payload: BlockTemplate<'a>,
+    extensions: Vec<BlockTemplate<'a>>,
 }
 
-impl Builder {
+impl<'a> Builder<'a> {
     /// Creates a new [`Builder`] for creating a [`bundle::Bundle`].
     ///
     /// # Examples
@@ -37,7 +37,7 @@ impl Builder {
     ///
     /// let (bundle, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
     ///     .with_report_to("ipn:3.0".parse().unwrap())
-    ///     .with_payload("Hello")
+    ///     .with_payload("Hello".as_bytes().into())
     ///     .build(CreationTimestamp::now()).unwrap();
     /// ```
     pub fn new(source: eid::Eid, destination: eid::Eid) -> Self {
@@ -82,7 +82,7 @@ impl Builder {
     }
 
     /// Adds an extension block to this [`Builder`].
-    pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder, Error> {
+    pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
         if let block::Type::Primary = block_type {
             Err(Error::PrimaryBlock)
         } else {
@@ -91,7 +91,7 @@ impl Builder {
     }
 
     /// Adds the payload block to this [`Builder`].
-    pub fn with_payload<T: AsRef<[u8]>>(self, data: T) -> Self {
+    pub fn with_payload(self, data: Cow<'a, [u8]>) -> Self {
         self.add_extension_block(block::Type::Payload)
             .expect("Failed to add payload block")
             .with_flags(block::Flags {
@@ -110,7 +110,7 @@ impl Builder {
                 must_replicate: true,
                 ..Default::default()
             })
-            .build(hardy_cbor::encode::emit(hop_info).0)
+            .build(hardy_cbor::encode::emit(hop_info).0.into())
     }
 
     /// Builds the [`bundle::Bundle`] with the given timestamp.
@@ -140,12 +140,12 @@ impl Builder {
             for (block_number, block) in self.extensions.into_iter().enumerate() {
                 bundle.blocks.insert(
                     block_number as u64,
-                    block.build(block_number as u64 + 2, a)?,
+                    block.build(block_number as u64 + 2, None, a)?,
                 );
             }
 
             // Emit payload
-            bundle.blocks.insert(1, self.payload.build(1, a)?);
+            bundle.blocks.insert(1, self.payload.build(1, None, a)?);
             Ok::<_, Error>(())
         })?;
 
@@ -154,14 +154,14 @@ impl Builder {
 }
 
 /// A builder for creating a new [`block::Block`].
-pub struct BlockBuilder {
-    builder: Builder,
-    template: BlockTemplate,
+pub struct BlockBuilder<'a> {
+    builder: Builder<'a>,
+    template: BlockTemplate<'a>,
 }
 
-impl BlockBuilder {
+impl<'a> BlockBuilder<'a> {
     /// Creates a new [`BlockBuilder`] for creating a [`block::Block`].
-    fn new(builder: Builder, block_type: block::Type) -> Self {
+    fn new(builder: Builder<'a>, block_type: block::Type) -> Self {
         Self {
             template: BlockTemplate::new(block_type, block::Flags::default(), builder.crc_type),
             builder,
@@ -181,8 +181,8 @@ impl BlockBuilder {
     }
 
     /// Builds the [`block::Block`] with the given data.
-    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> Builder {
-        self.template.data = Some(data.as_ref().into());
+    pub fn build(mut self, data: Cow<'a, [u8]>) -> Builder<'a> {
+        self.template.data = Some(data);
 
         if let block::Type::Payload = self.template.block_type {
             self.builder.payload = self.template;
@@ -195,14 +195,14 @@ impl BlockBuilder {
 
 /// A template for creating a new [`block::Block`].
 #[derive(Clone)]
-pub(crate) struct BlockTemplate {
+pub(crate) struct BlockTemplate<'a> {
     pub block_type: block::Type,
     pub flags: block::Flags,
     pub crc_type: crc::CrcType,
-    pub data: Option<Box<[u8]>>,
+    pub data: Option<Cow<'a, [u8]>>,
 }
 
-impl BlockTemplate {
+impl<'a> BlockTemplate<'a> {
     /// Creates a new [`BlockTemplate`] for creating a [`block::Block`].
     pub fn new(block_type: block::Type, flags: block::Flags, crc_type: crc::CrcType) -> Self {
         Self {
@@ -217,6 +217,7 @@ impl BlockTemplate {
     pub fn build(
         self,
         block_number: u64,
+        data: Option<&[u8]>,
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<block::Block, Error> {
         let mut block = block::Block {
@@ -228,7 +229,15 @@ impl BlockTemplate {
             bib: None,
             bcb: None,
         };
-        block.emit(block_number, &self.data.ok_or(Error::NoBlockData)?, array)?;
+        block.emit(
+            block_number,
+            self.data
+                .as_ref()
+                .map(|data| data.as_ref())
+                .or(data)
+                .ok_or(Error::NoBlockData)?,
+            array,
+        )?;
         Ok(block)
     }
 }
@@ -253,7 +262,7 @@ pub struct BundleTemplate {
     pub hop_limit: Option<u64>,
 }
 
-impl From<BundleTemplate> for Builder {
+impl From<BundleTemplate> for Builder<'_> {
     fn from(value: BundleTemplate) -> Self {
         let mut builder = Builder::new(value.source, value.destination);
 
@@ -288,7 +297,7 @@ impl From<BundleTemplate> for Builder {
 fn test_builder() {
     Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_report_to("ipn:3.0".parse().unwrap())
-        .with_payload("Hello")
+        .with_payload("Hello".as_bytes().into())
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
 }
@@ -304,7 +313,7 @@ fn test_template() {
     .unwrap()
     .into();
 
-    b.with_payload("Hello")
+    b.with_payload("Hello".as_bytes().into())
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
 }

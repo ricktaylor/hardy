@@ -143,7 +143,7 @@ pub fn build_payload(
 
     Ok((
         builder
-            .with_payload(payload.to_text_fmt().as_bytes())
+            .with_payload(payload.to_text_fmt().as_bytes().into())
             .build(
                 payload
                     .creation

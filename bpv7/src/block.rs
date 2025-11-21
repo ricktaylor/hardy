@@ -245,7 +245,7 @@ impl Block {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
 
-    /// Calculates the absolute range of the block's payload within the original bundle byte array.
+    /// Returns a reference to the block's payload within the original bundle byte array.
     pub fn payload<'a>(&self, source: &'a [u8]) -> Option<&'a [u8]> {
         source.get(self.payload_range())
     }

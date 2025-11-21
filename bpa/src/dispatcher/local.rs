@@ -69,7 +69,7 @@ impl Dispatcher {
             }
 
             let (bundle, data) = builder
-                .with_payload(data)
+                .with_payload(data.into())
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| service::Error::Internal(e.into()))?;
 

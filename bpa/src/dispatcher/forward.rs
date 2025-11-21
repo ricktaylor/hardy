@@ -63,12 +63,14 @@ impl Dispatcher {
                 report_on_failure: true,
                 ..Default::default()
             })
-            .build(
+            .with_data(
                 hardy_cbor::encode::emit(
                     &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
                 )
-                .0,
-            );
+                .0
+                .into(),
+            )
+            .rebuild();
 
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
@@ -80,13 +82,15 @@ impl Dispatcher {
                     must_replicate: true,
                     ..Default::default()
                 })
-                .build(
+                .with_data(
                     hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
                         limit: hop_count.limit,
                         count: hop_count.count + 1,
                     })
-                    .0,
-                );
+                    .0
+                    .into(),
+                )
+                .rebuild();
         }
 
         // Update Bundle Age, if required
@@ -105,7 +109,8 @@ impl Dispatcher {
                     must_replicate: true,
                     ..Default::default()
                 })
-                .build(hardy_cbor::encode::emit(&bundle_age).0);
+                .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
+                .rebuild();
         }
 
         editor.rebuild()

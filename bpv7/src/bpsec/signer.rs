@@ -123,7 +123,7 @@ impl<'a> Signer<'a> {
                 .with_flags(new_block.flags.clone());
 
             let source = b.block_number();
-            editor = b.build([]);
+            editor = b.rebuild();
 
             let editor_bs = editor::EditorBlockSet {
                 editor,
@@ -159,7 +159,8 @@ impl<'a> Signer<'a> {
                 .editor
                 .update_block(source)
                 .expect("Failed to update block")
-                .build(hardy_cbor::encode::emit(&operation_set).0);
+                .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
+                .rebuild();
         }
 
         editor.rebuild().map_err(Into::into)

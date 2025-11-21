@@ -1,4 +1,5 @@
 use super::*;
+use alloc::borrow::Cow;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -29,12 +30,13 @@ pub enum Error {
 pub struct Editor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
-    blocks: HashMap<u64, BlockTemplate>,
+    blocks: HashMap<u64, BlockTemplate<'a>>,
 }
 
-enum BlockTemplate {
+enum BlockTemplate<'a> {
     Keep(block::Type),
-    Replace(builder::BlockTemplate),
+    Replace(builder::BlockTemplate<'a>),
+    New(builder::BlockTemplate<'a>),
 }
 
 /// The `BlockBuilder` is used to construct a new or replacement block for a
@@ -42,7 +44,8 @@ enum BlockTemplate {
 pub struct BlockBuilder<'a> {
     editor: Editor<'a>,
     block_number: u64,
-    template: builder::BlockTemplate,
+    is_new: bool,
+    template: builder::BlockTemplate<'a>,
 }
 
 impl<'a> Editor<'a> {
@@ -107,7 +110,7 @@ impl<'a> Editor<'a> {
             return Err(Error::PrimaryBlock);
         }
 
-        if let Some((block_number, template)) =
+        if let Some((block_number, is_new, template)) =
             self.blocks
                 .iter()
                 .find_map(|(block_number, template)| match template {
@@ -115,18 +118,23 @@ impl<'a> Editor<'a> {
                         let block = self.original.blocks.get(block_number)?;
                         Some((
                             *block_number,
+                            false,
                             builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
                         ))
                     }
+                    BlockTemplate::New(template) if template.block_type == block_type => {
+                        Some((*block_number, true, template.clone()))
+                    }
                     BlockTemplate::Replace(template) if template.block_type == block_type => {
-                        Some((*block_number, template.clone()))
+                        Some((*block_number, false, template.clone()))
                     }
                     _ => None,
                 })
         {
-            return Ok(BlockBuilder::new_from_template(
+            return Ok(BlockBuilder::reuse_template(
                 self,
                 block_number,
+                is_new,
                 template,
             ));
         }
@@ -148,7 +156,7 @@ impl<'a> Editor<'a> {
     /// This will return a `BlockBuilder` that can be used to manipulate the
     /// existing block.
     pub fn update_block(self, block_number: u64) -> Result<BlockBuilder<'a>, Error> {
-        let template = match self
+        let (is_new, template) = match self
             .blocks
             .get(&block_number)
             .ok_or(Error::NoSuchBlock(block_number))?
@@ -162,14 +170,19 @@ impl<'a> Editor<'a> {
                     .blocks
                     .get(&block_number)
                     .ok_or(Error::NoSuchBlock(block_number))?;
-                builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type)
+                (
+                    false,
+                    builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
+                )
             }
-            BlockTemplate::Replace(template) => template.clone(),
+            BlockTemplate::New(template) => (true, template.clone()),
+            BlockTemplate::Replace(template) => (false, template.clone()),
         };
 
-        Ok(BlockBuilder::new_from_template(
+        Ok(BlockBuilder::reuse_template(
             self,
             block_number,
+            is_new,
             template,
         ))
     }
@@ -268,8 +281,21 @@ impl<'a> Editor<'a> {
                 Ok(block)
             }
             BlockTemplate::Replace(template) => {
-                template.build(block_number, array).map_err(Into::into)
+                let data = if template.data.is_some() {
+                    None
+                } else {
+                    self.original
+                        .blocks
+                        .get(&block_number)
+                        .and_then(|b| b.payload(self.source_data))
+                };
+                template
+                    .build(block_number, data, array)
+                    .map_err(Into::into)
             }
+            BlockTemplate::New(template) => template
+                .build(block_number, None, array)
+                .map_err(Into::into),
         }
     }
 }
@@ -282,19 +308,22 @@ impl<'a> BlockBuilder<'a> {
                 block::Flags::default(),
                 editor.original.crc_type,
             ),
+            is_new: true,
             block_number,
             editor,
         }
     }
 
-    fn new_from_template(
+    fn reuse_template(
         editor: Editor<'a>,
         block_number: u64,
-        template: builder::BlockTemplate,
+        is_new: bool,
+        template: builder::BlockTemplate<'a>,
     ) -> Self {
         Self {
             template,
             block_number,
+            is_new,
             editor,
         }
     }
@@ -311,20 +340,26 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    pub fn with_data(mut self, data: Cow<'a, [u8]>) -> Self {
+        self.template.data = Some(data);
+        self
+    }
+
     /// Get the block number for this block.
     pub fn block_number(&self) -> u64 {
         self.block_number
     }
 
     /// Build the block and return the modified `Editor`.
-    pub fn build<T: AsRef<[u8]>>(mut self, data: T) -> Editor<'a> {
-        if !data.as_ref().is_empty() {
-            self.template.data = Some(data.as_ref().into());
-        }
-
-        self.editor
-            .blocks
-            .insert(self.block_number, BlockTemplate::Replace(self.template));
+    pub fn rebuild(mut self) -> Editor<'a> {
+        self.editor.blocks.insert(
+            self.block_number,
+            if self.is_new {
+                BlockTemplate::New(self.template)
+            } else {
+                BlockTemplate::Replace(self.template)
+            },
+        );
 
         self.editor
     }
