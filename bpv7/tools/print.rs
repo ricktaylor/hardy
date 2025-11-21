@@ -222,7 +222,7 @@ fn dump_block(
         output.append_str(format!("Signed by Integrity Block {}", bib))?;
 
         if let Err(e) = bundle.verify_block(block_number, data, keys) {
-            output.append_str(format!(": {e}\n"))?;
+            output.append_str(format!(": Error {e}\n"))?;
         } else {
             output.append_str("\n")?;
         }
@@ -233,7 +233,7 @@ fn dump_block(
 
         match bundle.decrypt_block_data(block_number, data, keys) {
             Err(e) => {
-                output.append_str(format!(": {e}\n"))?;
+                output.append_str(format!(": Error {e}\n"))?;
                 None
             }
             Ok(p) => {
