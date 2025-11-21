@@ -2,8 +2,35 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-fn default_log_level() -> String {
-    "info".to_string()
+mod log_level_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::str::FromStr;
+    use tracing::Level;
+
+    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(level.as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct LogLevel(#[serde(with = "log_level_serde")] pub tracing::Level);
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self(tracing::Level::INFO)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -37,8 +64,8 @@ pub enum BundleStorage {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     // Logging level
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
+    #[serde(default)]
+    pub log_level: LogLevel,
 
     // Static Routes Configuration
     pub static_routes: Option<static_routes::Config>,
