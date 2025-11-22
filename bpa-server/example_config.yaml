@@ -1,4 +1,5 @@
 # Top-level configuration for the hardy-bpa-server.
+# Note: Commented out values in this file represent the default settings.
 
 # The logging level for the application.
 # Can be one of: trace, debug, info, warn, error
@@ -75,7 +76,7 @@ static_routes:
   # The path to the file containing static route definitions.
   routes_file: "/etc/hardy-bpa-server/static_routes.yaml"
   # Whether to monitor the routes file for changes and automatically reload it.
-  # watch: false # By default watcher is enabled.
+  # watch: true
 
 # A list of Convergence Layer Adapters (CLAs) to enable.
 # Each item in the list defines a CLA instance.
