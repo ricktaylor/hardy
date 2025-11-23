@@ -104,32 +104,37 @@ impl<'a> Signer<'a> {
 
         // Now build BIB blocks
         for ((bpsec_source, context), contexts) in blocks {
-            // Reserve a block number for the BIB block
-            let new_block = block::Block {
-                block_type: block::Type::BlockIntegrity,
-                // TODO: set flags, crc, etc
-                flags: block::Flags::default(),
-                crc_type: crc::CrcType::None,
-                extent: 0..0,
-                data: 0..0,
-                bib: None,
-                bcb: None,
-            };
+            /* RFC 9173, Section 3.8.1 states:
+             * Prior to the generation of the IPPT, if a Cyclic Redundancy Check
+             * (CRC) value is present for the target block of the BIB, then that
+             * CRC value MUST be removed from the target block.  This involves
+             * both removing the CRC value from the target block and setting the
+             * CRC type field of the target block to "no CRC is present." */
+            for (target, _) in &contexts {
+                let target_block = self
+                    .original
+                    .blocks
+                    .get(target)
+                    .expect("Missing target block");
+                if **target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
+                    editor = editor
+                        .update_block(**target)
+                        .expect("Missing target block")
+                        .with_crc_type(crc::CrcType::None)
+                        .rebuild();
+                }
+            }
 
+            // Reserve a block number for the BIB block
             let b = editor
-                .push_block(new_block.block_type)
+                .push_block(block::Type::BlockIntegrity)
                 .expect("Failed to reserve block")
-                .with_crc_type(new_block.crc_type)
-                .with_flags(new_block.flags.clone());
+                .with_crc_type(crc::CrcType::None);
 
             let source = b.block_number();
             editor = b.rebuild();
 
-            let editor_bs = editor::EditorBlockSet {
-                editor,
-                new_block,
-                new_block_number: source,
-            };
+            let editor_bs = editor::EditorBlockSet { editor };
 
             let mut operation_set = bib::OperationSet {
                 source: bpsec_source.clone(),
@@ -146,7 +151,7 @@ impl<'a> Signer<'a> {
                             target: *target,
                             target_block: editor_bs.block(*target).expect("Missing target block"),
                             source,
-                            source_block: &editor_bs.new_block,
+                            source_block: editor_bs.block(source).expect("Missing target block"),
                             blocks: &editor_bs,
                         },
                         key,

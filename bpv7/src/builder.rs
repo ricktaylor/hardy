@@ -170,13 +170,13 @@ impl<'a> BlockBuilder<'a> {
 
     /// Sets the [`block::Flags`] for this [`BlockBuilder`].
     pub fn with_flags(mut self, flags: block::Flags) -> Self {
-        self.template.flags = flags;
+        self.template.block.flags = flags;
         self
     }
 
     /// Sets the [`crc::CrcType`] for this [`BlockBuilder`].
     pub fn with_crc_type(mut self, crc_type: crc::CrcType) -> Self {
-        self.template.crc_type = crc_type;
+        self.template.block.crc_type = crc_type;
         self
     }
 
@@ -184,7 +184,7 @@ impl<'a> BlockBuilder<'a> {
     pub fn build(mut self, data: Cow<'a, [u8]>) -> Builder<'a> {
         self.template.data = Some(data);
 
-        if let block::Type::Payload = self.template.block_type {
+        if let block::Type::Payload = self.template.block.block_type {
             self.builder.payload = self.template;
         } else {
             self.builder.extensions.push(self.template);
@@ -196,9 +196,7 @@ impl<'a> BlockBuilder<'a> {
 /// A template for creating a new [`block::Block`].
 #[derive(Clone)]
 pub(crate) struct BlockTemplate<'a> {
-    pub block_type: block::Type,
-    pub flags: block::Flags,
-    pub crc_type: crc::CrcType,
+    pub block: block::Block,
     pub data: Option<Cow<'a, [u8]>>,
 }
 
@@ -206,30 +204,27 @@ impl<'a> BlockTemplate<'a> {
     /// Creates a new [`BlockTemplate`] for creating a [`block::Block`].
     pub fn new(block_type: block::Type, flags: block::Flags, crc_type: crc::CrcType) -> Self {
         Self {
-            block_type,
-            flags,
-            crc_type,
+            block: block::Block {
+                block_type,
+                flags,
+                crc_type,
+                extent: 0..0,
+                data: 0..0,
+                bib: None,
+                bcb: None,
+            },
             data: None,
         }
     }
 
     /// Builds the [`block::Block`] with the given block number and array.
     pub fn build(
-        self,
+        mut self,
         block_number: u64,
         data: Option<&[u8]>,
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<block::Block, Error> {
-        let mut block = block::Block {
-            block_type: self.block_type,
-            flags: self.flags,
-            crc_type: self.crc_type,
-            extent: 0..0,
-            data: 0..0,
-            bib: None,
-            bcb: None,
-        };
-        block.emit(
+        self.block.emit(
             block_number,
             self.data
                 .as_ref()
@@ -238,7 +233,7 @@ impl<'a> BlockTemplate<'a> {
                 .ok_or(Error::NoBlockData)?,
             array,
         )?;
-        Ok(block)
+        Ok(self.block)
     }
 }
 

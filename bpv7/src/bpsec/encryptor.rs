@@ -52,6 +52,10 @@ impl<'a> Encryptor<'a> {
         source: eid::Eid,
         key: key::Key,
     ) -> Result<Self, Error> {
+        if block_number == 0 {
+            return Err(Error::InvalidTarget(block_number));
+        }
+
         let Some(block) = self.original.blocks.get(&block_number) else {
             return Err(Error::NoSuchBlock(block_number));
         };
@@ -96,35 +100,40 @@ impl<'a> Encryptor<'a> {
 
         // Now build BCB blocks
         for ((bpsec_source, context), contexts) in blocks {
+            /* RFC 9173, Section 4.8.1 states:
+             * Prior to encryption, if a CRC value is present for the target block,
+             * then that CRC value MUST be removed.  This requires removing the CRC
+             * field from the target block and setting the CRC type field of the
+             * target block to "no CRC is present." */
+            for (target, _) in &contexts {
+                let target_block = self
+                    .original
+                    .blocks
+                    .get(target)
+                    .expect("Missing target block");
+                if !matches!(target_block.crc_type, crc::CrcType::None) {
+                    editor = editor
+                        .update_block(**target)
+                        .expect("Missing target block")
+                        .with_crc_type(crc::CrcType::None)
+                        .rebuild();
+                }
+            }
+
             // Reserve a block number for the BCB block
-            let new_block = block::Block {
-                block_type: block::Type::BlockSecurity,
-                // TODO: set flags, crc, etc
-                flags: block::Flags {
+            let b = editor
+                .push_block(block::Type::BlockSecurity)
+                .expect("Failed to reserve block")
+                .with_crc_type(crc::CrcType::None)
+                .with_flags(block::Flags {
                     must_replicate: true,
                     ..Default::default()
-                },
-                crc_type: crc::CrcType::None,
-                extent: 0..0,
-                data: 0..0,
-                bib: None,
-                bcb: None,
-            };
-
-            let b = editor
-                .push_block(new_block.block_type)
-                .expect("Failed to reserve block")
-                .with_crc_type(new_block.crc_type)
-                .with_flags(new_block.flags.clone());
+                });
 
             let source = b.block_number();
             editor = b.rebuild();
 
-            let mut editor_bs = editor::EditorBlockSet {
-                editor,
-                new_block,
-                new_block_number: source,
-            };
+            let mut editor_bs = editor::EditorBlockSet { editor };
 
             let mut operation_set = bcb::OperationSet {
                 source: bpsec_source.clone(),
@@ -139,7 +148,7 @@ impl<'a> Encryptor<'a> {
                         target: *target,
                         target_block: editor_bs.block(*target).expect("Missing target block"),
                         source,
-                        source_block: &editor_bs.new_block,
+                        source_block: editor_bs.block(source).expect("Missing target block"),
                         blocks: &editor_bs,
                     },
                     key,

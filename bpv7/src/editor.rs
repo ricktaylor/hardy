@@ -35,8 +35,8 @@ pub struct Editor<'a> {
 
 enum BlockTemplate<'a> {
     Keep(block::Type),
-    Replace(builder::BlockTemplate<'a>),
-    New(builder::BlockTemplate<'a>),
+    Update(builder::BlockTemplate<'a>),
+    Insert(builder::BlockTemplate<'a>),
 }
 
 /// The `BlockBuilder` is used to construct a new or replacement block for a
@@ -80,7 +80,9 @@ impl<'a> Editor<'a> {
                     BlockTemplate::Keep(t) if t == &block_type => {
                         return Err(Error::IllegalDuplicate(block_type));
                     }
-                    BlockTemplate::Replace(template) if template.block_type == block_type => {
+                    BlockTemplate::Insert(template) | BlockTemplate::Update(template)
+                        if template.block.block_type == block_type =>
+                    {
                         return Err(Error::IllegalDuplicate(block_type));
                     }
                     _ => {}
@@ -88,6 +90,10 @@ impl<'a> Editor<'a> {
             }
         }
 
+        self.add_block(block_type)
+    }
+
+    fn add_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
         // Find the lowest unused block_number
         let mut block_number = 2u64;
         loop {
@@ -122,10 +128,10 @@ impl<'a> Editor<'a> {
                             builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
                         ))
                     }
-                    BlockTemplate::New(template) if template.block_type == block_type => {
+                    BlockTemplate::Insert(template) if template.block.block_type == block_type => {
                         Some((*block_number, true, template.clone()))
                     }
-                    BlockTemplate::Replace(template) if template.block_type == block_type => {
+                    BlockTemplate::Update(template) if template.block.block_type == block_type => {
                         Some((*block_number, false, template.clone()))
                     }
                     _ => None,
@@ -139,16 +145,7 @@ impl<'a> Editor<'a> {
             ));
         }
 
-        // Find the lowest unused block_number
-        let mut block_number = 2u64;
-        loop {
-            if !self.blocks.contains_key(&block_number) {
-                return Ok(BlockBuilder::new(self, block_number, block_type));
-            }
-            block_number = block_number
-                .checked_add(1)
-                .ok_or(Error::OutOfBlockNumbers)?;
-        }
+        self.add_block(block_type)
     }
 
     /// Update an existing block in the bundle.
@@ -175,8 +172,8 @@ impl<'a> Editor<'a> {
                     builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
                 )
             }
-            BlockTemplate::New(template) => (true, template.clone()),
-            BlockTemplate::Replace(template) => (false, template.clone()),
+            BlockTemplate::Insert(template) => (true, template.clone()),
+            BlockTemplate::Update(template) => (false, template.clone()),
         };
 
         Ok(BlockBuilder::reuse_template(
@@ -280,7 +277,7 @@ impl<'a> Editor<'a> {
                 block.copy_whole(self.source_data, array);
                 Ok(block)
             }
-            BlockTemplate::Replace(template) => {
+            BlockTemplate::Update(template) => {
                 let data = if template.data.is_some() {
                     None
                 } else {
@@ -293,7 +290,7 @@ impl<'a> Editor<'a> {
                     .build(block_number, data, array)
                     .map_err(Into::into)
             }
-            BlockTemplate::New(template) => template
+            BlockTemplate::Insert(template) => template
                 .build(block_number, None, array)
                 .map_err(Into::into),
         }
@@ -330,13 +327,13 @@ impl<'a> BlockBuilder<'a> {
 
     /// Set the `Flags` for this block.
     pub fn with_flags(mut self, flags: block::Flags) -> Self {
-        self.template.flags = flags;
+        self.template.block.flags = flags;
         self
     }
 
     /// Set the `CrcType` for this block.
     pub fn with_crc_type(mut self, crc_type: crc::CrcType) -> Self {
-        self.template.crc_type = crc_type;
+        self.template.block.crc_type = crc_type;
         self
     }
 
@@ -355,9 +352,9 @@ impl<'a> BlockBuilder<'a> {
         self.editor.blocks.insert(
             self.block_number,
             if self.is_new {
-                BlockTemplate::New(self.template)
+                BlockTemplate::Insert(self.template)
             } else {
-                BlockTemplate::Replace(self.template)
+                BlockTemplate::Update(self.template)
             },
         );
 
@@ -367,28 +364,45 @@ impl<'a> BlockBuilder<'a> {
 
 pub(crate) struct EditorBlockSet<'a> {
     pub editor: Editor<'a>,
-    pub new_block: block::Block,
-    pub new_block_number: u64,
 }
 
 impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
     fn block(&self, block_number: u64) -> Option<&block::Block> {
         match self.editor.blocks.get(&block_number)? {
             BlockTemplate::Keep(_) => self.editor.original.blocks.get(&block_number),
-            BlockTemplate::Replace(_) if block_number == self.new_block_number => {
-                Some(&self.new_block)
+            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                Some(&template.block)
             }
-            _ => None,
         }
     }
 
-    fn block_payload(&self, block_number: u64, block: &block::Block) -> Option<block::Payload<'a>> {
-        if let BlockTemplate::Keep(_) = self.editor.blocks.get(&block_number)? {
-            block
+    fn block_payload(
+        &'a self,
+        block_number: u64,
+        block: &block::Block,
+    ) -> Option<block::Payload<'a>> {
+        match self.editor.blocks.get(&block_number)? {
+            BlockTemplate::Keep(_) => block
                 .payload(self.editor.source_data)
-                .map(block::Payload::Borrowed)
-        } else {
-            None
+                .map(block::Payload::Borrowed),
+            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                match template
+                    .data
+                    .as_ref()
+                    .map(|data| block::Payload::Borrowed(data.as_ref()))
+                {
+                    Some(data) => Some(data),
+                    None => self
+                        .editor
+                        .original
+                        .blocks
+                        .get(&block_number)
+                        .and_then(|b| {
+                            b.payload(self.editor.source_data)
+                                .map(block::Payload::Borrowed)
+                        }),
+                }
+            }
         }
     }
 }
