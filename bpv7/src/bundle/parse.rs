@@ -249,7 +249,7 @@ impl<'a> BlockParse<'a> {
                     .get(target_number)
                     .ok_or(bpsec::Error::MissingSecurityTarget)?;
 
-                if match target_block.block_type {
+                match target_block.block_type {
                     block::Type::BlockSecurity | block::Type::Primary => {
                         return Err(bpsec::Error::InvalidBCBTarget.into());
                     }
@@ -262,57 +262,51 @@ impl<'a> BlockParse<'a> {
                             self.primary_block_was_protected = true;
                             self.protects_primary_block.insert(*bcb_block_number);
                         }
-                        false
                     }
                     block::Type::PreviousNode
                     | block::Type::BundleAge
                     | block::Type::HopCount
                     | block::Type::BlockIntegrity => {
-                        if self.blocks_to_remove.contains(target_number) {
-                            false
-                        } else {
-                            if op.protects_primary_block() {
-                                self.primary_block_was_protected = true;
-                                self.protects_primary_block.insert(*bcb_block_number);
-                            }
-                            true
-                        }
-                    }
-                    _ => {
-                        if !self.blocks_to_remove.contains(target_number)
-                            && op.protects_primary_block()
-                        {
+                        if op.protects_primary_block() {
                             self.primary_block_was_protected = true;
                             self.protects_primary_block.insert(*bcb_block_number);
                         }
-                        false
-                    }
-                } {
-                    // Try to decrypt if we have keys
-                    match op.decrypt(
-                        key_f,
-                        bpsec::bcb::OperationArgs {
-                            bpsec_source: &bcb.source,
-                            target: *target_number,
-                            target_block,
-                            source: *bcb_block_number,
-                            source_block: bcb_block,
-                            blocks: self,
-                        },
-                    ) {
-                        Ok(plaintext) => {
-                            self.decrypted_data.insert(*target_number, plaintext);
+
+                        // Try to decrypt if we have keys
+                        match op.decrypt(
+                            key_f,
+                            bpsec::bcb::OperationArgs {
+                                bpsec_source: &bcb.source,
+                                target: *target_number,
+                                target_block,
+                                source: *bcb_block_number,
+                                source_block: bcb_block,
+                                blocks: self,
+                            },
+                        ) {
+                            Ok(plaintext) => {
+                                self.decrypted_data.insert(*target_number, plaintext);
+                            }
+                            Err(bpsec::Error::NoValidKey) => {
+                                if target_block.block_type == block::Type::BlockIntegrity {
+                                    // We can't decrypt the BIB, therefore we cannot check the BIB
+                                    self.bibs_to_check.remove(target_number);
+                                } else {
+                                    // We can't decrypt the block, therefore we cannot check it
+                                    self.blocks_to_check.remove(&target_block.block_type);
+                                }
+                            }
+                            Err(e) => return Err(Error::InvalidBPSec(e)),
                         }
-                        Err(bpsec::Error::NoValidKey) => {
-                            if target_block.block_type == block::Type::BlockIntegrity {
-                                // We can't decrypt the BIB, therefore we cannot check the BIB
-                                self.bibs_to_check.remove(target_number);
-                            } else {
-                                // We can't decrypt the block, therefore we cannot check it
-                                self.blocks_to_check.remove(&target_block.block_type);
+                    }
+                    _ => {
+                        if op.protects_primary_block() {
+                            self.primary_block_was_protected = true;
+
+                            if !self.blocks_to_remove.contains(target_number) {
+                                self.protects_primary_block.insert(*bcb_block_number);
                             }
                         }
-                        Err(e) => return Err(Error::InvalidBPSec(e)),
                     }
                 }
             }
@@ -423,12 +417,12 @@ impl<'a> BlockParse<'a> {
                     }
                 }
 
-                if target_number == &0
-                    || (!self.blocks_to_remove.contains(target_number)
-                        && op.protects_primary_block())
-                {
+                if *target_number == 0 || op.protects_primary_block() {
                     self.primary_block_was_protected = true;
-                    self.protects_primary_block.insert(bib_block_number);
+
+                    if !self.blocks_to_remove.contains(target_number) {
+                        self.protects_primary_block.insert(bib_block_number);
+                    }
                 }
             }
 
@@ -626,6 +620,8 @@ fn parse_blocks(
         if parser.protects_primary_block.is_empty()
             && let crc::CrcType::None = bundle.crc_type
         {
+            // TODO:  This is actually incorrect behaviour!  We need to have a proper think about how to manage this!
+
             bundle.crc_type = crc::CrcType::CRC32_CASTAGNOLI;
 
             // Rewrite the Primary Block
