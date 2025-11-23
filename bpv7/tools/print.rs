@@ -377,8 +377,6 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 if let Some(u) = op.parameters.flags.unrecognised {
                     output.append_str(format!("  * Unrecognised: {u:#x}\n"))?;
                 }
-
-                output.append_str("\n")?;
             }
         }
         bpsec::bcb::Operation::Unrecognised(_u, op) => {
@@ -453,8 +451,6 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 if let Some(u) = op.parameters.flags.unrecognised {
                     output.append_str(format!("  * Unrecognised: {u:#x}\n"))?;
                 }
-
-                output.append_str("\n")?;
             }
         }
         bpsec::bib::Operation::Unrecognised(_u, op) => {
