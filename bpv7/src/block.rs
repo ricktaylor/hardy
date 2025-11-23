@@ -184,7 +184,7 @@ impl hardy_cbor::decode::FromCbor for Type {
 /// Represents the payload of a block.
 ///
 /// The payload can either be a direct slice (`Borrowed`) into the original bundle's
-/// byte array, or an `Owned` byte slice. The `Owned` variant is used when the
+/// byte array, or an `Decrypted` byte slice. The `Decrypted` variant is used when the
 /// payload has been decrypted from a Block Confidentiality Block (BCB) and
 /// therefore does not correspond to a contiguous region of the original data.
 pub enum Payload<'a> {
