@@ -9,7 +9,7 @@ use notify_debouncer_full::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 mod parse;
 
@@ -35,6 +35,7 @@ impl Default for Config {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct StaticRoute {
+    pattern: eid_patterns::EidPattern,
     priority: Option<u32>,
     action: Action,
 }
@@ -43,7 +44,7 @@ struct StaticRoute {
 pub struct StaticRoutes {
     config: Config,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
-    routes: HashMap<eid_patterns::EidPattern, StaticRoute>,
+    routes: Vec<StaticRoute>,
 }
 
 impl StaticRoutes {
@@ -69,66 +70,40 @@ impl StaticRoutes {
         Ok(())
     }
 
-    fn compute_routes_changes(
-        &self,
-        new_routes: &HashMap<eid_patterns::EidPattern, StaticRoute>,
-    ) -> (
-        Vec<(eid_patterns::EidPattern, StaticRoute)>,
-        Vec<(eid_patterns::EidPattern, StaticRoute)>,
-    ) {
-        // Calculate routes to drop (present in current but missing or changed in new)
-        let drop_routes: Vec<_> = self
-            .routes
-            .iter()
-            .filter(|(k, v)| new_routes.get(k) != Some(v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        // Calculate routes to add (present in new but missing or changed in current)
-        let add_routes: Vec<_> = new_routes
-            .iter()
-            .filter(|(k, v)| self.routes.get(k) != Some(v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        (drop_routes, add_routes)
-    }
-
     async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
         // Reload the routes
-        let new_routes: HashMap<_, _> =
-            parse::load_routes(&self.config.routes_file, ignore_errors, self.config.watch)
-                .await?
-                .into_iter()
-                .collect();
+        let mut new_routes =
+            parse::load_routes(&self.config.routes_file, ignore_errors, self.config.watch).await?;
 
-        // Calculate routes to drop and add
-        let (drop_routes, add_routes) = self.compute_routes_changes(&new_routes);
-
-        // Drop routes
-        for (k, v) in drop_routes {
-            self.routes.remove(&k);
+        // Calculate routes to drop (present in current but missing or changed in new) and drop routes
+        for r in self
+            .routes
+            .extract_if(.., |r| !new_routes.iter().any(|r2| r == r2))
+        {
             self.bpa
                 .remove_route(
                     &self.config.protocol_id,
-                    &k,
-                    &v.action,
-                    v.priority.unwrap_or(self.config.priority),
+                    &r.pattern,
+                    &r.action,
+                    r.priority.unwrap_or(self.config.priority),
                 )
                 .await;
         }
 
+        // Calculate routes to add (present in new but missing or changed in current)
+        new_routes.retain(|r| self.routes.iter().any(|r2| r != r2));
+
         // Add routes
-        for (k, v) in add_routes {
+        for r in new_routes {
             self.bpa
                 .add_route(
                     self.config.protocol_id.clone(),
-                    k.clone(),
-                    v.action.clone(),
-                    v.priority.unwrap_or(self.config.priority),
+                    r.pattern.clone(),
+                    r.action.clone(),
+                    r.priority.unwrap_or(self.config.priority),
                 )
                 .await;
-            self.routes.insert(k, v);
+            self.routes.push(r);
         }
         Ok(())
     }
@@ -230,7 +205,7 @@ pub async fn init(
     StaticRoutes {
         config,
         bpa: bpa.clone(),
-        routes: HashMap::new(),
+        routes: Vec::new(),
     }
     .init(cancel_token, task_tracker)
     .await

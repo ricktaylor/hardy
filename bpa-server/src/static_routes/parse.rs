@@ -35,12 +35,11 @@ fn parse_reflect(input: &mut &[u8]) -> ModalResult<Action> {
         .parse_next(input)
 }
 
-fn parse_action(input: &mut &[u8]) -> ModalResult<StaticRoute> {
+fn parse_action(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
     (
         alt((parse_drop, parse_via, parse_reflect)),
         opt(preceded(space1, parse_priority)),
     )
-        .map(|(action, priority)| StaticRoute { priority, action })
         .parse_next(input)
 }
 
@@ -50,11 +49,20 @@ fn parse_pattern(input: &mut &[u8]) -> ModalResult<eid_patterns::EidPattern> {
         .parse_next(input)
 }
 
-fn parse_route(input: &mut &[u8]) -> ModalResult<(eid_patterns::EidPattern, StaticRoute)> {
-    cut_err((parse_pattern, preceded(space1, parse_action))).parse_next(input)
+fn parse_route(input: &mut &[u8]) -> ModalResult<StaticRoute> {
+    cut_err(
+        (parse_pattern, preceded(space1, parse_action)).map(|(pattern, (action, priority))| {
+            StaticRoute {
+                pattern,
+                priority,
+                action,
+            }
+        }),
+    )
+    .parse_next(input)
 }
 
-fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(eid_patterns::EidPattern, StaticRoute)>> {
+fn parse_line(input: &mut &[u8]) -> ModalResult<Option<StaticRoute>> {
     preceded(
         space0,
         alt((
@@ -67,11 +75,9 @@ fn parse_line(input: &mut &[u8]) -> ModalResult<Option<(eid_patterns::EidPattern
 }
 
 #[allow(clippy::type_complexity)]
-fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<(eid_patterns::EidPattern, StaticRoute)>> {
+fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<StaticRoute>> {
     separated(0.., till_line_ending.and_then(parse_line), line_ending)
-        .map(|v: Vec<Option<(eid_patterns::EidPattern, StaticRoute)>>| {
-            v.into_iter().flatten().collect()
-        })
+        .map(|v: Vec<Option<StaticRoute>>| v.into_iter().flatten().collect())
         .parse_next(input)
 }
 
@@ -79,7 +85,7 @@ pub async fn load_routes(
     routes_file: &PathBuf,
     ignore_errors: bool,
     watching: bool,
-) -> anyhow::Result<Vec<(eid_patterns::EidPattern, StaticRoute)>> {
+) -> anyhow::Result<Vec<StaticRoute>> {
     match tokio::fs::read(routes_file).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
             debug!("Static routes file: '{}' not found", routes_file.display());
