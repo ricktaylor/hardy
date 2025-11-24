@@ -74,7 +74,6 @@ fn parse_line(input: &mut &[u8]) -> ModalResult<Option<StaticRoute>> {
     .parse_next(input)
 }
 
-#[allow(clippy::type_complexity)]
 fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<StaticRoute>> {
     separated(0.., till_line_ending.and_then(parse_line), line_ending)
         .map(|v: Vec<Option<StaticRoute>>| v.into_iter().flatten().collect())
