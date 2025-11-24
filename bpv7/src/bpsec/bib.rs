@@ -27,14 +27,6 @@ impl Operation {
         }
     }
 
-    pub fn protects_primary_block(&self) -> bool {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(operation) => operation.protects_primary_block(),
-            Self::Unrecognised(..) => false,
-        }
-    }
-
     pub fn verify(&self, key_f: &impl key::KeyStore, args: OperationArgs) -> Result<(), Error> {
         match self {
             #[cfg(feature = "rfc9173")]

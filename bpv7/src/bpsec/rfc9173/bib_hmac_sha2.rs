@@ -290,10 +290,6 @@ impl Operation {
         matches!(self.parameters.variant, ShaVariant::Unrecognised(_))
     }
 
-    pub fn protects_primary_block(&self) -> bool {
-        self.parameters.flags.include_primary_block
-    }
-
     pub fn sign(
         jwk: &Key,
         scope_flags: ScopeFlags,

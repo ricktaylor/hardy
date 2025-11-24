@@ -27,14 +27,6 @@ impl Operation {
         }
     }
 
-    pub fn protects_primary_block(&self) -> bool {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(operation) => operation.protects_primary_block(),
-            Self::Unrecognised(..) => false,
-        }
-    }
-
     pub fn decrypt(
         &self,
         key_f: &impl key::KeyStore,

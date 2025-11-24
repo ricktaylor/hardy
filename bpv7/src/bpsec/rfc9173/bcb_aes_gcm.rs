@@ -221,11 +221,6 @@ impl Operation {
         matches!(self.parameters.variant, AesVariant::Unrecognised(_))
     }
 
-    pub fn protects_primary_block(&self) -> bool {
-        self.parameters.flags.include_primary_block
-    }
-
-    #[allow(clippy::type_complexity)]
     pub fn encrypt(
         jwk: &Key,
         scope_flags: ScopeFlags,
