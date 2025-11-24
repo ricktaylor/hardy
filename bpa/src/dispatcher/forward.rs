@@ -18,12 +18,12 @@ impl Dispatcher {
 
         // Increment Hop Count, etc...
         // We ignore the fact that a new bundle has been created, as it makes no difference below
-        let (_, data) = match self.update_extension_blocks(&bundle, &data) {
+        let data = match self.update_extension_blocks(&bundle, &data) {
             Err(e) => {
                 error!("Failed to update extension blocks: {e}");
                 return;
             }
-            Ok((bundle, data)) => (bundle, data),
+            Ok(data) => data,
         };
 
         // And pass to CLA
@@ -54,7 +54,7 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
         source_data: &[u8],
-    ) -> Result<(hardy_bpv7::bundle::Bundle, Box<[u8]>), hardy_bpv7::editor::Error> {
+    ) -> Result<Box<[u8]>, hardy_bpv7::editor::Error> {
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)

@@ -45,8 +45,7 @@ impl Command {
 
         let data = signer
             .rebuild()
-            .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?
-            .1;
+            .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
         self.output.write_all(&data)
     }

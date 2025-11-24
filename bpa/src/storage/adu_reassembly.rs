@@ -48,7 +48,7 @@ impl Store {
     pub async fn adu_reassemble(
         &self,
         mut bundle: bundle::Bundle,
-    ) -> Option<(bundle::Bundle, Bytes)> {
+    ) -> Option<(metadata::BundleMetadata, Bytes)> {
         let status = metadata::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
@@ -71,7 +71,11 @@ impl Store {
             self.tombstone_metadata(bundle_id).await;
         }
 
-        result
+        result.map(|(storage_name, data)| {
+            let mut metadata = bundle.metadata.clone();
+            metadata.storage_name = Some(storage_name);
+            (metadata, data)
+        })
     }
 
     async fn poll_fragments(
@@ -185,7 +189,7 @@ impl Store {
         h.await.unwrap_or(None)
     }
 
-    async fn reassemble(&self, results: &ReassemblyResult) -> Option<(bundle::Bundle, Bytes)> {
+    async fn reassemble(&self, results: &ReassemblyResult) -> Option<(Arc<str>, Bytes)> {
         let first = results.adus.get(&0).or_else(|| {
             info!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
@@ -194,7 +198,7 @@ impl Store {
             None
         })?;
 
-        let mut bundle = self.get_metadata(&first.0).await?;
+        let bundle = self.get_metadata(&first.0).await?;
         let old_data = self
             .load_data(
                 bundle
@@ -255,39 +259,28 @@ impl Store {
         }
 
         // Rewrite primary block
-        bundle.bundle.flags.do_not_fragment = false;
-        bundle.bundle.id.fragment_info = None;
+        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data);
+        editor = editor.with_fragment_info(None);
 
         // Now rebuild
-        let (bundle, new_data) =
-            match hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data).update_block(1) {
+        let new_data = match editor.update_block(1) {
+            Err(e) => {
+                info!("Missing payload block?: {e}");
+                return None;
+            }
+            Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
                 Err(e) => {
-                    info!("Missing payload block?: {e}");
+                    info!("Failed to rebuild bundle: {e}");
                     return None;
                 }
-                Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
-                    Err(e) => {
-                        info!("Failed to rebuild bundle: {e}");
-                        return None;
-                    }
-                    Ok((bundle, new_data)) => (bundle, new_data),
-                },
-            };
+                Ok(new_data) => new_data,
+            },
+        };
 
         // Write the rewritten bundle now for safety
         let new_data: Bytes = new_data.into();
         let new_storage_name = self.save_data(new_data.clone()).await;
 
-        Some((
-            bundle::Bundle {
-                metadata: metadata::BundleMetadata {
-                    storage_name: Some(new_storage_name),
-                    received_at: results.received_at,
-                    ..Default::default()
-                },
-                bundle,
-            },
-            new_data,
-        ))
+        Some((new_storage_name, new_data))
     }
 }

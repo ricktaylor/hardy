@@ -75,7 +75,7 @@ impl<'a> Encryptor<'a> {
         Ok(self)
     }
 
-    pub fn rebuild(self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
+    pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
         if self.templates.is_empty() {
             // No signing to do
             return editor::Editor::new(self.original, self.source_data)

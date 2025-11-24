@@ -30,7 +30,19 @@ pub enum Error {
 pub struct Editor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
+    bundle: Option<BundleUpdate>,
     blocks: HashMap<u64, BlockTemplate<'a>>,
+}
+
+struct BundleUpdate {
+    bundle_flags: bundle::Flags,
+    crc_type: crc::CrcType,
+    timestamp: creation_timestamp::CreationTimestamp,
+    source: eid::Eid,
+    destination: eid::Eid,
+    report_to: eid::Eid,
+    lifetime: core::time::Duration,
+    fragment_info: Option<bundle::FragmentInfo>,
 }
 
 enum BlockTemplate<'a> {
@@ -61,7 +73,71 @@ impl<'a> Editor<'a> {
                 .collect(),
             source_data,
             original,
+            bundle: None,
         }
+    }
+
+    fn primary_block(&mut self) -> &mut BundleUpdate {
+        if self.bundle.is_none() {
+            self.bundle = Some(BundleUpdate {
+                bundle_flags: self.original.flags.clone(),
+                crc_type: self.original.crc_type,
+                timestamp: self.original.id.timestamp.clone(),
+                source: self.original.id.source.clone(),
+                destination: self.original.destination.clone(),
+                report_to: self.original.report_to.clone(),
+                lifetime: self.original.lifetime,
+                fragment_info: self.original.id.fragment_info.clone(),
+            });
+        }
+        self.bundle.as_mut().unwrap()
+    }
+
+    /// Access the bundle flags for this [`Editor`].
+    pub fn bundle_flags(&mut self) -> &mut bundle::Flags {
+        &mut self.primary_block().bundle_flags
+    }
+
+    /// Sets the [`crc::CrcType`] for this [`Editor`].
+    pub fn with_bundle_crc_type(mut self, crc_type: crc::CrcType) -> Self {
+        self.primary_block().crc_type = crc_type;
+        self
+    }
+
+    /// Sets the creation timestamp for this [`Editor`].
+    pub fn with_timestamp(mut self, timestamp: creation_timestamp::CreationTimestamp) -> Self {
+        self.primary_block().timestamp = timestamp;
+        self
+    }
+
+    /// Sets the source [`eid::Eid`] for this [`Editor`].
+    pub fn with_source(mut self, source: eid::Eid) -> Self {
+        self.primary_block().source = source;
+        self
+    }
+
+    /// Sets the source [`eid::Eid`] for this [`Editor`].
+    pub fn with_destination(mut self, destination: eid::Eid) -> Self {
+        self.primary_block().destination = destination;
+        self
+    }
+
+    /// Sets the report_to [`eid::Eid`] for this [`Editor`].
+    pub fn with_report_to(mut self, report_to: eid::Eid) -> Self {
+        self.primary_block().report_to = report_to;
+        self
+    }
+
+    /// Sets the lifetime for this [`Editor`].
+    pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Self {
+        self.primary_block().lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
+        self
+    }
+
+    /// Sets the fragment_info for this [`Editor`].
+    pub fn with_fragment_info(mut self, fragment_info: Option<bundle::FragmentInfo>) -> Self {
+        self.primary_block().fragment_info = fragment_info;
+        self
     }
 
     /// Add a new block into the bundle.
@@ -217,47 +293,47 @@ impl<'a> Editor<'a> {
     /// Rebuild the bundle, applying all of the modifications.
     ///
     /// This will return the new `Bundle` and its serialized representation.
-    pub fn rebuild(mut self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
-        let mut bundle = bundle::Bundle {
-            id: self.original.id.clone(),
-            flags: self.original.flags.clone(),
-            crc_type: self.original.crc_type,
-            destination: self.original.destination.clone(),
-            report_to: self.original.report_to.clone(),
-            lifetime: self.original.lifetime,
-            previous_node: self.original.previous_node.clone(),
-            age: self.original.age,
-            hop_count: self.original.hop_count.clone(),
-            blocks: HashMap::new(),
-        };
-
-        let data = hardy_cbor::encode::try_emit_array(None, |a| {
+    pub fn rebuild(mut self) -> Result<Box<[u8]>, Error> {
+        hardy_cbor::encode::try_emit_array(None, |a| {
             // Emit primary block
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
-            bundle
-                .blocks
-                .insert(0, self.build_block(0, primary_block, a)?);
+
+            if let Some(update) = self.bundle.take() {
+                let mut bundle = bundle::Bundle {
+                    id: bundle::Id {
+                        source: update.source,
+                        timestamp: update.timestamp,
+                        fragment_info: update.fragment_info,
+                    },
+                    flags: update.bundle_flags,
+                    crc_type: update.crc_type,
+                    destination: update.destination,
+                    report_to: update.report_to,
+                    lifetime: update.lifetime,
+                    ..Default::default()
+                };
+                // Emit primary block
+                bundle
+                    .emit_primary_block(a)
+                    .map_err(|e| Error::Builder(e.into()))?;
+            } else {
+                self.build_block(0, primary_block, a)?;
+            }
 
             // Stash payload block
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
             // Emit extension blocks
             for (block_number, block_template) in core::mem::take(&mut self.blocks) {
-                bundle.blocks.insert(
-                    block_number,
-                    self.build_block(block_number, block_template, a)?,
-                );
+                self.build_block(block_number, block_template, a)?;
             }
 
             // Emit payload block
-            bundle
-                .blocks
-                .insert(1, self.build_block(1, payload_block, a)?);
+            self.build_block(1, payload_block, a)?;
 
             Ok::<_, Error>(())
-        })?;
-
-        Ok((bundle, data.into()))
+        })
+        .map(Into::into)
     }
 
     fn build_block(

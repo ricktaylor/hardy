@@ -202,7 +202,7 @@ impl Dispatcher {
                         _ => false,
                     }
                 {
-                    let Some((mut new_bundle, data)) = self.store.adu_reassemble(bundle).await
+                    let Some((mut new_metadata, data)) = self.store.adu_reassemble(bundle).await
                     else {
                         // Nothing more to do, the store has done the work
                         return;
@@ -210,9 +210,18 @@ impl Dispatcher {
 
                     // Reparse the reconstituted bundle, for sanity
                     match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store()) {
-                        Ok(hardy_bpv7::bundle::RewrittenBundle::Valid { .. }) => {}
+                        Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
+                            bundle: new_bundle,
+                            ..
+                        }) => {
+                            bundle = bundle::Bundle {
+                                metadata: new_metadata,
+                                bundle: new_bundle,
+                            };
+                            self.store.insert_metadata(&bundle).await;
+                        }
                         Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
-                            bundle,
+                            bundle: new_bundle,
                             new_data,
                             non_canonical,
                             ..
@@ -220,13 +229,17 @@ impl Dispatcher {
                             debug!("Reassembled bundle has been rewritten");
 
                             // Update the metadata
-                            new_bundle.metadata.non_canonical = non_canonical;
-                            let old_storage_name = new_bundle
-                                .metadata
+                            new_metadata.non_canonical = non_canonical;
+
+                            let old_storage_name = new_metadata
                                 .storage_name
                                 .replace(self.store.save_data(new_data.into()).await);
-                            new_bundle.bundle = bundle;
-                            self.store.update_metadata(&new_bundle).await;
+
+                            bundle = bundle::Bundle {
+                                metadata: new_metadata,
+                                bundle: new_bundle,
+                            };
+                            self.store.insert_metadata(&bundle).await;
 
                             // And drop the original bundle data
                             if let Some(old_storage_name) = old_storage_name {
@@ -237,12 +250,14 @@ impl Dispatcher {
                         | Err(error) => {
                             // Reconstituted bundle is garbage
                             debug!("Reassembled bundle is invalid: {error}");
-                            return self.delete_bundle(new_bundle).await;
+                            if let Some(storage_name) = new_metadata.storage_name {
+                                self.store.delete_data(&storage_name).await;
+                            }
+                            return;
                         }
                     }
 
                     // Dispatch the reassembled bundle
-                    bundle = new_bundle;
                     continue;
                 }
             }
