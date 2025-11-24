@@ -1,45 +1,67 @@
 use super::*;
-use hardy_bpv7::bundle::Flags;
-use hardy_bpv7::crc::CrcType;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{bundle::Flags, crc::CrcType, eid::Eid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ArgFlags {
     /// Specify bundle is a fragment
     #[value(name = "isfrag")]
-    IsFragment = 1 << 0,
+    IsFragment,
 
     /// Specify ADU is an administrative record
     #[value(name = "isadm")]
-    IsAdminRecord = 1 << 1,
+    IsAdminRecord,
 
     /// Require bundle to not be fragmented
     #[value(name = "nofrag")]
-    DoNotFragment = 1 << 2,
+    DoNotFragment,
 
     /// Request acknowledgement by application
     #[value(name = "ack")]
-    AppAckRequested = 1 << 5,
+    AppAckRequested,
 
     /// Request status time in status reports
     #[value(name = "time")]
-    ReportStatusTime = 1 << 6,
+    ReportStatusTime,
 
     /// Request reception status reports
     #[value(name = "rcv")]
-    ReceiptReportRequested = 1 << 14,
+    ReceiptReportRequested,
 
     /// Request forwarding status reports
     #[value(name = "fwd")]
-    ForwardReportRequested = 1 << 16,
+    ForwardReportRequested,
 
     /// Request delivery status reports
     #[value(name = "dlv")]
-    DeliveryReportRequested = 1 << 17,
+    DeliveryReportRequested,
 
     /// Request deletion status reports
     #[value(name = "del")]
-    DeleteReportRequested = 1 << 18,
+    DeleteReportRequested,
+}
+
+impl ArgFlags {
+    fn to_bundle_flags(args: &[ArgFlags]) -> Option<Flags> {
+        if args.is_empty() {
+            None
+        } else {
+            let mut flags = Flags::default();
+            for arg in args {
+                match arg {
+                    ArgFlags::IsFragment => flags.is_fragment = true,
+                    ArgFlags::IsAdminRecord => flags.is_admin_record = true,
+                    ArgFlags::DoNotFragment => flags.do_not_fragment = true,
+                    ArgFlags::AppAckRequested => flags.app_ack_requested = true,
+                    ArgFlags::ReportStatusTime => flags.report_status_time = true,
+                    ArgFlags::ReceiptReportRequested => flags.receipt_report_requested = true,
+                    ArgFlags::ForwardReportRequested => flags.forward_report_requested = true,
+                    ArgFlags::DeliveryReportRequested => flags.delivery_report_requested = true,
+                    ArgFlags::DeleteReportRequested => flags.delete_report_requested = true,
+                }
+            }
+            Some(flags)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -55,6 +77,16 @@ pub enum ArgCrcType {
     /// Standard CRC32C (Castagnoli) CRC-32 [aliases: crc32_castagnoli, 32]
     #[clap(alias = "crc32_castagnoli", alias = "32")]
     Crc32,
+}
+
+impl From<ArgCrcType> for CrcType {
+    fn from(value: ArgCrcType) -> Self {
+        match value {
+            ArgCrcType::None => CrcType::None,
+            ArgCrcType::Crc16 => CrcType::CRC16_X25,
+            ArgCrcType::Crc32 => CrcType::CRC32_CASTAGNOLI,
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -99,23 +131,12 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        // Accumulate bundle processing control flags
-        let flags: Option<Flags> = if self.flags.is_empty() {
-            None
-        } else {
-            Some(Flags::from(
-                self.flags.iter().map(|flag| *flag as u64).sum::<u64>(),
-            ))
-        };
-
-        let crc_val = self.crc_type.map(|crc| crc as u64);
-
         let builder: hardy_bpv7::builder::Builder = hardy_bpv7::builder::BundleTemplate {
             source: self.source,
             destination: self.destination,
             report_to: self.report_to,
-            flags,
-            crc_type: crc_val.map(CrcType::from),
+            flags: ArgFlags::to_bundle_flags(&self.flags),
+            crc_type: self.crc_type.map(Into::into),
             lifetime: {
                 if let Some(lifetime) = self.lifetime {
                     if lifetime.as_millis() > u64::MAX as u128 {
