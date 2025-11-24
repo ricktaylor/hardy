@@ -204,6 +204,10 @@ mod test {
             .expect("Failed to decrypt");
     }
 
+    /*
+
+    The example bundle is invalid as it lacks a CRC on the Primary Block
+
     #[test]
     fn rfc9173_appendix_a_4() {
         let data = hex_literal::hex!(
@@ -250,5 +254,5 @@ mod test {
         bundle
             .verify_block(1, &data, &keys)
             .expect("Failed to verify");
-    }
+    }*/
 }
