@@ -9,6 +9,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc::*,
 };
+use tokio_rustls::TlsAcceptor;
 use tower::{Service, ServiceExt};
 
 struct ListenerService {
@@ -53,6 +54,7 @@ pub struct Listener {
     pub node_ids: Arc<[Eid]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
+    pub tls_config: Option<Arc<tls::TlsConfig>>,
 }
 
 impl std::fmt::Debug for Listener {
@@ -96,6 +98,7 @@ impl Listener {
                         // Accept a new connection
                         match svc.call(()).await {
                             Ok((stream,remote_addr)) => {
+                                info!("New TCP connection from {}", remote_addr);
                                 // Spawn immediately to prevent head-of-line blocking
                                 let self_cloned = self.clone();
                                 let task = self_cloned.new_contact(stream, remote_addr);
@@ -188,8 +191,15 @@ impl Listener {
             .trace_expect("Failed to get socket local address");
 
         if self.use_tls && buffer[5] & 1 != 0 {
-            // TLS!!
-            todo!();
+            if let Some(tls_config) = &self.tls_config {
+                info!("TLS connection received from {}", remote_addr);
+                let self_clone = self.clone();
+                self_clone.tls_negotiate(stream, remote_addr, local_addr, tls_config).await;
+                return;
+            } else {
+                error!("TLS requested but no TLS configuration provided");
+                return;
+            }
         } else {
             self.new_passive(
                 local_addr,
@@ -332,5 +342,38 @@ impl Listener {
         self.registry
             .unregister_session(&local_addr, &remote_addr)
             .await
+    }
+
+    async fn tls_negotiate(
+        self: Arc<Listener>,
+        stream: TcpStream,
+        remote_addr: SocketAddr,
+        local_addr: SocketAddr,
+        tls_config: &Arc<tls::TlsConfig>,
+    ) {
+        let server_config = match &tls_config.server_config {
+            Some(config) => config.clone(),
+            None => {
+                error!("TLS server config not available");
+                return;
+            }
+        };
+
+        let acceptor = TlsAcceptor::from(server_config);
+        match acceptor.accept(stream).await {
+            Ok(tls_stream) => {
+                info!("TLS session key negotiation completed with {}", remote_addr);
+                self.new_passive(
+                    local_addr,
+                    remote_addr,
+                    None,
+                    codec::MessageCodec::new_framed(tls_stream),
+                )
+                .await;
+            }
+            Err(e) => {
+                error!("TLS session key negotiation failed with {}: {e}", remote_addr);
+            }
+        }
     }
 }

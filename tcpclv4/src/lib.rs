@@ -5,6 +5,7 @@ mod connection;
 mod listen;
 mod session;
 mod transport;
+mod tls;
 
 pub mod config;
 
@@ -20,6 +21,7 @@ struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     node_ids: Arc<[Eid]>,
     registry: Arc<connection::ConnectionRegistry>,
+    tls_config: Option<Arc<tls::TlsConfig>>,
 }
 
 pub struct Cla {

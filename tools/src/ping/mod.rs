@@ -98,6 +98,14 @@ pub struct Command {
 
     /// The CLA address of the next hop.
     address: Option<String>,
+
+    /// Accept self-signed TLS certificates (for testing only, insecure)
+    #[arg(long = "tls-accept-self-signed")]
+    tls_accept_self_signed: bool,
+
+    /// Path to CA bundle directory (all .crt/.pem files in the directory will be loaded) for TLS certificate validation
+    #[arg(long = "tls-ca-bundle")]
+    tls_ca_bundle: Option<std::path::PathBuf>,
 }
 
 impl Command {
@@ -110,7 +118,7 @@ impl Command {
                     let interval: std::time::Duration = self.interval.into();
                     interval.saturating_mul(*count) + **wait
                 } else {
-                    std::time::Duration::from_hours(24)
+                    std::time::Duration::from_secs(86_400)
                 }
             },
             |l| l.into(),

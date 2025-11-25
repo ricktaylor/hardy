@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -8,6 +10,7 @@ pub struct SessionConfig {
     // Keepalive interval in seconds
     pub keepalive_interval: Option<u16>, // default 60
 
+    // Whether to use TLS for encrypting the connection
     pub use_tls: bool,
 }
 
@@ -17,6 +20,52 @@ impl Default for SessionConfig {
             contact_timeout: 15,
             keepalive_interval: Some(60),
             use_tls: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct TlsConfig {
+    // Required only if acting as a TLS server (listening for incoming connections)
+    pub server_cert: Option<PathBuf>,   
+
+    // Path to server private key file (PEM format)
+    pub server_key: Option<PathBuf>,
+
+    // Required only if acting as a TLS client (connecting to remote servers)
+    // Path to directory containing CA certificate files (all .crt/.pem files in the directory will be loaded)
+    pub ca_bundle: Option<PathBuf>,
+    
+    // Debug options (development only)
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub debug: TlsDebugConfig,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct TlsDebugConfig {
+    // Accept self-signed certificates when no CA is configured (for testing)
+    pub accept_self_signed: bool,
+}
+
+impl Default for TlsDebugConfig {
+    fn default() -> Self {
+        Self {
+            accept_self_signed: false,
+        }
+    }
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            server_cert: None,
+            server_key: None,
+            ca_bundle: None,
+            debug: Default::default(),
         }
     }
 }
@@ -39,6 +88,10 @@ pub struct Config {
 
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub session_defaults: SessionConfig,
+
+    // TLS configuration (only used if use_tls is true)
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tls: TlsConfig,
 }
 
 impl Default for Config {
@@ -52,6 +105,7 @@ impl Default for Config {
             transfer_mru: 0x2_0000_0000_0000,
             max_idle_connections: 6,
             session_defaults: Default::default(),
+            tls: Default::default(),
         }
     }
 }
