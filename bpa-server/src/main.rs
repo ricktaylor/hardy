@@ -89,8 +89,8 @@ fn start_logging(config: &config::Config, config_source: String) {
 
     tracing_subscriber::fmt()
         .with_timer(timer)
-        .with_max_level(config.log_level.0)
-        .with_target(config.log_level.0 > tracing::Level::INFO)
+        .with_max_level(config.log_level)
+        .with_target(config.log_level > tracing::Level::INFO)
         .init();
 
     info!(
