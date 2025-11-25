@@ -7,34 +7,26 @@ impl ClaInner {
         config: &config::Config,
         cancel_token: &tokio_util::sync::CancellationToken,
         task_tracker: &tokio_util::task::TaskTracker,
+        tls_config: &Option<Arc<tls::TlsConfig>>,
     ) {
         // Start the listeners
         if let Some(address) = config.address {
-            let task = Arc::new(listen::Listener {
-                cancel_token: cancel_token.clone(),
-                task_tracker: task_tracker.clone(),
-                contact_timeout: config.session_defaults.contact_timeout,
-                use_tls: config.session_defaults.use_tls,
-                keepalive_interval: config.session_defaults.keepalive_interval,
-                segment_mru: config.segment_mru,
-                transfer_mru: config.transfer_mru,
-                node_ids: self.node_ids.clone(),
-                sink: self.sink.clone(),
-                registry: self.registry.clone(),
-            })
-            .listen(address);
-
-            #[cfg(feature = "tracing")]
-            let task = {
-                let span = tracing::trace_span!(
-                    parent: None,
-                    "tcp_listener"
-                );
-                span.follows_from(tracing::Span::current());
-                task.instrument(span)
-            };
-
-            task_tracker.spawn(task);
+            task_tracker.spawn(
+                Arc::new(listen::Listener {
+                    cancel_token: cancel_token.clone(),
+                    task_tracker: task_tracker.clone(),
+                    contact_timeout: config.session_defaults.contact_timeout,
+                    use_tls: config.session_defaults.use_tls,
+                    keepalive_interval: config.session_defaults.keepalive_interval,
+                    segment_mru: config.segment_mru,
+                    transfer_mru: config.transfer_mru,
+                    node_ids: self.node_ids.clone(),
+                    sink: self.sink.clone(),
+                    registry: self.registry.clone(),
+                    tls_config: tls_config.clone(),
+                })
+                .listen(address),
+            );
         }
     }
 }
@@ -48,6 +40,23 @@ impl hardy_bpa::cla::Cla for Cla {
         node_ids: &[Eid],
     ) -> hardy_bpa::cla::Result<()> {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
+        
+        // Initialize TLS config once and reuse it for all connections
+        let tls_config = if self.config.session_defaults.use_tls {
+            match tls::TlsConfig::new(&self.config.tls) {
+                Ok(cfg) => {
+                    info!("TLS configuration loaded successfully");
+                    Some(Arc::new(cfg))
+                }
+                Err(e) => {
+                    error!("Failed to load TLS configuration: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
         let inner = ClaInner {
             registry: Arc::new(connection::ConnectionRegistry::new(
                 sink.clone(),
@@ -55,9 +64,10 @@ impl hardy_bpa::cla::Cla for Cla {
             )),
             sink,
             node_ids: node_ids.into(),
+            tls_config: tls_config.clone(),
         };
 
-        inner.start_listeners(&self.config, &self.cancel_token, &self.task_tracker);
+        inner.start_listeners(&self.config, &self.cancel_token, &self.task_tracker, &tls_config);
 
         self.inner.set(inner).map_err(|_| {
             error!("CLA on_register called twice!");
@@ -91,14 +101,22 @@ impl hardy_bpa::cla::Cla for Cla {
         })?;
 
         if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
+            info!("Forwarding bundle to TCPCLv4 peer at {}", remote_addr);
             // We try this 5 times, because peers can close at random times
             for _ in 0..5 {
                 // See if we have an active connection already
                 bundle = match inner.registry.forward(remote_addr, bundle).await {
-                    Ok(r) => return Ok(r),
-                    Err(bundle) => bundle,
+                    Ok(r) => {
+                        info!("Bundle forwarded successfully using existing connection");
+                        return Ok(r);
+                    }
+                    Err(bundle) => {
+                        debug!("No existing connection, will create new one");
+                        bundle
+                    }
                 };
 
+                // Reuse the TLS config that was loaded during registration
                 // Do a new active connect
                 let conn = connect::Connector {
                     cancel_token: self.cancel_token.clone(),
@@ -111,6 +129,7 @@ impl hardy_bpa::cla::Cla for Cla {
                     node_ids: inner.node_ids.clone(),
                     sink: inner.sink.clone(),
                     registry: inner.registry.clone(),
+                    tls_config: inner.tls_config.clone(),
                 };
                 match conn.connect(remote_addr).await {
                     Ok(()) | Err(transport::Error::Timeout) => {}
