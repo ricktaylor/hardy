@@ -72,6 +72,7 @@ impl std::fmt::Debug for Listener {
 }
 
 impl Listener {
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn listen(self: Arc<Listener>, address: std::net::SocketAddr) {
         let Ok(listener) = TcpListener::bind(address)
             .await
@@ -112,6 +113,7 @@ impl Listener {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn new_contact(self: Arc<Listener>, mut stream: TcpStream, remote_addr: SocketAddr) {
         // Receive contact header
         let mut buffer = [0u8; 6];
@@ -187,6 +189,7 @@ impl Listener {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, transport)))]
     async fn new_passive<T>(
         self: Arc<Listener>,
         local_addr: SocketAddr,

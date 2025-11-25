@@ -123,6 +123,7 @@ where
         .await
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn on_transfer(&mut self, msg: codec::TransferSegmentMessage) -> Result<(), Error> {
         if msg.message_flags.start {
             if self.ingress_bundle.is_some() {
@@ -171,6 +172,7 @@ where
         .await
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
     async fn send_segment(
         &mut self,
         flags: codec::TransferSegmentMessageFlags,
@@ -274,6 +276,7 @@ where
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     async fn send_once(
         &mut self,
         mut bundle: Bytes,
@@ -316,6 +319,7 @@ where
         .await
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn forward_to_peer(
         &mut self,
         bundle: Bytes,
@@ -360,6 +364,7 @@ where
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn shutdown(mut self, reason_code: codec::SessionTermReasonCode) {
         // We must shut down our end of the session
 
@@ -407,6 +412,7 @@ where
         _ = self.transport.close().await;
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn on_terminate(mut self, mut msg: codec::SessionTermMessage) {
         // The remote end has started to end the session
 
@@ -476,6 +482,7 @@ where
         _ = self.transport.close().await;
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn close(mut self) {
         // The remote end has died completely
 
@@ -491,6 +498,7 @@ where
         _ = self.transport.close().await;
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn recv_from_peer(&mut self) -> Result<codec::Message, Error> {
         loop {
             match if let Some(keepalive_interval) = self.keepalive_interval {
@@ -524,6 +532,7 @@ where
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn run(mut self) {
         loop {
             // Because we can't double &mut self

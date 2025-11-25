@@ -20,10 +20,8 @@ pub struct Connector {
 }
 
 impl Connector {
-    pub async fn connect(
-        self: Connector,
-        remote_addr: &SocketAddr,
-    ) -> Result<(), transport::Error> {
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), transport::Error> {
         let mut stream = TcpStream::connect(remote_addr)
             .await
             .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
@@ -107,8 +105,9 @@ impl Connector {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, transport)))]
     async fn new_active<T>(
-        self: Connector,
+        self,
         local_addr: SocketAddr,
         remote_addr: &SocketAddr,
         segment_mtu: Option<usize>,

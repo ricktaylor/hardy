@@ -53,6 +53,7 @@ impl ConnectionPool {
         inner.active.is_empty() && inner.idle.is_empty()
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     async fn try_send(
         &self,
         mut bundle: hardy_bpa::Bytes,
@@ -157,6 +158,7 @@ impl ConnectionRegistry {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
         // Unregister peers
         let peers = std::mem::take(&mut *self.peers.lock().trace_expect("Failed to lock mutex"));
@@ -178,6 +180,7 @@ impl ConnectionRegistry {
             .clear();
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, conn)))]
     pub async fn register_session(
         &self,
         conn: Connection,
@@ -210,6 +213,7 @@ impl ConnectionRegistry {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn unregister_session(&self, local_addr: &SocketAddr, remote_addr: &SocketAddr) {
         {
             let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
@@ -223,6 +227,7 @@ impl ConnectionRegistry {
         self.remove_peer(remote_addr).await;
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn add_peer(&self, remote_addr: SocketAddr, eid: Eid) -> bool {
         {
             match self
@@ -268,6 +273,7 @@ impl ConnectionRegistry {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn remove_peer(&self, remote_addr: &SocketAddr) -> bool {
         let peer = self
             .peers
@@ -288,6 +294,7 @@ impl ConnectionRegistry {
             })
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     pub async fn forward(
         &self,
         remote_addr: &SocketAddr,

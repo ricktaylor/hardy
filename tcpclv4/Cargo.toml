@@ -11,6 +11,7 @@ crate-type = ["rlib"]
 [features]
 default = []
 serde = ["dep:serde"]
+tracing = []
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }

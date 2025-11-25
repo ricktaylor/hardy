@@ -31,6 +31,7 @@ impl ClaInner {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
+    #[cfg_attr(feature = "tracing", instrument(skip(self, sink)))]
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
@@ -54,6 +55,7 @@ impl hardy_bpa::cla::Cla for Cla {
         })
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn on_unregister(&self) {
         if let Some(inner) = self.inner.get() {
             self.cancel_token.cancel();
@@ -66,6 +68,7 @@ impl hardy_bpa::cla::Cla for Cla {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     async fn forward(
         &self,
         _queue: Option<u32>,
