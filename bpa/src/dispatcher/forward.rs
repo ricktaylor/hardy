@@ -41,7 +41,7 @@ impl Dispatcher {
                 );
             }
             Err(e) => {
-                error!("Failed to forward bundle: {e}");
+                info!("Failed to forward bundle: {e}");
                 debug!("Clearing queue assignment for peer {}", peer);
             }
         }

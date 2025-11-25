@@ -258,7 +258,7 @@ impl Registry {
         };
 
         info!(
-            "Added new peer {peer_id}: {eid} via {cla_addr} for CLA {}",
+            "Added new peer {peer_id}: {eid} at {cla_addr} via CLA {}",
             cla.name
         );
 

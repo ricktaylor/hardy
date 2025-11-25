@@ -12,7 +12,7 @@ name = "bp"
 path = "src/bp.rs"
 
 [features]
-tracing = ["hardy-bpa/tracing"]
+tracing = ["hardy-bpa/tracing","hardy-tcpclv4/tracing"]
 
 [dependencies]
 anyhow = "1.0.100"
