@@ -121,7 +121,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
 }
 
 impl Msg {
-    fn send(self: Msg) {
+    fn send(self) {
         static PIPE: std::sync::OnceLock<flume::Sender<Msg>> = std::sync::OnceLock::new();
         PIPE.get_or_init(|| {
             let (tx, rx) = flume::bounded::<Msg>(0);
