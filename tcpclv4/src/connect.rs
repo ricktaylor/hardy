@@ -6,6 +6,8 @@ use tokio::{
     sync::mpsc::*,
 };
 use tokio_rustls::TlsConnector;
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 pub struct Connector {
     pub cancel_token: tokio_util::sync::CancellationToken,
