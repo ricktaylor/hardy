@@ -582,22 +582,34 @@ where
         };
 
         match e {
-            Error::Terminate(session_term_message) => self.on_terminate(session_term_message).await,
+            Error::Terminate(session_term_message) => {
+                self.on_terminate(session_term_message).await;
+            }
             Error::Shutdown(session_term_reason_code) => {
-                self.shutdown(session_term_reason_code).await
+                self.shutdown(session_term_reason_code).await;
             }
             Error::Codec(e) => {
+                // TODO: may be there is a better way to handle this!! 
+                // If this is an UnexpectedEof error, it's likely a TLS close_notify issue
+                if let codec::Error::Io(io_err) = &e {
+                    if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
+                        // Peer closed connection (likely without TLS close_notify) - treat as normal hangup
+                        debug!("Peer closed connection (UnexpectedEof), ending session");
+                        self.close().await;
+                        return;
+                    }
+                }
                 // The other end is sending us garbage
                 info!("Peer sent invalid data: {e:?}, shutting down session");
-                self.shutdown(codec::SessionTermReasonCode::Unknown).await
+                self.shutdown(codec::SessionTermReasonCode::Unknown).await;
             }
             Error::Hangup => {
                 info!("Peer hung up, ending session");
-                self.close().await
+                self.close().await;
             }
             Error::Io(e) => {
                 info!("Session I/O failure: {e:?}, ending session");
-                self.close().await
+                self.close().await;
             }
         }
     }

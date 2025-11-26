@@ -120,7 +120,7 @@ impl Connector {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, transport)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn tls_handshake(
         self: Connector,
         stream: TcpStream,
