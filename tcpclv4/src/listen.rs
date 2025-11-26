@@ -362,6 +362,7 @@ impl Listener {
         let acceptor = TlsAcceptor::from(server_config);
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
+                // TODO(mTLS): Verify client certificate if mTLS is enabled
                 info!("TLS session key negotiation completed with {}", remote_addr);
                 self.new_passive(
                     local_addr,
