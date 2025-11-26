@@ -27,6 +27,7 @@ impl Default for SessionConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
+#[derive(Default)]
 pub struct TlsConfig {
     // Required only if acting as a TLS server (listening for incoming connections)
     pub server_cert: Option<PathBuf>,
@@ -50,29 +51,10 @@ pub struct TlsConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
+#[derive(Default)]
 pub struct TlsDebugConfig {
     // Accept self-signed certificates when no CA is configured (for testing)
     pub accept_self_signed: bool,
-}
-
-impl Default for TlsDebugConfig {
-    fn default() -> Self {
-        Self {
-            accept_self_signed: false,
-        }
-    }
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            server_cert: None,
-            server_key: None,
-            ca_bundle: None,
-            server_name: None,
-            debug: Default::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

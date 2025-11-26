@@ -101,15 +101,15 @@ impl Connector {
                     .tls_handshake(stream, remote_addr, local_addr, &tls_config_clone)
                     .await
                 {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => Ok(()),
                     Err(e) => {
                         error!("TLS session negotiation failed to {}: {e}", remote_addr);
-                        return Err(e);
+                        Err(e)
                     }
                 }
             } else {
                 error!("TLS requested but no TLS configuration provided");
-                return Err(transport::Error::InvalidProtocol);
+                Err(transport::Error::InvalidProtocol)
             }
         } else {
             info!("New TCP (NO-TLS) connection accepted from {}", remote_addr);

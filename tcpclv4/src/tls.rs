@@ -162,12 +162,11 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, Tl
     let data = read_file(&resolved, "Private key")?;
 
     // Try to load private key in PKCS8 format
-    if let Ok(mut keys) = pkcs8_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>() {
-        if !keys.is_empty() {
-            return Ok(PrivateKeyDer::Pkcs8(keys.remove(0).clone_key()));
-        }
+    if let Ok(mut keys) = pkcs8_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>()
+        && !keys.is_empty()
+    {
+        return Ok(PrivateKeyDer::Pkcs8(keys.remove(0).clone_key()));
     }
-
     // Question: Should we add RSA format as a fallback?
     // if let Ok(mut keys) = rsa_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>() {
     //     if !keys.is_empty() {
