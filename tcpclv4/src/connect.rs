@@ -131,14 +131,21 @@ impl Connector {
         local_addr: SocketAddr,
         tls_config: &Arc<tls::TlsConfig>,
     ) -> Result<(), transport::Error> {
-        // Use "localhost" for loopback connections, IP address for others
-        // This matches typical certificate SAN configurations
-        let server_name = if remote_addr.ip().is_loopback() {
+        // Priority: configured name > localhost (loopback) > IP address
+        let server_name = if let Some(configured_name) = &tls_config.server_name {
+            // Use the configured server name (for certificates issued to domain names)
+            rustls::pki_types::ServerName::try_from(configured_name.clone()).map_err(|e| {
+                error!("Invalid configured server name for TLS: {e}");
+                transport::Error::InvalidProtocol
+            })?
+        } else if remote_addr.ip().is_loopback() {
+            // Fallback: localhost for loopback connections
             rustls::pki_types::ServerName::try_from("localhost").map_err(|e| {
                 error!("Invalid server name for TLS: {e}");
                 transport::Error::InvalidProtocol
             })?
         } else {
+            // Fallback: IP address (may fail if certificate is for a domain name)
             rustls::pki_types::ServerName::from(remote_addr.ip())
         };
 
