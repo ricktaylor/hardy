@@ -25,6 +25,7 @@ pub enum TlsError {
     PrivateKeyLoad(String),
 }
 
+
 pub struct TlsConfig {
     pub server_config: Option<Arc<ServerConfig>>,
     pub client_config: Arc<ClientConfig>,
