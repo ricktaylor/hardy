@@ -194,7 +194,9 @@ impl Listener {
             if let Some(tls_config) = &self.tls_config {
                 info!("TLS connection received from {}", remote_addr);
                 let self_clone = self.clone();
-                self_clone.tls_negotiate(stream, remote_addr, local_addr, tls_config).await;
+                self_clone
+                    .tls_negotiate(stream, remote_addr, local_addr, tls_config)
+                    .await;
                 return;
             } else {
                 error!("TLS requested but no TLS configuration provided");
@@ -372,7 +374,10 @@ impl Listener {
                 .await;
             }
             Err(e) => {
-                error!("TLS session key negotiation failed with {}: {e}", remote_addr);
+                error!(
+                    "TLS session key negotiation failed with {}: {e}",
+                    remote_addr
+                );
             }
         }
     }

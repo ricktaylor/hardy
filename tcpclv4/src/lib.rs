@@ -4,8 +4,8 @@ mod connect;
 mod connection;
 mod listen;
 mod session;
-mod transport;
 mod tls;
+mod transport;
 
 pub mod config;
 

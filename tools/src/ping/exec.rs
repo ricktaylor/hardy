@@ -29,7 +29,7 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
         address: None,
         ..Default::default()
     };
-    
+
     // Configure TLS if accept_self_signed or CA bundle is specified
     if args.tls_accept_self_signed || args.tls_ca_bundle.is_some() {
         tcpclv4_config.session_defaults.use_tls = true;
@@ -38,19 +38,22 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
         }
         if let Some(ca_bundle) = &args.tls_ca_bundle {
             if !ca_bundle.exists() {
-                return Err(anyhow::anyhow!("CA bundle directory not found: {}", ca_bundle.display()));
+                return Err(anyhow::anyhow!(
+                    "CA bundle directory not found: {}",
+                    ca_bundle.display()
+                ));
             }
             if !ca_bundle.is_dir() {
-                return Err(anyhow::anyhow!("CA bundle must be a directory, not a file: {}", ca_bundle.display()));
+                return Err(anyhow::anyhow!(
+                    "CA bundle must be a directory, not a file: {}",
+                    ca_bundle.display()
+                ));
             }
             tcpclv4_config.tls.ca_bundle = Some(ca_bundle.clone());
         }
     }
-    
-    let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(
-        cla_name.clone(),
-        tcpclv4_config,
-    ));
+
+    let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(cla_name.clone(), tcpclv4_config));
 
     bpa.register_cla(cla_name.clone(), None, cla.clone(), None)
         .await

@@ -29,7 +29,7 @@ impl Default for SessionConfig {
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct TlsConfig {
     // Required only if acting as a TLS server (listening for incoming connections)
-    pub server_cert: Option<PathBuf>,   
+    pub server_cert: Option<PathBuf>,
 
     // Path to server private key file (PEM format)
     pub server_key: Option<PathBuf>,
@@ -37,7 +37,7 @@ pub struct TlsConfig {
     // Required only if acting as a TLS client (connecting to remote servers)
     // Path to directory containing CA certificate files (all .crt/.pem files in the directory will be loaded)
     pub ca_bundle: Option<PathBuf>,
-    
+
     // Debug options (development only)
     #[cfg_attr(feature = "serde", serde(default))]
     pub debug: TlsDebugConfig,

@@ -4,10 +4,10 @@ use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 
+use rustls::DigitallySignedStruct;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, RootCertStore, ServerConfig, SignatureScheme};
-use rustls::client::danger::{ServerCertVerifier, ServerCertVerified, HandshakeSignatureValid};
-use rustls::DigitallySignedStruct;
 use tracing::{debug, info, warn};
 
 #[derive(Error, Debug)]
@@ -42,7 +42,9 @@ impl TlsConfig {
         })
     }
 
-    fn build_server_config(config: &super::config::TlsConfig) -> Result<Option<Arc<ServerConfig>>, TlsError> {
+    fn build_server_config(
+        config: &super::config::TlsConfig,
+    ) -> Result<Option<Arc<ServerConfig>>, TlsError> {
         match (&config.server_cert, &config.server_key) {
             (Some(cert_path), Some(key_path)) => {
                 let certs = load_certs(cert_path)?;
@@ -51,18 +53,18 @@ impl TlsConfig {
                 let server_config = ServerConfig::builder()
                     .with_no_client_auth()
                     .with_single_cert(certs, key)
-                    .map_err(|e| TlsError::CertificateLoad(format!(
-                        "Server TLS configuration error for {}: {e}",
-                        cert_path.display()
-                    )))?;
+                    .map_err(|e| {
+                        TlsError::CertificateLoad(format!(
+                            "Server TLS configuration error for {}: {e}",
+                            cert_path.display()
+                        ))
+                    })?;
 
                 Ok(Some(Arc::new(server_config)))
             }
-            (Some(_), None) | (None, Some(_)) => {
-                Err(TlsError::CertificateLoad(
-                    "Both server_cert and server_key must be provided together".to_string()
-                ))
-            }
+            (Some(_), None) | (None, Some(_)) => Err(TlsError::CertificateLoad(
+                "Both server_cert and server_key must be provided together".to_string(),
+            )),
             (None, None) => Ok(None),
         }
     }
@@ -75,17 +77,21 @@ impl TlsConfig {
             load_ca_certs(&mut root_store, ca_bundle)?;
             info!(
                 "Successfully loaded CA certificates from bundle (total in store: {})",
-                root_store.len()    
+                root_store.len()
             );
         }
 
         // Build client config with appropriate certificate verification
         if config.debug.accept_self_signed {
-            warn!("TLS client: Using custom verifier to accept self-signed certificates (INSECURE)");
+            warn!(
+                "TLS client: Using custom verifier to accept self-signed certificates (INSECURE)"
+            );
             let mut client_config = ClientConfig::builder()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
-            client_config.dangerous().set_certificate_verifier(Arc::new(SelfSignedVerifier));
+            client_config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(SelfSignedVerifier));
             Ok(client_config)
         } else {
             if root_store.is_empty() {
@@ -110,20 +116,19 @@ fn resolve_path(path: &std::path::Path) -> Result<std::path::PathBuf, TlsError> 
         Ok(path.to_path_buf())
     } else {
         Ok(std::env::current_dir()
-            .map_err(|e| TlsError::CertificateLoad(format!(
-                "Cannot get current directory to resolve path {}: {e}",
-                path.display()
-            )))?
+            .map_err(|e| {
+                TlsError::CertificateLoad(format!(
+                    "Cannot get current directory to resolve path {}: {e}",
+                    path.display()
+                ))
+            })?
             .join(path))
     }
 }
 
 fn read_file(path: &Path, label: &str) -> Result<Vec<u8>, TlsError> {
     let data = fs::read(path).map_err(|e| {
-        TlsError::CertificateLoad(format!(
-            "Cannot read {label} from {}: {e}",
-            path.display()
-        ))
+        TlsError::CertificateLoad(format!("Cannot read {label} from {}: {e}", path.display()))
     })?;
 
     if data.is_empty() {
@@ -142,10 +147,12 @@ fn load_certs(path: &std::path::Path) -> Result<Vec<CertificateDer<'static>>, Tl
 
     certs(&mut data.as_slice())
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| TlsError::CertificateLoad(format!(
-            "Cannot parse certificate from {}: {e}",
-            resolved.display()
-        )))
+        .map_err(|e| {
+            TlsError::CertificateLoad(format!(
+                "Cannot parse certificate from {}: {e}",
+                resolved.display()
+            ))
+        })
 }
 
 fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, TlsError> {
@@ -174,7 +181,7 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, Tl
 
 fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<(), TlsError> {
     let resolved = resolve_path(path)?;
-    
+
     if !resolved.exists() {
         return Err(TlsError::CertificateLoad(format!(
             "CA bundle directory does not exist: {}",
@@ -190,26 +197,32 @@ fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<()
     }
 
     let initial_len = store.len();
-    debug!("Loading CA certificates from directory: {}", resolved.display());
-    
-    let entries = fs::read_dir(&resolved)
-        .map_err(|e| TlsError::CertificateLoad(format!(
+    debug!(
+        "Loading CA certificates from directory: {}",
+        resolved.display()
+    );
+
+    let entries = fs::read_dir(&resolved).map_err(|e| {
+        TlsError::CertificateLoad(format!(
             "Cannot read CA bundle directory {}: {e}",
             resolved.display()
-        )))?;
+        ))
+    })?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| TlsError::CertificateLoad(format!(
-            "Cannot read directory entry in {}: {e}",
-            resolved.display()
-        )))?;
-        
+        let entry = entry.map_err(|e| {
+            TlsError::CertificateLoad(format!(
+                "Cannot read directory entry in {}: {e}",
+                resolved.display()
+            ))
+        })?;
+
         let file_path = entry.path();
-        
+
         if file_path.is_dir() {
             continue; // Skip directories
         }
-        
+
         // Try to load certificates from this file
         // Ignore files that cannot be read or parsed (they might not be certificate files)
         let data = match fs::read(&file_path) {
@@ -219,44 +232,48 @@ fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<()
                 continue;
             }
         };
-        
+
         if data.is_empty() {
             continue;
         }
-        
+
         // Try to parse certificates - ignore files that cannot be parsed
         let certs = match load_certs_from_file_data(&data, &file_path) {
             Ok(certs) => certs,
             Err(e) => {
-                debug!("Skipping file {} (not a valid certificate file: {e})", file_path.display());
+                debug!(
+                    "Skipping file {} (not a valid certificate file: {e})",
+                    file_path.display()
+                );
                 continue;
             }
         };
-        
+
         if certs.is_empty() {
             continue; // Skip files with no certificates silently
         }
-        
+
         // Add all certificates to the store - fail if any cannot be added
         // (this indicates a real problem with a valid certificate)
         for cert in certs {
-            store.add(cert)
-                .map_err(|e| TlsError::CertificateLoad(format!(
+            store.add(cert).map_err(|e| {
+                TlsError::CertificateLoad(format!(
                     "Cannot add CA certificate from {} to trust store: {e}",
                     file_path.display()
-                )))?;
+                ))
+            })?;
         }
     }
-    
+
     let loaded_count = store.len() - initial_len;
-    
+
     if loaded_count == 0 {
         return Err(TlsError::CertificateLoad(format!(
             "No certificates found in CA bundle directory: {}",
             resolved.display(),
         )));
     }
-    
+
     Ok(())
 }
 
@@ -267,10 +284,12 @@ fn load_certs_from_file_data(
 ) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     certs(&mut &*data)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| TlsError::CertificateLoad(format!(
-            "Cannot parse certificates from {}: {e}",
-            file_path.display()
-        )))
+        .map_err(|e| {
+            TlsError::CertificateLoad(format!(
+                "Cannot parse certificates from {}: {e}",
+                file_path.display()
+            ))
+        })
 }
 
 // Accepts all certificates (for testing with self-signed certs only)
@@ -323,4 +342,3 @@ impl ServerCertVerifier for SelfSignedVerifier {
         ]
     }
 }
-
