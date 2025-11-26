@@ -40,7 +40,7 @@ impl hardy_bpa::cla::Cla for Cla {
         node_ids: &[Eid],
     ) -> hardy_bpa::cla::Result<()> {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-        
+
         // Initialize TLS config once and reuse it for all connections
         let tls_config = if self.config.session_defaults.use_tls {
             match tls::TlsConfig::new(&self.config.tls) {
@@ -56,7 +56,7 @@ impl hardy_bpa::cla::Cla for Cla {
         } else {
             None
         };
-        
+
         let inner = ClaInner {
             registry: Arc::new(connection::ConnectionRegistry::new(
                 sink.clone(),
@@ -67,7 +67,12 @@ impl hardy_bpa::cla::Cla for Cla {
             tls_config: tls_config.clone(),
         };
 
-        inner.start_listeners(&self.config, &self.cancel_token, &self.task_tracker, &tls_config);
+        inner.start_listeners(
+            &self.config,
+            &self.cancel_token,
+            &self.task_tracker,
+            &tls_config,
+        );
 
         self.inner.set(inner).map_err(|_| {
             error!("CLA on_register called twice!");

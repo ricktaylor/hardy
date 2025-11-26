@@ -97,7 +97,10 @@ impl Connector {
             if let Some(tls_config) = &self.tls_config {
                 info!("Initiating TLS handshake to {}", remote_addr);
                 let tls_config_clone = tls_config.clone();
-                match self.tls_handshake(stream, remote_addr, local_addr, &tls_config_clone).await {
+                match self
+                    .tls_handshake(stream, remote_addr, local_addr, &tls_config_clone)
+                    .await
+                {
                     Ok(()) => return Ok(()),
                     Err(e) => {
                         error!("TLS session negotiation failed to {}: {e}", remote_addr);
@@ -128,28 +131,23 @@ impl Connector {
         local_addr: SocketAddr,
         tls_config: &Arc<tls::TlsConfig>,
     ) -> Result<(), transport::Error> {
-
         // Use "localhost" for loopback connections, IP address for others
         // This matches typical certificate SAN configurations
         let server_name = if remote_addr.ip().is_loopback() {
-            rustls::pki_types::ServerName::try_from("localhost")
-                .map_err(|e| {
-                    error!("Invalid server name for TLS: {e}");
-                    transport::Error::InvalidProtocol
-                })?
+            rustls::pki_types::ServerName::try_from("localhost").map_err(|e| {
+                error!("Invalid server name for TLS: {e}");
+                transport::Error::InvalidProtocol
+            })?
         } else {
             rustls::pki_types::ServerName::from(remote_addr.ip())
         };
-        
+
         // Use tokio-rustls::TlsConnector - simple wrapper around rustls for async I/O
         let connector = TlsConnector::from(tls_config.client_config.clone());
-        let tls_stream = connector
-            .connect(server_name, stream)
-            .await
-            .map_err(|e| {
-                error!("TLS session key negotiation failed to {}: {e}", remote_addr);
-                transport::Error::InvalidProtocol
-            })?;
+        let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
+            error!("TLS session key negotiation failed to {}: {e}", remote_addr);
+            transport::Error::InvalidProtocol
+        })?;
 
         info!("TLS session key negotiation completed to {}", remote_addr);
 
