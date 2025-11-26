@@ -38,6 +38,10 @@ pub struct TlsConfig {
     // Path to directory containing CA certificate files (all .crt/.pem files in the directory will be loaded)
     pub ca_bundle: Option<PathBuf>,
 
+    // Optional server name to use for TLS connections (overrides IP-based logic)
+    // Use this when connecting via IP but the certificate is issued for a domain name
+    pub server_name: Option<String>,
+
     // Debug options (development only)
     #[cfg_attr(feature = "serde", serde(default))]
     pub debug: TlsDebugConfig,
@@ -65,6 +69,7 @@ impl Default for TlsConfig {
             server_cert: None,
             server_key: None,
             ca_bundle: None,
+            server_name: None,
             debug: Default::default(),
         }
     }

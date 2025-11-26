@@ -122,6 +122,7 @@ type = "tcpclv4"
 # server_cert = "/etc/hardy/certs/server.crt"
 # server_key = "/etc/hardy/private/server.key"
 # ca_bundle = "/etc/hardy/ca"
+# server_name = "dtn.example.com"
 
 # Debug options for TLS (testing only, INSECURE)
 [clas.config.tls.debug]

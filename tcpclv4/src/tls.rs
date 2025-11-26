@@ -29,6 +29,7 @@ pub enum TlsError {
 pub struct TlsConfig {
     pub server_config: Option<Arc<ServerConfig>>,
     pub client_config: Arc<ClientConfig>,
+    pub server_name: Option<String>,
 }
 
 impl TlsConfig {
@@ -39,6 +40,7 @@ impl TlsConfig {
         Ok(Self {
             server_config,
             client_config: Arc::new(client_config),
+            server_name: config.server_name.clone(),
         })
     }
 
@@ -166,7 +168,7 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, Tl
         }
     }
 
-    // Question for Rick: Should we add RSA format as a fallback?
+    // Question: Should we add RSA format as a fallback?
     // if let Ok(mut keys) = rsa_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>() {
     //     if !keys.is_empty() {
     //         return Ok(PrivateKeyDer::Pkcs1(keys.remove(0).clone_key()));
