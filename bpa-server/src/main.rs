@@ -7,10 +7,11 @@ mod static_routes;
 mod grpc;
 
 use std::sync::Arc;
-use time::macros::format_description;
 use trace_err::*;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::fmt::time::OffsetTime;
+
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn listen_for_cancel(
     cancel_token: &tokio_util::sync::CancellationToken,
@@ -81,24 +82,13 @@ fn start_storage(config: &mut config::Config) {
     }
 }
 
-fn start_logging(config: &config::Config, config_source: String) {
-    let timer = OffsetTime::new(
-        time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
-        format_description!("[year]-[month]-[day] [hour]:[minute]:[second]"),
-    );
+fn start_logging(config: &config::Config, config_source: String) -> hardy_otel::OtelGuard {
+    let guard = hardy_otel::init(PKG_NAME, PKG_VERSION, None, Some(config.log_level));
 
-    tracing_subscriber::fmt()
-        .with_timer(timer)
-        .with_max_level(config.log_level)
-        .with_target(config.log_level > tracing::Level::INFO)
-        .init();
-
-    info!(
-        "{} version {} starting...",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-    );
+    info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
     info!("{config_source}");
+
+    guard
 }
 
 #[tokio::main]
@@ -108,8 +98,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     };
 
-    // Start logging
-    start_logging(&config, config_source);
+    // Start logging - guard must be kept alive for the duration of the program
+    let _guard = start_logging(&config, config_source);
 
     inner_main(config).await.inspect_err(|e| error!("{e}"))
 }

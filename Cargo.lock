@@ -1101,6 +1101,7 @@ dependencies = [
  "hardy-eid-patterns",
  "hardy-file-cla",
  "hardy-localdisk-storage",
+ "hardy-otel",
  "hardy-proto",
  "hardy-sqlite-storage",
  "hardy-tcpclv4",
@@ -1117,8 +1118,6 @@ dependencies = [
  "tonic",
  "trace-err",
  "tracing",
- "tracing-log",
- "tracing-subscriber",
  "winnow",
 ]
 
@@ -1965,15 +1964,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "num_threads"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -2943,9 +2933,7 @@ checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
  "itoa",
- "libc",
  "num-conv",
- "num_threads",
  "powerfmt",
  "serde",
  "time-core",
@@ -3323,7 +3311,6 @@ dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
- "time",
  "tracing",
  "tracing-core",
  "tracing-log",
