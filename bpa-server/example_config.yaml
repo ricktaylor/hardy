@@ -116,10 +116,14 @@ clas:
 
       # Whether to use TLS for encrypting the connection.
       # use_tls: true
+
+      # TLS configuration (optional, required if use_tls is true)
       # tls:
       #   server_cert: "/etc/hardy/certs/server.crt"
       #   server_key: "/etc/hardy/private/server.key"
       #   ca_bundle: "/etc/hardy/ca"
+
+      #   # Debug options for TLS (testing only, INSECURE)
       #   debug:
       #     accept_self_signed: false
 
