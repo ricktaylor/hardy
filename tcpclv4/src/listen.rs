@@ -197,10 +197,8 @@ impl Listener {
                 self_clone
                     .tls_negotiate(stream, remote_addr, local_addr, tls_config)
                     .await;
-                return;
             } else {
                 error!("TLS requested but no TLS configuration provided");
-                return;
             }
         } else {
             self.new_passive(
