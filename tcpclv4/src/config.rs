@@ -43,6 +43,10 @@ pub struct TlsConfig {
     // Use this when connecting via IP but the certificate is issued for a domain name
     pub server_name: Option<String>,
 
+    // TODO(mTLS): Client certificate and key for mutual TLS authentication
+    // pub client_cert: Option<PathBuf>,
+    // pub client_key: Option<PathBuf>,
+
     // Debug options (development only)
     #[cfg_attr(feature = "serde", serde(default))]
     pub debug: TlsDebugConfig,

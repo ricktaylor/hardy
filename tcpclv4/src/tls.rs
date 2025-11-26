@@ -53,6 +53,7 @@ impl TlsConfig {
                 let key = load_private_key(key_path)?;
 
                 let server_config = ServerConfig::builder()
+                    // TODO(mTLS): Replace with client certificate verification
                     .with_no_client_auth()
                     .with_single_cert(certs, key)
                     .map_err(|e| {
@@ -90,6 +91,8 @@ impl TlsConfig {
             );
             let mut client_config = ClientConfig::builder()
                 .with_root_certificates(root_store)
+                // TODO(mTLS): Add client certificate authentication
+                // Use with_client_auth_cert() to present client certificate
                 .with_no_client_auth();
             client_config
                 .dangerous()
@@ -105,6 +108,8 @@ impl TlsConfig {
             }
             Ok(ClientConfig::builder()
                 .with_root_certificates(root_store)
+                // TODO(mTLS): Add client certificate authentication
+                // Use with_client_auth_cert() to present client certificate
                 .with_no_client_auth())
         }
     }

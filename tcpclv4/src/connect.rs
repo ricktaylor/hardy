@@ -156,6 +156,7 @@ impl Connector {
             transport::Error::InvalidProtocol
         })?;
 
+        // TODO(mTLS): Verify that server accepted our client certificate if mTLS is enabled
         info!("TLS session key negotiation completed to {}", remote_addr);
 
         self.new_active(
