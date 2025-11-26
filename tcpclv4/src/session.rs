@@ -589,7 +589,7 @@ where
                 self.shutdown(session_term_reason_code).await;
             }
             Error::Codec(e) => {
-                // TODO: may be there is a better way to handle this!! 
+                // Question: may be there is a better way to handle this ?! 
                 // If this is an UnexpectedEof error, it's likely a TLS close_notify issue
                 if let codec::Error::Io(io_err) = &e {
                     if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
