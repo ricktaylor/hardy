@@ -72,14 +72,10 @@ impl TlsConfig {
 
         // Load CA certificates from bundle directory if provided
         if let Some(ca_bundle) = &config.ca_bundle {
-            let initial_count = root_store.len();
             load_ca_certs(&mut root_store, ca_bundle)?;
-            let loaded_count = root_store.len() - initial_count;
             info!(
-                "Successfully loaded {} CA certificate(s) from bundle: {} (total in store: {})",
-                loaded_count,
-                ca_bundle.display(),
-                root_store.len()
+                "Successfully loaded CA certificates from bundle (total in store: {})",
+                root_store.len()    
             );
         }
 
@@ -156,14 +152,14 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, Tl
     let resolved = resolve_path(path)?;
     let data = read_file(&resolved, "Private key")?;
 
-    // Try PKCS8 format
+    // Try to load private key in PKCS8 format
     if let Ok(mut keys) = pkcs8_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>() {
         if !keys.is_empty() {
             return Ok(PrivateKeyDer::Pkcs8(keys.remove(0).clone_key()));
         }
     }
 
-    // Question: Should we add RSA format as a fallback?
+    // Question for Rick: Should we add RSA format as a fallback?
     // if let Ok(mut keys) = rsa_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>() {
     //     if !keys.is_empty() {
     //         return Ok(PrivateKeyDer::Pkcs1(keys.remove(0).clone_key()));
@@ -210,14 +206,12 @@ fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<()
         
         let file_path = entry.path();
         
-        // Skip directories
         if file_path.is_dir() {
-            continue;
+            continue; // Skip directories
         }
         
         // Try to load certificates from this file
         // Ignore files that cannot be read or parsed (they might not be certificate files)
-        // Common non-certificate files: .srl, .key, .csr, etc.
         let data = match fs::read(&file_path) {
             Ok(data) => data,
             Err(e) => {
@@ -227,11 +221,10 @@ fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<()
         };
         
         if data.is_empty() {
-            continue; // Skip empty files silently
+            continue;
         }
         
         // Try to parse certificates - ignore files that cannot be parsed
-        // (they might be other files like .srl, .key, .csr, etc.)
         let certs = match load_certs_from_file_data(&data, &file_path) {
             Ok(certs) => certs,
             Err(e) => {
