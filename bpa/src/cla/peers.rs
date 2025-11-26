@@ -105,11 +105,7 @@ impl Peer {
         queue: Option<u32>,
         rx: storage::channel::Receiver,
     ) {
-        loop {
-            let Ok(bundle) = rx.recv_async().await else {
-                break;
-            };
-
+        while let Ok(bundle) = rx.recv_async().await {
             controller.forward(queue, bundle).await;
         }
     }

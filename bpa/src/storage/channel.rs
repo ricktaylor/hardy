@@ -183,11 +183,7 @@ impl Store {
 
         let task = async move {
             let mut pushed_one = false;
-            loop {
-                let Ok(bundle) = inner_rx.recv_async().await else {
-                    break Ok(pushed_one);
-                };
-
+            while let Ok(bundle) = inner_rx.recv_async().await {
                 // Just do some checks
                 if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
                     // Send into queue
@@ -196,6 +192,7 @@ impl Store {
                     pushed_one = true;
                 }
             }
+            Ok(pushed_one)
         };
 
         #[cfg(feature = "tracing")]

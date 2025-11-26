@@ -172,14 +172,12 @@ impl<'a> Editor<'a> {
     fn add_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
         // Find the lowest unused block_number
         let mut block_number = 2u64;
-        loop {
-            if !self.blocks.contains_key(&block_number) {
-                return Ok(BlockBuilder::new(self, block_number, block_type));
-            }
+        while self.blocks.contains_key(&block_number) {
             block_number = block_number
                 .checked_add(1)
                 .ok_or(Error::OutOfBlockNumbers)?;
         }
+        Ok(BlockBuilder::new(self, block_number, block_type))
     }
 
     /// Insert a new block into the bundle.
