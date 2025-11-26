@@ -25,7 +25,7 @@ pub enum TlsError {
     PrivateKeyLoad(String),
 }
 
-
+#[derive(Debug)]
 pub struct TlsConfig {
     pub server_config: Option<Arc<ServerConfig>>,
     pub client_config: Arc<ClientConfig>,
@@ -53,7 +53,6 @@ impl TlsConfig {
                 let key = load_private_key(key_path)?;
 
                 let server_config = ServerConfig::builder()
-                    // TODO(mTLS): Replace with client certificate verification
                     .with_no_client_auth()
                     .with_single_cert(certs, key)
                     .map_err(|e| {
@@ -79,7 +78,7 @@ impl TlsConfig {
         if let Some(ca_bundle) = &config.ca_bundle {
             load_ca_certs(&mut root_store, ca_bundle)?;
             info!(
-                "Successfully loaded CA certificates from bundle (total in store: {})",
+                "Successfully loaded CA certificate(s) from bundle (total in store: {})",
                 root_store.len()
             );
         }
@@ -91,8 +90,6 @@ impl TlsConfig {
             );
             let mut client_config = ClientConfig::builder()
                 .with_root_certificates(root_store)
-                // TODO(mTLS): Add client certificate authentication
-                // Use with_client_auth_cert() to present client certificate
                 .with_no_client_auth();
             client_config
                 .dangerous()
@@ -108,8 +105,6 @@ impl TlsConfig {
             }
             Ok(ClientConfig::builder()
                 .with_root_certificates(root_store)
-                // TODO(mTLS): Add client certificate authentication
-                // Use with_client_auth_cert() to present client certificate
                 .with_no_client_auth())
         }
     }
@@ -166,12 +161,13 @@ fn load_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, Tl
     let resolved = resolve_path(path)?;
     let data = read_file(&resolved, "Private key")?;
 
-    // Try to load private key in PKCS8 format
+    // Try PKCS8 format
     if let Ok(mut keys) = pkcs8_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>()
         && !keys.is_empty()
     {
         return Ok(PrivateKeyDer::Pkcs8(keys.remove(0).clone_key()));
     }
+
     // Question: Should we add RSA format as a fallback?
     // if let Ok(mut keys) = rsa_private_keys(&mut data.as_slice()).collect::<Result<Vec<_>, _>>() {
     //     if !keys.is_empty() {
@@ -225,12 +221,14 @@ fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<()
 
         let file_path = entry.path();
 
+        // Skip directories
         if file_path.is_dir() {
-            continue; // Skip directories
+            continue;
         }
 
         // Try to load certificates from this file
         // Ignore files that cannot be read or parsed (they might not be certificate files)
+        // Common non-certificate files: .srl, .key, .csr, etc.
         let data = match fs::read(&file_path) {
             Ok(data) => data,
             Err(e) => {
@@ -240,10 +238,11 @@ fn load_ca_certs(store: &mut RootCertStore, path: &std::path::Path) -> Result<()
         };
 
         if data.is_empty() {
-            continue;
+            continue; // Skip empty files silently
         }
 
         // Try to parse certificates - ignore files that cannot be parsed
+        // (they might be other files like .srl, .key, .csr, etc.)
         let certs = match load_certs_from_file_data(&data, &file_path) {
             Ok(certs) => certs,
             Err(e) => {

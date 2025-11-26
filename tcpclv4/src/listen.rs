@@ -11,6 +11,8 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tower::{Service, ServiceExt};
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 struct ListenerService {
     listener: TcpListener,

@@ -591,13 +591,13 @@ where
             Error::Codec(e) => {
                 // Question: may be there is a better way to handle this ?!
                 // If this is an UnexpectedEof error, it's likely a TLS close_notify issue
-                if let codec::Error::Io(io_err) = &e {
-                    if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
-                        // Peer closed connection (likely without TLS close_notify) - treat as normal hangup
-                        debug!("Peer closed connection (UnexpectedEof), ending session");
-                        self.close().await;
-                        return;
-                    }
+                if let codec::Error::Io(io_err) = &e
+                    && io_err.kind() == std::io::ErrorKind::UnexpectedEof
+                {
+                    // Peer closed connection (likely without TLS close_notify) - treat as normal hangup
+                    debug!("Peer closed connection (UnexpectedEof), ending session");
+                    self.close().await;
+                    return;
                 }
                 // The other end is sending us garbage
                 info!("Peer sent invalid data: {e:?}, shutting down session");
