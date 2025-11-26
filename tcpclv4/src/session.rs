@@ -42,7 +42,7 @@ where
     transfer_mru: usize,
     from_sink: tokio::sync::mpsc::Receiver<(
         hardy_bpa::Bytes,
-        tokio::sync::oneshot::Sender<Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes>>,
+        tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
     )>,
     transfer_id: u64,
     acks: VecDeque<XferAck>,
@@ -64,9 +64,7 @@ where
         transfer_mru: usize,
         from_sink: tokio::sync::mpsc::Receiver<(
             hardy_bpa::Bytes,
-            tokio::sync::oneshot::Sender<
-                Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes>,
-            >,
+            tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
         )>,
     ) -> Self {
         Self {
@@ -128,12 +126,14 @@ where
         if msg.message_flags.start {
             if self.ingress_bundle.is_some() {
                 // Out of order bundle!
+                info!("Out of order segment received");
                 return self.unexpected_msg(codec::MessageType::XFER_SEGMENT).await;
             }
             self.ingress_bundle = Some(BytesMut::with_capacity(msg.data.len()));
         }
 
         let Some(bundle) = &mut self.ingress_bundle else {
+            info!("Unexpected segment received");
             return self.unexpected_msg(codec::MessageType::XFER_SEGMENT).await;
         };
 
@@ -141,6 +141,7 @@ where
             // Bundle beyond negotiated MRU
             self.ingress_bundle = None;
 
+            info!("Segment received beyond the negotiated MRU");
             return self
                 .reject_msg(
                     codec::MessageRejectionReasonCode::Unsupported,
@@ -299,6 +300,7 @@ where
                 )
                 .await?
             {
+                info!("Peer refused the transfer: {refused:?}");
                 return Ok(Some(refused));
             }
 
@@ -317,15 +319,18 @@ where
             acknowledged_length,
         )
         .await
+        .inspect(|r| {
+            r.as_ref().inspect(|r| {
+                info!("Peer refused the transfer: {r:?}");
+            });
+        })
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn forward_to_peer(
         &mut self,
         bundle: Bytes,
-        result: tokio::sync::oneshot::Sender<
-            Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes>,
-        >,
+        result: tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
     ) -> Result<(), Error> {
         // Check we can send the segments without rolling over the transfer id
         if self
@@ -333,9 +338,7 @@ where
             .saturating_add((bundle.len() / self.segment_mtu) as u64)
             == u64::MAX
         {
-            // Nope - need to shutdown the session
-            _ = result.send(Err(bundle));
-
+            info!("Out of Transfer Ids, closing session");
             return Err(Error::Shutdown(
                 codec::SessionTermReasonCode::ResourceExhaustion,
             ));
@@ -344,23 +347,22 @@ where
         loop {
             match self.send_once(bundle.clone()).await? {
                 None | Some(codec::TransferRefuseReasonCode::Completed) => {
-                    _ = result.send(Ok(hardy_bpa::cla::ForwardBundleResult::Sent));
+                    _ = result.send(hardy_bpa::cla::ForwardBundleResult::Sent);
+                    return Ok(());
                 }
                 Some(codec::TransferRefuseReasonCode::Retransmit) => {
                     /* Send again */
                     continue;
                 }
                 Some(codec::TransferRefuseReasonCode::NoResources) => {
-                    _ = result.send(Err(bundle));
                     return Err(Error::Shutdown(
                         codec::SessionTermReasonCode::ResourceExhaustion,
                     ));
                 }
                 _ => {
-                    _ = result.send(Err(bundle));
+                    return Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown));
                 }
             }
-            break Ok(());
         }
     }
 
@@ -370,11 +372,6 @@ where
 
         // Stop allowing more transfers
         self.from_sink.close();
-
-        // Drain the sink channel
-        while let Some((bundle, result)) = self.from_sink.recv().await {
-            _ = result.send(Err(bundle));
-        }
 
         // Send a SESS_TERM message
         let msg = codec::SessionTermMessage {
@@ -422,11 +419,6 @@ where
         // Drain the sink channel
         while let Some((bundle, result)) = self.from_sink.recv().await {
             if let Err(e) = self.forward_to_peer(bundle, result).await {
-                // Fail anything left in the sink channel
-                while let Some((bundle, result)) = self.from_sink.recv().await {
-                    _ = result.send(Err(bundle));
-                }
-
                 if let Error::Shutdown(_) = e {
                     break;
                 } else {
@@ -489,11 +481,6 @@ where
         // Stop allowing more transfers
         self.from_sink.close();
 
-        // Drain the rcv channel
-        while let Some((bundle, result)) = self.from_sink.recv().await {
-            _ = result.send(Err(bundle));
-        }
-
         // Close the connection
         _ = self.transport.close().await;
     }
@@ -534,7 +521,7 @@ where
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn run(mut self) {
-        loop {
+        let e = loop {
             // Because we can't double &mut self
             let msg = if let Some(keepalive_interval) = self.keepalive_interval {
                 tokio::select! {
@@ -585,33 +572,32 @@ where
                 }
             };
 
-            let result = match msg {
+            if let Err(e) = match msg {
                 Ok(codec::Message::TransferSegment(msg)) => self.on_transfer(msg).await,
                 Ok(msg) => self.unexpected_msg(msg.message_type()).await,
                 Err(e) => Err(e),
-            };
+            } {
+                break e;
+            }
+        };
 
-            match result {
-                Ok(_) => {}
-                Err(Error::Terminate(session_term_message)) => {
-                    return self.on_terminate(session_term_message).await;
-                }
-                Err(Error::Shutdown(session_term_reason_code)) => {
-                    return self.shutdown(session_term_reason_code).await;
-                }
-                Err(Error::Codec(e)) => {
-                    // The other end is sending us garbage
-                    info!("Peer sent invalid data: {e:?}, shutting down session");
-                    return self.shutdown(codec::SessionTermReasonCode::Unknown).await;
-                }
-                Err(Error::Hangup) => {
-                    info!("Peer hung up, ending session");
-                    return self.close().await;
-                }
-                Err(Error::Io(e)) => {
-                    info!("Session I/O failure: {e:?}, ending session");
-                    return self.close().await;
-                }
+        match e {
+            Error::Terminate(session_term_message) => self.on_terminate(session_term_message).await,
+            Error::Shutdown(session_term_reason_code) => {
+                self.shutdown(session_term_reason_code).await
+            }
+            Error::Codec(e) => {
+                // The other end is sending us garbage
+                info!("Peer sent invalid data: {e:?}, shutting down session");
+                self.shutdown(codec::SessionTermReasonCode::Unknown).await
+            }
+            Error::Hangup => {
+                info!("Peer hung up, ending session");
+                self.close().await
+            }
+            Error::Io(e) => {
+                info!("Session I/O failure: {e:?}, ending session");
+                self.close().await
             }
         }
     }

@@ -208,7 +208,8 @@ impl Connector {
         // Kick off the run() as a background task
         let registry = self.registry.clone();
         let remote_addr = *remote_addr;
-        self.task_tracker.spawn(async move {
+
+        let task = async move {
             // Register the client for addr
             if registry
                 .register_session(
@@ -221,11 +222,23 @@ impl Connector {
                 session.run().await;
             }
 
-            debug!("Session with {remote_addr} closed");
+            debug!("Session from {local_addr} to {remote_addr} closed");
 
             // Unregister the session for addr, whatever happens
             registry.unregister_session(&local_addr, &remote_addr).await
-        });
+        };
+
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!(
+                parent: None,
+                "active_session_task"
+            );
+            span.follows_from(tracing::Span::current());
+            task.instrument(span)
+        };
+
+        self.task_tracker.spawn(task);
         Ok(())
     }
 }

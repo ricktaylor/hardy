@@ -98,7 +98,19 @@ impl Listener {
                             Ok((stream,remote_addr)) => {
                                 // Spawn immediately to prevent head-of-line blocking
                                 let self_cloned = self.clone();
-                                self.task_tracker.spawn(self_cloned.new_contact(stream, remote_addr));
+                                let task = self_cloned.new_contact(stream, remote_addr);
+
+                                #[cfg(feature = "tracing")]
+                                let task = {
+                                    let span = tracing::trace_span!(
+                                        parent: None,
+                                        "passive_session_task"
+                                    );
+                                    span.follows_from(tracing::Span::current());
+                                    task.instrument(span)
+                                };
+
+                                self.task_tracker.spawn(task);
                             }
                             Err(e) => warn!("Failed to accept connection: {e}")
                         }
@@ -314,7 +326,7 @@ impl Listener {
             session.run().await;
         }
 
-        debug!("Session with {remote_addr} closed");
+        debug!("Session from {local_addr} to {remote_addr} closed");
 
         // Unregister the session for addr, whatever happens
         self.registry

@@ -10,21 +10,31 @@ impl ClaInner {
     ) {
         // Start the listeners
         if let Some(address) = config.address {
-            task_tracker.spawn(
-                Arc::new(listen::Listener {
-                    cancel_token: cancel_token.clone(),
-                    task_tracker: task_tracker.clone(),
-                    contact_timeout: config.session_defaults.contact_timeout,
-                    use_tls: config.session_defaults.use_tls,
-                    keepalive_interval: config.session_defaults.keepalive_interval,
-                    segment_mru: config.segment_mru,
-                    transfer_mru: config.transfer_mru,
-                    node_ids: self.node_ids.clone(),
-                    sink: self.sink.clone(),
-                    registry: self.registry.clone(),
-                })
-                .listen(address),
-            );
+            let task = Arc::new(listen::Listener {
+                cancel_token: cancel_token.clone(),
+                task_tracker: task_tracker.clone(),
+                contact_timeout: config.session_defaults.contact_timeout,
+                use_tls: config.session_defaults.use_tls,
+                keepalive_interval: config.session_defaults.keepalive_interval,
+                segment_mru: config.segment_mru,
+                transfer_mru: config.transfer_mru,
+                node_ids: self.node_ids.clone(),
+                sink: self.sink.clone(),
+                registry: self.registry.clone(),
+            })
+            .listen(address);
+
+            #[cfg(feature = "tracing")]
+            let task = {
+                let span = tracing::trace_span!(
+                    parent: None,
+                    "tcp_listener"
+                );
+                span.follows_from(tracing::Span::current());
+                task.instrument(span)
+            };
+
+            task_tracker.spawn(task);
         }
     }
 }
@@ -85,7 +95,7 @@ impl hardy_bpa::cla::Cla for Cla {
             for _ in 0..5 {
                 // See if we have an active connection already
                 bundle = match inner.registry.forward(remote_addr, bundle).await {
-                    Ok(r) => return r,
+                    Ok(r) => return Ok(r),
                     Err(bundle) => bundle,
                 };
 

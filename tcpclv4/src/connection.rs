@@ -8,7 +8,7 @@ use std::{
 
 pub type ConnectionTx = tokio::sync::mpsc::Sender<(
     hardy_bpa::Bytes,
-    tokio::sync::oneshot::Sender<Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes>>,
+    tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
 )>;
 
 pub struct Connection {
@@ -47,58 +47,46 @@ impl ConnectionPool {
 
     fn remove(&self, local_addr: &SocketAddr) -> bool {
         let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
-        if inner.active.remove(local_addr).is_none() {
-            _ = inner.idle.extract_if(.., |c| &c.local_addr == local_addr);
-        }
+        inner.active.remove(local_addr);
+        _ = inner.idle.extract_if(.., |c| &c.local_addr == local_addr);
         inner.active.is_empty() && inner.idle.is_empty()
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
     async fn try_send(
         &self,
-        mut bundle: hardy_bpa::Bytes,
-    ) -> Result<hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult>, hardy_bpa::Bytes> {
+        bundle: hardy_bpa::Bytes,
+    ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         // We repeatedly search as this function is async, so changes can happen while running
         loop {
             // Try to use an idle session
             while let Some(conn) = {
                 let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
-                if let Some(conn) = inner.idle.pop() {
+                let conn = inner.idle.pop();
+                if let Some(conn) = &conn {
                     inner.active.insert(conn.local_addr, conn.tx.clone());
-                    Some(conn)
-                } else {
-                    None
                 }
+                conn
             } {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                if let Err(e) = conn.tx.send((bundle, tx)).await {
-                    self.inner
-                        .lock()
-                        .trace_expect("Failed to lock mutex")
-                        .active
-                        .remove(&conn.local_addr);
-                    bundle = e.0.0;
-                } else {
-                    match rx.await.trace_expect("Sender dropped!") {
-                        Ok(r) => {
-                            let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
-                            inner.active.remove(&conn.local_addr);
-                            if inner.idle.len() + inner.active.len() <= self.max_idle {
-                                inner.idle.push(conn);
-                            }
-                            return Ok(Ok(r));
+                if conn.tx.send((bundle.clone(), tx)).await.is_ok() {
+                    if let Ok(r) = rx.await {
+                        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+                        inner.active.remove(&conn.local_addr);
+                        if inner.idle.len() + inner.active.len() <= self.max_idle {
+                            inner.idle.push(conn);
                         }
-                        Err(b) => {
-                            // The connection is closing
-                            self.inner
-                                .lock()
-                                .trace_expect("Failed to lock mutex")
-                                .active
-                                .remove(&conn.local_addr);
-                            bundle = b
-                        }
+                        return Ok(r);
                     }
+                    debug!("Connection failed to transfer bundle");
                 }
+
+                // By the time we got here, conn is in a bad state
+                self.inner
+                    .lock()
+                    .trace_expect("Failed to lock mutex")
+                    .active
+                    .remove(&conn.local_addr);
             }
 
             if self.max_idle == 0 || {
@@ -111,31 +99,29 @@ impl ConnectionPool {
             }
 
             // Pick a random active connection and enqueue
-            loop {
-                let conn_tx = self
-                    .inner
+            while let Some((local_addr, conn_tx)) = {
+                self.inner
                     .lock()
                     .trace_expect("Failed to lock mutex")
                     .active
-                    .values()
+                    .iter()
                     .choose(&mut rand::rng())
-                    .cloned();
-
-                let Some(conn_tx) = conn_tx else {
-                    break;
-                };
-
+                    .map(|(l, c)| (*l, c.clone()))
+            } {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                if let Err(e) = conn_tx.send((bundle, tx)).await {
-                    bundle = e.0.0;
-                } else {
-                    match rx.await.trace_expect("Sender dropped!") {
-                        Ok(r) => {
-                            return Ok(Ok(r));
-                        }
-                        Err(b) => bundle = b,
+                if conn_tx.send((bundle.clone(), tx)).await.is_ok() {
+                    if let Ok(r) = rx.await {
+                        return Ok(r);
                     }
+                    debug!("Connection failed to transfer bundle");
                 }
+
+                // By the time we got here, conn is in a bad state
+                self.inner
+                    .lock()
+                    .trace_expect("Failed to lock mutex")
+                    .active
+                    .remove(&local_addr);
             }
         }
     }
@@ -299,7 +285,7 @@ impl ConnectionRegistry {
         &self,
         remote_addr: &SocketAddr,
         mut bundle: hardy_bpa::Bytes,
-    ) -> Result<hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult>, hardy_bpa::Bytes> {
+    ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         let pool = self
             .pools
             .lock()
