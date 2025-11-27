@@ -370,15 +370,14 @@ impl Listener {
         local_addr: SocketAddr,
         tls_config: Arc<tls::TlsConfig>,
     ) {
-        let server_config = match &tls_config.server_config {
-            Some(config) => config.clone(),
-            None => {
-                error!("TLS server config not available");
-                return;
-            }
-        };
+        // This expect should be guarded by listeners not starting without TLS server config
+        let acceptor = TlsAcceptor::from(
+            tls_config
+                .server_config
+                .clone()
+                .trace_expect("TLS server config not available"),
+        );
 
-        let acceptor = TlsAcceptor::from(server_config);
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
                 // TODO(mTLS): Verify client certificate if mTLS is enabled

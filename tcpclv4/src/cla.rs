@@ -70,7 +70,12 @@ impl hardy_bpa::cla::Cla for Cla {
             tls_config: tls_config.clone(),
         };
 
-        if !self.config.session_defaults.must_use_tls || self.config.tls.is_some() {
+        if !self.config.session_defaults.must_use_tls
+            || tls_config
+                .as_ref()
+                .and_then(|c| c.server_config.as_ref())
+                .is_some()
+        {
             inner.start_listeners(
                 &self.config,
                 &self.cancel_token,
