@@ -77,10 +77,6 @@ impl Connector {
                 )
                 .await;
             }
-
-            // Make sure we remove any registered peer
-            self.registry.remove_peer(remote_addr).await;
-
             return Err(transport::Error::InvalidProtocol);
         }
 
@@ -274,17 +270,16 @@ impl Connector {
         let remote_addr = *remote_addr;
 
         let task = async move {
-            // Register the client for addr
-            if registry
+            registry
                 .register_session(
+                    self.sink.clone(),
                     connection::Connection { tx, local_addr },
                     remote_addr,
                     peer_init.node_id,
                 )
-                .await
-            {
-                session.run().await;
-            }
+                .await;
+
+            session.run().await;
 
             debug!("Session from {local_addr} to {remote_addr} closed");
 

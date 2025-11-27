@@ -67,21 +67,35 @@ impl Cla {
         true
     }
 
-    pub async fn add_peer(&self, remote_addr: std::net::SocketAddr, eid: Eid) -> bool {
-        self.inner
-            .get()
-            .trace_expect("CLA not registered")
-            .registry
-            .add_peer(remote_addr, eid)
-            .await
-    }
+    pub async fn connect(&self, remote_addr: &std::net::SocketAddr) -> hardy_bpa::cla::Result<()> {
+        let inner = self.inner.get().trace_expect("CLA not registered");
 
-    pub async fn remove_peer(&self, remote_addr: &std::net::SocketAddr) -> bool {
-        self.inner
-            .get()
-            .trace_expect("CLA not registered")
-            .registry
-            .remove_peer(remote_addr)
-            .await
+        for _ in 0..5 {
+            // Do a new active connect
+            let conn = connect::Connector {
+                cancel_token: self.cancel_token.clone(),
+                task_tracker: self.task_tracker.clone(),
+                contact_timeout: self.config.session_defaults.contact_timeout,
+                must_use_tls: self.config.session_defaults.must_use_tls,
+                keepalive_interval: self.config.session_defaults.keepalive_interval,
+                segment_mru: self.config.segment_mru,
+                transfer_mru: self.config.transfer_mru,
+                node_ids: inner.node_ids.clone(),
+                sink: inner.sink.clone(),
+                registry: inner.registry.clone(),
+                tls_config: inner.tls_config.clone(),
+            };
+            match conn.connect(remote_addr).await {
+                Ok(()) => return Ok(()),
+                Err(transport::Error::Timeout) => {}
+                Err(e) => {
+                    // No point retrying
+                    return Err(hardy_bpa::cla::Error::Internal(e.into()));
+                }
+            }
+        }
+        Err(hardy_bpa::cla::Error::Internal(
+            transport::Error::Timeout.into(),
+        ))
     }
 }

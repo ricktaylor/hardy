@@ -326,17 +326,16 @@ impl Listener {
         );
 
         // Register the client for addr
-        if self
-            .registry
+        self.registry
             .register_session(
+                self.sink.clone(),
                 connection::Connection { tx, local_addr },
                 remote_addr,
                 peer_init.node_id,
             )
-            .await
-        {
-            session.run().await;
-        }
+            .await;
+
+        session.run().await;
 
         debug!("Session from {local_addr} to {remote_addr} closed");
 

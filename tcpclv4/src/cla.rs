@@ -59,7 +59,6 @@ impl hardy_bpa::cla::Cla for Cla {
 
         let inner = ClaInner {
             registry: Arc::new(connection::ConnectionRegistry::new(
-                sink.clone(),
                 self.config.max_idle_connections,
             )),
             sink,
@@ -116,7 +115,7 @@ impl hardy_bpa::cla::Cla for Cla {
                         return Ok(r);
                     }
                     Err(bundle) => {
-                        debug!("No existing connection, will create new one");
+                        debug!("No live connections, will attempt to create new one");
                         bundle
                     }
                 };
