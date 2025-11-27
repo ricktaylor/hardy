@@ -10,6 +10,9 @@ use std::sync::Arc;
 use trace_err::*;
 use tracing::{debug, error, info, warn};
 
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn listen_for_cancel(
     cancel_token: &tokio_util::sync::CancellationToken,
     task_tracker: &tokio_util::task::TaskTracker,
@@ -79,25 +82,13 @@ fn start_storage(config: &mut config::Config) {
     }
 }
 
-fn start_logging(config: &config::Config, config_source: String) {
-    let log_level = config
-        .log_level
-        .parse::<tracing_subscriber::filter::LevelFilter>()
-        .expect("Invalid 'log_level' value in configuration");
+fn start_logging(config: &config::Config, config_source: String) -> hardy_otel::OtelGuard {
+    let guard = hardy_otel::init(PKG_NAME, PKG_VERSION, None, Some(config.log_level));
 
-    tracing_subscriber::fmt()
-        .with_max_level(log_level)
-        .with_target(
-            log_level > tracing_subscriber::filter::LevelFilter::from_level(tracing::Level::INFO),
-        )
-        .init();
-
-    info!(
-        "{} version {} starting...",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-    );
+    info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
     info!("{config_source}");
+
+    guard
 }
 
 #[tokio::main]
@@ -107,8 +98,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     };
 
-    // Start logging
-    start_logging(&config, config_source);
+    // Start logging - guard must be kept alive for the duration of the program
+    let _guard = start_logging(&config, config_source);
 
     inner_main(config).await.inspect_err(|e| error!("{e}"))
 }

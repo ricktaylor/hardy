@@ -15,7 +15,7 @@ postgres-storage = []
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = []
 packaged-installation = []
-grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic", "dep:prost-types"]
+grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic", "dep:prost-types", "dep:time"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 
@@ -38,13 +38,15 @@ serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
 thiserror = "2.0.17"
-time = "0.3.44"
+time = { version = "0.3.44", optional = true }
 tracing = "0.1.41"
-tracing-subscriber = "0.3.20"
-tracing-log = "0.2.0"
+hardy-otel = { path = "../otel" }
 notify-debouncer-full = "0.6.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "0.1.5"
 winnow = "0.7.14"
 anyhow = "1.0.100"
 flume = "0.11.1"
+
+[dev-dependencies]
+serde_json = "1.0.145"

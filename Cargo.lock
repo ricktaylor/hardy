@@ -1090,6 +1090,7 @@ dependencies = [
  "hardy-eid-patterns",
  "hardy-file-cla",
  "hardy-localdisk-storage",
+ "hardy-otel",
  "hardy-proto",
  "hardy-sqlite-storage",
  "hardy-tcpclv4",
@@ -1097,6 +1098,7 @@ dependencies = [
  "notify-debouncer-full",
  "prost-types",
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "tokio",
@@ -1105,8 +1107,6 @@ dependencies = [
  "tonic",
  "trace-err",
  "tracing",
- "tracing-log",
- "tracing-subscriber",
  "winnow",
 ]
 

@@ -1,6 +1,27 @@
 use super::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::PathBuf;
+use std::str::FromStr;
+use tracing::Level;
+
+mod log_level_serde {
+    use super::*;
+
+    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(level.as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
@@ -30,10 +51,11 @@ pub enum BundleStorage {
     // S3(S3Config),
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     // Logging level
-    pub log_level: String,
+    #[serde(default = "default_log_level", with = "log_level_serde")]
+    pub log_level: Level,
 
     // Static Routes Configuration
     pub static_routes: Option<static_routes::Config>,
@@ -169,4 +191,8 @@ pub fn init() -> Option<(Config, String)> {
 
     // And parse...
     Some((config, config_source))
+}
+
+fn default_log_level() -> Level {
+    Level::INFO
 }
