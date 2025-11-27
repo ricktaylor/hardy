@@ -178,7 +178,6 @@ where
         &mut self,
         flags: codec::TransferSegmentMessageFlags,
         data: Bytes,
-        acknowledged_length: usize,
     ) -> Result<Option<codec::TransferRefuseReasonCode>, Error> {
         // Inc transfer id
         let transfer_id = self.transfer_id;
@@ -188,7 +187,7 @@ where
         self.acks.push_back(XferAck {
             flags: flags.clone(),
             transfer_id,
-            acknowledged_length,
+            acknowledged_length: data.len(),
         });
 
         let last = flags.end;
@@ -285,9 +284,7 @@ where
         let mut start = true;
 
         // Segment if needed
-        let mut acknowledged_length = 0;
         while bundle.len() > self.segment_mtu {
-            acknowledged_length += self.segment_mtu;
             if let Some(refused) = self
                 .send_segment(
                     codec::TransferSegmentMessageFlags {
@@ -296,7 +293,6 @@ where
                         ..Default::default()
                     },
                     bundle.split_to(self.segment_mtu),
-                    acknowledged_length,
                 )
                 .await?
             {
@@ -308,7 +304,6 @@ where
         }
 
         // Send the last segment
-        acknowledged_length += self.segment_mtu;
         self.send_segment(
             codec::TransferSegmentMessageFlags {
                 start,
@@ -316,7 +311,6 @@ where
                 ..Default::default()
             },
             bundle,
-            acknowledged_length,
         )
         .await
         .inspect(|r| {
