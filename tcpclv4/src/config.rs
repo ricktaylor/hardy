@@ -10,8 +10,8 @@ pub struct SessionConfig {
     // Keepalive interval in seconds
     pub keepalive_interval: Option<u16>, // default 60
 
-    // Whether to use TLS for encrypting the connection
-    pub use_tls: bool,
+    // Whether to enforce TLS for encrypting the connection
+    pub must_use_tls: bool,
 }
 
 impl Default for SessionConfig {
@@ -19,7 +19,7 @@ impl Default for SessionConfig {
         Self {
             contact_timeout: 15,
             keepalive_interval: Some(60),
-            use_tls: true,
+            must_use_tls: true,
         }
     }
 }
@@ -78,9 +78,8 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub session_defaults: SessionConfig,
 
-    // TLS configuration (only used if use_tls is true)
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub tls: TlsConfig,
+    // TLS configuration
+    pub tls: Option<TlsConfig>,
 }
 
 impl Default for Config {

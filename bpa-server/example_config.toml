@@ -114,11 +114,11 @@ type = "tcpclv4"
 # A value of `null` or `0` disables keepalives.
 #keepalive_interval = 60
 
-# Whether to use TLS for encrypting the connection.
-# use_tls = true
-
-# TLS configuration (optional, required if use_tls is true)
+# TLS configuration (optional, TLS disabled if not set)
 [clas.config.tls]
+# Whether to enforce TLS for encrypting the connection.
+# must_use_tls = true
+
 # server_cert = "/etc/hardy/certs/server.crt"
 # server_key = "/etc/hardy/private/server.key"
 # ca_bundle = "/etc/hardy/ca"

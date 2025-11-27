@@ -15,7 +15,7 @@ use trace_err::*;
 use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "tracing")]
-use tracing::instrument;
+use tracing::{Instrument, instrument};
 
 struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
@@ -34,6 +34,10 @@ pub struct Cla {
 
 impl Cla {
     pub fn new(name: String, config: config::Config) -> Self {
+        if config.session_defaults.must_use_tls && config.tls.is_none() {
+            error!("{name}: TLS is required, but no TLS configuration has been provided");
+        }
+
         if config.session_defaults.contact_timeout > 60 {
             warn!("{name}: RFC9174 specifies contact timeout SHOULD be a maximum of 60 seconds");
         }

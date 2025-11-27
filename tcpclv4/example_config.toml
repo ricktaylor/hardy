@@ -22,5 +22,16 @@
 # A value of 0 disables keepalives.
 #keepalive_interval = 60
 
-# Whether to use TLS for encrypting the connection.
-#use_tls = true
+# TLS configuration (optional, TLS disabled if not set)
+[tls]
+# Whether to enforce TLS for encrypting the connection.
+# must_use_tls = true
+
+# server_cert = "/etc/hardy/certs/server.crt"
+# server_key = "/etc/hardy/private/server.key"
+# ca_bundle = "/etc/hardy/ca"
+# server_name = "dtn.example.com"
+
+# Debug options for TLS (testing only, INSECURE)
+[tls.debug]
+# accept_self_signed = false

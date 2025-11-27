@@ -11,8 +11,6 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tower::{Service, ServiceExt};
-#[cfg(feature = "tracing")]
-use tracing::Instrument;
 
 struct ListenerService {
     listener: TcpListener,
@@ -49,7 +47,7 @@ pub struct Listener {
     pub cancel_token: tokio_util::sync::CancellationToken,
     pub task_tracker: tokio_util::task::TaskTracker,
     pub contact_timeout: u16,
-    pub use_tls: bool,
+    pub must_use_tls: bool,
     pub keepalive_interval: Option<u16>,
     pub segment_mru: u64,
     pub transfer_mru: u64,
@@ -63,20 +61,22 @@ impl std::fmt::Debug for Listener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Listener")
             //.field("cancel_token", &self.cancel_token)
+            //.field("task_tracker", &self.task_tracker)
             .field("contact_timeout", &self.contact_timeout)
-            .field("use_tls", &self.use_tls)
+            .field("must_use_tls", &self.must_use_tls)
             .field("keepalive_interval", &self.keepalive_interval)
             .field("segment_mru", &self.segment_mru)
             .field("transfer_mru", &self.transfer_mru)
             .field("node_ids", &self.node_ids)
             //.field("sink", &self.sink)
             //.field("registry", &self.registry)
+            .field("tls_config", &self.tls_config)
             .finish()
     }
 }
 
 impl Listener {
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument)]
     pub async fn listen(self: Arc<Listener>, address: std::net::SocketAddr) {
         let Ok(listener) = TcpListener::bind(address)
             .await
@@ -130,7 +130,7 @@ impl Listener {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument)]
     async fn new_contact(self: Arc<Listener>, mut stream: TcpStream, remote_addr: SocketAddr) {
         // Receive contact header
         let mut buffer = [0u8; 6];
@@ -161,7 +161,14 @@ impl Listener {
 
         // Always send our contact header in reply!
         if let Err(e) = stream
-            .write_all(&[b'd', b't', b'n', b'!', 4, if self.use_tls { 1 } else { 0 }])
+            .write_all(&[
+                b'd',
+                b't',
+                b'n',
+                b'!',
+                4,
+                if self.tls_config.is_some() { 1 } else { 0 },
+            ])
             .await
         {
             debug!("Failed to send contact header: {e}");
@@ -192,28 +199,38 @@ impl Listener {
             .local_addr()
             .trace_expect("Failed to get socket local address");
 
-        if self.use_tls && buffer[5] & 1 != 0 {
-            if let Some(tls_config) = &self.tls_config {
+        if buffer[5] & 1 != 0 {
+            if let Some(tls_config) = self.tls_config.clone() {
                 info!("TLS connection received from {}", remote_addr);
-                let self_clone = self.clone();
-                self_clone
+
+                return self
+                    .clone()
                     .tls_negotiate(stream, remote_addr, local_addr, tls_config)
                     .await;
-            } else {
-                error!("TLS requested but no TLS configuration provided");
             }
-        } else {
-            self.new_passive(
-                local_addr,
-                remote_addr,
-                None,
+            error!("TLS requested but no TLS configuration provided");
+        } else if self.must_use_tls {
+            warn!("Peer does not support TLS, but TLS is required by configuration");
+            return transport::terminate(
                 codec::MessageCodec::new_framed(stream),
+                codec::SessionTermReasonCode::ContactFailure,
+                self.contact_timeout,
+                &self.cancel_token,
             )
             .await;
         }
+
+        info!("New TCP (NO-TLS) connection accepted from {}", remote_addr);
+        self.new_passive(
+            local_addr,
+            remote_addr,
+            None,
+            codec::MessageCodec::new_framed(stream),
+        )
+        .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, transport)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(transport)))]
     async fn new_passive<T>(
         self: Arc<Listener>,
         local_addr: SocketAddr,
@@ -345,12 +362,13 @@ impl Listener {
             .await
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(stream)))]
     async fn tls_negotiate(
         self: Arc<Listener>,
         stream: TcpStream,
         remote_addr: SocketAddr,
         local_addr: SocketAddr,
-        tls_config: &Arc<tls::TlsConfig>,
+        tls_config: Arc<tls::TlsConfig>,
     ) {
         let server_config = match &tls_config.server_config {
             Some(config) => config.clone(),

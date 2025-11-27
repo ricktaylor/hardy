@@ -1,6 +1,12 @@
 use super::*;
 
-async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
+async fn exec_async(args: &Command) -> anyhow::Result<()> {
+    println!(
+        "Pinging {} from {}",
+        args.destination,
+        args.source.as_ref().unwrap()
+    );
+
     let bpa = hardy_bpa::bpa::Bpa::start(
         &hardy_bpa::config::Config {
             status_reports: args.report_to.is_some(),
@@ -27,14 +33,18 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
     let cla_name = "tcp0".to_string();
     let mut tcpclv4_config = hardy_tcpclv4::config::Config {
         address: None,
+        session_defaults: hardy_tcpclv4::config::SessionConfig {
+            must_use_tls: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     // Configure TLS if accept_self_signed or CA bundle is specified
     if args.tls_accept_self_signed || args.tls_ca_bundle.is_some() {
-        tcpclv4_config.session_defaults.use_tls = true;
+        let mut tls_config = hardy_tcpclv4::config::TlsConfig::default();
         if args.tls_accept_self_signed {
-            tcpclv4_config.tls.debug.accept_self_signed = true;
+            tls_config.debug.accept_self_signed = true;
         }
         if let Some(ca_bundle) = &args.tls_ca_bundle {
             if !ca_bundle.exists() {
@@ -49,8 +59,10 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
                     ca_bundle.display()
                 ));
             }
-            tcpclv4_config.tls.ca_bundle = Some(ca_bundle.clone());
+            tls_config.ca_bundle = Some(ca_bundle.clone());
         }
+        tcpclv4_config.tls = Some(tls_config);
+        tcpclv4_config.session_defaults.must_use_tls = true;
     }
 
     let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(cla_name.clone(), tcpclv4_config));
@@ -59,13 +71,23 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_name))?;
 
-    let Some(address) = &args.address else {
+    let address = if let Some(address) = &args.address {
+        address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse CLA address: {e}"))?
+    } else {
         // TODO: DNS resolution for EIDs
         // https://datatracker.ietf.org/doc/draft-ek-dtn-ipn-arpa/
+
         return Err(anyhow::anyhow!(
             "No CLA address specified for destination EID, and no DNS support currently available"
         ));
     };
+
+    cla.connect(&address)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to {address}: {e}"))?;
+    drop(cla);
 
     let peer = match &args.destination {
         Eid::LegacyIpn {
@@ -93,36 +115,19 @@ async fn start_bpa(args: &Command) -> anyhow::Result<hardy_bpa::bpa::Bpa> {
         }
     };
 
-    cla.add_peer(
-        address
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Failed to parse CLA address: {e}"))?,
-        peer.clone(),
-    )
-    .await
-    .then_some(())
-    .ok_or(anyhow::anyhow!("Failed to add peer to CLA"))?;
-
-    // Now add a route
-    bpa.add_route(
-        "ping".to_string(),
-        args.destination.clone().into(),
-        hardy_bpa::routes::Action::Via(peer),
-        1,
-    )
-    .await
-    .then_some(bpa)
-    .ok_or(anyhow::anyhow!("Failed to add route"))
-}
-
-async fn exec_async(args: &Command) -> anyhow::Result<()> {
-    println!(
-        "Pinging {} from {}",
-        args.destination,
-        args.source.as_ref().unwrap()
-    );
-
-    let bpa = start_bpa(args).await?;
+    // Now add a route if we are targeting a service
+    if peer != args.destination
+        && !bpa
+            .add_route(
+                "ping".to_string(),
+                args.destination.clone().into(),
+                hardy_bpa::routes::Action::Via(peer),
+                1,
+            )
+            .await
+    {
+        return Err(anyhow::anyhow!("Failed to add route"));
+    }
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
     cancel::listen_for_cancel(&cancel_token);

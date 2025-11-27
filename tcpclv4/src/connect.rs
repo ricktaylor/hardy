@@ -6,14 +6,12 @@ use tokio::{
     sync::mpsc::*,
 };
 use tokio_rustls::TlsConnector;
-#[cfg(feature = "tracing")]
-use tracing::Instrument;
 
 pub struct Connector {
     pub cancel_token: tokio_util::sync::CancellationToken,
     pub task_tracker: tokio_util::task::TaskTracker,
     pub contact_timeout: u16,
-    pub use_tls: bool,
+    pub must_use_tls: bool,
     pub keepalive_interval: Option<u16>,
     pub segment_mru: u64,
     pub transfer_mru: u64,
@@ -23,8 +21,26 @@ pub struct Connector {
     pub tls_config: Option<Arc<tls::TlsConfig>>,
 }
 
+impl std::fmt::Debug for Connector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connector")
+            //.field("cancel_token", &self.cancel_token)
+            //.field("task_tracker", &self.task_tracker)
+            .field("contact_timeout", &self.contact_timeout)
+            .field("must_use_tls", &self.must_use_tls)
+            .field("keepalive_interval", &self.keepalive_interval)
+            .field("segment_mru", &self.segment_mru)
+            .field("transfer_mru", &self.transfer_mru)
+            .field("node_ids", &self.node_ids)
+            //.field("sink", &self.sink)
+            //.field("registry", &self.registry)
+            .field("tls_config", &self.tls_config)
+            .finish()
+    }
+}
+
 impl Connector {
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument)]
     pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), transport::Error> {
         let mut stream = TcpStream::connect(remote_addr)
             .await
@@ -32,7 +48,14 @@ impl Connector {
 
         // Send contact header
         stream
-            .write_all(&[b'd', b't', b'n', b'!', 4, if self.use_tls { 1 } else { 0 }])
+            .write_all(&[
+                b'd',
+                b't',
+                b'n',
+                b'!',
+                4,
+                if self.tls_config.is_some() { 1 } else { 0 },
+            ])
             .await
             .inspect_err(|e| debug!("Failed to send contact header: {e}"))?;
 
@@ -91,43 +114,47 @@ impl Connector {
             .local_addr()
             .trace_expect("Failed to get socket local address");
 
-        if self.use_tls && buffer[5] & 1 != 0 {
-            if let Some(tls_config) = &self.tls_config {
-                info!("Initiating TLS handshake to {}", remote_addr);
-                let tls_config_clone = tls_config.clone();
-                match self
-                    .tls_handshake(stream, remote_addr, local_addr, &tls_config_clone)
+        if buffer[5] & 1 != 0 {
+            if let Some(tls_config) = self.tls_config.clone() {
+                info!("Initiating TLS handshake with {}", remote_addr);
+                return self
+                    .tls_handshake(stream, remote_addr, local_addr, tls_config)
                     .await
-                {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        error!("TLS session negotiation failed to {}: {e}", remote_addr);
-                        Err(e)
-                    }
-                }
-            } else {
-                error!("TLS requested but no TLS configuration provided");
-                Err(transport::Error::InvalidProtocol)
+                    .inspect_err(|e| {
+                        error!("TLS session negotiation failed to {}: {e}", remote_addr)
+                    });
             }
-        } else {
-            info!("New TCP (NO-TLS) connection accepted from {}", remote_addr);
-            self.new_active(
-                local_addr,
-                remote_addr,
-                None,
+            info!("TLS requested by peer but no TLS configuration provided");
+        } else if self.must_use_tls {
+            warn!("Peer does not support TLS, but TLS is required by configuration");
+            transport::terminate(
                 codec::MessageCodec::new_framed(stream),
+                codec::SessionTermReasonCode::ContactFailure,
+                self.contact_timeout,
+                &self.cancel_token,
             )
-            .await
+            .await;
+
+            return Err(transport::Error::InvalidProtocol);
         }
+
+        info!("New TCP (NO-TLS) connection connected to {}", remote_addr);
+        self.new_active(
+            local_addr,
+            remote_addr,
+            None,
+            codec::MessageCodec::new_framed(stream),
+        )
+        .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip(stream)))]
     async fn tls_handshake(
         self: Connector,
         stream: TcpStream,
         remote_addr: &SocketAddr,
         local_addr: SocketAddr,
-        tls_config: &Arc<tls::TlsConfig>,
+        tls_config: Arc<tls::TlsConfig>,
     ) -> Result<(), transport::Error> {
         // Priority: configured name > localhost (loopback) > IP address
         let server_name = if let Some(configured_name) = &tls_config.server_name {
@@ -166,6 +193,7 @@ impl Connector {
         .await
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(transport)))]
     async fn new_active<T>(
         self,
         local_addr: SocketAddr,
