@@ -126,7 +126,7 @@ impl Command {
     }
 
     pub fn node_id(&self) -> anyhow::Result<NodeId> {
-        NodeId::try_from(self.source.clone().unwrap()).map_err(|_| {
+        self.source.clone().unwrap().try_to_node_id().map_err(|_| {
             anyhow::anyhow!(
                 "Invalid source EID '{}' for ping service",
                 self.source.as_ref().unwrap()
