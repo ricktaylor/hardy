@@ -22,8 +22,8 @@ time = { version = "0.3.44", features = ["serde-human-readable"] }
 async-trait = "0.1.89"
 tokio = { version = "1.48.0", features = ["rt", "macros", "time"] }
 tokio-util = { version = "0.7.17", features = ["rt"] }
-tracing = "0.1.41"
-metrics = "0.24.2"
+tracing = "0.1.43"
+metrics = "0.24.3"
 trace-err = "0.1.5"
 rand = "0.9.2"
 lru = "0.16.2"
