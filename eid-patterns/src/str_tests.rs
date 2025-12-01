@@ -6,7 +6,7 @@ use dtn_pattern::*;
 
 #[test]
 fn tests() {
-    ipn_parse("ipn:0.3.4", IpnPatternItem::new(0, 3, 4));
+    ipn_parse("ipn:0.3.4", IpnPatternItem::new(0, 3, Some(4)));
     assert!(ipn_match("ipn:0.3.4", "ipn:0.3.4"));
     assert!(!ipn_match("ipn:0.3.4", "ipn:0.4.0"));
     assert!(!ipn_match("ipn:0.3.4", "ipn:0.4.3"));
@@ -250,7 +250,7 @@ fn tests() {
                         "node".into(),
                         "service".into()
                     )),
-                    EidPatternItem::IpnPatternItem(IpnPatternItem::new(0, 3, 4))
+                    EidPatternItem::IpnPatternItem(IpnPatternItem::new(0, 3, Some(4)))
                 ]
                 .into()
             )

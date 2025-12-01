@@ -92,7 +92,7 @@ fn null_check(s: &str) {
 }
 
 fn local_node_check(s: &str, expected_service_number: u32) {
-    let Eid::LocalNode { service_number } = s.parse().expect("Failed to parse") else {
+    let Eid::LocalNode(service_number) = s.parse().expect("Failed to parse") else {
         panic!("Not a LocalNode EID!")
     };
     assert_eq!(expected_service_number, service_number);
@@ -106,13 +106,19 @@ fn ipn_check(
 ) {
     match s.parse().expect("Failed to parse") {
         Eid::LegacyIpn {
-            allocator_id,
-            node_number,
+            fqnn:
+                IpnNodeId {
+                    allocator_id,
+                    node_number,
+                },
             service_number,
         }
         | Eid::Ipn {
-            allocator_id,
-            node_number,
+            fqnn:
+                IpnNodeId {
+                    allocator_id,
+                    node_number,
+                },
             service_number,
         } => {
             assert_eq!(expected_allocator_id, allocator_id);
@@ -123,10 +129,14 @@ fn ipn_check(
     };
 }
 
-fn dtn_check(s: &str, expected_node_name: &str, expected_demux: &str) {
-    let Eid::Dtn { node_name, demux } = s.parse().expect("Failed to parse") else {
+fn dtn_check(s: &str, expected_node_name: &str, expected_service_name: &str) {
+    let Eid::Dtn {
+        node_name,
+        service_name,
+    } = s.parse().expect("Failed to parse")
+    else {
         panic!("Not a dtn EID!")
     };
-    assert_eq!(node_name.as_ref(), expected_node_name);
-    assert_eq!(demux.as_ref(), expected_demux);
+    assert_eq!(node_name.node_name.as_ref(), expected_node_name);
+    assert_eq!(service_name.as_ref(), expected_service_name);
 }

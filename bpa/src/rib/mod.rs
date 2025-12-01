@@ -1,5 +1,8 @@
 use super::*;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{
+    eid::{Eid, NodeId},
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},

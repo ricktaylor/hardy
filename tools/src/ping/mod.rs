@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::{Eid, NodeId};
 use rand::Rng;
 use trace_err::*;
 
@@ -125,31 +125,12 @@ impl Command {
         )
     }
 
-    pub fn node_id(&self) -> anyhow::Result<Eid> {
-        Ok(match self.source.as_ref().unwrap() {
-            Eid::LegacyIpn {
-                allocator_id,
-                node_number,
-                ..
-            }
-            | Eid::Ipn {
-                allocator_id,
-                node_number,
-                ..
-            } => Eid::Ipn {
-                allocator_id: *allocator_id,
-                node_number: *node_number,
-                service_number: 0,
-            },
-            Eid::Dtn { node_name, .. } => Eid::Dtn {
-                node_name: node_name.clone(),
-                demux: "".into(),
-            },
-            eid => {
-                return Err(anyhow::anyhow!(
-                    "Invalid source EID '{eid}' for ping service"
-                ));
-            }
+    pub fn node_id(&self) -> anyhow::Result<NodeId> {
+        NodeId::try_from(self.source.clone().unwrap()).map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid source EID '{}' for ping service",
+                self.source.as_ref().unwrap()
+            )
         })
     }
 
@@ -167,8 +148,10 @@ impl Command {
             // Create a random EID
             let mut rng = rand::rng();
             self.source = Some(Eid::Ipn {
-                allocator_id: 0,
-                node_number: rng.random_range(1..=16383),
+                fqnn: hardy_bpv7::eid::IpnNodeId {
+                    allocator_id: 0,
+                    node_number: rng.random_range(1..=16383),
+                },
                 service_number: rng.random_range(1..=127),
             })
         }

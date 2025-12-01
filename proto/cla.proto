@@ -109,8 +109,8 @@ message DispatchBundleResponse {}
 
 // A request to add a peer to the CLA.
 message AddPeerRequest {
-  // The EID of the peer.
-  string eid = 1;
+  // The NodeId of the peer.
+  string node_id = 1;
   // The address of the peer.
   ClaAddress address = 2;
 }
@@ -120,8 +120,8 @@ message AddPeerResponse {}
 
 // A request to remove a peer from the CLA.
 message RemovePeerRequest {
-  // The EID of the peer.
-  string eid = 1;
+  // The NodeId of the peer.
+  string node_id = 1;
   // The address of the peer.
   ClaAddress address = 2;
 }

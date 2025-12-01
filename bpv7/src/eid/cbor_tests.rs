@@ -82,11 +82,14 @@ fn null_check(data: &[u8]) {
     );
 }
 
-fn dtn_check(data: &[u8], expected_node_name: &str, expected_demux: &str) {
+fn dtn_check(data: &[u8], expected_node_name: &str, expected_service_name: &str) {
     match hardy_cbor::decode::parse(data).expect("Failed to parse") {
-        Eid::Dtn { node_name, demux } => {
-            assert_eq!(node_name.as_ref(), expected_node_name);
-            assert_eq!(demux.as_ref(), expected_demux);
+        Eid::Dtn {
+            node_name,
+            service_name,
+        } => {
+            assert_eq!(node_name.node_name.as_ref(), expected_node_name);
+            assert_eq!(service_name.as_ref(), expected_service_name);
         }
         _ => panic!("Not a dtn EID!"),
     };
@@ -100,8 +103,11 @@ fn ipn_check_legacy(
 ) {
     match hardy_cbor::decode::parse(data).expect("Failed to parse") {
         Eid::LegacyIpn {
-            allocator_id,
-            node_number,
+            fqnn:
+                IpnNodeId {
+                    allocator_id,
+                    node_number,
+                },
             service_number,
         } => {
             assert_eq!(expected_allocator_id, allocator_id);
@@ -120,8 +126,11 @@ fn ipn_check(
 ) {
     match hardy_cbor::decode::parse(data).expect("Failed to parse") {
         Eid::Ipn {
-            allocator_id,
-            node_number,
+            fqnn:
+                IpnNodeId {
+                    allocator_id,
+                    node_number,
+                },
             service_number,
         } => {
             assert_eq!(expected_allocator_id, allocator_id);

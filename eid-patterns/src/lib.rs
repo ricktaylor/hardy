@@ -1,4 +1,4 @@
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
 use std::borrow::Cow;
 use thiserror::Error;
 
@@ -64,42 +64,93 @@ impl From<EidPattern> for String {
     }
 }
 
+impl From<IpnNodeId> for EidPattern {
+    fn from(value: IpnNodeId) -> Self {
+        EidPattern::Set(
+            [EidPatternItem::IpnPatternItem(
+                ipn_pattern::IpnPatternItem::new(value.allocator_id, value.node_number, None),
+            )]
+            .into(),
+        )
+    }
+}
+
+impl From<DtnNodeId> for EidPattern {
+    fn from(value: DtnNodeId) -> Self {
+        EidPattern::Set(
+            [EidPatternItem::DtnPatternItem(
+                dtn_pattern::DtnPatternItem::new_glob(format!("{}/**", value.node_name).as_str())
+                    .expect("Invalid glob"),
+            )]
+            .into(),
+        )
+    }
+}
+
+impl From<NodeId> for EidPattern {
+    fn from(value: NodeId) -> Self {
+        match value {
+            NodeId::LocalNode => EidPattern::Set(
+                [EidPatternItem::IpnPatternItem(
+                    ipn_pattern::IpnPatternItem::new(0, u32::MAX, None),
+                )]
+                .into(),
+            ),
+            NodeId::Ipn(node_id) => node_id.into(),
+            NodeId::Dtn(node_id) => node_id.into(),
+        }
+    }
+}
+
 impl From<Eid> for EidPattern {
     fn from(value: Eid) -> Self {
         match value {
             Eid::Null => EidPattern::Set(
                 [
-                    EidPatternItem::IpnPatternItem(ipn_pattern::IpnPatternItem::new(0, 0, 0)),
+                    EidPatternItem::IpnPatternItem(ipn_pattern::IpnPatternItem::new(0, 0, Some(0))),
                     #[cfg(feature = "dtn-pat-item")]
                     EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::None),
                 ]
                 .into(),
             ),
-            Eid::LocalNode { service_number } => EidPattern::Set(
+            Eid::LocalNode(service_number) => EidPattern::Set(
                 [EidPatternItem::IpnPatternItem(
-                    ipn_pattern::IpnPatternItem::new(0, u32::MAX, service_number),
+                    ipn_pattern::IpnPatternItem::new(0, u32::MAX, Some(service_number)),
                 )]
                 .into(),
             ),
             Eid::LegacyIpn {
-                allocator_id,
-                node_number,
+                fqnn:
+                    IpnNodeId {
+                        allocator_id,
+                        node_number,
+                    },
                 service_number,
             }
             | Eid::Ipn {
-                allocator_id,
-                node_number,
+                fqnn:
+                    IpnNodeId {
+                        allocator_id,
+                        node_number,
+                    },
                 service_number,
             } => EidPattern::Set(
                 [EidPatternItem::IpnPatternItem(
-                    ipn_pattern::IpnPatternItem::new(allocator_id, node_number, service_number),
+                    ipn_pattern::IpnPatternItem::new(
+                        allocator_id,
+                        node_number,
+                        Some(service_number),
+                    ),
                 )]
                 .into(),
             ),
             #[cfg(feature = "dtn-pat-item")]
-            Eid::Dtn { node_name, demux } => EidPattern::Set(
+            Eid::Dtn {
+                node_name,
+                service_name,
+            } => EidPattern::Set(
                 [EidPatternItem::DtnPatternItem(
-                    dtn_pattern::DtnPatternItem::Exact(node_name, demux),
+                    dtn_pattern::DtnPatternItem::Exact(node_name.node_name, service_name),
                 )]
                 .into(),
             ),

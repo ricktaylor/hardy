@@ -47,7 +47,7 @@ struct ReassemblyResult {
 impl Store {
     pub async fn adu_reassemble(
         &self,
-        mut bundle: bundle::Bundle,
+        bundle: &mut bundle::Bundle,
     ) -> Option<(metadata::BundleMetadata, Bytes)> {
         let status = metadata::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
@@ -55,10 +55,9 @@ impl Store {
         };
 
         // See if we can collect all the fragments
-        let Some(results) = self.poll_fragments(&bundle, &status).await else {
+        let Some(results) = self.poll_fragments(bundle, &status).await else {
             bundle.metadata.status = status;
-            self.update_metadata(&bundle).await;
-            self.watch_bundle(bundle).await;
+            self.update_metadata(bundle).await;
             return None;
         };
 

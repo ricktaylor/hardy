@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId};
 use rand::{
     Rng,
     distr::{Alphanumeric, SampleString},
@@ -151,7 +151,7 @@ impl ServiceRegistry {
     #[cfg_attr(feature = "tracing", instrument(skip(self, service, dispatcher)))]
     pub async fn register(
         self: &Arc<Self>,
-        service_id: Option<service::ServiceId<'_>>,
+        service_id: Option<hardy_bpv7::eid::Service>,
         service: Arc<dyn service::Service>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> service::Result<Eid> {
@@ -159,12 +159,11 @@ impl ServiceRegistry {
         let (service, service_id) = {
             let mut services = self.services.write().trace_expect("Failed to lock mutex");
 
-            let new_ipn_service = |allocator_id, node_number| {
+            let new_ipn_service = |fqnn: &IpnNodeId| {
                 let mut rng = rand::rng();
                 loop {
                     let service_id = Eid::Ipn {
-                        allocator_id,
-                        node_number,
+                        fqnn: fqnn.clone(),
                         service_number: rng.random_range(0x10000..=u32::MAX),
                     };
                     if !services.contains_key(&service_id) {
@@ -172,12 +171,13 @@ impl ServiceRegistry {
                     }
                 }
             };
-            let new_dtn_service = |node_name: &str| {
+            let new_dtn_service = |node_name: &DtnNodeId| {
                 let mut rng = rand::rng();
                 loop {
                     let service_id = Eid::Dtn {
-                        node_name: node_name.into(),
-                        demux: format!("auto/{}", Alphanumeric.sample_string(&mut rng, 16)).into(),
+                        node_name: node_name.clone(),
+                        service_name: format!("auto/{}", Alphanumeric.sample_string(&mut rng, 16))
+                            .into(),
                     };
                     if !services.contains_key(&service_id) {
                         break service_id;
@@ -188,7 +188,7 @@ impl ServiceRegistry {
             // Compose service EID
             let service_id = if let Some(service_id) = service_id {
                 match &service_id {
-                    service::ServiceId::DtnService(service_name) => {
+                    hardy_bpv7::eid::Service::Dtn(service_name) => {
                         let node_name = self
                             .node_ids
                             .dtn
@@ -198,21 +198,17 @@ impl ServiceRegistry {
                         if service_name.is_empty() {
                             new_dtn_service(node_name)
                         } else {
-                            // Round-trip via Eid for formatting sanity
-                            let Eid::Dtn {
-                                node_name: _,
-                                demux,
-                            } = format!("dtn://nowhere/{service_name}")
-                                .parse::<Eid>()
-                                .map_err(|e| service::Error::Internal(e.into()))?
-                            else {
-                                panic!("DTN scheme parsing is borked!");
-                            };
+                            if !DtnNodeId::is_valid_service_name(service_name) {
+                                return Err(service::Error::DtnInvalidServiceName(
+                                    service_name.to_string(),
+                                ));
+                            }
 
                             let service_id = Eid::Dtn {
                                 node_name: node_name.clone(),
-                                demux,
+                                service_name: service_name.clone(),
                             };
+
                             if services.contains_key(&service_id) {
                                 return Err(service::Error::DtnServiceInUse(
                                     service_name.to_string(),
@@ -221,17 +217,18 @@ impl ServiceRegistry {
                             service_id
                         }
                     }
-                    service::ServiceId::IpnService(service_number) => {
-                        let Some((allocator_id, node_number)) = self.node_ids.ipn else {
-                            unreachable!()
-                        };
+                    hardy_bpv7::eid::Service::Ipn(service_number) => {
+                        let fqnn = self
+                            .node_ids
+                            .ipn
+                            .as_ref()
+                            .ok_or(service::Error::NoIpnNodeId)?;
 
                         if service_number == &0 {
-                            new_ipn_service(allocator_id, node_number)
+                            new_ipn_service(fqnn)
                         } else {
                             let service_id = Eid::Ipn {
-                                allocator_id,
-                                node_number,
+                                fqnn: fqnn.clone(),
                                 service_number: *service_number,
                             };
                             if services.contains_key(&service_id) {
@@ -241,8 +238,8 @@ impl ServiceRegistry {
                         }
                     }
                 }
-            } else if let Some((allocator_id, node_number)) = self.node_ids.ipn {
-                new_ipn_service(allocator_id, node_number)
+            } else if let Some(fqnn) = &self.node_ids.ipn {
+                new_ipn_service(fqnn)
             } else if let Some(node_name) = &self.node_ids.dtn {
                 new_dtn_service(node_name)
             } else {

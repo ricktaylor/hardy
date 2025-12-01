@@ -9,7 +9,7 @@ mod transport;
 
 pub mod config;
 
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
 use trace_err::*;
 use tracing::{debug, error, info, warn};
@@ -19,7 +19,7 @@ use tracing::{Instrument, instrument};
 
 struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
-    node_ids: Arc<[Eid]>,
+    node_ids: Arc<[NodeId]>,
     registry: Arc<connection::ConnectionRegistry>,
     tls_config: Option<Arc<tls::TlsConfig>>,
 }

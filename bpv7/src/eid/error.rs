@@ -15,6 +15,12 @@ pub enum Error {
     #[error("Unsupported EID scheme {0}")]
     UnsupportedScheme(u64),
 
+    #[error("Not a NodeId")]
+    InvalidNodeId,
+
+    #[error("NodeID and Service have different schemes")]
+    MismatchedService,
+
     #[error("Parse error: {0}")]
     ParseError(String),
 

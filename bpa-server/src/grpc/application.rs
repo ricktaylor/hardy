@@ -46,10 +46,10 @@ impl Application {
                         .register_service(
                             msg.service_id.as_ref().map(|o| match o {
                                 register_application_request::ServiceId::Dtn(s) => {
-                                    hardy_bpa::service::ServiceId::DtnService(s)
+                                    hardy_bpv7::eid::Service::Dtn(s.clone().into())
                                 }
                                 register_application_request::ServiceId::Ipn(s) => {
-                                    hardy_bpa::service::ServiceId::IpnService(*s)
+                                    hardy_bpv7::eid::Service::Ipn(*s)
                                 }
                             }),
                             app.clone(),

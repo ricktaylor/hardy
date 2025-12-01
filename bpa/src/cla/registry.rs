@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::NodeId;
 use std::sync::{Mutex, RwLock, Weak};
 
 pub struct Cla {
@@ -7,7 +7,7 @@ pub struct Cla {
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
 
     name: String,
-    peers: Mutex<HashMap<Eid, HashMap<ClaAddress, u32>>>,
+    peers: Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
     address_type: Option<ClaAddressType>,
 }
 
@@ -65,20 +65,20 @@ impl cla::Sink for Sink {
         self.dispatcher.receive_bundle(bundle).await
     }
 
-    async fn add_peer(&self, eid: Eid, cla_addr: ClaAddress) -> cla::Result<bool> {
+    async fn add_peer(&self, node_id: NodeId, cla_addr: ClaAddress) -> cla::Result<bool> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
         Ok(self
             .registry
-            .add_peer(cla, self.dispatcher.clone(), eid, cla_addr)
+            .add_peer(cla, self.dispatcher.clone(), node_id, cla_addr)
             .await)
     }
 
-    async fn remove_peer(&self, eid: &Eid, cla_addr: &ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, node_id: NodeId, cla_addr: &ClaAddress) -> cla::Result<bool> {
         Ok(self
             .registry
             .remove_peer(
                 self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                eid,
+                node_id,
                 cla_addr,
             )
             .await)
@@ -94,7 +94,7 @@ impl Drop for Sink {
 }
 
 pub struct Registry {
-    node_ids: Vec<Eid>,
+    node_ids: Vec<NodeId>,
     clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
     store: Arc<storage::Store>,
@@ -208,10 +208,10 @@ impl Registry {
 
         let peers = std::mem::take(&mut *cla.peers.lock().trace_expect("Failed to lock mutex"));
 
-        for (eid, i) in peers {
+        for (node_id, i) in peers {
             for (_, peer_id) in i {
                 self.peers.remove(peer_id).await;
-                self.rib.remove_forward(&eid, peer_id).await;
+                self.rib.remove_forward(node_id.clone(), peer_id).await;
             }
         }
 
@@ -222,7 +222,7 @@ impl Registry {
         &self,
         cla: Arc<Cla>,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        eid: Eid,
+        node_id: NodeId,
         cla_addr: ClaAddress,
     ) -> bool {
         // TODO: This should ideally do a replace and return the previous
@@ -235,7 +235,7 @@ impl Registry {
                 .peers
                 .lock()
                 .trace_expect("Failed to lock mutex")
-                .entry(eid.clone())
+                .entry(node_id.clone())
             {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     match e.get_mut().entry(cla_addr.clone()) {
@@ -258,7 +258,7 @@ impl Registry {
         };
 
         info!(
-            "Added new peer {peer_id}: {eid} at {cla_addr} via CLA {}",
+            "Added new peer {peer_id}: {node_id} at {cla_addr} via CLA {}",
             cla.name
         );
 
@@ -274,24 +274,24 @@ impl Registry {
         .await;
 
         // Add to the RIB
-        self.rib.add_forward(eid, peer_id).await;
+        self.rib.add_forward(node_id, peer_id).await;
 
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Cla>, eid: &Eid, cla_addr: &ClaAddress) -> bool {
+    async fn remove_peer(&self, cla: Arc<Cla>, node_id: NodeId, cla_addr: &ClaAddress) -> bool {
         let Some(peer_id) = cla
             .peers
             .lock()
             .trace_expect("Failed to lock mutex")
-            .get_mut(eid)
+            .get_mut(&node_id)
             .and_then(|m| m.remove(cla_addr))
         else {
             return false;
         };
 
         self.peers.remove(peer_id).await;
-        self.rib.remove_forward(eid, peer_id).await;
+        self.rib.remove_forward(node_id, peer_id).await;
 
         info!("Removed peer {peer_id}");
 

@@ -12,6 +12,9 @@ pub enum Error {
     #[error("There is already a service using dtn service demux {0}")]
     DtnServiceInUse(String),
 
+    #[error("Invalid dtn service name {0}")]
+    DtnInvalidServiceName(String),
+
     #[error("There is no ipn node id configured")]
     NoIpnNodeId,
 
@@ -26,12 +29,6 @@ pub enum Error {
 
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ServiceId<'a> {
-    DtnService(&'a str),
-    IpnService(u32),
 }
 
 #[derive(Debug)]

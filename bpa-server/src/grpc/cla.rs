@@ -105,14 +105,14 @@ impl Cla {
                     Some(cla_to_bpa::Msg::Dispatch(msg)) => Some(cla.dispatch(msg.bundle).await),
                     Some(cla_to_bpa::Msg::AddPeer(msg)) => {
                         Some(if let Some(address) = msg.address {
-                            cla.add_peer(msg.eid, address).await
+                            cla.add_peer(msg.node_id, address).await
                         } else {
                             Err(tonic::Status::invalid_argument("Missing address"))
                         })
                     }
                     Some(cla_to_bpa::Msg::RemovePeer(msg)) => {
                         Some(if let Some(address) = msg.address {
-                            cla.remove_peer(msg.eid, address).await
+                            cla.remove_peer(msg.node_id, address).await
                         } else {
                             Err(tonic::Status::invalid_argument("Missing address"))
                         })
@@ -183,10 +183,10 @@ impl Cla {
 
     async fn add_peer(
         &self,
-        eid: String,
+        node_id: String,
         cla_addr: ClaAddress,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let eid = eid
+        let node_id = node_id
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
         let addr = cla_addr
@@ -195,7 +195,7 @@ impl Cla {
         self.sink
             .get()
             .trace_expect("CLA registration not complete!")
-            .add_peer(eid, addr)
+            .add_peer(node_id, addr)
             .await
             .map(|_| bpa_to_cla::Msg::AddPeer(AddPeerResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
@@ -203,10 +203,10 @@ impl Cla {
 
     async fn remove_peer(
         &self,
-        eid: String,
+        node_id: String,
         cla_addr: ClaAddress,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let eid = eid
+        let node_id = node_id
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
         let addr = cla_addr
@@ -215,7 +215,7 @@ impl Cla {
         self.sink
             .get()
             .trace_expect("CLA registration not complete!")
-            .remove_peer(&eid, &addr)
+            .remove_peer(node_id, &addr)
             .await
             .map(|_| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
@@ -243,7 +243,7 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[hardy_bpv7::eid::Eid],
+        _node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> hardy_bpa::cla::Result<()> {
         if self.sink.set(sink).is_err() {
             error!("CLA on_register called twice!");

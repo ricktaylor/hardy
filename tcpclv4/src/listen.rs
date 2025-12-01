@@ -51,7 +51,7 @@ pub struct Listener {
     pub keepalive_interval: Option<u16>,
     pub segment_mru: u64,
     pub transfer_mru: u64,
-    pub node_ids: Arc<[Eid]>,
+    pub node_ids: Arc<[NodeId]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
     pub tls_config: Option<Arc<tls::TlsConfig>>,
@@ -280,12 +280,12 @@ impl Listener {
         let node_id = {
             self.node_ids
                 .iter()
-                .find(|eid| {
+                .find(|node_id| {
                     matches!(
-                        (&peer_init.node_id, eid),
+                        (&peer_init.node_id, node_id),
                         (None, _)
-                            | (Some(Eid::Ipn { .. }), Eid::Ipn { .. })
-                            | (Some(Eid::Dtn { .. }), Eid::Dtn { .. })
+                            | (Some(NodeId::Ipn(_)), NodeId::Ipn(_))
+                            | (Some(NodeId::Dtn(_)), NodeId::Dtn(_))
                     )
                 })
                 .or_else(|| self.node_ids.first())
