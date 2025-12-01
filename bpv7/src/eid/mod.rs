@@ -183,6 +183,15 @@ impl Eid {
             _ => false,
         }
     }
+
+    pub fn try_to_node_id(self) -> Result<NodeId, Error> {
+        match self {
+            Eid::LocalNode(_) => Ok(NodeId::LocalNode),
+            Eid::LegacyIpn { fqnn, .. } | Eid::Ipn { fqnn, .. } => Ok(NodeId::Ipn(fqnn)),
+            Eid::Dtn { node_name, .. } => Ok(NodeId::Dtn(node_name)),
+            _ => Err(Error::InvalidNodeId),
+        }
+    }
 }
 
 impl From<NodeId> for Eid {
