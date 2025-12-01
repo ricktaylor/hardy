@@ -16,7 +16,7 @@ tracing = ["hardy-bpa/tracing"]
 [dependencies]
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
-tracing = "0.1.41"
+tracing = "0.1.43"
 tokio = { version = "1.48.0", features = ["macros", "fs"] }
 tokio-util = { version = "0.7.17", features = ["rt"] }
 trace-err = "0.1.5"
