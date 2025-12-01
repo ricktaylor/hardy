@@ -21,7 +21,6 @@ pub struct Config {
         + time::Duration::nanoseconds(t.nanos.into()))
 }*/
 
-#[cfg(feature = "grpc")]
 fn to_timestamp(t: OffsetDateTime) -> prost_types::Timestamp {
     let t = t - OffsetDateTime::UNIX_EPOCH;
     prost_types::Timestamp {
