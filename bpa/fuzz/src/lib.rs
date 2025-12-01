@@ -81,11 +81,10 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     let bpa = hardy_bpa::bpa::Bpa::start(
         &hardy_bpa::config::Config {
             status_reports: true,
-            node_ids: [hardy_bpv7::eid::Eid::Ipn {
+            node_ids: [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
-                service_number: 0,
-            }]
+            })]
             .as_slice()
             .try_into()
             .unwrap(),

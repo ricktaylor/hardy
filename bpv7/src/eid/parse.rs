@@ -20,16 +20,20 @@ fn parse_ipn_parts(input: &mut &str) -> ModalResult<Eid> {
                 Err(Error::IpnInvalidServiceNumber(service_number as u64))
             }
             (0, u32::MAX, Some(service_number)) | (u32::MAX, service_number, None) => {
-                Ok(Eid::LocalNode { service_number })
+                Ok(Eid::LocalNode(service_number))
             }
             (allocator_id, node_number, Some(service_number)) => Ok(Eid::Ipn {
-                allocator_id,
-                node_number,
+                fqnn: IpnNodeId {
+                    allocator_id,
+                    node_number,
+                },
                 service_number,
             }),
             (node_number, service_number, None) => Ok(Eid::Ipn {
-                allocator_id: 0,
-                node_number,
+                fqnn: IpnNodeId {
+                    allocator_id: 0,
+                    node_number,
+                },
                 service_number,
             }),
         })
@@ -38,7 +42,7 @@ fn parse_ipn_parts(input: &mut &str) -> ModalResult<Eid> {
 
 fn parse_local_node(input: &mut &str) -> ModalResult<Eid> {
     preceded("!.", dec_uint)
-        .map(|service_number| Eid::LocalNode { service_number })
+        .map(Eid::LocalNode)
         .parse_next(input)
 }
 
@@ -46,7 +50,7 @@ fn parse_ipn(input: &mut &str) -> ModalResult<Eid> {
     (alt((parse_local_node, parse_ipn_parts))).parse_next(input)
 }
 
-fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
+fn parse_regname(input: &mut &str) -> ModalResult<DtnNodeId> {
     take_while(
         0..,
         (
@@ -69,18 +73,31 @@ fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
             ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
         ),
     )
-    .try_map(|v| urlencoding::decode(v).map(|s| s.into_owned().into()))
+    .try_map(|v| {
+        urlencoding::decode(v).map(|s| DtnNodeId {
+            node_name: s.into_owned().into(),
+        })
+    })
     .parse_next(input)
 }
 
+fn parse_dtn_service_name(input: &mut &str) -> ModalResult<Box<str>> {
+    take_while(0.., '\x21'..='\x7e')
+        .map(Box::from)
+        .parse_next(input)
+}
+
+impl DtnNodeId {
+    pub fn is_valid_service_name(mut service_name: &str) -> bool {
+        parse_dtn_service_name(&mut service_name).is_ok()
+    }
+}
+
 fn parse_dtn_parts(input: &mut &str) -> ModalResult<Eid> {
-    (
-        terminated(parse_regname, "/"),
-        take_while(0.., '\x21'..='\x7e'),
-    )
-        .map(|(node_name, demux)| Eid::Dtn {
+    (terminated(parse_regname, "/"), parse_dtn_service_name)
+        .map(|(node_name, service_name)| Eid::Dtn {
             node_name,
-            demux: demux.into(),
+            service_name,
         })
         .parse_next(input)
 }
@@ -93,6 +110,14 @@ pub fn parse_eid(input: &mut &str) -> ModalResult<Eid> {
     alt((preceded("dtn:", parse_dtn), preceded("ipn:", parse_ipn))).parse_next(input)
 }
 
+impl core::str::FromStr for NodeId {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Eid::from_str(s)?.try_into()
+    }
+}
+
 impl core::str::FromStr for Eid {
     type Err = Error;
 
@@ -100,6 +125,14 @@ impl core::str::FromStr for Eid {
         parse_eid
             .parse(s)
             .map_err(|e| Error::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<&str> for NodeId {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 
@@ -111,9 +144,19 @@ impl TryFrom<&str> for Eid {
     }
 }
 
-impl From<Eid> for String {
-    fn from(value: Eid) -> Self {
-        value.to_string()
+impl TryFrom<Cow<'_, str>> for NodeId {
+    type Error = Error;
+
+    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl TryFrom<Cow<'_, str>> for Eid {
+    type Error = Error;
+
+    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 
@@ -137,40 +180,43 @@ fn ipn_from_cbor(
         (a, _, Some(_)) if a > U32_MAX => Err(Error::IpnInvalidAllocatorId(a)),
         (_, n, Some(_)) if n > U32_MAX => Err(Error::IpnInvalidNodeNumber(n)),
         (_, _, Some(s)) | (_, s, None) if s > U32_MAX => Err(Error::IpnInvalidServiceNumber(s)),
-        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => Ok((
-            Eid::LocalNode {
-                service_number: s as u32,
-            },
-            shortest,
-        )),
+        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => Ok((Eid::LocalNode(s as u32), shortest)),
         (0, n, Some(s)) => Ok((
             Eid::Ipn {
-                allocator_id: 0,
-                node_number: n as u32,
+                fqnn: IpnNodeId {
+                    allocator_id: 0,
+                    node_number: n as u32,
+                },
                 service_number: s as u32,
             },
             false,
         )),
         (a, n, Some(s)) => Ok((
             Eid::Ipn {
-                allocator_id: a as u32,
-                node_number: n as u32,
+                fqnn: IpnNodeId {
+                    allocator_id: a as u32,
+                    node_number: n as u32,
+                },
                 service_number: s as u32,
             },
             shortest,
         )),
         (n, s, None) if n <= U32_MAX => Ok((
             Eid::Ipn {
-                allocator_id: 0,
-                node_number: n as u32,
+                fqnn: IpnNodeId {
+                    allocator_id: 0,
+                    node_number: n as u32,
+                },
                 service_number: s as u32,
             },
             shortest,
         )),
         (fqnn, s, None) => Ok((
             Eid::LegacyIpn {
-                allocator_id: (fqnn >> 32) as u32,
-                node_number: (fqnn & U32_MAX) as u32,
+                fqnn: IpnNodeId {
+                    allocator_id: (fqnn >> 32) as u32,
+                    node_number: (fqnn & U32_MAX) as u32,
+                },
                 service_number: s as u32,
             },
             shortest,

@@ -37,7 +37,7 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        node_ids: &[Eid],
+        node_ids: &[NodeId],
     ) -> hardy_bpa::cla::Result<()> {
         if self.config.session_defaults.must_use_tls && self.config.tls.is_none() {
             return Err(hardy_bpa::cla::Error::Internal(

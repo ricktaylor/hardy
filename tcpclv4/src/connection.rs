@@ -19,7 +19,7 @@ pub struct Connection {
 struct ConnectionPoolInner {
     active: HashMap<SocketAddr, ConnectionTx>,
     idle: Vec<Connection>,
-    peers: HashSet<Eid>,
+    peers: HashSet<NodeId>,
 }
 
 struct ConnectionPool {
@@ -57,16 +57,16 @@ impl ConnectionPool {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    async fn add_peer(&self, eid: Eid) {
+    async fn add_peer(&self, node_id: NodeId) {
         if self
             .inner
             .lock()
             .trace_expect("Failed to lock mutex")
             .peers
-            .insert(eid.clone())
+            .insert(node_id.clone())
             && !self
                 .sink
-                .add_peer(eid.clone(), self.remote_addr.clone())
+                .add_peer(node_id.clone(), self.remote_addr.clone())
                 .await
                 .unwrap_or_else(|e| {
                     error!("add_peer failed: {e:?}");
@@ -77,7 +77,7 @@ impl ConnectionPool {
                 .lock()
                 .trace_expect("Failed to lock mutex")
                 .peers
-                .remove(&eid);
+                .remove(&node_id);
         }
     }
 
@@ -96,7 +96,7 @@ impl ConnectionPool {
 
         if let Some(peers) = peers {
             for p in peers {
-                _ = self.sink.remove_peer(&p, &self.remote_addr).await;
+                _ = self.sink.remove_peer(p, &self.remote_addr).await;
             }
             true
         } else {
@@ -207,7 +207,7 @@ impl ConnectionRegistry {
         sink: Arc<dyn hardy_bpa::cla::Sink>,
         conn: Connection,
         remote_addr: SocketAddr,
-        eid: Option<Eid>,
+        node_id: Option<NodeId>,
     ) {
         let pool = match self
             .pools
@@ -230,8 +230,8 @@ impl ConnectionRegistry {
                 .clone(),
         };
 
-        if let Some(eid) = eid {
-            pool.add_peer(eid).await
+        if let Some(node_id) = node_id {
+            pool.add_peer(node_id).await
         }
     }
 

@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::{IpnNodeId, NodeId};
 
 #[derive(Arbitrary)]
 pub struct RandomBundle {
@@ -64,14 +64,13 @@ impl hardy_bpa::cla::Cla for NullCla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[Eid],
+        _node_ids: &[NodeId],
     ) -> hardy_bpa::cla::Result<()> {
         sink.add_peer(
-            Eid::Ipn {
+            NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
-                service_number: 0,
-            },
+            }),
             hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
         )
         .await
@@ -90,11 +89,10 @@ impl hardy_bpa::cla::Cla for NullCla {
         };
 
         sink.remove_peer(
-            &Eid::Ipn {
+            NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
-                service_number: 0,
-            },
+            }),
             &hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
         )
         .await

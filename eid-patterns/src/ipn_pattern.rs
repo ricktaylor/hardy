@@ -20,7 +20,7 @@ pub const ANY: IpnPatternItem = IpnPatternItem {
 };
 
 impl IpnPatternItem {
-    pub(crate) fn new(allocator_id: u32, node_number: u32, service_number: u32) -> Self {
+    pub(crate) fn new(allocator_id: u32, node_number: u32, service_number: Option<u32>) -> Self {
         Self {
             allocator_id: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
                 allocator_id,
@@ -28,9 +28,13 @@ impl IpnPatternItem {
             node_number: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
                 node_number,
             )]),
-            service_number: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
-                service_number,
-            )]),
+            service_number: if let Some(service_number) = service_number {
+                ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
+                    service_number,
+                )])
+            } else {
+                ipn_pattern::IpnPattern::Wildcard
+            },
         }
     }
 
@@ -41,19 +45,25 @@ impl IpnPatternItem {
                     && self.node_number.matches(0)
                     && self.service_number.matches(0)
             }
-            Eid::LocalNode { service_number } => {
+            Eid::LocalNode(service_number) => {
                 self.allocator_id.matches(0)
                     && self.node_number.matches(u32::MAX)
                     && self.service_number.matches(*service_number)
             }
             Eid::LegacyIpn {
-                allocator_id,
-                node_number,
+                fqnn:
+                    IpnNodeId {
+                        allocator_id,
+                        node_number,
+                    },
                 service_number,
             }
             | Eid::Ipn {
-                allocator_id,
-                node_number,
+                fqnn:
+                    IpnNodeId {
+                        allocator_id,
+                        node_number,
+                    },
                 service_number,
             } => {
                 self.allocator_id.matches(*allocator_id)
@@ -72,8 +82,10 @@ impl IpnPatternItem {
 
     pub(super) fn try_to_eid(&self) -> Option<Eid> {
         Some(Eid::Ipn {
-            allocator_id: self.allocator_id.try_to_eid()?,
-            node_number: self.node_number.try_to_eid()?,
+            fqnn: IpnNodeId {
+                allocator_id: self.allocator_id.try_to_eid()?,
+                node_number: self.node_number.try_to_eid()?,
+            },
             service_number: self.service_number.try_to_eid()?,
         })
     }

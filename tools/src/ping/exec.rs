@@ -89,39 +89,20 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to connect to {address}: {e}"))?;
     drop(cla);
 
-    let peer = match &args.destination {
-        Eid::LegacyIpn {
-            allocator_id,
-            node_number,
-            ..
-        }
-        | Eid::Ipn {
-            allocator_id,
-            node_number,
-            ..
-        } => Eid::Ipn {
-            allocator_id: *allocator_id,
-            node_number: *node_number,
-            service_number: 0,
-        },
-        Eid::Dtn { node_name, .. } => Eid::Dtn {
-            node_name: node_name.clone(),
-            demux: "".into(),
-        },
-        eid => {
-            return Err(anyhow::anyhow!(
-                "Invalid source EID '{eid}' for ping service"
-            ));
-        }
-    };
+    let peer: NodeId = args.destination.clone().try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid destination EID {} for ping service",
+            args.destination
+        )
+    })?;
 
     // Now add a route if we are targeting a service
-    if peer != args.destination
+    if args.destination.service().is_some()
         && !bpa
             .add_route(
                 "ping".to_string(),
                 args.destination.clone().into(),
-                hardy_bpa::routes::Action::Via(peer),
+                hardy_bpa::routes::Action::Via(peer.into()),
                 1,
             )
             .await
@@ -147,32 +128,13 @@ async fn exec_inner(
     bpa: &hardy_bpa::bpa::Bpa,
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
-    let service_id = match args.source.as_ref().unwrap() {
-        Eid::LegacyIpn {
-            allocator_id: _,
-            node_number: _,
-            service_number,
-        }
-        | Eid::Ipn {
-            allocator_id: _,
-            node_number: _,
-            service_number,
-        } => hardy_bpa::service::ServiceId::IpnService(*service_number),
-        Eid::Dtn {
-            node_name: _,
-            demux,
-        } => hardy_bpa::service::ServiceId::DtnService(demux),
-        eid => {
-            return Err(anyhow::anyhow!(
-                "Invalid source EID '{eid}' for ping service"
-            ));
-        }
-    };
-
     let service = std::sync::Arc::new(service::Service::new(args));
-    bpa.register_service(Some(service_id), service.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+    bpa.register_service(
+        args.source.as_ref().and_then(|eid| eid.service()),
+        service.clone(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;

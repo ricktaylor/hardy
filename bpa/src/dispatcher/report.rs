@@ -157,9 +157,12 @@ impl Dispatcher {
                     dispatch::DispatchResult::Wait => {
                         dispatcher.store.watch_bundle(bundle).await;
                     }
-                    _ => {
+                    dispatch::DispatchResult::Delivered | dispatch::DispatchResult::Drop(_) => {
                         // Delete the bundle from the bundle store
                         _ = dispatcher.delete_bundle(bundle).await;
+                    }
+                    dispatch::DispatchResult::Reassemble => {
+                        unreachable!("Fragmented status report?!")
                     }
                 }
             };

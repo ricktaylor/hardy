@@ -1,4 +1,4 @@
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::NodeId;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -25,7 +25,7 @@ pub struct Config {
     /// A map of peer Endpoint IDs (EIDs) to their corresponding inbox directories.
     /// When a bundle is to be forwarded to a peer, it will be written as a file
     /// in the directory associated with that peer's EID.
-    pub peers: HashMap<Eid, PathBuf>,
+    pub peers: HashMap<NodeId, PathBuf>,
 }
 
 struct ClaInner {

@@ -78,7 +78,7 @@ pub struct SessionInitMessage {
     pub keepalive_interval: u16,
     pub segment_mru: u64,
     pub transfer_mru: u64,
-    pub node_id: Option<Eid>,
+    pub node_id: Option<NodeId>,
     pub session_extensions: Vec<SessionInitExtension>,
 }
 

@@ -130,7 +130,7 @@ pub trait Cla: Send + Sync {
     async fn on_register(
         &self,
         sink: Box<dyn Sink>,
-        node_ids: &[hardy_bpv7::eid::Eid],
+        node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> Result<()>;
 
     /// Called when the CLA is being unregistered.
@@ -178,9 +178,17 @@ pub trait Sink: Send + Sync {
 
     /// Notifies the BPA that a new peer has been discovered at a given `ClaAddress`.
     /// The BPA will update its routing information accordingly.
-    async fn add_peer(&self, eid: hardy_bpv7::eid::Eid, cla_addr: ClaAddress) -> Result<bool>;
+    async fn add_peer(
+        &self,
+        node_id: hardy_bpv7::eid::NodeId,
+        cla_addr: ClaAddress,
+    ) -> Result<bool>;
 
     /// Notifies the BPA that a peer is no longer reachable at a given `ClaAddress`.
     /// The BPA will update its routing information to remove the path.
-    async fn remove_peer(&self, eid: &hardy_bpv7::eid::Eid, cla_addr: &ClaAddress) -> Result<bool>;
+    async fn remove_peer(
+        &self,
+        node_id: hardy_bpv7::eid::NodeId,
+        cla_addr: &ClaAddress,
+    ) -> Result<bool>;
 }

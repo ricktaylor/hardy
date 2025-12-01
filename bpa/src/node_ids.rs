@@ -1,4 +1,4 @@
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
 use rand::Rng;
 use thiserror::Error;
 
@@ -25,27 +25,21 @@ pub enum Error {
 
 #[derive(Debug, Clone)]
 pub struct NodeIds {
-    pub(crate) ipn: Option<(u32, u32)>,
-    pub(crate) dtn: Option<Box<str>>,
+    pub(crate) ipn: Option<IpnNodeId>,
+    pub(crate) dtn: Option<DtnNodeId>,
 }
 
 impl NodeIds {
     pub(crate) fn get_admin_endpoint(&self, destination: &Eid) -> Eid {
         match (destination, &self.ipn, &self.dtn) {
-            (Eid::LegacyIpn { .. }, Some((allocator_id, node_number)), _) => Eid::LegacyIpn {
-                allocator_id: *allocator_id,
-                node_number: *node_number,
+            (Eid::LegacyIpn { .. }, Some(node_id), _) => Eid::LegacyIpn {
+                fqnn: node_id.clone(),
                 service_number: 0,
             },
-            (Eid::Dtn { .. }, _, Some(node_name)) | (_, None, Some(node_name)) => Eid::Dtn {
-                node_name: node_name.clone(),
-                demux: "".into(),
-            },
-            (_, Some((allocator_id, node_number)), _) => Eid::Ipn {
-                allocator_id: *allocator_id,
-                node_number: *node_number,
-                service_number: 0,
-            },
+            (Eid::Dtn { .. }, _, Some(node_id)) | (_, None, Some(node_id)) => {
+                node_id.clone().into()
+            }
+            (_, Some(node_id), _) => node_id.clone().into(),
             (_, None, None) => unreachable!(),
         }
     }
@@ -81,92 +75,54 @@ impl Default for NodeIds {
     fn default() -> Self {
         let mut rng = rand::rng();
         Self {
-            ipn: Some((
-                rng.random_range(0x40000000..0x80000000),
-                rng.random_range(1..=u32::MAX),
-            )),
+            ipn: Some(IpnNodeId {
+                allocator_id: rng.random_range(0x40000000..0x80000000),
+                node_number: rng.random_range(1..=u32::MAX),
+            }),
             dtn: None,
         }
     }
 }
 
-impl From<&NodeIds> for Vec<Eid> {
+impl From<&NodeIds> for Vec<NodeId> {
     fn from(value: &NodeIds) -> Self {
         let mut v = Vec::new();
-        if let Some((allocator_id, node_number)) = value.ipn {
-            v.push(Eid::Ipn {
-                allocator_id,
-                node_number,
-                service_number: 0,
-            });
+        if let Some(node_id) = &value.ipn {
+            v.push(NodeId::Ipn(node_id.clone()));
         }
-        if let Some(node_name) = &value.dtn {
-            v.push(Eid::Dtn {
-                node_name: node_name.clone(),
-                demux: "".into(),
-            });
+        if let Some(node_id) = &value.dtn {
+            v.push(NodeId::Dtn(node_id.clone()));
         }
         v
     }
 }
 
-impl TryFrom<&[Eid]> for NodeIds {
+impl TryFrom<&[NodeId]> for NodeIds {
     type Error = Error;
 
-    fn try_from(eids: &[Eid]) -> Result<Self, Self::Error> {
+    fn try_from(node_ids: &[NodeId]) -> Result<Self, Self::Error> {
         let mut ipn = None;
         let mut dtn = None;
-        for eid in eids {
-            match eid {
-                Eid::LegacyIpn {
-                    allocator_id,
-                    node_number,
-                    service_number: 0,
-                }
-                | Eid::Ipn {
-                    allocator_id,
-                    node_number,
-                    service_number: 0,
-                } => {
-                    if let Some((a, n)) = ipn {
-                        if a != *allocator_id || n != *node_number {
-                            return Err(Error::MultipleIpnNodeIds);
-                        }
-                    } else {
-                        ipn = Some((*allocator_id, *node_number));
+        for node_id in node_ids {
+            match node_id {
+                NodeId::Ipn(node_id) => {
+                    if let Some(existing) = &ipn
+                        && node_id != existing
+                    {
+                        return Err(Error::MultipleIpnNodeIds);
                     }
+                    ipn = Some(node_id.clone());
                 }
-                Eid::Dtn { node_name, demux } if demux.is_empty() => {
-                    if let Some(n) = &dtn {
-                        if n != node_name {
-                            return Err(Error::MultipleDtnNodeIds);
-                        }
-                    } else {
-                        dtn = Some(node_name.clone());
+                NodeId::Dtn(node_id) => {
+                    if let Some(existing) = &dtn
+                        && existing != node_id
+                    {
+                        return Err(Error::MultipleDtnNodeIds);
                     }
+                    dtn = Some(node_id.clone());
                 }
-                Eid::LegacyIpn {
-                    allocator_id: _,
-                    node_number: _,
-                    service_number,
-                }
-                | Eid::Ipn {
-                    allocator_id: _,
-                    node_number: _,
-                    service_number,
-                } => {
-                    return Err(hardy_bpv7::eid::Error::IpnInvalidServiceNumber(
-                        *service_number as u64,
-                    )
-                    .into());
-                }
-                Eid::Dtn { .. } => return Err(Error::DtnWithDemux),
-                Eid::Null => return Err(Error::NullEndpoint),
-                Eid::LocalNode { .. } => {
+                NodeId::LocalNode => {
                     return Err(Error::LocalNode);
-                }
-                Eid::Unknown { scheme, .. } => {
-                    return Err(hardy_bpv7::eid::Error::UnsupportedScheme(*scheme).into());
                 }
             }
         }
@@ -182,36 +138,11 @@ impl serde::Serialize for NodeIds {
     {
         match (&self.ipn, &self.dtn) {
             (None, None) => unreachable!(),
-            (None, Some(node_name)) => serializer.serialize_str(
-                Eid::Dtn {
-                    node_name: node_name.clone(),
-                    demux: "".into(),
-                }
-                .to_string()
-                .as_str(),
-            ),
-            (Some((allocator_id, node_number)), None) => serializer.serialize_str(
-                Eid::Ipn {
-                    allocator_id: *allocator_id,
-                    node_number: *node_number,
-                    service_number: 0,
-                }
-                .to_string()
-                .as_str(),
-            ),
-            (Some((allocator_id, node_number)), Some(node_name)) => serializer.collect_seq([
-                Eid::Ipn {
-                    allocator_id: *allocator_id,
-                    node_number: *node_number,
-                    service_number: 0,
-                }
-                .to_string(),
-                Eid::Dtn {
-                    node_name: node_name.clone(),
-                    demux: "".into(),
-                }
-                .to_string(),
-            ]),
+            (None, Some(node_id)) => serializer.serialize_str(node_id.to_string().as_str()),
+            (Some(node_id), None) => serializer.serialize_str(node_id.to_string().as_str()),
+            (Some(ipn_node_id), Some(dtn_node_id)) => {
+                serializer.collect_seq([ipn_node_id.to_string(), dtn_node_id.to_string()])
+            }
         }
     }
 }
@@ -228,7 +159,7 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
             type Value = NodeIds;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a single EID or a sequence of EIDs")
+                formatter.write_str("a single NodeId or a sequence of NodeIds")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -278,9 +209,9 @@ impl std::fmt::Display for NodeIds {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match (&self.ipn, &self.dtn) {
             (None, None) => write!(f, "[]"),
-            (None, Some(d)) => write!(f, "[ dtn://{d}/_ ]"),
-            (Some((a, n)), None) => write!(f, "[ ipn:{a}.{n}._ ]"),
-            (Some((a, n)), Some(d)) => write!(f, "[ ipn:{a}.{n}._, dtn://{d}/_ ]"),
+            (None, Some(node_id)) => write!(f, "[ {node_id} ]"),
+            (Some(node_id), None) => write!(f, "[ {node_id} ]"),
+            (Some(ipn_node_id), Some(dtn_node_id)) => write!(f, "[ {ipn_node_id}, {dtn_node_id} ]"),
         }
     }
 }

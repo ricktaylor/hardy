@@ -23,10 +23,13 @@ impl DtnPatternItem {
             DtnPatternItem::None => eid.is_null(),
             DtnPatternItem::Any => matches!(eid, Eid::Dtn { .. } | Eid::Unknown { scheme: 1, .. }),
             DtnPatternItem::Exact(n1, d1) => {
-                matches!(eid, Eid::Dtn { node_name, demux } if n1 == node_name && d1 == demux)
+                matches!(eid, Eid::Dtn { node_name, service_name } if n1 == &node_name.node_name && d1 == service_name)
             }
             DtnPatternItem::Glob(pattern) => match eid {
-                Eid::Dtn { node_name, demux } => do_glob(node_name, demux, pattern),
+                Eid::Dtn {
+                    node_name,
+                    service_name,
+                } => do_glob(&node_name.node_name, service_name, pattern),
                 _ => false,
             },
         }
@@ -55,9 +58,11 @@ impl DtnPatternItem {
     pub(super) fn try_to_eid(&self) -> Option<Eid> {
         match self {
             DtnPatternItem::None => Some(Eid::Null),
-            DtnPatternItem::Exact(node_name, demux) => Some(Eid::Dtn {
-                node_name: node_name.clone(),
-                demux: demux.clone(),
+            DtnPatternItem::Exact(node_name, service_name) => Some(Eid::Dtn {
+                node_name: DtnNodeId {
+                    node_name: node_name.clone(),
+                },
+                service_name: service_name.clone(),
             }),
             _ => None,
         }

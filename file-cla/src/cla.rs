@@ -37,7 +37,7 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[Eid],
+        _node_ids: &[NodeId],
     ) -> hardy_bpa::cla::Result<()> {
         let cwd = std::env::current_dir().map_err(|e| {
             error!("Failed to get current working directory: {e}");

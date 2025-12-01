@@ -76,7 +76,7 @@ impl Bpa {
     #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
     pub async fn register_service(
         &self,
-        service_id: Option<service::ServiceId<'_>>,
+        service_id: Option<hardy_bpv7::eid::Service>,
         service: Arc<dyn service::Service>,
     ) -> service::Result<hardy_bpv7::eid::Eid> {
         self.service_registry

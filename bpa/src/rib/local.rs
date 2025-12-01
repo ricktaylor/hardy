@@ -53,7 +53,7 @@ impl LocalInner {
 
         // Add localnode admin endpoint
         actions.insert(
-            Eid::LocalNode { service_number: 0 },
+            NodeId::LocalNode.into(),
             [local::Action::AdminEndpoint].into(),
         );
 
@@ -61,20 +61,12 @@ impl LocalInner {
         // TODO: Drive this from a services file...
 
         // Drop LocalNode services
-        finals.insert(
-            "ipn:!.*"
-                .parse()
-                .trace_expect("Failed to parse hard-coded pattern item"),
-        );
+        finals.insert(NodeId::LocalNode.into());
 
-        if let Some((allocator_id, node_number)) = config.node_ids.ipn {
+        if let Some(node_id) = &config.node_ids.ipn {
             // Add the Admin Endpoint EID itself
             actions.insert(
-                Eid::Ipn {
-                    allocator_id,
-                    node_number,
-                    service_number: 0,
-                },
+                node_id.clone().into(),
                 [local::Action::AdminEndpoint].into(),
             );
 
@@ -82,22 +74,13 @@ impl LocalInner {
             // TODO: Drive this from a services file...
 
             // Drop ephemeral services
-            finals.insert(
-                format!("ipn:{allocator_id}.{node_number}.*")
-                    .parse()
-                    .trace_expect(
-                        "Failed to parse pattern item: 'ipn:{allocator_id}.{node_number}.*'",
-                    ),
-            );
+            finals.insert(node_id.clone().into());
         }
 
         if let Some(node_name) = &config.node_ids.dtn {
             // Add the Admin Endpoint EID itself
             actions.insert(
-                Eid::Dtn {
-                    node_name: node_name.clone(),
-                    demux: "".into(),
-                },
+                node_name.clone().into(),
                 [local::Action::AdminEndpoint].into(),
             );
 
@@ -105,11 +88,7 @@ impl LocalInner {
             // TODO: Drive this from a services file...
 
             // Drop ephemeral services
-            finals.insert(
-                format!("dtn://{node_name}/**")
-                    .parse()
-                    .trace_expect("Failed to parse pattern item: 'dtn://{node_name}/auto/**'"),
-            );
+            finals.insert(node_name.clone().into());
         }
 
         Self { actions, finals }
@@ -143,8 +122,8 @@ impl Rib {
         true
     }
 
-    pub async fn add_forward(&self, eid: Eid, peer: u32) -> bool {
-        self.add_local(eid, Action::Forward(peer)).await
+    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
+        self.add_local(node_id.into(), Action::Forward(peer)).await
     }
 
     pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) -> bool {
@@ -174,9 +153,9 @@ impl Rib {
             .unwrap_or(false)
     }
 
-    pub async fn remove_forward(&self, eid: &Eid, peer: u32) -> bool {
+    pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
         if !self.remove_local(
-            eid,
+            &node_id.into(),
             |action| matches!(action, Action::Forward(p) if &peer == p),
         ) {
             return false;

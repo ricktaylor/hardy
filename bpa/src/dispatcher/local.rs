@@ -13,28 +13,24 @@ impl Dispatcher {
         // Check to see if we should use ipn 2-element encoding
         if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
             if let Eid::Ipn {
-                allocator_id: sa,
-                node_number: sn,
-                service_number: ss,
+                fqnn,
+                service_number,
             } = source
             {
                 source = Eid::LegacyIpn {
-                    allocator_id: sa,
-                    node_number: sn,
-                    service_number: ss,
+                    fqnn,
+                    service_number,
                 };
             }
 
             if let Eid::Ipn {
-                allocator_id: da,
-                node_number: dn,
-                service_number: ds,
+                fqnn,
+                service_number,
             } = destination
             {
                 destination = Eid::LegacyIpn {
-                    allocator_id: da,
-                    node_number: dn,
-                    service_number: ds,
+                    fqnn,
+                    service_number,
                 };
             }
         }

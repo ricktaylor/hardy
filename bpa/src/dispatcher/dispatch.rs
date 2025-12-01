@@ -6,6 +6,7 @@ pub(super) enum DispatchResult {
     Drop(Option<ReasonCode>),
     Forward(u32),
     Wait,
+    Reassemble,
     Delivered,
 }
 
@@ -146,6 +147,7 @@ impl Dispatcher {
         }
 
         // We loop here because of reassembly
+        let mut reassemble = false;
         loop {
             // Check some basic semantic validity, lifetime first
             if bundle.has_expired() {
@@ -168,117 +170,38 @@ impl Dispatcher {
             // TODO: Pluggable ingress filters!
 
             // Check for reassembly
-            if bundle.bundle.id.fragment_info.is_some() {
-                let reassemble = false;
+            if bundle.bundle.id.fragment_info.is_some() && reassemble {
+                let Some(reassembled_bundle) = self.reassemble(&mut bundle).await else {
+                    // Nothing more to do, all the fragments have yet to arrive
+                    return self.store.watch_bundle(bundle).await;
+                };
 
-                // TODO: Pluggable reassembly filters
+                // Dispatch the reassembled bundle
+                bundle = reassembled_bundle;
+                continue;
+            }
 
-                if reassemble
-                    || match &bundle.bundle.id.source {
-                        Eid::LocalNode { .. } => true,
-                        Eid::LegacyIpn {
-                            allocator_id,
-                            node_number,
-                            ..
-                        }
-                        | Eid::Ipn {
-                            allocator_id,
-                            node_number,
-                            ..
-                        } => {
-                            if let Some((a, n)) = &self.node_ids.ipn {
-                                a == allocator_id && n == node_number
-                            } else {
-                                false
-                            }
-                        }
-                        Eid::Dtn { node_name, .. } => {
-                            if let Some(n) = &self.node_ids.dtn {
-                                node_name == n
-                            } else {
-                                false
-                            }
-                        }
-                        _ => false,
-                    }
-                {
-                    let Some((mut new_metadata, data)) = self.store.adu_reassemble(bundle).await
-                    else {
-                        // Nothing more to do, the store has done the work
-                        return;
-                    };
-
-                    // Reparse the reconstituted bundle, for sanity
-                    match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store()) {
-                        Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
-                            bundle: new_bundle,
-                            ..
-                        }) => {
-                            bundle = bundle::Bundle {
-                                metadata: new_metadata,
-                                bundle: new_bundle,
-                            };
-                            self.store.insert_metadata(&bundle).await;
-                        }
-                        Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
-                            bundle: new_bundle,
-                            new_data,
-                            non_canonical,
-                            ..
-                        }) => {
-                            debug!("Reassembled bundle has been rewritten");
-
-                            // Update the metadata
-                            new_metadata.non_canonical = non_canonical;
-
-                            let old_storage_name = new_metadata
-                                .storage_name
-                                .replace(self.store.save_data(new_data.into()).await);
-
-                            bundle = bundle::Bundle {
-                                metadata: new_metadata,
-                                bundle: new_bundle,
-                            };
-                            self.store.insert_metadata(&bundle).await;
-
-                            // And drop the original bundle data
-                            if let Some(old_storage_name) = old_storage_name {
-                                self.store.delete_data(&old_storage_name).await;
-                            }
-                        }
-                        Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. })
-                        | Err(error) => {
-                            // Reconstituted bundle is garbage
-                            debug!("Reassembled bundle is invalid: {error}");
-                            if let Some(storage_name) = new_metadata.storage_name {
-                                self.store.delete_data(&storage_name).await;
-                            }
-                            return;
-                        }
-                    }
-
-                    // Dispatch the reassembled bundle
-                    continue;
+            // Now process the bundle
+            match self.process_bundle(&mut bundle).await {
+                DispatchResult::Gone => {
+                    break;
                 }
-            }
-
-            // By the time we get here, we've reassembled or the bundle isn't an ADU fragment
-            break;
-        }
-
-        // Now process the bundle
-        match self.process_bundle(&mut bundle).await {
-            DispatchResult::Gone => {}
-            DispatchResult::Drop(reason_code) => self.drop_bundle(bundle, reason_code).await,
-            DispatchResult::Forward(peer) => {
-                self.cla_registry.forward(peer, bundle).await;
-            }
-            DispatchResult::Wait => {
-                self.store.watch_bundle(bundle).await;
-            }
-            DispatchResult::Delivered => {
-                self.report_bundle_delivery(&bundle).await;
-                self.drop_bundle(bundle, None).await;
+                DispatchResult::Drop(reason_code) => {
+                    return self.drop_bundle(bundle, reason_code).await;
+                }
+                DispatchResult::Forward(peer) => {
+                    return self.cla_registry.forward(peer, bundle).await;
+                }
+                DispatchResult::Wait => {
+                    return self.store.watch_bundle(bundle).await;
+                }
+                DispatchResult::Reassemble => {
+                    reassemble = true;
+                }
+                DispatchResult::Delivered => {
+                    self.report_bundle_delivery(&bundle).await;
+                    return self.drop_bundle(bundle, None).await;
+                }
             }
         }
     }
@@ -299,10 +222,15 @@ impl Dispatcher {
                 self.administrative_bundle(bundle).await
             }
             Some(rib::FindResult::Deliver(Some(service))) => {
-                // TODO:  This needs to move to a storage::channel
+                // Check for reassembly
+                if bundle.bundle.id.fragment_info.is_some() {
+                    DispatchResult::Reassemble
+                } else {
+                    // TODO:  This needs to move to a storage::channel
 
-                // Bundle is for a local service
-                self.deliver_bundle(service, bundle).await
+                    // Bundle is for a local service
+                    self.deliver_bundle(service, bundle).await
+                }
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
@@ -351,12 +279,16 @@ impl Dispatcher {
                                     DispatchResult::Forward(peer) => {
                                         dispatcher.cla_registry.forward(peer, bundle).await;
                                     }
-                                    DispatchResult::Wait | DispatchResult::Gone => {}
+                                    DispatchResult::Wait
+                                    | DispatchResult::Gone => {}
+                                    | DispatchResult::Reassemble => {
+                                        // We are already waiting, and reassembly happens on recepetion, so don't do it again here
+                                    }
                                     DispatchResult::Delivered => {
                                         dispatcher.report_bundle_delivery(&bundle).await;
                                         dispatcher.drop_bundle(bundle, None).await;
                                     }
-                                };
+                                }
                                 drop(permit);
                             });
                         }
