@@ -90,7 +90,7 @@ impl Listener {
             .rate_limit(1024, std::time::Duration::from_secs(1))
             .service(ListenerService::new(listener));
 
-        info!("TCP server listening on {}", address);
+        info!("TCP server listening on {address}");
 
         loop {
             tokio::select! {
@@ -100,7 +100,7 @@ impl Listener {
                         // Accept a new connection
                         match svc.call(()).await {
                             Ok((stream,remote_addr)) => {
-                                info!("New TCP connection from {}", remote_addr);
+                                info!("New TCP connection from {remote_addr}");
                                 // Spawn immediately to prevent head-of-line blocking
                                 let self_cloned = self.clone();
                                 let task = self_cloned.new_contact(stream, remote_addr);
@@ -157,7 +157,7 @@ impl Listener {
             return;
         }
 
-        debug!("Contact header received from {}", remote_addr);
+        debug!("Contact header received from {remote_addr}");
 
         // Always send our contact header in reply!
         if let Err(e) = stream
@@ -190,8 +190,8 @@ impl Listener {
 
         if buffer[5] & 0xFE != 0 {
             info!(
-                "Reserved flags {:#x} set in contact header from {}",
-                buffer[5], remote_addr,
+                "Reserved flags {:#x} set in contact header from {remote_addr}",
+                buffer[5]
             );
         }
 
@@ -201,7 +201,7 @@ impl Listener {
 
         if buffer[5] & 1 != 0 {
             if let Some(tls_config) = self.tls_config.clone() {
-                info!("TLS connection received from {}", remote_addr);
+                info!("TLS connection received from {remote_addr}");
 
                 return self
                     .clone()
@@ -220,7 +220,7 @@ impl Listener {
             .await;
         }
 
-        info!("New TCP (NO-TLS) connection accepted from {}", remote_addr);
+        info!("New TCP (NO-TLS) connection accepted from {remote_addr}");
         self.new_passive(
             local_addr,
             remote_addr,
@@ -381,7 +381,7 @@ impl Listener {
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
                 // TODO(mTLS): Verify client certificate if mTLS is enabled
-                info!("TLS session key negotiation completed with {}", remote_addr);
+                info!("TLS session key negotiation completed with {remote_addr}");
                 self.new_passive(
                     local_addr,
                     remote_addr,
@@ -391,10 +391,7 @@ impl Listener {
                 .await;
             }
             Err(e) => {
-                error!(
-                    "TLS session key negotiation failed with {}: {e}",
-                    remote_addr
-                );
+                error!("TLS session key negotiation failed with {remote_addr}: {e}");
             }
         }
     }

@@ -27,7 +27,7 @@ pub async fn init(
         //     Ok(policy)
         // }
         EgressPolicyConfig::Unknown => {
-            warn!("Ignoring unknown policy type for CLA: {}", cla_name);
+            warn!("Ignoring unknown policy type for CLA: {cla_name}");
             Ok(None)
         }
     }

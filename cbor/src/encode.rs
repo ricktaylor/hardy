@@ -480,8 +480,8 @@ impl<'a, const D: usize> Sequence<'a, D> {
         };
         if self.idx != count {
             panic!(
-                "Definite length sequence is short of items: {}, expected {}",
-                self.idx, count
+                "Definite length sequence is short of items: {}, expected {count}",
+                self.idx
             );
         }
     }

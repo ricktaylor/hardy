@@ -57,7 +57,7 @@ impl Service {
     pub async fn send(&self, args: &Command, seq_no: u32) -> anyhow::Result<()> {
         let (payload, creation) = ping::payload::build_payload(args, seq_no)?;
 
-        println!("Sending ping {}... ", seq_no);
+        println!("Sending ping {seq_no}... ");
 
         let id = self
             .sink

@@ -76,13 +76,13 @@ impl Connector {
             return Err(transport::Error::InvalidProtocol);
         }
 
-        debug!("Contact header received from {}", remote_addr);
+        debug!("Contact header received from {remote_addr}");
 
         if buffer[4] != 4 {
             warn!("Unsupported protocol version {}", buffer[4]);
 
             if buffer[4] == 3 {
-                debug!("Sending TCPCLv3 SHUTDOWN message to {}", remote_addr);
+                debug!("Sending TCPCLv3 SHUTDOWN message to {remote_addr}");
 
                 // Send a TCPCLv3 SHUTDOWN message
                 stream
@@ -105,8 +105,8 @@ impl Connector {
 
         if buffer[5] & 0xFE != 0 {
             info!(
-                "Reserved flags {:#x} set in contact header from {}",
-                buffer[5], remote_addr,
+                "Reserved flags {:#x} set in contact header from {remote_addr}",
+                buffer[5]
             );
         }
 
@@ -116,12 +116,12 @@ impl Connector {
 
         if buffer[5] & 1 != 0 {
             if let Some(tls_config) = self.tls_config.clone() {
-                info!("Initiating TLS handshake with {}", remote_addr);
+                info!("Initiating TLS handshake with {remote_addr}");
                 return self
                     .tls_handshake(stream, remote_addr, local_addr, tls_config)
                     .await
                     .inspect_err(|e| {
-                        error!("TLS session negotiation failed to {}: {e}", remote_addr)
+                        error!("TLS session negotiation failed to {remote_addr}: {e}")
                     });
             }
             info!("TLS requested by peer but no TLS configuration provided");
@@ -138,7 +138,7 @@ impl Connector {
             return Err(transport::Error::InvalidProtocol);
         }
 
-        info!("New TCP (NO-TLS) connection connected to {}", remote_addr);
+        info!("New TCP (NO-TLS) connection connected to {remote_addr}");
         self.new_active(
             local_addr,
             remote_addr,
@@ -177,12 +177,12 @@ impl Connector {
         // Use tokio-rustls::TlsConnector - simple wrapper around rustls for async I/O
         let connector = TlsConnector::from(tls_config.client_config.clone());
         let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
-            error!("TLS session key negotiation failed to {}: {e}", remote_addr);
+            error!("TLS session key negotiation failed to {remote_addr}: {e}");
             transport::Error::InvalidProtocol
         })?;
 
         // TODO(mTLS): Verify that server accepted our client certificate if mTLS is enabled
-        info!("TLS session key negotiation completed to {}", remote_addr);
+        info!("TLS session key negotiation completed to {remote_addr}");
 
         self.new_active(
             local_addr,

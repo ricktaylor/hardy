@@ -68,10 +68,7 @@ pub async fn terminate<T>(
                                 info!("Failed to send termination message to peer: {e:?}");
                             });
                     } else if msg != expected_reply {
-                        info!(
-                            "Mismatched SESS_TERM message: {:?}, expected {:?}",
-                            msg, expected_reply
-                        );
+                        info!("Mismatched SESS_TERM message: {msg:?}, expected {expected_reply:?}",);
                     }
                     break;
                 }

@@ -236,9 +236,8 @@ impl hardy_cbor::encode::ToCbor for Eid {
             } => encoder.emit(&(
                 1,
                 format!(
-                    "//{}/{}",
-                    urlencoding::encode(&node_name.node_name),
-                    service_name
+                    "//{}/{service_name}",
+                    urlencoding::encode(&node_name.node_name)
                 ),
             )),
             Eid::LegacyIpn {
@@ -314,9 +313,8 @@ impl core::fmt::Display for Eid {
             } => {
                 write!(
                     f,
-                    "dtn://{}/{}",
-                    urlencoding::encode(&node_name.node_name),
-                    service_name
+                    "dtn://{}/{service_name}",
+                    urlencoding::encode(&node_name.node_name)
                 )
             }
             Eid::Unknown { scheme, data } => {

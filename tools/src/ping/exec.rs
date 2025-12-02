@@ -69,7 +69,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
 
     bpa.register_cla(cla_name.clone(), None, cla.clone(), None)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_name))?;
+        .map_err(|e| anyhow::anyhow!("Failed to start CLA '{cla_name}': {e}"))?;
 
     let address = if let Some(address) = &args.address {
         address

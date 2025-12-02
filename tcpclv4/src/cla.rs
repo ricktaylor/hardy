@@ -116,7 +116,7 @@ impl hardy_bpa::cla::Cla for Cla {
         })?;
 
         if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
-            info!("Forwarding bundle to TCPCLv4 peer at {}", remote_addr);
+            info!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
             // We try this 5 times, because peers can close at random times
             for _ in 0..5 {
                 // See if we have an active connection already

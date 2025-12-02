@@ -156,8 +156,8 @@ impl Store {
 
         if &m.bundle.id != bundle_id {
             error!(
-                "Metadata store failed to return correct bundle: {:?} != {:?}",
-                m.bundle.id, bundle_id
+                "Metadata store failed to return correct bundle: {:?} != {bundle_id:?}",
+                m.bundle.id
             );
             None
         } else {

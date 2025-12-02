@@ -36,13 +36,12 @@ impl Dispatcher {
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
                 // The neighbour has gone, kill the queue
                 debug!(
-                    "CLA indicates neighbour has gone, clearing queue assignment for peer {}",
-                    peer
+                    "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
             }
             Err(e) => {
                 info!("Failed to forward bundle: {e}");
-                debug!("Clearing queue assignment for peer {}", peer);
+                debug!("Clearing queue assignment for peer {peer}");
             }
         }
 

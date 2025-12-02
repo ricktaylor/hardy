@@ -31,7 +31,7 @@ impl Application {
         let app = match requests.message().await {
             Ok(Some(AppToBpa { msg_id, msg })) => match msg {
                 Some(app_to_bpa::Msg::Status(status)) => {
-                    info!("Service failed before registration started!: {:?}", status);
+                    info!("Service failed before registration started!: {status:?}");
                     return;
                 }
                 Some(app_to_bpa::Msg::Register(msg)) => {
@@ -76,7 +76,7 @@ impl Application {
                     app
                 }
                 Some(msg) => {
-                    info!("Service sent incorrect message: {:?}", msg);
+                    info!("Service sent incorrect message: {msg:?}");
                     return;
                 }
                 None => {
@@ -99,7 +99,7 @@ impl Application {
             let response = match requests.message().await {
                 Ok(Some(AppToBpa { msg_id, msg })) => match msg {
                     Some(app_to_bpa::Msg::Register(msg)) => {
-                        info!("Service sent duplicate registration message: {:?}", msg);
+                        info!("Service sent duplicate registration message: {msg:?}");
                         _ = tx
                             .send(Err(tonic::Status::failed_precondition(
                                 "Already registered",

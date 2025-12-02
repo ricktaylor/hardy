@@ -219,7 +219,7 @@ fn dump_block(
     }
 
     if let Some(bib) = block.bib {
-        output.append_str(format!("Signed by Integrity Block {}", bib))?;
+        output.append_str(format!("Signed by Integrity Block {bib}"))?;
 
         if let Err(e) = bundle.verify_block(block_number, data, keys) {
             output.append_str(format!(": Error {e}\n"))?;
@@ -229,7 +229,7 @@ fn dump_block(
     }
 
     let payload = if let Some(bcb) = block.bcb {
-        output.append_str(format!("Encrypted by Security Block {}", bcb))?;
+        output.append_str(format!("Encrypted by Security Block {bcb}"))?;
 
         match bundle.decrypt_block_data(block_number, data, keys) {
             Err(e) => {
@@ -340,7 +340,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 
 fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     let ops = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data)?;
-    output.append_str(format!("Security Source: {}\n", &ops.source))?;
+    output.append_str(format!("Security Source: {}\n", ops.source))?;
 
     match ops.operations.values().next().unwrap() {
         bpsec::bcb::Operation::AES_GCM(op) => {
@@ -382,7 +382,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         bpsec::bcb::Operation::Unrecognised(_u, op) => {
             output.append_str("Context: Unrecognised Type {u}\n")?;
             for (p, v) in op.parameters.iter() {
-                output.append_str(format!("Parameter {}: {}/n", p, dump_bytes(v)))?;
+                output.append_str(format!("Parameter {p}: {}/n", dump_bytes(v)))?;
             }
         }
     }
@@ -419,7 +419,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 
 fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     let ops = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(data)?;
-    output.append_str(format!("Security Source: {}\n", &ops.source))?;
+    output.append_str(format!("Security Source: {}\n", ops.source))?;
 
     match ops.operations.values().next().unwrap() {
         bpsec::bib::Operation::HMAC_SHA2(op) => {
@@ -456,7 +456,7 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         bpsec::bib::Operation::Unrecognised(_u, op) => {
             output.append_str("Context: Unrecognised Type {u}\n")?;
             for (p, v) in op.parameters.iter() {
-                output.append_str(format!("Parameter {}: {}/n", p, dump_bytes(v)))?;
+                output.append_str(format!("Parameter {p}: {}/n", dump_bytes(v)))?;
             }
         }
     }
@@ -474,7 +474,7 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
             bpsec::bib::Operation::Unrecognised(_u, op) => {
                 output.append_str(format!("Target Block: {target}\n"))?;
                 for (r, v) in op.results.iter() {
-                    output.append_str(format!("Result {}: {}/n", r, dump_bytes(v)))?;
+                    output.append_str(format!("Result {r}: {}/n", dump_bytes(v)))?;
                 }
                 if !op.results.is_empty() {
                     output.append_str("\n")?;

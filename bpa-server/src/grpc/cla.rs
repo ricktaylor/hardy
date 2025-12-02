@@ -94,7 +94,7 @@ impl Cla {
             let response = match requests.message().await {
                 Ok(Some(ClaToBpa { msg_id, msg })) => match msg {
                     Some(cla_to_bpa::Msg::Register(msg)) => {
-                        info!("CLA sent duplicate registration message: {:?}", msg);
+                        info!("CLA sent duplicate registration message: {msg:?}");
                         _ = tx
                             .send(Err(tonic::Status::failed_precondition(
                                 "Already registered",
