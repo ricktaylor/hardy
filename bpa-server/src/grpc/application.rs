@@ -273,7 +273,7 @@ impl hardy_bpa::service::Service for Application {
         self.rpc(bpa_to_app::Msg::Receive(ReceiveBundleRequest {
             bundle_id: bundle.source.to_string(),
             ack_requested: bundle.ack_requested,
-            expiry: Some(to_timestamp(bundle.expiry)),
+            expiry: Some(hardy_proto::to_timestamp(bundle.expiry)),
             payload: bundle.payload,
         }))
         .await

@@ -13,6 +13,7 @@ tonic = "0.14.2"
 tonic-prost = "0.14.2"
 prost = "0.14.1"
 prost-types = "0.14.1"
+time = "0.3.44"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"

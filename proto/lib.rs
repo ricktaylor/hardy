@@ -1,3 +1,17 @@
+pub fn from_timestamp(
+    t: prost_types::Timestamp,
+) -> Result<time::OffsetDateTime, time::error::ComponentRange> {
+    Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)?
+        + time::Duration::nanoseconds(t.nanos.into()))
+}
+
+pub fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: (t.unix_timestamp_nanos() / 1_000_000_000) as i64,
+        nanos: (t.unix_timestamp_nanos() % 1_000_000_000) as i32,
+    }
+}
+
 pub mod cla {
     tonic::include_proto!("cla");
 
