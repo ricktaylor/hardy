@@ -1,9 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "grpc")]
-use time::OffsetDateTime;
-
 mod application;
 mod cla;
 
@@ -21,8 +18,8 @@ pub struct Config {
         + time::Duration::nanoseconds(t.nanos.into()))
 }*/
 
-fn to_timestamp(t: OffsetDateTime) -> prost_types::Timestamp {
-    let t = t - OffsetDateTime::UNIX_EPOCH;
+fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
+    let t = t - time::OffsetDateTime::UNIX_EPOCH;
     prost_types::Timestamp {
         seconds: t.whole_seconds(),
         nanos: t.subsec_nanoseconds(),
