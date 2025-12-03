@@ -139,7 +139,6 @@ pub fn init() -> Option<(Config, String)> {
     // Parse cmdline
     let opts = options();
     let args: Vec<String> = std::env::args().collect();
-    let program = args[0].clone();
     let flags = opts
         .parse(&args[1..])
         .expect("Failed to parse command line args");
@@ -149,7 +148,7 @@ pub fn init() -> Option<(Config, String)> {
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_DESCRIPTION"),
-            program
+            args[0]
         );
         print!("{}", opts.usage(&brief));
         return None;
