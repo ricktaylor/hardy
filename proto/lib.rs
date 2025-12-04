@@ -95,5 +95,11 @@ pub mod google {
                 }
             }
         }
+
+        impl From<Status> for tonic::Status {
+            fn from(value: Status) -> Self {
+                Self::new(value.code.into(), value.message)
+            }
+        }
     }
 }

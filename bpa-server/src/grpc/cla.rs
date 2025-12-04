@@ -3,10 +3,7 @@ use hardy_bpa::async_trait;
 use hardy_proto::cla::*;
 use std::{
     collections::HashMap,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::{Mutex, OnceLock},
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -14,10 +11,15 @@ use tonic::{Request, Response, Streaming};
 
 type AckMapEntry<T> = oneshot::Sender<hardy_bpa::cla::Result<T>>;
 
+struct ClaInner {
+    sink: Box<dyn hardy_bpa::cla::Sink>,
+    node_ids: Vec<String>,
+}
+
 struct Cla {
-    sink: OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
+    inner: OnceLock<ClaInner>,
     tx: mpsc::Sender<Result<BpaToCla, tonic::Status>>,
-    msg_id: AtomicU32,
+    msg_id: u32,
     forward_acks: Mutex<HashMap<u32, AckMapEntry<forward_bundle_response::Result>>>,
 }
 
@@ -29,55 +31,66 @@ impl Cla {
     ) {
         // Expect Register message first
         let cla = match requests.message().await {
-            Ok(Some(ClaToBpa { msg_id, msg })) => {
-                match msg {
-                    Some(cla_to_bpa::Msg::Status(status)) => {
-                        info!("CLA failed before registration started!: {:?}", status);
-                        return;
-                    }
-                    Some(cla_to_bpa::Msg::Register(msg)) => {
-                        // Register the CLA and respond
-                        let cla = Arc::new(Self {
-                            sink: OnceLock::default(),
-                            tx: tx.clone(),
-                            msg_id: 0.into(),
-                            forward_acks: Mutex::new(HashMap::new()),
-                        });
+            Ok(Some(ClaToBpa {
+                msg: Some(cla_to_bpa::Msg::Status(status)),
+                ..
+            })) => {
+                info!("CLA failed before registration started!: {status:?}");
+                return;
+            }
+            Ok(Some(ClaToBpa {
+                msg_id,
+                msg: Some(cla_to_bpa::Msg::Register(msg)),
+            })) => {
+                // Register the CLA and respond
+                let cla = Arc::new(Self {
+                    inner: OnceLock::default(),
+                    tx: tx.clone(),
+                    msg_id: 0,
+                    forward_acks: Mutex::new(HashMap::new()),
+                });
 
-                        if tx
-                            .send(
-                                bpa.register_cla(
-                                    msg.name,
-                                msg.address_type.map(|o| match <i32 as std::convert::TryInto<ClaAddressType>>::try_into(o) {
-                                    Ok(t) => t.into(),
-                                    Err(_) => hardy_bpa::cla::ClaAddressType::Private,
-                                }),
-                                    cla.clone(),
-                                    None,
-                                )
-                                .await
-                                .map(|_| BpaToCla {
-                                    msg_id,
-                                    msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {})),
-                                })
-                                .map_err(|e| tonic::Status::from_error(e.into())),
-                            )
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                        cla
-                    }
-                    Some(msg) => {
-                        info!("CLA sent incorrect message: {:?}", msg);
-                        return;
-                    }
-                    None => {
-                        info!("CLA sent unrecognized message");
-                        return;
-                    }
+                if tx
+                    .send(
+                        bpa.register_cla(
+                            msg.name,
+                            msg.address_type.map(|o| {
+                                ClaAddressType::try_from(o)
+                                    .map_or(hardy_bpa::cla::ClaAddressType::Private, Into::into)
+                            }),
+                            cla.clone(),
+                            None,
+                        )
+                        .await
+                        .map(|_| {
+                            let inner = cla
+                                .inner
+                                .get()
+                                .trace_expect("CLA registration not complete!");
+
+                            BpaToCla {
+                                msg_id,
+                                msg: Some(bpa_to_cla::Msg::Register(RegisterClaResponse {
+                                    node_ids: inner.node_ids.clone(),
+                                })),
+                            }
+                        })
+                        .map_err(|e| tonic::Status::from_error(e.into())),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
                 }
+                cla
+            }
+            Ok(Some(ClaToBpa { msg: Some(msg), .. })) => {
+                info!("CLA sent incorrect message: {msg:?}");
+                return;
+            }
+            Ok(Some(ClaToBpa { msg: None, .. })) => {
+                info!("CLA sent unrecognized message");
+                return;
             }
             Ok(None) => {
                 info!("CLA disconnected before registration completed");
@@ -129,11 +142,7 @@ impl Cla {
                         .await
                     }
                     Some(cla_to_bpa::Msg::Status(status)) => {
-                        cla.forward_ack_response(
-                            msg_id,
-                            Err(tonic::Status::new(status.code.into(), status.message)),
-                        )
-                        .await
+                        cla.forward_ack_response(msg_id, Err(status.into())).await
                     }
                     None => {
                         info!("CLA sent unrecognized message");
@@ -166,15 +175,16 @@ impl Cla {
         }
 
         // Done with cla
-        if let Some(sink) = cla.sink.get() {
-            sink.unregister().await;
+        if let Some(inner) = cla.inner.get() {
+            inner.sink.unregister().await;
         }
     }
 
     async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        self.sink
+        self.inner
             .get()
             .trace_expect("CLA registration not complete!")
+            .sink
             .dispatch(bundle)
             .await
             .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
@@ -192,12 +202,13 @@ impl Cla {
         let addr = cla_addr
             .try_into()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
-        self.sink
+        self.inner
             .get()
             .trace_expect("CLA registration not complete!")
+            .sink
             .add_peer(node_id, addr)
             .await
-            .map(|_| bpa_to_cla::Msg::AddPeer(AddPeerResponse {}))
+            .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
@@ -212,12 +223,13 @@ impl Cla {
         let addr = cla_addr
             .try_into()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid address: {e}")))?;
-        self.sink
+        self.inner
             .get()
             .trace_expect("CLA registration not complete!")
+            .sink
             .remove_peer(node_id, &addr)
             .await
-            .map(|_| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse {}))
+            .map(|removed| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse { removed }))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
@@ -243,13 +255,17 @@ impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[hardy_bpv7::eid::NodeId],
+        node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> hardy_bpa::cla::Result<()> {
-        if self.sink.set(sink).is_err() {
-            error!("CLA on_register called twice!");
-            return Err(hardy_bpa::cla::Error::AlreadyConnected);
-        }
-        Ok(())
+        self.inner
+            .set(ClaInner {
+                sink,
+                node_ids: node_ids.iter().map(|n| n.to_string()).collect(),
+            })
+            .map_err(|_| {
+                error!("CLA on_register called twice!");
+                hardy_bpa::cla::Error::AlreadyConnected
+            })
     }
 
     async fn on_unregister(&self) {
@@ -270,9 +286,9 @@ impl hardy_bpa::cla::Cla for Cla {
                 .forward_acks
                 .lock()
                 .trace_expect("Failed to lock mutex");
-            let mut msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
+            let mut msg_id = self.msg_id.wrapping_add(1);
             while forward_acks.contains_key(&msg_id) {
-                msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
+                msg_id = self.msg_id.wrapping_add(1);
             }
             forward_acks.insert(msg_id, tx);
             msg_id

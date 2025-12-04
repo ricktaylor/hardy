@@ -96,7 +96,10 @@ message RegisterClaRequest {
 }
 
 // A response to a register CLA request.
-message RegisterClaResponse {}
+message RegisterClaResponse {
+  // The NodeIds of the BPA.
+  repeated string node_ids = 1;
+}
 
 // A request to dispatch a bundle from the CLA to the BPA.
 message DispatchBundleRequest {
@@ -116,7 +119,10 @@ message AddPeerRequest {
 }
 
 // A response to an add peer request.
-message AddPeerResponse {}
+message AddPeerResponse {
+  // If the peer was added
+  bool added = 1;
+}
 
 // A request to remove a peer from the CLA.
 message RemovePeerRequest {
@@ -127,7 +133,10 @@ message RemovePeerRequest {
 }
 
 // A response to a remove peer request.
-message RemovePeerResponse {}
+message RemovePeerResponse {
+  // If the peer was removed
+  bool removed = 1;
+}
 
 // A request to forward a bundle from the BPA to the CLA.
 message ForwardBundleRequest {
