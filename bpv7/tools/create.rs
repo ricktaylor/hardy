@@ -104,7 +104,7 @@ pub struct Command {
     #[arg(short, long = "report-to")]
     report_to: Option<Eid>,
 
-    /// The file to use as payload, use '-' for stdin
+    /// Path to the location of the file to use as payload, use '-' for stdin
     #[arg(short, long)]
     payload: io::Input,
 
