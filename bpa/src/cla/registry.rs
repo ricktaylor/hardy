@@ -135,7 +135,7 @@ impl Registry {
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<()> {
+    ) -> cla::Result<Vec<NodeId>> {
         // Scope lock
         let cla = {
             let mut clas = self.clas.write().trace_expect("Failed to lock mutex");
@@ -161,6 +161,11 @@ impl Registry {
             }
         };
 
+        // Register that the CLA is a handler for the address type
+        if let Some(address_type) = address_type {
+            self.rib.add_address_type(address_type, cla.clone());
+        }
+
         cla.cla
             .on_register(
                 Box::new(Sink {
@@ -170,21 +175,9 @@ impl Registry {
                 }),
                 &self.node_ids,
             )
-            .await
-            .inspect_err(|_| {
-                // Remove the CLA
-                self.clas
-                    .write()
-                    .trace_expect("Failed to lock mutex")
-                    .remove(&name);
-            })?;
+            .await;
 
-        // Register that the CLA is a handler for the address type
-        if let Some(address_type) = address_type {
-            self.rib.add_address_type(address_type, cla.clone());
-        }
-
-        Ok(())
+        Ok(self.node_ids.clone())
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {

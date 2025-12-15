@@ -34,49 +34,57 @@ fn check_path(cwd: &Path, path: &PathBuf) -> hardy_bpa::cla::Result<String> {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[NodeId],
-    ) -> hardy_bpa::cla::Result<()> {
-        let cwd = std::env::current_dir().map_err(|e| {
-            error!("Failed to get current working directory: {e}");
-            hardy_bpa::cla::Error::Internal(e.into())
-        })?;
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(e) => {
+                error!("Failed to get current working directory: {e}");
+                return;
+            }
+        };
 
         let mut inboxes = HashSet::new();
         for (eid, path) in &self.config.peers {
-            let path = check_path(&cwd, path)?;
+            let Ok(path) = check_path(&cwd, path) else {
+                return;
+            };
 
             // Register the peer with the BPA
-            sink.add_peer(
-                eid.clone(),
-                hardy_bpa::cla::ClaAddress::Private(hardy_bpa::Bytes::copy_from_slice(
-                    path.as_bytes(),
-                )),
-            )
-            .await?;
+            if let Err(e) = sink
+                .add_peer(
+                    eid.clone(),
+                    hardy_bpa::cla::ClaAddress::Private(hardy_bpa::Bytes::copy_from_slice(
+                        path.as_bytes(),
+                    )),
+                )
+                .await
+            {
+                error!("add_peer() failed: {e}");
+                return;
+            }
 
             inboxes.insert(path);
         }
 
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-        self.inner
+        if self
+            .inner
             .set(ClaInner {
                 sink: sink.clone(),
                 inboxes,
             })
-            .map_err(|_| {
-                error!("CLA on_register called twice!");
-                hardy_bpa::cla::Error::AlreadyConnected
-            })?;
-
-        if let Some(outbox) = &self.config.outbox {
-            let outbox = check_path(&cwd, outbox)?;
-            self.start_watcher(sink, outbox).await;
+            .is_err()
+        {
+            error!("CLA on_register called twice!");
+            return;
         }
 
-        Ok(())
+        if let Some(outbox) = &self.config.outbox {
+            let Ok(outbox) = check_path(&cwd, outbox) else {
+                return;
+            };
+            self.start_watcher(sink, outbox).await;
+        }
     }
 
     async fn on_unregister(&self) {

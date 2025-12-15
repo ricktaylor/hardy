@@ -34,17 +34,7 @@ impl ClaInner {
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
     #[cfg_attr(feature = "tracing", instrument(skip(self, sink)))]
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        node_ids: &[NodeId],
-    ) -> hardy_bpa::cla::Result<()> {
-        if self.config.session_defaults.must_use_tls && self.config.tls.is_none() {
-            return Err(hardy_bpa::cla::Error::Internal(
-                transport::Error::InvalidProtocol.into(),
-            ));
-        }
-
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, node_ids: &[NodeId]) {
         // Initialize TLS config once and reuse it for all connections
         let tls_config = if let Some(tls_config) = &self.config.tls {
             match tls::TlsConfig::new(tls_config) {

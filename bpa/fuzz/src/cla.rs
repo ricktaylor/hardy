@@ -61,11 +61,7 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[NodeId],
-    ) -> hardy_bpa::cla::Result<()> {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
         sink.add_peer(
             NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
@@ -79,8 +75,6 @@ impl hardy_bpa::cla::Cla for NullCla {
         if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }
-
-        Ok(())
     }
 
     async fn on_unregister(&self) {

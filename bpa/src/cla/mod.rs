@@ -21,10 +21,6 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
-    /// The CLA has already been connected to the BPA.
-    #[error("The CLA is already connected")]
-    AlreadyConnected,
-
     /// An error occurred while processing a BPv7 bundle.
     #[error(transparent)]
     InvalidBundle(#[from] hardy_bpv7::Error),
@@ -127,11 +123,7 @@ pub trait Cla: Send + Sync {
     /// or starting listener tasks. It is given a `sink` to communicate back to the
     /// BPA (e.g., to dispatch received bundles or report peer changes) and a list
     /// of the BPA's own node EIDs.
-    async fn on_register(
-        &self,
-        sink: Box<dyn Sink>,
-        node_ids: &[hardy_bpv7::eid::NodeId],
-    ) -> Result<()>;
+    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[hardy_bpv7::eid::NodeId]);
 
     /// Called when the CLA is being unregistered.
     ///

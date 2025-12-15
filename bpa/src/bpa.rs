@@ -91,7 +91,7 @@ impl Bpa {
         address_type: Option<cla::ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<()> {
+    ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
         self.cla_registry
             .register(name, address_type, cla, &self.dispatcher, policy)
             .await
