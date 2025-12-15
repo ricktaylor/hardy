@@ -39,4 +39,4 @@ check_elevation = "0.2.7"
 
 # --- Other Unix (e.g., macOS, BSD) dependencies ---
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
-libc = "0.2.177"
+libc = "0.2.178"
