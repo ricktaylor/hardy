@@ -111,18 +111,21 @@ impl hardy_bpa::service::Service for Service {
         // Nothing to do
     }
 
-    async fn on_receive(&self, bundle: hardy_bpa::service::Bundle) {
-        if bundle.source != self.destination {
+    async fn on_receive(
+        &self,
+        source: Eid,
+        _expiry: time::OffsetDateTime,
+        _ack_requested: bool,
+        payload: hardy_bpa::Bytes,
+    ) {
+        if source != self.destination {
             // Ignore spurious responses
-            eprintln!(
-                "Ignoring bundle from unexpected source EID '{}'",
-                bundle.source
-            );
+            eprintln!("Ignoring bundle from unexpected source EID '{}'", source);
             return;
         }
 
         // Try to unpack the payload
-        let Ok(payload) = str::from_utf8(&bundle.payload) else {
+        let Ok(payload) = str::from_utf8(&payload) else {
             eprintln!("Failed to parse ping payload as UTF-8 text");
             return;
         };
@@ -160,7 +163,7 @@ impl hardy_bpa::service::Service for Service {
         if let Ok(rtt) = (payload.creation - sent_time).try_into() {
             println!(
                 "Reply from {}: ping {}, rtt {}",
-                &bundle.source,
+                &source,
                 payload.seqno,
                 humantime::format_duration(rtt)
             );

@@ -70,7 +70,13 @@ impl hardy_bpa::service::Service for PipeService {
         }
     }
 
-    async fn on_receive(&self, _bundle: hardy_bpa::service::Bundle) {
+    async fn on_receive(
+        &self,
+        _source: Eid,
+        _expiry: time::OffsetDateTime,
+        _ack_requested: bool,
+        _payload: hardy_bpa::Bytes,
+    ) {
         // Do nothing
     }
 

@@ -39,21 +39,19 @@ pub enum StatusNotify {
     Deleted,
 }
 
-#[derive(Debug)]
-pub struct Bundle {
-    pub source: Eid,
-    pub expiry: time::OffsetDateTime,
-    pub ack_requested: bool,
-    pub payload: Bytes,
-}
-
 #[async_trait]
 pub trait Service: Send + Sync {
     async fn on_register(&self, source: &Eid, sink: Box<dyn Sink>);
 
     async fn on_unregister(&self);
 
-    async fn on_receive(&self, bundle: Bundle);
+    async fn on_receive(
+        &self,
+        source: Eid,
+        expiry: time::OffsetDateTime,
+        ack_requested: bool,
+        payload: Bytes,
+    );
 
     async fn on_status_notify(
         &self,

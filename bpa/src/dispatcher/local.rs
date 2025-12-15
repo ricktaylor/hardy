@@ -125,12 +125,12 @@ impl Dispatcher {
         // Pass the bundle and data to the service
         service
             .service
-            .on_receive(service::Bundle {
-                source: bundle.bundle.id.source.clone(),
-                expiry: bundle.expiry(),
-                ack_requested: bundle.bundle.flags.app_ack_requested,
+            .on_receive(
+                bundle.bundle.id.source.clone(),
+                bundle.expiry(),
+                bundle.bundle.flags.app_ack_requested,
                 payload,
-            })
+            )
             .await;
 
         // And we are done with the bundle
