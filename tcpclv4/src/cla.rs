@@ -80,15 +80,15 @@ impl hardy_bpa::cla::Cla for Cla {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn on_unregister(&self) {
-        if let Some(inner) = self.inner.get() {
-            self.cancel_token.cancel();
-            self.task_tracker.close();
+        self.cancel_token.cancel();
+        self.task_tracker.close();
 
+        if let Some(inner) = self.inner.get() {
             // Shutdown all pooled connections
             inner.registry.shutdown().await;
-
-            self.task_tracker.wait().await;
         }
+
+        self.task_tracker.wait().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
@@ -98,10 +98,10 @@ impl hardy_bpa::cla::Cla for Cla {
         cla_addr: &hardy_bpa::cla::ClaAddress,
         mut bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        let inner = self.inner.get().ok_or_else(|| {
+        let Some(inner) = self.inner.get() else {
             error!("forward called before on_register!");
-            hardy_bpa::cla::Error::Disconnected
-        })?;
+            return Err(hardy_bpa::cla::Error::Disconnected);
+        };
 
         if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
             info!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");

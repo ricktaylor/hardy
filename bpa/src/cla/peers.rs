@@ -123,7 +123,7 @@ impl Peer {
             None
         };
 
-        let queues = &self.inner.get().trace_expect("No queues?").queues;
+        let queues = &self.inner.wait().queues;
         let queue = queues
             .get(&queue)
             .unwrap_or_else(|| queues.get(&None).trace_expect("No None queue?!?"));
@@ -135,7 +135,7 @@ impl Peer {
     }
 
     async fn close(&self) {
-        for tx in self.inner.get().trace_expect("No queues?").queues.values() {
+        for tx in self.inner.wait().queues.values() {
             tx.close().await;
         }
     }

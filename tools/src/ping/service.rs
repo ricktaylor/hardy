@@ -61,8 +61,7 @@ impl Service {
 
         let id = self
             .sink
-            .get()
-            .trace_expect("Service not registered!")
+            .wait()
             .send(
                 self.destination.clone(),
                 payload.into(),
@@ -102,9 +101,8 @@ impl Service {
 #[async_trait]
 impl hardy_bpa::service::Service for Service {
     async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::service::Sink>) {
-        if self.sink.set(sink).is_err() {
-            panic!("Double connect()");
-        }
+        // Ensure single initialization
+        self.sink.get_or_init(|| sink);
     }
 
     async fn on_unregister(&self) {

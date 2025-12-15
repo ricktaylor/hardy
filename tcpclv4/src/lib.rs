@@ -72,7 +72,10 @@ impl Cla {
     }
 
     pub async fn connect(&self, remote_addr: &std::net::SocketAddr) -> hardy_bpa::cla::Result<()> {
-        let inner = self.inner.get().trace_expect("CLA not registered");
+        let Some(inner) = self.inner.get() else {
+            error!("connect called before on_register!");
+            return Err(hardy_bpa::cla::Error::Disconnected);
+        };
 
         for _ in 0..5 {
             // Do a new active connect
