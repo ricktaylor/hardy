@@ -256,6 +256,11 @@ impl ServiceRegistry {
 
         info!("Registered new service: {service_id}");
 
+        // Add local service to RIB
+        self.rib
+            .add_service(service_id.clone(), service.clone())
+            .await;
+
         service
             .service
             .on_register(
@@ -267,9 +272,6 @@ impl ServiceRegistry {
                 }),
             )
             .await;
-
-        // Add local service to RIB
-        self.rib.add_service(service_id.clone(), service).await;
 
         Ok(service_id)
     }
