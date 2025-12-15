@@ -188,7 +188,7 @@ impl Msg {
                             _ = service
                                 .send(
                                     msg.destination.0,
-                                    &msg.payload,
+                                    msg.payload.into(),
                                     msg.lifetime,
                                     msg.flags.map(Into::into),
                                 )

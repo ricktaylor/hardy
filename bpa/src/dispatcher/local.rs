@@ -6,7 +6,7 @@ impl Dispatcher {
         self: &Arc<Self>,
         mut source: Eid,
         mut destination: Eid,
-        data: &[u8],
+        data: Bytes,
         lifetime: std::time::Duration,
         flags: Option<service::SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id, service::Error> {
@@ -65,7 +65,7 @@ impl Dispatcher {
             }
 
             let (bundle, data) = builder
-                .with_payload(data.into())
+                .with_payload(std::borrow::Cow::Borrowed(&data))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| service::Error::Internal(e.into()))?;
 

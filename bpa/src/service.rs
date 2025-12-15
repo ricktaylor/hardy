@@ -83,9 +83,9 @@ pub trait Sink: Send + Sync {
     async fn send(
         &self,
         destination: Eid,
-        data: &[u8],
+        data: Bytes,
         lifetime: std::time::Duration,
-        flags: Option<SendOptions>,
+        options: Option<SendOptions>,
     ) -> Result<Box<str>>;
 
     async fn cancel(&self, bundle_id: &str) -> Result<bool>;

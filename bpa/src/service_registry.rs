@@ -65,9 +65,9 @@ impl service::Sink for Sink {
     async fn send(
         &self,
         destination: Eid,
-        data: &[u8],
+        data: Bytes,
         lifetime: std::time::Duration,
-        flags: Option<service::SendOptions>,
+        options: Option<service::SendOptions>,
     ) -> service::Result<Box<str>> {
         // Sanity check
         if destination.is_null() {
@@ -85,7 +85,7 @@ impl service::Sink for Sink {
                 destination,
                 data,
                 lifetime,
-                flags,
+                options,
             )
             .await?
             .to_key()

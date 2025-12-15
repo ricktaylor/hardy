@@ -65,7 +65,7 @@ impl Service {
             .trace_expect("Service not registered!")
             .send(
                 self.destination.clone(),
-                payload.as_ref(),
+                payload.into(),
                 self.lifetime,
                 Some(self.flags.clone()),
             )

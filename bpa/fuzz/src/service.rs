@@ -44,14 +44,14 @@ impl PipeService {
     pub async fn send(
         &self,
         destination: Eid,
-        data: &[u8],
+        data: hardy_bpa::Bytes,
         lifetime: std::time::Duration,
-        flags: Option<hardy_bpa::service::SendOptions>,
+        options: Option<hardy_bpa::service::SendOptions>,
     ) -> hardy_bpa::service::Result<Box<str>> {
         self.sink
             .get()
             .unwrap()
-            .send(destination, data, lifetime, flags)
+            .send(destination, data, lifetime, options)
             .await
     }
 }
