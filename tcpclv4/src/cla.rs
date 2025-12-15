@@ -74,10 +74,8 @@ impl hardy_bpa::cla::Cla for Cla {
             );
         }
 
-        self.inner.set(inner).map_err(|_| {
-            error!("CLA on_register called twice!");
-            hardy_bpa::cla::Error::AlreadyConnected
-        })
+        // Ensure single initialization
+        self.inner.get_or_init(|| inner);
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
