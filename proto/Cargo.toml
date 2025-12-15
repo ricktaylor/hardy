@@ -8,12 +8,16 @@ path = "lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
+hardy-bpv7 = { path = "../bpv7" }
 hardy-bpa = { path = "../bpa" }
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "time"] }
+tokio-stream = "0.1.17"
 tonic = "0.14.2"
 tonic-prost = "0.14.2"
 prost = "0.14.1"
 prost-types = "0.14.1"
 time = "0.3.44"
+tracing = "0.1"
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"

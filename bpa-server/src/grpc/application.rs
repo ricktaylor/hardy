@@ -1,156 +1,28 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_proto::application::*;
-use std::{
-    collections::HashMap,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicI32, Ordering},
-    },
-};
-use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Streaming};
+use hardy_proto::{application::*, proxy::*, to_timestamp};
 
-type AckMapEntry<T> = oneshot::Sender<hardy_bpa::service::Result<T>>;
+struct ApplicationInner {
+    sink: Box<dyn hardy_bpa::service::Sink>,
+}
 
+#[derive(Default)]
 struct Application {
-    sink: OnceLock<Box<dyn hardy_bpa::service::Sink>>,
-    tx: mpsc::Sender<Result<BpaToApp, tonic::Status>>,
-    msg_id: AtomicI32,
-    acks: Mutex<HashMap<i32, AckMapEntry<()>>>,
+    inner: std::sync::OnceLock<ApplicationInner>,
+    proxy: std::sync::OnceLock<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
-    async fn run(
-        tx: mpsc::Sender<Result<BpaToApp, tonic::Status>>,
-        bpa: Arc<hardy_bpa::bpa::Bpa>,
-        mut requests: Streaming<AppToBpa>,
-    ) {
-        // Expect Register message first
-        let app = match requests.message().await {
-            Ok(Some(AppToBpa { msg_id, msg })) => match msg {
-                Some(app_to_bpa::Msg::Status(status)) => {
-                    info!("Service failed before registration started!: {status:?}");
-                    return;
-                }
-                Some(app_to_bpa::Msg::Register(msg)) => {
-                    // Register the Service and respond
-                    let app = Arc::new(Self {
-                        sink: OnceLock::default(),
-                        tx: tx.clone(),
-                        msg_id: 0.into(),
-                        acks: Mutex::new(HashMap::new()),
-                    });
-                    let result = bpa
-                        .register_service(
-                            msg.service_id.as_ref().map(|o| match o {
-                                register_application_request::ServiceId::Dtn(s) => {
-                                    hardy_bpv7::eid::Service::Dtn(s.clone().into())
-                                }
-                                register_application_request::ServiceId::Ipn(s) => {
-                                    hardy_bpv7::eid::Service::Ipn(*s)
-                                }
-                            }),
-                            app.clone(),
-                        )
-                        .await;
-                    if tx
-                        .send(
-                            result
-                                .map(|endpoint_id| BpaToApp {
-                                    msg_id,
-                                    msg: Some(bpa_to_app::Msg::Register(
-                                        RegisterApplicationResponse {
-                                            endpoint_id: endpoint_id.to_string(),
-                                        },
-                                    )),
-                                })
-                                .map_err(|e| tonic::Status::from_error(e.into())),
-                        )
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                    app
-                }
-                Some(msg) => {
-                    info!("Service sent incorrect message: {msg:?}");
-                    return;
-                }
-                None => {
-                    info!("Service sent unrecognized message");
-                    return;
-                }
-            },
-            Ok(None) => {
-                info!("Service disconnected before registration completed");
-                return;
-            }
-            Err(status) => {
-                info!("Service failed before registration completed: {status}");
-                return;
-            }
-        };
+    async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::service::Result<app_to_bpa::Msg> {
+        let proxy = self.proxy.get().ok_or_else(|| {
+            error!("call made before on_register!");
+            hardy_bpa::service::Error::Disconnected
+        })?;
 
-        // And now just pump messages
-        loop {
-            let response = match requests.message().await {
-                Ok(Some(AppToBpa { msg_id, msg })) => match msg {
-                    Some(app_to_bpa::Msg::Register(msg)) => {
-                        info!("Service sent duplicate registration message: {msg:?}");
-                        _ = tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "Already registered",
-                            )))
-                            .await;
-                        break;
-                    }
-                    Some(app_to_bpa::Msg::Send(msg)) => Some(app.send(msg).await),
-                    Some(app_to_bpa::Msg::Receive(_)) | Some(app_to_bpa::Msg::StatusNotify(_)) => {
-                        app.ack_response(msg_id, Ok(())).await
-                    }
-                    Some(app_to_bpa::Msg::Status(status)) => {
-                        app.ack_response(
-                            msg_id,
-                            Err(tonic::Status::new(status.code.into(), status.message)),
-                        )
-                        .await
-                    }
-                    None => {
-                        info!("Service sent unrecognized message");
-                        Some(Ok(bpa_to_app::Msg::Status(
-                            tonic::Status::invalid_argument("Unrecognized message").into(),
-                        )))
-                    }
-                }
-                .map(|o| {
-                    o.map(|v| BpaToApp {
-                        msg_id,
-                        msg: Some(v),
-                    })
-                }),
-                Ok(None) => {
-                    debug!("Service disconnected");
-                    break;
-                }
-                Err(status) => {
-                    info!("Service failed: {status}");
-                    break;
-                }
-            };
-
-            if let Some(response) = response
-                && tx.send(response).await.is_err()
-            {
-                break;
-            }
-        }
-
-        // Done with app
-        if let Some(sink) = app.sink.get() {
-            sink.unregister().await;
+        match proxy.call(msg).await {
+            Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
+            Ok(Some(msg)) => Ok(msg),
+            Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
         }
     }
 
@@ -176,9 +48,9 @@ impl Application {
             }
         }
 
-        self.sink
-            .get()
-            .trace_expect("Service registration not complete!")
+        self.inner
+            .wait()
+            .sink
             .send(
                 request
                     .destination
@@ -186,7 +58,7 @@ impl Application {
                     .map_err(|e: hardy_bpv7::eid::Error| {
                         tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
                     })?,
-                &request.payload,
+                request.payload,
                 std::time::Duration::from_millis(request.lifetime),
                 options,
             )
@@ -199,56 +71,20 @@ impl Application {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn ack_response(
-        &self,
-        msg_id: i32,
-        response: Result<(), tonic::Status>,
-    ) -> Option<Result<bpa_to_app::Msg, tonic::Status>> {
-        if let Some(entry) = self
-            .acks
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .remove(&msg_id)
-        {
-            _ = entry.send(response.map_err(|s| hardy_bpa::service::Error::Internal(s.into())));
-        }
-        None
+    async fn cancel(&self, request: CancelRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
+        self.inner
+            .wait()
+            .sink
+            .cancel(&request.bundle_id)
+            .await
+            .map(|cancelled| bpa_to_app::Msg::Cancel(CancelResponse { cancelled }))
+            .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn rpc(&self, msg: bpa_to_app::Msg) -> hardy_bpa::service::Result<()> {
-        let (tx, rx) = oneshot::channel();
-
-        // Generate a new msg_id, and add to the forward_ack map
-        let msg_id = {
-            let mut acks = self.acks.lock().trace_expect("Failed to lock mutex");
-            let mut msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
-            while acks.contains_key(&msg_id) {
-                msg_id = self.msg_id.fetch_add(1, Ordering::SeqCst);
-            }
-            acks.insert(msg_id, tx);
-            msg_id
-        };
-
-        if self
-            .tx
-            .send(Ok(BpaToApp {
-                msg_id,
-                msg: Some(msg),
-            }))
-            .await
-            .is_err()
-        {
-            // Remove ack waiter
-            self.acks
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .remove(&msg_id);
-            return Err(hardy_bpa::service::Error::Disconnected);
+    async fn unregister(&self) {
+        if let Some(inner) = self.inner.get() {
+            inner.sink.unregister().await
         }
-
-        rx.await
-            .map_err(|_| hardy_bpa::service::Error::Disconnected)?
-            .map_err(|s| hardy_bpa::service::Error::Internal(s.into()))
     }
 }
 
@@ -259,25 +95,56 @@ impl hardy_bpa::service::Service for Application {
         _source: &hardy_bpv7::eid::Eid,
         sink: Box<dyn hardy_bpa::service::Sink>,
     ) {
-        if self.sink.set(sink).is_err() {
-            error!("Service on_register called twice!");
-            panic!("Service on_register called twice!");
-        }
+        // Ensure single initialization
+        self.inner.get_or_init(|| ApplicationInner { sink });
     }
 
     async fn on_unregister(&self) {
-        // We do nothing
+        match self
+            .call(bpa_to_app::Msg::Unregister(
+                UnregisterApplicationResponse {},
+            ))
+            .await
+        {
+            Ok(app_to_bpa::Msg::Unregister(_)) => {}
+            Ok(msg) => {
+                warn!("Unexpected response: {msg:?}");
+            }
+            Err(e) => {
+                error!("Failed to notify service of unregistration: {e}");
+            }
+        }
+
+        // Close the proxy, nothing else is going to be processed
+        if let Some(proxy) = self.proxy.get() {
+            proxy.close().await;
+        }
     }
 
-    async fn on_receive(&self, bundle: hardy_bpa::service::Bundle) {
-        self.rpc(bpa_to_app::Msg::Receive(ReceiveBundleRequest {
-            bundle_id: bundle.source.to_string(),
-            ack_requested: bundle.ack_requested,
-            expiry: Some(hardy_proto::to_timestamp(bundle.expiry)),
-            payload: bundle.payload,
-        }))
-        .await
-        .unwrap_or_else(|e| info!("Service refused notification: {e}"))
+    async fn on_receive(
+        &self,
+        source: hardy_bpv7::eid::Eid,
+        expiry: time::OffsetDateTime,
+        ack_requested: bool,
+        payload: hardy_bpa::Bytes,
+    ) {
+        match self
+            .call(bpa_to_app::Msg::Receive(ReceiveBundleRequest {
+                bundle_id: source.to_string(),
+                ack_requested,
+                expiry: Some(hardy_proto::to_timestamp(expiry)),
+                payload,
+            }))
+            .await
+        {
+            Ok(app_to_bpa::Msg::Receive(_)) => {}
+            Ok(msg) => {
+                warn!("Unexpected response: {msg:?}");
+            }
+            Err(e) => {
+                warn!("Service refused notification: {e}");
+            }
+        }
     }
 
     async fn on_status_notify(
@@ -286,65 +153,150 @@ impl hardy_bpa::service::Service for Application {
         from: &str,
         kind: hardy_bpa::service::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
+        timestamp: Option<time::OffsetDateTime>,
     ) {
-        self.rpc(bpa_to_app::Msg::StatusNotify(StatusNotifyRequest {
-            bundle_id: bundle_id.into(),
-            from: from.into(),
-            kind: match kind {
-                hardy_bpa::service::StatusNotify::Received => {
-                    status_notify_request::StatusKind::Received
+        match self
+            .call(bpa_to_app::Msg::StatusNotify(StatusNotifyRequest {
+                bundle_id: bundle_id.into(),
+                from: from.into(),
+                kind: match kind {
+                    hardy_bpa::service::StatusNotify::Received => {
+                        status_notify_request::StatusKind::Received
+                    }
+                    hardy_bpa::service::StatusNotify::Forwarded => {
+                        status_notify_request::StatusKind::Forwarded
+                    }
+                    hardy_bpa::service::StatusNotify::Delivered => {
+                        status_notify_request::StatusKind::Delivered
+                    }
+                    hardy_bpa::service::StatusNotify::Deleted => {
+                        status_notify_request::StatusKind::Deleted
+                    }
                 }
-                hardy_bpa::service::StatusNotify::Forwarded => {
-                    status_notify_request::StatusKind::Forwarded
-                }
-                hardy_bpa::service::StatusNotify::Delivered => {
-                    status_notify_request::StatusKind::Delivered
-                }
-                hardy_bpa::service::StatusNotify::Deleted => {
-                    status_notify_request::StatusKind::Deleted
-                }
-            } as i32,
-            reason: reason.into(),
-            timestamp: timestamp.map(|t| prost_types::Timestamp {
-                seconds: (t.millisecs() / 1000) as i64,
-                nanos: (t.millisecs() % 1000 * 1_000_000) as i32,
-            }),
-        }))
-        .await
-        .unwrap_or_else(|e| info!("Service refused notification: {e}"))
+                .into(),
+                reason: reason.into(),
+                timestamp: timestamp.map(to_timestamp),
+            }))
+            .await
+        {
+            Ok(app_to_bpa::Msg::StatusNotify(_)) => {}
+            Ok(msg) => {
+                warn!("Unexpected response: {msg:?}");
+            }
+            Err(e) => {
+                warn!("Service refused notification: {e}");
+            }
+        }
+    }
+}
+
+struct Handler {
+    app: Arc<Application>,
+}
+
+#[async_trait]
+impl ProxyHandler for Handler {
+    type SMsg = bpa_to_app::Msg;
+    type RMsg = app_to_bpa::Msg;
+
+    async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
+        let msg = match msg {
+            app_to_bpa::Msg::Send(msg) => self.app.send(msg).await,
+            app_to_bpa::Msg::Cancel(msg) => self.app.cancel(msg).await,
+            app_to_bpa::Msg::Unregister(_) => {
+                self.app.unregister().await;
+                Ok(bpa_to_app::Msg::Unregister(
+                    UnregisterApplicationResponse {},
+                ))
+            }
+            _ => {
+                warn!("Ignoring unsolicited response: {msg:?}");
+                return None;
+            }
+        };
+
+        match msg {
+            Ok(msg) => Some(msg),
+            Err(e) => Some(bpa_to_app::Msg::Status(e.into())),
+        }
+    }
+
+    async fn on_close(&self) {
+        // Do nothing
     }
 }
 
 pub struct Service {
     bpa: Arc<hardy_bpa::bpa::Bpa>,
+    channel_size: usize,
 }
 
-impl Service {
-    fn new(bpa: &Arc<hardy_bpa::bpa::Bpa>) -> Self {
-        Self { bpa: bpa.clone() }
-    }
-}
-
-#[tonic::async_trait]
+#[async_trait]
 impl application_server::Application for Service {
-    type RegisterStream = ReceiverStream<Result<BpaToApp, tonic::Status>>;
+    type RegisterStream = tokio_stream::wrappers::ReceiverStream<Result<BpaToApp, tonic::Status>>;
 
     async fn register(
         &self,
-        request: Request<tonic::Streaming<AppToBpa>>,
-    ) -> Result<Response<Self::RegisterStream>, tonic::Status> {
-        let (tx, rx) = mpsc::channel(32);
+        request: tonic::Request<tonic::Streaming<AppToBpa>>,
+    ) -> Result<tonic::Response<Self::RegisterStream>, tonic::Status> {
+        let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
+        let mut channel_receiver = request.into_inner();
 
-        // Spawn a task to handle I/O
-        tokio::spawn(Application::run(tx, self.bpa.clone(), request.into_inner()));
+        let app = Arc::new(Application::default());
+        RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
+            match msg {
+                app_to_bpa::Msg::Register(request) => {
+                    // Register the Service and respond
+                    let endpoint_id = self
+                        .bpa
+                        .register_service(
+                            request
+                                .service_id
+                                .as_ref()
+                                .map(|service_id| match service_id {
+                                    register_application_request::ServiceId::Dtn(s) => {
+                                        hardy_bpv7::eid::Service::Dtn(s.clone().into())
+                                    }
+                                    register_application_request::ServiceId::Ipn(s) => {
+                                        hardy_bpv7::eid::Service::Ipn(*s)
+                                    }
+                                }),
+                            app.clone(),
+                        )
+                        .await
+                        .map(|endpoint_id| endpoint_id.to_string())
+                        .map_err(|e| tonic::Status::from_error(e.into()))?;
 
-        Ok(Response::new(ReceiverStream::new(rx)))
+                    Ok(bpa_to_app::Msg::Register(RegisterApplicationResponse {
+                        endpoint_id,
+                    }))
+                }
+                _ => {
+                    info!("Application sent incorrect message: {msg:?}");
+                    Err(tonic::Status::internal(format!(
+                        "Unexpected response: {msg:?}"
+                    )))
+                }
+            }
+        })
+        .await?;
+
+        // Start the proxy
+        let handler = Box::new(Handler { app: app.clone() });
+        app.proxy
+            .get_or_init(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
     }
 }
 
 pub fn new_service(
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
 ) -> application_server::ApplicationServer<Service> {
-    application_server::ApplicationServer::new(Service::new(bpa))
+    application_server::ApplicationServer::new(Service {
+        bpa: bpa.clone(),
+        channel_size: 16,
+    })
 }
