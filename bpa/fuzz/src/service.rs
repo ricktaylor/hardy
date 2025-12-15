@@ -80,7 +80,7 @@ impl hardy_bpa::service::Service for PipeService {
         _from: &str,
         _kind: hardy_bpa::service::StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
-        _timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
+        _timestamp: Option<time::OffsetDateTime>,
     ) {
         // Do nothing
     }

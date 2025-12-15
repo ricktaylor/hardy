@@ -29,6 +29,17 @@ impl DtnTime {
     pub fn millisecs(&self) -> u64 {
         self.0
     }
+
+    pub fn saturating_from(t: time::OffsetDateTime) -> Self {
+        let millisecs = (t - DTN_EPOCH).whole_milliseconds();
+        if millisecs < 0 {
+            Self::new(0)
+        } else if millisecs > u64::MAX as i128 {
+            Self::new(u64::MAX)
+        } else {
+            Self(millisecs as u64)
+        }
+    }
 }
 
 impl hardy_cbor::encode::ToCbor for DtnTime {

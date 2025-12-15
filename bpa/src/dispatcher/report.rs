@@ -1,7 +1,6 @@
 use super::*;
-use hardy_bpv7::{
-    dtn_time::DtnTime,
-    status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion},
+use hardy_bpv7::status_report::{
+    AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion,
 };
 
 impl Dispatcher {
@@ -23,7 +22,7 @@ impl Dispatcher {
                         bundle_id: bundle.bundle.id.clone(),
                         received: Some(StatusAssertion(
                             if bundle.bundle.flags.report_status_time {
-                                bundle.metadata.received_at.try_into().ok()
+                                Some(bundle.metadata.received_at)
                             } else {
                                 None
                             },
@@ -55,7 +54,11 @@ impl Dispatcher {
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
                         forwarded: Some(StatusAssertion(
-                            bundle.bundle.flags.report_status_time.then(DtnTime::now),
+                            bundle
+                                .bundle
+                                .flags
+                                .report_status_time
+                                .then(time::OffsetDateTime::now_utc),
                         )),
                         ..Default::default()
                     },
@@ -81,7 +84,11 @@ impl Dispatcher {
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
                         delivered: Some(StatusAssertion(
-                            bundle.bundle.flags.report_status_time.then(DtnTime::now),
+                            bundle
+                                .bundle
+                                .flags
+                                .report_status_time
+                                .then(time::OffsetDateTime::now_utc),
                         )),
                         ..Default::default()
                     },
@@ -109,7 +116,11 @@ impl Dispatcher {
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
                         deleted: Some(StatusAssertion(
-                            bundle.bundle.flags.report_status_time.then(DtnTime::now),
+                            bundle
+                                .bundle
+                                .flags
+                                .report_status_time
+                                .then(time::OffsetDateTime::now_utc),
                         )),
                         reason,
                         ..Default::default()

@@ -163,16 +163,18 @@ impl hardy_cbor::decode::FromCbor for ReasonCode {
 /// Represents a status assertion, which may include a timestamp.
 ///
 /// A `StatusAssertion` is used to indicate that a particular event (e.g., reception, forwarding)
-/// has occurred. It can optionally include the `DtnTime` at which the event happened.
+/// has occurred. It can optionally include the time at which the event happened.
 #[derive(Debug, Clone)]
-pub struct StatusAssertion(pub Option<dtn_time::DtnTime>);
+pub struct StatusAssertion(pub Option<time::OffsetDateTime>);
 
 fn emit_status_assertion(a: &mut hardy_cbor::encode::Array, sa: &Option<StatusAssertion>) {
     // This is a horrible format!
     match sa {
         None => a.emit(&[false]),
         Some(StatusAssertion(None)) => a.emit(&[true]),
-        Some(StatusAssertion(Some(timestamp))) => a.emit(&(true, timestamp)),
+        Some(StatusAssertion(Some(timestamp))) => {
+            a.emit(&(true, dtn_time::DtnTime::saturating_from(*timestamp)))
+        }
     }
 }
 
@@ -205,7 +207,7 @@ fn parse_status_assertion(
                 if timestamp.millisecs() == 0 {
                     Ok::<_, Error>(Some(StatusAssertion(None)))
                 } else {
-                    Ok(Some(StatusAssertion(Some(timestamp))))
+                    Ok(Some(StatusAssertion(Some(timestamp.into()))))
                 }
             } else {
                 Ok(Some(StatusAssertion(None)))

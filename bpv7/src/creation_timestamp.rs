@@ -40,8 +40,8 @@ impl CreationTimestamp {
     pub fn now() -> Self {
         let timestamp = time::OffsetDateTime::now_utc();
         Self {
-            creation_time: Some(timestamp.try_into().unwrap()),
             sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
+            creation_time: Some(dtn_time::DtnTime::saturating_from(timestamp)),
         }
     }
 

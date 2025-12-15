@@ -61,7 +61,7 @@ pub trait Service: Send + Sync {
         from: &str,
         kind: StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
+        timestamp: Option<time::OffsetDateTime>,
     );
 }
 

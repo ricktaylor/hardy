@@ -183,7 +183,7 @@ impl hardy_bpa::service::Service for Service {
         from: &str,
         kind: hardy_bpa::service::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<hardy_bpv7::dtn_time::DtnTime>,
+        timestamp: Option<time::OffsetDateTime>,
     ) {
         if let Some(seqno) = self
             .sent_bundles
@@ -226,7 +226,6 @@ impl hardy_bpa::service::Service for Service {
             }
 
             if let Some(timestamp) = timestamp {
-                let timestamp: time::OffsetDateTime = timestamp.into();
                 output = format!("{output} at {timestamp}");
             }
 
