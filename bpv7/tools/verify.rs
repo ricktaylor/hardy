@@ -7,7 +7,7 @@ pub struct Command {
     key_args: keys::KeySetLoaderArgs,
 
     /// The number of the block to verify
-    #[arg(short, long, default_value = "1")]
+    #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]
     block: u64,
 
     /// The bundle file in which to verify a block, '-' to use stdin.
