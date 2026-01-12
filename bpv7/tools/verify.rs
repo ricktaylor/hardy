@@ -24,8 +24,15 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
             .bundle;
 
-        bundle
+        match bundle
             .verify_block(self.block, &data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to verify block: {e}"))
+            .map_err(|e| anyhow::anyhow!("Failed to verify block: {e}"))?
+        {
+            true => Ok(()),
+            false => Err(anyhow::anyhow!(
+                "Block {} is not protected by a BIB",
+                self.block
+            )),
+        }
     }
 }

@@ -576,12 +576,13 @@ impl Bundle {
     /// This method handles the complexity of block-level security. If the target
     /// block is encrypted with a Block Integrity Block (BIB), this method
     /// will attempt to verify it using the provided `key_f` keystore.
+    /// Returns a boolean indicating if the block had a BIB
     pub fn verify_block(
         &self,
         block_number: u64,
         source_data: &[u8],
         key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let target_block = self
             .blocks
             .get(&block_number)
@@ -589,7 +590,7 @@ impl Bundle {
 
         // Check for BIB
         let Some(bib_block_number) = &target_block.bib else {
-            return Ok(());
+            return Ok(false);
         };
 
         let bib_block = self.blocks.get(bib_block_number).ok_or(Error::Altered)?;
@@ -636,6 +637,7 @@ impl Bundle {
                 },
             )
             .map_err(Error::InvalidBPSec)
+            .map(|_| true)
     }
 }
 
