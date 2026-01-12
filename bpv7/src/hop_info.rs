@@ -14,7 +14,6 @@ use error::CaptureFieldErr;
 /// while the hop count is the number of hops it has already traversed.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct HopInfo {
     /// The maximum number of hops the bundle is allowed to traverse.
     pub limit: u64,

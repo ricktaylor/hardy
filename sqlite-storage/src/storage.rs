@@ -76,7 +76,6 @@ impl ConnectionPool {
 
 pub struct Storage {
     pool: Arc<ConnectionPool>,
-    bincode_config: bincode::config::Configuration,
 }
 
 impl Storage {
@@ -134,7 +133,6 @@ impl Storage {
 
         Self {
             pool: Arc::new(ConnectionPool::new(path, connection)),
-            bincode_config: bincode::config::standard(),
         }
     }
 
@@ -165,20 +163,24 @@ impl Storage {
 
 fn from_status(
     status: &hardy_bpa::metadata::BundleStatus,
-) -> (i64, Option<u64>, Option<u64>, Option<String>) {
+) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
         hardy_bpa::metadata::BundleStatus::Dispatching => (0, None, None, None),
         hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None, None),
         hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer as u64), queue.map(|q| q as u64), None)
+            (2, Some(*peer as i64), queue.map(|q| q as i64), None)
         }
         hardy_bpa::metadata::BundleStatus::LocalPending { service } => {
-            (3, Some(*service as u64), None, None)
+            (3, Some(*service as i64), None, None)
         }
         hardy_bpa::metadata::BundleStatus::AduFragment { source, timestamp } => (
             4,
-            Some(timestamp.creation_time().map_or(0, |t| t.millisecs())),
-            Some(timestamp.sequence_number()),
+            Some(
+                timestamp
+                    .creation_time()
+                    .map_or(0, |t| t.millisecs() as i64),
+            ),
+            Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
         ),
     }
@@ -191,7 +193,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
-        let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
+        let id = serde_json::to_vec(bundle_id)?;
         let Some(bundle) = self
             .read(move |conn| {
                 conn
@@ -206,8 +208,8 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        bincode::decode_from_slice(&bundle, self.bincode_config)
-            .map(|(b, _)| Some(b))
+        serde_json::from_slice(&bundle)
+            .map(Some)
             .map_err(Into::into)
     }
 
@@ -217,8 +219,8 @@ impl storage::MetadataStorage for Storage {
         let received_at = bundle.metadata.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
-        let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
+        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let bundle = serde_json::to_vec(bundle)?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
@@ -237,8 +239,8 @@ impl storage::MetadataStorage for Storage {
         let received_at = bundle.metadata.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = bincode::encode_to_vec(&bundle.bundle.id, self.bincode_config)?;
-        let bundle = bincode::encode_to_vec(bundle, self.bincode_config)?;
+        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let bundle = serde_json::to_vec(bundle)?;
         if self
             .write(move |conn| {
                 // Update bundle
@@ -258,7 +260,7 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
+        let id = serde_json::to_vec(bundle_id)?;
         if self
             .write(move |conn| {
                 conn.prepare_cached(
@@ -293,7 +295,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
-        let id = bincode::encode_to_vec(bundle_id, self.bincode_config)?;
+        let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, id)) = self
             .read(move |conn| {
                 conn.prepare_cached(
@@ -329,11 +331,8 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        match bincode::decode_from_slice::<hardy_bpa::bundle::Bundle, _>(
-            &bundle,
-            self.bincode_config,
-        ) {
-            Ok((bundle, _)) => Ok(Some(bundle.metadata)),
+        match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+            Ok(bundle) => Ok(Some(bundle.metadata)),
             Err(e) => {
                 warn!("Garbage bundle found in metadata: {e}");
                 self.tombstone(bundle_id).await.map(|_| None)
@@ -387,8 +386,8 @@ impl storage::MetadataStorage for Storage {
                 .await?;
 
             for bundle in bundles {
-                match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                    Ok((bundle, _)) => {
+                match serde_json::from_slice(&bundle) {
+                    Ok(bundle) => {
                         if tx.send_async(bundle).await.is_err() {
                             // The other end is shutting down - get out
                             break;
@@ -411,7 +410,7 @@ impl storage::MetadataStorage for Storage {
             from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending {
                 peer,
                 queue: Some(0)
-            }) == (2, Some(peer as u64), Some(0), None),
+            }) == (2, Some(peer as i64), Some(0), None),
             "Status code mismatch"
         );
 
@@ -445,15 +444,15 @@ impl storage::MetadataStorage for Storage {
                         ORDER BY expiry ASC
                         LIMIT ?1",
                 )?
-                .query_map((limit,), |row| row.get::<_, Vec<u8>>(0))?
+                .query_map((limit as isize,), |row| row.get::<_, Vec<u8>>(0))?
                 .collect::<Result<Vec<Vec<u8>>, _>>()
                 .map_err(Into::into)
             })
             .await?;
 
         for bundle in bundles {
-            match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                Ok((bundle, _)) => {
+            match serde_json::from_slice(&bundle) {
+                Ok(bundle) => {
                     if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
@@ -524,8 +523,8 @@ impl storage::MetadataStorage for Storage {
             }
 
             for bundle in bundles {
-                match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                    Ok((bundle, _)) => {
+                match serde_json::from_slice(&bundle) {
+                    Ok(bundle) => {
                         if tx.send_async(bundle).await.is_err() {
                             // The other end is shutting down - get out
                             return Ok(());
@@ -561,8 +560,8 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                Ok((bundle, _)) => {
+            match serde_json::from_slice(&bundle) {
+                Ok(bundle) => {
                     if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
@@ -592,7 +591,7 @@ impl storage::MetadataStorage for Storage {
                         ORDER BY received_at ASC
                         LIMIT ?5",
                 )?
-                .query_map((status, status_param1, status_param2,status_param3, limit), |row| {
+                .query_map((status, status_param1, status_param2,status_param3, limit as isize), |row| {
                     row.get::<_, Vec<u8>>(0)
                 })?
                 .collect::<Result<Vec<Vec<u8>>, _>>()
@@ -601,8 +600,8 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match bincode::decode_from_slice(&bundle, self.bincode_config) {
-                Ok((bundle, _)) => {
+            match serde_json::from_slice(&bundle) {
+                Ok(bundle) => {
                     if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;

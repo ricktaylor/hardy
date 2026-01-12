@@ -17,7 +17,6 @@ mod cbor_tests;
 mod roundtrip_tests;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct IpnNodeId {
     pub allocator_id: u32,
     pub node_number: u32,
@@ -45,7 +44,6 @@ impl core::fmt::Display for IpnNodeId {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct DtnNodeId {
     pub node_name: Box<str>,
 }
@@ -131,7 +129,6 @@ pub enum Service {
     derive(serde::Serialize, serde::Deserialize),
     serde(into = "String", try_from = "Cow<str>")
 )]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum Eid {
     #[default]
     Null,

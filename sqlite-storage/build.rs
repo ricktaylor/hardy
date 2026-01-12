@@ -23,7 +23,10 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
             && filetype.is_file()
             && let Some(c) = regex.captures(&entry.file_name().to_string_lossy())
         {
-            let seq: u64 = c.get(1).unwrap().as_str().parse().unwrap();
+            let seq: usize = c.get(1).unwrap().as_str().parse().unwrap();
+            if seq > isize::MAX as usize {
+                panic!("Too many migrations!");
+            }
             m.push((seq, entry.path()));
         }
     }
@@ -38,7 +41,7 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         in_buf.read_to_end(&mut data)?;
         write!(
             out,
-            "({seq}u64,r###\"{}\"###,\"{}\",",
+            "({seq}isize,r###\"{}\"###,\"{}\",",
             file_path.to_string_lossy(),
             BASE64_STANDARD_NO_PAD.encode(sha1::Sha1::digest(&data))
         )?;

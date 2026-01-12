@@ -38,7 +38,7 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
 
     // Get current max sequence number
     let mut next = 0;
-    if let Some(Some::<i64>(current_max)) = trans
+    if let Some(Some::<isize>(current_max)) = trans
         .query_row(r"SELECT max(seq_no) FROM schema_versions", [], |row| {
             row.get(0)
         })
@@ -58,7 +58,7 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
             .prepare(r"INSERT INTO temp.schema_check (seq_no,file_name,hash) VALUES (?1,?2,?3)")?;
         for (i, (seq, file_name, hash, _)) in migrations.iter().enumerate() {
             next = i + 1;
-            if *seq <= current_max as u64 {
+            if *seq <= current_max {
                 query.execute((seq, file_name, hash))?;
             } else {
                 break;

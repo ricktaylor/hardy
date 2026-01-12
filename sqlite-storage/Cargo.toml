@@ -9,23 +9,23 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-serde = ["dep:serde","hardy-bpa/serde","hardy-bpv7/serde"]
 tracing = ["hardy-bpa/tracing"]
 
 [dependencies]
-hardy-bpa = { path = "../bpa", features = ["bincode"] }
-hardy-bpv7 = { path = "../bpv7", features = ["std", "bincode"] }
+hardy-bpa = { path = "../bpa", features = ["serde"] }
+hardy-bpv7 = { path = "../bpv7", features = ["std","serde"] }
 hardy-cbor = { path = "../cbor" }
-rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
+rusqlite = { version = "0.38.0", features = ["bundled", "time"] }
 tokio = "1.49.0"
 thiserror = "2.0.17"
-bincode = "2.0.1"
 directories = "6.0.0"
 tracing = "0.1.44"
 base64 = "0.22.1"
 time = "0.3.44"
 trace-err = "0.1.5"
 flume = "0.12.0"
+serde = { version = "1.0.228", default-features = false }
+serde_json = "1.0.149"
 
 [build-dependencies]
 regex = "1.12.2"

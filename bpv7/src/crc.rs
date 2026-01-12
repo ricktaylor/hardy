@@ -43,7 +43,6 @@ pub enum Error {
 #[allow(non_camel_case_types)]
 #[derive(Default, Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum CrcType {
     /// No CRC is used.
     #[default]

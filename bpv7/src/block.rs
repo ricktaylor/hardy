@@ -14,34 +14,36 @@ use error::CaptureFieldErr;
 /// process the block, especially in cases of failure or fragmentation.
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Flags {
     /// If set, the block must be replicated in every fragment of the bundle.
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
     )]
     pub must_replicate: bool,
     /// If set, a status report should be generated if block processing fails.
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
     )]
     pub report_on_failure: bool,
     /// If set, the entire bundle should be deleted if block processing fails.
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
     )]
     pub delete_bundle_on_failure: bool,
     /// If set, this block should be deleted if its processing fails.
     #[cfg_attr(
         feature = "serde",
-        serde(skip_serializing_if = "<&bool as core::ops::Not>::not")
+        serde(default, skip_serializing_if = "<&bool as core::ops::Not>::not")
     )]
     pub delete_block_on_failure: bool,
 
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     /// A bitmask of any unrecognized flags encountered during parsing.
     pub unrecognised: Option<u64>,
 }
@@ -114,7 +116,6 @@ impl hardy_cbor::decode::FromCbor for Flags {
 /// The type of a BPv7 block, as defined in RFC 9171 Section 4.2.1.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub enum Type {
     /// Primary Block (type code 0).
     Primary,
@@ -218,7 +219,6 @@ impl AsRef<[u8]> for Payload<'_> {
 /// within the full bundle's byte representation.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "bincode", derive(bincode::Encode, bincode::Decode))]
 pub struct Block {
     /// The type of the block.
     #[cfg_attr(feature = "serde", serde(rename = "type"))]
@@ -228,10 +228,16 @@ pub struct Block {
     /// The type of CRC used for this block's integrity check.
     pub crc_type: crc::CrcType,
     /// The block number of the Block Integrity Block (BIB) that protects this block, if any.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub bib: Option<u64>,
     /// The block number of the Block Confidentiality Block (BCB) that protects this block, if any.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub bcb: Option<u64>,
     /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
     pub extent: Range<usize>,
