@@ -16,7 +16,7 @@ tracing = ["hardy-bpa/tracing"]
 hardy-bpa = { path = "../bpa", features = ["bincode"] }
 hardy-bpv7 = { path = "../bpv7", features = ["std", "bincode"] }
 hardy-cbor = { path = "../cbor" }
-rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
+rusqlite = { version = "0.38.0", features = ["bundled", "time"] }
 tokio = "1.49.0"
 thiserror = "2.0.17"
 bincode = "2.0.1"
