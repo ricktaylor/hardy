@@ -25,8 +25,7 @@ tracing = "0.1.44"
 base64 = "0.22.1"
 time = "0.3.44"
 trace-err = "0.1.5"
-flume = "0.11.1"
-serde = { version = "1.0.228", features = ["derive"], optional = true }
+flume = "0.12.0"
 
 [build-dependencies]
 regex = "1.12.2"
