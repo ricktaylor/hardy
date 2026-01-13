@@ -208,10 +208,7 @@ impl<'a> BlockTemplate<'a> {
                 block_type,
                 flags,
                 crc_type,
-                extent: 0..0,
-                data: 0..0,
-                bib: None,
-                bcb: None,
+                ..Default::default()
             },
             data: None,
         }

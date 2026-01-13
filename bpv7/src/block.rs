@@ -245,6 +245,20 @@ pub struct Block {
     pub data: Range<usize>,
 }
 
+impl Default for Block {
+    fn default() -> Self {
+        Self {
+            block_type: Type::Payload,
+            flags: Flags::default(),
+            crc_type: crc::CrcType::None,
+            bib: None,
+            bcb: None,
+            extent: 0..0,
+            data: 0..0,
+        }
+    }
+}
+
 impl Block {
     /// Calculates the absolute range of the block's payload within the original bundle byte array.
     pub fn payload_range(&self) -> Range<usize> {
@@ -406,10 +420,8 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                         block_type,
                         flags,
                         crc_type,
-                        extent: 0..0,
                         data: payload_range,
-                        bib: None,
-                        bcb: None,
+                        ..Default::default()
                     },
                     payload,
                 },
