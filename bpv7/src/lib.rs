@@ -73,10 +73,10 @@ use alloc::{
 };
 
 #[cfg(feature = "std")]
-use std::collections::{HashMap, HashSet, hash_map};
+use std::collections::{HashMap, HashSet};
 
 #[cfg(not(feature = "std"))]
-use hashbrown::{HashMap, HashSet, hash_map};
+use hashbrown::{HashMap, HashSet};
 
 pub mod block;
 pub mod bpsec;

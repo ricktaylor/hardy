@@ -76,17 +76,15 @@ impl<'a> Signer<'a> {
             return Err(Error::EncryptedTarget(block_number));
         }
 
-        match self.templates.entry(block_number) {
-            hash_map::Entry::Vacant(e) => {
-                e.insert(BlockTemplate {
-                    context,
-                    source,
-                    key,
-                });
-                Ok(self)
-            }
-            hash_map::Entry::Occupied(_) => Err(Error::AlreadySigned(block_number)),
-        }
+        self.templates.insert(
+            block_number,
+            BlockTemplate {
+                context,
+                source,
+                key,
+            },
+        );
+        Ok(self)
     }
 
     /// Create an `Encryptor` to encrypt blocks in the bundle.
@@ -117,14 +115,14 @@ impl<'a> Signer<'a> {
         let mut editor = editor::Editor::new(self.original, self.source_data);
 
         // Now build BIB blocks
-        for ((bpsec_source, context), contexts) in blocks {
+        for ((bpsec_source, context), targets) in blocks {
             /* RFC 9173, Section 3.8.1 states:
              * Prior to the generation of the IPPT, if a Cyclic Redundancy Check
              * (CRC) value is present for the target block of the BIB, then that
              * CRC value MUST be removed from the target block.  This involves
              * both removing the CRC value from the target block and setting the
              * CRC type field of the target block to "no CRC is present." */
-            for (target, _) in &contexts {
+            for (target, _) in &targets {
                 let target_block = self
                     .original
                     .blocks
@@ -132,8 +130,7 @@ impl<'a> Signer<'a> {
                     .expect("Missing target block");
                 if *target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(*target)
-                        .expect("Missing target block")
+                        .update_block(*target)?
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
                 }
@@ -141,8 +138,7 @@ impl<'a> Signer<'a> {
 
             // Reserve a block number for the BIB block
             let b = editor
-                .push_block(block::Type::BlockIntegrity)
-                .expect("Failed to reserve block")
+                .push_block(block::Type::BlockIntegrity)?
                 .with_crc_type(crc::CrcType::None);
 
             let source = b.block_number();
@@ -155,7 +151,7 @@ impl<'a> Signer<'a> {
                 operations: HashMap::new(),
             };
 
-            for (target, key) in contexts {
+            for (target, key) in targets {
                 operation_set.operations.insert(
                     target,
                     build_bib_data(
@@ -176,8 +172,7 @@ impl<'a> Signer<'a> {
             // Rewrite with the real data
             editor = editor_bs
                 .editor
-                .update_block(source)
-                .expect("Failed to update block")
+                .update_block(source)?
                 .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
                 .rebuild();
         }

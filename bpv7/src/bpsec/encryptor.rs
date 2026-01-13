@@ -9,6 +9,9 @@ pub enum Error {
     #[error("Invalid block target {0}, BCB block")]
     InvalidTarget(u64),
 
+    #[error("Block target {0} is already the target of a BCB")]
+    AlreadyEncrypted(u64),
+
     #[error(transparent)]
     Editor(#[from] editor::Error),
 
@@ -56,12 +59,55 @@ impl<'a> Encryptor<'a> {
             return Err(Error::InvalidTarget(block_number));
         }
 
-        let Some(block) = self.original.blocks.get(&block_number) else {
-            return Err(Error::NoSuchBlock(block_number));
-        };
+        let block = self
+            .original
+            .blocks
+            .get(&block_number)
+            .ok_or(Error::NoSuchBlock(block_number))?;
+
+        if block.bcb.is_some() {
+            return Err(Error::AlreadyEncrypted(block_number));
+        }
 
         if let block::Type::BlockSecurity = block.block_type {
             return Err(Error::InvalidTarget(block_number));
+        }
+
+        /* RFC 9172 Section 3.9 states that BCBs targetting blocks with BIBs MUST also target the BIB
+         * We take the 'all-or-nothing' approach and encrypt all BIB targets, rather than splitting the BIB
+         * because splitting requires integrity keys */
+        if let Some(bib_block) = block.bib {
+            let bib = self.original.blocks.get(&bib_block).ok_or(Error::Editor(
+                editor::Error::Builder(builder::Error::InternalError(crate::Error::Altered)),
+            ))?;
+
+            let opset = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(
+                bib.payload(self.source_data)
+                    .ok_or(Error::Editor(editor::Error::Builder(
+                        builder::Error::InternalError(crate::Error::Altered),
+                    )))?,
+            )
+            .map_err(|e| {
+                Error::Editor(editor::Error::Builder(builder::Error::InternalError(
+                    crate::Error::InvalidField {
+                        field: "BIB Abstract Syntax Block",
+                        source: e.into(),
+                    },
+                )))
+            })?;
+
+            for target in opset.operations.keys() {
+                if *target != block_number {
+                    self.templates.insert(
+                        *target,
+                        BlockTemplate {
+                            context: context.clone(),
+                            source: source.clone(),
+                            key: key.clone(),
+                        },
+                    );
+                }
+            }
         }
 
         self.templates.insert(
@@ -84,28 +130,23 @@ impl<'a> Encryptor<'a> {
         }
 
         // Reorder and accumulate BCB operations
-        let mut blocks = HashMap::new();
-        for (block_number, template) in &self.templates {
-            match blocks.entry((template.source.clone(), template.context.clone())) {
-                hash_map::Entry::Vacant(e) => {
-                    e.insert(vec![(block_number, &template.key)]);
-                }
-                hash_map::Entry::Occupied(mut e) => {
-                    e.get_mut().push((block_number, &template.key));
-                }
-            }
+        let mut bcbs = HashMap::<(eid::Eid, Context), Vec<(u64, key::Key)>>::new();
+        for (block_number, template) in self.templates {
+            bcbs.entry((template.source.clone(), template.context.clone()))
+                .or_default()
+                .push((block_number, template.key));
         }
 
         let mut editor = editor::Editor::new(self.original, self.source_data);
 
         // Now build BCB blocks
-        for ((bpsec_source, context), contexts) in blocks {
+        for ((bpsec_source, context), targets) in bcbs {
             /* RFC 9173, Section 4.8.1 states:
              * Prior to encryption, if a CRC value is present for the target block,
              * then that CRC value MUST be removed.  This requires removing the CRC
              * field from the target block and setting the CRC type field of the
              * target block to "no CRC is present." */
-            for (target, _) in &contexts {
+            for (target, _) in &targets {
                 let target_block = self
                     .original
                     .blocks
@@ -113,8 +154,7 @@ impl<'a> Encryptor<'a> {
                     .expect("Missing target block");
                 if !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(**target)
-                        .expect("Missing target block")
+                        .update_block(*target)?
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
                 }
@@ -122,8 +162,7 @@ impl<'a> Encryptor<'a> {
 
             // Reserve a block number for the BCB block
             let b = editor
-                .push_block(block::Type::BlockSecurity)
-                .expect("Failed to reserve block")
+                .push_block(block::Type::BlockSecurity)?
                 .with_crc_type(crc::CrcType::None)
                 .with_flags(block::Flags {
                     must_replicate: true,
@@ -140,36 +179,34 @@ impl<'a> Encryptor<'a> {
                 operations: HashMap::new(),
             };
 
-            for (target, key) in contexts {
+            for (target, key) in targets {
                 let (op, data) = build_bcb_data(
                     context.clone(),
                     bcb::OperationArgs {
                         bpsec_source: &bpsec_source,
-                        target: *target,
-                        target_block: editor_bs.block(*target).expect("Missing target block"),
+                        target,
+                        target_block: editor_bs.block(target).expect("Missing target block"),
                         source,
-                        source_block: editor_bs.block(source).expect("Missing target block"),
+                        source_block: editor_bs.block(source).expect("Missing source block"),
                         blocks: &editor_bs,
                     },
-                    key,
+                    &key,
                 )?;
 
                 // Rewrite the target block
                 editor_bs.editor = editor_bs
                     .editor
-                    .update_block(*target)
-                    .expect("Failed to update target block")
+                    .update_block(target)?
                     .with_data(data.to_vec().into())
                     .rebuild();
 
-                operation_set.operations.insert(*target, op);
+                operation_set.operations.insert(target, op);
             }
 
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
-                .update_block(source)
-                .expect("Failed to update block")
+                .update_block(source)?
                 .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
                 .rebuild();
         }
