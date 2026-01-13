@@ -231,7 +231,7 @@ impl Registry {
                     else {
                         return false;
                     };
-                    *e.insert(self.peers.insert(peer.clone()));
+                    *e.insert(self.peers.insert(peer.clone()))
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let peer_id = self.peers.insert(peer.clone());
