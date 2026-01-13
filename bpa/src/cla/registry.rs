@@ -139,26 +139,21 @@ impl Registry {
         // Scope lock
         let cla = {
             let mut clas = self.clas.write().trace_expect("Failed to lock mutex");
-            match clas.entry(name.clone()) {
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    return Err(cla::Error::AlreadyExists(name));
-                }
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    info!("Registered new CLA: {name}");
+            let std::collections::hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
+                return Err(cla::Error::AlreadyExists(name));
+            };
 
-                    let cla = Arc::new(Cla {
-                        cla,
-                        peers: Default::default(),
-                        name: name.clone(),
-                        address_type,
-                        policy: policy
-                            .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
-                    });
+            info!("Registered new CLA: {name}");
 
-                    e.insert(cla.clone());
-                    cla
-                }
-            }
+            e.insert(Arc::new(Cla {
+                cla,
+                peers: Default::default(),
+                name,
+                address_type,
+                policy: policy
+                    .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+            }))
+            .clone()
         };
 
         // Register that the CLA is a handler for the address type
@@ -231,16 +226,12 @@ impl Registry {
                 .entry(node_id.clone())
             {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
-                    match e.get_mut().entry(cla_addr.clone()) {
-                        std::collections::hash_map::Entry::Occupied(_) => {
-                            return false;
-                        }
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            let peer_id = self.peers.insert(peer.clone());
-                            e.insert(peer_id);
-                            peer_id
-                        }
-                    }
+                    let std::collections::hash_map::Entry::Vacant(e) =
+                        e.get_mut().entry(cla_addr.clone())
+                    else {
+                        return false;
+                    };
+                    *e.insert(self.peers.insert(peer.clone()));
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let peer_id = self.peers.insert(peer.clone());
