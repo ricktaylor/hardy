@@ -9,6 +9,12 @@ pub enum Error {
     #[error("Invalid block target {0}, either BCB or BIB block")]
     InvalidTarget(u64),
 
+    #[error("Block target {0} is already signed with another BIB")]
+    AlreadySigned(u64),
+
+    #[error("Block target {0} is already the target of a BCB")]
+    EncryptedTarget(u64),
+
     #[error(transparent)]
     Editor(#[from] editor::Error),
 
@@ -52,23 +58,35 @@ impl<'a> Signer<'a> {
         source: eid::Eid,
         key: key::Key,
     ) -> Result<Self, Error> {
-        let Some(block) = self.original.blocks.get(&block_number) else {
-            return Err(Error::NoSuchBlock(block_number));
-        };
+        let block = self
+            .original
+            .blocks
+            .get(&block_number)
+            .ok_or(Error::NoSuchBlock(block_number))?;
 
         if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
             return Err(Error::InvalidTarget(block_number));
         }
 
-        self.templates.insert(
-            block_number,
-            BlockTemplate {
-                context,
-                source,
-                key,
-            },
-        );
-        Ok(self)
+        if block.bib.is_some() {
+            return Err(Error::AlreadySigned(block_number));
+        }
+
+        if block.bcb.is_some() {
+            return Err(Error::EncryptedTarget(block_number));
+        }
+
+        match self.templates.entry(block_number) {
+            hash_map::Entry::Vacant(e) => {
+                e.insert(BlockTemplate {
+                    context,
+                    source,
+                    key,
+                });
+                Ok(self)
+            }
+            hash_map::Entry::Occupied(_) => Err(Error::AlreadySigned(block_number)),
+        }
     }
 
     /// Create an `Encryptor` to encrypt blocks in the bundle.
@@ -88,16 +106,12 @@ impl<'a> Signer<'a> {
         }
 
         // Reorder and accumulate BIB operations
-        let mut blocks = HashMap::new();
-        for (block_number, template) in &self.templates {
-            match blocks.entry((template.source.clone(), template.context.clone())) {
-                hash_map::Entry::Vacant(e) => {
-                    e.insert(vec![(block_number, &template.key)]);
-                }
-                hash_map::Entry::Occupied(mut e) => {
-                    e.get_mut().push((block_number, &template.key));
-                }
-            }
+        let mut blocks = HashMap::<(eid::Eid, Context), Vec<(u64, key::Key)>>::new();
+        for (block_number, template) in self.templates {
+            blocks
+                .entry((template.source, template.context))
+                .or_default()
+                .push((block_number, template.key));
         }
 
         let mut editor = editor::Editor::new(self.original, self.source_data);
@@ -116,9 +130,9 @@ impl<'a> Signer<'a> {
                     .blocks
                     .get(target)
                     .expect("Missing target block");
-                if **target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
+                if *target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(**target)
+                        .update_block(*target)
                         .expect("Missing target block")
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
@@ -143,18 +157,18 @@ impl<'a> Signer<'a> {
 
             for (target, key) in contexts {
                 operation_set.operations.insert(
-                    *target,
+                    target,
                     build_bib_data(
                         context.clone(),
                         bib::OperationArgs {
                             bpsec_source: &bpsec_source,
-                            target: *target,
-                            target_block: editor_bs.block(*target).expect("Missing target block"),
+                            target,
+                            target_block: editor_bs.block(target).expect("Missing target block"),
                             source,
                             source_block: editor_bs.block(source).expect("Missing target block"),
                             blocks: &editor_bs,
                         },
-                        key,
+                        &key,
                     )?,
                 );
             }
