@@ -26,7 +26,7 @@ metrics = "0.24.3"
 trace-err = "0.1.5"
 rand = "0.9.2"
 lru = "0.16.3"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 rustversion = "1.0"
 flume = "0.12.0"
 serde = { version = "1.0.228", features = ["derive","rc"], optional = true }

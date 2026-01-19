@@ -37,7 +37,7 @@ config = { version = "0.15.19", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 tracing = "0.1.44"
 hardy-otel = { path = "../otel" }
 notify-debouncer-full = "0.6.0"

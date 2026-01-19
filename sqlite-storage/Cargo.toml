@@ -17,7 +17,7 @@ hardy-bpv7 = { path = "../bpv7", features = ["std","serde"] }
 hardy-cbor = { path = "../cbor" }
 rusqlite = { version = "0.38.0", features = ["bundled", "time"] }
 tokio = "1.49.0"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 directories = "6.0.0"
 tracing = "0.1.44"
 base64 = "0.22.1"
