@@ -4,35 +4,35 @@ use hardy_bpv7::{bundle::Flags, crc::CrcType, eid::Eid};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ArgFlags {
     /// Specify ADU is an administrative record
-    #[value(name = "isadm")]
+    #[value(name = "admin-record", alias = "admin")]
     IsAdminRecord,
 
     /// Require bundle to not be fragmented
-    #[value(name = "nofrag")]
+    #[value(name = "do-not-fragment", alias = "dnf")]
     DoNotFragment,
 
-    /// Request acknowledgement by application
-    #[value(name = "ack")]
+    /// Application requests acknowledgement
+    #[value(name = "ack-requested", alias = "ack")]
     AppAckRequested,
 
     /// Request status time in status reports
-    #[value(name = "time")]
+    #[value(name = "report-status-time", alias = "time")]
     ReportStatusTime,
 
     /// Request reception status reports
-    #[value(name = "rcv")]
+    #[value(name = "report-receiption", alias = "rcv")]
     ReceiptReportRequested,
 
     /// Request forwarding status reports
-    #[value(name = "fwd")]
+    #[value(name = "report-forwarding", alias = "fwd")]
     ForwardReportRequested,
 
     /// Request delivery status reports
-    #[value(name = "dlv")]
+    #[value(name = "report-delivery", alias = "dlv")]
     DeliveryReportRequested,
 
     /// Request deletion status reports
-    #[value(name = "del")]
+    #[value(name = "report-deletion", alias = "del")]
     DeleteReportRequested,
 }
 
