@@ -1,0 +1,17 @@
+[package]
+name = "hardy-tcpclv4-server"
+version = "0.1.0"
+description = "Standalone TCPCLv4 Server executable"
+edition.workspace = true
+
+[dependencies]
+hardy-tcpclv4 = { path = "../tcpclv4" }
+hardy-bpa = { path = "../bpa" }
+hardy-proto = { path = "../proto" }
+tokio = { version = "1.0", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+config = "0.13"

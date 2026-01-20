@@ -17,6 +17,7 @@ members = [
     "proto",
     "sqlite-storage",
     "tcpclv4",
+    "tcpclv4-server",
     "tools",
 ]
 
@@ -26,4 +27,3 @@ members = [
 
 [workspace.package]
 edition = "2024"
-
