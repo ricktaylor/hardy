@@ -224,7 +224,7 @@ fn dump_block(
         if let Err(e) = bundle.verify_block(block_number, data, keys) {
             output.append_str(format!(": Error {e}\n"))?;
         } else {
-            output.append_str("\n")?;
+            output.append_str(": ✔\n")?;
         }
     }
 
@@ -237,7 +237,7 @@ fn dump_block(
                 None
             }
             Ok(p) => {
-                output.append_str("\n")?;
+                output.append_str(": ✔\n")?;
                 Some(p)
             }
         }
