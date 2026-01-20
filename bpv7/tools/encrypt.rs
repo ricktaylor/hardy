@@ -18,20 +18,20 @@ mod rfc9173 {
         IncludeSecurityHeader,
 
         /// Set default flags
-        #[value(name = "default")]
-        Default,
-
-        /// Include all flags
         #[value(name = "all")]
         All,
+
+        /// Include all flags
+        #[value(name = "none")]
+        None,
     }
 
     impl ArgFlags {
         pub fn to_scope_flags(args: &[ArgFlags]) -> hardy_bpv7::bpsec::rfc9173::ScopeFlags {
-            let mut flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::NONE;
+            let mut flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::default();
             for arg in args {
                 match arg {
-                    ArgFlags::Default => flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::default(),
+                    ArgFlags::None => flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::NONE,
                     ArgFlags::All => {
                         flags.include_primary_block = true;
                         flags.include_target_header = true;
