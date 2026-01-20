@@ -3,10 +3,6 @@ use hardy_bpv7::{bundle::Flags, crc::CrcType, eid::Eid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ArgFlags {
-    /// Specify bundle is a fragment
-    #[value(name = "isfrag")]
-    IsFragment,
-
     /// Specify ADU is an administrative record
     #[value(name = "isadm")]
     IsAdminRecord,
@@ -48,7 +44,6 @@ impl ArgFlags {
             let mut flags = Flags::default();
             for arg in args {
                 match arg {
-                    ArgFlags::IsFragment => flags.is_fragment = true,
                     ArgFlags::IsAdminRecord => flags.is_admin_record = true,
                     ArgFlags::DoNotFragment => flags.do_not_fragment = true,
                     ArgFlags::AppAckRequested => flags.app_ack_requested = true,

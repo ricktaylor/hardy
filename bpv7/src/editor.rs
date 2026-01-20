@@ -308,7 +308,10 @@ impl<'a> Editor<'a> {
             // Emit primary block
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
-            if let Some(update) = self.bundle.take() {
+            if let Some(mut update) = self.bundle.take() {
+                // Sync the is_fragment flags to the presence of fragment info
+                update.bundle_flags.is_fragment = update.fragment_info.is_some();
+
                 let mut bundle = bundle::Bundle {
                     id: bundle::Id {
                         source: update.source,

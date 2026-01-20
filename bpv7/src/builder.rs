@@ -61,6 +61,11 @@ impl<'a> Builder<'a> {
     /// Sets the [`bundle::Flags`] for this [`Builder`].
     pub fn with_flags(mut self, flags: bundle::Flags) -> Self {
         self.bundle_flags = flags;
+
+        // Do not allow the fragment flag to be set
+        assert!(!self.bundle_flags.is_fragment);
+        self.bundle_flags.is_fragment = false;
+
         self
     }
 
