@@ -352,13 +352,7 @@ impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> 
         // Check for BCB
         if let Some(bcb_block_number) = &block.bcb {
             self.bundle
-                .decrypt_block_inner(
-                    block_number,
-                    block,
-                    *bcb_block_number,
-                    self.source_data,
-                    self.keys,
-                )
+                .decrypt_block_inner(block_number, *bcb_block_number, self.source_data, self.keys)
                 .ok()
         } else {
             block
@@ -369,12 +363,14 @@ impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> 
 }
 
 // A view into a bundle's blocks for BPSec operations.
-struct EncryptBlockSet<'a, K: bpsec::key::KeyStore> {
+struct DecryptBlockSet<'a, K: bpsec::key::KeyStore> {
     inner: VerifyBlockSet<'a, K>,
-    except: u64,
+
+    // To avoid recursion
+    target: u64,
 }
 
-impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for EncryptBlockSet<'a, K> {
+impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for DecryptBlockSet<'a, K> {
     /// Retrieves a reference to a block by its number.
     fn block(&self, block_number: u64) -> Option<&block::Block> {
         self.inner.block(block_number)
@@ -386,7 +382,7 @@ impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for EncryptBlockSet<'a, K>
         block_number: u64,
         block: &block::Block,
     ) -> Option<block::Payload<'a>> {
-        if self.except == block_number {
+        if self.target == block_number {
             block
                 .payload(self.inner.source_data)
                 .map(block::Payload::Borrowed)
@@ -483,13 +479,7 @@ impl Bundle {
 
         // Check for BCB
         if let Some(bcb_block_number) = &target_block.bcb {
-            self.decrypt_block_inner(
-                block_number,
-                target_block,
-                *bcb_block_number,
-                source_data,
-                key_f,
-            )
+            self.decrypt_block_inner(block_number, *bcb_block_number, source_data, key_f)
         } else {
             target_block
                 .payload(source_data)
@@ -509,28 +499,19 @@ impl Bundle {
         source_data: &'a [u8],
         key_f: &impl bpsec::key::KeyStore,
     ) -> Result<block::Payload<'a>, Error> {
-        let target_block = self
+        let bcb_block_number = self
             .blocks
             .get(&block_number)
-            .ok_or(Error::MissingBlock(block_number))?;
-
-        let bcb_block_number = &target_block
+            .ok_or(Error::MissingBlock(block_number))?
             .bcb
             .ok_or(Error::InvalidBPSec(bpsec::Error::NotEncrypted))?;
 
-        self.decrypt_block_inner(
-            block_number,
-            target_block,
-            *bcb_block_number,
-            source_data,
-            key_f,
-        )
+        self.decrypt_block_inner(block_number, bcb_block_number, source_data, key_f)
     }
 
     fn decrypt_block_inner<'a>(
         &self,
         target: u64,
-        target_block: &block::Block,
         bcb_block_number: u64,
         source_data: &'a [u8],
         key_f: &impl bpsec::key::KeyStore,
@@ -554,16 +535,14 @@ impl Bundle {
                 bpsec::bcb::OperationArgs {
                     bpsec_source: &bcb.source,
                     target,
-                    target_block,
                     source: bcb_block_number,
-                    source_block: bcb_block,
-                    blocks: &EncryptBlockSet {
+                    blocks: &DecryptBlockSet {
                         inner: VerifyBlockSet {
                             bundle: self,
                             source_data,
                             keys: key_f,
                         },
-                        except: target,
+                        target,
                     },
                 },
             )
@@ -597,13 +576,7 @@ impl Bundle {
 
         // Check for BCB
         let bib_data = if let Some(bcb_block_number) = &bib_block.bcb {
-            self.decrypt_block_inner(
-                *bib_block_number,
-                bib_block,
-                *bcb_block_number,
-                source_data,
-                key_f,
-            )?
+            self.decrypt_block_inner(*bib_block_number, *bcb_block_number, source_data, key_f)?
         } else {
             bib_block
                 .payload(source_data)

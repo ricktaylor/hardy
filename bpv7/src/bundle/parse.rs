@@ -265,9 +265,7 @@ impl<'a> BlockParse<'a> {
                             bpsec::bcb::OperationArgs {
                                 bpsec_source: &bcb.source,
                                 target: *target_number,
-                                target_block,
                                 source: *bcb_block_number,
-                                source_block: bcb_block,
                                 blocks: self,
                             },
                         ) {

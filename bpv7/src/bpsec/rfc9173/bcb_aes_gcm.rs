@@ -183,15 +183,23 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
     }
 
     if flags.include_target_header {
-        encoder.emit(&args.target_block.block_type);
+        let target_block = args
+            .blocks
+            .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+        encoder.emit(&target_block.block_type);
         encoder.emit(&args.target);
-        encoder.emit(&args.target_block.flags);
+        encoder.emit(&target_block.flags);
     }
 
     if flags.include_security_header {
-        encoder.emit(&args.source_block.block_type);
+        let source_block = args
+            .blocks
+            .block(args.source)
+            .ok_or(Error::MissingSecurityTarget)?;
+        encoder.emit(&source_block.block_type);
         encoder.emit(&args.source);
-        encoder.emit(&args.source_block.flags);
+        encoder.emit(&source_block.flags);
     }
 
     Ok(encoder.build())
@@ -226,7 +234,11 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {
-        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+        let target_block = args
+            .blocks
+            .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+        if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
 
@@ -280,7 +292,7 @@ impl Operation {
 
         let data = args
             .blocks
-            .block_payload(args.target, args.target_block)
+            .block_payload(args.target, target_block)
             .ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&scope_flags, &args)?;
@@ -354,14 +366,18 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+        let target_block = args
+            .blocks
+            .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+        if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
 
         // This will always be Payload::Borrowed because we are decrypting now!
         let data = args
             .blocks
-            .block_payload(args.target, args.target_block)
+            .block_payload(args.target, target_block)
             .ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&self.parameters.flags, &args)?;

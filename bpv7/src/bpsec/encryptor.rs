@@ -217,9 +217,7 @@ impl<'a> Encryptor<'a> {
                     bcb::OperationArgs {
                         bpsec_source: &bpsec_source,
                         target,
-                        target_block: editor_bs.block(target).expect("Missing target block"),
                         source,
-                        source_block: editor_bs.block(source).expect("Missing source block"),
                         blocks: &editor_bs,
                     },
                     &key,
