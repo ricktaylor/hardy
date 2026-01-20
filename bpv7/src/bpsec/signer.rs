@@ -159,9 +159,7 @@ impl<'a> Signer<'a> {
                         bib::OperationArgs {
                             bpsec_source: &bpsec_source,
                             target,
-                            target_block: editor_bs.block(target).expect("Missing target block"),
                             source,
-                            source_block: editor_bs.block(source).expect("Missing target block"),
                             blocks: &editor_bs,
                         },
                         &key,

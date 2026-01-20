@@ -599,9 +599,7 @@ impl Bundle {
                 bpsec::bib::OperationArgs {
                     bpsec_source: &bib.source,
                     target: block_number,
-                    target_block,
                     source: *bib_block_number,
-                    source_block: bib_block,
                     blocks: &VerifyBlockSet {
                         bundle: self,
                         source_data,

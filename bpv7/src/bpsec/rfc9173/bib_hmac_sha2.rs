@@ -186,31 +186,40 @@ where
         .0,
     );
 
-    if !matches!(args.target_block.block_type, block::Type::Primary) {
+    let target_block = args
+        .blocks
+        .block(args.target)
+        .ok_or(Error::MissingSecurityTarget)?;
+
+    if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
             mac.update(args.blocks.primary_block().as_ref());
         }
 
         if flags.include_target_header {
             let mut encoder = hardy_cbor::encode::Encoder::new();
-            encoder.emit(&args.target_block.block_type);
+            encoder.emit(&target_block.block_type);
             encoder.emit(&args.target);
-            encoder.emit(&args.target_block.flags);
+            encoder.emit(&target_block.flags);
             mac.update(&encoder.build());
         }
     }
 
     if flags.include_security_header {
+        let source_block = args
+            .blocks
+            .block(args.source)
+            .ok_or(Error::MissingSecurityTarget)?;
         let mut encoder = hardy_cbor::encode::Encoder::new();
-        encoder.emit(&args.source_block.block_type);
+        encoder.emit(&source_block.block_type);
         encoder.emit(&args.source);
-        encoder.emit(&args.source_block.flags);
+        encoder.emit(&source_block.flags);
         mac.update(&encoder.build());
     }
 
     let payload = args
         .blocks
-        .block_payload(args.target, args.target_block)
+        .block_payload(args.target, target_block)
         .ok_or(Error::MissingSecurityTarget)?;
 
     // Reduce copying here
@@ -295,7 +304,11 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bib::OperationArgs,
     ) -> Result<Self, Error> {
-        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+        let target_block = args
+            .blocks
+            .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+        if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
 
@@ -394,7 +407,11 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bib::OperationArgs,
     ) -> Result<(), Error> {
-        if !matches!(args.target_block.crc_type, crc::CrcType::None) {
+        let target_block = args
+            .blocks
+            .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+        if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
 
