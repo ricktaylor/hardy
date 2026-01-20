@@ -365,8 +365,6 @@ impl<'a> BlockParse<'a> {
                 }
             }
 
-            let bcb = bib_block.bcb.and_then(|b| self.bcbs.get(&b));
-
             // Check targets
             for target_number in bib.operations.keys() {
                 if bib_targets
@@ -389,11 +387,9 @@ impl<'a> BlockParse<'a> {
                     return Err(bpsec::Error::InvalidBIBTarget.into());
                 }
 
-                if let Some(bcb) = bcb {
-                    // Check we share a target with our BCB
-                    if !bcb.operations.contains_key(target_number) {
-                        return Err(bpsec::Error::BCBMustShareTarget.into());
-                    }
+                // If BIB target is the target of the BCB, then the BIB MUST also be a BCB target
+                if target_block.bcb.is_some() && bib_block.bcb.is_none() {
+                    return Err(bpsec::Error::BIBMustBeEncrypted.into());
                 }
             }
 

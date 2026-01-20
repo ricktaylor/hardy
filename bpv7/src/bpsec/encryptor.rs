@@ -27,6 +27,15 @@ pub enum Context {
     AES_GCM(rfc9173::ScopeFlags),
 }
 
+impl Context {
+    fn can_share(&self) -> bool {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(_) => false, // The presence of an IV in context parameters means operations MUST NOT be shared
+        }
+    }
+}
+
 struct BlockTemplate {
     context: Context,
     source: eid::Eid,
@@ -96,6 +105,7 @@ impl<'a> Encryptor<'a> {
                 )))
             })?;
 
+            // Encrypt all the BIB targets
             for target in opset.operations.keys() {
                 if *target != block_number {
                     self.templates.insert(
@@ -108,6 +118,16 @@ impl<'a> Encryptor<'a> {
                     );
                 }
             }
+
+            // Encrypt the BIB itself
+            self.templates.insert(
+                bib_block,
+                BlockTemplate {
+                    context: context.clone(),
+                    source: source.clone(),
+                    key: key.clone(),
+                },
+            );
         }
 
         self.templates.insert(
@@ -129,18 +149,35 @@ impl<'a> Encryptor<'a> {
                 .map_err(Into::into);
         }
 
-        // Reorder and accumulate BCB operations
-        let mut bcbs = HashMap::<(eid::Eid, Context), Vec<(u64, key::Key)>>::new();
+        // Reorder and accumulate BCB operations if sharing is possible
+        let mut bcbs = Vec::new();
+        let mut shared_bcbs = HashMap::<(eid::Eid, Context), Vec<(u64, key::Key)>>::new();
         for (block_number, template) in self.templates {
-            bcbs.entry((template.source.clone(), template.context.clone()))
-                .or_default()
-                .push((block_number, template.key));
+            if template.context.can_share() {
+                shared_bcbs
+                    .entry((template.source, template.context))
+                    .or_default()
+                    .push((block_number, template.key));
+            } else {
+                bcbs.push((
+                    template.source,
+                    template.context,
+                    vec![(block_number, template.key)],
+                ));
+            }
         }
+
+        // Add all shared BCBs to the total BCBs
+        bcbs.extend(
+            shared_bcbs
+                .into_iter()
+                .map(|((bpsec_source, context), targets)| (bpsec_source, context, targets)),
+        );
 
         let mut editor = editor::Editor::new(self.original, self.source_data);
 
         // Now build BCB blocks
-        for ((bpsec_source, context), targets) in bcbs {
+        for (bpsec_source, context, targets) in bcbs {
             /* RFC 9173, Section 4.8.1 states:
              * Prior to encryption, if a CRC value is present for the target block,
              * then that CRC value MUST be removed.  This requires removing the CRC
@@ -173,12 +210,7 @@ impl<'a> Encryptor<'a> {
             editor = b.rebuild();
 
             let mut editor_bs = editor::EditorBlockSet { editor };
-
-            let mut operation_set = bcb::OperationSet {
-                source: bpsec_source.clone(),
-                operations: HashMap::new(),
-            };
-
+            let mut operations = HashMap::new();
             for (target, key) in targets {
                 let (op, data) = build_bcb_data(
                     context.clone(),
@@ -200,14 +232,21 @@ impl<'a> Encryptor<'a> {
                     .with_data(data.to_vec().into())
                     .rebuild();
 
-                operation_set.operations.insert(target, op);
+                operations.insert(target, op);
             }
 
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
                 .update_block(source)?
-                .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
+                .with_data(
+                    hardy_cbor::encode::emit(&bcb::OperationSet {
+                        source: bpsec_source,
+                        operations,
+                    })
+                    .0
+                    .into(),
+                )
                 .rebuild();
         }
 

@@ -143,7 +143,7 @@ impl<'a> Editor<'a> {
     /// Add a new block into the bundle.
     ///
     /// The new block will be assigned the next available block
-    /// number.  Be very careful about add duplicate blocks that should not be duplicated
+    /// number.  Be very careful about adding duplicate blocks that should not be duplicated
     pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
         if let block::Type::Primary
         | block::Type::Payload
@@ -196,10 +196,16 @@ impl<'a> Editor<'a> {
                 .find_map(|(block_number, template)| match template {
                     BlockTemplate::Keep(t) if &block_type == t => {
                         let block = self.original.blocks.get(block_number)?;
+
                         Some((
                             *block_number,
                             false,
-                            builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
+                            builder::BlockTemplate::new(
+                                *t,
+                                block.flags.clone(),
+                                block.crc_type,
+                                block.payload(self.source_data).map(Cow::Borrowed),
+                            ),
                         ))
                     }
                     BlockTemplate::Insert(template) if template.block.block_type == block_type => {
@@ -241,9 +247,15 @@ impl<'a> Editor<'a> {
                     .blocks
                     .get(&block_number)
                     .ok_or(Error::NoSuchBlock(block_number))?;
+
                 (
                     false,
-                    builder::BlockTemplate::new(*t, block.flags.clone(), block.crc_type),
+                    builder::BlockTemplate::new(
+                        *t,
+                        block.flags.clone(),
+                        block.crc_type,
+                        block.payload(self.source_data).map(Cow::Borrowed),
+                    ),
                 )
             }
             BlockTemplate::Insert(template) => (true, template.clone()),
@@ -340,33 +352,17 @@ impl<'a> Editor<'a> {
         template: BlockTemplate,
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<block::Block, Error> {
-        match template {
-            BlockTemplate::Keep(_) => {
-                let mut block = self
-                    .original
-                    .blocks
-                    .get(&block_number)
-                    .expect("Mismatched block in bundle!")
-                    .clone();
-                block.copy_whole(self.source_data, array);
-                Ok(block)
-            }
-            BlockTemplate::Update(template) => {
-                let data = if template.data.is_some() {
-                    None
-                } else {
-                    self.original
-                        .blocks
-                        .get(&block_number)
-                        .and_then(|b| b.payload(self.source_data))
-                };
-                template
-                    .build(block_number, data, array)
-                    .map_err(Into::into)
-            }
-            BlockTemplate::Insert(template) => template
-                .build(block_number, None, array)
-                .map_err(Into::into),
+        if let BlockTemplate::Update(template) | BlockTemplate::Insert(template) = template {
+            template.build(block_number, array).map_err(Into::into)
+        } else {
+            let mut block = self
+                .original
+                .blocks
+                .get(&block_number)
+                .expect("Mismatched block in bundle!")
+                .clone();
+            block.copy_whole(self.source_data, array);
+            Ok(block)
         }
     }
 }
@@ -378,6 +374,7 @@ impl<'a> BlockBuilder<'a> {
                 block_type,
                 block::Flags::default(),
                 editor.original.crc_type,
+                None,
             ),
             is_new: true,
             block_number,

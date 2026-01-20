@@ -29,16 +29,12 @@ impl KeyStore for KeySet {
         _source: &eid::Eid,
         operations: &[Operation],
     ) -> impl Iterator<Item = &'a Key> {
-        self.keys.iter().filter(move |k| {
-            let Some(key_operations) = &k.operations else {
-                return true;
-            };
-            for op in operations {
-                if key_operations.contains(op) {
-                    return true;
-                }
+        self.keys.iter().filter(|k| {
+            if let Some(key_operations) = &k.operations {
+                operations.iter().any(|op| key_operations.contains(op))
+            } else {
+                false
             }
-            false
         })
     }
 }

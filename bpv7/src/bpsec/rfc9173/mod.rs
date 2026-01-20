@@ -255,4 +255,113 @@ mod test {
             .verify_block(1, &data, &keys)
             .expect("Failed to verify");
     }*/
+
+    // TODO: Implement test for Wrapped Key Unwrap (LLR 2.2.4, 2.2.7).
+    // Scenario: Verify unwrapping of a session key using a KEK.
+
+    // TODO: Implement test for Wrapped Key Fail.
+    // Scenario: Verify failure when unwrapping a corrupted key blob.
+
+    #[test]
+    fn test_sign_then_encrypt() {
+        use crate::bpsec::{encryptor, key, signer};
+        use crate::builder::Builder;
+        use crate::bundle;
+        use crate::creation_timestamp::CreationTimestamp;
+
+        // 1. Create a bundle
+        let (bundle, bundle_bytes) =
+            Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+                .with_report_to("ipn:2.1".parse().unwrap())
+                .with_lifetime(core::time::Duration::from_millis(1000))
+                .with_payload(b"hello".as_slice().into())
+                .build(CreationTimestamp::now())
+                .unwrap();
+
+        // Keys
+        let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "HS256",
+            "key_ops": ["sign", "verify"],
+            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+        }))
+        .unwrap();
+        let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+            "k": "AAAAAAAAAAAAAAAAAAAAAA"
+        }))
+        .unwrap();
+        let sign_keys = key::KeySet::new(vec![sign_key.clone()]);
+        let enc_keys = key::KeySet::new(vec![enc_key.clone()]);
+        let all_keys = key::KeySet::new(vec![sign_key.clone(), enc_key.clone()]);
+
+        // 2. Sign
+        let signer = signer::Signer::new(&bundle, &bundle_bytes);
+        let signer = signer
+            .sign_block(
+                1,
+                signer::Context::HMAC_SHA2(ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                sign_key.clone(),
+            )
+            .expect("Failed to sign block");
+        let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
+        // println!("Bundle bytes: {:02x?}", signed_bytes);
+
+        let parsed_signed = bundle::ParsedBundle::parse(&signed_bytes, &sign_keys)
+            .expect("Failed to parse signed bundle");
+
+        // 3. Encrypt
+        // Exclude the security header from AAD to avoid mismatches due to BCB header mutation
+        let flags = ScopeFlags {
+            include_security_header: false,
+            ..ScopeFlags::default()
+        };
+
+        let encryptor = encryptor::Encryptor::new(&parsed_signed.bundle, &signed_bytes);
+        let encryptor = encryptor
+            .encrypt_block(
+                1,
+                encryptor::Context::AES_GCM(flags),
+                "ipn:2.1".parse().unwrap(),
+                enc_key.clone(),
+            )
+            .expect("Failed to encrypt block");
+        let encrypted_bytes = encryptor
+            .rebuild()
+            .expect("Failed to rebuild encrypted bundle");
+        // println!("Bundle bytes: {:02x?}", encrypted_bytes);
+
+        // 4. Decrypt and Verify
+        let parsed_enc = bundle::ParsedBundle::parse(&encrypted_bytes, &enc_keys)
+            .expect("Failed to parse encrypted bundle");
+        // println!("{:#?}", parsed_enc);
+
+        // Attempt to decrypt the BIB first to isolate decryption issues from verification issues
+        if let Some(bib_num) = parsed_enc.bundle.blocks.get(&1).and_then(|b| b.bib) {
+            // println!("Found BIB at block {bib_num}");
+            parsed_enc
+                .bundle
+                .decrypt_block_data(bib_num, &encrypted_bytes, &enc_keys)
+                .expect("BIB Decryption failed");
+        }
+
+        // This should succeed if everything is working
+        parsed_enc
+            .bundle
+            .verify_block(1, &encrypted_bytes, &all_keys)
+            .expect("Verification failed");
+
+        // Also check decryption of payload directly
+        let payload = parsed_enc
+            .bundle
+            .decrypt_block_data(1, &encrypted_bytes, &enc_keys)
+            .expect("Decryption failed");
+        assert_eq!(payload.as_ref(), b"hello");
+    }
 }

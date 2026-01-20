@@ -52,6 +52,7 @@ impl<'a> Builder<'a> {
                 block::Type::Payload,
                 block::Flags::default(),
                 crc::CrcType::CRC32_CASTAGNOLI,
+                None,
             ),
             extensions: Vec::new(),
         }
@@ -140,12 +141,12 @@ impl<'a> Builder<'a> {
             for (block_number, block) in self.extensions.into_iter().enumerate() {
                 bundle.blocks.insert(
                     block_number as u64,
-                    block.build(block_number as u64 + 2, None, a)?,
+                    block.build(block_number as u64 + 2, a)?,
                 );
             }
 
             // Emit payload
-            bundle.blocks.insert(1, self.payload.build(1, None, a)?);
+            bundle.blocks.insert(1, self.payload.build(1, a)?);
             Ok::<_, Error>(())
         })?;
 
@@ -163,7 +164,12 @@ impl<'a> BlockBuilder<'a> {
     /// Creates a new [`BlockBuilder`] for creating a [`block::Block`].
     fn new(builder: Builder<'a>, block_type: block::Type) -> Self {
         Self {
-            template: BlockTemplate::new(block_type, block::Flags::default(), builder.crc_type),
+            template: BlockTemplate::new(
+                block_type,
+                block::Flags::default(),
+                builder.crc_type,
+                None,
+            ),
             builder,
         }
     }
@@ -202,7 +208,12 @@ pub(crate) struct BlockTemplate<'a> {
 
 impl<'a> BlockTemplate<'a> {
     /// Creates a new [`BlockTemplate`] for creating a [`block::Block`].
-    pub fn new(block_type: block::Type, flags: block::Flags, crc_type: crc::CrcType) -> Self {
+    pub fn new(
+        block_type: block::Type,
+        flags: block::Flags,
+        crc_type: crc::CrcType,
+        data: Option<Cow<'a, [u8]>>,
+    ) -> Self {
         Self {
             block: block::Block {
                 block_type,
@@ -210,7 +221,7 @@ impl<'a> BlockTemplate<'a> {
                 crc_type,
                 ..Default::default()
             },
-            data: None,
+            data,
         }
     }
 
@@ -218,7 +229,6 @@ impl<'a> BlockTemplate<'a> {
     pub fn build(
         mut self,
         block_number: u64,
-        data: Option<&[u8]>,
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<block::Block, Error> {
         self.block.emit(
@@ -226,7 +236,6 @@ impl<'a> BlockTemplate<'a> {
             self.data
                 .as_ref()
                 .map(|data| data.as_ref())
-                .or(data)
                 .ok_or(Error::NoBlockData)?,
             array,
         )?;

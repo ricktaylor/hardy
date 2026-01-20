@@ -64,7 +64,7 @@ pub struct OperationSet {
 
 impl OperationSet {
     pub fn is_unsupported(&self) -> bool {
-        self.operations.values().next().unwrap().is_unsupported()
+        self.operations.values().any(|op| op.is_unsupported())
     }
 }
 

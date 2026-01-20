@@ -54,8 +54,8 @@ pub enum Error {
     )]
     BCBDeleteFlag,
 
-    #[error("BCBs must not target a BIB unless it shares a security target with that BIB")]
-    BCBMustShareTarget,
+    #[error("BIBs that target blocks that are targets of BCBs must also be encrypted")]
+    BIBMustBeEncrypted,
 
     #[error(
         "The same security service must not be applied to a security target more than once in a bundle"
