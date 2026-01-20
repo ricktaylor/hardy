@@ -203,3 +203,20 @@ impl PeerTable {
         peer.forward(bundle).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Queue Selection' (Verify Policy maps to correct CLA queue)
+    #[test]
+    fn test_queue_selection() {
+        todo!("Verify Policy maps to correct CLA queue");
+    }
+
+    // TODO: Implement test for 'Queue Fallback' (Verify fallback to default queue on invalid index)
+    #[test]
+    fn test_queue_fallback() {
+        todo!("Verify fallback to default queue on invalid index");
+    }
+}

@@ -802,6 +802,7 @@ mod test {
     use super::*;
     use hex_literal::hex;
 
+    // Requirement: LLR 1.1.15
     #[test]
     fn tests() {
         // From Stephan Havermans testing
@@ -818,4 +819,28 @@ mod test {
             })
         ));
     }
+
+    // TODO: Implement test for LLR 1.1.33: Processing must use Bundle Age block for expiry if Creation Time is zero.
+    // Scenario: Parse a bundle with creation_timestamp = 0 and no Bundle Age block. Expect Error::MissingBundleAge.
+
+    // TODO: Implement test for LLR 1.1.34: Processing must process and act on Hop Count extension block.
+    // Scenario: Parse a bundle with a Hop Count block. Verify it is extracted into bundle.hop_count.
+
+    // TODO: Implement test for LLR 1.1.14: Parser must indicate when bundle rewriting has occurred.
+    // Scenario: Parse a non-canonical bundle (e.g., blocks out of order) that is otherwise valid. Expect RewrittenBundle::Rewritten.
+
+    // TODO: Implement test for LLR 1.1.19: Parser must parse/validate extension blocks specified in RFC 9171.
+    // Scenario: Verify correct parsing of PreviousNode, BundleAge, and HopCount blocks into the Bundle struct.
+
+    // TODO: Implement test for LLR 1.1.1: Compliant with all mandatory requirements of CCSDS Bundle Protocol.
+    // Scenario: Verify general compliance (e.g. no floats, correct structure).
+
+    // TODO: Implement test for LLR 1.1.30: Processing must enforce bundle rewriting rules when discarding unrecognised blocks.
+    // Scenario: Parse a bundle with an unrecognised block marked for deletion. Verify it is removed and bundle is rewritten.
+
+    // TODO: Implement test for LLR 1.1.12: CBOR decoder must indicate if an incomplete item is found at end of buffer.
+    // Scenario: Feed truncated bundle data. Expect Error::NeedMoreData (or equivalent).
+
+    // TODO: Implement test for Trailing Data.
+    // Scenario: Feed a valid bundle followed by extra bytes. Expect Error::AdditionalData.
 }

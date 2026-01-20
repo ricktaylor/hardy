@@ -30,3 +30,20 @@ impl Bundle {
         self.expiry() <= time::OffsetDateTime::now_utc()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Age Fallback' (Verify creation time derived from Age)
+    #[test]
+    fn test_age_fallback() {
+        todo!("Verify creation time derived from Age");
+    }
+
+    // TODO: Implement test for 'Expiry Calculation' (Verify expiry time summation)
+    #[test]
+    fn test_expiry_calculation() {
+        todo!("Verify expiry time summation");
+    }
+}

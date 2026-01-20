@@ -184,3 +184,14 @@ pub trait Sink: Send + Sync {
         cla_addr: &ClaAddress,
     ) -> Result<bool>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Address Parsing' (Verify ClaAddress conversion logic)
+    #[test]
+    fn test_address_parsing() {
+        todo!("Verify ClaAddress conversion logic");
+    }
+}

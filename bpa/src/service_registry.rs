@@ -305,3 +305,20 @@ impl ServiceRegistry {
             .cloned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Duplicate Reg' (Attempt to register an active ID)
+    #[test]
+    fn test_duplicate_reg() {
+        todo!("Verify Attempt to register an active ID");
+    }
+
+    // TODO: Implement test for 'Cleanup' (Verify ID is freed on disconnect)
+    #[test]
+    fn test_cleanup() {
+        todo!("Verify ID is freed on disconnect");
+    }
+}

@@ -298,3 +298,15 @@ impl PrimaryBlock {
         .map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod test {
+    // TODO: Implement test for LLR 1.1.21: Parser must parse and validate all CRC values.
+    // Scenario: 1. Parse bundle with valid CRC. 2. Parse bundle with invalid CRC (expect error).
+
+    // TODO: Implement test for LLR 1.1.22: Parser must support all CRC types specified in RFC 9171.
+    // Scenario: Verify support for CRC-16 and CRC-32C types.
+
+    // TODO: Implement test for LLR 1.1.15: Parser must indicate that the Primary Block is valid.
+    // Scenario: Explicitly test Primary Block validation logic (e.g. invalid EIDs, timestamps).
+}

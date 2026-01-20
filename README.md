@@ -45,6 +45,8 @@ We welcome contributions to the Hardy project! If you would like to contribute, 
 1. Write tests to cover your changes and ensure that all existing tests pass.
 1. Submit a pull request with a clear description of your changes and the problem they solve.
 
+Before contributing, please familiarize yourself with the project's [Test Strategy](./test_strategy.md) to understand our approach to quality and verification.
+
 By contributing to Hardy, you agree to license your contributions under the project's license.
 
 Thank you for your interest in contributing to the project!

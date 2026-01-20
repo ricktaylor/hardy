@@ -13,6 +13,8 @@ enum Msg {
     Cla(cla::RandomBundle),
     ClaBytes(Vec<u8>),
     Service(service::Msg),
+    // TODO: Implement Msg::TickTimer to advance mock clock and test expiry logic.
+    // TODO: Implement Msg::UpdateRoute to test dynamic routing changes during processing.
 }
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {

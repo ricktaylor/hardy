@@ -187,3 +187,44 @@ fn find_recurse<'a>(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Exact Match' (Lookup exact EID match)
+    #[test]
+    fn test_exact_match() {
+        todo!("Verify lookup exact EID match");
+    }
+
+    // TODO: Implement test for 'Longest Prefix' (Lookup with overlapping routes)
+    #[test]
+    fn test_longest_prefix() {
+        todo!("Verify lookup with overlapping routes");
+    }
+
+    // TODO: Implement test for 'Default Route' (Lookup with no match but default set)
+    #[test]
+    fn test_default_route() {
+        todo!("Verify lookup with no match but default set");
+    }
+
+    // TODO: Implement test for 'ECMP Hashing' (Verify deterministic peer selection (REQ-6.1.10))
+    #[test]
+    fn test_ecmp_hashing() {
+        todo!("Verify deterministic peer selection (REQ-6.1.10)");
+    }
+
+    // TODO: Implement test for 'Recursion Loop' (Verify detection of routing loops)
+    #[test]
+    fn test_recursion_loop() {
+        todo!("Verify detection of routing loops");
+    }
+
+    // TODO: Implement test for 'Reflection' (Verify routing to previous node (REQ-6.1.8))
+    #[test]
+    fn test_reflection() {
+        todo!("Verify routing to previous node (REQ-6.1.8)");
+    }
+}

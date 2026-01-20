@@ -109,3 +109,14 @@ impl Rib {
             .remove(address_type);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Impacted Subsets' (Verify Rib::add detects affected sub-routes)
+    #[test]
+    fn test_impacted_subsets() {
+        todo!("Verify Rib::add detects affected sub-routes");
+    }
+}

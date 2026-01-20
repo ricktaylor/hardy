@@ -12,6 +12,8 @@ fn tests() {
     assert!(!ipn_match("ipn:0.3.4", "ipn:0.4.3"));
     assert!(!ipn_match("ipn:0.3.4", "ipn:1.3.4"));
 
+    // TODO: Add test for Legacy IPN format (2-element) parsing: "ipn:1.2"
+
     ipn_parse(
         "ipn:0.3.*",
         IpnPatternItem {
@@ -177,6 +179,8 @@ fn tests() {
         EidPattern::Any
     );
 
+    // TODO: Add tests for invalid syntax: "ipn:1-1", "ipn:[10-5]", "http://*"
+
     ipn_parse(
         "ipn:!.*",
         IpnPatternItem {
@@ -213,6 +217,8 @@ fn tests() {
             "dtn://**/some/serv",
             DtnPatternItem::new_glob("**/some/serv").unwrap(),
         );
+
+        // TODO: Add tests for DTN matching logic: Exact, Prefix, Recursive
         /*dtn_match(
         "dtn://**/
 [%5B^a%5D]",

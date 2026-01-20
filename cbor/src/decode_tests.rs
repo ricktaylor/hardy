@@ -157,6 +157,7 @@ fn rfc_tests() {
     // RFC 8949, Appendix A:
     // https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
 
+    // LLR 1.1.9: Support all primitive data items (Unsigned Integers)
     test_simple(0, &hex!("00"));
     test_simple(1, &hex!("01"));
     test_simple(10, &hex!("0a"));
@@ -168,6 +169,8 @@ fn rfc_tests() {
     test_simple(1000000, &hex!("1a000f4240"));
     test_simple(1000000000000u64, &hex!("1b000000e8d4a51000"));
     test_simple(18446744073709551615u64, &hex!("1bffffffffffffffff"));
+
+    // LLR 1.1.9: Correctly reject unsupported types (Bignums)
     /* We do not support BIGNUMs */
     assert!(parse::<u64>(&hex!("c249010000000000000000")).is_err());
     /*test_simple(
@@ -184,10 +187,13 @@ fn rfc_tests() {
         -18446744073709551617,
         &hex!("c349010000000000000000")
     );*/
+
+    // LLR 1.1.9: Support all primitive data items (Negative Integers)
     test_simple(-1, &hex!("20"));
     test_simple(-10, &hex!("29"));
     test_simple(-100, &hex!("3863"));
     test_simple(-1000, &hex!("3903e7"));
+    // LLR 1.1.9: Support all primitive data items (Floating-Point Numbers)
     test_simple(0.0, &hex!("f90000"));
     test_simple(-0.0, &hex!("f98000"));
     test_simple(1.0, &hex!("f93c00"));
@@ -206,6 +212,8 @@ fn rfc_tests() {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
     test_simple(half::f16::NEG_INFINITY, &hex!("f9fc00"));
+
+    // LLR 1.1.7: Report if a parsed data item is in canonical form (non-canonical floats)
     test_simple_long(f32::INFINITY, &hex!("fa7f800000"));
     test_value_long(&hex!("fa7fc00000"), &[], |v| {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
@@ -216,9 +224,10 @@ fn rfc_tests() {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
     test_simple_long(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));
+
+    // LLR 1.1.9: Support all primitive data items (Simple values and booleans)
     test_simple(false, &hex!("f4"));
     test_simple(true, &hex!("f5"));
-
     test_value(&hex!("f6"), &[], |v| assert!(matches!(v, Value::Null)));
     test_value(&hex!("f7"), &[], |v| assert!(matches!(v, Value::Undefined)));
     test_value(&hex!("f0"), &[], |v| {
@@ -227,6 +236,8 @@ fn rfc_tests() {
     test_value(&hex!("f8ff"), &[], |v| {
         assert!(matches!(v, Value::Simple(255)))
     });
+
+    // LLR 1.1.8: Report if a parsed data item has associated tags
     test_value(
         &hex!("c074323031332d30332d32315432303a30343a30305a"),
         &[0],
@@ -249,6 +260,8 @@ fn rfc_tests() {
         &[32],
         |v| assert!(matches!(v, Value::Text(v) if v == "http://www.example.com")),
     );
+
+    // LLR 1.1.9: Support all primitive data items (Byte and Text Strings)
     test_value(&hex!("40"), &[], |v| {
         assert!(matches!(v, Value::Bytes(v) if v.is_empty()))
     });
@@ -265,6 +278,8 @@ fn rfc_tests() {
         "\u{10151}", /* surrogate pair: \u{d800}\u{dd51} */
         &hex!("64f0908591"),
     );
+
+    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Definite-length Arrays)
     test_array(&[], true, &hex!("80"), |a| assert_eq!(a.count(), Some(0)));
     test_array(&[], true, &hex!("83010203"), |a| {
         test_sub_simple(1, a);
@@ -292,6 +307,8 @@ fn rfc_tests() {
             }
         },
     );
+
+    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Definite-length Maps)
     test_map(&[], true, &hex!("a0"), |_| {});
     test_map(&[], true, &hex!("a201020304"), |m| {
         for i in 1..=4 {
@@ -324,6 +341,8 @@ fn rfc_tests() {
             }
         },
     );
+
+    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Strings)
     {
         let test_data = &hex!("5f42010243030405ff");
         test_value(test_data, &[], |v| match v {
@@ -353,6 +372,8 @@ fn rfc_tests() {
         }
         _ => panic!("Expected indefinite byte string"),
     });
+
+    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Arrays)
     test_array(&[], false, &hex!("9fff"), |_| ());
     test_array(&[], false, &hex!("9f018202039f0405ffff"), |a| {
         test_sub_simple(1, a);
@@ -365,6 +386,8 @@ fn rfc_tests() {
             test_sub_simple(5, a);
         });
     });
+
+    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Mixed definite/indefinite arrays)
     test_array(&[], true, &hex!("83018202039f0405ff"), |a| {
         test_sub_simple(1, a);
         test_sub_array(&[], true, a, |a| {
@@ -397,6 +420,8 @@ fn rfc_tests() {
             }
         },
     );
+
+    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Maps)
     test_map(&[], false, &hex!("bf61610161629f0203ffff"), |m| {
         test_sub_string("a", m);
         test_sub_simple(1, m);
@@ -420,3 +445,13 @@ fn rfc_tests() {
         test_sub_simple(-2, m);
     });
 }
+
+// TODO: Add tests for missing requirements:
+//
+// - LLR 1.1.12 (Incomplete Item Detection):
+//   Verify that `Error::NeedMoreData` is returned for truncated inputs.
+//   For example, parsing `0x18` without a following byte.
+//
+// - LLR 1.1.11 (Opportunistic Parsing):
+//   Verify the specific contract of `try_parse`, ensuring it returns `Ok(None)`
+//   when a sequence is cleanly exhausted, rather than an error.

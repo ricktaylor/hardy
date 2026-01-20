@@ -318,3 +318,51 @@ impl BundleStorage for Storage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_atomic_save_ld_01() {
+        // TODO: LD-01 Atomic Save (fsync)
+        // Verifies the "save-to-temp, then rename" logic when `fsync` is enabled.
+        // Tests should simulate a crash (panic) after the temp file is written but before the rename,
+        // ensuring no partial bundle file is left with the final name.
+        todo!("Implement test_atomic_save_ld_01");
+    }
+
+    #[tokio::test]
+    async fn test_recovery_logic_ld_02() {
+        // TODO: LD-02 Recovery Logic
+        // Verifies the `recover()` function correctly handles a dirty storage directory.
+        // The test should set up a directory containing:
+        // 1. Valid bundle files.
+        // 2. Leftover `.tmp` files.
+        // 3. Zero-byte placeholder files.
+        // 4. Empty subdirectories.
+        // The test must confirm that only valid bundles are recovered and that temporary files
+        // and empty directories are cleaned up.
+        todo!("Implement test_recovery_logic_ld_02");
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_structure_ld_03() {
+        // TODO: LD-03 Filesystem Structure
+        // Verifies that the `xx/yy/` two-level directory structure is created correctly.
+        // It should also stress-test the filename collision logic by forcing many saves
+        // into the same subdirectory bucket to ensure it resolves collisions without error.
+        todo!("Implement test_filesystem_structure_ld_03");
+    }
+
+    // TODO: LD-04 `mmap` Feature Flag
+    // All test suites (Generic and Specific) must be run with and without the `mmap` feature flag enabled.
+
+    #[tokio::test]
+    async fn test_persistence_ld_05() {
+        // TODO: LD-05 Persistence
+        // Verifies that saved data survives the `Storage` object being dropped and recreated,
+        // pointing to the same `store_dir`. This confirms that file paths and recovery work across restarts.
+        todo!("Implement test_persistence_ld_05");
+    }
+}

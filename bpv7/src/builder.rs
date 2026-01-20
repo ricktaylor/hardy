@@ -299,6 +299,7 @@ impl From<BundleTemplate> for Builder<'_> {
     }
 }
 
+// Requirement: LLR 1.1.25
 #[test]
 fn test_builder() {
     Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -308,6 +309,7 @@ fn test_builder() {
         .unwrap();
 }
 
+// Requirement: LLR 1.1.25
 #[cfg(feature = "serde")]
 #[test]
 fn test_template() {

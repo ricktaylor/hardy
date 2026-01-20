@@ -289,3 +289,26 @@ impl Registry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Duplicate Registration' (Register CLA with existing name)
+    #[test]
+    fn test_duplicate_registration() {
+        todo!("Verify Register CLA with existing name");
+    }
+
+    // TODO: Implement test for 'Peer Lifecycle' (Verify RIB updates on peer add/remove)
+    #[test]
+    fn test_peer_lifecycle() {
+        todo!("Verify RIB updates on peer add/remove");
+    }
+
+    // TODO: Implement test for 'Cascading Cleanup' (Verify unregistering CLA removes peers)
+    #[test]
+    fn test_cascading_cleanup() {
+        todo!("Verify unregistering CLA removes peers");
+    }
+}

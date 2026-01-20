@@ -212,3 +212,68 @@ impl Store {
         h.await.trace_expect("Failed to join task")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: Implement test for 'Fast Path Saturation' (Fill memory channel to trigger Draining state)
+    #[test]
+    fn test_fast_path_saturation() {
+        todo!("Verify Fill memory channel to trigger Draining state");
+    }
+
+    // TODO: Implement test for 'Congestion Signal' (Send while Draining to trigger Congested state)
+    #[test]
+    fn test_congestion_signal() {
+        todo!("Verify Send while Draining to trigger Congested state");
+    }
+
+    // TODO: Implement test for 'Hysteresis Recovery' (Verify fast path re-opens only after drain)
+    #[test]
+    fn test_hysteresis_recovery() {
+        todo!("Verify fast path re-opens only after drain");
+    }
+
+    // TODO: Implement test for 'Lazy Expiry' (Verify expired bundles are dropped during poll)
+    #[test]
+    fn test_lazy_expiry() {
+        todo!("Verify expired bundles are dropped during poll");
+    }
+
+    // TODO: Implement test for 'Close Safety' (Verify sends fail when closing)
+    #[test]
+    fn test_close_safety() {
+        todo!("Verify sends fail when closing");
+    }
+
+    // TODO: Implement test for 'Drop-to-Storage Integrity' (Verify bundle dropped from memory is retrieved from persistent storage)
+    #[test]
+    fn test_drop_to_storage_integrity() {
+        todo!("Verify bundle dropped from memory is retrieved from persistent storage");
+    }
+
+    // TODO: Implement test for 'Hybrid Duplication' (Verify bundles already in channel are not re-injected by poller)
+    #[test]
+    fn test_hybrid_duplication() {
+        todo!("Verify bundles already in channel are not re-injected by poller");
+    }
+
+    // TODO: Implement test for 'Ordering Preservation' (Verify FIFO/Priority is maintained during mode switch)
+    #[test]
+    fn test_ordering_preservation() {
+        todo!("Verify FIFO/Priority is maintained during mode switch");
+    }
+
+    // TODO: Implement test for 'Status Consistency' (Verify bundles with mismatched status are filtered)
+    #[test]
+    fn test_status_consistency() {
+        todo!("Verify bundles with mismatched status are filtered");
+    }
+
+    // TODO: Implement test for 'Zombie Task Leak' (Verify poller task exits when Sender is dropped)
+    #[test]
+    fn test_zombie_task_leak() {
+        todo!("Verify poller task exits when Sender is dropped");
+    }
+}

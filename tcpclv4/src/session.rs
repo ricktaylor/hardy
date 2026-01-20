@@ -608,3 +608,30 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_parameter_negotiation_ut_tcp_03() {
+        // TODO: UT-TCP-03 Parameter Negotiation
+        // Verify that session parameters (Keepalive, Segment Size) are correctly negotiated
+        // (e.g., taking the minimum of local and peer values).
+        todo!("Implement test_parameter_negotiation_ut_tcp_03");
+    }
+
+    #[tokio::test]
+    async fn test_fragment_logic_ut_tcp_04() {
+        // TODO: UT-TCP-04 Fragment Logic
+        // Verify the logic that splits a large payload into XFER_SEGMENT chunks based on the negotiated segment size.
+        todo!("Implement test_fragment_logic_ut_tcp_04");
+    }
+
+    #[test]
+    fn test_reason_codes_ut_tcp_05() {
+        // TODO: UT-TCP-05 Reason Codes
+        // Verify mapping of internal errors (e.g., Storage Full) to correct SESS_TERM or XFER_REFUSE reason codes.
+        todo!("Implement test_reason_codes_ut_tcp_05");
+    }
+}
