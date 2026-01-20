@@ -46,11 +46,11 @@ fn dump_bundle(
         output.write_str("# BPv7 Bundle\n\n")?;
     }
 
-    output.append_str(format!("Source: {}\n", bundle.bundle.id.source))?;
-    output.append_str(format!("Destination: {}\n", bundle.bundle.destination))?;
-    output.append_str(format!("Created: {}\n", bundle.bundle.id.timestamp))?;
+    output.append_str(format!("Source: {}\n\n", bundle.bundle.id.source))?;
+    output.append_str(format!("Destination: {}\n\n", bundle.bundle.destination))?;
+    output.append_str(format!("Created: {}\n\n", bundle.bundle.id.timestamp))?;
     output.append_str(format!(
-        "Lifetime: {}\n",
+        "Lifetime: {}\n\n",
         humantime::format_duration(bundle.bundle.lifetime)
     ))?;
 
@@ -67,27 +67,27 @@ fn dump_bundle(
     dump_crc(bundle.bundle.crc_type, &output)?;
 
     if bundle.bundle.flags == bundle::Flags::default() {
-        output.append_str("Bundle Flags: None\n")?;
+        output.append_str("Bundle Flags: None\n\n")?;
     } else {
-        output.append_str("Bundle Flags:\n")?;
+        output.append_str("Bundle Flags:\n\n")?;
 
         if bundle.bundle.flags.is_fragment {
-            output.append_str("  * Is a fragment\n")?;
+            output.append_str("* Is a fragment\n")?;
 
             if bundle.bundle.flags.is_admin_record {
-                output.append_str("  * ADU is an Administrative Record\n")?;
+                output.append_str("* ADU is an Administrative Record\n")?;
             }
 
             if bundle.bundle.flags.do_not_fragment {
-                output.append_str("  * Do not fragment\n")?;
+                output.append_str("* Do not fragment\n")?;
             }
 
             if bundle.bundle.flags.app_ack_requested {
-                output.append_str("  * Application acknowledgement requested\n")?;
+                output.append_str("* Application acknowledgement requested\n")?;
             }
 
             if bundle.bundle.flags.report_status_time {
-                output.append_str("  * Include status time with reports\n")?;
+                output.append_str("* Include status time with reports\n")?;
 
                 if !bundle.bundle.flags.receipt_report_requested
                     || !bundle.bundle.flags.forward_report_requested
@@ -99,23 +99,23 @@ fn dump_bundle(
             }
 
             if bundle.bundle.flags.receipt_report_requested {
-                output.append_str("  * Reception report requested\n")?;
+                output.append_str("* Reception report requested\n")?;
             }
 
             if bundle.bundle.flags.forward_report_requested {
-                output.append_str("  * Forwarding report requested\n")?;
+                output.append_str("* Forwarding report requested\n")?;
             }
 
             if bundle.bundle.flags.delivery_report_requested {
-                output.append_str("  * Delivery report requested\n")?;
+                output.append_str("* Delivery report requested\n")?;
             }
 
             if bundle.bundle.flags.delete_report_requested {
-                output.append_str("  * Deletion report requested\n")?;
+                output.append_str("* Deletion report requested\n")?;
             }
 
             if let Some(u) = bundle.bundle.flags.unrecognised {
-                output.append_str(format!("  * Unrecognised: {u:#x}\n",))?;
+                output.append_str(format!("* Unrecognised: {u:#x}\n",))?;
             }
 
             output.append_str("\n")?;
@@ -131,13 +131,14 @@ fn dump_bundle(
         }
     }
 
-    output.append_str(format!("Report-To: {}\n", bundle.bundle.report_to))?;
+    output.append_str(format!("Report-To: {}\n\n", bundle.bundle.report_to))?;
 
     if !notes.is_empty() {
-        output.append_str("\n**Notes:**\n")?;
+        output.append_str("**Notes:**\n\n")?;
         for (idx, note) in notes.into_iter().enumerate() {
-            output.append_str(format!("  {idx}. {note}\n"))?;
+            output.append_str(format!("{idx}. {note}\n"))?;
         }
+        output.append_str("\n")?;
     }
 
     let blocks = bundle.bundle.blocks.keys().cloned().collect::<Vec<_>>();
@@ -158,12 +159,14 @@ fn dump_bundle(
 }
 
 fn dump_crc(crc: crc::CrcType, output: &io::Output) -> anyhow::Result<()> {
+    output.append_str("CRC: ")?;
     match crc {
-        crc::CrcType::None => output.append_str("CRC: None\n"),
-        crc::CrcType::Unrecognised(u) => output.append_str(format!("CRC: Unrecognised ({u})\n")),
-        crc::CrcType::CRC16_X25 => output.append_str("CRC: 16-bit (type 1)\n"),
-        crc::CrcType::CRC32_CASTAGNOLI => output.append_str("CRC: 32-bit (type 2)\n"),
-    }
+        crc::CrcType::None => output.append_str("None"),
+        crc::CrcType::Unrecognised(u) => output.append_str(format!("Unrecognised ({u})")),
+        crc::CrcType::CRC16_X25 => output.append_str("16-bit (type 1)"),
+        crc::CrcType::CRC32_CASTAGNOLI => output.append_str("32-bit (type 2)"),
+    }?;
+    output.append_str("\n\n")
 }
 
 fn dump_block(
@@ -174,7 +177,7 @@ fn dump_block(
     output: &io::Output,
     keys: &bpsec::key::KeySet,
 ) -> anyhow::Result<()> {
-    output.append_str(format!("\n## Block {block_number}: "))?;
+    output.append_str(format!("## Block {block_number}: "))?;
     match &block.block_type {
         block::Type::Primary => unreachable!(),
         block::Type::Payload => output.append_str("Payload\n\n"),
@@ -189,55 +192,53 @@ fn dump_block(
     dump_crc(block.crc_type, output)?;
 
     if block.flags == block::Flags::default() {
-        output.append_str("Block Flags: None\n")?;
+        output.append_str("Block Flags: None\n\n")?;
     } else {
-        output.append_str("Block Flags:\n")?;
+        output.append_str("Block Flags:\n\n")?;
 
         if block.flags.must_replicate {
-            output.append_str("  * Must replicate\n")?;
+            output.append_str("* Must replicate\n")?;
         }
 
         if block.flags.report_on_failure {
-            output.append_str("  * Report on failure\n")?;
+            output.append_str("* Report on failure\n")?;
         }
 
         if block.flags.delete_block_on_failure {
-            output.append_str("  * Delete block on failure\n")?;
+            output.append_str("* Delete block on failure\n")?;
         }
 
         if block.flags.delete_bundle_on_failure {
-            output.append_str("  * Delete bundle on failure\n")?;
+            output.append_str("* Delete bundle on failure\n")?;
         }
 
         if let Some(u) = block.flags.unrecognised {
-            output.append_str(format!("  * Unrecognised: {u:#x}\n",))?;
+            output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
         }
 
-        if block.bib.is_some() || block.bcb.is_some() {
-            output.append_str("\n")?;
-        }
+        output.append_str("\n")?;
     }
 
     if let Some(bib) = block.bib {
-        output.append_str(format!("Signed by Integrity Block {bib}"))?;
+        output.append_str(format!("Signed by Integrity Block {bib}: "))?;
 
         if let Err(e) = bundle.verify_block(block_number, data, keys) {
-            output.append_str(format!(": Error {e}\n"))?;
+            output.append_str(format!("Error {e}\n\n"))?;
         } else {
-            output.append_str(": ✔\n")?;
+            output.append_str("✔\n\n")?;
         }
     }
 
     let payload = if let Some(bcb) = block.bcb {
-        output.append_str(format!("Encrypted by Security Block {bcb}"))?;
+        output.append_str(format!("Encrypted by Security Block {bcb}: "))?;
 
         match bundle.decrypt_block_data(block_number, data, keys) {
             Err(e) => {
-                output.append_str(format!(": Error {e}\n"))?;
+                output.append_str(format!("Error {e}\n\n"))?;
                 None
             }
             Ok(p) => {
-                output.append_str(": ✔\n")?;
+                output.append_str("✔\n\n")?;
                 Some(p)
             }
         }
@@ -248,23 +249,21 @@ fn dump_block(
             .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?
     };
 
-    output.append_str("\n")?;
-
     if let Some(payload) = payload {
         match block.block_type {
             block::Type::Primary => unreachable!(),
             block::Type::PreviousNode => output.append_str(format!(
-                "Previous Node: {}\n",
+                "Previous Node: {}\n\n",
                 bundle.previous_node.as_ref().unwrap()
             )),
             block::Type::BundleAge => output.append_str(format!(
-                "Bundle Age: {}\n",
+                "Bundle Age: {}\n\n",
                 humantime::format_duration(bundle.age.unwrap())
             )),
             block::Type::HopCount => {
                 let hop_count = bundle.hop_count.as_ref().unwrap();
                 output.append_str(format!(
-                    "Hop Count: {} of {}\n",
+                    "Hop Count: {} of {}\n\n",
                     hop_count.count, hop_count.limit
                 ))
             }
@@ -276,23 +275,23 @@ fn dump_block(
         }
     } else {
         output.append_str(format!(
-            "Block Specific Data: {} bytes of encrypted data\n",
+            "### Block Specific Data\n\n{} bytes of encrypted data\n\n",
             block.data.len()
         ))
     }
 }
 
 fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
-    output.append_str("Block Specific Data:")?;
+    output.append_str("### Block Specific Data\n\n")?;
 
     if data.is_empty() {
-        return output.append_str(" None\n");
+        return output.append_str("None\n");
     }
 
     if let Ok(s) = str::from_utf8(data)
         && !s.contains(|c: char| c.is_control())
     {
-        return output.append_str(format!("\n`{s}`\n"));
+        return output.append_str(format!("`{s}`\n"));
     }
 
     let mut results = Vec::new();
@@ -320,95 +319,92 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     }
 
     if !results.is_empty() {
-        output.append_str(" Probably CBOR\n")?;
+        output.append_str("Probably CBOR\n")?;
         for s in results {
-            output.append_str(format!("`{s}`\n"))?;
+            output.append_str(format!("\n`{s}`\n"))?;
         }
 
         if data.is_empty() {
             return Ok(());
         }
 
-        output.append_str("Followed by")?;
+        output.append_str("\nFollowed by ")?;
     }
 
     output.append_str(format!(
-        " {} bytes of data in an unrecognized format\n",
+        "{} bytes of data in an unrecognized format\n",
         data.len()
     ))
 }
 
 fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     let ops = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data)?;
-    output.append_str(format!("Security Source: {}\n", ops.source))?;
+    output.append_str(format!(
+        "### BCB Data\n\nSecurity Source: {}\n\n",
+        ops.source
+    ))?;
 
     match ops.operations.values().next().unwrap() {
         bpsec::bcb::Operation::AES_GCM(op) => {
             output.append_str(format!(
-                "Context: BCB-AES-GCM {:?}\n",
+                "Context: BCB-AES-GCM {:?}\n\n",
                 op.parameters.variant
             ))?;
             output.append_str(format!(
-                "IV: ({} bits) {}\n",
+                "IV: ({} bits) {}\n\n",
                 op.parameters.iv.len() * 8,
                 dump_bytes(&op.parameters.iv),
             ))?;
             if let Some(key) = &op.parameters.key {
-                output.append_str(format!("Wrapped Key: {}\n", dump_bytes(key),))?;
+                output.append_str(format!("Wrapped Key: {}\n\n", dump_bytes(key),))?;
             }
 
             if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
-                output.append_str("Scope Flags: None\n")?;
+                output.append_str("Scope Flags: None\n\n")?;
             } else {
-                output.append_str("Scope Flags:\n")?;
+                output.append_str("Scope Flags:\n\n")?;
 
                 if op.parameters.flags.include_primary_block {
-                    output.append_str("  * Include primary block\n")?;
+                    output.append_str("* Include primary block\n")?;
                 }
 
                 if op.parameters.flags.include_target_header {
-                    output.append_str("  * Include target header\n")?;
+                    output.append_str("* Include target header\n")?;
                 }
 
                 if op.parameters.flags.include_security_header {
-                    output.append_str("  * Include security header\n")?;
+                    output.append_str("* Include security header\n")?;
                 }
 
                 if let Some(u) = op.parameters.flags.unrecognised {
-                    output.append_str(format!("  * Unrecognised: {u:#x}\n"))?;
+                    output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
                 }
+
+                output.append_str("\n")?;
             }
         }
         bpsec::bcb::Operation::Unrecognised(_u, op) => {
-            output.append_str("Context: Unrecognised Type {u}\n")?;
+            output.append_str("Context: Unrecognised Type {u}\n\n")?;
             for (p, v) in op.parameters.iter() {
-                output.append_str(format!("Parameter {p}: {}/n", dump_bytes(v)))?;
+                output.append_str(format!("Parameter {p}: {}\n\n", dump_bytes(v)))?;
             }
         }
     }
 
-    output.append_str("\n")?;
-
     for (target, op) in ops.operations {
+        output.append_str(format!("#### Target Block {target}\n\n"))?;
+
         match op {
             bpsec::bcb::Operation::AES_GCM(op) => {
                 if let Some(tag) = &op.results.0 {
-                    output.append_str(format!(
-                        "Target Block {target} Authentication Tag: {}\n",
-                        dump_bytes(tag)
-                    ))?;
+                    output.append_str(format!("Authentication Tag: {}\n\n", dump_bytes(tag)))?;
                 } else {
-                    output
-                        .append_str(format!("Target Block {target} Authentication Tag: None\n"))?;
+                    output.append_str("Authentication Tag: None\n\n")?;
                 }
             }
             bpsec::bcb::Operation::Unrecognised(_u, op) => {
-                output.append_str(format!("Target Block: {target}\n"))?;
                 for (r, v) in op.results.iter() {
-                    output.append_str(format!("Result {}: {}/n", r, dump_bytes(v)))?;
-                }
-                if !op.results.is_empty() {
-                    output.append_str("\n")?;
+                    output.append_str(format!("Result {}: {}\n\n", r, dump_bytes(v)))?;
                 }
             }
         }
@@ -419,65 +415,63 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 
 fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     let ops = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(data)?;
-    output.append_str(format!("Security Source: {}\n", ops.source))?;
+    output.append_str(format!(
+        "### BIB Data\n\nSecurity Source: {}\n\n",
+        ops.source
+    ))?;
 
     match ops.operations.values().next().unwrap() {
         bpsec::bib::Operation::HMAC_SHA2(op) => {
             output.append_str(format!(
-                "Context: BIB-HMAC-SHA2 {:?}\n",
+                "Context: BIB-HMAC-SHA2 {:?}\n\n",
                 op.parameters.variant
             ))?;
             if let Some(key) = &op.parameters.key {
-                output.append_str(format!("Wrapped Key: {}\n", dump_bytes(key),))?;
+                output.append_str(format!("Wrapped Key: {}\n\n", dump_bytes(key),))?;
             }
 
             if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
-                output.append_str("Scope Flags: None\n")?;
+                output.append_str("Scope Flags: None\n\n")?;
             } else {
-                output.append_str("Scope Flags:\n")?;
+                output.append_str("Scope Flags:\n\n")?;
 
                 if op.parameters.flags.include_primary_block {
-                    output.append_str("  * Include primary block\n")?;
+                    output.append_str("* Include primary block\n")?;
                 }
 
                 if op.parameters.flags.include_target_header {
-                    output.append_str("  * Include target header\n")?;
+                    output.append_str("* Include target header\n")?;
                 }
 
                 if op.parameters.flags.include_security_header {
-                    output.append_str("  * Include security header\n")?;
+                    output.append_str("* Include security header\n")?;
                 }
 
                 if let Some(u) = op.parameters.flags.unrecognised {
-                    output.append_str(format!("  * Unrecognised: {u:#x}\n"))?;
+                    output.append_str(format!("* Unrecognised: {u:#x}\n"))?;
                 }
+
+                output.append_str("\n")?;
             }
         }
         bpsec::bib::Operation::Unrecognised(_u, op) => {
-            output.append_str("Context: Unrecognised Type {u}\n")?;
+            output.append_str("Context: Unrecognised Type {u}\n\n")?;
             for (p, v) in op.parameters.iter() {
-                output.append_str(format!("Parameter {p}: {}/n", dump_bytes(v)))?;
+                output.append_str(format!("Parameter {p}: {}\n\n", dump_bytes(v)))?;
             }
         }
     }
 
-    output.append_str("\n")?;
-
     for (target, op) in ops.operations {
+        output.append_str(format!("#### Target Block: {target}\n\n"))?;
+
         match op {
             bpsec::bib::Operation::HMAC_SHA2(op) => {
-                output.append_str(format!(
-                    "Target Block {target} HMAC: {}\n",
-                    dump_bytes(&op.results.0)
-                ))?;
+                output.append_str(format!("HMAC: {}\n\n", dump_bytes(&op.results.0)))?;
             }
             bpsec::bib::Operation::Unrecognised(_u, op) => {
-                output.append_str(format!("Target Block: {target}\n"))?;
                 for (r, v) in op.results.iter() {
-                    output.append_str(format!("Result {r}: {}/n", dump_bytes(v)))?;
-                }
-                if !op.results.is_empty() {
-                    output.append_str("\n")?;
+                    output.append_str(format!("Result {r}: {}\n\n", dump_bytes(v)))?;
                 }
             }
         }
