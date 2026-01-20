@@ -65,12 +65,12 @@ pub enum ArgCrcType {
     #[clap(alias = "none")]
     None,
 
-    /// Standard X-25 CRC-16 [aliases: crc16_x25, 16]
-    #[clap(alias = "crc16_x25", alias = "16")]
+    /// Standard X-25 CRC-16 [aliases: crc16-x25, 16]
+    #[clap(alias = "crc16-x25", alias = "16")]
     Crc16,
 
-    /// Standard CRC32C (Castagnoli) CRC-32 [aliases: crc32_castagnoli, 32]
-    #[clap(alias = "crc32_castagnoli", alias = "32")]
+    /// Standard CRC32C (Castagnoli) CRC-32 [aliases: crc32-castagnoli, 32]
+    #[clap(alias = "crc32-castagnoli", alias = "32")]
     Crc32,
 }
 
