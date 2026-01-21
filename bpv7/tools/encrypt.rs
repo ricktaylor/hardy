@@ -90,7 +90,7 @@ impl Command {
                     &self.flags,
                 )),
                 self.source.unwrap_or(bundle.id.source.clone()),
-                key,
+                &key,
             )
             .map_err(|e| anyhow::anyhow!("Failed to encrypt block: {e}"))?;
 

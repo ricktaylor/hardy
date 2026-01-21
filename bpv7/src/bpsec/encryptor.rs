@@ -36,16 +36,16 @@ impl Context {
     }
 }
 
-struct BlockTemplate {
+struct BlockTemplate<'a> {
     context: Context,
     source: eid::Eid,
-    key: key::Key,
+    key: &'a key::Key,
 }
 
 pub struct Encryptor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
-    templates: HashMap<u64, BlockTemplate>,
+    templates: HashMap<u64, BlockTemplate<'a>>,
 }
 
 impl<'a> Encryptor<'a> {
@@ -62,7 +62,7 @@ impl<'a> Encryptor<'a> {
         block_number: u64,
         context: Context,
         source: eid::Eid,
-        key: key::Key,
+        key: &'a key::Key,
     ) -> Result<Self, Error> {
         if block_number == 0 {
             return Err(Error::InvalidTarget(block_number));
@@ -113,7 +113,7 @@ impl<'a> Encryptor<'a> {
                         BlockTemplate {
                             context: context.clone(),
                             source: source.clone(),
-                            key: key.clone(),
+                            key,
                         },
                     );
                 }
@@ -125,7 +125,7 @@ impl<'a> Encryptor<'a> {
                 BlockTemplate {
                     context: context.clone(),
                     source: source.clone(),
-                    key: key.clone(),
+                    key,
                 },
             );
         }
@@ -151,7 +151,7 @@ impl<'a> Encryptor<'a> {
 
         // Reorder and accumulate BCB operations if sharing is possible
         let mut bcbs = Vec::new();
-        let mut shared_bcbs = HashMap::<(eid::Eid, Context), Vec<(u64, key::Key)>>::new();
+        let mut shared_bcbs = HashMap::<(eid::Eid, Context), Vec<(u64, &'a key::Key)>>::new();
         for (block_number, template) in self.templates {
             if template.context.can_share() {
                 shared_bcbs
@@ -220,7 +220,7 @@ impl<'a> Encryptor<'a> {
                         source,
                         blocks: &editor_bs,
                     },
-                    &key,
+                    key,
                 )?;
 
                 // Rewrite the target block

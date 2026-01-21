@@ -301,13 +301,12 @@ mod test {
         let all_keys = key::KeySet::new(vec![sign_key.clone(), enc_key.clone()]);
 
         // 2. Sign
-        let signer = signer::Signer::new(&bundle, &bundle_bytes);
-        let signer = signer
+        let signer = signer::Signer::new(&bundle, &bundle_bytes)
             .sign_block(
                 1,
                 signer::Context::HMAC_SHA2(ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
-                sign_key.clone(),
+                &sign_key,
             )
             .expect("Failed to sign block");
         let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
@@ -323,13 +322,12 @@ mod test {
             ..ScopeFlags::default()
         };
 
-        let encryptor = encryptor::Encryptor::new(&parsed_signed.bundle, &signed_bytes);
-        let encryptor = encryptor
+        let encryptor = encryptor::Encryptor::new(&parsed_signed.bundle, &signed_bytes)
             .encrypt_block(
                 1,
                 encryptor::Context::AES_GCM(flags),
                 "ipn:2.1".parse().unwrap(),
-                enc_key.clone(),
+                &enc_key,
             )
             .expect("Failed to encrypt block");
         let encrypted_bytes = encryptor

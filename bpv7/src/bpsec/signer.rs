@@ -30,16 +30,16 @@ pub enum Context {
     HMAC_SHA2(rfc9173::ScopeFlags),
 }
 
-struct BlockTemplate {
+struct BlockTemplate<'a> {
     context: Context,
     source: eid::Eid,
-    key: key::Key,
+    key: &'a key::Key,
 }
 
 pub struct Signer<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
-    templates: HashMap<u64, BlockTemplate>,
+    templates: HashMap<u64, BlockTemplate<'a>>,
 }
 
 impl<'a> Signer<'a> {
@@ -56,7 +56,7 @@ impl<'a> Signer<'a> {
         block_number: u64,
         context: Context,
         source: eid::Eid,
-        key: key::Key,
+        key: &'a key::Key,
     ) -> Result<Self, Error> {
         let block = self
             .original
@@ -104,7 +104,7 @@ impl<'a> Signer<'a> {
         }
 
         // Reorder and accumulate BIB operations
-        let mut blocks = HashMap::<(eid::Eid, Context), Vec<(u64, key::Key)>>::new();
+        let mut blocks = HashMap::<(eid::Eid, Context), Vec<(u64, &'a key::Key)>>::new();
         for (block_number, template) in self.templates {
             blocks
                 .entry((template.source, template.context))
@@ -162,7 +162,7 @@ impl<'a> Signer<'a> {
                             source,
                             blocks: &editor_bs,
                         },
-                        &key,
+                        key,
                     )?,
                 );
             }
