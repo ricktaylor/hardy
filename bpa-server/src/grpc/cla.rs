@@ -128,7 +128,7 @@ impl hardy_bpa::cla::Cla for Cla {
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
-                bundle: bundle.to_vec().into(),
+                bundle,
                 address: Some(cla_addr.clone().into()),
                 queue,
             }))
