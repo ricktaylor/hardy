@@ -8,6 +8,8 @@ mod extract;
 mod io;
 mod keys;
 mod print;
+mod remove_bcb;
+mod remove_bib;
 mod rewrite;
 mod sign;
 mod validate;
@@ -52,6 +54,12 @@ enum Commands {
     /// Verify the integrity of a block in a bundle
     Verify(verify::Command),
 
+    /// Remove the integrity protection (BIB) from a block in a bundle
+    RemoveBib(remove_bib::Command),
+
+    /// Remove the encryption (BCB) from a block in a bundle
+    RemoveBcb(remove_bcb::Command),
+
     /// Print the content of a bundle
     Print(print::Command),
 }
@@ -69,6 +77,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Extract(args) => args.exec(),
         Commands::Sign(args) => args.exec(),
         Commands::Verify(args) => args.exec(),
+        Commands::RemoveBib(args) => args.exec(),
+        Commands::RemoveBcb(args) => args.exec(),
         Commands::Print(args) => args.exec(),
     }
 }

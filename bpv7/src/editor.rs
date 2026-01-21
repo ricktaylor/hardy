@@ -317,16 +317,16 @@ impl<'a> Editor<'a> {
         let Some(bib) = target_block.bib else {
             return Ok(self);
         };
-        let Some((_, payload)) = self.block(bib) else {
+        let Some((_, bib_payload)) = self.block(bib) else {
             return Ok(self);
         };
-        let Some(payload) = payload else {
+        let Some(bib_payload) = bib_payload else {
             return Ok(self);
         };
         let target_block = target_block.clone();
 
-        let mut opset =
-            hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(payload).map_err(|e| {
+        let mut opset = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
+            .map_err(|e| {
                 Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
                     field: "BIB Abstract Syntax Block",
                     source: e.into(),
@@ -356,20 +356,87 @@ impl<'a> Editor<'a> {
         Ok(self)
     }
 
-    /// Create a `Signer` to sign blocks in the bundle.
+    /// Remove the encryption from a block in the bundle.
     ///
-    /// Note that this consumes the `Editor`, so any modifications made to the
-    /// bundle prior to calling this method will be completed prior to signing.
-    pub fn signer(self) -> bpsec::signer::Signer<'a> {
-        bpsec::signer::Signer::new(self.original, self.source_data)
-    }
+    /// Note that this will rewrite (or remove) the target and the BCB block.
+    pub fn remove_encryption(
+        mut self,
+        block_number: u64,
+        key_f: &impl bpsec::key::KeyStore,
+    ) -> Result<Self, Error> {
+        if block_number == 0 {
+            return Err(Error::PrimaryBlock);
+        }
 
-    /// Create an `Encryptor` to encrypt blocks in the bundle.
-    ///
-    /// Note that this consumes the `Editor`, so any modifications made to the
-    /// bundle prior to calling this method will be completed prior to signing.
-    pub fn encryptor(self) -> bpsec::encryptor::Encryptor<'a> {
-        bpsec::encryptor::Encryptor::new(self.original, self.source_data)
+        let target_block = self
+            .block(block_number)
+            .ok_or(Error::NoSuchBlock(block_number))?
+            .0;
+
+        let Some(bcb) = target_block.bcb else {
+            return Ok(self);
+        };
+        let Some((_, bcb_payload)) = self.block(bcb) else {
+            return Ok(self);
+        };
+        let Some(bcb_payload) = bcb_payload else {
+            return Ok(self);
+        };
+        let original_block = target_block.clone();
+
+        let mut opset = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
+            .map_err(|e| {
+                Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                    field: "BCB Abstract Syntax Block",
+                    source: e.into(),
+                }))
+            })?;
+
+        let Some(op) = opset.operations.remove(&block_number) else {
+            return Ok(self);
+        };
+
+        // Decrypt the target payload
+        let block_set = EditorBlockSet { editor: self };
+        let mut target_payload = op
+            .decrypt(
+                key_f,
+                bpsec::bcb::OperationArgs {
+                    bpsec_source: &opset.source,
+                    target: block_number,
+                    source: bcb,
+                    blocks: &block_set,
+                },
+            )
+            .map_err(|e| Error::Builder(builder::Error::InternalError(e.into())))?;
+
+        // Steal the content of the decrypted payload
+        // This is safe as this function is an explicit 'remove the encryption', hence
+        // removing the Zeroizing<> is valid
+        let target_payload: Box<[u8]> = std::mem::take(&mut target_payload);
+
+        // Replace the block payload
+        let mut block = block_set
+            .editor
+            .update_block(block_number)?
+            .with_data(target_payload.into_vec().into());
+        if original_block.bib.is_none() && matches!(original_block.crc_type, crc::CrcType::None) {
+            // Ensure we have a CRC
+            block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
+        }
+        self = block.rebuild();
+
+        if opset.operations.is_empty() {
+            self.remove_block_inner(bcb);
+        } else {
+            // Rewrite BCB
+            self = self
+                .update_block(bcb)?
+                .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                .rebuild();
+        }
+
+        Ok(self)
     }
 
     /// Rebuild the bundle, applying all of the modifications.
