@@ -63,17 +63,6 @@ impl hardy_cbor::decode::FromCbor for Context {
 }
 
 pub trait BlockSet<'a> {
-    fn block(&self, block_number: u64) -> Option<&block::Block>;
-
-    fn block_payload(
-        &'a self,
-        block_number: u64,
-        block: &block::Block,
-    ) -> Option<block::Payload<'a>>;
-
-    fn primary_block(&'a self) -> block::Payload<'a> {
-        self.block(0)
-            .and_then(|primary_block| self.block_payload(0, primary_block))
-            .expect("Missing primary block!")
-    }
+    fn block(&'a self, block_number: u64)
+    -> Option<(&'a block::Block, Option<block::Payload<'a>>)>;
 }

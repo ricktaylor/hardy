@@ -196,7 +196,6 @@ impl<'a> Editor<'a> {
                 .find_map(|(block_number, template)| match template {
                     BlockTemplate::Keep(t) if &block_type == t => {
                         let block = self.original.blocks.get(block_number)?;
-
                         Some((
                             *block_number,
                             false,
@@ -280,7 +279,80 @@ impl<'a> Editor<'a> {
         if block_number == 1 {
             return Err(Error::PayloadBlock);
         }
-        self.blocks.remove(&block_number);
+        self.remove_block_inner(block_number);
+        Ok(self)
+    }
+
+    fn remove_block_inner(&mut self, block_number: u64) -> bool {
+        self.blocks.remove(&block_number).is_some()
+    }
+
+    // Helper to get the inner Block
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Option<&'a [u8]>)> {
+        match self.blocks.get(&block_number)? {
+            BlockTemplate::Keep(_) => {
+                let block = self.original.blocks.get(&block_number)?;
+                Some((block, block.payload(self.source_data)))
+            }
+            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => Some((
+                &template.block,
+                template.data.as_ref().map(|data| data.as_ref()),
+            )),
+        }
+    }
+
+    /// Remove the integrity check from a block in the bundle.
+    ///
+    /// Note that this will rewrite (or remove) the BIB block.
+    pub fn remove_integrity(mut self, block_number: u64) -> Result<Self, Error> {
+        if block_number == 0 {
+            return Err(Error::PrimaryBlock);
+        }
+
+        let target_block = self
+            .block(block_number)
+            .ok_or(Error::NoSuchBlock(block_number))?
+            .0;
+
+        let Some(bib) = target_block.bib else {
+            return Ok(self);
+        };
+        let Some((_, payload)) = self.block(bib) else {
+            return Ok(self);
+        };
+        let Some(payload) = payload else {
+            return Ok(self);
+        };
+        let target_block = target_block.clone();
+
+        let mut opset =
+            hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(payload).map_err(|e| {
+                Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                    field: "BIB Abstract Syntax Block",
+                    source: e.into(),
+                }))
+            })?;
+
+        // Remove the target from the BIB
+        if opset.operations.remove(&block_number).is_some() {
+            if opset.operations.is_empty() {
+                self.remove_block_inner(bib);
+            } else {
+                // Rewrite BIB
+                self = self
+                    .update_block(bib)?
+                    .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                    .rebuild();
+            }
+
+            if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
+                // Ensure we have a CRC
+                self = self
+                    .update_block(block_number)?
+                    .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+                    .rebuild();
+            }
+        }
         Ok(self)
     }
 
@@ -362,7 +434,9 @@ impl<'a> Editor<'a> {
                 .original
                 .blocks
                 .get(&block_number)
-                .expect("Mismatched block in bundle!")
+                .ok_or(Error::Builder(builder::Error::InternalError(
+                    crate::Error::Altered,
+                )))?
                 .clone();
             block.copy_whole(self.source_data, array);
             Ok(block)
@@ -441,42 +515,11 @@ pub(crate) struct EditorBlockSet<'a> {
 }
 
 impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
-    fn block(&self, block_number: u64) -> Option<&block::Block> {
-        match self.editor.blocks.get(&block_number)? {
-            BlockTemplate::Keep(_) => self.editor.original.blocks.get(&block_number),
-            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
-                Some(&template.block)
-            }
-        }
-    }
-
-    fn block_payload(
+    fn block(
         &'a self,
         block_number: u64,
-        block: &block::Block,
-    ) -> Option<block::Payload<'a>> {
-        match self.editor.blocks.get(&block_number)? {
-            BlockTemplate::Keep(_) => block
-                .payload(self.editor.source_data)
-                .map(block::Payload::Borrowed),
-            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
-                match template
-                    .data
-                    .as_ref()
-                    .map(|data| block::Payload::Borrowed(data.as_ref()))
-                {
-                    Some(data) => Some(data),
-                    None => self
-                        .editor
-                        .original
-                        .blocks
-                        .get(&block_number)
-                        .and_then(|b| {
-                            b.payload(self.editor.source_data)
-                                .map(block::Payload::Borrowed)
-                        }),
-                }
-            }
-        }
+    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        let (block, payload) = self.editor.block(block_number)?;
+        Some((block, payload.map(block::Payload::Borrowed)))
     }
 }

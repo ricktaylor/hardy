@@ -343,22 +343,29 @@ struct VerifyBlockSet<'a, K: bpsec::key::KeyStore> {
 
 impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> {
     /// Retrieves a reference to a block by its number.
-    fn block(&self, block_number: u64) -> Option<&block::Block> {
-        self.bundle.blocks.get(&block_number)
-    }
-
-    /// Retrieves the payload of a block as a byte slice.
-    fn block_payload(&self, block_number: u64, block: &block::Block) -> Option<block::Payload<'a>> {
-        // Check for BCB
-        if let Some(bcb_block_number) = &block.bcb {
-            self.bundle
-                .decrypt_block_inner(block_number, *bcb_block_number, self.source_data, self.keys)
-                .ok()
-        } else {
-            block
-                .payload(self.source_data)
-                .map(block::Payload::Borrowed)
-        }
+    fn block(
+        &'a self,
+        block_number: u64,
+    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        let block = self.bundle.blocks.get(&block_number)?;
+        Some((
+            block,
+            // Check for BCB
+            if let Some(bcb_block_number) = &block.bcb {
+                self.bundle
+                    .decrypt_block_inner(
+                        block_number,
+                        *bcb_block_number,
+                        self.source_data,
+                        self.keys,
+                    )
+                    .ok()
+            } else {
+                block
+                    .payload(self.source_data)
+                    .map(block::Payload::Borrowed)
+            },
+        ))
     }
 }
 
@@ -372,22 +379,20 @@ struct DecryptBlockSet<'a, K: bpsec::key::KeyStore> {
 
 impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for DecryptBlockSet<'a, K> {
     /// Retrieves a reference to a block by its number.
-    fn block(&self, block_number: u64) -> Option<&block::Block> {
-        self.inner.block(block_number)
-    }
-
-    /// Retrieves the payload of a block as a byte slice.
-    fn block_payload(
+    fn block(
         &'a self,
         block_number: u64,
-        block: &block::Block,
-    ) -> Option<block::Payload<'a>> {
-        if self.target == block_number {
-            block
-                .payload(self.inner.source_data)
-                .map(block::Payload::Borrowed)
+    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        if self.target != block_number {
+            self.inner.block(block_number)
         } else {
-            self.inner.block_payload(block_number, block)
+            let block = self.inner.bundle.blocks.get(&block_number)?;
+            Some((
+                block,
+                block
+                    .payload(self.inner.source_data)
+                    .map(block::Payload::Borrowed),
+            ))
         }
     }
 }

@@ -178,7 +178,11 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
 
     if flags.include_primary_block {
         encoder.emit(&hardy_cbor::encode::Raw(
-            args.blocks.primary_block().as_ref(),
+            args.blocks
+                .block(0)
+                .and_then(|v| v.1)
+                .expect("Missing primary block!")
+                .as_ref(),
         ));
     }
 
@@ -186,7 +190,8 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
         let target_block = args
             .blocks
             .block(args.target)
-            .ok_or(Error::MissingSecurityTarget)?;
+            .ok_or(Error::MissingSecurityTarget)?
+            .0;
         encoder.emit(&target_block.block_type);
         encoder.emit(&args.target);
         encoder.emit(&target_block.flags);
@@ -196,7 +201,8 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
         let source_block = args
             .blocks
             .block(args.source)
-            .ok_or(Error::MissingSecurityTarget)?;
+            .ok_or(Error::MissingSecurityTarget)?
+            .0;
         encoder.emit(&source_block.block_type);
         encoder.emit(&args.source);
         encoder.emit(&source_block.flags);
@@ -234,13 +240,14 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {
-        let target_block = args
+        let (target_block, payload) = args
             .blocks
             .block(args.target)
             .ok_or(Error::MissingSecurityTarget)?;
         if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
+        let payload = payload.ok_or(Error::MissingSecurityTarget)?;
 
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Encrypt)
@@ -290,11 +297,6 @@ impl Operation {
             return Err(Error::NoValidKey);
         };
 
-        let data = args
-            .blocks
-            .block_payload(args.target, target_block)
-            .ok_or(Error::MissingSecurityTarget)?;
-
         let aad = build_data(&scope_flags, &args)?;
 
         let active_cek = cek
@@ -311,7 +313,7 @@ impl Operation {
                         cipher,
                         (*aes_gcm::Aes128Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
                         &aad,
-                        data.as_ref(),
+                        payload.as_ref(),
                     )
                 }),
             AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(active_cek)
@@ -321,7 +323,7 @@ impl Operation {
                         cipher,
                         (*aes_gcm::Aes256Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
                         &aad,
-                        data.as_ref(),
+                        payload.as_ref(),
                     )
                 }),
             AesVariant::Unrecognised(_) => unreachable!(),
@@ -366,7 +368,7 @@ impl Operation {
         key_f: &impl key::KeyStore,
         args: bcb::OperationArgs,
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-        let target_block = args
+        let (target_block, data) = args
             .blocks
             .block(args.target)
             .ok_or(Error::MissingSecurityTarget)?;
@@ -375,10 +377,7 @@ impl Operation {
         }
 
         // This will always be Payload::Borrowed because we are decrypting now!
-        let data = args
-            .blocks
-            .block_payload(args.target, target_block)
-            .ok_or(Error::MissingSecurityTarget)?;
+        let data = data.ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&self.parameters.flags, &args)?;
 

@@ -37,23 +37,19 @@ struct BlockParse<'a> {
 }
 
 impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
-    fn block(&self, block_number: u64) -> Option<&block::Block> {
-        self.blocks.get(&block_number)
-    }
-
-    fn block_payload(
-        &'a self,
-        block_number: u64,
-        block: &block::Block,
-    ) -> Option<block::Payload<'a>> {
-        if let Some(b) = self.decrypted_data.get(&block_number) {
-            Some(b.as_ref())
-        } else if let Some(Some(b)) = self.noncanonical_blocks.get(&block_number) {
-            Some(b.as_ref())
-        } else {
-            block.payload(self.source_data)
-        }
-        .map(block::Payload::Borrowed)
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        let block = self.blocks.get(&block_number)?;
+        Some((
+            block,
+            if let Some(b) = self.decrypted_data.get(&block_number) {
+                Some(b.as_ref())
+            } else if let Some(Some(b)) = self.noncanonical_blocks.get(&block_number) {
+                Some(b.as_ref())
+            } else {
+                block.payload(self.source_data)
+            }
+            .map(block::Payload::Borrowed),
+        ))
     }
 }
 

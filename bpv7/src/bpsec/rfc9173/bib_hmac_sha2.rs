@@ -186,14 +186,21 @@ where
         .0,
     );
 
-    let target_block = args
+    let (target_block, payload) = args
         .blocks
         .block(args.target)
         .ok_or(Error::MissingSecurityTarget)?;
+    let payload = payload.ok_or(Error::MissingSecurityTarget)?;
 
     if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
-            mac.update(args.blocks.primary_block().as_ref());
+            mac.update(
+                args.blocks
+                    .block(0)
+                    .and_then(|v| v.1)
+                    .expect("Missing primary block!")
+                    .as_ref(),
+            );
         }
 
         if flags.include_target_header {
@@ -209,18 +216,14 @@ where
         let source_block = args
             .blocks
             .block(args.source)
-            .ok_or(Error::MissingSecurityTarget)?;
+            .ok_or(Error::MissingSecurityTarget)?
+            .0;
         let mut encoder = hardy_cbor::encode::Encoder::new();
         encoder.emit(&source_block.block_type);
         encoder.emit(&args.source);
         encoder.emit(&source_block.flags);
         mac.update(&encoder.build());
     }
-
-    let payload = args
-        .blocks
-        .block_payload(args.target, target_block)
-        .ok_or(Error::MissingSecurityTarget)?;
 
     // Reduce copying here
     mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(&payload)).0);
@@ -307,7 +310,8 @@ impl Operation {
         let target_block = args
             .blocks
             .block(args.target)
-            .ok_or(Error::MissingSecurityTarget)?;
+            .ok_or(Error::MissingSecurityTarget)?
+            .0;
         if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
@@ -410,7 +414,8 @@ impl Operation {
         let target_block = args
             .blocks
             .block(args.target)
-            .ok_or(Error::MissingSecurityTarget)?;
+            .ok_or(Error::MissingSecurityTarget)?
+            .0;
         if !matches!(target_block.crc_type, crc::CrcType::None) {
             return Err(Error::CrcPresent);
         }
