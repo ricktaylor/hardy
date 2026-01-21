@@ -81,7 +81,7 @@ impl From<ClaAddress> for (ClaAddressType, Bytes) {
         match value {
             ClaAddress::Tcp(socket_addr) => (
                 ClaAddressType::Tcp,
-                socket_addr.to_string().as_bytes().to_vec().into(),
+                socket_addr.to_string().into_bytes().into(),
             ),
             ClaAddress::Private(bytes) => (ClaAddressType::Private, bytes),
         }

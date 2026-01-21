@@ -227,7 +227,7 @@ impl<'a> Encryptor<'a> {
                 editor_bs.editor = editor_bs
                     .editor
                     .update_block(target)?
-                    .with_data(data.to_vec().into())
+                    .with_data(data.into_vec().into())
                     .rebuild();
 
                 operations.insert(target, op);
