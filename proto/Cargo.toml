@@ -7,7 +7,12 @@ edition.workspace = true
 path = "lib.rs"
 crate-type = ["rlib"]
 
+[features]
+default = []
+tracing = ["hardy-async/tracing"]
+
 [dependencies]
+hardy-async = { path = "../async" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "time"] }

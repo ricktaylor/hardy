@@ -146,6 +146,7 @@ where
     S::Msg: Send,
 {
     tx: tokio::sync::mpsc::Sender<Option<Msg<S::Msg, R::Msg>>>,
+    tasks: hardy_async::task_pool::TaskPool,
 }
 
 impl<S, R> RpcProxy<S, R>
@@ -206,8 +207,13 @@ where
     ) -> Self {
         // Now create the worker
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        tokio::spawn(run(channel_receiver, rx, channel_sender, handler));
-        Self { tx }
+
+        let tasks = hardy_async::task_pool::TaskPool::new();
+        hardy_async::spawn!(tasks, "rpc_proxy_run", async move {
+            run(channel_receiver, rx, channel_sender, handler).await;
+        });
+
+        Self { tx, tasks }
     }
 
     pub async fn call(&self, msg: S::Msg) -> Result<Option<R::Msg>, tonic::Status> {
@@ -224,5 +230,8 @@ where
     pub async fn close(&self) {
         // Send hangup message
         _ = self.tx.send(None).await;
+
+        // Wait for run() to exit
+        self.tasks.shutdown().await;
     }
 }
