@@ -19,7 +19,7 @@ hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 tracing = "0.1.44"
 tokio = { version = "1.49.0", features = ["macros", "time", "net", "io-util"] }
-tokio-util = { version = "0.7.18", features = ["rt", "codec"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
 tower = { version = "0.5.3", features = ["util", "limit"] }
 tokio-tower = "0.6.0"
 trace-err = "0.1.5"

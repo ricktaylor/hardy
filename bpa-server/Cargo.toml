@@ -29,7 +29,7 @@ hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"],
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
-tokio-util = { version = "0.7.18", features = ["rt"] }
+tokio-util = "0.7.18"
 tokio-stream = { version = "0.1.18", optional = true }
 tonic = { version = "0.14.2", optional = true }
 prost-types = { version = "0.14.3", optional = true }

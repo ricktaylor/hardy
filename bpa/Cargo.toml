@@ -20,8 +20,9 @@ hardy-cbor = { path = "../cbor" }
 hardy-eid-patterns = { path = "../eid-patterns" }
 time = { version = "0.3.45", features = ["serde-human-readable"] }
 async-trait = "0.1.89"
+bytes = "1.11.0"
 tokio = { version = "1.49.0", features = ["rt", "macros", "time"] }
-tokio-util = { version = "0.7.18", features = ["rt"] }
+tokio-util = "0.7.18"
 tracing = "0.1.44"
 metrics = "0.24.3"
 trace-err = "0.1.5"
