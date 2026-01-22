@@ -64,11 +64,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 .and_then(|c| c.server_config.as_ref())
                 .is_some()
         {
-            inner.start_listeners(
-                &self.config,
-                &self.tasks,
-                &tls_config,
-            );
+            inner.start_listeners(&self.config, &self.tasks, &tls_config);
         }
 
         // Ensure single initialization
