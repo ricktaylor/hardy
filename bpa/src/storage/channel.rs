@@ -106,16 +106,9 @@ impl Store {
 
         let store = self.clone();
         let shared_cloned = shared.clone();
-        let task = async move { Self::poll_queue(store, shared_cloned, cap).await };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "channel_queue_poll", ?status);
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
+        task_pool::spawn!(self.tasks, "channel_queue_poll", (?status), async move {
+            Self::poll_queue(store, shared_cloned, cap).await
+        });
 
         (
             Sender {
@@ -181,7 +174,7 @@ impl Store {
         let (inner_tx, inner_rx) = flume::bounded::<bundle::Bundle>(cap);
         let shared_cloned = shared.clone();
 
-        let task = async move {
+        let h = task_pool::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv_async().await {
                 // Just do some checks
@@ -193,16 +186,7 @@ impl Store {
                 }
             }
             Ok(pushed_one)
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "poll_pending_once");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        let h = self.task_tracker.spawn(task);
+        });
 
         self.metadata_storage
             .poll_pending(inner_tx, &shared.status, cap)

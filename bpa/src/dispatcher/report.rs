@@ -159,7 +159,7 @@ impl Dispatcher {
 
             // Dispatch the new bundle
             let dispatcher = self.clone();
-            let task = async move {
+            task_pool::spawn!(self.tasks, "dispatch_status_report_task", async move {
                 match dispatcher.process_bundle(&mut bundle).await {
                     dispatch::DispatchResult::Gone => {}
                     dispatch::DispatchResult::Forward(peer) => {
@@ -176,16 +176,7 @@ impl Dispatcher {
                         unreachable!("Fragmented status report?!")
                     }
                 }
-            };
-
-            #[cfg(feature = "tracing")]
-            let task = {
-                let span = tracing::trace_span!(parent: None, "dispatch_status_report_task");
-                span.follows_from(tracing::Span::current());
-                task.instrument(span)
-            };
-
-            self.task_tracker.spawn(task);
+            });
         }
     }
 }

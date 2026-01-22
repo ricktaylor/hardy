@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::RwLock,
 };
+use task_pool::TaskPool;
 
 mod find;
 mod local;
@@ -30,8 +31,7 @@ struct RibInner {
 
 pub struct Rib {
     inner: RwLock<RibInner>,
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
+    tasks: TaskPool,
     poll_waiting_notify: Arc<tokio::sync::Notify>,
     store: Arc<storage::Store>,
 }
@@ -44,17 +44,16 @@ impl Rib {
                 routes: BTreeMap::new(),
                 address_types: HashMap::new(),
             }),
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            task_tracker: tokio_util::task::TaskTracker::new(),
+            tasks: TaskPool::new(),
             poll_waiting_notify: Arc::new(tokio::sync::Notify::new()),
             store,
         }
     }
 
     pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
-        let cancel_token = self.cancel_token.clone();
+        let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
-        let task = async move {
+        task_pool::spawn!(self.tasks, "poll_waiting_task", async move {
             loop {
                 tokio::select! {
                     _ = rib.poll_waiting_notify.notified() => {
@@ -67,22 +66,11 @@ impl Rib {
             }
 
             debug!("Poll waiting task complete");
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "poll_waiting_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
+        });
     }
 
     pub async fn shutdown(&self) {
-        self.cancel_token.cancel();
-        self.task_tracker.close();
-        self.task_tracker.wait().await;
+        self.tasks.shutdown().await;
     }
 
     async fn notify_updated(&self) {

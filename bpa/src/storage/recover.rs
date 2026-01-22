@@ -13,7 +13,7 @@ impl Store {
         // Start the store - this can take a while as the store is walked
         let store = self.clone();
         let dispatcher = dispatcher.clone();
-        let task = async move {
+        task_pool::spawn!(self.tasks, "store_check_task", async move {
             // Start the store - this can take a while as the store is walked
             info!("Starting store consistency check...");
 
@@ -48,19 +48,10 @@ impl Store {
 
             store.bundle_storage_recovery(dispatcher.clone()).await;
 
-            if !store.cancel_token.is_cancelled() {
+            if !store.tasks.is_cancelled() {
                 store.metadata_storage_recovery(dispatcher).await;
             }
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "store_check_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
+        });
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -70,7 +61,7 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
-        let cancel_token = self.cancel_token.clone();
+        let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
         let task = async move {
             loop {
@@ -115,7 +106,7 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
-        let cancel_token = self.cancel_token.clone();
+        let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
         let task = async move {
             loop {

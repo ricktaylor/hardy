@@ -109,7 +109,7 @@ impl Store {
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {},
                 _ = self.reaper_wakeup.notified() => {},
-                _ = self.cancel_token.cancelled() => {
+                _ = self.tasks.cancel_token().cancelled() => {
                     // Shutting down
                     debug!("Reaper task complete");
                     break;
@@ -161,22 +161,15 @@ impl Store {
 
                 // No active task, so we can spawn a new one.
                 let reaper = self.clone();
-                let task = async move { reaper.refill_cache().await };
-
-                #[cfg(feature = "tracing")]
-                let task = {
-                    let span = tracing::trace_span!(parent: None, "refill_cache_task");
-                    span.follows_from(tracing::Span::current());
-                    task.instrument(span)
-                };
-
-                repopulation_task = Some(self.task_tracker.spawn(task));
+                repopulation_task = Some(task_pool::spawn!(self.tasks, "refill_cache_task", async move {
+                    reaper.refill_cache().await
+                }));
             }
         }
     }
 
     async fn refill_cache(self: Arc<Self>) {
-        let outer_cancel_token = self.cancel_token.child_token();
+        let outer_cancel_token = self.tasks.child_token();
         let cancel_token = outer_cancel_token.clone();
         let reaper = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.reaper_cache_size);

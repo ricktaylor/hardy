@@ -1,6 +1,7 @@
 use super::{metadata::*, *};
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use std::collections::BTreeSet;
+use task_pool::TaskPool;
 
 mod admin;
 mod dispatch;
@@ -11,8 +12,7 @@ mod report;
 mod restart;
 
 pub struct Dispatcher {
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
+    tasks: TaskPool,
     store: Arc<storage::Store>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
@@ -37,8 +37,7 @@ impl Dispatcher {
         //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
     ) -> Self {
         Self {
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            task_tracker: tokio_util::task::TaskTracker::new(),
+            tasks: TaskPool::new(),
             store,
             service_registry,
             cla_registry,
@@ -58,9 +57,7 @@ impl Dispatcher {
     }
 
     pub async fn shutdown(&self) {
-        self.cancel_token.cancel();
-        self.task_tracker.close();
-        self.task_tracker.wait().await;
+        self.tasks.shutdown().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]

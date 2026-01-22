@@ -83,7 +83,7 @@ impl Store {
         status: &metadata::BundleStatus,
     ) -> Option<ReassemblyResult> {
         // Poll the store for the other fragments
-        let outer_cancel_token = self.cancel_token.child_token();
+        let outer_cancel_token = self.tasks.child_token();
         let cancel_token = outer_cancel_token.clone();
 
         let source = bundle.bundle.id.source.clone();

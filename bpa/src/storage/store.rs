@@ -4,8 +4,7 @@ impl Store {
     pub fn new(config: &config::Config) -> Self {
         // Init pluggable storage engines
         Self {
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            task_tracker: tokio_util::task::TaskTracker::new(),
+            tasks: TaskPool::new(),
             metadata_storage: config
                 .metadata_storage
                 .as_ref()
@@ -31,22 +30,13 @@ impl Store {
 
         // Start the reaper
         let store = self.clone();
-        let task = async move { store.run_reaper(dispatcher).await };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "reaper_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
+        task_pool::spawn!(self.tasks, "reaper_task", async move {
+            store.run_reaper(dispatcher).await
+        });
     }
 
     pub async fn shutdown(&self) {
-        self.cancel_token.cancel();
-        self.task_tracker.close();
-        self.task_tracker.wait().await;
+        self.tasks.shutdown().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.id)))]
