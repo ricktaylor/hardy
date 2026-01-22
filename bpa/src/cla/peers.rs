@@ -46,6 +46,7 @@ impl Peer {
                 poll_channel_depth,
                 controller.clone(),
                 store.clone(),
+                &cla.task_tracker,
                 peer,
                 None,
             ),
@@ -58,6 +59,7 @@ impl Peer {
                     poll_channel_depth,
                     controller.clone(),
                     store.clone(),
+                    &cla.task_tracker,
                     peer,
                     Some(q),
                 ),
@@ -71,6 +73,7 @@ impl Peer {
         poll_channel_depth: usize,
         controller: Arc<dyn policy::EgressController>,
         store: Arc<storage::Store>,
+        task_tracker: &tokio_util::task::TaskTracker,
         peer: u32,
         queue: Option<u32>,
     ) -> storage::channel::Sender {
@@ -95,7 +98,7 @@ impl Peer {
             task.instrument(span)
         };
 
-        tokio::spawn(task);
+        task_tracker.spawn(task);
 
         tx
     }

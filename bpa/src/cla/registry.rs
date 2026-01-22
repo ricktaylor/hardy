@@ -5,6 +5,7 @@ use std::sync::{Mutex, RwLock, Weak};
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
+    pub(super) task_tracker: tokio_util::task::TaskTracker,
 
     name: String,
     peers: Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
@@ -152,6 +153,7 @@ impl Registry {
                 address_type,
                 policy: policy
                     .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+                task_tracker: tokio_util::task::TaskTracker::new(),
             }))
             .clone()
         };
@@ -196,12 +198,17 @@ impl Registry {
 
         let peers = std::mem::take(&mut *cla.peers.lock().trace_expect("Failed to lock mutex"));
 
-        for (node_id, i) in peers {
-            for (_, peer_id) in i {
-                self.peers.remove(peer_id).await;
+        for (node_id, peers) in peers {
+            for (_, peer_id) in peers {
+                // Remove from RIB first (stops new routing), then close channel (signals drain)
                 self.rib.remove_forward(node_id.clone(), peer_id).await;
+                self.peers.remove(peer_id).await;
             }
         }
+
+        // Wait for all poll_queue tasks to complete draining
+        cla.task_tracker.close();
+        cla.task_tracker.wait().await;
 
         info!("Unregistered CLA: {}", cla.name);
     }
