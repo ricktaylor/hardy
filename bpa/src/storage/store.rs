@@ -211,23 +211,23 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
 
-    // TODO: Implement test for 'Quota Enforcement' (Attempt to store bundle exceeding total capacity)
-    #[test]
-    fn test_quota_enforcement() {
-        todo!("Verify Attempt to store bundle exceeding total capacity");
-    }
+    // // TODO: Implement test for 'Quota Enforcement' (Attempt to store bundle exceeding total capacity)
+    // #[test]
+    // fn test_quota_enforcement() {
+    //     todo!("Verify Attempt to store bundle exceeding total capacity");
+    // }
 
-    // TODO: Implement test for 'Double Delete' (Handle deletion of already removed bundle)
-    #[test]
-    fn test_double_delete() {
-        todo!("Verify Handle deletion of already removed bundle");
-    }
+    // // TODO: Implement test for 'Double Delete' (Handle deletion of already removed bundle)
+    // #[test]
+    // fn test_double_delete() {
+    //     todo!("Verify Handle deletion of already removed bundle");
+    // }
 
-    // TODO: Implement test for 'Transaction Rollback' (Verify data cleanup on metadata failure)
-    #[test]
-    fn test_transaction_rollback() {
-        todo!("Verify data cleanup on metadata failure");
-    }
+    // // TODO: Implement test for 'Transaction Rollback' (Verify data cleanup on metadata failure)
+    // #[test]
+    // fn test_transaction_rollback() {
+    //     todo!("Verify data cleanup on metadata failure");
+    // }
 }

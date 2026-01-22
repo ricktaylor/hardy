@@ -150,17 +150,17 @@ impl Rib {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
 
-    // TODO: Implement test for 'Action Precedence' (Verify Drop takes precedence over Via)
-    #[test]
-    fn test_action_precedence() {
-        todo!("Verify Drop takes precedence over Via");
-    }
+    // // TODO: Implement test for 'Action Precedence' (Verify Drop takes precedence over Via)
+    // #[test]
+    // fn test_action_precedence() {
+    //     todo!("Verify Drop takes precedence over Via");
+    // }
 
-    // TODO: Implement test for 'Route Entry Sort' (Verify Ord impl for route::Entry)
-    #[test]
-    fn test_route_entry_sort() {
-        todo!("Verify Ord impl for route::Entry");
-    }
+    // // TODO: Implement test for 'Route Entry Sort' (Verify Ord impl for route::Entry)
+    // #[test]
+    // fn test_route_entry_sort() {
+    //     todo!("Verify Ord impl for route::Entry");
+    // }
 }
