@@ -1,5 +1,6 @@
 version: 2
 updates:
+  # Regular weekly Cargo dependency updates
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -7,7 +8,54 @@ updates:
     allow:
       # Allow both direct and indirect updates for all packages
       - dependency-type: "all"
+    # Group minor and patch updates to reduce PR noise
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # Limit open PRs to avoid overwhelming the review queue
+    open-pull-requests-limit: 10
+    # Add labels for easy filtering
+    labels:
+      - "dependencies"
+      - "rust"
+      - "automated"
+    # Customize commit messages
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+      include: "scope"
+
+  # Daily security updates for Cargo dependencies
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    allow:
+      - dependency-type: "all"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "security"
+      - "priority-high"
+    commit-message:
+      prefix: "security"
+      include: "scope"
+
+  # Weekly GitHub Actions updates
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "ci-cd"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
