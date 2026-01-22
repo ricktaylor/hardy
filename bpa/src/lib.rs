@@ -22,4 +22,4 @@ use tracing::{Instrument, instrument};
 
 // Re-export for consistency
 pub use async_trait::async_trait;
-pub use tokio_util::bytes::Bytes;
+pub use bytes::Bytes;
