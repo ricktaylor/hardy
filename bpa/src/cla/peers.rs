@@ -19,6 +19,7 @@ impl Peer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         &self,
         poll_channel_depth: usize,
@@ -27,6 +28,7 @@ impl Peer {
         cla_addr: ClaAddress,
         store: Arc<storage::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
+        tasks: &hardy_async::task_pool::TaskPool,
     ) {
         let controller = cla
             .policy
@@ -46,7 +48,7 @@ impl Peer {
                 poll_channel_depth,
                 controller.clone(),
                 store.clone(),
-                &cla.task_tracker,
+                tasks,
                 peer,
                 None,
             ),
@@ -59,7 +61,7 @@ impl Peer {
                     poll_channel_depth,
                     controller.clone(),
                     store.clone(),
-                    &cla.task_tracker,
+                    tasks,
                     peer,
                     Some(q),
                 ),
@@ -73,7 +75,7 @@ impl Peer {
         poll_channel_depth: usize,
         controller: Arc<dyn policy::EgressController>,
         store: Arc<storage::Store>,
-        task_tracker: &tokio_util::task::TaskTracker,
+        tasks: &hardy_async::task_pool::TaskPool,
         peer: u32,
         queue: Option<u32>,
     ) -> storage::channel::Sender {
@@ -82,35 +84,18 @@ impl Peer {
             poll_channel_depth,
         );
 
-        let task = async move {
-            Self::poll_queue(controller, queue, rx).await;
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(
-                parent: None,
-                "egress_queue_poller",
-                peer = peer,
-                queue = queue
-            );
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        task_tracker.spawn(task);
+        hardy_async::spawn!(
+            tasks,
+            "egress_queue_poller",
+            (peer = peer, queue = queue),
+            async move {
+                while let Ok(bundle) = rx.recv_async().await {
+                    controller.forward(queue, bundle).await;
+                }
+            }
+        );
 
         tx
-    }
-
-    async fn poll_queue(
-        controller: Arc<dyn policy::EgressController>,
-        queue: Option<u32>,
-        rx: storage::channel::Receiver,
-    ) {
-        while let Ok(bundle) = rx.recv_async().await {
-            controller.forward(queue, bundle).await;
-        }
     }
 
     pub async fn forward(

@@ -114,7 +114,12 @@ impl service::Sink for Sink {
 impl Drop for Sink {
     fn drop(&mut self) {
         if let Some(service) = self.service.upgrade() {
-            tokio::runtime::Handle::current().block_on(self.registry.unregister(service));
+            // Spawn async cleanup onto the Registry's TaskPool
+            // This makes the cleanup tracked by the Registry's lifecycle
+            let registry = self.registry.clone();
+            hardy_async::spawn!(self.registry.tasks, "service_drop_cleanup", async move {
+                registry.unregister(service).await;
+            });
         }
     }
 }
@@ -123,6 +128,7 @@ pub struct ServiceRegistry {
     node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
     services: RwLock<HashMap<Eid, Arc<Service>>>,
+    tasks: hardy_async::task_pool::TaskPool,
 }
 
 impl ServiceRegistry {
@@ -131,6 +137,7 @@ impl ServiceRegistry {
             node_ids: config.node_ids.clone(),
             rib,
             services: Default::default(),
+            tasks: hardy_async::task_pool::TaskPool::new(),
         }
     }
 
@@ -146,6 +153,9 @@ impl ServiceRegistry {
         for service in services {
             self.unregister_service(service).await
         }
+
+        // Wait for all cleanup tasks spawned from Drop handlers
+        self.tasks.shutdown().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, service, dispatcher)))]

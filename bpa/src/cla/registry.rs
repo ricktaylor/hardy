@@ -5,7 +5,6 @@ use std::sync::{Mutex, RwLock, Weak};
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
-    pub(super) task_tracker: tokio_util::task::TaskTracker,
 
     name: String,
     peers: Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
@@ -58,7 +57,7 @@ struct Sink {
 impl cla::Sink for Sink {
     async fn unregister(&self) {
         if let Some(cla) = self.cla.upgrade() {
-            self.registry.unregister(cla).await
+            self.registry.unregister(cla).await;
         }
     }
 
@@ -89,7 +88,12 @@ impl cla::Sink for Sink {
 impl Drop for Sink {
     fn drop(&mut self) {
         if let Some(cla) = self.cla.upgrade() {
-            tokio::runtime::Handle::current().block_on(self.registry.unregister(cla));
+            // Spawn async cleanup onto the Registry's TaskPool
+            // This makes the cleanup tracked by the Registry's lifecycle
+            let registry = self.registry.clone();
+            hardy_async::spawn!(self.registry.tasks, "cla_drop_cleanup", async move {
+                registry.unregister(cla).await;
+            });
         }
     }
 }
@@ -101,6 +105,7 @@ pub struct Registry {
     store: Arc<storage::Store>,
     peers: peers::PeerTable,
     poll_channel_depth: usize,
+    tasks: hardy_async::task_pool::TaskPool,
 }
 
 impl Registry {
@@ -112,6 +117,7 @@ impl Registry {
             store,
             peers: peers::PeerTable::new(),
             poll_channel_depth: config.poll_channel_depth.into(),
+            tasks: hardy_async::task_pool::TaskPool::new(),
         }
     }
 
@@ -127,6 +133,9 @@ impl Registry {
         for cla in clas {
             self.unregister_cla(cla).await;
         }
+
+        // Wait for all cleanup tasks spawned from Drop handlers
+        self.tasks.shutdown().await;
     }
 
     pub async fn register(
@@ -153,7 +162,6 @@ impl Registry {
                 address_type,
                 policy: policy
                     .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
-                task_tracker: tokio_util::task::TaskTracker::new(),
             }))
             .clone()
         };
@@ -206,9 +214,8 @@ impl Registry {
             }
         }
 
-        // Wait for all poll_queue tasks to complete draining
-        cla.task_tracker.close();
-        cla.task_tracker.wait().await;
+        // Queue pollers will exit naturally when channels are closed.
+        // They're tracked by Registry's TaskPool and cleaned up in shutdown().
 
         info!("Unregistered CLA: {}", cla.name);
     }
@@ -261,6 +268,7 @@ impl Registry {
             cla_addr,
             self.store.clone(),
             dispatcher,
+            &self.tasks,
         )
         .await;
 
