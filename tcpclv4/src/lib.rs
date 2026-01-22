@@ -15,7 +15,7 @@ use trace_err::*;
 use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "tracing")]
-use tracing::{Instrument, instrument};
+use tracing::instrument;
 
 struct ClaInner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
@@ -28,8 +28,7 @@ pub struct Cla {
     _name: String,
     config: config::Config,
     inner: std::sync::OnceLock<ClaInner>,
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
+    tasks: Arc<hardy_async::task_pool::TaskPool>,
 }
 
 impl Cla {
@@ -57,8 +56,7 @@ impl Cla {
             config,
             _name: name,
             inner: std::sync::OnceLock::new(),
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            task_tracker: tokio_util::task::TaskTracker::new(),
+            tasks: Arc::new(hardy_async::task_pool::TaskPool::new()),
         }
     }
 
@@ -80,8 +78,7 @@ impl Cla {
         for _ in 0..5 {
             // Do a new active connect
             let conn = connect::Connector {
-                cancel_token: self.cancel_token.clone(),
-                task_tracker: self.task_tracker.clone(),
+                tasks: self.tasks.clone(),
                 contact_timeout: self.config.session_defaults.contact_timeout,
                 must_use_tls: self.config.session_defaults.must_use_tls,
                 keepalive_interval: self.config.session_defaults.keepalive_interval,

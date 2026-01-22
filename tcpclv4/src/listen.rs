@@ -44,8 +44,7 @@ impl tower::Service<()> for ListenerService {
 }
 
 pub struct Listener {
-    pub cancel_token: tokio_util::sync::CancellationToken,
-    pub task_tracker: tokio_util::task::TaskTracker,
+    pub tasks: Arc<hardy_async::task_pool::TaskPool>,
     pub contact_timeout: u16,
     pub must_use_tls: bool,
     pub keepalive_interval: Option<u16>,
@@ -103,19 +102,9 @@ impl Listener {
                                 info!("New TCP connection from {remote_addr}");
                                 // Spawn immediately to prevent head-of-line blocking
                                 let self_cloned = self.clone();
-                                let task = self_cloned.new_contact(stream, remote_addr);
-
-                                #[cfg(feature = "tracing")]
-                                let task = {
-                                    let span = tracing::trace_span!(
-                                        parent: None,
-                                        "passive_session_task"
-                                    );
-                                    span.follows_from(tracing::Span::current());
-                                    task.instrument(span)
-                                };
-
-                                self.task_tracker.spawn(task);
+                                hardy_async::spawn!(self.tasks, "passive_session_task", async move {
+                                    self_cloned.new_contact(stream, remote_addr).await
+                                });
                             }
                             Err(e) => warn!("Failed to accept connection: {e}")
                         }
@@ -125,7 +114,7 @@ impl Listener {
                         break;
                     }
                 },
-                _ = self.cancel_token.cancelled() => break
+                _ = self.tasks.cancel_token().cancelled() => break
             }
         }
     }
@@ -183,7 +172,7 @@ impl Listener {
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::VersionMismatch,
                 self.contact_timeout,
-                &self.cancel_token,
+                self.tasks.cancel_token(),
             )
             .await;
         }
@@ -215,7 +204,7 @@ impl Listener {
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
                 self.contact_timeout,
-                &self.cancel_token,
+                self.tasks.cancel_token(),
             )
             .await;
         }
@@ -249,7 +238,7 @@ impl Listener {
             match transport::next_with_timeout(
                 &mut transport,
                 self.contact_timeout,
-                &self.cancel_token,
+                self.tasks.cancel_token(),
             )
             .await
             {
@@ -320,7 +309,7 @@ impl Listener {
                     transport,
                     codec::SessionTermReasonCode::ContactFailure,
                     keepalive_interval * 2,
-                    &self.cancel_token,
+                    self.tasks.cancel_token(),
                 )
                 .await;
             }

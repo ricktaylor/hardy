@@ -88,9 +88,7 @@ impl hardy_bpa::cla::Cla for Cla {
     }
 
     async fn on_unregister(&self) {
-        self.cancel_token.cancel();
-        self.task_tracker.close();
-        self.task_tracker.wait().await;
+        self.tasks.shutdown().await;
     }
 
     async fn forward(

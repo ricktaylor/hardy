@@ -1,0 +1,19 @@
+[package]
+name = "hardy-async"
+version = "0.1.0"
+edition.workspace = true
+description = "Runtime-agnostic async primitives for the Hardy DTN implementation"
+
+[features]
+default = ["tokio"]
+tokio = ["dep:tokio", "dep:tokio-util"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+tokio = { version = "1.49.0", optional = true, features = ["rt", "macros", "time"] }
+tokio-util = { version = "0.7.18", optional = true, features = ["rt"] }
+tracing = { version = "0.1.44", optional = true }
+
+# Future runtime support
+# smol = ["dep:async-executor", "dep:async-channel"]
+# embassy = ["dep:embassy-executor", "dep:embassy-sync", "dep:embassy-time"]

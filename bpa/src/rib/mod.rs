@@ -8,7 +8,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::RwLock,
 };
-use task_pool::TaskPool;
 
 mod find;
 mod local;
@@ -31,7 +30,7 @@ struct RibInner {
 
 pub struct Rib {
     inner: RwLock<RibInner>,
-    tasks: TaskPool,
+    tasks: hardy_async::task_pool::TaskPool,
     poll_waiting_notify: Arc<tokio::sync::Notify>,
     store: Arc<storage::Store>,
 }
@@ -44,7 +43,7 @@ impl Rib {
                 routes: BTreeMap::new(),
                 address_types: HashMap::new(),
             }),
-            tasks: TaskPool::new(),
+            tasks: hardy_async::task_pool::TaskPool::new(),
             poll_waiting_notify: Arc::new(tokio::sync::Notify::new()),
             store,
         }
@@ -53,7 +52,7 @@ impl Rib {
     pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
-        task_pool::spawn!(self.tasks, "poll_waiting_task", async move {
+        hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
             loop {
                 tokio::select! {
                     _ = rib.poll_waiting_notify.notified() => {

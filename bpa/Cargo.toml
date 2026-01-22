@@ -7,13 +7,14 @@ edition.workspace = true
 default = ["rfc9173"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
 serde = ["dep:serde","hardy-bpv7/serde","hardy-eid-patterns/serde"]
-tracing = []
+tracing = ["hardy-async/tracing"]
 
 [lib]
 path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
+hardy-async = { path = "../async" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
 hardy-eid-patterns = { path = "../eid-patterns" }

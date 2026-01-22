@@ -159,7 +159,7 @@ impl Dispatcher {
 
             // Dispatch the new bundle
             let dispatcher = self.clone();
-            task_pool::spawn!(self.tasks, "dispatch_status_report_task", async move {
+            hardy_async::spawn!(self.tasks, "dispatch_status_report_task", async move {
                 match dispatcher.process_bundle(&mut bundle).await {
                     dispatch::DispatchResult::Gone => {}
                     dispatch::DispatchResult::Forward(peer) => {

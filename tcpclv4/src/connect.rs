@@ -8,8 +8,7 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 
 pub struct Connector {
-    pub cancel_token: tokio_util::sync::CancellationToken,
-    pub task_tracker: tokio_util::task::TaskTracker,
+    pub tasks: Arc<hardy_async::task_pool::TaskPool>,
     pub contact_timeout: u16,
     pub must_use_tls: bool,
     pub keepalive_interval: Option<u16>,
@@ -96,7 +95,7 @@ impl Connector {
                     codec::MessageCodec::new_framed(stream),
                     codec::SessionTermReasonCode::VersionMismatch,
                     self.contact_timeout,
-                    &self.cancel_token,
+                    self.tasks.cancel_token(),
                 )
                 .await;
             }
@@ -131,7 +130,7 @@ impl Connector {
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
                 self.contact_timeout,
-                &self.cancel_token,
+                self.tasks.cancel_token(),
             )
             .await;
 
@@ -232,7 +231,7 @@ impl Connector {
             match transport::next_with_timeout(
                 &mut transport,
                 self.contact_timeout,
-                &self.cancel_token,
+                self.tasks.cancel_token(),
             )
             .await
             .inspect_err(|e| info!("Failed to receive SESS_INIT message: {e:?}"))?
@@ -270,7 +269,7 @@ impl Connector {
                     transport,
                     codec::SessionTermReasonCode::ContactFailure,
                     keepalive_interval * 2,
-                    &self.cancel_token,
+                    self.tasks.cancel_token(),
                 )
                 .await;
                 return Err(transport::Error::InvalidProtocol);
@@ -297,7 +296,7 @@ impl Connector {
         let registry = self.registry.clone();
         let remote_addr = *remote_addr;
 
-        let task = async move {
+        hardy_async::spawn!(self.tasks, "active_session_task", async move {
             registry
                 .register_session(
                     self.sink.clone(),
@@ -313,19 +312,8 @@ impl Connector {
 
             // Unregister the session for addr, whatever happens
             registry.unregister_session(&local_addr, &remote_addr).await
-        };
+        });
 
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(
-                parent: None,
-                "active_session_task"
-            );
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
         Ok(())
     }
 }

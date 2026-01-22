@@ -5,16 +5,14 @@ impl ClaInner {
     fn start_listeners(
         &self,
         config: &config::Config,
-        cancel_token: &tokio_util::sync::CancellationToken,
-        task_tracker: &tokio_util::task::TaskTracker,
+        tasks: &Arc<hardy_async::task_pool::TaskPool>,
         tls_config: &Option<Arc<tls::TlsConfig>>,
     ) {
         // Start the listeners
         if let Some(address) = config.address {
-            task_tracker.spawn(
+            tasks.spawn(
                 Arc::new(listen::Listener {
-                    cancel_token: cancel_token.clone(),
-                    task_tracker: task_tracker.clone(),
+                    tasks: tasks.clone(),
                     contact_timeout: config.session_defaults.contact_timeout,
                     must_use_tls: config.session_defaults.must_use_tls,
                     keepalive_interval: config.session_defaults.keepalive_interval,
@@ -68,8 +66,7 @@ impl hardy_bpa::cla::Cla for Cla {
         {
             inner.start_listeners(
                 &self.config,
-                &self.cancel_token,
-                &self.task_tracker,
+                &self.tasks,
                 &tls_config,
             );
         }
@@ -80,15 +77,12 @@ impl hardy_bpa::cla::Cla for Cla {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn on_unregister(&self) {
-        self.cancel_token.cancel();
-        self.task_tracker.close();
-
         if let Some(inner) = self.inner.get() {
             // Shutdown all pooled connections
             inner.registry.shutdown().await;
         }
 
-        self.task_tracker.wait().await;
+        self.tasks.shutdown().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
@@ -122,8 +116,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 // Reuse the TLS config that was loaded during registration
                 // Do a new active connect
                 let conn = connect::Connector {
-                    cancel_token: self.cancel_token.clone(),
-                    task_tracker: self.task_tracker.clone(),
+                    tasks: self.tasks.clone(),
                     contact_timeout: self.config.session_defaults.contact_timeout,
                     must_use_tls: self.config.session_defaults.must_use_tls,
                     keepalive_interval: self.config.session_defaults.keepalive_interval,

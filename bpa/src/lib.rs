@@ -1,7 +1,6 @@
 mod dispatcher;
 mod rib;
 mod service_registry;
-mod task_pool;
 
 pub mod bpa;
 pub mod bundle;

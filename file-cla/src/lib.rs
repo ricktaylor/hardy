@@ -7,9 +7,6 @@ use std::{
 use trace_err::*;
 use tracing::{debug, error, info, warn};
 
-#[cfg(feature = "tracing")]
-use tracing::Instrument;
-
 mod cla;
 mod watcher;
 
@@ -38,8 +35,7 @@ pub struct Cla {
     _name: String,
     config: Config,
     inner: std::sync::OnceLock<ClaInner>,
-    cancel_token: tokio_util::sync::CancellationToken,
-    task_tracker: tokio_util::task::TaskTracker,
+    tasks: hardy_async::task_pool::TaskPool,
 }
 
 impl Cla {
@@ -54,8 +50,7 @@ impl Cla {
             config,
             _name: name,
             inner: std::sync::OnceLock::new(),
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-            task_tracker: tokio_util::task::TaskTracker::new(),
+            tasks: hardy_async::task_pool::TaskPool::new(),
         }
     }
 

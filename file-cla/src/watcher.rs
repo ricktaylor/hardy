@@ -20,29 +20,15 @@ impl Cla {
     pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::Sink>, outbox: String) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
-        let cancel_token = self.cancel_token.clone();
-        let task = async move { watcher_task(outbox, path_tx, cancel_token).await };
+        let cancel_token = self.tasks.cancel_token().clone();
+        hardy_async::spawn!(self.tasks, "watcher_task", async move {
+            watcher_task(outbox, path_tx, cancel_token).await
+        });
 
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "watcher_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
-
-        let cancel_token = self.cancel_token.clone();
-        let task = async move { forwarder_task(sink, path_rx, cancel_token).await };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "forwarder_task");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        self.task_tracker.spawn(task);
+        let cancel_token = self.tasks.cancel_token().clone();
+        hardy_async::spawn!(self.tasks, "forwarder_task", async move {
+            forwarder_task(sink, path_rx, cancel_token).await
+        });
     }
 }
 

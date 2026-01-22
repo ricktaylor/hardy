@@ -1,7 +1,6 @@
 use super::{metadata::*, *};
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use std::collections::BTreeSet;
-use task_pool::TaskPool;
 
 mod admin;
 mod dispatch;
@@ -12,7 +11,7 @@ mod report;
 mod restart;
 
 pub struct Dispatcher {
-    tasks: TaskPool,
+    tasks: hardy_async::task_pool::TaskPool,
     store: Arc<storage::Store>,
     service_registry: Arc<service_registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
@@ -37,7 +36,7 @@ impl Dispatcher {
         //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
     ) -> Self {
         Self {
-            tasks: TaskPool::new(),
+            tasks: hardy_async::task_pool::TaskPool::new(),
             store,
             service_registry,
             cla_registry,

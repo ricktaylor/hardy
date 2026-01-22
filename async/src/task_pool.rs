@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use hardy_bpa::task_pool::TaskPool;
+//! use hardy_async::task_pool::TaskPool;
 //!
 //! struct MyService {
 //!     tasks: TaskPool,
@@ -50,66 +50,10 @@
 //! }
 //! ```
 
-/// Spawns a task with optional tracing instrumentation.
-///
-/// This macro provides a convenient way to spawn tasks with tracing support.
-/// When the `tracing` feature is enabled, it automatically adds span instrumentation.
-///
-/// # Syntax
-///
-/// Within the BPA crate, use `task_pool::spawn!` for clarity:
-///
-/// ```text
-/// // Simple case (no fields):
-/// task_pool::spawn!(pool, "task_name", async { ... })
-///
-/// // Complex case (with span fields - use parentheses):
-/// task_pool::spawn!(pool, "task_name", (?field1, field2 = value), async { ... })
-/// ```
-///
-#[macro_export]
-macro_rules! spawn {
-    // Simple case: just task name and future (no fields)
-    ($pool:expr, $name:literal, async $($rest:tt)*) => {{
-        #[cfg(feature = "tracing")]
-        {
-            let task = async $($rest)*;
-            let span = tracing::trace_span!(parent: None, $name);
-            span.follows_from(tracing::Span::current());
-            $pool.spawn(tracing::Instrument::instrument(task, span))
-        }
-        #[cfg(not(feature = "tracing"))]
-        {
-            $pool.spawn(async $($rest)*)
-        }
-    }};
-
-    // Complex case: has fields before async
-    // Fields are wrapped in parentheses for clear delimitation
-    ($pool:expr, $name:literal, ($($field:tt)*), async $($rest:tt)*) => {{
-        #[cfg(feature = "tracing")]
-        {
-            let task = async $($rest)*;
-            // Pass fields directly to trace_span (handles any tracing field syntax)
-            let span = tracing::trace_span!(parent: None, $name, $($field)*);
-            span.follows_from(tracing::Span::current());
-            $pool.spawn(tracing::Instrument::instrument(task, span))
-        }
-        #[cfg(not(feature = "tracing"))]
-        {
-            $pool.spawn(async $($rest)*)
-        }
-    }};
-}
-
-// Re-export the macro at module level for convenience
-pub use spawn;
-
 /// Manages a group of cancellable tasks with graceful shutdown.
 ///
 /// `TaskPool` combines a [`tokio_util::sync::CancellationToken`] and
-/// [`tokio_util::task::TaskTracker`] to provide a consistent shutdown pattern
-/// used throughout the BPA.
+/// [`tokio_util::task::TaskTracker`] to provide a consistent shutdown pattern.
 ///
 /// # Shutdown Guarantees
 ///
@@ -145,7 +89,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_bpa::task_pool::TaskPool;
+    /// # use hardy_async::task_pool::TaskPool;
     /// let pool = TaskPool::new();
     /// let cancel = pool.cancel_token().clone();
     ///
@@ -176,7 +120,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_bpa::task_pool::TaskPool;
+    /// # use hardy_async::task_pool::TaskPool;
     /// let pool = TaskPool::new();
     /// let child = pool.child_token();
     ///
@@ -200,7 +144,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_bpa::task_pool::TaskPool;
+    /// # use hardy_async::task_pool::TaskPool;
     /// let pool = TaskPool::new();
     /// let handle = pool.spawn(async {
     ///     // Do work
@@ -233,7 +177,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_bpa::task_pool::TaskPool;
+    /// # use hardy_async::task_pool::TaskPool;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let pool = TaskPool::new();
     ///

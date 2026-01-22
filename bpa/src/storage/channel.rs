@@ -106,7 +106,7 @@ impl Store {
 
         let store = self.clone();
         let shared_cloned = shared.clone();
-        task_pool::spawn!(self.tasks, "channel_queue_poll", (?status), async move {
+        hardy_async::spawn!(self.tasks, "channel_queue_poll", (?status), async move {
             Self::poll_queue(store, shared_cloned, cap).await
         });
 
@@ -174,7 +174,7 @@ impl Store {
         let (inner_tx, inner_rx) = flume::bounded::<bundle::Bundle>(cap);
         let shared_cloned = shared.clone();
 
-        let h = task_pool::spawn!(self.tasks, "poll_pending_once", async move {
+        let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv_async().await {
                 // Just do some checks

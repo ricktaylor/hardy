@@ -1026,12 +1026,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-async"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "criterion",
  "flume",
+ "hardy-async",
  "hardy-bpa-fuzz",
  "hardy-bpv7",
  "hardy-cbor",
@@ -1196,6 +1206,7 @@ name = "hardy-file-cla"
 version = "0.1.0"
 dependencies = [
  "flume",
+ "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "notify",
@@ -1287,6 +1298,7 @@ name = "hardy-tcpclv4"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "rand",

@@ -11,9 +11,10 @@ crate-type = ["rlib"]
 [features]
 default = []
 serde = ["dep:serde"]
-tracing = []
+tracing = ["hardy-async/tracing"]
 
 [dependencies]
+hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 tracing = "0.1.44"

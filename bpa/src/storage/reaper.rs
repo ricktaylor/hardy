@@ -161,7 +161,7 @@ impl Store {
 
                 // No active task, so we can spawn a new one.
                 let reaper = self.clone();
-                repopulation_task = Some(task_pool::spawn!(self.tasks, "refill_cache_task", async move {
+                repopulation_task = Some(hardy_async::spawn!(self.tasks, "refill_cache_task", async move {
                     reaper.refill_cache().await
                 }));
             }

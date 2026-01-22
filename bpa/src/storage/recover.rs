@@ -13,7 +13,7 @@ impl Store {
         // Start the store - this can take a while as the store is walked
         let store = self.clone();
         let dispatcher = dispatcher.clone();
-        task_pool::spawn!(self.tasks, "store_check_task", async move {
+        hardy_async::spawn!(self.tasks, "store_check_task", async move {
             // Start the store - this can take a while as the store is walked
             info!("Starting store consistency check...");
 

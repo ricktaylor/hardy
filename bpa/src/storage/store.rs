@@ -4,7 +4,7 @@ impl Store {
     pub fn new(config: &config::Config) -> Self {
         // Init pluggable storage engines
         Self {
-            tasks: TaskPool::new(),
+            tasks: hardy_async::task_pool::TaskPool::new(),
             metadata_storage: config
                 .metadata_storage
                 .as_ref()
@@ -30,7 +30,7 @@ impl Store {
 
         // Start the reaper
         let store = self.clone();
-        task_pool::spawn!(self.tasks, "reaper_task", async move {
+        hardy_async::spawn!(self.tasks, "reaper_task", async move {
             store.run_reaper(dispatcher).await
         });
     }

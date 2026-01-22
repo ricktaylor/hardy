@@ -2,7 +2,6 @@ use super::*;
 use lru::LruCache;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
-use task_pool::TaskPool;
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
@@ -255,7 +254,7 @@ pub trait BundleStorage: Send + Sync {
 
 // Storage helper
 pub(crate) struct Store {
-    tasks: TaskPool,
+    tasks: hardy_async::task_pool::TaskPool,
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
     bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
