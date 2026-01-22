@@ -37,7 +37,10 @@ struct BlockParse<'a> {
 }
 
 impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
-    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+    fn block(
+        &'a self,
+        block_number: u64,
+    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
         let block = self.blocks.get(&block_number)?;
         Some((
             block,
