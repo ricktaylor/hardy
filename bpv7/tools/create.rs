@@ -16,9 +16,13 @@ pub struct Command {
     #[arg(short, long = "report-to")]
     report_to: Option<Eid>,
 
-    /// Path to the location of the file to use as payload, use '-' for stdin
-    #[arg(short, long)]
-    payload: io::Input,
+    /// Payload from command line
+    #[arg(short, long, conflicts_with = "payload_file")]
+    payload: Option<String>,
+
+    /// Path to file containing payload, '-' for stdin
+    #[arg(long = "payload-file", conflicts_with = "payload")]
+    payload_file: Option<io::Input>,
 
     /// Path to the location to write the bundle to, or stdout if not supplied
     #[arg(short, long, required = false, default_value = "")]
@@ -43,6 +47,17 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
+        // Get payload data
+        let payload_data = if let Some(payload_str) = &self.payload {
+            payload_str.as_bytes().to_vec()
+        } else if let Some(input) = &self.payload_file {
+            input.read_all()?
+        } else {
+            return Err(anyhow::anyhow!(
+                "Either --payload or --payload-file must be provided"
+            ));
+        };
+
         let builder: hardy_bpv7::builder::Builder = hardy_bpv7::builder::BundleTemplate {
             source: self.source,
             destination: self.destination,
@@ -65,7 +80,7 @@ impl Command {
 
         self.output.write_all(
             &builder
-                .with_payload(self.payload.read_all()?.into())
+                .with_payload(payload_data.into())
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| anyhow::anyhow!("Failed to build bundle: {e}"))?
                 .1,
