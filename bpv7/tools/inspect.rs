@@ -2,36 +2,79 @@ use super::*;
 use hardy_bpv7::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(about = "Inspect and display bundle information", long_about = None)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,
+
+    /// Output format
+    #[arg(
+        long,
+        default_value = "markdown",
+        value_name = "FORMAT",
+        help = "Output format: markdown (human-readable), json, json-pretty"
+    )]
+    format: OutputFormat,
 
     /// Path to the location to write the output to, or stdout if not supplied
     #[arg(short, long, required = false, default_value = "")]
     output: io::Output,
 
-    /// The bundle file to print, '-' to use stdin.
+    /// The bundle file to inspect, '-' to use stdin.
     input: io::Input,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    /// Human-readable markdown format
+    Markdown,
+    /// Machine-readable JSON format
+    Json,
+    /// Pretty-printed JSON format
+    #[value(name = "json-pretty")]
+    JsonPretty,
 }
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
         let key_store: bpsec::key::KeySet = self.key_args.try_into()?;
+        let bundle_data = self.input.read_all()?;
 
-        let bundle = self.input.read_all()?;
+        let parsed = bundle::ParsedBundle::parse(&bundle_data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        dump_bundle(
-            bundle::ParsedBundle::parse(&bundle, &key_store)
-                .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?,
-            &bundle,
-            self.output,
-            key_store,
-        )
+        match self.format {
+            OutputFormat::Markdown => {
+                dump_markdown(parsed, &bundle_data, self.output, key_store)
+            }
+            OutputFormat::Json | OutputFormat::JsonPretty => {
+                dump_json(parsed, self.format == OutputFormat::JsonPretty, self.output)
+            }
+        }
     }
 }
 
-fn dump_bundle(
+fn dump_json(
+    parsed: bundle::ParsedBundle,
+    pretty: bool,
+    output: io::Output,
+) -> anyhow::Result<()> {
+    if parsed.non_canonical {
+        eprintln!("Warning: Non-canonical, but semantically valid bundle");
+    }
+
+    let mut json = if pretty {
+        serde_json::to_string_pretty(&parsed.bundle)
+    } else {
+        serde_json::to_string(&parsed.bundle)
+    }
+    .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
+    json.push('\n');
+
+    output.write_all(json.as_bytes())
+}
+
+fn dump_markdown(
     bundle: bundle::ParsedBundle,
     data: &[u8],
     output: io::Output,

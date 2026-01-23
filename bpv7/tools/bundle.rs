@@ -3,13 +3,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod add_block;
 mod create;
 mod decrypt;
-mod dump;
 mod encrypt;
 mod extract;
 mod flags;
+mod inspect;
 mod io;
 mod keys;
-mod print;
 mod remove_bcb;
 mod remove_bib;
 mod remove_block;
@@ -34,14 +33,14 @@ enum Commands {
     /// Create a new bundle with payload
     Create(create::Command),
 
+    /// Inspect and display bundle information
+    Inspect(inspect::Command),
+
     /// Rewrite a bundle, removing unsupported blocks and canonicalizing as appropriate
     Rewrite(rewrite::Command),
 
     /// Check one or more bundles for validity
     Validate(validate::Command),
-
-    /// Dump the json serialization of a bundle
-    Dump(dump::Command),
 
     /// Decrypt the data of a block in a bundle
     Decrypt(decrypt::Command),
@@ -72,9 +71,6 @@ enum Commands {
 
     /// Update an existing block in a bundle
     UpdateBlock(update_block::Command),
-
-    /// Print the content of a bundle
-    Print(print::Command),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -82,10 +78,10 @@ fn main() -> anyhow::Result<()> {
     // This is the core of the dispatch logic.
     match Cli::parse().command {
         Commands::Create(args) => args.exec(),
+        Commands::Inspect(args) => args.exec(),
         Commands::Rewrite(args) => args.exec(),
-        Commands::Dump(args) => args.exec(),
-        Commands::Decrypt(args) => args.exec(),
         Commands::Validate(args) => args.exec(),
+        Commands::Decrypt(args) => args.exec(),
         Commands::Encrypt(args) => args.exec(),
         Commands::Extract(args) => args.exec(),
         Commands::Sign(args) => args.exec(),
@@ -95,6 +91,5 @@ fn main() -> anyhow::Result<()> {
         Commands::AddBlock(args) => args.exec(),
         Commands::RemoveBlock(args) => args.exec(),
         Commands::UpdateBlock(args) => args.exec(),
-        Commands::Print(args) => args.exec(),
     }
 }

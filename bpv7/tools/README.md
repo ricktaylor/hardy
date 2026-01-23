@@ -12,8 +12,7 @@ A command-line utility for creating, inspecting, and manipulating Bundle Protoco
   - [Working with Extension Blocks](#working-with-extension-blocks)
 - [Subcommand Reference](#subcommand-reference)
   - [`create`](#create)
-  - [`print`](#print)
-  - [`dump`](#dump)
+  - [`inspect`](#inspect)
   - [`validate`](#validate)
   - [`rewrite`](#rewrite)
   - [`extract`](#extract)
@@ -74,11 +73,14 @@ echo "Hello, DTN!" | bundle create \
   --payload-file - \
   --output hello.bundle
 
-# Print bundle information
-bundle print hello.bundle
+# Inspect bundle (human-readable format)
+bundle inspect hello.bundle
 
-# Dump detailed JSON representation
-bundle dump hello.bundle
+# Inspect bundle (JSON format)
+bundle inspect --format json hello.bundle
+
+# Inspect bundle (pretty-printed JSON)
+bundle inspect --format json-pretty hello.bundle
 ```
 
 ### Securing Bundles with BPSec
@@ -194,47 +196,40 @@ bundle create \
 
 ---
 
-### `print`
+### `inspect`
 
-Print human-readable bundle information.
+Inspect and display bundle information in various formats.
 
 **Usage:**
 
 ```bash
-bundle print [INPUT]
+bundle inspect [OPTIONS] [INPUT]
 ```
 
 **Arguments:**
 
 - `<INPUT>` - Bundle file path (use `-` for stdin)
-
-**Example:**
-
-```bash
-bundle print bundle.cbor
-```
-
----
-
-### `dump`
-
-Dump JSON serialization of a bundle.
-
-**Usage:**
-
-```bash
-bundle dump [OPTIONS] [INPUT]
-```
-
-**Arguments:**
-
-- `<INPUT>` - Bundle file path (use `-` for stdin)
+- `--format <FORMAT>` - Output format (default: `markdown`)
+  - `markdown` - Human-readable markdown format (default)
+  - `json` - Machine-readable JSON format
+  - `json-pretty` - Pretty-printed JSON format
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
+- `--keys <JWKS>` - Optional key set for decrypting blocks during inspection
 
-**Example:**
+**Examples:**
 
 ```bash
-bundle dump bundle.cbor > bundle.json
+# Display bundle in human-readable format
+bundle inspect bundle.cbor
+
+# Output as JSON for machine processing
+bundle inspect --format json bundle.cbor
+
+# Pretty-print JSON and save to file
+bundle inspect --format json-pretty -o bundle.json bundle.cbor
+
+# Inspect bundle with encrypted blocks (requires keys)
+bundle inspect --keys keys.json encrypted.bundle
 ```
 
 ---
