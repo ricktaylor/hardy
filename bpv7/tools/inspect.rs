@@ -44,9 +44,7 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         match self.format {
-            OutputFormat::Markdown => {
-                dump_markdown(parsed, &bundle_data, self.output, key_store)
-            }
+            OutputFormat::Markdown => dump_markdown(parsed, &bundle_data, self.output, key_store),
             OutputFormat::Json | OutputFormat::JsonPretty => {
                 dump_json(parsed, self.format == OutputFormat::JsonPretty, self.output)
             }
@@ -54,11 +52,7 @@ impl Command {
     }
 }
 
-fn dump_json(
-    parsed: bundle::ParsedBundle,
-    pretty: bool,
-    output: io::Output,
-) -> anyhow::Result<()> {
+fn dump_json(parsed: bundle::ParsedBundle, pretty: bool, output: io::Output) -> anyhow::Result<()> {
     if parsed.non_canonical {
         eprintln!("Warning: Non-canonical, but semantically valid bundle");
     }
