@@ -12,6 +12,9 @@ pub enum Error {
     #[error("Block target {0} is already the target of a BCB")]
     AlreadyEncrypted(u64),
 
+    #[error("Bundle is a fragment")]
+    FragmentedBundle,
+
     #[error(transparent)]
     Editor(#[from] editor::Error),
 
@@ -68,6 +71,10 @@ impl<'a> Encryptor<'a> {
         source: eid::Eid,
         key: &'a key::Key,
     ) -> Result<Self, (Self, Error)> {
+        if self.original.flags.is_fragment {
+            return Err((self, Error::FragmentedBundle));
+        }
+
         if block_number == 0 {
             return Err((self, Error::InvalidTarget(block_number)));
         }

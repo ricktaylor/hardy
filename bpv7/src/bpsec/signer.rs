@@ -15,6 +15,9 @@ pub enum Error {
     #[error("Block target {0} is already the target of a BCB")]
     EncryptedTarget(u64),
 
+    #[error("Bundle is a fragment")]
+    FragmentedBundle,
+
     #[error(transparent)]
     Editor(#[from] editor::Error),
 
@@ -62,6 +65,10 @@ impl<'a> Signer<'a> {
         source: eid::Eid,
         key: &'a key::Key,
     ) -> Result<Self, (Self, Error)> {
+        if self.original.flags.is_fragment {
+            return Err((self, Error::FragmentedBundle));
+        }
+
         let block = match self.original.blocks.get(&block_number) {
             Some(b) => b,
             None => return Err((self, Error::NoSuchBlock(block_number))),
