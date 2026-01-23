@@ -9,6 +9,7 @@ members = [
     "bpv7/tools",
     "bpv7/fuzz",
     "cbor",
+    "cbor/tools",
     "cbor/fuzz",
     "eid-patterns",
     "eid-patterns/fuzz",
