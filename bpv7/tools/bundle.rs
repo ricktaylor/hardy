@@ -1,17 +1,21 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod add_block;
 mod create;
 mod decrypt;
 mod dump;
 mod encrypt;
 mod extract;
+mod flags;
 mod io;
 mod keys;
 mod print;
 mod remove_bcb;
 mod remove_bib;
+mod remove_block;
 mod rewrite;
 mod sign;
+mod update_block;
 mod validate;
 mod verify;
 
@@ -60,6 +64,15 @@ enum Commands {
     /// Remove the encryption (BCB) from a block in a bundle
     RemoveBcb(remove_bcb::Command),
 
+    /// Add an extension block to a bundle
+    AddBlock(add_block::Command),
+
+    /// Remove an extension block from a bundle
+    RemoveBlock(remove_block::Command),
+
+    /// Update an existing block in a bundle
+    UpdateBlock(update_block::Command),
+
     /// Print the content of a bundle
     Print(print::Command),
 }
@@ -79,6 +92,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Verify(args) => args.exec(),
         Commands::RemoveBib(args) => args.exec(),
         Commands::RemoveBcb(args) => args.exec(),
+        Commands::AddBlock(args) => args.exec(),
+        Commands::RemoveBlock(args) => args.exec(),
+        Commands::UpdateBlock(args) => args.exec(),
         Commands::Print(args) => args.exec(),
     }
 }
