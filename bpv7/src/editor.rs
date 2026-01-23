@@ -282,26 +282,120 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn remove_block(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
+    pub fn remove_block(self, block_number: u64) -> Result<Self, (Self, Error)> {
         if block_number == 0 {
             return Err((self, Error::PrimaryBlock));
         }
         if block_number == 1 {
             return Err((self, Error::PayloadBlock));
         }
-        self.remove_block_inner(block_number);
+        self.remove_block_inner(block_number)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
+        // Get the block's security references BEFORE removing it
+        let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
+            (block.bib, block.bcb)
+        } else {
+            (None, None)
+        };
+
+        // Now remove the block from the templates
+        if self.blocks.remove(&block_number).is_some() {
+            // If there is a BIB, remove the block from the list of targets
+            // If the BIB is now empty, recursively call this function.
+            if let Some(bib) = bib {
+                self = self.remove_from_bib_targets(block_number, bib)?;
+            }
+
+            // If there is a BCB, remove the block from the list of targets
+            // If the BCB is now empty, recursively call this function.
+            if let Some(bcb) = bcb {
+                self = self.remove_from_bcb_targets(block_number, bcb)?;
+            }
+        }
         Ok(self)
     }
 
-    fn remove_block_inner(&mut self, block_number: u64) {
-        if let Some(_block) = self.blocks.remove(&block_number) {
+    /// Remove a target block from a BIB's operation set.
+    /// If the BIB becomes empty, recursively remove it.
+    #[allow(clippy::result_large_err)]
+    fn remove_from_bib_targets(
+        mut self,
+        target_block: u64,
+        bib_block: u64,
+    ) -> Result<Self, (Self, Error)> {
+        if let Some((_, Some(bib_payload))) = self.block(bib_block) {
+            let mut opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
+            {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                            field: "BIB Abstract Syntax Block",
+                            source: e.into(),
+                        })),
+                    ));
+                }
+            };
 
-            // TODO:  If there is a BIB, remove the block from the list of targets
-            // If the BIB is now empty, recursively call this function.
-
-            // TODO:  If there is a BCB, remove the block from the list of targets
-            // If the BCB is now empty, recursively call this function.
+            // Remove the target from the BIB
+            if opset.operations.remove(&target_block).is_some() {
+                if opset.operations.is_empty() {
+                    // BIB is now empty, recursively remove it
+                    self = self.remove_block_inner(bib_block)?;
+                } else {
+                    // Rewrite BIB with updated operation set using the public API
+                    self = self
+                        .update_block(bib_block)?
+                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .rebuild();
+                }
+            }
         }
+        Ok(self)
+    }
+
+    /// Remove a target block from a BCB's operation set.
+    /// If the BCB becomes empty, recursively remove it.
+    #[allow(clippy::result_large_err)]
+    fn remove_from_bcb_targets(
+        mut self,
+        target_block: u64,
+        bcb_block: u64,
+    ) -> Result<Self, (Self, Error)> {
+        if let Some((_, Some(bcb_payload))) = self.block(bcb_block) {
+            let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
+            {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                            field: "BCB Abstract Syntax Block",
+                            source: e.into(),
+                        })),
+                    ));
+                }
+            };
+
+            // Remove the target from the BCB
+            if opset.operations.remove(&target_block).is_some() {
+                if opset.operations.is_empty() {
+                    // BCB is now empty, recursively remove it
+                    self = self.remove_block_inner(bcb_block)?;
+                } else {
+                    // Rewrite BCB with updated operation set using the public API
+                    self = self
+                        .update_block(bcb_block)?
+                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .rebuild();
+                }
+            }
+        }
+        Ok(self)
     }
 
     // Helper to get the inner Block
@@ -334,45 +428,18 @@ impl<'a> Editor<'a> {
             None => return Err((self, Error::NoSuchBlock(block_number))),
         };
 
-        if let Some(bib) = target_block.bib
-            && let Some((_, Some(bib_payload))) = self.block(bib)
-        {
+        if let Some(bib) = target_block.bib {
             let target_block = target_block.clone();
 
-            let mut opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
-            {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
-                            field: "BIB Abstract Syntax Block",
-                            source: e.into(),
-                        })),
-                    ));
-                }
-            };
+            // Use the helper function to remove from BIB targets
+            self = self.remove_from_bib_targets(block_number, bib)?;
 
-            // Remove the target from the BIB
-            if opset.operations.remove(&block_number).is_some() {
-                if opset.operations.is_empty() {
-                    self.remove_block_inner(bib);
-                } else {
-                    // Rewrite BIB
-                    self = self
-                        .update_block(bib)?
-                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
-                        .rebuild();
-                }
-
-                if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None)
-                {
-                    // Ensure we have a CRC
-                    self = self
-                        .update_block(block_number)?
-                        .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
-                        .rebuild();
-                }
+            // Ensure we have a CRC if there's no BCB
+            if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
+                self = self
+                    .update_block(block_number)?
+                    .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+                    .rebuild();
             }
         }
         Ok(self)
@@ -457,7 +524,7 @@ impl<'a> Editor<'a> {
                 self = block.rebuild();
 
                 if opset.operations.is_empty() {
-                    self.remove_block_inner(bcb);
+                    self = self.remove_block_inner(bcb)?;
                 } else {
                     // Rewrite BCB
                     self = self
