@@ -5,6 +5,12 @@ mod rfc9173 {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
     pub enum ArgFlags {
+        /// Include all flags (default)
+        All,
+
+        /// Clear all flags
+        None,
+
         /// Include Primary Block
         #[value(name = "primary")]
         IncludePrimaryBlock,
@@ -16,19 +22,18 @@ mod rfc9173 {
         /// Include Security Source Header
         #[value(name = "source")]
         IncludeSecurityHeader,
-
-        /// Include all flags
-        #[value(name = "all")]
-        All,
-
-        /// Set default flags
-        #[value(name = "none")]
-        None,
     }
 
     impl ArgFlags {
         pub fn to_scope_flags(args: &[ArgFlags]) -> hardy_bpv7::bpsec::rfc9173::ScopeFlags {
-            let mut flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::default();
+            // If no flags specified, use Default (all true)
+            if args.is_empty() {
+                return hardy_bpv7::bpsec::rfc9173::ScopeFlags::default();
+            }
+
+            // If individual flags specified, start from NONE and enable only specified ones
+            let mut flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::NONE;
+
             for arg in args {
                 match arg {
                     ArgFlags::None => flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::NONE,

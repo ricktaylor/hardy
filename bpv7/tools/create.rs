@@ -3,6 +3,12 @@ use hardy_bpv7::{bundle::Flags, crc::CrcType, eid::Eid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ArgFlags {
+    /// Set all flags
+    All,
+
+    /// Clear all flags (default)
+    None,
+
     /// Specify ADU is an administrative record
     #[value(name = "admin-record", alias = "admin")]
     IsAdminRecord,
@@ -44,6 +50,19 @@ impl ArgFlags {
             let mut flags = Flags::default();
             for arg in args {
                 match arg {
+                    ArgFlags::All => {
+                        flags.is_admin_record = true;
+                        flags.do_not_fragment = true;
+                        flags.app_ack_requested = true;
+                        flags.report_status_time = true;
+                        flags.receipt_report_requested = true;
+                        flags.forward_report_requested = true;
+                        flags.delivery_report_requested = true;
+                        flags.delete_report_requested = true;
+                    }
+                    ArgFlags::None => {
+                        flags = Flags::default();
+                    }
                     ArgFlags::IsAdminRecord => flags.is_admin_record = true,
                     ArgFlags::DoNotFragment => flags.do_not_fragment = true,
                     ArgFlags::AppAckRequested => flags.app_ack_requested = true,
