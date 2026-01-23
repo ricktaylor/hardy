@@ -321,6 +321,43 @@ where
     }
 }
 
+/// A wrapper for emitting CBOR tags with runtime-determined tag numbers.
+///
+/// Unlike [`Tagged<const TAG, T>`], which requires the tag number to be known at compile time,
+/// `RuntimeTagged` allows you to specify the tag number at runtime. This is useful when parsing
+/// or generating CBOR data where tag numbers are determined dynamically.
+///
+/// # Examples
+///
+/// ```
+/// use hardy_cbor::encode::{self, RuntimeTagged};
+///
+/// // Tag 24 (embedded CBOR) with runtime tag number
+/// let data = b"hello";
+/// let tagged = RuntimeTagged(24u64, &data);
+/// let bytes = encode::emit(&tagged).0;
+/// ```
+///
+/// # CBOR Encoding
+///
+/// CBOR tags use major type 6, with the tag number encoded using the same variable-length
+/// encoding as unsigned integers. The tagged value immediately follows the tag header.
+pub struct RuntimeTagged<'a, T>(pub u64, pub &'a T)
+where
+    T: ToCbor + ?Sized;
+
+impl<'a, T> ToCbor for RuntimeTagged<'a, T>
+where
+    T: ToCbor + ?Sized,
+{
+    type Result = T::Result;
+
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
+        encoder.emit_tag(self.0);
+        encoder.emit(self.1)
+    }
+}
+
 /// A wrapper to write raw bytes directly into the stream without any CBOR encoding.
 ///
 /// This is useful for embedding pre-encoded CBOR data or other byte-oriented
