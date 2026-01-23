@@ -57,53 +57,76 @@ impl<'a> Encryptor<'a> {
         }
     }
 
+    /// Encrypt a block in the bundle.
+    ///
+    /// On error, returns the encryptor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
     pub fn encrypt_block(
         mut self,
         block_number: u64,
         context: Context,
         source: eid::Eid,
         key: &'a key::Key,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, (Self, Error)> {
         if block_number == 0 {
-            return Err(Error::InvalidTarget(block_number));
+            return Err((self, Error::InvalidTarget(block_number)));
         }
 
-        let block = self
-            .original
-            .blocks
-            .get(&block_number)
-            .ok_or(Error::NoSuchBlock(block_number))?;
+        let block = match self.original.blocks.get(&block_number) {
+            Some(b) => b,
+            None => return Err((self, Error::NoSuchBlock(block_number))),
+        };
 
         if block.bcb.is_some() {
-            return Err(Error::AlreadyEncrypted(block_number));
+            return Err((self, Error::AlreadyEncrypted(block_number)));
         }
 
         if let block::Type::BlockSecurity = block.block_type {
-            return Err(Error::InvalidTarget(block_number));
+            return Err((self, Error::InvalidTarget(block_number)));
         }
 
         /* RFC 9172 Section 3.9 states that BCBs targetting blocks with BIBs MUST also target the BIB
          * We take the 'all-or-nothing' approach and encrypt all BIB targets, rather than splitting the BIB
          * because splitting requires integrity keys */
         if let Some(bib_block) = block.bib {
-            let bib = self.original.blocks.get(&bib_block).ok_or(Error::Editor(
-                editor::Error::Builder(builder::Error::InternalError(crate::Error::Altered)),
-            ))?;
+            let bib = match self.original.blocks.get(&bib_block) {
+                Some(b) => b,
+                None => {
+                    return Err((
+                        self,
+                        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
+                            crate::Error::Altered,
+                        ))),
+                    ));
+                }
+            };
 
-            let opset = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(
-                bib.payload(self.source_data)
-                    .ok_or(Error::Editor(editor::Error::Builder(
-                        builder::Error::InternalError(crate::Error::Altered),
-                    )))?,
-            )
-            .map_err(|e| {
-                Error::Editor(editor::Error::Builder(builder::Error::InternalError(
-                    crate::Error::InvalidField {
-                        field: "BIB Abstract Syntax Block",
-                        source: e.into(),
-                    },
-                )))
-            })?;
+            let bib_payload = match bib.payload(self.source_data) {
+                Some(p) => p,
+                None => {
+                    return Err((
+                        self,
+                        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
+                            crate::Error::Altered,
+                        ))),
+                    ));
+                }
+            };
+
+            let opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload) {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
+                            crate::Error::InvalidField {
+                                field: "BIB Abstract Syntax Block",
+                                source: e.into(),
+                            },
+                        ))),
+                    ));
+                }
+            };
 
             // Encrypt all the BIB targets
             for target in opset.operations.keys() {
@@ -191,7 +214,8 @@ impl<'a> Encryptor<'a> {
                     .expect("Missing target block");
                 if !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(*target)?
+                        .update_block(*target)
+                        .map_err(|(_, e)| e)?
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
                 }
@@ -199,7 +223,8 @@ impl<'a> Encryptor<'a> {
 
             // Reserve a block number for the BCB block
             let b = editor
-                .push_block(block::Type::BlockSecurity)?
+                .push_block(block::Type::BlockSecurity)
+                .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None)
                 .with_flags(block::Flags {
                     must_replicate: true,
@@ -226,7 +251,8 @@ impl<'a> Encryptor<'a> {
                 // Rewrite the target block
                 editor_bs.editor = editor_bs
                     .editor
-                    .update_block(target)?
+                    .update_block(target)
+                    .map_err(|(_, e)| e)?
                     .with_data(data.into_vec().into())
                     .rebuild();
 
@@ -236,7 +262,8 @@ impl<'a> Encryptor<'a> {
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
-                .update_block(source)?
+                .update_block(source)
+                .map_err(|(_, e)| e)?
                 .with_data(
                     hardy_cbor::encode::emit(&bcb::OperationSet {
                         source: bpsec_source,

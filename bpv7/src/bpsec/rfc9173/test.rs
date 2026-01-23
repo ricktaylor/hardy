@@ -228,6 +228,7 @@ fn test_sign_then_encrypt() {
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
     // println!("Bundle bytes: {:02x?}", signed_bytes);
@@ -249,6 +250,7 @@ fn test_sign_then_encrypt() {
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -322,6 +324,7 @@ fn test_partial_bcb_removal() {
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -341,6 +344,7 @@ fn test_partial_bcb_removal() {
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -359,6 +363,7 @@ fn test_partial_bcb_removal() {
     // 4. Remove BCB from payload only (block 1)
     let editor = Editor::new(&parsed_enc.bundle, &encrypted_bytes)
         .remove_encryption(1, &all_keys)
+        .map_err(|(_, e)| e)
         .expect("Failed to remove BCB from payload");
     let partially_decrypted_bytes = editor
         .rebuild()
@@ -405,6 +410,7 @@ fn test_partial_bcb_removal() {
 
     let editor = Editor::new(&parsed_partial.bundle, &partially_decrypted_bytes)
         .remove_encryption(bib_block_num, &all_keys)
+        .map_err(|(_, e)| e)
         .expect("Failed to remove BCB from BIB");
     let fully_decrypted_bytes = editor
         .rebuild()
@@ -464,6 +470,7 @@ fn test_bib_removal_and_readd() {
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -482,6 +489,7 @@ fn test_bib_removal_and_readd() {
     // 4. Remove BIB using Editor::remove_integrity
     let editor = Editor::new(&parsed_signed.bundle, &signed_bytes)
         .remove_integrity(1)
+        .map_err(|(_, e)| e)
         .expect("Failed to remove BIB");
     let unsigned_bytes = editor
         .rebuild()
@@ -513,6 +521,7 @@ fn test_bib_removal_and_readd() {
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to re-sign block");
     let resigned_bytes = signer
         .rebuild()
@@ -574,6 +583,7 @@ fn test_encrypt_then_sign_fails() {
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -625,6 +635,7 @@ fn test_signature_tamper_detection() {
             "ipn:2.1".parse().unwrap(),
             &sign_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
@@ -695,6 +706,7 @@ fn test_bcb_without_bib_removal() {
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
+        .map_err(|(_, e)| e)
         .expect("Failed to encrypt block");
     let encrypted_bytes = encryptor
         .rebuild()
@@ -710,6 +722,7 @@ fn test_bcb_without_bib_removal() {
     // 3. Remove BCB using Editor::remove_encryption
     let editor = Editor::new(&parsed_enc.bundle, &encrypted_bytes)
         .remove_encryption(1, &keys)
+        .map_err(|(_, e)| e)
         .expect("Failed to remove BCB");
     let decrypted_bytes = editor
         .rebuild()

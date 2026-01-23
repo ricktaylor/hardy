@@ -97,7 +97,7 @@ impl Command {
                 self.source.unwrap_or(bundle.id.source.clone()),
                 &key,
             )
-            .map_err(|e| anyhow::anyhow!("Failed to sign block: {e}"))?;
+            .map_err(|(_, e)| anyhow::anyhow!("Failed to sign block: {e}"))?;
 
         let data = signer
             .rebuild()

@@ -144,7 +144,10 @@ impl<'a> Editor<'a> {
     ///
     /// The new block will be assigned the next available block
     /// number.  Be very careful about adding duplicate blocks that should not be duplicated
-    pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
         if let block::Type::Primary
         | block::Type::Payload
         | block::Type::BundleAge
@@ -154,12 +157,12 @@ impl<'a> Editor<'a> {
             for template in self.blocks.values() {
                 match template {
                     BlockTemplate::Keep(t) if t == &block_type => {
-                        return Err(Error::IllegalDuplicate(block_type));
+                        return Err((self, Error::IllegalDuplicate(block_type)));
                     }
                     BlockTemplate::Insert(template) | BlockTemplate::Update(template)
                         if template.block.block_type == block_type =>
                     {
-                        return Err(Error::IllegalDuplicate(block_type));
+                        return Err((self, Error::IllegalDuplicate(block_type)));
                     }
                     _ => {}
                 }
@@ -169,13 +172,15 @@ impl<'a> Editor<'a> {
         self.add_block(block_type)
     }
 
-    fn add_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
+    #[allow(clippy::result_large_err)]
+    fn add_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
         // Find the lowest unused block_number
         let mut block_number = 2u64;
         while self.blocks.contains_key(&block_number) {
-            block_number = block_number
-                .checked_add(1)
-                .ok_or(Error::OutOfBlockNumbers)?;
+            block_number = match block_number.checked_add(1) {
+                Some(n) => n,
+                None => return Err((self, Error::OutOfBlockNumbers)),
+            };
         }
         Ok(BlockBuilder::new(self, block_number, block_type))
     }
@@ -185,9 +190,12 @@ impl<'a> Editor<'a> {
     /// If a block of the same type already exists, the new block will replace
     /// it. Otherwise, the new block will be assigned the next available block
     /// number.
-    pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
         if let block::Type::Primary = block_type {
-            return Err(Error::PrimaryBlock);
+            return Err((self, Error::PrimaryBlock));
         }
 
         if let Some((block_number, is_new, template)) =
@@ -231,21 +239,20 @@ impl<'a> Editor<'a> {
     ///
     /// This will return a `BlockBuilder` that can be used to manipulate the
     /// existing block.
-    pub fn update_block(self, block_number: u64) -> Result<BlockBuilder<'a>, Error> {
-        let (is_new, template) = match self
-            .blocks
-            .get(&block_number)
-            .ok_or(Error::NoSuchBlock(block_number))?
-        {
-            BlockTemplate::Keep(t) => {
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn update_block(self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
+        let (is_new, template) = match self.blocks.get(&block_number) {
+            None => return Err((self, Error::NoSuchBlock(block_number))),
+            Some(BlockTemplate::Keep(t)) => {
                 if let &block::Type::Primary = t {
-                    return Err(Error::PrimaryBlock);
+                    return Err((self, Error::PrimaryBlock));
                 }
-                let block = self
-                    .original
-                    .blocks
-                    .get(&block_number)
-                    .ok_or(Error::NoSuchBlock(block_number))?;
+                let block = match self.original.blocks.get(&block_number) {
+                    Some(b) => b,
+                    None => return Err((self, Error::NoSuchBlock(block_number))),
+                };
 
                 (
                     false,
@@ -257,8 +264,8 @@ impl<'a> Editor<'a> {
                     ),
                 )
             }
-            BlockTemplate::Insert(template) => (true, template.clone()),
-            BlockTemplate::Update(template) => (false, template.clone()),
+            Some(BlockTemplate::Insert(template)) => (true, template.clone()),
+            Some(BlockTemplate::Update(template)) => (false, template.clone()),
         };
 
         Ok(BlockBuilder::reuse_template(
@@ -272,19 +279,29 @@ impl<'a> Editor<'a> {
     /// Remove a block from the bundle.
     ///
     /// Note that the primary and payload blocks cannot be removed.
-    pub fn remove_block(mut self, block_number: u64) -> Result<Self, Error> {
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn remove_block(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
         if block_number == 0 {
-            return Err(Error::PrimaryBlock);
+            return Err((self, Error::PrimaryBlock));
         }
         if block_number == 1 {
-            return Err(Error::PayloadBlock);
+            return Err((self, Error::PayloadBlock));
         }
         self.remove_block_inner(block_number);
         Ok(self)
     }
 
-    fn remove_block_inner(&mut self, block_number: u64) -> bool {
-        self.blocks.remove(&block_number).is_some()
+    fn remove_block_inner(&mut self, block_number: u64) {
+        if let Some(_block) = self.blocks.remove(&block_number) {
+
+            // TODO:  If there is a BIB, remove the block from the list of targets
+            // If the BIB is now empty, recursively call this function.
+
+            // TODO:  If there is a BCB, remove the block from the list of targets
+            // If the BCB is now empty, recursively call this function.
+        }
     }
 
     // Helper to get the inner Block
@@ -304,53 +321,58 @@ impl<'a> Editor<'a> {
     /// Remove the integrity check from a block in the bundle.
     ///
     /// Note that this will rewrite (or remove) the BIB block.
-    pub fn remove_integrity(mut self, block_number: u64) -> Result<Self, Error> {
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn remove_integrity(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
         if block_number == 0 {
-            return Err(Error::PrimaryBlock);
+            return Err((self, Error::PrimaryBlock));
         }
 
-        let target_block = self
-            .block(block_number)
-            .ok_or(Error::NoSuchBlock(block_number))?
-            .0;
-
-        let Some(bib) = target_block.bib else {
-            return Ok(self);
+        let target_block = match self.block(block_number) {
+            Some((block, _)) => block,
+            None => return Err((self, Error::NoSuchBlock(block_number))),
         };
-        let Some((_, bib_payload)) = self.block(bib) else {
-            return Ok(self);
-        };
-        let Some(bib_payload) = bib_payload else {
-            return Ok(self);
-        };
-        let target_block = target_block.clone();
 
-        let mut opset = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
-            .map_err(|e| {
-                Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
-                    field: "BIB Abstract Syntax Block",
-                    source: e.into(),
-                }))
-            })?;
+        if let Some(bib) = target_block.bib
+            && let Some((_, Some(bib_payload))) = self.block(bib)
+        {
+            let target_block = target_block.clone();
 
-        // Remove the target from the BIB
-        if opset.operations.remove(&block_number).is_some() {
-            if opset.operations.is_empty() {
-                self.remove_block_inner(bib);
-            } else {
-                // Rewrite BIB
-                self = self
-                    .update_block(bib)?
-                    .with_data(hardy_cbor::encode::emit(&opset).0.into())
-                    .rebuild();
-            }
+            let mut opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
+            {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                            field: "BIB Abstract Syntax Block",
+                            source: e.into(),
+                        })),
+                    ));
+                }
+            };
 
-            if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
-                // Ensure we have a CRC
-                self = self
-                    .update_block(block_number)?
-                    .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
-                    .rebuild();
+            // Remove the target from the BIB
+            if opset.operations.remove(&block_number).is_some() {
+                if opset.operations.is_empty() {
+                    self.remove_block_inner(bib);
+                } else {
+                    // Rewrite BIB
+                    self = self
+                        .update_block(bib)?
+                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .rebuild();
+                }
+
+                if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None)
+                {
+                    // Ensure we have a CRC
+                    self = self
+                        .update_block(block_number)?
+                        .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+                        .rebuild();
+                }
             }
         }
         Ok(self)
@@ -359,81 +381,91 @@ impl<'a> Editor<'a> {
     /// Remove the encryption from a block in the bundle.
     ///
     /// Note that this will rewrite (or remove) the target and the BCB block.
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
     pub fn remove_encryption(
         mut self,
         block_number: u64,
         key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, (Self, Error)> {
         if block_number == 0 {
-            return Err(Error::PrimaryBlock);
+            return Err((self, Error::PrimaryBlock));
         }
 
-        let target_block = self
-            .block(block_number)
-            .ok_or(Error::NoSuchBlock(block_number))?
-            .0;
-
-        let Some(bcb) = target_block.bcb else {
-            return Ok(self);
-        };
-        let Some((_, bcb_payload)) = self.block(bcb) else {
-            return Ok(self);
-        };
-        let Some(bcb_payload) = bcb_payload else {
-            return Ok(self);
-        };
-        let original_block = target_block.clone();
-
-        let mut opset = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
-            .map_err(|e| {
-                Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
-                    field: "BCB Abstract Syntax Block",
-                    source: e.into(),
-                }))
-            })?;
-
-        let Some(op) = opset.operations.remove(&block_number) else {
-            return Ok(self);
+        let target_block = match self.block(block_number) {
+            Some((block, _)) => block,
+            None => return Err((self, Error::NoSuchBlock(block_number))),
         };
 
-        // Decrypt the target payload
-        let block_set = EditorBlockSet { editor: self };
-        let mut target_payload = op
-            .decrypt(
-                key_f,
-                bpsec::bcb::OperationArgs {
-                    bpsec_source: &opset.source,
-                    target: block_number,
-                    source: bcb,
-                    blocks: &block_set,
-                },
-            )
-            .map_err(|e| Error::Builder(builder::Error::InternalError(e.into())))?;
+        if let Some(bcb) = target_block.bcb
+            && let Some((_, Some(bcb_payload))) = self.block(bcb)
+        {
+            let original_block = target_block.clone();
 
-        // Steal the content of the decrypted payload
-        // This is safe as this function is an explicit 'remove the encryption', hence
-        // removing the Zeroizing<> is valid
-        let target_payload: Box<[u8]> = std::mem::take(&mut target_payload);
+            let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
+            {
+                Ok(opset) => opset,
+                Err(e) => {
+                    return Err((
+                        self,
+                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                            field: "BCB Abstract Syntax Block",
+                            source: e.into(),
+                        })),
+                    ));
+                }
+            };
 
-        // Replace the block payload
-        let mut block = block_set
-            .editor
-            .update_block(block_number)?
-            .with_data(target_payload.into_vec().into());
-        if original_block.bib.is_none() && matches!(original_block.crc_type, crc::CrcType::None) {
-            // Ensure we have a CRC
-            block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
-        }
-        self = block.rebuild();
+            if let Some(op) = opset.operations.remove(&block_number) {
+                // Decrypt the target payload
+                let block_set = EditorBlockSet { editor: self };
+                let mut target_payload = match op.decrypt(
+                    key_f,
+                    bpsec::bcb::OperationArgs {
+                        bpsec_source: &opset.source,
+                        target: block_number,
+                        source: bcb,
+                        blocks: &block_set,
+                    },
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Err((
+                            block_set.editor,
+                            Error::Builder(builder::Error::InternalError(e.into())),
+                        ));
+                    }
+                };
 
-        if opset.operations.is_empty() {
-            self.remove_block_inner(bcb);
-        } else {
-            // Rewrite BCB
-            self = self
-                .update_block(bcb)?
-                .with_data(hardy_cbor::encode::emit(&opset).0.into())
-                .rebuild();
+                // Steal the content of the decrypted payload
+                // This is safe as this function is an explicit 'remove the encryption', hence
+                // removing the Zeroizing<> is valid
+                let target_payload: Box<[u8]> = std::mem::take(&mut target_payload);
+
+                // Replace the block payload
+                let mut block = block_set
+                    .editor
+                    .update_block(block_number)?
+                    .with_data(target_payload.into_vec().into());
+                if original_block.bib.is_none()
+                    && matches!(original_block.crc_type, crc::CrcType::None)
+                {
+                    // Ensure we have a CRC
+                    block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
+                }
+                self = block.rebuild();
+
+                if opset.operations.is_empty() {
+                    self.remove_block_inner(bcb);
+                } else {
+                    // Rewrite BCB
+                    self = self
+                        .update_block(bcb)?
+                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .rebuild();
+                }
+            }
         }
 
         Ok(self)

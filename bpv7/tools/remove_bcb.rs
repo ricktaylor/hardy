@@ -30,7 +30,7 @@ impl Command {
 
         let editor = hardy_bpv7::editor::Editor::new(&bundle, &data)
             .remove_encryption(self.block, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
+            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
 
         let data = editor
             .rebuild()

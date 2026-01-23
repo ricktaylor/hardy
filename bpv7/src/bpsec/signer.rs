@@ -51,29 +51,32 @@ impl<'a> Signer<'a> {
         }
     }
 
+    /// Sign a block in the bundle.
+    ///
+    /// On error, returns the signer along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
     pub fn sign_block(
         mut self,
         block_number: u64,
         context: Context,
         source: eid::Eid,
         key: &'a key::Key,
-    ) -> Result<Self, Error> {
-        let block = self
-            .original
-            .blocks
-            .get(&block_number)
-            .ok_or(Error::NoSuchBlock(block_number))?;
+    ) -> Result<Self, (Self, Error)> {
+        let block = match self.original.blocks.get(&block_number) {
+            Some(b) => b,
+            None => return Err((self, Error::NoSuchBlock(block_number))),
+        };
 
         if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
-            return Err(Error::InvalidTarget(block_number));
+            return Err((self, Error::InvalidTarget(block_number)));
         }
 
         if block.bib.is_some() {
-            return Err(Error::AlreadySigned(block_number));
+            return Err((self, Error::AlreadySigned(block_number)));
         }
 
         if block.bcb.is_some() {
-            return Err(Error::EncryptedTarget(block_number));
+            return Err((self, Error::EncryptedTarget(block_number)));
         }
 
         self.templates.insert(
@@ -85,14 +88,6 @@ impl<'a> Signer<'a> {
             },
         );
         Ok(self)
-    }
-
-    /// Create an `Encryptor` to encrypt blocks in the bundle.
-    ///
-    /// Note that this consumes the `Siner`, so any modifications made to the
-    /// bundle prior to calling this method will be completed prior to signing.
-    pub fn encryptor(self) -> encryptor::Encryptor<'a> {
-        encryptor::Encryptor::new(self.original, self.source_data)
     }
 
     pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
@@ -130,7 +125,8 @@ impl<'a> Signer<'a> {
                     .expect("Missing target block");
                 if *target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(*target)?
+                        .update_block(*target)
+                        .map_err(|(_, e)| e)?
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
                 }
@@ -138,7 +134,8 @@ impl<'a> Signer<'a> {
 
             // Reserve a block number for the BIB block
             let b = editor
-                .push_block(block::Type::BlockIntegrity)?
+                .push_block(block::Type::BlockIntegrity)
+                .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None);
 
             let source = b.block_number();
@@ -170,7 +167,8 @@ impl<'a> Signer<'a> {
             // Rewrite with the real data
             editor = editor_bs
                 .editor
-                .update_block(source)?
+                .update_block(source)
+                .map_err(|(_, e)| e)?
                 .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
                 .rebuild();
         }

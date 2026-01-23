@@ -30,7 +30,7 @@ impl Command {
 
         let editor = hardy_bpv7::editor::Editor::new(&bundle, &data)
             .remove_integrity(self.block)
-            .map_err(|e| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
+            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
 
         let data = editor
             .rebuild()

@@ -263,7 +263,7 @@ impl Store {
 
         // Now rebuild
         let new_data = match editor.update_block(1) {
-            Err(e) => {
+            Err((_, e)) => {
                 info!("Missing payload block?: {e}");
                 return None;
             }
