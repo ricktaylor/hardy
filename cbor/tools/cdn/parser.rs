@@ -1,5 +1,5 @@
 /*!
-CDN parser using Chumsky
+CDN parser using Chumsky 0.12
 
 Parses CBOR Diagnostic Notation (CDN) text into AST.
 */
@@ -7,6 +7,18 @@ Parses CBOR Diagnostic Notation (CDN) text into AST.
 use super::ast::CdnValue;
 use base64::prelude::*;
 use chumsky::prelude::*;
+
+// ============================================================================
+// Type Aliases
+// ============================================================================
+
+type Span = SimpleSpan<usize>;
+type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
+type BoxedParser<'a, T> = Boxed<'a, 'a, &'a str, T, Extra<'a>>;
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 /// Parse CDN text into a CDN AST value
 ///
@@ -18,214 +30,282 @@ use chumsky::prelude::*;
 /// let cdn = "[1, 2, h'deadbeef']";
 /// let value = parse(cdn).unwrap();
 /// ```
-pub fn parse(input: &str) -> Result<CdnValue, Vec<Simple<char>>> {
-    cdn_parser().parse(input)
+pub fn parse(input: &str) -> Result<CdnValue, Vec<Rich<'_, char, Span>>> {
+    cdn_parser().parse(input).into_result()
 }
 
+// ============================================================================
+// Parser Implementation
+// ============================================================================
+
 /// Build the complete CDN parser
-fn cdn_parser() -> impl Parser<char, CdnValue, Error = Simple<char>> {
-    value_parser().then_ignore(end())
+fn cdn_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    value_parser().then_ignore(end()).boxed()
+}
+
+/// Parse whitespace
+fn whitespace<'a>() -> BoxedParser<'a, ()> {
+    any()
+        .filter(|c: &char| c.is_whitespace())
+        .repeated()
+        .ignored()
+        .boxed()
 }
 
 /// Parse a single CDN value (recursive)
-fn value_parser() -> impl Parser<char, CdnValue, Error = Simple<char>> {
+fn value_parser<'a>() -> BoxedParser<'a, CdnValue> {
     recursive(|value| {
-        let whitespace = || filter(|c: &char| c.is_whitespace()).repeated();
-
-        // Unsigned integer: 0, 42, 1000000
-        let unsigned = text::int(10)
-            .try_map(|s: String, span| {
-                s.parse::<u64>()
-                    .map(CdnValue::Unsigned)
-                    .map_err(|e| Simple::custom(span, format!("Invalid unsigned integer: {}", e)))
-            })
-            .labelled("unsigned integer");
-
-        // Negative integer: -1, -42, -1000000
-        let negative = just('-')
-            .ignore_then(text::int(10))
-            .try_map(|s: String, span| {
-                s.parse::<i64>()
-                    .map(|n| CdnValue::Negative(-n))
-                    .map_err(|e| Simple::custom(span, format!("Invalid negative integer: {}", e)))
-            })
-            .labelled("negative integer");
-
-        // Float: 1.5, -3.14159, 1.0e10
-        let float = {
-            let sign = just('-').or_not();
-            let integer = text::int(10);
-            let fraction = just('.').chain(text::digits(10));
-            let exponent = one_of("eE")
-                .chain(one_of("+-").or_not())
-                .chain(text::int(10));
-
-            sign.chain::<char, _, _>(integer)
-                .chain::<char, _, _>(
-                    fraction
-                        .or(exponent.clone())
-                        .repeated()
-                        .at_least(1)
-                        .flatten(),
-                )
-                .collect::<String>()
-                .try_map(|s, span| {
-                    s.parse::<f64>()
-                        .map(CdnValue::Float)
-                        .map_err(|e| Simple::custom(span, format!("Invalid float: {}", e)))
-                })
-                .labelled("float")
-        };
-
-        // Hex byte string: h'deadbeef'
-        let hex_bytes = just("h'")
-            .ignore_then(filter(|c: &char| c.is_ascii_hexdigit()).repeated())
-            .then_ignore(just('\''))
-            .try_map(|chars, span| {
-                let hex_str: String = chars.iter().collect();
-                hex::decode(&hex_str)
-                    .map(CdnValue::ByteString)
-                    .map_err(|e| Simple::custom(span, format!("Invalid hex string: {}", e)))
-            })
-            .labelled("hex byte string");
-
-        // Base64 byte string: b64'SGVsbG8='
-        let b64_bytes = just("b64'")
-            .ignore_then(filter(|c: &char| *c != '\'').repeated())
-            .then_ignore(just('\''))
-            .try_map(|chars, span| {
-                let b64_str: String = chars.iter().collect();
-                BASE64_STANDARD
-                    .decode(&b64_str)
-                    .map(CdnValue::ByteString)
-                    .map_err(|e| Simple::custom(span, format!("Invalid base64 string: {}", e)))
-            })
-            .labelled("base64 byte string");
-
-        // Text string: "hello world"
-        // Parse string content - handle escapes by accepting backslash followed by any char
-        let escape = just('\\').then(any()).map(|(_, c)| vec!['\\', c]);
-        let normal = none_of("\"\\").map(|c| vec![c]);
-
-        let text_string = just('"')
-            .ignore_then(
-                escape
-                    .or(normal)
-                    .repeated()
-                    .map(|vecs: Vec<Vec<char>>| vecs.into_iter().flatten().collect::<String>()),
-            )
-            .then_ignore(just('"'))
-            .map(|s: String| CdnValue::TextString(unescape_string(&s)))
-            .labelled("text string");
-
-        // Array: [1, 2, 3] or [_ 1, 2, 3]
-        let array = just('[')
-            .padded_by(whitespace())
-            .ignore_then(just('_').padded_by(whitespace()).or_not())
-            .then(
-                value
-                    .clone()
-                    .separated_by(just(',').padded_by(whitespace()))
-                    .allow_trailing()
-                    .padded_by(whitespace()),
-            )
-            .then_ignore(just(']').padded_by(whitespace()))
-            .map(|(indefinite, items): (Option<char>, Vec<CdnValue>)| {
-                if indefinite.is_some() {
-                    CdnValue::ArrayIndefinite(items)
-                } else {
-                    CdnValue::Array(items)
-                }
-            })
-            .labelled("array");
-
-        // Map: {1: "a", 2: "b"} or {_ 1: "a"}
-        let map_entry = value
-            .clone()
-            .then_ignore(just(':').padded_by(whitespace()))
-            .then(value.clone());
-
-        let map = just('{')
-            .padded_by(whitespace())
-            .ignore_then(just('_').padded_by(whitespace()).or_not())
-            .then(
-                map_entry
-                    .separated_by(just(',').padded_by(whitespace()))
-                    .allow_trailing()
-                    .padded_by(whitespace()),
-            )
-            .then_ignore(just('}').padded_by(whitespace()))
-            .map(
-                |(indefinite, pairs): (Option<char>, Vec<(CdnValue, CdnValue)>)| {
-                    if indefinite.is_some() {
-                        CdnValue::MapIndefinite(pairs)
-                    } else {
-                        CdnValue::Map(pairs)
-                    }
-                },
-            )
-            .labelled("map");
-
-        // Tagged value: 24(h'...')
-        let tagged = text::int(10)
-            .try_map(|s: String, span| {
-                s.parse::<u64>()
-                    .map_err(|e| Simple::custom(span, format!("Invalid tag number: {}", e)))
-            })
-            .then_ignore(just('(').padded_by(whitespace()))
-            .then(value.clone())
-            .then_ignore(just(')').padded_by(whitespace()))
-            .map(|(tag, val)| CdnValue::Tagged(tag, Box::new(val)))
-            .labelled("tagged value");
-
-        // Keywords
-        let bool_true = text::keyword("true")
-            .to(CdnValue::Bool(true))
-            .labelled("true");
-
-        let bool_false = text::keyword("false")
-            .to(CdnValue::Bool(false))
-            .labelled("false");
-
-        let null = text::keyword("null").to(CdnValue::Null).labelled("null");
-
-        let undefined = text::keyword("undefined")
-            .to(CdnValue::Undefined)
-            .labelled("undefined");
-
-        // Simple value: simple(22)
-        let simple = text::keyword("simple")
-            .ignore_then(just('(').padded_by(whitespace()))
-            .ignore_then(text::int(10))
-            .then_ignore(just(')').padded_by(whitespace()))
-            .try_map(|s: String, span| {
-                s.parse::<u8>()
-                    .map(CdnValue::Simple)
-                    .map_err(|e| Simple::custom(span, format!("Invalid simple value: {}", e)))
-            })
-            .labelled("simple value");
+        let value_boxed: BoxedParser<'a, CdnValue> = value.clone().boxed();
 
         // Combine all value parsers
         // Order matters: try more specific patterns first
         choice((
-            tagged,     // Must be before unsigned (to catch "24()")
-            bool_true,  // Before unsigned
-            bool_false, // Before unsigned
-            null,       // Before unsigned
-            undefined,  // Before unsigned
-            simple,     // Before unsigned
-            float,      // Before negative and unsigned
-            negative,   // Before unsigned (to catch the "-" sign)
-            unsigned,
-            hex_bytes,
-            b64_bytes,
-            text_string,
-            array,
-            map,
+            tagged_parser(value_boxed.clone()),
+            bool_true_parser(),
+            bool_false_parser(),
+            null_parser(),
+            undefined_parser(),
+            simple_parser(),
+            float_parser(),
+            negative_parser(),
+            unsigned_parser(),
+            hex_bytes_parser(),
+            b64_bytes_parser(),
+            text_string_parser(),
+            array_parser(value_boxed.clone()),
+            map_parser(value_boxed),
         ))
         .padded_by(whitespace())
     })
+    .boxed()
 }
+
+/// Unsigned integer: 0, 42, 1000000
+fn unsigned_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    text::int(10)
+        .try_map(|s: &str, span| {
+            s.parse::<u64>()
+                .map(CdnValue::Unsigned)
+                .map_err(|e| Rich::custom(span, format!("Invalid unsigned integer: {}", e)))
+        })
+        .labelled("unsigned integer")
+        .boxed()
+}
+
+/// Negative integer: -1, -42, -1000000
+fn negative_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    just('-')
+        .ignore_then(text::int(10))
+        .try_map(|s: &str, span| {
+            s.parse::<i64>()
+                .map(|n| CdnValue::Negative(-n))
+                .map_err(|e| Rich::custom(span, format!("Invalid negative integer: {}", e)))
+        })
+        .labelled("negative integer")
+        .boxed()
+}
+
+/// Float: 1.5, -3.14159, 1.0e10
+fn float_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    let sign = just('-').or_not();
+    let integer = text::int(10);
+    let fraction = just('.').then(text::digits(10)).ignored();
+    let exponent = one_of("eE")
+        .then(one_of("+-").or_not())
+        .then(text::int(10))
+        .ignored();
+
+    // Float requires at least a fraction or exponent part
+    sign.then(integer)
+        .then(fraction.or(exponent).repeated().at_least(1))
+        .to_slice()
+        .try_map(|s: &str, span| {
+            s.parse::<f64>()
+                .map(CdnValue::Float)
+                .map_err(|e| Rich::custom(span, format!("Invalid float: {}", e)))
+        })
+        .labelled("float")
+        .boxed()
+}
+
+/// Hex byte string: h'deadbeef'
+fn hex_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    just("h'")
+        .ignore_then(
+            any()
+                .filter(|c: &char| c.is_ascii_hexdigit())
+                .repeated()
+                .collect::<String>(),
+        )
+        .then_ignore(just('\''))
+        .try_map(|hex_str, span| {
+            hex::decode(&hex_str)
+                .map(CdnValue::ByteString)
+                .map_err(|e| Rich::custom(span, format!("Invalid hex string: {}", e)))
+        })
+        .labelled("hex byte string")
+        .boxed()
+}
+
+/// Base64 byte string: b64'SGVsbG8='
+fn b64_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    just("b64'")
+        .ignore_then(
+            any()
+                .filter(|c: &char| *c != '\'')
+                .repeated()
+                .collect::<String>(),
+        )
+        .then_ignore(just('\''))
+        .try_map(|b64_str, span| {
+            BASE64_STANDARD
+                .decode(&b64_str)
+                .map(CdnValue::ByteString)
+                .map_err(|e| Rich::custom(span, format!("Invalid base64 string: {}", e)))
+        })
+        .labelled("base64 byte string")
+        .boxed()
+}
+
+/// Text string: "hello world"
+fn text_string_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    // Parse escape sequences
+    let escape = just('\\').ignore_then(any()).map(|c| format!("\\{}", c));
+
+    let normal = none_of("\"\\").map(|c: char| c.to_string());
+
+    just('"')
+        .ignore_then(escape.or(normal).repeated().collect::<Vec<String>>())
+        .then_ignore(just('"'))
+        .map(|parts| {
+            let s: String = parts.into_iter().collect();
+            CdnValue::TextString(unescape_string(&s))
+        })
+        .labelled("text string")
+        .boxed()
+}
+
+/// Array: [1, 2, 3] or [_ 1, 2, 3]
+fn array_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue> {
+    just('[')
+        .padded_by(whitespace())
+        .ignore_then(just('_').padded_by(whitespace()).or_not())
+        .then(
+            value
+                .separated_by(just(',').padded_by(whitespace()))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .padded_by(whitespace()),
+        )
+        .then_ignore(just(']').padded_by(whitespace()))
+        .map(|(indefinite, items): (Option<char>, Vec<CdnValue>)| {
+            if indefinite.is_some() {
+                CdnValue::ArrayIndefinite(items)
+            } else {
+                CdnValue::Array(items)
+            }
+        })
+        .labelled("array")
+        .boxed()
+}
+
+/// Map: {1: "a", 2: "b"} or {_ 1: "a"}
+fn map_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue> {
+    let map_entry = value
+        .clone()
+        .then_ignore(just(':').padded_by(whitespace()))
+        .then(value)
+        .boxed();
+
+    just('{')
+        .padded_by(whitespace())
+        .ignore_then(just('_').padded_by(whitespace()).or_not())
+        .then(
+            map_entry
+                .separated_by(just(',').padded_by(whitespace()))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .padded_by(whitespace()),
+        )
+        .then_ignore(just('}').padded_by(whitespace()))
+        .map(
+            |(indefinite, pairs): (Option<char>, Vec<(CdnValue, CdnValue)>)| {
+                if indefinite.is_some() {
+                    CdnValue::MapIndefinite(pairs)
+                } else {
+                    CdnValue::Map(pairs)
+                }
+            },
+        )
+        .labelled("map")
+        .boxed()
+}
+
+/// Tagged value: 24(h'...')
+fn tagged_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue> {
+    text::int(10)
+        .try_map(|s: &str, span| {
+            s.parse::<u64>()
+                .map_err(|e| Rich::custom(span, format!("Invalid tag number: {}", e)))
+        })
+        .then_ignore(just('(').padded_by(whitespace()))
+        .then(value)
+        .then_ignore(just(')').padded_by(whitespace()))
+        .map(|(tag, val)| CdnValue::Tagged(tag, Box::new(val)))
+        .labelled("tagged value")
+        .boxed()
+}
+
+/// Boolean true
+fn bool_true_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    text::keyword("true")
+        .to(CdnValue::Bool(true))
+        .labelled("true")
+        .boxed()
+}
+
+/// Boolean false
+fn bool_false_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    text::keyword("false")
+        .to(CdnValue::Bool(false))
+        .labelled("false")
+        .boxed()
+}
+
+/// Null value
+fn null_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    text::keyword("null")
+        .to(CdnValue::Null)
+        .labelled("null")
+        .boxed()
+}
+
+/// Undefined value
+fn undefined_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    text::keyword("undefined")
+        .to(CdnValue::Undefined)
+        .labelled("undefined")
+        .boxed()
+}
+
+/// Simple value: simple(22)
+fn simple_parser<'a>() -> BoxedParser<'a, CdnValue> {
+    text::keyword("simple")
+        .ignore_then(just('(').padded_by(whitespace()))
+        .ignore_then(text::int(10))
+        .then_ignore(just(')').padded_by(whitespace()))
+        .try_map(|s: &str, span| {
+            s.parse::<u8>()
+                .map(CdnValue::Simple)
+                .map_err(|e| Rich::custom(span, format!("Invalid simple value: {}", e)))
+        })
+        .labelled("simple value")
+        .boxed()
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 /// Unescape a string (handle \n, \t, \", etc.)
 fn unescape_string(s: &str) -> String {
@@ -252,7 +332,12 @@ fn unescape_string(s: &str) -> String {
                         result.push(ch);
                     }
                 }
-                _ => result.push(c),
+                Some(other) => {
+                    // Unknown escape, keep as-is
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
             }
         } else {
             result.push(c);
@@ -261,6 +346,10 @@ fn unescape_string(s: &str) -> String {
 
     result
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
