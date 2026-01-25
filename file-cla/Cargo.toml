@@ -23,6 +23,6 @@ tokio-util = "0.7.18"
 trace-err = "0.1.5"
 thiserror = "2.0.18"
 serde = { version = "1.0.228", features = ["derive"], optional = true }
-notify-debouncer-full = "0.6.0"
+notify-debouncer-full = "0.7.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 flume = "0.12.0"

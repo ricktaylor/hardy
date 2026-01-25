@@ -40,7 +40,7 @@ directories = "6.0.0"
 thiserror = "2.0.18"
 tracing = "0.1.44"
 hardy-otel = { path = "../otel" }
-notify-debouncer-full = "0.6.0"
+notify-debouncer-full = "0.7.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "0.1.5"
 winnow = "0.7.14"
