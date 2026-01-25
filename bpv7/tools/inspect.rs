@@ -184,7 +184,7 @@ fn dump_markdown(
         .map(|n| (n, bundle.bundle.blocks.get(&n).unwrap()))
         .collect::<Vec<_>>();
 
-    blocks.sort_by(|a, b| a.1.extent.start.cmp(&b.1.extent.start));
+    blocks.sort_by_key(|a| a.1.extent.start);
 
     for (block_number, block) in blocks {
         if block_number != 0 {
