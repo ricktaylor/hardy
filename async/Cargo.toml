@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 description = "Runtime-agnostic async primitives for the Hardy DTN implementation"
 
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
 [features]
 default = ["tokio"]
 tokio = ["dep:tokio", "dep:tokio-util"]
