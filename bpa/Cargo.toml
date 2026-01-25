@@ -18,7 +18,7 @@ hardy-async = { path = "../async" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
 hardy-eid-patterns = { path = "../eid-patterns" }
-time = { version = "0.3.45", features = ["serde-human-readable"] }
+time = { version = "0.3.46", features = ["serde-human-readable"] }
 async-trait = "0.1.89"
 bytes = "1.11.0"
 tokio = { version = "1.49.0", features = ["rt", "macros", "time"] }

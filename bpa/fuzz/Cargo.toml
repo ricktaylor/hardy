@@ -24,7 +24,7 @@ hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 hardy-file-cla = { path = "../../file-cla", optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "time"] }
-time = { version = "0.3.45", features = ["parsing"] }
+time = { version = "0.3.46", features = ["parsing"] }
 tracing = "0.1.44"
 arbitrary = { version = "1.4.2", features = ["derive"] }
 flume = "0.12.0"
