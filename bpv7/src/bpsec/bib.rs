@@ -25,10 +25,13 @@ impl Operation {
         }
     }
 
-    pub fn verify(&self, key_f: &impl key::KeyStore, args: OperationArgs) -> Result<(), Error> {
+    pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(key_f, args),
+            Self::HMAC_SHA2(o) => o.verify(key_source, args),
             Self::Unrecognised(..) => Err(Error::NoValidKey),
         }
     }

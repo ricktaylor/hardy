@@ -451,11 +451,14 @@ impl<'a> Editor<'a> {
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn remove_encryption(
+    pub fn remove_encryption<K>(
         mut self,
         block_number: u64,
-        key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<Self, (Self, Error)> {
+        key_source: &K,
+    ) -> Result<Self, (Self, Error)>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         if block_number == 0 {
             return Err((self, Error::PrimaryBlock));
         }
@@ -488,7 +491,7 @@ impl<'a> Editor<'a> {
                 // Decrypt the target payload
                 let block_set = EditorBlockSet { editor: self };
                 let mut target_payload = match op.decrypt(
-                    key_f,
+                    key_source,
                     bpsec::bcb::OperationArgs {
                         bpsec_source: &opset.source,
                         target: block_number,

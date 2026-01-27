@@ -34,6 +34,9 @@ impl Bpa {
         let service_registry =
             Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
 
+        // New Keys Registry (TODO: Make this laod keys from the Config!)
+        let keys_registry = Arc::new(keys::registry::Registry::new());
+
         // New dispatcher
         let dispatcher = Arc::new(dispatcher::Dispatcher::new(
             config,
@@ -41,6 +44,7 @@ impl Bpa {
             cla_registry.clone(),
             service_registry.clone(),
             rib.clone(),
+            keys_registry,
         ));
 
         // Start the store

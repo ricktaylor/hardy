@@ -14,7 +14,7 @@ impl Dispatcher {
         };
 
         // Parse the bundle (again, just in case we have changed policies etc)
-        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store()) {
+        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
             Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
                 bundle,
                 report_unsupported,

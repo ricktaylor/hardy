@@ -4,7 +4,6 @@ use crate::builder::Builder;
 use crate::bundle;
 use crate::creation_timestamp::CreationTimestamp;
 use crate::editor::Editor;
-use base64::prelude::*;
 
 // Helper function to count blocks of a specific type
 fn count_blocks_of_type(bundle: &bundle::Bundle, block_type: crate::block::Type) -> usize {
@@ -25,21 +24,18 @@ fn rfc9173_appendix_a_1() {
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
                 746f2067656e657261746520612033322d62797465207061796c6f6164ff"
     );
-    let keys = key::KeySet::new(vec![
-        serde_json::from_str::<key::Key>(
-            &serde_json::json!({
-                        "kid": "ipn:2.1",
-                        "kty": "oct",
-                        "alg": "HS512",
-                        "key_ops": ["verify"],
-                        "k": "GisaKxorGisaKxorGisaKw"
-            })
-            .to_string(),
-        )
-        .unwrap(),
-    ]);
+    let keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "HS512",
+            "key_ops": ["verify"],
+            "k": "GisaKxorGisaKxorGisaKw"
+        }]
+    }))
+    .unwrap();
 
-    bundle::ParsedBundle::parse(&data, &keys)
+    bundle::ParsedBundle::parse_with_keys(&data, &keys)
         .unwrap()
         .bundle
         .verify_block(1, &data, &keys)
@@ -56,21 +52,19 @@ fn rfc9173_appendix_a_2() {
                 a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
-    let keys = key::KeySet::new(vec![key::Key {
-        id: Some("ipn:2.1".into()),
-        key_algorithm: Some(key::KeyAlgorithm::A128KW),
-        enc_algorithm: Some(key::EncAlgorithm::A128GCM),
-        operations: Some([key::Operation::UnwrapKey, key::Operation::Decrypt].into()),
-        key_type: key::Type::OctetSequence {
-            key: BASE64_URL_SAFE_NO_PAD
-                .decode(b"YWJjZGVmZ2hpamtsbW5vcA")
-                .unwrap()
-                .into(),
-        },
-        ..Default::default()
-    }]);
+    let keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["unwrapKey", "decrypt"],
+            "k": "YWJjZGVmZ2hpamtsbW5vcA"
+        }]
+    }))
+    .unwrap();
 
-    bundle::ParsedBundle::parse(&data, &keys)
+    bundle::ParsedBundle::parse_with_keys(&data, &keys)
         .unwrap()
         .bundle
         .decrypt_block_data(1, &data, &keys)
@@ -89,35 +83,30 @@ fn rfc9173_appendix_a_3() {
                 3a09c1e63fe23a7f66a59c7303837241e070b02619fc59c5214a22f08cd70795e73e
                 9aff"
     );
-    let keys = key::KeySet::new(vec![
-        key::Key {
-            id: Some("ipn:3.0".into()),
-            key_algorithm: Some(key::KeyAlgorithm::HS256),
-            operations: Some([key::Operation::Verify].into()),
-            key_type: key::Type::OctetSequence {
-                key: BASE64_URL_SAFE_NO_PAD
-                    .decode(b"GisaKxorGisaKxorGisaKw")
-                    .unwrap()
-                    .into(),
+    let keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [
+            {
+                "kid": "ipn:3.0",
+                "kty": "oct",
+                "alg": "HS256",
+                "key_ops": ["verify"],
+                "k": "GisaKxorGisaKxorGisaKw"
             },
-            ..Default::default()
-        },
-        key::Key {
-            id: Some("ipn:2.1".into()),
-            key_algorithm: Some(key::KeyAlgorithm::Direct),
-            enc_algorithm: Some(key::EncAlgorithm::A128GCM),
-            operations: Some([key::Operation::Decrypt].into()),
-            key_type: key::Type::OctetSequence {
-                key: BASE64_URL_SAFE_NO_PAD
-                    .decode(b"cXdlcnR5dWlvcGFzZGZnaA")
-                    .unwrap()
-                    .into(),
-            },
-            ..Default::default()
-        },
-    ]);
+            {
+                "kid": "ipn:2.1",
+                "kty": "oct",
+                "alg": "dir",
+                "enc": "A128GCM",
+                "key_ops": ["decrypt"],
+                "k": "cXdlcnR5dWlvcGFzZGZnaA"
+            }
+        ]
+    }))
+    .unwrap();
 
-    let bundle = bundle::ParsedBundle::parse(&data, &keys).unwrap().bundle;
+    let bundle = bundle::ParsedBundle::parse_with_keys(&data, &keys)
+        .unwrap()
+        .bundle;
     bundle
         .verify_block(2, &data, &keys)
         .expect("Failed to verify");
@@ -145,34 +134,27 @@ fn rfc9173_appendix_a_4() {
                 50d2c51cb2481792dae8b21d848cede99b850704000041018501010000582390eab6
                 457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
     );
-    let keys = key::KeySet::new(vec![
-        key::Key {
-            id: Some("ipn:2.1".into()),
-            key_algorithm: Some(key::KeyAlgorithm::HS384),
-            operations: Some([key::Operation::Verify].into()),
-            key_type: key::Type::OctetSequence {
-                key: BASE64_URL_SAFE_NO_PAD
-                    .decode(b"GisaKxorGisaKxorGisaKw")
-                    .unwrap()
-                    .into(),
+    let keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [
+            {
+                "kid": "ipn:2.1",
+                "kty": "oct",
+                "alg": "HS384",
+                "key_ops": ["verify"],
+                "k": "GisaKxorGisaKxorGisaKw"
             },
-            ..Default::default()
-        },
-        key::Key {
-            id: Some("ipn:2.1".into()),
-            enc_algorithm: Some(key::EncAlgorithm::A256GCM),
-            operations: Some([key::Operation::Decrypt].into()),
-            key_type: key::Type::OctetSequence {
-                key: BASE64_URL_SAFE_NO_PAD
-                    .decode(b"cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g")
-                    .unwrap()
-                    .into(),
-            },
-            ..Default::default()
-        },
-    ]);
+            {
+                "kid": "ipn:2.1",
+                "kty": "oct",
+                "enc": "A256GCM",
+                "key_ops": ["decrypt"],
+                "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g"
+            }
+        ]
+    }))
+    .unwrap();
 
-    let bundle = bundle::ParsedBundle::parse(&data, &keys).unwrap().bundle;
+    let bundle = bundle::ParsedBundle::parse_with_keys(&data, &keys).unwrap().bundle;
     bundle
         .decrypt_block_data(1, &data, &keys)
         .expect("Failed to decrypt");
@@ -233,7 +215,7 @@ fn test_sign_then_encrypt() {
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
     // println!("Bundle bytes: {:02x?}", signed_bytes);
 
-    let parsed_signed = bundle::ParsedBundle::parse(&signed_bytes, &sign_keys)
+    let parsed_signed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &sign_keys)
         .expect("Failed to parse signed bundle");
 
     // 3. Encrypt
@@ -258,7 +240,7 @@ fn test_sign_then_encrypt() {
     // println!("Bundle bytes: {:02x?}", encrypted_bytes);
 
     // 4. Decrypt and Verify
-    let parsed_enc = bundle::ParsedBundle::parse(&encrypted_bytes, &enc_keys)
+    let parsed_enc = bundle::ParsedBundle::parse_with_keys(&encrypted_bytes, &enc_keys)
         .expect("Failed to parse encrypted bundle");
     // println!("{:#?}", parsed_enc);
 
@@ -328,7 +310,7 @@ fn test_partial_bcb_removal() {
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
-    let parsed_signed = bundle::ParsedBundle::parse(&signed_bytes, &all_keys)
+    let parsed_signed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &all_keys)
         .expect("Failed to parse signed bundle");
 
     // 3. Encrypt payload (creates 2 BCBs: one for payload, one for BIB per RFC9172)
@@ -350,7 +332,7 @@ fn test_partial_bcb_removal() {
         .rebuild()
         .expect("Failed to rebuild encrypted bundle");
 
-    let parsed_enc = bundle::ParsedBundle::parse(&encrypted_bytes, &all_keys)
+    let parsed_enc = bundle::ParsedBundle::parse_with_keys(&encrypted_bytes, &all_keys)
         .expect("Failed to parse encrypted bundle");
 
     // Verify we have 2 BCB blocks (payload + BIB)
@@ -369,8 +351,9 @@ fn test_partial_bcb_removal() {
         .rebuild()
         .expect("Failed to rebuild after removing payload BCB");
 
-    let parsed_partial = bundle::ParsedBundle::parse(&partially_decrypted_bytes, &all_keys)
-        .expect("Failed to parse partially decrypted bundle");
+    let parsed_partial =
+        bundle::ParsedBundle::parse_with_keys(&partially_decrypted_bytes, &all_keys)
+            .expect("Failed to parse partially decrypted bundle");
 
     // 5. Assert: 1 BCB remains (BIB still encrypted)
     let bcb_count_after =
@@ -416,7 +399,7 @@ fn test_partial_bcb_removal() {
         .rebuild()
         .expect("Failed to rebuild after removing BIB BCB");
 
-    let parsed_final = bundle::ParsedBundle::parse(&fully_decrypted_bytes, &all_keys)
+    let parsed_final = bundle::ParsedBundle::parse_with_keys(&fully_decrypted_bytes, &all_keys)
         .expect("Failed to parse fully decrypted bundle");
 
     // 8. Assert: 0 BCBs remain, BIB still present
@@ -474,8 +457,8 @@ fn test_bib_removal_and_readd() {
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
-    let parsed_signed =
-        bundle::ParsedBundle::parse(&signed_bytes, &keys).expect("Failed to parse signed bundle");
+    let parsed_signed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &keys)
+        .expect("Failed to parse signed bundle");
 
     // 3. Verify signature succeeds
     parsed_signed
@@ -495,7 +478,7 @@ fn test_bib_removal_and_readd() {
         .rebuild()
         .expect("Failed to rebuild after BIB removal");
 
-    let parsed_unsigned = bundle::ParsedBundle::parse(&unsigned_bytes, &keys)
+    let parsed_unsigned = bundle::ParsedBundle::parse_with_keys(&unsigned_bytes, &keys)
         .expect("Failed to parse unsigned bundle");
 
     // 5. Assert: No BIB blocks exist
@@ -527,7 +510,7 @@ fn test_bib_removal_and_readd() {
         .rebuild()
         .expect("Failed to rebuild re-signed bundle");
 
-    let parsed_resigned = bundle::ParsedBundle::parse(&resigned_bytes, &keys)
+    let parsed_resigned = bundle::ParsedBundle::parse_with_keys(&resigned_bytes, &keys)
         .expect("Failed to parse re-signed bundle");
 
     // 8. Verify signature succeeds again
@@ -589,7 +572,7 @@ fn test_encrypt_then_sign_fails() {
         .rebuild()
         .expect("Failed to rebuild encrypted bundle");
 
-    let parsed_enc = bundle::ParsedBundle::parse(&encrypted_bytes, &all_keys)
+    let parsed_enc = bundle::ParsedBundle::parse_with_keys(&encrypted_bytes, &all_keys)
         .expect("Failed to parse encrypted bundle");
 
     // 3. Attempt to sign encrypted payload - this should fail
@@ -639,8 +622,8 @@ fn test_signature_tamper_detection() {
         .expect("Failed to sign block");
     let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
 
-    let parsed_signed =
-        bundle::ParsedBundle::parse(&signed_bytes, &keys).expect("Failed to parse signed bundle");
+    let parsed_signed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &keys)
+        .expect("Failed to parse signed bundle");
 
     // Verify signature succeeds with untampered bundle
     parsed_signed
@@ -661,7 +644,7 @@ fn test_signature_tamper_detection() {
     // Corrupt the last byte of the payload data
     tampered_bytes[payload_range.end - 1] ^= 0xFF;
 
-    let parsed_tampered = bundle::ParsedBundle::parse(&tampered_bytes, &keys)
+    let parsed_tampered = bundle::ParsedBundle::parse_with_keys(&tampered_bytes, &keys)
         .expect("Tampered bundle should still parse successfully");
 
     // 3. Verify signature fails
@@ -712,7 +695,7 @@ fn test_bcb_without_bib_removal() {
         .rebuild()
         .expect("Failed to rebuild encrypted bundle");
 
-    let parsed_enc = bundle::ParsedBundle::parse(&encrypted_bytes, &keys)
+    let parsed_enc = bundle::ParsedBundle::parse_with_keys(&encrypted_bytes, &keys)
         .expect("Failed to parse encrypted bundle");
 
     // Verify BCB exists
@@ -728,7 +711,7 @@ fn test_bcb_without_bib_removal() {
         .rebuild()
         .expect("Failed to rebuild after BCB removal");
 
-    let parsed_decrypted = bundle::ParsedBundle::parse(&decrypted_bytes, &keys)
+    let parsed_decrypted = bundle::ParsedBundle::parse_with_keys(&decrypted_bytes, &keys)
         .expect("Failed to parse decrypted bundle");
 
     // 4. Assert: 0 BCBs, payload is decrypted

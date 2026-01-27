@@ -406,11 +406,10 @@ impl Operation {
         })
     }
 
-    pub fn verify(
-        &self,
-        key_f: &impl key::KeyStore,
-        args: bib::OperationArgs,
-    ) -> Result<(), Error> {
+    pub fn verify<K>(&self, key_source: &K, args: bib::OperationArgs) -> Result<(), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
         let target_block = args
             .blocks
             .block(args.target)
@@ -423,7 +422,7 @@ impl Operation {
         let mut tried_to_verify = false;
 
         if let Some(cek) = &self.parameters.key {
-            for jwk in key_f.decrypt_keys(
+            for jwk in key_source.keys(
                 args.bpsec_source,
                 &[key::Operation::UnwrapKey, key::Operation::Verify],
             ) {
@@ -448,7 +447,7 @@ impl Operation {
                 }
             }
         } else {
-            for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Verify]) {
+            for jwk in key_source.keys(args.bpsec_source, &[key::Operation::Verify]) {
                 if Some(self.parameters.variant) == as_variant(&jwk.key_algorithm)
                     && let key::Type::OctetSequence { key } = &jwk.key_type
                     && self.verify_inner(&mut tried_to_verify, key, &args)? == Some(true)

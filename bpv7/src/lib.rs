@@ -55,11 +55,15 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .build(CreationTimestamp::now())
     .unwrap();
 
-// Parse the bundle from the CBOR data.
-let bundle = ParsedBundle::parse(&cbor, &hardy_bpv7::bpsec::key::KeySet::new(vec![])).unwrap().bundle;
+// Parse the bundle from the CBOR data (no keys needed for this bundle).
+let bundle = ParsedBundle::parse(&cbor, hardy_bpv7::bundle::no_keys).unwrap().bundle;
 
 assert_eq!(bundle.id, original_bundle.id);
 assert_eq!(bundle.destination, original_bundle.destination);
+
+// Alternatively, if you have a KeySet for decryption/verification:
+let keys = hardy_bpv7::bpsec::key::KeySet::EMPTY;
+let bundle2 = ParsedBundle::parse_with_keys(&cbor, &keys).unwrap().bundle;
 ```
 */
 #![cfg_attr(not(feature = "std"), no_std)]

@@ -11,6 +11,12 @@ use base64::prelude::*;
 mod parse;
 mod primary_block;
 
+/// A key provider function that returns no keys.
+/// Use this when parsing bundles that don't require decryption.
+pub fn no_keys(_bundle: &Bundle, _data: &[u8]) -> Box<dyn bpsec::key::KeySource> {
+    Box::new(bpsec::key::KeySet::EMPTY)
+}
+
 /// Holds fragmentation information for a bundle.
 ///
 /// As defined in RFC 9171 Section 4.2.1, this information is present in the
@@ -335,13 +341,13 @@ impl hardy_cbor::decode::FromCbor for Flags {
 }
 
 // A view into a bundle's blocks for BPSec operations.
-struct VerifyBlockSet<'a, K: bpsec::key::KeyStore> {
+struct VerifyBlockSet<'a, K: bpsec::key::KeySource + ?Sized> {
     bundle: &'a Bundle,
     source_data: &'a [u8],
     keys: &'a K,
 }
 
-impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> {
+impl<'a, K: bpsec::key::KeySource + ?Sized> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> {
     /// Retrieves a reference to a block by its number.
     fn block(
         &'a self,
@@ -370,14 +376,14 @@ impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for VerifyBlockSet<'a, K> 
 }
 
 // A view into a bundle's blocks for BPSec operations.
-struct DecryptBlockSet<'a, K: bpsec::key::KeyStore> {
+struct DecryptBlockSet<'a, K: bpsec::key::KeySource + ?Sized> {
     inner: VerifyBlockSet<'a, K>,
 
     // To avoid recursion
     target: u64,
 }
 
-impl<'a, K: bpsec::key::KeyStore> bpsec::BlockSet<'a> for DecryptBlockSet<'a, K> {
+impl<'a, K: bpsec::key::KeySource + ?Sized> bpsec::BlockSet<'a> for DecryptBlockSet<'a, K> {
     /// Retrieves a reference to a block by its number.
     fn block(
         &'a self,
@@ -470,13 +476,16 @@ impl Bundle {
     ///
     /// This method handles the complexity of block-level security. If the target
     /// block is encrypted with a Block Confidentiality Block (BCB), this method
-    /// will attempt to decrypt it using the provided `key_f` keystore.
-    pub fn block_data<'a>(
+    /// will attempt to decrypt it using the provided `key_source` key source.
+    pub fn block_data<'a, K>(
         &self,
         block_number: u64,
         source_data: &'a [u8],
-        key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<block::Payload<'a>, Error> {
+        key_source: &K,
+    ) -> Result<block::Payload<'a>, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let target_block = self
             .blocks
             .get(&block_number)
@@ -484,7 +493,7 @@ impl Bundle {
 
         // Check for BCB
         if let Some(bcb_block_number) = &target_block.bcb {
-            self.decrypt_block_inner(block_number, *bcb_block_number, source_data, key_f)
+            self.decrypt_block_inner(block_number, *bcb_block_number, source_data, key_source)
         } else {
             target_block
                 .payload(source_data)
@@ -497,13 +506,16 @@ impl Bundle {
     ///
     /// This method handles the complexity of block-level security. If the target
     /// block is encrypted with a Block Confidentiality Block (BCB), this method
-    /// will attempt to decrypt it using the provided `key_f` keystore.
-    pub fn decrypt_block_data<'a>(
+    /// will attempt to decrypt it using the provided `key_source` key source.
+    pub fn decrypt_block_data<'a, K>(
         &self,
         block_number: u64,
         source_data: &'a [u8],
-        key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<block::Payload<'a>, Error> {
+        key_source: &K,
+    ) -> Result<block::Payload<'a>, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let bcb_block_number = self
             .blocks
             .get(&block_number)
@@ -511,16 +523,19 @@ impl Bundle {
             .bcb
             .ok_or(Error::InvalidBPSec(bpsec::Error::NotEncrypted))?;
 
-        self.decrypt_block_inner(block_number, bcb_block_number, source_data, key_f)
+        self.decrypt_block_inner(block_number, bcb_block_number, source_data, key_source)
     }
 
-    fn decrypt_block_inner<'a>(
+    fn decrypt_block_inner<'a, K>(
         &self,
         target: u64,
         bcb_block_number: u64,
         source_data: &'a [u8],
-        key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<block::Payload<'a>, Error> {
+        key_source: &K,
+    ) -> Result<block::Payload<'a>, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let bcb_block = self.blocks.get(&bcb_block_number).ok_or(Error::Altered)?;
 
         let bcb = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(
@@ -536,7 +551,7 @@ impl Bundle {
             .get(&target)
             .ok_or(Error::Altered)?
             .decrypt(
-                key_f,
+                key_source,
                 bpsec::bcb::OperationArgs {
                     bpsec_source: &bcb.source,
                     target,
@@ -545,7 +560,7 @@ impl Bundle {
                         inner: VerifyBlockSet {
                             bundle: self,
                             source_data,
-                            keys: key_f,
+                            keys: key_source,
                         },
                         target,
                     },
@@ -559,14 +574,17 @@ impl Bundle {
     ///
     /// This method handles the complexity of block-level security. If the target
     /// block is encrypted with a Block Integrity Block (BIB), this method
-    /// will attempt to verify it using the provided `key_f` keystore.
+    /// will attempt to verify it using the provided `key_source` key source.
     /// Returns a boolean indicating if the block had a BIB
-    pub fn verify_block(
+    pub fn verify_block<K>(
         &self,
         block_number: u64,
         source_data: &[u8],
-        key_f: &impl bpsec::key::KeyStore,
-    ) -> Result<bool, Error> {
+        key_source: &K,
+    ) -> Result<bool, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let target_block = self
             .blocks
             .get(&block_number)
@@ -581,7 +599,12 @@ impl Bundle {
 
         // Check for BCB
         let bib_data = if let Some(bcb_block_number) = &bib_block.bcb {
-            self.decrypt_block_inner(*bib_block_number, *bcb_block_number, source_data, key_f)?
+            self.decrypt_block_inner(
+                *bib_block_number,
+                *bcb_block_number,
+                source_data,
+                key_source,
+            )?
         } else {
             bib_block
                 .payload(source_data)
@@ -600,7 +623,7 @@ impl Bundle {
             .get(&block_number)
             .ok_or(Error::Altered)?
             .verify(
-                key_f,
+                key_source,
                 bpsec::bib::OperationArgs {
                     bpsec_source: &bib.source,
                     target: block_number,
@@ -608,7 +631,7 @@ impl Bundle {
                     blocks: &VerifyBlockSet {
                         bundle: self,
                         source_data,
-                        keys: key_f,
+                        keys: key_source,
                     },
                 },
             )

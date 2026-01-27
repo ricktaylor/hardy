@@ -8,7 +8,7 @@ impl Dispatcher {
         };
 
         // Reparse the reconstituted bundle, for sanity
-        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store()) {
+        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
             Ok(hardy_bpv7::bundle::RewrittenBundle::Valid { bundle, .. }) => {
                 let bundle = bundle::Bundle { metadata, bundle };
                 self.store.insert_metadata(&bundle).await;

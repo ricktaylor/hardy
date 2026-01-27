@@ -25,14 +25,17 @@ impl Operation {
         }
     }
 
-    pub fn decrypt(
+    pub fn decrypt<K>(
         &self,
-        key_f: &impl key::KeyStore,
+        key_source: &K,
         args: OperationArgs,
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(op) => op.decrypt(key_f, args),
+            Self::AES_GCM(op) => op.decrypt(key_source, args),
             Self::Unrecognised(..) => Err(Error::NoValidKey),
         }
     }

@@ -1,12 +1,12 @@
 use super::*;
 
-pub trait KeyStore {
+pub trait KeySource {
     /// Get an iterator for keys suitable for decryption, verification, or unwrapping
-    fn decrypt_keys<'a>(
+    fn keys<'a>(
         &'a self,
         source: &eid::Eid,
         operations: &[Operation],
-    ) -> impl Iterator<Item = &'a Key>;
+    ) -> Box<dyn Iterator<Item = &'a Key> + 'a>;
 }
 
 #[derive(Debug)]
@@ -23,19 +23,21 @@ impl KeySet {
     }
 }
 
-impl KeyStore for KeySet {
-    fn decrypt_keys<'a>(
+impl KeySource for KeySet {
+    fn keys<'a>(
         &'a self,
         _source: &eid::Eid,
         operations: &[Operation],
-    ) -> impl Iterator<Item = &'a Key> {
-        self.keys.iter().filter(|k| {
+    ) -> Box<dyn Iterator<Item = &'a Key> + 'a> {
+        // Copy operations to owned vec so the filter closure doesn't borrow from the parameter
+        let operations: Vec<Operation> = operations.to_vec();
+        Box::new(self.keys.iter().filter(move |k| {
             if let Some(key_operations) = &k.operations {
                 operations.iter().any(|op| key_operations.contains(op))
             } else {
                 false
             }
-        })
+        }))
     }
 }
 

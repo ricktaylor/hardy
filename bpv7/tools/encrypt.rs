@@ -83,10 +83,9 @@ impl Command {
         let key = self.key_input.try_into()?;
         let data = self.input.read_all()?;
 
-        let bundle =
-            hardy_bpv7::bundle::ParsedBundle::parse(&data, &hardy_bpv7::bpsec::key::KeySet::EMPTY)
-                .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-                .bundle;
+        let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bundle::no_keys)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
+            .bundle;
 
         let encryptor = hardy_bpv7::bpsec::encryptor::Encryptor::new(&bundle, &data)
             .encrypt_block(

@@ -17,7 +17,7 @@ pub struct Dispatcher {
     cla_registry: Arc<cla::registry::Registry>,
     rib: Arc<rib::Rib>,
     ipn_2_element: Arc<BTreeSet<hardy_eid_patterns::EidPattern>>,
-    //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
+    keys_registry: Arc<keys::registry::Registry>,
 
     // Config options
     status_reports: bool,
@@ -33,7 +33,7 @@ impl Dispatcher {
         cla_registry: Arc<cla::registry::Registry>,
         service_registry: Arc<service_registry::ServiceRegistry>,
         rib: Arc<rib::Rib>,
-        //keys: Box<[hardy_bpv7::bpsec::key::Key]>,
+        keys_registry: Arc<keys::registry::Registry>,
     ) -> Self {
         Self {
             tasks: hardy_async::task_pool::TaskPool::new(),
@@ -48,7 +48,7 @@ impl Dispatcher {
                     .cloned()
                     .collect::<BTreeSet<_>>(),
             ),
-            //keys: keys.unwrap_or(Box<NoKeys>::new()),
+            keys_registry,
             status_reports: config.status_reports,
             node_ids: config.node_ids.clone(),
             poll_channel_depth: config.poll_channel_depth.into(),
@@ -92,18 +92,19 @@ impl Dispatcher {
         self.store.tombstone_metadata(&bundle.bundle.id).await
     }
 
-    fn key_store(&self) -> &impl hardy_bpv7::bpsec::key::KeyStore {
-        self
+    fn key_provider(
+        &self,
+    ) -> impl FnOnce(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
+    {
+        let keys_registry = self.keys_registry.clone();
+        move |bundle, data| keys_registry.key_source(bundle, data)
     }
-}
 
-impl hardy_bpv7::bpsec::key::KeyStore for Dispatcher {
-    // TODO: Dispatcher keys!
-    fn decrypt_keys<'a>(
-        &'a self,
-        _source: &Eid,
-        _operation: &[hardy_bpv7::bpsec::key::Operation],
-    ) -> impl Iterator<Item = &'a hardy_bpv7::bpsec::key::Key> {
-        std::iter::empty()
+    fn key_source(
+        &self,
+        bundle: &hardy_bpv7::bundle::Bundle,
+        data: &[u8],
+    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
+        self.keys_registry.key_source(bundle, data)
     }
 }

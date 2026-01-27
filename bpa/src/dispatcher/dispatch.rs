@@ -48,7 +48,7 @@ impl Dispatcher {
 
         // Parse the bundle
         let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_store())? {
+            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider())? {
                 hardy_bpv7::bundle::RewrittenBundle::Valid {
                     bundle,
                     report_unsupported,

@@ -82,10 +82,9 @@ impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
         let data = self.input.read_all()?;
 
-        let bundle =
-            hardy_bpv7::bundle::ParsedBundle::parse(&data, &hardy_bpv7::bpsec::key::KeySet::EMPTY)
-                .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-                .bundle;
+        let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bundle::no_keys)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
+            .bundle;
 
         // Get block payload
         let block_data = if let Some(payload_str) = &self.payload {

@@ -1164,12 +1164,12 @@ dependencies = [
 name = "hardy-bpv7-fuzz"
 version = "0.0.0"
 dependencies = [
- "base64",
  "hardy-bpv7",
  "hardy-cbor",
  "hardy-eid-patterns",
  "hex-literal",
  "libfuzzer-sys",
+ "serde_json",
 ]
 
 [[package]]

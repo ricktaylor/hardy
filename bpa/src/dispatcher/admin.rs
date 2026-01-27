@@ -20,17 +20,21 @@ impl Dispatcher {
             return dispatch::DispatchResult::Gone;
         };
 
-        let data = match bundle.bundle.block_data(1, &data, self.key_store()) {
-            Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoValidKey)) => {
-                // TODO: We are unable to decrypt the payload, what do we do?
-                return dispatch::DispatchResult::Wait;
-            }
-            Err(e) => {
-                debug!("Received an invalid administrative record: {e}");
-                return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
-            }
-            Ok(data) => data,
-        };
+        let data =
+            match bundle
+                .bundle
+                .block_data(1, &data, &*self.key_source(&bundle.bundle, &data))
+            {
+                Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoValidKey)) => {
+                    // TODO: We are unable to decrypt the payload, what do we do?
+                    return dispatch::DispatchResult::Wait;
+                }
+                Err(e) => {
+                    debug!("Received an invalid administrative record: {e}");
+                    return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
+                }
+                Ok(data) => data,
+            };
 
         match hardy_cbor::decode::parse(data.as_ref()) {
             Err(e) => {

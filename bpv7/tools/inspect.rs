@@ -40,7 +40,7 @@ impl Command {
         let key_store: bpsec::key::KeySet = self.key_args.try_into()?;
         let bundle_data = self.input.read_all()?;
 
-        let parsed = bundle::ParsedBundle::parse(&bundle_data, &key_store)
+        let parsed = bundle::ParsedBundle::parse_with_keys(&bundle_data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         match self.format {

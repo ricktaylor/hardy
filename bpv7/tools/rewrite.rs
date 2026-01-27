@@ -20,7 +20,7 @@ impl Command {
 
         let data = self.input.read_all()?;
 
-        let data = match hardy_bpv7::bundle::RewrittenBundle::parse(&data, &key_store)
+        let data = match hardy_bpv7::bundle::RewrittenBundle::parse_with_keys(&data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
         {
             hardy_bpv7::bundle::RewrittenBundle::Valid { .. } => data,

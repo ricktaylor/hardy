@@ -222,7 +222,10 @@ impl<'a> BlockParse<'a> {
 
     /// Parses and processes all Block Confidentiality Blocks (BCBs).
     /// This involves decrypting the payloads of their target blocks.
-    fn parse_bcbs(&mut self, key_f: &impl bpsec::key::KeyStore) -> Result<(), Error> {
+    fn parse_bcbs<K>(&mut self, key_source: &K) -> Result<(), Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let mut bcb_targets = HashMap::new();
         for (bcb_block_number, bcb) in &self.bcbs {
             let bcb_block = self
@@ -260,7 +263,7 @@ impl<'a> BlockParse<'a> {
                     | block::Type::BlockIntegrity => {
                         // Try to decrypt if we have keys
                         match op.decrypt(
-                            key_f,
+                            key_source,
                             bpsec::bcb::OperationArgs {
                                 bpsec_source: &bcb.source,
                                 target: *target_number,
@@ -530,7 +533,7 @@ fn parse_blocks(
     canonical_bundle: bool,
     block_array: &mut hardy_cbor::decode::Array,
     source_data: &[u8],
-    key_f: &impl bpsec::key::KeyStore,
+    key_source: &dyn bpsec::key::KeySource,
     rewrite: bool,
 ) -> Result<(Option<Box<[u8]>>, bool, bool), Error> {
     let mut parser = BlockParse::new(source_data, rewrite);
@@ -550,8 +553,8 @@ fn parse_blocks(
     // Parse the blocks
     let mut report_unsupported = parser.parse_blocks(bundle, block_array)?;
 
-    // Decrypt all relevant BCB targets first
-    parser.parse_bcbs(key_f)?;
+    // Decrypt BCB targets
+    parser.parse_bcbs(key_source)?;
 
     // Now parse all the non-BIBs we need to check
     parser.check_blocks(bundle)?;
@@ -604,12 +607,41 @@ enum RewriteError {
 }
 
 impl RewrittenBundle {
-    /// Parses a byte slice into a `RewrittenBundle`.
+    /// Parses a byte slice into a `RewrittenBundle` using a key provider closure.
+    ///
+    /// The closure receives the bundle and raw data, allowing key selection based on
+    /// bundle context (e.g., destination EID).
     // Bouncing via RewriteError allows us to avoid the array completeness check when a semantic error occurs
     // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
-    pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
+    pub fn parse<F>(data: &[u8], key_provider: F) -> Result<Self, Error>
+    where
+        F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    {
         match hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
-            Self::parse_inner(data, key_f, a, shortest, tags)
+            Self::parse_inner(data, key_provider, a, shortest, tags)
+        }) {
+            Ok((Self::Valid { bundle, .. } | Self::Rewritten { bundle, .. }, len))
+                if len != data.len() =>
+            {
+                Ok(Self::Invalid {
+                    bundle,
+                    reason: status_report::ReasonCode::BlockUnintelligible,
+                    error: Error::AdditionalData,
+                })
+            }
+            Ok((b, _)) => Ok(b),
+            Err(RewriteError::Invalid(bundle)) => Ok(*bundle),
+            Err(RewriteError::InvalidCBOR(e)) => Err(e.into()),
+            Err(RewriteError::Wrapped(e)) => Err(e),
+        }
+    }
+
+    /// Parses a byte slice into a `RewrittenBundle` using keys provided directly.
+    ///
+    /// This is a simpler API for cases where keys don't depend on bundle context.
+    pub fn parse_with_keys(data: &[u8], keys: &dyn bpsec::key::KeySource) -> Result<Self, Error> {
+        match hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+            Self::parse_inner_with_keys(data, keys, a, shortest, tags)
         }) {
             Ok((Self::Valid { bundle, .. } | Self::Rewritten { bundle, .. }, len))
                 if len != data.len() =>
@@ -628,11 +660,83 @@ impl RewrittenBundle {
     }
 
     /// The inner parsing logic, called by `parse`.
-    /// This function is responsible for parsing the primary block and then handing off
-    /// to `parse_blocks` for the extension blocks.
-    fn parse_inner(
+    fn parse_inner<F>(
         data: &[u8],
-        key_f: &impl bpsec::key::KeyStore,
+        key_provider: F,
+        block_array: &mut hardy_cbor::decode::Array,
+        mut canonical: bool,
+        tags: &[u64],
+    ) -> Result<Self, RewriteError>
+    where
+        F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    {
+        // Check for shortest/correct form
+        canonical = canonical && !block_array.is_definite() && tags.is_empty();
+
+        // Parse Primary block
+        let block_start = block_array.offset();
+        let primary_block = block_array
+            .parse::<(primary_block::PrimaryBlock, bool)>()
+            .map(|(v, s)| {
+                canonical = canonical && s;
+                v
+            })
+            .map_field_err("Primary Block")?;
+
+        let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
+        if let Some(e) = e {
+            _ = block_array.skip_to_end(16);
+            return Ok(Self::Invalid {
+                bundle,
+                reason: status_report::ReasonCode::BlockUnintelligible,
+                error: Error::InvalidField {
+                    field: "Primary Block",
+                    source: e.into(),
+                },
+            });
+        }
+
+        // Get key source from provider
+        let key_source = key_provider(&bundle, data);
+
+        // Parse blocks
+        match parse_blocks(
+            &mut bundle,
+            canonical,
+            block_array,
+            data,
+            &*key_source,
+            true,
+        ) {
+            Ok((None, _, report_unsupported)) => Ok(Self::Valid {
+                bundle,
+                report_unsupported,
+            }),
+            Ok((Some(new_data), non_canonical, report_unsupported)) => Ok(Self::Rewritten {
+                bundle,
+                new_data,
+                report_unsupported,
+                non_canonical,
+            }),
+            Err(Error::Unsupported(n)) => {
+                Err(RewriteError::Invalid(Box::new(RewrittenBundle::Invalid {
+                    bundle,
+                    reason: status_report::ReasonCode::BlockUnsupported,
+                    error: Error::Unsupported(n),
+                })))
+            }
+            Err(error) => Err(RewriteError::Invalid(Box::new(RewrittenBundle::Invalid {
+                bundle,
+                reason: status_report::ReasonCode::BlockUnintelligible,
+                error,
+            }))),
+        }
+    }
+
+    /// The inner parsing logic when keys are provided directly.
+    fn parse_inner_with_keys(
+        data: &[u8],
+        key_source: &dyn bpsec::key::KeySource,
         block_array: &mut hardy_cbor::decode::Array,
         mut canonical: bool,
         tags: &[u64],
@@ -663,8 +767,8 @@ impl RewrittenBundle {
             });
         }
 
-        // And now parse the blocks
-        match parse_blocks(&mut bundle, canonical, block_array, data, key_f, true) {
+        // Parse blocks using the key source directly
+        match parse_blocks(&mut bundle, canonical, block_array, data, key_source, true) {
             Ok((None, _, report_unsupported)) => Ok(Self::Valid {
                 bundle,
                 report_unsupported,
@@ -692,12 +796,33 @@ impl RewrittenBundle {
 }
 
 impl ParsedBundle {
-    /// Parses a byte slice into a `ParsedBundle`.
+    /// Parses a byte slice into a `ParsedBundle` using a key provider closure.
+    ///
+    /// The closure receives the bundle and raw data, allowing key selection based on
+    /// bundle context (e.g., destination EID).
     // Bouncing via RewriteError allows us to avoid the array completeness check when a semantic error occurs
     // so we don't shadow the semantic error by exiting the loop early and therefore reporting 'additional items'
-    pub fn parse(data: &[u8], key_f: &impl bpsec::key::KeyStore) -> Result<Self, Error> {
+    pub fn parse<F>(data: &[u8], key_provider: F) -> Result<Self, Error>
+    where
+        F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    {
         let (b, len) = hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
-            Self::parse_inner(data, key_f, a, shortest, tags)
+            Self::parse_inner(data, key_provider, a, shortest, tags)
+        })?;
+
+        if len != data.len() {
+            Err(Error::AdditionalData)
+        } else {
+            Ok(b)
+        }
+    }
+
+    /// Parses a byte slice into a `ParsedBundle` using keys provided directly.
+    ///
+    /// This is a simpler API for cases where keys don't depend on bundle context.
+    pub fn parse_with_keys(data: &[u8], keys: &dyn bpsec::key::KeySource) -> Result<Self, Error> {
+        let (b, len) = hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+            Self::parse_inner_with_keys(data, keys, a, shortest, tags)
         })?;
 
         if len != data.len() {
@@ -708,11 +833,58 @@ impl ParsedBundle {
     }
 
     /// The inner parsing logic, called by `parse`.
-    /// This function is responsible for parsing the primary block and then handing off
-    /// to `parse_blocks` for the extension blocks.
-    fn parse_inner(
+    fn parse_inner<F>(
         data: &[u8],
-        key_f: &impl bpsec::key::KeyStore,
+        key_provider: F,
+        block_array: &mut hardy_cbor::decode::Array,
+        mut canonical: bool,
+        tags: &[u64],
+    ) -> Result<Self, Error>
+    where
+        F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    {
+        // Check for shortest/correct form
+        canonical = canonical && !block_array.is_definite() && tags.is_empty();
+
+        // Parse Primary block
+        let block_start = block_array.offset();
+        let primary_block = block_array
+            .parse::<(primary_block::PrimaryBlock, bool)>()
+            .map(|(v, s)| {
+                canonical = canonical && s;
+                v
+            })
+            .map_field_err("Primary Block")?;
+
+        let (mut bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
+        if let Some(e) = e {
+            _ = block_array.skip_to_end(16);
+            return Err(e);
+        }
+
+        // Get key source from provider
+        let key_source = key_provider(&bundle, data);
+
+        // Parse blocks
+        parse_blocks(
+            &mut bundle,
+            canonical,
+            block_array,
+            data,
+            &*key_source,
+            false,
+        )
+        .map(|(_, non_canonical, report_unsupported)| Self {
+            bundle,
+            report_unsupported,
+            non_canonical,
+        })
+    }
+
+    /// The inner parsing logic when keys are provided directly.
+    fn parse_inner_with_keys(
+        data: &[u8],
+        key_source: &dyn bpsec::key::KeySource,
         block_array: &mut hardy_cbor::decode::Array,
         mut canonical: bool,
         tags: &[u64],
@@ -736,8 +908,8 @@ impl ParsedBundle {
             return Err(e);
         }
 
-        // And now parse the blocks
-        parse_blocks(&mut bundle, canonical, block_array, data, key_f, false).map(
+        // Parse blocks
+        parse_blocks(&mut bundle, canonical, block_array, data, key_source, false).map(
             |(_, non_canonical, report_unsupported)| Self {
                 bundle,
                 report_unsupported,
@@ -807,7 +979,7 @@ mod test {
     fn tests() {
         // From Stephan Havermans testing
         assert!(matches!(
-            RewrittenBundle::parse(
+            RewrittenBundle::parse_with_keys(
                 &hex!(
                     "9f89071844018202820301820100820100821b000000b5998c982b011a000493e042c9f6850602182700458202820200850704010042183485010101004454455354ff"
                 ),

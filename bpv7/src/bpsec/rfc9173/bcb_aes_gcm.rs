@@ -363,11 +363,14 @@ impl Operation {
         ))
     }
 
-    pub fn decrypt(
+    pub fn decrypt<K>(
         &self,
-        key_f: &impl key::KeyStore,
+        key_source: &K,
         args: bcb::OperationArgs,
-    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
         let (target_block, data) = args
             .blocks
             .block(args.target)
@@ -383,7 +386,7 @@ impl Operation {
 
         let mut tried_to_decrypt = false;
         if let Some(cek) = &self.parameters.key {
-            for jwk in key_f.decrypt_keys(
+            for jwk in key_source.keys(
                 args.bpsec_source,
                 &[key::Operation::UnwrapKey, key::Operation::Decrypt],
             ) {
@@ -419,7 +422,7 @@ impl Operation {
                 }
             }
         } else {
-            for jwk in key_f.decrypt_keys(args.bpsec_source, &[key::Operation::Decrypt]) {
+            for jwk in key_source.keys(args.bpsec_source, &[key::Operation::Decrypt]) {
                 if let Some(key_algorithm) = &jwk.key_algorithm
                     && !matches!(key_algorithm, key::KeyAlgorithm::Direct)
                 {

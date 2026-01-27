@@ -22,7 +22,7 @@ impl Command {
         for input in self.files {
             let bundle = input.read_all()?;
 
-            match hardy_bpv7::bundle::ParsedBundle::parse(&bundle, &key_store) {
+            match hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&bundle, &key_store) {
                 Err(e) => {
                     eprintln!("{}: Failed to parse bundle: {e}", input.filepath());
                     count_failed = count_failed.saturating_add(1);
