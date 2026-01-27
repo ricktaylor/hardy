@@ -221,7 +221,7 @@ impl<'a> Encryptor<'a> {
                     .expect("Missing target block");
                 if !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(*target)
+                        .update_block_inner(*target)
                         .map_err(|(_, e)| e)?
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
@@ -258,7 +258,7 @@ impl<'a> Encryptor<'a> {
                 // Rewrite the target block
                 editor_bs.editor = editor_bs
                     .editor
-                    .update_block(target)
+                    .update_block_inner(target)
                     .map_err(|(_, e)| e)?
                     .with_data(data.into_vec().into())
                     .rebuild();
@@ -269,7 +269,7 @@ impl<'a> Encryptor<'a> {
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
-                .update_block(source)
+                .update_block_inner(source)
                 .map_err(|(_, e)| e)?
                 .with_data(
                     hardy_cbor::encode::emit(&bcb::OperationSet {

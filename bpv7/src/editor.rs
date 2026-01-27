@@ -248,6 +248,45 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
+        // Get security references before any modifications
+        let (bib, bcb) = match self.original.blocks.get(&block_number) {
+            Some(block) => (block.bib, block.bcb),
+            None => (None, None),
+        };
+
+        // Check if the block is protected by an encrypted BIB
+        if let Some(bib_num) = bib
+            && let Some(bib_block) = self.original.blocks.get(&bib_num)
+            && bib_block.bcb.is_some()
+        {
+            // The BIB is encrypted by a BCB. We cannot modify the BIB's
+            // target list without first decrypting it, but the Editor doesn't
+            // have access to keys. The caller must use remove_integrity() first.
+            return Err((self, Error::BibIsEncrypted(block_number)));
+        }
+
+        // Remove from BIB target list if present (signature will be invalid after update)
+        if let Some(bib_num) = bib {
+            self = self.remove_from_bib_targets(block_number, bib_num)?;
+        }
+
+        // Remove from BCB target list if present (encryption will be invalid after update)
+        if let Some(bcb_num) = bcb {
+            self = self.remove_from_bcb_targets(block_number, bcb_num)?;
+        }
+
+        self.update_block_inner(block_number)
+    }
+
+    /// Update an existing block without automatic security target removal.
+    ///
+    /// This is for internal use by encryptor/signer which need to update blocks
+    /// that are security targets without removing them from those target lists.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn update_block_inner(
+        self,
+        block_number: u64,
+    ) -> Result<BlockBuilder<'a>, (Self, Error)> {
         let (is_new, template) = match self.blocks.get(&block_number) {
             None => return Err((self, Error::NoSuchBlock(block_number))),
             Some(BlockTemplate::Keep(t)) => {
@@ -259,41 +298,18 @@ impl<'a> Editor<'a> {
                     None => return Err((self, Error::NoSuchBlock(block_number))),
                 };
 
-                // Check if the block is protected by an encrypted BIB
-                if let Some(bib) = block.bib {
-                    if let Some(bib_block) = self.original.blocks.get(&bib) {
-                        if bib_block.bcb.is_some() {
-                            // The BIB is encrypted by a BCB. We cannot modify the BIB's
-                            // target list without first decrypting it, but the Editor doesn't
-                            // have access to keys. The caller must use remove_integrity() first.
-                            return Err((self, Error::BibIsEncrypted(block_number)));
-                        }
-                    }
-                }
-
-                // Remove from BIB target list if present (signature will be invalid after update)
-                if let Some(bib) = block.bib {
-                    self = self.remove_from_bib_targets(block_number, bib)?;
-                }
-
-                // Remove from BCB target list if present (encryption will be invalid after update)
-                if let Some(bcb) = block.bcb {
-                    self = self.remove_from_bcb_targets(block_number, bcb)?;
-                }
-
-                // Re-fetch the block after potential modifications
-                let block = match self.original.blocks.get(&block_number) {
-                    Some(b) => b,
-                    None => return Err((self, Error::NoSuchBlock(block_number))),
-                };
-
                 (
                     false,
                     builder::BlockTemplate::new(
                         *t,
                         block.flags.clone(),
                         block.crc_type,
-                        block.payload(self.source_data).map(Cow::Borrowed),
+                        if block.bcb.is_some() {
+                            // Block is encrypted, caller MUST provide fresh data
+                            None
+                        } else {
+                            block.payload(self.source_data).map(Cow::Borrowed)
+                        },
                     ),
                 )
             }
@@ -324,20 +340,18 @@ impl<'a> Editor<'a> {
         }
 
         // Check if the block is protected by an encrypted BIB
-        if let Some((block, _)) = self.block(block_number) {
-            if let Some(bib) = block.bib {
-                if let Some((bib_block, _)) = self.block(bib) {
-                    if bib_block.bcb.is_some() {
-                        // The BIB is encrypted by a BCB. We cannot modify the BIB's
-                        // target list without first decrypting it, but the Editor doesn't
-                        // have access to keys. The caller must use remove_integrity() first.
-                        return Err((self, Error::BibIsEncrypted(block_number)));
-                    }
-                }
-            }
-            // Note: BCB case is fine - we can silently update the BCB's target list
-            // without needing keys since we're just removing a target, not decrypting.
+        if let Some((block, _)) = self.block(block_number)
+            && let Some(bib) = block.bib
+            && let Some((bib_block, _)) = self.block(bib)
+            && bib_block.bcb.is_some()
+        {
+            // The BIB is encrypted by a BCB. We cannot modify the BIB's
+            // target list without first decrypting it, but the Editor doesn't
+            // have access to keys. The caller must use remove_integrity() first.
+            return Err((self, Error::BibIsEncrypted(block_number)));
         }
+        // Note: BCB case is fine - we can silently update the BCB's target list
+        // without needing keys since we're just removing a target, not decrypting.
 
         self.remove_block_inner(block_number)
     }
@@ -397,9 +411,9 @@ impl<'a> Editor<'a> {
                     // BIB is now empty, recursively remove it
                     self = self.remove_block_inner(bib_block)?;
                 } else {
-                    // Rewrite BIB with updated operation set using the public API
+                    // Rewrite BIB with updated operation set
                     self = self
-                        .update_block(bib_block)?
+                        .update_block_inner(bib_block)?
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
                         .rebuild();
                 }
@@ -437,9 +451,9 @@ impl<'a> Editor<'a> {
                     // BCB is now empty, recursively remove it
                     self = self.remove_block_inner(bcb_block)?;
                 } else {
-                    // Rewrite BCB with updated operation set using the public API
+                    // Rewrite BCB with updated operation set
                     self = self
-                        .update_block(bcb_block)?
+                        .update_block_inner(bcb_block)?
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
                         .rebuild();
                 }
@@ -487,7 +501,7 @@ impl<'a> Editor<'a> {
             // Ensure we have a CRC if there's no BCB
             if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
                 self = self
-                    .update_block(block_number)?
+                    .update_block_inner(block_number)?
                     .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
                     .rebuild();
             }
@@ -566,7 +580,7 @@ impl<'a> Editor<'a> {
                 // Replace the block payload
                 let mut block = block_set
                     .editor
-                    .update_block(block_number)?
+                    .update_block_inner(block_number)?
                     .with_data(target_payload.into_vec().into());
                 if original_block.bib.is_none()
                     && matches!(original_block.crc_type, crc::CrcType::None)
@@ -581,7 +595,7 @@ impl<'a> Editor<'a> {
                 } else {
                     // Rewrite BCB
                     self = self
-                        .update_block(bcb)?
+                        .update_block_inner(bcb)?
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
                         .rebuild();
                 }

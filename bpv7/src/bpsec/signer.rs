@@ -132,7 +132,7 @@ impl<'a> Signer<'a> {
                     .expect("Missing target block");
                 if *target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
                     editor = editor
-                        .update_block(*target)
+                        .update_block_inner(*target)
                         .map_err(|(_, e)| e)?
                         .with_crc_type(crc::CrcType::None)
                         .rebuild();
@@ -174,7 +174,7 @@ impl<'a> Signer<'a> {
             // Rewrite with the real data
             editor = editor_bs
                 .editor
-                .update_block(source)
+                .update_block_inner(source)
                 .map_err(|(_, e)| e)?
                 .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
                 .rebuild();
