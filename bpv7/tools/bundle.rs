@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod add_block;
 mod create;
-mod decrypt;
 mod encrypt;
 mod extract;
 mod flags;
@@ -42,9 +41,6 @@ enum Commands {
     /// Check one or more bundles for validity
     Validate(validate::Command),
 
-    /// Decrypt the data of a block in a bundle
-    Decrypt(decrypt::Command),
-
     /// Encrypt the data of a block in a bundle
     Encrypt(encrypt::Command),
 
@@ -81,7 +77,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Inspect(args) => args.exec(),
         Commands::Rewrite(args) => args.exec(),
         Commands::Validate(args) => args.exec(),
-        Commands::Decrypt(args) => args.exec(),
         Commands::Encrypt(args) => args.exec(),
         Commands::Extract(args) => args.exec(),
         Commands::Sign(args) => args.exec(),

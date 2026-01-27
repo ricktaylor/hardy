@@ -23,7 +23,6 @@ A command-line utility for creating, inspecting, and manipulating Bundle Protoco
   - [`verify`](#verify)
   - [`remove-integrity`](#remove-integrity)
   - [`encrypt`](#encrypt)
-  - [`decrypt`](#decrypt)
   - [`remove-encryption`](#remove-encryption)
 - [Working with Keys](#working-with-keys)
   - [Key Structure](#key-structure)
@@ -43,7 +42,7 @@ The `bundle` tool provides a comprehensive set of subcommands for working with D
 - **Bundle Creation**: Create new bundles from payload data
 - **Inspection**: Examine bundle structure and content
 - **Block Manipulation**: Add, remove, and update extension blocks
-- **Security Operations**: Sign, encrypt, verify, and decrypt blocks using BPSec (RFC 9172/9173)
+- **Security Operations**: Sign, encrypt, and verify blocks using BPSec (RFC 9172/9173)
 - **Validation**: Verify bundle correctness
 
 ## Building
@@ -105,10 +104,10 @@ bundle verify -b 1 \
   --keys keys.json \
   signed.bundle
 
-# Decrypt block
-bundle decrypt -b 1 \
+# Extract payload from encrypted bundle
+bundle extract -b 1 \
   --keys keys.json \
-  --output decrypted.bundle \
+  --output payload.dat \
   encrypted.bundle
 ```
 
@@ -611,43 +610,6 @@ bundle encrypt -b 1 \
 
 ---
 
-### `decrypt`
-
-Decrypt an encrypted block and output its raw data. This is similar to `extract` but specifically for encrypted blocks. To remove encryption from a block while preserving the bundle structure, use `remove-encryption` instead.
-
-**Usage:**
-
-```bash
-bundle decrypt [OPTIONS] [INPUT]
-```
-
-**Arguments:**
-
-- `<INPUT>` - Bundle file path (use `-` for stdin)
-
-**Optional Arguments:**
-
-- `-b, --block <NUMBER>` - Block number to decrypt (default: 1)
-- `--keys <JWKS>` - Key set for decryption (JSON string or file path)
-- `-o, --output <OUTPUT>` - Output file (default: stdout)
-
-**Example:**
-
-```bash
-# Decrypt and extract payload data
-bundle decrypt -b 1 \
-  --keys keys.json \
-  encrypted.bundle > payload.dat
-
-# To get a bundle with the block decrypted, use remove-encryption:
-bundle remove-encryption -b 1 \
-  --keys keys.json \
-  --output modified.bundle \
-  encrypted.bundle
-```
-
----
-
 ### `remove-encryption`
 
 Remove the encryption from a block. This removes the BCB targeting the specified block, decrypting it, without removing the BCB block itself if it protects other blocks.
@@ -863,11 +825,11 @@ jq -n --slurpfile hmac test-hmac.json \
 # 4. Use the keys with bundle tool
 echo "Test message" | \
   bundle create -s dtn://alice -d dtn://bob --payload-file - | \
-  bundle sign -b 1 --keys test-keys.json --kid test-hmac | \
-  bundle encrypt -b 1 --keys test-keys.json --kid test-aes | \
-  bundle decrypt -b 1 --keys test-keys.json | \
-  bundle verify -b 1 --keys test-keys.json | \
-  bundle extract
+  bundle sign -b 1 --keys test-keys.json --kid test-hmac - | \
+  bundle encrypt -b 1 --keys test-keys.json --kid test-aes - | \
+  bundle remove-encryption -b 1 --keys test-keys.json - | \
+  bundle verify --keys test-keys.json - | \
+  bundle extract -
 ```
 
 ### Key Selection
@@ -952,8 +914,8 @@ bundle verify -b 1 --keys keys.json signed.bundle
 # Encryption with specific key
 bundle encrypt -b 1 --keys keys.json --kid aesgcmkey input.bundle
 
-# Decryption automatically finds keys with "decrypt" in key_ops
-bundle decrypt -b 1 --keys keys.json encrypted.bundle
+# Extract from encrypted bundle (automatically decrypts with matching key)
+bundle extract -b 1 --keys keys.json encrypted.bundle
 ```
 
 ## Piping and Composition
@@ -968,10 +930,10 @@ echo "Secret message" | \
   bundle encrypt -b 1 --keys keys.json --kid encrypt-key \
   > secure.bundle
 
-# Decrypt, verify, and extract
-bundle decrypt -b 1 --keys keys.json secure.bundle | \
-  bundle verify -b 1 --keys keys.json | \
-  bundle extract > message.txt
+# Remove encryption, verify, and extract
+bundle remove-encryption -b 1 --keys keys.json secure.bundle | \
+  bundle verify --keys keys.json - | \
+  bundle extract - > message.txt
 ```
 
 ## Exit Codes

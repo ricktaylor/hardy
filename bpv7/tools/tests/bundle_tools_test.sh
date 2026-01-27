@@ -232,8 +232,8 @@ echo "13. Inspecting encrypted bundle..."
 ${BUNDLE} inspect --keys "${KEYS}" -o "${OUT_DIR}/out_enc.md" "${OUT_DIR}/test_enc.bundle"
 echo "   PASS: Encrypted bundle inspected and saved to out_enc.md"
 
-echo "14. Extracting decrypted payload data..."
-${BUNDLE} decrypt --keys "${KEYS}" -o "${OUT_DIR}/payload.txt" "${OUT_DIR}/test_enc.bundle"
+echo "14. Extracting payload from encrypted bundle..."
+${BUNDLE} extract --keys "${KEYS}" -o "${OUT_DIR}/payload.txt" "${OUT_DIR}/test_enc.bundle"
 if cmp -s "${OUT_DIR}/payload.txt" "${OUT_DIR}/expected_payload.txt"; then
     echo "   PASS: Payload extracted and verified (matches expected)"
 else
