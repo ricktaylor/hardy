@@ -29,6 +29,15 @@ impl Operation {
     where
         K: key::KeySource + ?Sized,
     {
+        // RFC 9172 Section 3.8: CRC must be removed for targets "other than the bundle's
+        // primary block". The primary block (block 0) is exempt from this requirement.
+        if args.target != 0
+            && let Some((target_block, _)) = args.blocks.block(args.target)
+            && !matches!(target_block.crc_type, crc::CrcType::None)
+        {
+            return Err(Error::CrcPresent);
+        }
+
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.verify(key_source, args),

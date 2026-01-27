@@ -240,14 +240,12 @@ impl Operation {
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {
-        let (target_block, payload) = args
+        let payload = args
             .blocks
             .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?
+            .1
             .ok_or(Error::MissingSecurityTarget)?;
-        if !matches!(target_block.crc_type, crc::CrcType::None) {
-            return Err(Error::CrcPresent);
-        }
-        let payload = payload.ok_or(Error::MissingSecurityTarget)?;
 
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Encrypt)
@@ -371,16 +369,12 @@ impl Operation {
     where
         K: key::KeySource + ?Sized,
     {
-        let (target_block, data) = args
+        let data = args
             .blocks
             .block(args.target)
+            .ok_or(Error::MissingSecurityTarget)?
+            .1
             .ok_or(Error::MissingSecurityTarget)?;
-        if !matches!(target_block.crc_type, crc::CrcType::None) {
-            return Err(Error::CrcPresent);
-        }
-
-        // This will always be Payload::Borrowed because we are decrypting now!
-        let data = data.ok_or(Error::MissingSecurityTarget)?;
 
         let aad = build_data(&self.parameters.flags, &args)?;
 

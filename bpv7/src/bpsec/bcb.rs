@@ -33,6 +33,14 @@ impl Operation {
     where
         K: key::KeySource + ?Sized,
     {
+        // RFC 9172 Section 3.9: CRC must be removed from BCB targets.
+        // Note: BCBs cannot target the primary block, so no block 0 exemption needed.
+        if let Some((target_block, _)) = args.blocks.block(args.target)
+            && !matches!(target_block.crc_type, crc::CrcType::None)
+        {
+            return Err(Error::CrcPresent);
+        }
+
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(op) => op.decrypt(key_source, args),
