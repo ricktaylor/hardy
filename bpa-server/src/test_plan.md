@@ -96,7 +96,54 @@ The following requirements from **DTN-LLR_v1.1** are verified by the unit tests 
 | **PERF-SYS-03** | **Large Reassembly** | 1. Fragment a 4.1GB file into 10MB chunks.<br>2. Send fragments to server.<br>3. Verify reassembled payload. | 1. Reassembly succeeds.<br>2. MD5 checksum matches.<br>3. No OOM crash. |
 | **PERF-SYS-04** | **Storage Scalability** | 1. Fill storage with 1 million small bundles (metadata stress).<br>2. Perform retrieval/deletion operations. | Operations remain O(1) or O(log n).<br>No significant latency degradation. |
 
-### 4.5 Packaging & Deployment (REQ-15, REQ-16)
+### 4.5 Latency Profiling
+
+*Objective: Verify latency distribution meets SLA requirements.*
+
+| Test ID | Scenario | Procedure | Pass Criteria |
+| :--- | :--- | :--- | :--- |
+| **PERF-LAT-SYS-01** | **End-to-End Latency** | 1. Configure 3-node topology (A -> B -> C).<br>2. Send 10,000 bundles via `hardy-ping`.<br>3. Compute latency percentiles. | P50 < 10ms, P95 < 50ms, P99 < 100ms |
+
+### 4.6 Stress and Soak Testing
+
+*Objective: Verify system stability under sustained load and detect resource leaks.*
+
+| Test ID | Scenario | Duration | Pass Criteria |
+| :--- | :--- | :--- | :--- |
+| **STRESS-01** | **Sustained Load** | 4 hours at 80% max throughput | No crashes. Memory usage stable (< 10% growth). Throughput variance < 5%. |
+| **STRESS-02** | **Memory Leak Detection** | 24 hours at moderate load | RSS memory at T=24h within 5% of T=1h. No OOM events. |
+| **STRESS-03** | **Handle Exhaustion** | Rapid connection open/close cycles (10k connections) | All connections handled. File descriptor count returns to baseline. |
+| **STRESS-04** | **Storage Fill/Drain Cycle** | Fill storage to 95%, drain, repeat 10 times | No storage corruption. Performance consistent across cycles. |
+
+*Tooling: Use `valgrind --tool=massif` or `heaptrack` for memory profiling. Monitor `/proc/{pid}/fd` for handle exhaustion.*
+
+### 4.7 Network Degradation Testing
+
+*Objective: Verify graceful degradation under adverse network conditions.*
+
+| Test ID | Network Condition | Procedure | Pass Criteria |
+| :--- | :--- | :--- | :--- |
+| **NET-01** | **Packet Loss (5%)** | Apply `tc netem loss 5%` between nodes. Run throughput test. | Throughput > 50% of baseline. No data corruption. |
+| **NET-02** | **High Latency (500ms)** | Apply `tc netem delay 500ms`. Run throughput test. | Bundles delivered successfully. Keepalive timers adjusted. |
+| **NET-03** | **Jitter (100ms +/- 50ms)** | Apply `tc netem delay 100ms 50ms`. Transfer 1000 bundles. | All bundles delivered. Reassembly succeeds. |
+| **NET-04** | **Bandwidth Limit (1Mbps)** | Apply `tc tbf rate 1mbit`. Send 100MB of bundles. | Transfer completes. TCPCL backpressure functions correctly. |
+| **NET-05** | **Intermittent Connectivity** | Alternate 30s connected / 30s disconnected. | All bundles eventually delivered. No duplicate deliveries. |
+
+*Tooling: Use Linux Traffic Control (`tc`) with `netem` for network simulation.*
+
+### 4.8 Resource Utilization Targets
+
+*Objective: Define and verify resource consumption bounds.*
+
+| Test ID | Scenario | Procedure | Pass Criteria |
+| :--- | :--- | :--- | :--- |
+| **RES-01** | **Idle Resource Usage** | Start server with no traffic. Wait 5 minutes. Measure CPU/memory. | CPU < 1%. RSS < 100MB. |
+| **RES-02** | **Memory Scaling** | Store 100k bundles, measure memory. Store 500k bundles, measure memory. | Memory scales linearly or sub-linearly. |
+| **RES-03** | **CPU Efficiency** | Measure bundles/sec at 50% CPU, then at 100% CPU. | Linear scaling (no lock contention). |
+
+*Tooling: Use Prometheus metrics or `/proc/{pid}/stat` for measurement.*
+
+### 4.9 Packaging & Deployment (REQ-15, REQ-16)
 
 *Objective: Verify the build artifacts (Docker Image, Helm Chart) are valid and secure.*
 

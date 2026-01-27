@@ -82,6 +82,25 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 | **PERF-02** | **Storage I/O** | Route 10k bundles (Disk Storage, Loopback). | > 2k bundles/sec |
 | **PERF-03** | **Reassembly Overhead** | Reassemble 1000 fragmented bundles (10 frags each). | > 1k bundles/sec |
 
+### 5.1 Latency Profiling
+
+*Objective: Measure latency distribution under various conditions.*
+
+| Benchmark ID | Scenario | Procedure | Target |
+| :--- | :--- | :--- | :--- |
+| **PERF-LAT-01** | **Single-Hop Latency (Baseline)** | Send 10,000 small bundles (1KB) via loopback. Measure per-bundle RTT using `hardy-ping`. | P50 < 1ms, P95 < 5ms, P99 < 10ms |
+| **PERF-LAT-02** | **Latency Under Load** | Establish baseline latency. Increase load to 80% throughput capacity. Measure latency degradation. | P99 latency < 10x baseline |
+
+### 5.2 BPSec Performance
+
+*Objective: Quantify cryptographic overhead for security operations.*
+
+| Benchmark ID | Scenario | Procedure | Target |
+| :--- | :--- | :--- | :--- |
+| **PERF-SEC-01** | **BIB Signing Overhead** | Measure throughput without BIB, then with HMAC-SHA256, then HMAC-SHA512. | Throughput > 10k bundles/sec (1KB bundles) |
+| **PERF-SEC-02** | **BCB Encryption Overhead** | Measure throughput without BCB, then with AES-GCM-128, then AES-GCM-256. | Large bundle encryption > 1GB/sec |
+| **PERF-SEC-03** | **Combined BIB + BCB** | Apply both integrity and confidentiality. Measure combined overhead. | Overhead < 2x individual operations |
+
 ## 6. Execution Matrix
 
 | Test Level | Tooling | Coverage Focus |

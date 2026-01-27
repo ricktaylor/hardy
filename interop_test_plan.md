@@ -74,6 +74,7 @@ This matrix defines which implementations are tested and which suites are applic
 | **HDTN** | 2.0.0 | `github.com/nasa/HDTN` | TCPCLv4 | A, B, D | High-rate C++ impl. No BPv7 Status Reports or Fragmentation. |
 | **µD3TN** | 0.14.5 | `gitlab.com/d3tn/ud3tn` | File (Shared Vol) | B, C | No BPSec. Supports TCPCLv3 (not v4). Use AAP bridge. |
 | **dtn7-rs** | 0.21.0 | `github.com/dtn7/dtn7-rs` | TCPCLv4 | A, B, C, E | Rust DTN daemon. BPSec not explicitly listed. |
+| **ESA BP** | TBD | ESA Internal | File (Shared Vol) | B, C, D | ESA reference implementation (CCSDS 734.20-O-1 Annex 14). Contact ESA for access and version details. |
 
 ## 4. Test Topologies
 

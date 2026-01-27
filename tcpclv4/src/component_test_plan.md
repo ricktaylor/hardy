@@ -58,7 +58,18 @@ These tests verify the RFC 9174 protocol logic using a dedicated component test 
 | **Fragment Logic (UT-TCP-04)** | Verify splitting payload into segments. | `src/session.rs` | Payload: 1000B, MTU: 100B. | 10 `XFER_SEGMENT` messages sent. |
 | **Reason Codes (UT-TCP-05)** | Verify mapping of internal errors to reason codes. | `src/session.rs` | `Error::StorageFull`. | `SESS_TERM` with `ResourceExhaustion`. |
 
-## 6. Execution Strategy
+## 6. Connection Scaling Tests
+
+*Objective: Verify TCPCL performance with many concurrent connections.*
+
+| Test ID | Scenario | Procedure | Pass Criteria |
+| :--- | :--- | :--- | :--- |
+| **TCPCL-SCALE-01** | **Concurrent Sessions (100)** | Establish 100 simultaneous TCPCL connections. Send bundles on each. | All connections stable. Per-connection throughput > 10% of single-connection baseline. |
+| **TCPCL-SCALE-02** | **Concurrent Sessions (1000)** | Establish 1000 simultaneous TCPCL connections. Measure system resource usage. | All connections accepted. CPU < 80%. Memory < configured limit. |
+| **TCPCL-SCALE-03** | **Connection Churn** | Continuously connect/disconnect at 100 conn/sec for 10 minutes. | No connection failures. No resource leaks. |
+| **TCPCL-SCALE-04** | **TLS Handshake Throughput** | Measure TLS session establishment rate. | > 500 TLS handshakes/sec (single core). |
+
+## 7. Execution Strategy
 
 * **Unit/Component Tests:** `cargo test -p hardy-tcpclv4`
 * **Integration Tests:** `cargo test --test cla_harness` (via `hardy-bpa` harness)
