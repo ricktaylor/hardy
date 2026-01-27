@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Bundle Protocol Agent Core Logic |
 | **Component** | `hardy-bpv7` Library |
-| **Test Driver** | `hardy-bpv7-tools` (Binary: `bundle`), `jq` |
+| **Test Driver** | `hardy-bpv7-tools` (Binary: `bundle`), `hardy-cbor-tools` (Binary: `cbor`), `jq` |
 | **Requirements Ref** | `DTN-LLR_v1.1` |
 | **Standard Ref** | RFC 9171 (BPv7), RFC 9172 (BPSec), RFC 9173 (Contexts) |
 | **Scope** | Verification of Library Parsing, Serialization, and Security Logic using the CLI harness. |
@@ -19,6 +19,8 @@ The tests are organized into **Functional Suites**, where each suite targets a s
 **Prerequisites:**
 
 * **Driver:** `bundle` binary (from `hardy-bpv7-tools`).
+
+* **CBOR Tools:** `cbor` binary (from `hardy-cbor-tools`) for low-level CBOR manipulation.
 
 * **Key Material:** JSON keyfile containing valid HMAC and AES keys.
 
@@ -61,12 +63,21 @@ The following requirements from **DTN-LLR_v1.1** are verified by this plan:
 ```bash
 # Ensure valid keyfile exists at ./test_data/test-keys.json
 export BUNDLE="cargo run --quiet --package hardy-bpv7-tools --bin bundle --"
+export CBOR="cargo run --quiet --package hardy-cbor-tools --bin cbor --"
 export KEYS="./test_data/test-keys.json"
+export OUT="./test_data"
 
+# Helper: Query bundle JSON with jq
 function bundle_jq() {
-  $BUNDLE dump "$1" | jq -e "$2"
+  $BUNDLE inspect --format json "$1" | jq -e "$2"
 }
-export -f bundle_jq
+
+# Helper: Query bundle JSON with keys
+function bundle_jq_keys() {
+  $BUNDLE inspect --keys $KEYS --format json "$1" | jq -e "$2"
+}
+
+export -f bundle_jq bundle_jq_keys
 ```
 
 ## 4. Functional Test Suites
@@ -77,12 +88,21 @@ export -f bundle_jq
 
 | Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
 | --- | --- | --- | --- |
-| **CREATE-01** | **Minimal Bundle**<br><br>Create a bundle with only mandatory fields (Source, Dest, Lifetime). | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 -o ./test_data/create_01.bundle` | `bundle_jq ./test_data/create_01.bundle '.primary.version == 7 and .primary.source == "ipn:1.1" and .primary.destination == "ipn:2.1"'` |
-| **CREATE-02** | **Payload from Stdin**<br><br>Stream data into the payload during creation. | `echo "StreamData" \| $BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --payload - -o ./test_data/create_02.bundle` | `bundle_jq ./test_data/create_02.bundle '.payload_block.data_base64 == "U3RyZWFtRGF0YQo="'` |
-| **CREATE-03** | **Payload from File**<br><br>Load payload data from an existing file. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --payload ./test_data/image.png -o ./test_data/create_03.bundle` | `bundle_jq ./test_data/create_03.bundle '.payload_block.length > 0'` |
-| **CREATE-04** | **No CRC**<br><br>Create a bundle with no CRC. (LLR 1.1.29) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --crc-type none -o ./test_data/create_04.bundle` | `bundle_jq ./test_data/create_04.bundle '.primary.crc_type == "none"'` |
-| **CREATE-05** | **CRC Type**<br><br>Create a bundle with a non-default CRC type. (LLR 1.1.22, 1.1.29) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --crc-type crc16 -o ./test_data/create_05.bundle` | `bundle_jq ./test_data/create_05.bundle '.primary.crc_type == "crc16"'` |
-| **CREATE-06** | **Zero Timestamp**<br><br>Create a bundle with DTN Time 0. (LLR 1.1.33) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --creation-time 0 --bundle-age 5000 -o ./test_data/create_06.bundle` | `bundle_jq ./test_data/create_06.bundle '.primary.creation_timestamp == 0'` |
+| **CREATE-01** | **Minimal Bundle**<br><br>Create a bundle with only mandatory fields (Source, Dest, Lifetime). | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" -o $OUT/create_01.bundle` | `bundle_jq $OUT/create_01.bundle '.source == "ipn:1.1" and .destination == "ipn:2.1"'` |
+| **CREATE-02** | **Payload from Stdin**<br><br>Stream data into the payload during creation. | `echo "StreamData" \| $BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload-file - -o $OUT/create_02.bundle` | `$BUNDLE extract $OUT/create_02.bundle \| grep -q "StreamData"` |
+| **CREATE-03** | **Payload from File**<br><br>Load payload data from an existing file. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload-file $OUT/payload.dat -o $OUT/create_03.bundle` | `$BUNDLE extract $OUT/create_03.bundle \| cmp - $OUT/payload.dat` |
+| **CREATE-04** | **No CRC**<br><br>Create a bundle with no CRC. (LLR 1.1.29) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" --crc-type none -o $OUT/create_04.bundle` | `bundle_jq $OUT/create_04.bundle '.crc_type == "None"'` |
+| **CREATE-05** | **CRC Type**<br><br>Create a bundle with a non-default CRC type. (LLR 1.1.22, 1.1.29) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" --crc-type crc16 -o $OUT/create_05.bundle` | `bundle_jq $OUT/create_05.bundle '.crc_type == "CRC16_X25"'` |
+| **CREATE-06** | **Zero Timestamp**<br><br>Create a bundle with DTN Time 0 using low-level CBOR manipulation. (LLR 1.1.33) | See Note 1 below. | Validate that bundle with timestamp=0 and bundle-age block is accepted; without bundle-age it is rejected. |
+
+**Note 1 (CREATE-06):** The `bundle create` command always uses the current timestamp. To test zero-timestamp bundles:
+1. Create a bundle: `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" -o $OUT/temp.bundle`
+2. Convert to CDN: `$CBOR inspect $OUT/temp.bundle > $OUT/temp.cdn`
+3. Edit CDN to set creation timestamp to `[0, 0]` (DTN time zero)
+4. Reconstitute: `$CBOR compose $OUT/temp.cdn -o $OUT/create_06.bundle`
+5. Add bundle-age block: `echo '5000' | $CBOR compose - | $BUNDLE add-block -t age --payload-file - $OUT/create_06.bundle -o $OUT/create_06_with_age.bundle`
+6. Validate: `$BUNDLE validate $OUT/create_06_with_age.bundle` (should pass)
+7. Negative test: `! $BUNDLE validate $OUT/create_06.bundle` (should fail - missing bundle-age)
 
 ### Suite 2: Extension Blocks (LLR 1.1.19, 1.1.34)
 
@@ -90,10 +110,16 @@ export -f bundle_jq
 
 | Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
 | --- | --- | --- | --- |
-| **EXT-01** | **Add Hop Count**<br><br>Insert a Hop Count block limit. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --hop-count 5 -o ./test_data/ext_01.bundle` | `bundle_jq ./test_data/ext_01.bundle 'any(.extension_blocks[]; .block_type == 10 and .limit == 5)'` |
-| **EXT-02** | **Add Previous Node**<br><br>Insert a Previous Node EID block. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --previous-node ipn:9.9 -o ./test_data/ext_02.bundle` | `bundle_jq ./test_data/ext_02.bundle 'any(.extension_blocks[]; .block_type == 6 and .eid == "ipn:9.9")'` |
-| **EXT-03** | **Report-To EID**<br><br>Set the Report-To field in the Primary Block. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --report-to ipn:3.3 -o ./test_data/ext_03.bundle` | `bundle_jq ./test_data/ext_03.bundle '.primary.report_to == "ipn:3.3"'` |
-| **EXT-04** | **Bundle Age**<br><br>Insert a Bundle Age block. (LLR 1.1.33) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --bundle-age 5000 -o ./test_data/ext_04.bundle` | `bundle_jq ./test_data/ext_04.bundle 'any(.extension_blocks[]; .block_type == 7 and .age == 5000)'` |
+| **EXT-01** | **Add Hop Count (via create)**<br><br>Insert a Hop Count block using create flag. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" --hop-limit 5 -o $OUT/ext_01.bundle` | `bundle_jq $OUT/ext_01.bundle '.hop_count.limit == 5 and .hop_count.count == 0'` |
+| **EXT-02** | **Add Hop Count (via add-block)**<br><br>Insert a Hop Count block using add-block. | `echo '[30, 0]' \| $CBOR compose - \| $BUNDLE add-block -t hop-count --payload-file - $OUT/create_01.bundle -o $OUT/ext_02.bundle` | `bundle_jq $OUT/ext_02.bundle '.hop_count.limit == 30'` |
+| **EXT-03** | **Add Previous Node**<br><br>Insert a Previous Node EID block. | See Note 2 below. | `bundle_jq $OUT/ext_03.bundle '.previous_node == "ipn:9.9"'` |
+| **EXT-04** | **Report-To EID**<br><br>Set the Report-To field in the Primary Block. | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" --report-to ipn:3.3 -o $OUT/ext_04.bundle` | `bundle_jq $OUT/ext_04.bundle '.report_to == "ipn:3.3"'` |
+| **EXT-05** | **Bundle Age**<br><br>Insert a Bundle Age block. (LLR 1.1.33) | `echo '5000' \| $CBOR compose - \| $BUNDLE add-block -t age --payload-file - $OUT/create_01.bundle -o $OUT/ext_05.bundle` | `bundle_jq $OUT/ext_05.bundle '.age.secs == 5 and .age.nanos == 0'` |
+
+**Note 2 (EXT-03):** Previous Node block requires CBOR-encoded EID. The EID `ipn:9.9` encodes as CBOR array `[2, [9, 9]]`:
+```bash
+echo '[2, [9, 9]]' | $CBOR compose - | $BUNDLE add-block -t prev --payload-file - $OUT/create_01.bundle -o $OUT/ext_03.bundle
+```
 
 ### Suite 3: Integrity Operations (BIB) (LLR 2.1.1, 2.2.1, 2.2.3)
 
@@ -101,15 +127,18 @@ export -f bundle_jq
 
 | Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
 | --- | --- | --- | --- |
-| **SIGN-01a** | **Sign Payload**<br><br>Apply HMAC-SHA256 to the payload block. | `$BUNDLE sign ./test_data/create_01.bundle -o ./test_data/sign_01a.bundle -s ipn:1.1 --keys $KEYS --kid "hmackey" --target payload` | `bundle_jq ./test_data/sign_01a.bundle 'any(.extension_blocks[]; .block_type == 11 and .security_target[0] == 1 and .cipher_suite_id == 1)'` |
-| **SIGN-01b** | **Sign Payload**<br><br>Apply HMAC-SHA256 to the payload block. | `$BUNDLE sign ./test_data/create_01.bundle -o ./test_data/sign_01b.bundle -s ipn:1.1 --keys $KEYS --kid "hmackey" --block-id 1` | `bundle_jq ./test_data/sign_01b.bundle 'any(.extension_blocks[]; .block_type == 11 and .security_target[0] == 1 and .cipher_suite_id == 1)'` |
-| **SIGN-02** | **Sign Extension Block**<br><br>Apply integrity to a specific extension block (e.g., Hop Count). | `$BUNDLE sign ./test_data/ext_01.bundle -o ./test_data/sign_02.bundle -s ipn:1.1 --keys $KEYS --kid "hmackey" --block-id 2` | `bundle_jq ./test_data/sign_02.bundle 'any(.extension_blocks[]; .block_type == 11 and .security_target[0] == 2)'` |
-| **SIGN-03** | **Verify Valid**<br><br>Verify a correctly signed bundle. | `$BUNDLE verify ./test_data/sign_01a.bundle --keys $KEYS` | Returns success/valid status.<br><br>Verifies HMAC calculation matches. |
-| **SIGN-04** | **Verify Tampered**<br><br>Verify a bundle with modified payload bytes. | `[External Mod]`<br><br>`$BUNDLE verify ./test_data/tampered.bundle --keys $KEYS` | Returns failure.<br><br>Specific error indicating integrity mismatch (not parsing error). |
-| **SIGN-05** | **Alternate Ciphersuite**<br><br>Apply HMAC-SHA384 to the payload. (LLR 2.2.2) | `$BUNDLE sign ./test_data/create_01.bundle -o ./test_data/sign_05.bundle -s ipn:1.1 --keys $KEYS --kid "hmackey_384" --target payload` | `bundle_jq ./test_data/sign_05.bundle 'any(.extension_blocks[]; .block_type == 11 and .cipher_suite_id == 2)'` |
-| **SIGN-06** | **Verify Extension Block**<br><br>Verify the integrity of a signed extension block. | `$BUNDLE verify ./test_data/sign_02.bundle --keys $KEYS --block-id 2` | Returns success/valid status.<br><br>Verifies HMAC calculation for Block 2. |
-| **SIGN-07** | **HMAC-SHA512**<br><br>Apply HMAC-SHA512 to the payload. (LLR 2.2.3) | `$BUNDLE sign ./test_data/create_01.bundle -o ./test_data/sign_07.bundle -s ipn:1.1 --keys $KEYS --kid "hmackey_512" --target payload` | `bundle_jq ./test_data/sign_07.bundle 'any(.extension_blocks[]; .block_type == 11 and .cipher_suite_id == 3)'` |
-| **SIGN-08** | **HMAC Key Wrap**<br><br>Sign payload using a session key wrapped with a KEK. (LLR 2.2.4) | `$BUNDLE sign ./test_data/create_01.bundle -o ./test_data/sign_08.bundle -s ipn:1.1 --keys $KEYS --kid "hmackey_kw" --target payload` | `bundle_jq ./test_data/sign_08.bundle 'any(.extension_blocks[]; .block_type == 11 and .cipher_suite_id == 1)'` |
+| **SIGN-01** | **Sign Payload (default)**<br><br>Apply HMAC-SHA256 to the payload block (block 1 is default). | `$BUNDLE sign --keys $KEYS --kid "hmackey" -s ipn:1.1 -o $OUT/sign_01.bundle $OUT/create_01.bundle` | `bundle_jq $OUT/sign_01.bundle '[.blocks[] \| select(.type == "BlockIntegrity")] \| length == 1'` |
+| **SIGN-02** | **Sign Specific Block**<br><br>Apply integrity to a specific extension block (e.g., Hop Count at block 2). | `$BUNDLE sign --keys $KEYS --kid "hmackey" -s ipn:1.1 -b 2 -o $OUT/sign_02.bundle $OUT/ext_01.bundle` | BIB block present targeting block 2. |
+| **SIGN-03** | **Verify Valid**<br><br>Verify a correctly signed bundle. | `$BUNDLE verify --keys $KEYS $OUT/sign_01.bundle` | Returns exit code 0 (success). |
+| **SIGN-04** | **Verify Tampered**<br><br>Verify a bundle with modified payload bytes. | See Note 3 below. | Returns non-zero exit code with integrity mismatch error. |
+| **SIGN-05** | **HMAC-SHA384**<br><br>Apply HMAC-SHA384 to the payload. (LLR 2.2.2) | `$BUNDLE sign --keys $KEYS --kid "hmackey_384" -s ipn:1.1 -o $OUT/sign_05.bundle $OUT/create_01.bundle` | BIB block present. Requires `hmackey_384` in keyfile. |
+| **SIGN-06** | **HMAC-SHA512**<br><br>Apply HMAC-SHA512 to the payload. (LLR 2.2.3) | `$BUNDLE sign --keys $KEYS --kid "hmackey_512" -s ipn:1.1 -o $OUT/sign_06.bundle $OUT/create_01.bundle` | BIB block present. Requires `hmackey_512` in keyfile. |
+| **SIGN-07** | **Remove Integrity**<br><br>Remove BIB from a signed bundle. | `$BUNDLE remove-integrity --keys $KEYS -o $OUT/sign_07.bundle $OUT/sign_01.bundle` | `bundle_jq $OUT/sign_07.bundle '[.blocks[] \| select(.type == "BlockIntegrity")] \| length == 0'` |
+
+**Note 3 (SIGN-04):** To create a tampered bundle for verification testing:
+1. Create and sign: `$BUNDLE sign --keys $KEYS --kid "hmackey" -o $OUT/signed.bundle $OUT/create_01.bundle`
+2. Convert to hex, modify a payload byte, reconstitute
+3. Verify: `! $BUNDLE verify --keys $KEYS $OUT/tampered.bundle` (should fail)
 
 ### Suite 4: Confidentiality Operations (BCB) (LLR 2.1.1, 2.2.6)
 
@@ -117,13 +146,13 @@ export -f bundle_jq
 
 | Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
 | --- | --- | --- | --- |
-| **ENC-01a** | **Encrypt Payload**<br><br>Apply AES-GCM encryption to the payload. | `$BUNDLE encrypt ./test_data/create_01.bundle -o ./test_data/enc_01a.bundle -s ipn:1.1 --keys $KEYS --kid "aesgcmkey_32" --target payload` | `bundle_jq ./test_data/enc_01a.bundle 'any(.extension_blocks[]; .block_type == 12 and .security_target[0] == 1)'` |
-| **ENC-01b** | **Encrypt Payload**<br><br>Apply AES-GCM encryption to the payload. | `$BUNDLE encrypt ./test_data/create_01.bundle -o ./test_data/enc_01b.bundle -s ipn:1.1 --keys $KEYS --kid "aesgcmkey_32" --block-id 1` | `bundle_jq ./test_data/enc_01b.bundle 'any(.extension_blocks[]; .block_type == 12 and .security_target[0] == 1)'` |
-| **ENC-02** | **Decrypt Payload**<br><br>Decrypt a valid BCB using the correct key. | `$BUNDLE decrypt ./test_data/enc_01a.bundle -o ./test_data/dec_02.bundle --keys $KEYS` | Decrypts ciphertext in memory.<br><br>Outputs original plaintext data.<br><br>Validates GCM Auth Tag. |
-| **ENC-03** | **Bad Key Decryption**<br><br>Attempt decryption with incorrect key material. | `$BUNDLE decrypt ./test_data/enc_01a.bundle -o ./test_data/dec_03.bundle --keys ./test_data/wrong_keys.json` | Returns failure.<br><br>Auth Tag validation fails. |
-| **ENC-04** | **Alternate Ciphersuite**<br><br>Apply AES-128-GCM encryption. (LLR 2.2.5) | `$BUNDLE encrypt ./test_data/create_01.bundle -o ./test_data/enc_04.bundle -s ipn:1.1 --keys $KEYS --kid "aesgcmkey_16" --target payload` | `bundle_jq ./test_data/enc_04.bundle 'any(.extension_blocks[]; .block_type == 12 and .cipher_suite_id == 1)'` |
-| **ENC-05** | **AES Key Wrap**<br><br>Encrypt payload using a session key wrapped with a KEK. (LLR 2.2.7) | `$BUNDLE encrypt ./test_data/create_01.bundle -o ./test_data/enc_05.bundle -s ipn:1.1 --keys $KEYS --kid "aesgcmkey_32_kw" --target payload` | `bundle_jq ./test_data/enc_05.bundle 'any(.extension_blocks[]; .block_type == 12 and .security_target[0] == 1)'` |
-| **ENC-06** | **Encrypt Signed Payload**<br><br>Encrypt a bundle with a signed payload; verify BIB is also encrypted. | `$BUNDLE encrypt ./test_data/sign_01a.bundle -o ./test_data/enc_06.bundle -s ipn:1.1 --keys $KEYS --kid "aesgcmkey_32" --target payload` | `bundle_jq ./test_data/enc_06.bundle 'any(.extension_blocks[]; .block_type == 12 and (.security_target | contains([1])) and (.security_target | length > 1))'` |
+| **ENC-01** | **Encrypt Payload (AES-256-GCM)**<br><br>Apply AES-GCM encryption to the payload block (default). | `$BUNDLE encrypt --keys $KEYS --kid "aesgcmkey_32" -s ipn:1.1 -o $OUT/enc_01.bundle $OUT/create_01.bundle` | `bundle_jq_keys $OUT/enc_01.bundle '[.blocks[] \| select(.type == "BlockSecurity")] \| length == 1'` |
+| **ENC-02** | **Decrypt Payload**<br><br>Extract decrypted payload data from encrypted bundle. | `$BUNDLE decrypt --keys $KEYS -o $OUT/dec_02.txt $OUT/enc_01.bundle` | `cmp $OUT/dec_02.txt` with original payload ("test"). |
+| **ENC-03** | **Bad Key Decryption**<br><br>Attempt decryption with incorrect key material. | `! $BUNDLE decrypt --keys $OUT/wrong_keys.json -o $OUT/dec_03.txt $OUT/enc_01.bundle` | Returns non-zero exit code. Auth Tag validation fails. |
+| **ENC-04** | **AES-128-GCM**<br><br>Apply AES-128-GCM encryption. (LLR 2.2.5) | `$BUNDLE encrypt --keys $KEYS --kid "aesgcmkey_16" -s ipn:1.1 -o $OUT/enc_04.bundle $OUT/create_01.bundle` | BCB block present. Requires `aesgcmkey_16` (16-byte key) in keyfile. |
+| **ENC-05** | **Encrypt Signed Payload**<br><br>Encrypt a bundle with a signed payload; verify BIB is also encrypted per RFC 9172. | `$BUNDLE encrypt --keys $KEYS --kid "aesgcmkey_32" -s ipn:1.1 -o $OUT/enc_05.bundle $OUT/sign_01.bundle` | `bundle_jq_keys $OUT/enc_05.bundle '[.blocks[] \| select(.type == "BlockSecurity")] \| length == 2'` (one BCB for payload, one for BIB). |
+| **ENC-06** | **Remove Encryption (payload)**<br><br>Remove BCB from payload block. | `$BUNDLE remove-encryption --keys $KEYS -o $OUT/enc_06.bundle $OUT/enc_01.bundle` | `bundle_jq $OUT/enc_06.bundle '[.blocks[] \| select(.type == "BlockSecurity")] \| length == 0'` |
+| **ENC-07** | **Remove Encryption (specific block)**<br><br>Remove BCB from a specific block in a multi-BCB bundle. | `$BUNDLE remove-encryption --keys $KEYS -b 2 -o $OUT/enc_07.bundle $OUT/enc_05.bundle` | One BCB removed, one remains. |
 
 ### Suite 5: Validation & Inspection (LLR 1.1.1, 1.1.15, 1.1.16, 1.1.17, 1.1.21, 1.1.33)
 
@@ -131,11 +160,21 @@ export -f bundle_jq
 
 | Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
 | --- | --- | --- | --- |
-| **VALID-01** | **Validate Compliant Bundle**<br><br>Run all internal consistency checks on a valid bundle. (LLR 1.1.15, 1.1.16, 1.1.17, 1.1.21, 1.1.27, 1.1.28) | `$BUNDLE validate ./test_data/create_01.bundle` | Returns success/valid status.<br><br>Checks: CRC validity, Block ordering, EID format compliance. |
-| **VALID-02** | **Validate Invalid CRC**<br><br>Verify detection of a corrupt CRC. (LLR 1.1.21) | `[External Mod]`<br><br>`$BUNDLE validate ./test_data/bad_crc.bundle` | Returns failure with a specific CRC error. |
-| **VALID-03** | **Validate Missing Age**<br><br>Verify rejection of a bundle with timestamp 0 but no Bundle Age block. (LLR 1.1.33) | `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 3600 --creation-time 0 -o ./test_data/valid_03.bundle`<br><br>`! $BUNDLE validate ./test_data/valid_03.bundle` | Command returns failure with a specific error about the missing Bundle Age block. |
-| **INSP-01** | **Print Structure**<br><br>Output textual representation of the bundle. | `$BUNDLE print ./test_data/create_01.bundle` | correctly parses all blocks.<br><br>Displays fields (Source, Dest, Block Types) accurately. |
-| **INSP-03** | **Inspect Encrypted**<br><br>Print an encrypted bundle *without* keys. | `$BUNDLE print ./test_data/enc_01a.bundle` | Shows Payload Block as "Encrypted" or "Ciphertext".<br><br>Does NOT leak plaintext. |
+| **VALID-01** | **Validate Compliant Bundle**<br><br>Run all internal consistency checks on a valid bundle. (LLR 1.1.15, 1.1.16, 1.1.17, 1.1.21, 1.1.27, 1.1.28) | `$BUNDLE validate $OUT/create_01.bundle` | Returns exit code 0 (success). Checks: CRC validity, Block ordering, EID format compliance. |
+| **VALID-02** | **Validate Invalid CRC**<br><br>Verify detection of a corrupt CRC. (LLR 1.1.21) | See Note 4 below. | Returns non-zero exit code with CRC error message. |
+| **VALID-03** | **Validate Missing Age**<br><br>Verify rejection of a bundle with timestamp 0 but no Bundle Age block. (LLR 1.1.33) | See CREATE-06 procedure, step 7. | Returns non-zero exit code with missing Bundle Age error. |
+| **VALID-04** | **Validate Encrypted Bundle**<br><br>Validate an encrypted bundle with keys. | `$BUNDLE validate --keys $KEYS $OUT/enc_01.bundle` | Returns exit code 0 (success). |
+| **INSP-01** | **Inspect (Markdown)**<br><br>Output human-readable representation of the bundle. | `$BUNDLE inspect $OUT/create_01.bundle` | Correctly parses and displays all blocks with Source, Dest, Block Types. |
+| **INSP-02** | **Inspect (JSON)**<br><br>Output machine-readable JSON representation. | `$BUNDLE inspect --format json $OUT/create_01.bundle` | Valid JSON output parseable by jq. |
+| **INSP-03** | **Inspect Encrypted (without keys)**<br><br>Inspect an encrypted bundle without providing keys. | `$BUNDLE inspect $OUT/enc_01.bundle` | Shows Payload Block as encrypted/ciphertext. Does NOT leak plaintext. |
+| **INSP-04** | **Inspect Encrypted (with keys)**<br><br>Inspect an encrypted bundle with keys for decryption. | `$BUNDLE inspect --keys $KEYS $OUT/enc_01.bundle` | Shows decrypted payload content. |
+
+**Note 4 (VALID-02):** To create a bundle with invalid CRC for testing:
+1. Create valid bundle: `$BUNDLE create -s ipn:1.1 -d ipn:2.1 -l 1h --payload "test" -o $OUT/valid.bundle`
+2. Convert to hex: `xxd $OUT/valid.bundle > $OUT/valid.hex`
+3. Modify a CRC byte (last 4 bytes of primary block)
+4. Reconstitute: `xxd -r $OUT/valid.hex > $OUT/bad_crc.bundle`
+5. Validate: `! $BUNDLE validate $OUT/bad_crc.bundle` (should fail with CRC error)
 
 ### Suite 6: Rewriting & Canonicalization (LLR 1.1.30, 1.1.31)
 
@@ -143,5 +182,20 @@ export -f bundle_jq
 
 | Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
 | --- | --- | --- | --- |
-| **REWRITE-01** | **Reorder Blocks**<br><br>Canonicalize a bundle with blocks in the wrong order. (LLR 1.1.31) | `$BUNDLE rewrite ./test_data/non_canonical.bundle -o ./test_data/rewrite_01.bundle`<br><br>`$BUNDLE validate ./test_data/rewrite_01.bundle` | Returns success.<br><br>The `validate` command passes, indicating the block order is now canonical. |
-| **REWRITE-02** | **Discard Unknown Block**<br><br>Discard an unrecognized, non-critical extension block. (LLR 1.1.30) | `$BUNDLE rewrite ./test_data/unknown_block.bundle -o ./test_data/rewrite_02.bundle` | `bundle_jq ./test_data/rewrite_02.bundle '(.extension_blocks | length) == 0'`<br><br>The rewritten bundle contains no extension blocks. |
+| **REWRITE-01** | **Rewrite Valid Bundle**<br><br>Rewrite a valid bundle (should be unchanged). | `$BUNDLE rewrite -o $OUT/rewrite_01.bundle $OUT/create_01.bundle && $BUNDLE validate $OUT/rewrite_01.bundle` | Returns exit code 0 (success). Rewritten bundle is valid. |
+| **REWRITE-02** | **Discard Unknown Block**<br><br>Discard an unrecognized, non-critical extension block. (LLR 1.1.30) | See Note 5 below. | The rewritten bundle contains no unrecognized extension blocks. |
+
+**Note 5 (REWRITE-02):** To test discarding unknown blocks:
+1. Create a bundle with an unknown block type using CBOR manipulation
+2. Add an extension block with unrecognized type code (e.g., 200): Use `cbor compose` to create bundle with block type 200
+3. Rewrite: `$BUNDLE rewrite $OUT/unknown_block.bundle -o $OUT/rewrite_02.bundle`
+4. Verify the unknown block was discarded (if marked non-critical)
+
+### Suite 7: Pipeline Operations
+
+*Objective: Verify that commands can be chained via stdin/stdout.*
+
+| Test ID | Scenario | Driver Command / Flags | Verification (jq) / Expected Behavior |
+| --- | --- | --- | --- |
+| **PIPE-01** | **Create → Sign → Encrypt**<br><br>Chain bundle creation with security operations. | `echo "test" \| $BUNDLE create -s ipn:1.1 -d ipn:2.2 --payload-file - \| $BUNDLE sign --keys $KEYS --kid hmackey - \| $BUNDLE encrypt --keys $KEYS --kid aesgcmkey_32 -o $OUT/pipe_01.bundle -` | `$BUNDLE validate --keys $KEYS $OUT/pipe_01.bundle` returns success. |
+| **PIPE-02** | **Decrypt → Remove Integrity → Extract**<br><br>Chain decryption with payload extraction. | `$BUNDLE remove-encryption --keys $KEYS $OUT/pipe_01.bundle \| $BUNDLE remove-encryption --keys $KEYS -b 2 - \| $BUNDLE remove-integrity --keys $KEYS - \| $BUNDLE extract -o $OUT/pipe_02.txt -` | `grep -q "test" $OUT/pipe_02.txt` |
