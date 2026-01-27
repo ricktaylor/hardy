@@ -6,7 +6,7 @@ pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,
 
-    /// The number of the block to remove integrity protection from
+    /// The number of the block to remove encryption from
     #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]
     block: u64,
 
@@ -14,7 +14,7 @@ pub struct Command {
     #[arg(short, long, required = false, default_value = "")]
     output: io::Output,
 
-    /// The bundle file from which to remove the BIB, '-' to use stdin.
+    /// The bundle file from which to remove encryption, '-' to use stdin.
     input: io::Input,
 }
 
@@ -29,8 +29,8 @@ impl Command {
             .bundle;
 
         let editor = hardy_bpv7::editor::Editor::new(&bundle, &data)
-            .remove_integrity(self.block)
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
+            .remove_encryption(self.block, &key_store)
+            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
 
         let data = editor
             .rebuild()

@@ -21,10 +21,10 @@ A command-line utility for creating, inspecting, and manipulating Bundle Protoco
   - [`remove-block`](#remove-block)
   - [`sign`](#sign)
   - [`verify`](#verify)
-  - [`remove-bib`](#remove-bib)
+  - [`remove-integrity`](#remove-integrity)
   - [`encrypt`](#encrypt)
   - [`decrypt`](#decrypt)
-  - [`remove-bcb`](#remove-bcb)
+  - [`remove-encryption`](#remove-encryption)
 - [Working with Keys](#working-with-keys)
   - [Key Structure](#key-structure)
   - [Supported Algorithms](#supported-algorithms)
@@ -512,29 +512,30 @@ bundle verify -b 1 \
 
 ---
 
-### `remove-bib`
+### `remove-integrity`
 
-Remove the Block Integrity Block (BIB) from a signed block.
+Remove the integrity protection (signature) from a block. This removes the BIB targeting the specified block without removing the BIB block itself if it protects other blocks.
 
 **Usage:**
 
 ```bash
-bundle remove-bib [OPTIONS] --block <NUMBER> [INPUT]
+bundle remove-integrity [OPTIONS] [INPUT]
 ```
 
-**Required Arguments:**
+**Arguments:**
 
-- `-b, --block <NUMBER>` - Block number to remove signature from
+- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Optional Arguments:**
 
+- `-b, --block <NUMBER>` - Block number to remove integrity protection from (default: 1)
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
-- `<INPUT>` - Bundle file path (use `-` for stdin)
+- `--keys <JWKS>` - Key set for processing (JSON string or file path)
 
 **Example:**
 
 ```bash
-bundle remove-bib -b 1 --output unsigned.bundle signed.bundle
+bundle remove-integrity -b 1 --output unsigned.bundle signed.bundle
 ```
 
 ---
@@ -600,36 +601,40 @@ bundle decrypt [OPTIONS] --keys <JWKS> [INPUT]
 ```bash
 bundle decrypt -b 1 \
   --keys keys.json \
-  --output decrypted.bundle \
+
+# To get a bundle with the block decrypted, use remove-encryption:
+bundle remove-encryption -b 1 \
+  --keys keys.json \
+  --output modified.bundle \
   encrypted.bundle
 ```
 
 ---
 
-### `remove-bcb`
+### `remove-encryption`
 
-Remove the Block Confidentiality Block (BCB) from an encrypted block, decrypting it.
+Remove the encryption from a block. This removes the BCB targeting the specified block, decrypting it, without removing the BCB block itself if it protects other blocks.
 
 **Usage:**
 
 ```bash
-bundle remove-bcb [OPTIONS] --block <NUMBER> --keys <JWKS> [INPUT]
+bundle remove-encryption [OPTIONS] [INPUT]
 ```
 
-**Required Arguments:**
+**Arguments:**
 
-- `-b, --block <NUMBER>` - Block number to decrypt
-- `--keys <JWKS>` - JWKS key set (JSON string or file path)
+- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Optional Arguments:**
 
+- `-b, --block <NUMBER>` - Block number to remove encryption from (default: 1)
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
-- `<INPUT>` - Bundle file path (use `-` for stdin)
+- `--keys <JWKS>` - Key set for decryption (JSON string or file path)
 
 **Example:**
 
 ```bash
-bundle remove-bcb -b 1 \
+bundle remove-encryption -b 1 \
   --keys keys.json \
   --output decrypted.bundle \
   encrypted.bundle

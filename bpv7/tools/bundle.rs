@@ -9,9 +9,9 @@ mod flags;
 mod inspect;
 mod io;
 mod keys;
-mod remove_bcb;
-mod remove_bib;
 mod remove_block;
+mod remove_encryption;
+mod remove_integrity;
 mod rewrite;
 mod sign;
 mod update_block;
@@ -57,11 +57,11 @@ enum Commands {
     /// Verify the integrity of a block in a bundle
     Verify(verify::Command),
 
-    /// Remove the integrity protection (BIB) from a block in a bundle
-    RemoveBib(remove_bib::Command),
+    /// Remove the integrity protection from a block in a bundle
+    RemoveIntegrity(remove_integrity::Command),
 
-    /// Remove the encryption (BCB) from a block in a bundle
-    RemoveBcb(remove_bcb::Command),
+    /// Remove the encryption from a block in a bundle
+    RemoveEncryption(remove_encryption::Command),
 
     /// Add an extension block to a bundle
     AddBlock(add_block::Command),
@@ -86,8 +86,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Extract(args) => args.exec(),
         Commands::Sign(args) => args.exec(),
         Commands::Verify(args) => args.exec(),
-        Commands::RemoveBib(args) => args.exec(),
-        Commands::RemoveBcb(args) => args.exec(),
+        Commands::RemoveIntegrity(args) => args.exec(),
+        Commands::RemoveEncryption(args) => args.exec(),
         Commands::AddBlock(args) => args.exec(),
         Commands::RemoveBlock(args) => args.exec(),
         Commands::UpdateBlock(args) => args.exec(),
