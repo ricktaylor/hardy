@@ -53,7 +53,15 @@ mod rfc9173 {
 }
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Sign a block using BPSec Block Integrity Block (BIB)",
+    long_about = "Sign a block using BPSec Block Integrity Block (BIB).\n\n\
+        Adds integrity protection to the specified block using HMAC-SHA2 \
+        (RFC 9173 Section 3). Creates a BIB that can protect one or more blocks. \
+        If a BIB already exists from the same security source, the target is added \
+        to that BIB's security target list.\n\n\
+        Scope flags control what is included in the Additional Authenticated Data (AAD)."
+)]
 pub struct Command {
     /// The number of the block to sign
     #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]

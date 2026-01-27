@@ -53,7 +53,15 @@ mod rfc9173 {
 }
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Encrypt a block using BPSec Block Confidentiality Block (BCB)",
+    long_about = "Encrypt a block using BPSec Block Confidentiality Block (BCB).\n\n\
+        Adds confidentiality protection to the specified block using AES-GCM \
+        (RFC 9173 Section 4). Creates a BCB that can protect one or more blocks. \
+        If a BCB already exists from the same security source, the target is added \
+        to that BCB's security target list.\n\n\
+        Scope flags control what is included in the Additional Authenticated Data (AAD)."
+)]
 pub struct Command {
     /// The number of the block to encrypt
     #[arg(short, long, default_value = "1", value_name = "BLOCK_NUMBER")]

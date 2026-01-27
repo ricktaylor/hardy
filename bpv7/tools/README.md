@@ -326,6 +326,20 @@ bundle extract -b 3 bundle.cbor > block3.dat
 bundle extract --keys keys.json encrypted.bundle > payload.dat
 ```
 
+**Verifying Encryption Before Extraction:**
+
+The `extract` command will transparently decrypt blocks if keys are provided, regardless of whether the block was actually encrypted. To verify that a block is protected by a BCB before extracting (strict decryption), use `inspect` with `jq`:
+
+```bash
+# Check if block 1 is encrypted (has a bcb field), then extract
+if bundle inspect --format json input.bundle | jq -e '.blocks["1"].bcb' > /dev/null 2>&1; then
+    bundle extract --keys keys.json input.bundle > payload.dat
+else
+    echo "Error: Block 1 is not encrypted" >&2
+    exit 1
+fi
+```
+
 ---
 
 ### `add-block`
@@ -546,7 +560,7 @@ bundle verify -b 1 \
 
 ### `remove-integrity`
 
-Remove the integrity protection (signature) from a block. This removes the BIB targeting the specified block without removing the BIB block itself if it protects other blocks.
+Remove a block from BIB protection. This command removes the specified block from the BIB's security target list, discarding its integrity signature. The BIB itself is only removed from the bundle if it has no remaining security targets (see [RFC 9172 §3.4](https://www.rfc-editor.org/rfc/rfc9172.html#section-3.4)).
 
 **Usage:**
 
@@ -612,7 +626,7 @@ bundle encrypt -b 1 \
 
 ### `remove-encryption`
 
-Remove the encryption from a block. This removes the BCB targeting the specified block, decrypting it, without removing the BCB block itself if it protects other blocks.
+Decrypt a block and remove it from BCB protection. This command removes the specified block from the BCB's security target list and restores the block's plaintext data. The BCB itself is only removed from the bundle if it has no remaining security targets (see [RFC 9172 §3.4](https://www.rfc-editor.org/rfc/rfc9172.html#section-3.4)).
 
 **Usage:**
 

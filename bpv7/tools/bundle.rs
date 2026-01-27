@@ -35,28 +35,28 @@ enum Commands {
     /// Inspect and display bundle information
     Inspect(inspect::Command),
 
-    /// Rewrite a bundle, removing unsupported blocks and canonicalizing as appropriate
+    /// Rewrite a bundle, removing unsupported blocks and canonicalizing
     Rewrite(rewrite::Command),
 
     /// Check one or more bundles for validity
     Validate(validate::Command),
 
-    /// Encrypt the data of a block in a bundle
+    /// Encrypt a block using BPSec Block Confidentiality Block (BCB)
     Encrypt(encrypt::Command),
 
-    /// Extract the data of a block in a bundle
+    /// Extract the data from a block in a bundle
     Extract(extract::Command),
 
-    /// Sign a block in the bundle
+    /// Sign a block using BPSec Block Integrity Block (BIB)
     Sign(sign::Command),
 
-    /// Verify the integrity of a block in a bundle
+    /// Verify the integrity signature of a block
     Verify(verify::Command),
 
-    /// Remove the integrity protection from a block in a bundle
+    /// Remove a block from BIB protection
     RemoveIntegrity(remove_integrity::Command),
 
-    /// Remove the encryption from a block in a bundle
+    /// Decrypt a block and remove it from BCB protection
     RemoveEncryption(remove_encryption::Command),
 
     /// Add an extension block to a bundle

@@ -1,7 +1,14 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Remove a block from BIB protection",
+    long_about = "Remove a block from BIB protection.\n\n\
+        This command removes the specified block from the BIB's security target list, \
+        discarding its integrity signature. The BIB block itself is only removed from \
+        the bundle if it has no remaining security targets.\n\n\
+        See RFC 9172 Section 3.4 for details on security targets."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

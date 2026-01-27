@@ -44,7 +44,15 @@ impl From<BlockTypeArg> for block::Type {
 }
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Add an extension block to a bundle",
+    long_about = "Add an extension block to a bundle.\n\n\
+        Adds a new extension block of the specified type to the bundle. The block \
+        payload must be provided as raw CBOR data appropriate for the block type.\n\n\
+        Supported block types: bundle-age, hop-count, previous-node, block-integrity \
+        (bib), block-security (bcb), or a numeric type code for custom blocks.\n\n\
+        Use --force to replace an existing block of the same type."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

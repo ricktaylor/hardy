@@ -1,7 +1,13 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Verify the integrity signature of a block",
+    long_about = "Verify the integrity signature of a block.\n\n\
+        Verifies that the specified block's BIB signature is valid using the \
+        provided keys. Returns success (exit code 0) if verification passes, \
+        or an error if the block is not protected or verification fails."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

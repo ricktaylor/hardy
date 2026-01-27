@@ -1,7 +1,14 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Decrypt a block and remove it from BCB protection",
+    long_about = "Decrypt a block and remove it from BCB protection.\n\n\
+        This command removes the specified block from the BCB's security target list \
+        and restores the block's plaintext data. The BCB block itself is only removed \
+        from the bundle if it has no remaining security targets.\n\n\
+        See RFC 9172 Section 3.4 for details on security targets."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

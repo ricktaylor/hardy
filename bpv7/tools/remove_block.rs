@@ -1,7 +1,12 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Remove an extension block from a bundle",
+    long_about = "Remove an extension block from a bundle.\n\n\
+        Removes the block with the specified block number from the bundle. \
+        Cannot remove block 0 (primary) or block 1 (payload)."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

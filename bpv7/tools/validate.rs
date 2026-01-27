@@ -1,7 +1,13 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Check one or more bundles for validity",
+    long_about = "Check one or more bundles for validity.\n\n\
+        Validates that bundles are well-formed and conform to the BPv7 specification. \
+        Reports any parsing errors or non-canonical encodings. Returns a non-zero exit \
+        code if any bundles fail validation."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

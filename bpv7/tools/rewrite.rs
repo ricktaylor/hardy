@@ -1,7 +1,13 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Rewrite a bundle, removing unsupported blocks and canonicalizing",
+    long_about = "Rewrite a bundle, removing unsupported blocks and canonicalizing.\n\n\
+        Parses the input bundle and rewrites it in canonical form. Unsupported or \
+        malformed extension blocks are removed according to their block processing \
+        flags. This is useful for cleaning up bundles received from other implementations."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

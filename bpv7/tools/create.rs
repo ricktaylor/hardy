@@ -2,7 +2,14 @@ use super::*;
 use hardy_bpv7::eid::Eid;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Create a new bundle with payload",
+    long_about = "Create a new bundle with payload.\n\n\
+        Creates a BPv7 bundle with the specified source, destination, and payload. \
+        The bundle can include optional extension blocks like hop-count, and supports \
+        various processing flags and CRC types.\n\n\
+        See RFC 9171 for the Bundle Protocol specification."
+)]
 pub struct Command {
     /// The source Endpoint ID (EID) of the bundle
     #[arg(short, long)]

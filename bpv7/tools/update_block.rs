@@ -1,7 +1,12 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Update an existing block in a bundle",
+    long_about = "Update an existing block in a bundle.\n\n\
+        Modifies an existing block's payload, flags, or CRC type. At least one \
+        update option must be specified. The block is identified by its block number."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

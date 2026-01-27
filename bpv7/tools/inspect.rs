@@ -2,7 +2,16 @@ use super::*;
 use hardy_bpv7::*;
 
 #[derive(Parser, Debug)]
-#[command(about = "Inspect and display bundle information", long_about = None)]
+#[command(
+    about = "Inspect and display bundle information",
+    long_about = "Inspect and display bundle information.\n\n\
+        Displays bundle structure, blocks, flags, and security information in various \
+        formats. If keys are provided, encrypted blocks will be decrypted for inspection.\n\n\
+        Output formats:\n\
+        - markdown: Human-readable format (default)\n\
+        - json: Machine-readable JSON\n\
+        - json-pretty: Pretty-printed JSON"
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,

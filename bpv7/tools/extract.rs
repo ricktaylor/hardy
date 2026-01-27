@@ -1,7 +1,13 @@
 use super::*;
 
 #[derive(Parser, Debug)]
-#[command(about, long_about = None)]
+#[command(
+    about = "Extract the data from a block in a bundle",
+    long_about = "Extract the data from a block in a bundle.\n\n\
+        Extracts and outputs the raw data from a specific block. By default extracts \
+        block 1 (the payload block). If the block is encrypted and keys are provided, \
+        it will be automatically decrypted before extraction."
+)]
 pub struct Command {
     #[clap(flatten)]
     key_args: keys::KeySetLoaderArgs,
