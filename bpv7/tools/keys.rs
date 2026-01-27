@@ -82,25 +82,43 @@ impl TryFrom<KeyInput> for Key {
     type Error = anyhow::Error;
 
     fn try_from(args: KeyInput) -> Result<Self, Self::Error> {
-        if let Some(raw_key_str) = args.key {
+        let (_, key) = args.try_into_keyset_and_key()?;
+        Ok(key)
+    }
+}
+
+impl KeyInput {
+    /// Convert to both a KeySet (for parsing bundles) and the selected Key (for operations).
+    /// When --keys is used, the full keyset is available for parsing encrypted bundles,
+    /// and the key specified by --kid is used for the operation.
+    /// When --key is used, a keyset containing just that key is returned.
+    pub fn try_into_keyset_and_key(self) -> anyhow::Result<(KeySet, Key)> {
+        if let Some(raw_key_str) = self.key {
             let key_content = if raw_key_str.trim_ascii_start().starts_with('{') {
                 raw_key_str
             } else {
                 std::fs::read_to_string(&raw_key_str)
                     .map_err(|e| anyhow::anyhow!("Failed to read key file: {e}"))?
             };
-            serde_json::from_str(&key_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse key: {e}"))
-        } else if let Some(keyset_input) = args.keyset_input {
+            let key: Key = serde_json::from_str(&key_content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse key: {e}"))?;
+            let keyset = KeySet::new(vec![key.clone()]);
+            Ok((keyset, key))
+        } else if let Some(keyset_input) = self.keyset_input {
             let keyset: KeySet = KeySetLoaderArgs {
                 keys: Some(keyset_input.keys),
             }
             .try_into()?;
-            keyset
+            let key = keyset
                 .keys
-                .into_iter()
+                .iter()
                 .find(|k| k.id.as_ref() == Some(&keyset_input.kid))
-                .ok_or(anyhow::anyhow!("Key not found"))
+                .cloned()
+                .ok_or(anyhow::anyhow!(
+                    "Key '{}' not found in keyset",
+                    keyset_input.kid
+                ))?;
+            Ok((keyset, key))
         } else {
             Err(anyhow::anyhow!(
                 "Either --key must be provided, or both --keys and --kid must be provided."

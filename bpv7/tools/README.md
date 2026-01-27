@@ -209,12 +209,15 @@ bundle inspect [OPTIONS] [INPUT]
 **Arguments:**
 
 - `<INPUT>` - Bundle file path (use `-` for stdin)
-- `--format <FORMAT>` - Output format (default: `markdown`)
+
+**Optional Arguments:**
+
+- `--format <FORMAT>` - Output format (default: `markdown`):
   - `markdown` - Human-readable markdown format (default)
   - `json` - Machine-readable JSON format
   - `json-pretty` - Pretty-printed JSON format
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
-- `--keys <JWKS>` - Optional key set for decrypting blocks during inspection
+- `--keys <JWKS>` - Key set for decrypting blocks during inspection (JSON string or file path)
 
 **Examples:**
 
@@ -241,17 +244,25 @@ Check one or more bundles for validity.
 **Usage:**
 
 ```bash
-bundle validate [INPUT]...
+bundle validate [OPTIONS] [INPUT]...
 ```
 
 **Arguments:**
 
 - `<INPUT>...` - One or more bundle files to validate
 
+**Optional Arguments:**
+
+- `--keys <JWKS>` - Key set for validating encrypted bundles (JSON string or file path)
+
 **Example:**
 
 ```bash
+# Validate multiple bundles
 bundle validate bundle1.cbor bundle2.cbor bundle3.cbor
+
+# Validate bundle with encrypted blocks
+bundle validate --keys keys.json encrypted.bundle
 ```
 
 ---
@@ -269,7 +280,11 @@ bundle rewrite [OPTIONS] [INPUT]
 **Arguments:**
 
 - `<INPUT>` - Bundle file path (use `-` for stdin)
+
+**Optional Arguments:**
+
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
+- `--keys <JWKS>` - Key set for processing encrypted bundles (JSON string or file path)
 
 **Example:**
 
@@ -281,7 +296,7 @@ bundle rewrite --output clean.bundle bundle.cbor
 
 ### `extract`
 
-Extract the payload or data from a specific block.
+Extract the payload or data from a specific block. If the block is encrypted, it will be automatically decrypted if keys are provided.
 
 **Usage:**
 
@@ -292,8 +307,12 @@ bundle extract [OPTIONS] [INPUT]
 **Arguments:**
 
 - `<INPUT>` - Bundle file path (use `-` for stdin)
+
+**Optional Arguments:**
+
 - `-b, --block <NUMBER>` - Block number to extract (default: 1 - payload). Block 0 is the primary block, block 1 is the payload, blocks 2+ are extension blocks (see [RFC 9171 §4.1](https://www.rfc-editor.org/rfc/rfc9171.html#section-4.1))
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
+- `--keys <JWKS>` - Key set for decrypting encrypted blocks (JSON string or file path)
 
 **Example:**
 
@@ -303,6 +322,9 @@ bundle extract bundle.cbor > payload.dat
 
 # Extract block 3 data
 bundle extract -b 3 bundle.cbor > block3.dat
+
+# Extract encrypted payload
+bundle extract --keys keys.json encrypted.bundle > payload.dat
 ```
 
 ---
@@ -320,12 +342,12 @@ bundle add-block [OPTIONS] --type <TYPE> [INPUT]
 **Required Arguments:**
 
 - `-t, --type <TYPE>` - Block type (see [RFC 9171 §4.1](https://www.rfc-editor.org/rfc/rfc9171.html#section-4.1)):
-  - `bundle-age`, `age`
-  - `hop-count`, `hop`
-  - `previous-node`, `prev`
-  - `block-integrity`, `bib`
-  - `block-security`, `bcb`
-  - Numeric type code
+  - `bundle-age` (alias: `age`)
+  - `hop-count` (alias: `hop`)
+  - `previous-node` (alias: `prev`)
+  - `block-integrity` (alias: `bib`)
+  - `block-security` (alias: `bcb`)
+  - Numeric type code (e.g., `192` for custom block types)
 
 **Block Content (one required):**
 
@@ -343,6 +365,7 @@ bundle add-block [OPTIONS] --type <TYPE> [INPUT]
   - `delete-block-on-failure`, `delete-block`
 - `-c, --crc-type <TYPE>` - CRC type for the block
 - `--force` - Replace existing block of same type if present
+- `--keys <JWKS>` - Key set for parsing bundles with encrypted blocks (JSON string or file path)
 
 **Example:**
 
@@ -373,6 +396,10 @@ Update an existing block's payload, flags, or CRC.
 bundle update-block [OPTIONS] --block-number <NUMBER> [INPUT]
 ```
 
+**Arguments:**
+
+- `<INPUT>` - Bundle file path (use `-` for stdin)
+
 **Required Arguments:**
 
 - `-n, --block-number <NUMBER>` - Block number to update
@@ -387,7 +414,7 @@ bundle update-block [OPTIONS] --block-number <NUMBER> [INPUT]
 **Other Arguments:**
 
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
-- `<INPUT>` - Bundle file path (use `-` for stdin)
+- `--keys <JWKS>` - Key set for parsing bundles with encrypted blocks (JSON string or file path)
 
 **Example:**
 
@@ -417,6 +444,10 @@ Remove an extension block from a bundle.
 bundle remove-block [OPTIONS] --block-number <NUMBER> [INPUT]
 ```
 
+**Arguments:**
+
+- `<INPUT>` - Bundle file path (use `-` for stdin)
+
 **Required Arguments:**
 
 - `-n, --block-number <NUMBER>` - Block number to remove
@@ -424,7 +455,7 @@ bundle remove-block [OPTIONS] --block-number <NUMBER> [INPUT]
 **Optional Arguments:**
 
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
-- `<INPUT>` - Bundle file path (use `-` for stdin)
+- `--keys <JWKS>` - Key set for parsing bundles with encrypted blocks (JSON string or file path)
 
 **Example:**
 
@@ -436,23 +467,26 @@ bundle remove-block -n 2 --output cleaned.bundle input.bundle
 
 ### `sign`
 
-Sign a block using BPSec Block Integrity Block (BIB) with HMAC-SHA256 (see [RFC 9173 §3](https://www.rfc-editor.org/rfc/rfc9173.html#section-3)).
+Sign a block using BPSec Block Integrity Block (BIB) with HMAC-SHA2 (see [RFC 9173 §3](https://www.rfc-editor.org/rfc/rfc9173.html#section-3)).
 
 **Usage:**
 
 ```bash
-bundle sign [OPTIONS] (--key <JWK> | --keys <JWKS> --kid <KEY_ID>) [INPUT]
+bundle sign [OPTIONS] (--key <KEY> | --keys <KEYS> --kid <KEY_ID>) [INPUT]
 ```
 
-**Required Arguments:**
+**Arguments:**
 
-- `-b, --block <NUMBER>` - Block number to sign (default: 1)
-- Key specification (choose one):
-  - `--key <JWK>` - Single JWK key (JSON string or file path)
-  - `--keys <JWKS> --kid <KEY_ID>` - Select key from JWKS by key ID
+- `<INPUT>` - Bundle file path (use `-` for stdin)
+
+**Key Specification (one required):**
+
+- `--key <KEY>` - Single JWK key (JSON string or file path)
+- `--keys <KEYS> --kid <KEY_ID>` - Select key from JWKS by key ID. The full keyset is also used to parse bundles with encrypted blocks.
 
 **Optional Arguments:**
 
+- `-b, --block <NUMBER>` - Block number to sign (default: 1)
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
 - `-s, --source <EID>` - Security source EID (default: bundle source)
 - `-f, --flags <FLAGS>` - BPSec scope flags control Additional Authenticated Data (comma-separated, see [RFC 9172 §3.6](https://www.rfc-editor.org/rfc/rfc9172.html#section-3.6)):
@@ -461,7 +495,6 @@ bundle sign [OPTIONS] (--key <JWK> | --keys <JWKS> --kid <KEY_ID>) [INPUT]
   - `primary` - Include primary block
   - `target` - Include target header
   - `source` - Include security source header
-- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Examples:**
 
@@ -490,17 +523,17 @@ Verify the integrity signature of a block.
 **Usage:**
 
 ```bash
-bundle verify [OPTIONS] --keys <JWKS> [INPUT]
+bundle verify [OPTIONS] [INPUT]
 ```
 
-**Required Arguments:**
+**Arguments:**
 
-- `-b, --block <NUMBER>` - Block number to verify (default: 1)
-- `--keys <JWKS>` - JWKS key set (JSON string or file path)
+- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Optional Arguments:**
 
-- `<INPUT>` - Bundle file path (use `-` for stdin)
+- `-b, --block <NUMBER>` - Block number to verify (default: 1)
+- `--keys <JWKS>` - Key set for verification (JSON string or file path)
 
 **Example:**
 
@@ -547,22 +580,24 @@ Encrypt a block using BPSec Block Confidentiality Block (BCB) with AES-GCM (see 
 **Usage:**
 
 ```bash
-bundle encrypt [OPTIONS] (--key <JWK> | --keys <JWKS> --kid <KEY_ID>) [INPUT]
+bundle encrypt [OPTIONS] (--key <KEY> | --keys <KEYS> --kid <KEY_ID>) [INPUT]
 ```
 
-**Required Arguments:**
+**Arguments:**
 
-- `-b, --block <NUMBER>` - Block number to encrypt (default: 1)
-- Key specification (choose one):
-  - `--key <JWK>` - Single JWK key (JSON string or file path)
-  - `--keys <JWKS> --kid <KEY_ID>` - Select key from JWKS by key ID
+- `<INPUT>` - Bundle file path (use `-` for stdin)
+
+**Key Specification (one required):**
+
+- `--key <KEY>` - Single JWK key (JSON string or file path)
+- `--keys <KEYS> --kid <KEY_ID>` - Select key from JWKS by key ID. The full keyset is also used to parse bundles with encrypted blocks.
 
 **Optional Arguments:**
 
+- `-b, --block <NUMBER>` - Block number to encrypt (default: 1)
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
 - `-s, --source <EID>` - Security source EID (default: bundle source)
 - `-f, --flags <FLAGS>` - BPSec scope flags (comma-separated, see [RFC 9172 §3.6](https://www.rfc-editor.org/rfc/rfc9172.html#section-3.6), same as sign)
-- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Example:**
 
@@ -578,29 +613,31 @@ bundle encrypt -b 1 \
 
 ### `decrypt`
 
-Decrypt an encrypted block.
+Decrypt an encrypted block and output its raw data. This is similar to `extract` but specifically for encrypted blocks. To remove encryption from a block while preserving the bundle structure, use `remove-encryption` instead.
 
 **Usage:**
 
 ```bash
-bundle decrypt [OPTIONS] --keys <JWKS> [INPUT]
+bundle decrypt [OPTIONS] [INPUT]
 ```
 
-**Required Arguments:**
+**Arguments:**
 
-- `-b, --block <NUMBER>` - Block number to decrypt (default: 1)
-- `--keys <JWKS>` - JWKS key set (JSON string or file path)
+- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Optional Arguments:**
 
+- `-b, --block <NUMBER>` - Block number to decrypt (default: 1)
+- `--keys <JWKS>` - Key set for decryption (JSON string or file path)
 - `-o, --output <OUTPUT>` - Output file (default: stdout)
-- `<INPUT>` - Bundle file path (use `-` for stdin)
 
 **Example:**
 
 ```bash
+# Decrypt and extract payload data
 bundle decrypt -b 1 \
   --keys keys.json \
+  encrypted.bundle > payload.dat
 
 # To get a bundle with the block decrypted, use remove-encryption:
 bundle remove-encryption -b 1 \

@@ -46,6 +46,9 @@ impl From<BlockTypeArg> for block::Type {
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
+    #[clap(flatten)]
+    key_args: keys::KeySetLoaderArgs,
+
     /// Block type to add (bundle-age, hop-count, previous-node, or numeric type code)
     #[arg(short = 't', long = "type", value_name = "BLOCK_TYPE")]
     block_type: BlockTypeArg,
@@ -80,9 +83,10 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
+        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
         let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bundle::no_keys)
+        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
             .bundle;
 

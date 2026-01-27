@@ -80,10 +80,10 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key = self.key_input.try_into()?;
+        let (key_store, key) = self.key_input.try_into_keyset_and_key()?;
         let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bundle::no_keys)
+        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
             .bundle;
 
