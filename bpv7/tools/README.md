@@ -401,7 +401,7 @@ bundle add-block --type hop-count \
 
 ### `update-block`
 
-Update an existing block's payload, flags, or CRC.
+Update an existing block's payload, flags, or CRC. If the block is a security target of a BIB or BCB, it will be automatically removed from those target lists (since the signature/encryption would be invalid after modification). If the BIB itself is encrypted, use `remove-integrity` first.
 
 **Usage:**
 
@@ -449,7 +449,7 @@ bundle update-block -n 3 \
 
 ### `remove-block`
 
-Remove an extension block from a bundle.
+Remove an extension block from a bundle. If the block is a security target of a BIB or BCB, it will be automatically removed from those target lists. If the BIB itself is encrypted, use `remove-integrity` first.
 
 **Usage:**
 
@@ -463,7 +463,7 @@ bundle remove-block [OPTIONS] --block-number <NUMBER> [INPUT]
 
 **Required Arguments:**
 
-- `-n, --block-number <NUMBER>` - Block number to remove
+- `-n, --block-number <NUMBER>` - Block number to remove (cannot remove block 0 or 1)
 
 **Optional Arguments:**
 

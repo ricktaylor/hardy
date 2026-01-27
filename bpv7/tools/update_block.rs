@@ -5,7 +5,11 @@ use super::*;
     about = "Update an existing block in a bundle",
     long_about = "Update an existing block in a bundle.\n\n\
         Modifies an existing block's payload, flags, or CRC type. At least one \
-        update option must be specified. The block is identified by its block number."
+        update option must be specified. The block is identified by its block number.\n\n\
+        If the block is a security target of a BIB or BCB, it will be automatically \
+        removed from those target lists (since the signature/encryption would be \
+        invalid after modification). If the BIB itself is encrypted, use \
+        remove-integrity first."
 )]
 pub struct Command {
     #[clap(flatten)]

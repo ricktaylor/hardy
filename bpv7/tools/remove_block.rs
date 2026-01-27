@@ -5,7 +5,10 @@ use super::*;
     about = "Remove an extension block from a bundle",
     long_about = "Remove an extension block from a bundle.\n\n\
         Removes the block with the specified block number from the bundle. \
-        Cannot remove block 0 (primary) or block 1 (payload)."
+        Cannot remove block 0 (primary) or block 1 (payload).\n\n\
+        If the block is a security target of a BIB or BCB, it will be automatically \
+        removed from those target lists. If the BIB itself is encrypted, use \
+        remove-integrity first."
 )]
 pub struct Command {
     #[clap(flatten)]

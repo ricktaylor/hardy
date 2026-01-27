@@ -19,6 +19,9 @@ pub enum Error {
     #[error("No such block number {0}")]
     NoSuchBlock(u64),
 
+    #[error("Block {0} is protected by an encrypted BIB; use remove_integrity() first")]
+    BibIsEncrypted(u64),
+
     #[error(transparent)]
     Builder(#[from] builder::Error),
 }
@@ -238,17 +241,47 @@ impl<'a> Editor<'a> {
     /// Update an existing block in the bundle.
     ///
     /// This will return a `BlockBuilder` that can be used to manipulate the
-    /// existing block.
+    /// existing block. If the block is a security target of a BIB or BCB, it
+    /// will be automatically removed from those target lists first (since the
+    /// signature/encryption would be invalid after modification).
     ///
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
-    pub fn update_block(self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
+    pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
         let (is_new, template) = match self.blocks.get(&block_number) {
             None => return Err((self, Error::NoSuchBlock(block_number))),
             Some(BlockTemplate::Keep(t)) => {
                 if let &block::Type::Primary = t {
                     return Err((self, Error::PrimaryBlock));
                 }
+                let block = match self.original.blocks.get(&block_number) {
+                    Some(b) => b,
+                    None => return Err((self, Error::NoSuchBlock(block_number))),
+                };
+
+                // Check if the block is protected by an encrypted BIB
+                if let Some(bib) = block.bib {
+                    if let Some(bib_block) = self.original.blocks.get(&bib) {
+                        if bib_block.bcb.is_some() {
+                            // The BIB is encrypted by a BCB. We cannot modify the BIB's
+                            // target list without first decrypting it, but the Editor doesn't
+                            // have access to keys. The caller must use remove_integrity() first.
+                            return Err((self, Error::BibIsEncrypted(block_number)));
+                        }
+                    }
+                }
+
+                // Remove from BIB target list if present (signature will be invalid after update)
+                if let Some(bib) = block.bib {
+                    self = self.remove_from_bib_targets(block_number, bib)?;
+                }
+
+                // Remove from BCB target list if present (encryption will be invalid after update)
+                if let Some(bcb) = block.bcb {
+                    self = self.remove_from_bcb_targets(block_number, bcb)?;
+                }
+
+                // Re-fetch the block after potential modifications
                 let block = match self.original.blocks.get(&block_number) {
                     Some(b) => b,
                     None => return Err((self, Error::NoSuchBlock(block_number))),
@@ -289,6 +322,23 @@ impl<'a> Editor<'a> {
         if block_number == 1 {
             return Err((self, Error::PayloadBlock));
         }
+
+        // Check if the block is protected by an encrypted BIB
+        if let Some((block, _)) = self.block(block_number) {
+            if let Some(bib) = block.bib {
+                if let Some((bib_block, _)) = self.block(bib) {
+                    if bib_block.bcb.is_some() {
+                        // The BIB is encrypted by a BCB. We cannot modify the BIB's
+                        // target list without first decrypting it, but the Editor doesn't
+                        // have access to keys. The caller must use remove_integrity() first.
+                        return Err((self, Error::BibIsEncrypted(block_number)));
+                    }
+                }
+            }
+            // Note: BCB case is fine - we can silently update the BCB's target list
+            // without needing keys since we're just removing a target, not decrypting.
+        }
+
         self.remove_block_inner(block_number)
     }
 
