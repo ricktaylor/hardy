@@ -347,9 +347,19 @@ assert_eq "$BIB_COUNT" "1" "BIB block count after signing primary block"
 ${BUNDLE} verify --keys "${KEYS}" -b 0 "${OUT_DIR}/test_primary_signed.bundle"
 echo "   PASS: Primary block signed and verified (CRC preserved per RFC 9171)"
 
+echo "26. Rejecting bundle create with --crc-type none..."
+# RFC 9171 Section 4.3.1 requires CRC on primary block (unless BIB present)
+# bundle create should reject --crc-type none to prevent creating invalid bundles
+if ${BUNDLE} create --source ipn:1.0 --destination ipn:2.0 --payload "test" --crc-type none -o "${OUT_DIR}/invalid.bundle" 2>/dev/null; then
+    echo "   FAIL: bundle create should have rejected --crc-type none"
+    exit 1
+else
+    echo "   PASS: bundle create correctly rejected --crc-type none"
+fi
+
 # ============================================================================
 echo
-echo "=== All 25 tests passed! ==="
+echo "=== All 26 tests passed! ==="
 echo
 
 if [ "$KEEP_OUTPUT" = true ]; then

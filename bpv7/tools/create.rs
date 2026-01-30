@@ -39,7 +39,9 @@ pub struct Command {
     #[arg(short, long, value_delimiter = ',')]
     flags: Vec<flags::ArgBundleFlags>,
 
-    /// The CRC type of the bundle
+    /// The CRC type for both the primary and payload blocks (crc16 or crc32, default: crc32).
+    /// Note: 'none' is not allowed as the primary block requires a CRC per RFC 9171.
+    /// Use 'update-block' after creation to set a different CRC type for the payload block.
     #[arg(short, long = "crc-type")]
     crc_type: Option<flags::ArgCrcType>,
 
@@ -54,6 +56,16 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
+        // Validate CRC type - None is not allowed for bundle creation
+        // because it would create an invalid bundle per RFC 9171 Section 4.3.1
+        // (primary block must have CRC unless protected by BIB)
+        if self.crc_type == Some(flags::ArgCrcType::None) {
+            return Err(anyhow::anyhow!(
+                "CRC type 'none' is not allowed for bundle creation. \
+                The primary block must have a CRC (use 'crc16' or 'crc32')."
+            ));
+        }
+
         // Get payload data
         let payload_data = if let Some(payload_str) = &self.payload {
             payload_str.as_bytes().to_vec()

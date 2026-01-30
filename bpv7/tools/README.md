@@ -168,7 +168,7 @@ bundle create [OPTIONS] --source <EID> --destination <EID> (--payload <STRING> |
   - `report-forwarding`, `fwd`
   - `report-delivery`, `dlv`
   - `report-deletion`, `del`
-- `-c, --crc-type <TYPE>` - CRC type (see [RFC 9171 §4.2.1](https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.1)): `none`, `crc16`, `crc32`
+- `-c, --crc-type <TYPE>` - CRC type for both the primary and payload blocks (see [RFC 9171 §4.2.1](https://www.rfc-editor.org/rfc/rfc9171.html#section-4.2.1)): `crc16`, `crc32` (default: `crc32`). Note: `none` is not allowed for bundle creation because the primary block requires a CRC per [RFC 9171 §4.3.1](https://www.rfc-editor.org/rfc/rfc9171.html#section-4.3.1). Use `update-block` after creation to set a different CRC type for the payload block (e.g., `bundle update-block -n 1 --crc-type none`).
 - `-l, --lifetime <DURATION>` - Bundle lifetime (default: 24h)
 - `-H, --hop-limit <COUNT>` - Maximum hop count
 
