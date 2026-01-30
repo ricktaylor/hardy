@@ -22,6 +22,9 @@ pub enum Error {
     #[error("Block {0} is protected by an encrypted BIB; use remove_integrity() first")]
     BibIsEncrypted(u64),
 
+    #[error("Primary block is protected by a BIB; use remove_integrity(0) first")]
+    PrimaryBlockHasBib,
+
     #[error(transparent)]
     Builder(#[from] builder::Error),
 }
@@ -80,7 +83,15 @@ impl<'a> Editor<'a> {
         }
     }
 
-    fn primary_block(&mut self) -> &mut BundleUpdate {
+    fn primary_block(&mut self) -> Result<&mut BundleUpdate, Error> {
+        // Check if primary block is still protected by an untouched BIB
+        if let Some(primary) = self.original.blocks.get(&0)
+            && let Some(bib_num) = primary.bib
+            && matches!(self.blocks.get(&bib_num), Some(BlockTemplate::Keep(_)))
+        {
+            return Err(Error::PrimaryBlockHasBib);
+        }
+
         if self.bundle.is_none() {
             self.bundle = Some(BundleUpdate {
                 bundle_flags: self.original.flags.clone(),
@@ -93,54 +104,125 @@ impl<'a> Editor<'a> {
                 fragment_info: self.original.id.fragment_info.clone(),
             });
         }
-        self.bundle.as_mut().unwrap()
+        Ok(self.bundle.as_mut().unwrap())
     }
 
-    /// Access the bundle flags for this [`Editor`].
-    pub fn bundle_flags(&mut self) -> &mut bundle::Flags {
-        &mut self.primary_block().bundle_flags
+    /// Sets the bundle flags for this [`Editor`].
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_bundle_flags(mut self, flags: bundle::Flags) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.bundle_flags = flags;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Sets the [`crc::CrcType`] for this [`Editor`].
-    pub fn with_bundle_crc_type(mut self, crc_type: crc::CrcType) -> Self {
-        self.primary_block().crc_type = crc_type;
-        self
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_bundle_crc_type(mut self, crc_type: crc::CrcType) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.crc_type = crc_type;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Sets the creation timestamp for this [`Editor`].
-    pub fn with_timestamp(mut self, timestamp: creation_timestamp::CreationTimestamp) -> Self {
-        self.primary_block().timestamp = timestamp;
-        self
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_timestamp(
+        mut self,
+        timestamp: creation_timestamp::CreationTimestamp,
+    ) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.timestamp = timestamp;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Sets the source [`eid::Eid`] for this [`Editor`].
-    pub fn with_source(mut self, source: eid::Eid) -> Self {
-        self.primary_block().source = source;
-        self
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_source(mut self, source: eid::Eid) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.source = source;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
-    /// Sets the source [`eid::Eid`] for this [`Editor`].
-    pub fn with_destination(mut self, destination: eid::Eid) -> Self {
-        self.primary_block().destination = destination;
-        self
+    /// Sets the destination [`eid::Eid`] for this [`Editor`].
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_destination(mut self, destination: eid::Eid) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.destination = destination;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Sets the report_to [`eid::Eid`] for this [`Editor`].
-    pub fn with_report_to(mut self, report_to: eid::Eid) -> Self {
-        self.primary_block().report_to = report_to;
-        self
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_report_to(mut self, report_to: eid::Eid) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.report_to = report_to;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Sets the lifetime for this [`Editor`].
-    pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Self {
-        self.primary_block().lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
-        self
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Sets the fragment_info for this [`Editor`].
-    pub fn with_fragment_info(mut self, fragment_info: Option<bundle::FragmentInfo>) -> Self {
-        self.primary_block().fragment_info = fragment_info;
-        self
+    ///
+    /// On error, returns the editor along with the error so it can be reused for recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn with_fragment_info(
+        mut self,
+        fragment_info: Option<bundle::FragmentInfo>,
+    ) -> Result<Self, (Self, Error)> {
+        match self.primary_block() {
+            Ok(pb) => {
+                pb.fragment_info = fragment_info;
+                Ok(self)
+            }
+            Err(e) => Err((self, e)),
+        }
     }
 
     /// Add a new block into the bundle.
@@ -483,10 +565,6 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn remove_integrity(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
-        if block_number == 0 {
-            return Err((self, Error::PrimaryBlock));
-        }
-
         let Some((target_block, _)) = self.block(block_number) else {
             return Err((self, Error::NoSuchBlock(block_number)));
         };
@@ -507,10 +585,16 @@ impl<'a> Editor<'a> {
 
         // Ensure we have a CRC if there's no BCB
         if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
-            self = self
-                .update_block_inner(block_number)?
-                .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
-                .rebuild();
+            if block_number == 0 {
+                // Primary block: use with_bundle_crc_type
+                self = self.with_bundle_crc_type(crc::CrcType::CRC32_CASTAGNOLI)?;
+            } else {
+                // Extension block: use update_block_inner
+                self = self
+                    .update_block_inner(block_number)?
+                    .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+                    .rebuild();
+            }
         }
 
         Ok(self)

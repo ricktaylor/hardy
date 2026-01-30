@@ -259,7 +259,13 @@ impl Store {
 
         // Rewrite primary block
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data);
-        editor = editor.with_fragment_info(None);
+        editor = match editor.with_fragment_info(None) {
+            Ok(e) => e,
+            Err((_, e)) => {
+                info!("Failed to clear fragment info: {e}");
+                return None;
+            }
+        };
 
         // Now rebuild
         let new_data = match editor.update_block(1) {

@@ -14,6 +14,7 @@ mod remove_integrity;
 mod rewrite;
 mod sign;
 mod update_block;
+mod update_primary;
 mod validate;
 mod verify;
 
@@ -67,6 +68,9 @@ enum Commands {
 
     /// Update an existing block in a bundle
     UpdateBlock(update_block::Command),
+
+    /// Update the primary block of a bundle
+    UpdatePrimary(update_primary::Command),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -86,5 +90,6 @@ fn main() -> anyhow::Result<()> {
         Commands::AddBlock(args) => args.exec(),
         Commands::RemoveBlock(args) => args.exec(),
         Commands::UpdateBlock(args) => args.exec(),
+        Commands::UpdatePrimary(args) => args.exec(),
     }
 }
