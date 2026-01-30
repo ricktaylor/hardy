@@ -880,3 +880,119 @@ fn test_encrypt_bib_directly_fails() {
         e
     );
 }
+
+#[test]
+fn test_sign_primary_block_with_crc() {
+    // Test that signing the primary block (block 0) works even when
+    // the primary block has a CRC. RFC 9171 Section 4.3.1 allows
+    // both CRC and BIB on the primary block.
+
+    // 1. Create a bundle (primary block will have a CRC by default)
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.1".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"test payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+
+    // Verify primary block has a CRC
+    let primary = bundle.blocks.get(&0).expect("Primary block missing");
+    assert!(
+        !matches!(primary.crc_type, crate::crc::CrcType::None),
+        "Primary block should have a CRC"
+    );
+
+    // 2. Sign the primary block (block 0)
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+    }))
+    .unwrap();
+
+    let signer = signer::Signer::new(&bundle, &bundle_bytes)
+        .sign_block(
+            0, // Sign the primary block
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("Failed to sign primary block");
+
+    let signed_bytes = signer
+        .rebuild()
+        .expect("Failed to rebuild bundle after signing primary block");
+
+    // 3. Parse and verify the signed bundle
+    let keys = key::KeySet::new(vec![sign_key]);
+    let parsed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &keys)
+        .expect("Failed to parse signed bundle");
+
+    // 4. Verify BIB exists and targets block 0
+    let bib_count = count_blocks_of_type(&parsed.bundle, crate::block::Type::BlockIntegrity);
+    assert_eq!(
+        bib_count, 1,
+        "Should have 1 BIB after signing primary block"
+    );
+
+    // 5. Verify the primary block still has its CRC (RFC 9171 allows this)
+    let signed_primary = parsed.bundle.blocks.get(&0).expect("Primary block missing");
+    assert!(
+        !matches!(signed_primary.crc_type, crate::crc::CrcType::None),
+        "Primary block should still have CRC after signing"
+    );
+
+    // 6. Verify the signature
+    parsed
+        .bundle
+        .verify_block(0, &signed_bytes, &keys)
+        .expect("Failed to verify signature on primary block");
+}
+
+#[test]
+fn test_sign_primary_block_with_crc_no_scope_flags() {
+    // Test signing primary block with ScopeFlags::NONE to ensure
+    // CRC handling works regardless of AAD configuration.
+
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.1".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"test payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+    }))
+    .unwrap();
+
+    // Use ScopeFlags::NONE - no AAD included
+    let signer = signer::Signer::new(&bundle, &bundle_bytes)
+        .sign_block(
+            0,
+            signer::Context::HMAC_SHA2(ScopeFlags::NONE),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("Failed to sign primary block with NONE flags");
+
+    let signed_bytes = signer
+        .rebuild()
+        .expect("Failed to rebuild bundle after signing primary block with NONE flags");
+
+    let keys = key::KeySet::new(vec![sign_key]);
+    let parsed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &keys)
+        .expect("Failed to parse signed bundle");
+
+    // Verify signature works with NONE flags
+    parsed
+        .bundle
+        .verify_block(0, &signed_bytes, &keys)
+        .expect("Failed to verify signature on primary block with NONE flags");
+}

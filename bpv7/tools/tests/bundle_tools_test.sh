@@ -337,9 +337,19 @@ else
     exit 1
 fi
 
+echo "25. Signing primary block (block 0) with CRC..."
+# RFC 9171 Section 4.3.1 allows both CRC and BIB on the primary block
+${BUNDLE} create --source ipn:1.0 --destination ipn:4.23 --payload "primary block sign test" -o "${OUT_DIR}/test_primary.bundle"
+${BUNDLE} sign --keys "${KEYS}" --kid hmackey -f all -b 0 -o "${OUT_DIR}/test_primary_signed.bundle" "${OUT_DIR}/test_primary.bundle"
+BIB_COUNT=$(bundle_jq "${OUT_DIR}/test_primary_signed.bundle" '[.blocks[] | select(.type == "BlockIntegrity")] | length')
+assert_eq "$BIB_COUNT" "1" "BIB block count after signing primary block"
+# Verify the signature
+${BUNDLE} verify --keys "${KEYS}" -b 0 "${OUT_DIR}/test_primary_signed.bundle"
+echo "   PASS: Primary block signed and verified (CRC preserved per RFC 9171)"
+
 # ============================================================================
 echo
-echo "=== All 24 tests passed! ==="
+echo "=== All 25 tests passed! ==="
 echo
 
 if [ "$KEEP_OUTPUT" = true ]; then
