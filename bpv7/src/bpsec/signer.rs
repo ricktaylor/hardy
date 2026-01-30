@@ -162,7 +162,7 @@ impl<'a> Signer<'a> {
 
             let mut operation_set = bib::OperationSet {
                 source: bpsec_source.clone(),
-                operations: HashMap::new(),
+                operations: HashMap::with_capacity(targets.len()),
             };
 
             for (target, key) in targets {

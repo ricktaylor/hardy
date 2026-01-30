@@ -398,7 +398,7 @@ where
             let data = &data[offset..];
             let (v, s, len) = parse_data_chunked(3, data)?;
             offset += len;
-            let mut t = Vec::new();
+            let mut t = Vec::with_capacity(v.len());
             for b in v {
                 t.push(core::str::from_utf8(&data[b]).map_err(Into::into)?);
             }

@@ -130,9 +130,9 @@ impl SessionInitMessage {
             // Not enough data to read session extensions length
             return Ok(None);
         }
-        let session_extensions_length = src_cloned.get_u32();
+        let session_extensions_length = src_cloned.get_u32() as usize;
         let mut consumed = 24 + node_id_length as usize;
-        let mut session_extensions = Vec::new();
+        let mut session_extensions = Vec::with_capacity(session_extensions_length);
         for _ in 0..session_extensions_length {
             if src_cloned.len() < 7 {
                 // Not enough data to read session extension
@@ -624,7 +624,8 @@ impl TransferSegmentMessage {
                 // Not enough data to read transfer extensions length
                 return Ok(None);
             }
-            let transfer_extensions_length = src_cloned.get_u32();
+            let transfer_extensions_length = src_cloned.get_u32() as usize;
+            transfer_extensions.reserve(transfer_extensions_length);
             consumed += 4;
             for _ in 0..transfer_extensions_length {
                 if src_cloned.len() < 7 {

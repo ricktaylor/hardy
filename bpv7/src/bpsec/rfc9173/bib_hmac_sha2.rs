@@ -510,7 +510,7 @@ pub fn parse(
     );
 
     // Unpack results
-    let mut operations = HashMap::new();
+    let mut operations = HashMap::with_capacity(asb.results.len());
     for (target, results) in asb.results {
         operations.insert(
             target,

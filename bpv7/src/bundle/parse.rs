@@ -61,11 +61,21 @@ impl<'a> bpsec::BlockSet<'a> for BlockParse<'a> {
 
 impl<'a> BlockParse<'a> {
     /// Creates a new `BlockParse` state for a given bundle data slice.
+    ///
+    /// Pre-allocates collections based on typical bundle sizes to avoid reallocations.
+    /// Most bundles have 5-10 blocks, with 1-2 security blocks.
     fn new(source_data: &'a [u8], rewrite: bool) -> Self {
         Self {
             source_data,
             rewrite,
-            ..Default::default()
+            blocks: HashMap::with_capacity(8),
+            decrypted_data: HashMap::with_capacity(4),
+            noncanonical_blocks: HashMap::with_capacity(4),
+            unique_blocks: HashSet::with_capacity(4), // PreviousNode, BundleAge, HopCount, Payload
+            blocks_to_check: HashSet::with_capacity(8),
+            blocks_to_remove: HashSet::with_capacity(4),
+            bcbs: HashMap::with_capacity(2),
+            bib_targets: HashMap::with_capacity(4),
         }
     }
 
@@ -226,7 +236,9 @@ impl<'a> BlockParse<'a> {
     /// This is done before any decryption so that Block.bcb values are available
     /// when the key provider is consulted.
     fn mark_bcb_targets(&mut self) -> Result<(), Error> {
-        let mut bcb_targets = HashMap::new();
+        // Pre-allocate based on total number of BCB operations
+        let total_targets: usize = self.bcbs.values().map(|bcb| bcb.operations.len()).sum();
+        let mut bcb_targets = HashMap::with_capacity(total_targets);
         for (bcb_block_number, bcb) in &self.bcbs {
             let bcb_block = self
                 .blocks

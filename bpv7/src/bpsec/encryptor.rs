@@ -246,7 +246,7 @@ impl<'a> Encryptor<'a> {
             editor = b.rebuild();
 
             let mut editor_bs = editor::EditorBlockSet { editor };
-            let mut operations = HashMap::new();
+            let mut operations = HashMap::with_capacity(targets.len());
             for (target, key) in targets {
                 let (op, data) = build_bcb_data(
                     context.clone(),

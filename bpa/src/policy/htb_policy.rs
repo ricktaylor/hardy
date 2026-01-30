@@ -81,8 +81,8 @@ where
     // 1. Sort the ranges by their start value.
     ranges.sort_by_key(|r| *r.start());
 
-    // 2. Merge them into a new vector.
-    let mut merged = Vec::new();
+    // 2. Merge them into a new vector (at most as many as input ranges).
+    let mut merged = Vec::with_capacity(ranges.len());
     let mut current_range = ranges.remove(0);
 
     for next_range in ranges {

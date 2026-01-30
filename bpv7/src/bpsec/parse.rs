@@ -52,8 +52,9 @@ impl UnknownOperation {
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
     ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
+        let param_count = asb.parameters.len();
         let parameters = Rc::from(asb.parameters.into_iter().fold(
-            HashMap::new(),
+            HashMap::with_capacity(param_count),
             |mut map, (id, range)| {
                 map.insert(id, source_data[range].into());
                 map
@@ -61,18 +62,20 @@ impl UnknownOperation {
         ));
 
         // Unpack results
-        let mut operations = HashMap::new();
+        let mut operations = HashMap::with_capacity(asb.results.len());
         for (target, results) in asb.results {
+            let result_count = results.len();
             operations.insert(
                 target,
                 Self {
                     parameters: parameters.clone(),
-                    results: results
-                        .into_iter()
-                        .fold(HashMap::new(), |mut map, (id, range)| {
+                    results: results.into_iter().fold(
+                        HashMap::with_capacity(result_count),
+                        |mut map, (id, range)| {
                             map.insert(id, source_data[range].into());
                             map
-                        }),
+                        },
+                    ),
                 },
             );
         }
@@ -188,7 +191,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             let results = seq.parse_array(|a, s, tags| {
                 shortest = shortest && s && tags.is_empty() && a.is_definite();
 
-                let mut results = HashMap::new();
+                let mut results = HashMap::with_capacity(targets.len());
                 let mut idx = 0;
                 while let Some(target_results) =
                     parse_ranges(a, &mut shortest, offset).map_field_err("security results")?

@@ -41,7 +41,8 @@ impl Peer {
             ))
             .await;
 
-        let mut queues = HashMap::new();
+        let queue_count = cla.policy.queue_count();
+        let mut queues = HashMap::with_capacity(queue_count as usize + 1);
         queues.insert(
             None,
             Self::start_queue_poller(
@@ -54,7 +55,7 @@ impl Peer {
             ),
         );
 
-        for q in 0..cla.policy.queue_count() {
+        for q in 0..queue_count {
             queues.insert(
                 Some(q),
                 Self::start_queue_poller(

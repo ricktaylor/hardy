@@ -289,8 +289,8 @@ fn parse_ipn_range(input: &mut &str) -> ModalResult<IpnPattern> {
                 // 1. Sort the ranges by their start value.
                 intervals.sort_by_key(|r| *r.start());
 
-                // 2. Merge them into a new vector.
-                let mut merged = Vec::new();
+                // 2. Merge them into a new vector (at most as many as input intervals).
+                let mut merged = Vec::with_capacity(intervals.len());
                 let mut current_interval = intervals.remove(0);
 
                 for next_interval in intervals {
