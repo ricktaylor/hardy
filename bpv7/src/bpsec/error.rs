@@ -9,6 +9,9 @@ pub enum Error {
     #[error("Block is not the target of a BIB")]
     NotSigned,
 
+    #[error("Block {0} may be protected by an encrypted BIB that couldn't be decrypted")]
+    MaybeHasBib(u64),
+
     #[error("Mismatch Target and Results arrays")]
     MismatchedTargetResult,
 

@@ -265,7 +265,7 @@ fn dump_block(
         output.append_str("\n")?;
     }
 
-    if let Some(bib) = block.bib {
+    if let hardy_bpv7::block::BibCoverage::Some(bib) = block.bib {
         output.append_str(format!("Signed by Integrity Block {bib}: "))?;
 
         if let Err(e) = bundle.verify_block(block_number, data, keys) {
@@ -273,6 +273,8 @@ fn dump_block(
         } else {
             output.append_str("✔\n\n")?;
         }
+    } else if matches!(block.bib, hardy_bpv7::block::BibCoverage::Maybe) {
+        output.append_str("Signed by Integrity Block: Unknown (encrypted BIB)\n\n")?;
     }
 
     let payload = if let Some(bcb) = block.bcb {

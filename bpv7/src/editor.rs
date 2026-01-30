@@ -25,8 +25,25 @@ pub enum Error {
     #[error("Primary block is protected by a BIB; use remove_integrity(0) first")]
     PrimaryBlockHasBib,
 
+    #[error(
+        "Cannot decrypt BIB {0} that targets the decrypted block; this would violate RFC 9172 §3.8"
+    )]
+    CannotDecryptRelatedBib(u64),
+
     #[error(transparent)]
     Builder(#[from] builder::Error),
+}
+
+impl From<bpsec::Error> for Error {
+    fn from(e: bpsec::Error) -> Self {
+        Error::Builder(builder::Error::InternalError(e.into()))
+    }
+}
+
+impl From<error::Error> for Error {
+    fn from(e: error::Error) -> Self {
+        Error::Builder(builder::Error::InternalError(e))
+    }
 }
 
 /// The `Editor` provides an interface for modifying a bundle.
@@ -85,11 +102,18 @@ impl<'a> Editor<'a> {
 
     fn primary_block(&mut self) -> Result<&mut BundleUpdate, Error> {
         // Check if primary block is still protected by an untouched BIB
-        if let Some(primary) = self.original.blocks.get(&0)
-            && let Some(bib_num) = primary.bib
-            && matches!(self.blocks.get(&bib_num), Some(BlockTemplate::Keep(_)))
-        {
-            return Err(Error::PrimaryBlockHasBib);
+        if let Some(primary) = self.original.blocks.get(&0) {
+            match primary.bib {
+                block::BibCoverage::Some(bib_num)
+                    if matches!(self.blocks.get(&bib_num), Some(BlockTemplate::Keep(_))) =>
+                {
+                    return Err(Error::PrimaryBlockHasBib);
+                }
+                block::BibCoverage::Maybe => {
+                    return Err(bpsec::Error::MaybeHasBib(0).into());
+                }
+                _ => {}
+            }
         }
 
         if self.bundle.is_none() {
@@ -332,24 +356,26 @@ impl<'a> Editor<'a> {
     pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
         // Get security references before any modifications
         let (bib, bcb) = match self.original.blocks.get(&block_number) {
-            Some(block) => (block.bib, block.bcb),
-            None => (None, None),
+            Some(block) => (block.bib.clone(), block.bcb),
+            None => (block::BibCoverage::None, None),
         };
 
-        // Check if the block is protected by an encrypted BIB
-        if let Some(bib_num) = bib
-            && let Some(bib_block) = self.original.blocks.get(&bib_num)
-            && bib_block.bcb.is_some()
-        {
-            // The BIB is encrypted by a BCB. We cannot modify the BIB's
-            // target list without first decrypting it, but the Editor doesn't
-            // have access to keys. The caller must use remove_integrity() first.
-            return Err((self, Error::BibIsEncrypted(block_number)));
-        }
-
-        // Remove from BIB target list if present (signature will be invalid after update)
-        if let Some(bib_num) = bib {
-            self = self.remove_from_bib_targets(block_number, bib_num)?;
+        // Handle BIB coverage - must remove from target list if present
+        match &bib {
+            block::BibCoverage::Maybe => {
+                return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+            }
+            block::BibCoverage::Some(bib_num) => {
+                // Check if the BIB is encrypted
+                if let Some(bib_block) = self.original.blocks.get(bib_num)
+                    && bib_block.bcb.is_some()
+                {
+                    return Err((self, Error::BibIsEncrypted(block_number)));
+                }
+                // Remove from BIB target list (signature will be invalid after update)
+                self = self.remove_from_bib_targets(block_number, *bib_num)?;
+            }
+            block::BibCoverage::None => {}
         }
 
         // Remove from BCB target list if present (encryption will be invalid after update)
@@ -421,16 +447,22 @@ impl<'a> Editor<'a> {
             return Err((self, Error::PayloadBlock));
         }
 
-        // Check if the block is protected by an encrypted BIB
-        if let Some((block, _)) = self.block(block_number)
-            && let Some(bib) = block.bib
-            && let Some((bib_block, _)) = self.block(bib)
-            && bib_block.bcb.is_some()
-        {
-            // The BIB is encrypted by a BCB. We cannot modify the BIB's
-            // target list without first decrypting it, but the Editor doesn't
-            // have access to keys. The caller must use remove_integrity() first.
-            return Err((self, Error::BibIsEncrypted(block_number)));
+        // Check BIB coverage
+        if let Some((block, _)) = self.block(block_number) {
+            match block.bib {
+                block::BibCoverage::Maybe => {
+                    return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+                }
+                block::BibCoverage::Some(bib) => {
+                    // Check if the BIB is encrypted
+                    if let Some((bib_block, _)) = self.block(bib)
+                        && bib_block.bcb.is_some()
+                    {
+                        return Err((self, Error::BibIsEncrypted(block_number)));
+                    }
+                }
+                block::BibCoverage::None => {}
+            }
         }
         // Note: BCB case is fine - we can silently update the BCB's target list
         // without needing keys since we're just removing a target, not decrypting.
@@ -442,16 +474,16 @@ impl<'a> Editor<'a> {
     fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
         // Get the block's security references BEFORE removing it
         let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
-            (block.bib, block.bcb)
+            (block.bib.clone(), block.bcb)
         } else {
-            (None, None)
+            (block::BibCoverage::None, None)
         };
 
         // Now remove the block from the templates
         if self.blocks.remove(&block_number).is_some() {
             // If there is a BIB, remove the block from the list of targets
             // If the BIB is now empty, recursively call this function.
-            if let Some(bib) = bib {
+            if let block::BibCoverage::Some(bib) = bib {
                 self = self.remove_from_bib_targets(block_number, bib)?;
             }
 
@@ -479,10 +511,11 @@ impl<'a> Editor<'a> {
                 Err(e) => {
                     return Err((
                         self,
-                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                        error::Error::InvalidField {
                             field: "BIB Abstract Syntax Block",
                             source: e.into(),
-                        })),
+                        }
+                        .into(),
                     ));
                 }
             };
@@ -519,10 +552,11 @@ impl<'a> Editor<'a> {
                 Err(e) => {
                     return Err((
                         self,
-                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                        error::Error::InvalidField {
                             field: "BCB Abstract Syntax Block",
                             source: e.into(),
-                        })),
+                        }
+                        .into(),
                     ));
                 }
             };
@@ -569,13 +603,8 @@ impl<'a> Editor<'a> {
             return Err((self, Error::NoSuchBlock(block_number)));
         };
 
-        let Some(bib) = target_block.bib else {
-            return Err((
-                self,
-                Error::Builder(builder::Error::InternalError(crate::Error::InvalidBPSec(
-                    bpsec::Error::NotSigned,
-                ))),
-            ));
+        let block::BibCoverage::Some(bib) = target_block.bib else {
+            return Err((self, bpsec::Error::NotSigned.into()));
         };
 
         let target_block = target_block.clone();
@@ -623,12 +652,7 @@ impl<'a> Editor<'a> {
         };
 
         let Some(bcb) = target_block.bcb else {
-            return Err((
-                self,
-                Error::Builder(builder::Error::InternalError(crate::Error::InvalidBPSec(
-                    bpsec::Error::NotEncrypted,
-                ))),
-            ));
+            return Err((self, bpsec::Error::NotEncrypted.into()));
         };
 
         if let Some((_, Some(bcb_payload))) = self.block(bcb) {
@@ -640,10 +664,11 @@ impl<'a> Editor<'a> {
                 Err(e) => {
                     return Err((
                         self,
-                        Error::Builder(builder::Error::InternalError(crate::Error::InvalidField {
+                        error::Error::InvalidField {
                             field: "BCB Abstract Syntax Block",
                             source: e.into(),
-                        })),
+                        }
+                        .into(),
                     ));
                 }
             };
@@ -662,10 +687,7 @@ impl<'a> Editor<'a> {
                 ) {
                     Ok(t) => t,
                     Err(e) => {
-                        return Err((
-                            block_set.editor,
-                            Error::Builder(builder::Error::InternalError(e.into())),
-                        ));
+                        return Err((block_set.editor, e.into()));
                     }
                 };
 
@@ -679,7 +701,7 @@ impl<'a> Editor<'a> {
                     .editor
                     .update_block_inner(block_number)?
                     .with_data(target_payload.into_vec().into());
-                if original_block.bib.is_none()
+                if matches!(original_block.bib, block::BibCoverage::None)
                     && matches!(original_block.crc_type, crc::CrcType::None)
                 {
                     // Ensure we have a CRC
@@ -728,9 +750,7 @@ impl<'a> Editor<'a> {
                     ..Default::default()
                 };
                 // Emit primary block
-                bundle
-                    .emit_primary_block(a)
-                    .map_err(|e| Error::Builder(e.into()))?;
+                bundle.emit_primary_block(a)?;
             } else {
                 self.build_block(0, primary_block, a)?;
             }
@@ -764,9 +784,7 @@ impl<'a> Editor<'a> {
                 .original
                 .blocks
                 .get(&block_number)
-                .ok_or(Error::Builder(builder::Error::InternalError(
-                    crate::Error::Altered,
-                )))?
+                .ok_or(Error::from(error::Error::Altered))?
                 .clone();
             block.copy_whole(self.source_data, array);
             Ok(block)

@@ -591,8 +591,10 @@ impl Bundle {
             .ok_or(Error::MissingBlock(block_number))?;
 
         // Check for BIB
-        let Some(bib_block_number) = &target_block.bib else {
-            return Ok(false);
+        let bib_block_number = match &target_block.bib {
+            block::BibCoverage::Some(n) => n,
+            block::BibCoverage::None => return Ok(false),
+            block::BibCoverage::Maybe => return Err(bpsec::Error::MaybeHasBib(block_number).into()),
         };
 
         let bib_block = self.blocks.get(bib_block_number).ok_or(Error::Altered)?;

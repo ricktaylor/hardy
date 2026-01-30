@@ -3,9 +3,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("No such block number {0}")]
-    NoSuchBlock(u64),
-
     #[error("Invalid block target {0}, BCB block")]
     InvalidTarget(u64),
 
@@ -17,9 +14,18 @@ pub enum Error {
 
     #[error(transparent)]
     Editor(#[from] editor::Error),
+}
 
-    #[error(transparent)]
-    Security(#[from] bpsec::Error),
+impl From<crate::error::Error> for Error {
+    fn from(e: crate::error::Error) -> Self {
+        Error::Editor(e.into())
+    }
+}
+
+impl From<bpsec::Error> for Error {
+    fn from(e: bpsec::Error) -> Self {
+        crate::error::Error::from(e).into()
+    }
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -81,7 +87,7 @@ impl<'a> Encryptor<'a> {
 
         let block = match self.original.blocks.get(&block_number) {
             Some(b) => b,
-            None => return Err((self, Error::NoSuchBlock(block_number))),
+            None => return Err((self, editor::Error::NoSuchBlock(block_number).into())),
         };
 
         if block.bcb.is_some() {
@@ -95,69 +101,65 @@ impl<'a> Encryptor<'a> {
         /* RFC 9172 Section 3.9 states that BCBs targetting blocks with BIBs MUST also target the BIB
          * We take the 'all-or-nothing' approach and encrypt all BIB targets, rather than splitting the BIB
          * because splitting requires integrity keys */
-        if let Some(bib_block) = block.bib {
-            let bib = match self.original.blocks.get(&bib_block) {
-                Some(b) => b,
-                None => {
-                    return Err((
-                        self,
-                        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
-                            crate::Error::Altered,
-                        ))),
-                    ));
-                }
-            };
+        match block.bib {
+            block::BibCoverage::Maybe => {
+                return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+            }
+            block::BibCoverage::Some(bib_block) => {
+                let bib = match self.original.blocks.get(&bib_block) {
+                    Some(b) => b,
+                    None => {
+                        return Err((self, crate::error::Error::Altered.into()));
+                    }
+                };
 
-            let bib_payload = match bib.payload(self.source_data) {
-                Some(p) => p,
-                None => {
-                    return Err((
-                        self,
-                        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
-                            crate::Error::Altered,
-                        ))),
-                    ));
-                }
-            };
+                let bib_payload = match bib.payload(self.source_data) {
+                    Some(p) => p,
+                    None => {
+                        return Err((self, crate::error::Error::Altered.into()));
+                    }
+                };
 
-            let opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload) {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
-                            crate::Error::InvalidField {
+                let opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
+                {
+                    Ok(opset) => opset,
+                    Err(e) => {
+                        return Err((
+                            self,
+                            crate::error::Error::InvalidField {
                                 field: "BIB Abstract Syntax Block",
                                 source: e.into(),
+                            }
+                            .into(),
+                        ));
+                    }
+                };
+
+                // Encrypt all the BIB targets
+                for target in opset.operations.keys() {
+                    if *target != block_number {
+                        self.templates.insert(
+                            *target,
+                            BlockTemplate {
+                                context: context.clone(),
+                                source: source.clone(),
+                                key,
                             },
-                        ))),
-                    ));
+                        );
+                    }
                 }
-            };
 
-            // Encrypt all the BIB targets
-            for target in opset.operations.keys() {
-                if *target != block_number {
-                    self.templates.insert(
-                        *target,
-                        BlockTemplate {
-                            context: context.clone(),
-                            source: source.clone(),
-                            key,
-                        },
-                    );
-                }
+                // Encrypt the BIB itself
+                self.templates.insert(
+                    bib_block,
+                    BlockTemplate {
+                        context: context.clone(),
+                        source: source.clone(),
+                        key,
+                    },
+                );
             }
-
-            // Encrypt the BIB itself
-            self.templates.insert(
-                bib_block,
-                BlockTemplate {
-                    context: context.clone(),
-                    source: source.clone(),
-                    key,
-                },
-            );
+            block::BibCoverage::None => {}
         }
 
         self.templates.insert(

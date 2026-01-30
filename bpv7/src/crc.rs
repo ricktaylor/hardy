@@ -122,7 +122,7 @@ pub(super) fn parse_crc_value(
                 shortest && tags.is_empty(),
             ))
         } else {
-            Err(crc::Error::InvalidCBOR(
+            Err(Error::InvalidCBOR(
                 hardy_cbor::decode::Error::IncorrectType(
                     "Definite-length Byte String".to_string(),
                     value.type_name(!tags.is_empty()),

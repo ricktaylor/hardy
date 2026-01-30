@@ -245,7 +245,10 @@ fn test_sign_then_encrypt() {
     // println!("{:#?}", parsed_enc);
 
     // Attempt to decrypt the BIB first to isolate decryption issues from verification issues
-    if let Some(bib_num) = parsed_enc.bundle.blocks.get(&1).and_then(|b| b.bib) {
+    if let Some(bib_num) = parsed_enc.bundle.blocks.get(&1).and_then(|b| match b.bib {
+        crate::block::BibCoverage::Some(n) => Some(n),
+        _ => None,
+    }) {
         // println!("Found BIB at block {bib_num}");
         parsed_enc
             .bundle
@@ -849,7 +852,10 @@ fn test_encrypt_bib_directly_fails() {
         .bundle
         .blocks
         .get(&1)
-        .and_then(|b| b.bib)
+        .and_then(|b| match b.bib {
+            crate::block::BibCoverage::Some(n) => Some(n),
+            _ => None,
+        })
         .expect("BIB not found on payload block");
 
     // 4. Attempt to directly encrypt the BIB - this should fail

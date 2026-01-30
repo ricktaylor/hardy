@@ -211,6 +211,30 @@ impl AsRef<[u8]> for Payload<'_> {
     }
 }
 
+/// Represents the integrity block (BIB) coverage state for a block.
+///
+/// This enum tracks whether a block is protected by a Block Integrity Block (BIB)
+/// and handles the case where encrypted BIBs couldn't be decrypted during parsing,
+/// meaning their targets are unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "state", content = "block_number"))]
+pub enum BibCoverage {
+    /// No BIB is known to target this block.
+    #[default]
+    None,
+    /// A BIB at the given block number targets this block.
+    Some(u64),
+    /// There are encrypted BIBs that couldn't be decrypted during parsing;
+    /// it's unknown whether any of them target this block.
+    Maybe,
+}
+
+#[cfg(feature = "serde")]
+fn bib_is_none(bib: &BibCoverage) -> bool {
+    matches!(bib, BibCoverage::None)
+}
+
 /// Represents a generic BPv7 extension block within a bundle.
 ///
 /// This struct holds the common metadata for all blocks, such as the type, flags,
@@ -227,12 +251,9 @@ pub struct Block {
     pub flags: Flags,
     /// The type of CRC used for this block's integrity check.
     pub crc_type: crc::CrcType,
-    /// The block number of the Block Integrity Block (BIB) that protects this block, if any.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub bib: Option<u64>,
+    /// The BIB coverage state for this block.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "bib_is_none"))]
+    pub bib: BibCoverage,
     /// The block number of the Block Confidentiality Block (BCB) that protects this block, if any.
     #[cfg_attr(
         feature = "serde",
@@ -251,7 +272,7 @@ impl Default for Block {
             block_type: Type::Payload,
             flags: Flags::default(),
             crc_type: crc::CrcType::None,
-            bib: None,
+            bib: BibCoverage::None,
             bcb: None,
             extent: 0..0,
             data: 0..0,

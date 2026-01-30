@@ -3,9 +3,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("No such block number {0}")]
-    NoSuchBlock(u64),
-
     #[error("Invalid block target {0}, either BCB or BIB block")]
     InvalidTarget(u64),
 
@@ -20,9 +17,14 @@ pub enum Error {
 
     #[error(transparent)]
     Editor(#[from] editor::Error),
+}
 
-    #[error(transparent)]
-    Security(#[from] bpsec::Error),
+impl From<bpsec::Error> for Error {
+    fn from(e: bpsec::Error) -> Self {
+        Error::Editor(editor::Error::Builder(builder::Error::InternalError(
+            e.into(),
+        )))
+    }
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -71,15 +73,21 @@ impl<'a> Signer<'a> {
 
         let block = match self.original.blocks.get(&block_number) {
             Some(b) => b,
-            None => return Err((self, Error::NoSuchBlock(block_number))),
+            None => return Err((self, editor::Error::NoSuchBlock(block_number).into())),
         };
 
         if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
             return Err((self, Error::InvalidTarget(block_number)));
         }
 
-        if block.bib.is_some() {
-            return Err((self, Error::AlreadySigned(block_number)));
+        match block.bib {
+            block::BibCoverage::Some(_) => {
+                return Err((self, Error::AlreadySigned(block_number)));
+            }
+            block::BibCoverage::Maybe => {
+                return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
+            }
+            block::BibCoverage::None => {}
         }
 
         if block.bcb.is_some() {

@@ -276,18 +276,21 @@ impl<'a> BlockParse<'a> {
     /// Called after mark_bcb_targets() so Block.bcb values are available.
     /// After successful decryption, immediately checks/parses the block.
     /// Blocks that cannot be decrypted (no valid key) are removed from the set.
-    /// Returns true if any unsupported BIBs were found that need reporting.
+    /// Returns (report_unsupported, has_undecrypted_bibs) where:
+    /// - report_unsupported: true if any unsupported BIBs were found that need reporting
+    /// - has_undecrypted_bibs: true if any BIBs couldn't be decrypted (for Unknown marking)
     fn decrypt_bcbs<K, F>(
         &mut self,
         key_source: &K,
         filter: F,
         bundle: &mut Bundle,
-    ) -> Result<bool, Error>
+    ) -> Result<(bool, bool), Error>
     where
         K: bpsec::key::KeySource + ?Sized,
         F: Fn(block::Type) -> bool,
     {
         let mut report_unsupported = false;
+        let mut has_undecrypted_bibs = false;
         let mut to_remove = Vec::new();
         let mut to_check = Vec::new();
 
@@ -329,8 +332,12 @@ impl<'a> BlockParse<'a> {
                 Err(bpsec::Error::NoValidKey) => {
                     // Can't decrypt, mark for removal so we don't try to parse it
                     to_remove.push(target_number);
+                    // Track if this was a BIB we couldn't decrypt
+                    if target_type == block::Type::BlockIntegrity {
+                        has_undecrypted_bibs = true;
+                    }
                 }
-                Err(e) => return Err(Error::InvalidBPSec(e)),
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -345,7 +352,7 @@ impl<'a> BlockParse<'a> {
             }
         }
 
-        Ok(report_unsupported)
+        Ok((report_unsupported, has_undecrypted_bibs))
     }
 
     /// Parses and validates all unencrypted blocks from blocks_to_check.
@@ -487,7 +494,7 @@ impl<'a> BlockParse<'a> {
             }
 
             // Mark target immediately so decrypt callbacks see fresh BIB info
-            target_block.bib = Some(bib_block_number);
+            target_block.bib = block::BibCoverage::Some(bib_block_number);
         }
 
         if self.rewrite {
@@ -514,6 +521,23 @@ impl<'a> BlockParse<'a> {
         }
 
         Ok(report_unsupported)
+    }
+
+    /// Marks all blocks with `bib == None` as `Maybe`.
+    /// Called when there are encrypted BIBs that couldn't be decrypted,
+    /// meaning we don't know which blocks they target.
+    fn mark_bib_coverage_unknown(&mut self) {
+        for block in self.blocks.values_mut() {
+            // Only mark blocks that could be valid BIB targets
+            // BIBs cannot target other security blocks (BIB or BCB)
+            if !matches!(
+                block.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            ) && matches!(block.bib, block::BibCoverage::None)
+            {
+                block.bib = block::BibCoverage::Maybe;
+            }
+        }
     }
 
     /// Reduces the set of BCBs by removing targets that are scheduled for removal.
@@ -651,13 +675,21 @@ fn parse_blocks(
     }
 
     // Phase 4: Decrypt and check BIBs first (so key provider sees BIB coverage for other blocks)
-    if parser.decrypt_bcbs(key_source, |t| t == block::Type::BlockIntegrity, bundle)? {
+    let (unsupported, has_undecrypted_bibs) =
+        parser.decrypt_bcbs(key_source, |t| t == block::Type::BlockIntegrity, bundle)?;
+    if unsupported {
         report_unsupported = true;
+    }
+
+    // If any BIBs couldn't be decrypted, mark blocks with unknown BIB coverage
+    if has_undecrypted_bibs {
+        parser.mark_bib_coverage_unknown();
     }
 
     // Phase 5: Decrypt and check remaining blocks (key provider now sees BIB coverage)
     // BIBs already removed from blocks_to_check, so just process everything remaining
-    if parser.decrypt_bcbs(key_source, |_| true, bundle)? {
+    let (unsupported, _) = parser.decrypt_bcbs(key_source, |_| true, bundle)?;
+    if unsupported {
         report_unsupported = true;
     }
 
@@ -671,12 +703,10 @@ fn parse_blocks(
 
     // Check we have at least some primary block protection
     if let crc::CrcType::None = bundle.crc_type
-        && parser
-            .blocks
-            .get(&0)
-            .expect("Missing primary block!")
-            .bib
-            .is_none()
+        && matches!(
+            parser.blocks.get(&0).expect("Missing primary block!").bib,
+            block::BibCoverage::None
+        )
     {
         return Err(Error::MissingIntegrityCheck);
     }
