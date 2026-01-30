@@ -100,14 +100,14 @@ fn dump_markdown(
         humantime::format_duration(bundle.bundle.lifetime)
     ))?;
 
-    let mut notes = Vec::new();
+    let mut notes: Vec<&'static str> = Vec::new();
 
     if bundle.non_canonical {
-        notes.push("The bundle is not in canonical form\n".to_string());
+        notes.push("The bundle is not in canonical form\n");
     }
 
     if bundle.report_unsupported {
-        notes.push("The bundle contains unsupported blocks\n".to_string());
+        notes.push("The bundle contains unsupported blocks\n");
     }
 
     dump_crc(bundle.bundle.crc_type, &output)?;
@@ -140,7 +140,7 @@ fn dump_markdown(
                     || !bundle.bundle.flags.delivery_report_requested
                     || !bundle.bundle.flags.delete_report_requested
                 {
-                    notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.".to_string());
+                    notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.");
                 }
             }
 
@@ -172,7 +172,7 @@ fn dump_markdown(
                 || bundle.bundle.flags.delete_report_requested)
                 && bundle.bundle.report_to.is_null()
             {
-                notes.push("Null endpoint EID specified for 'Report To', but status reports are requested.".to_string());
+                notes.push("Null endpoint EID specified for 'Report To', but status reports are requested.");
             }
         }
     }

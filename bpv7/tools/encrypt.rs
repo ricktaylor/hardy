@@ -101,7 +101,7 @@ impl Command {
                 hardy_bpv7::bpsec::encryptor::Context::AES_GCM(rfc9173::ArgFlags::to_scope_flags(
                     &self.flags,
                 )),
-                self.source.unwrap_or(bundle.id.source.clone()),
+                self.source.unwrap_or_else(|| bundle.id.source.clone()),
                 &key,
             )
             .map_err(|(_, e)| anyhow::anyhow!("Failed to encrypt block: {e}"))?;

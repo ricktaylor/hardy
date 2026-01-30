@@ -31,7 +31,7 @@ impl Command {
             match hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&bundle, &key_store) {
                 Err(e) => {
                     eprintln!("{}: Failed to parse bundle: {e}", input.filepath());
-                    count_failed = count_failed.saturating_add(1);
+                    count_failed += 1;
                 }
                 Ok(hardy_bpv7::bundle::ParsedBundle { non_canonical, .. }) => {
                     if non_canonical {
@@ -39,14 +39,16 @@ impl Command {
                             "{}: Non-canonical, but semantically valid bundle",
                             input.filepath()
                         );
-                        count_failed = count_failed.saturating_add(1);
+                        count_failed += 1;
                     }
                 }
             }
         }
 
-        (count_failed == 0)
-            .then_some(())
-            .ok_or(anyhow::anyhow!("{count_failed} files failed to validate"))
+        if count_failed == 0 {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("{count_failed} files failed to validate"))
+        }
     }
 }
