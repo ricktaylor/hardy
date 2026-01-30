@@ -6,6 +6,9 @@ pub enum Error {
     #[error("Block is not the target of a BCB")]
     NotEncrypted,
 
+    #[error("Block is not the target of a BIB")]
+    NotSigned,
+
     #[error("Mismatch Target and Results arrays")]
     MismatchedTargetResult,
 

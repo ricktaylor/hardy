@@ -492,20 +492,28 @@ impl<'a> Editor<'a> {
             None => return Err((self, Error::NoSuchBlock(block_number))),
         };
 
-        if let Some(bib) = target_block.bib {
-            let target_block = target_block.clone();
+        let Some(bib) = target_block.bib else {
+            return Err((
+                self,
+                Error::Builder(builder::Error::InternalError(crate::Error::InvalidBPSec(
+                    bpsec::Error::NotSigned,
+                ))),
+            ));
+        };
 
-            // Use the helper function to remove from BIB targets
-            self = self.remove_from_bib_targets(block_number, bib)?;
+        let target_block = target_block.clone();
 
-            // Ensure we have a CRC if there's no BCB
-            if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
-                self = self
-                    .update_block_inner(block_number)?
-                    .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
-                    .rebuild();
-            }
+        // Use the helper function to remove from BIB targets
+        self = self.remove_from_bib_targets(block_number, bib)?;
+
+        // Ensure we have a CRC if there's no BCB
+        if target_block.bcb.is_none() && matches!(target_block.crc_type, crc::CrcType::None) {
+            self = self
+                .update_block_inner(block_number)?
+                .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+                .rebuild();
         }
+
         Ok(self)
     }
 
@@ -532,9 +540,16 @@ impl<'a> Editor<'a> {
             None => return Err((self, Error::NoSuchBlock(block_number))),
         };
 
-        if let Some(bcb) = target_block.bcb
-            && let Some((_, Some(bcb_payload))) = self.block(bcb)
-        {
+        let Some(bcb) = target_block.bcb else {
+            return Err((
+                self,
+                Error::Builder(builder::Error::InternalError(crate::Error::InvalidBPSec(
+                    bpsec::Error::NotEncrypted,
+                ))),
+            ));
+        };
+
+        if let Some((_, Some(bcb_payload))) = self.block(bcb) {
             let original_block = target_block.clone();
 
             let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)

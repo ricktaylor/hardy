@@ -733,3 +733,81 @@ fn test_bcb_without_bib_removal() {
         "Payload should match original after decryption"
     );
 }
+
+#[test]
+fn test_remove_encryption_fails_on_unencrypted_block() {
+    // Test that remove_encryption returns NotEncrypted error when called on a block
+    // that is not the target of a BCB
+
+    let keys: key::KeySet = serde_json::from_value(serde_json::json!({
+        "keys": [{
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["wrapKey", "encrypt", "unwrapKey", "decrypt"],
+            "k": "YWJjZGVmZ2hpamtsbW5vcA"
+        }]
+    }))
+    .unwrap();
+
+    // Create a simple bundle with no encryption
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.1".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"not encrypted".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+
+    // Verify no BCBs exist
+    let bcb_count = count_blocks_of_type(&bundle, crate::block::Type::BlockSecurity);
+    assert_eq!(bcb_count, 0, "Should have 0 BCBs (bundle is not encrypted)");
+
+    // Attempt to remove encryption from payload block (which is not encrypted)
+    let result = Editor::new(&bundle, &bundle_bytes).remove_encryption(1, &keys);
+
+    // Should fail with NotEncrypted error
+    match result {
+        Ok(_) => panic!("Expected remove_encryption to fail on unencrypted block"),
+        Err((_, e)) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("not the target of a BCB"),
+                "Expected NotEncrypted error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_remove_integrity_fails_on_unsigned_block() {
+    // Test that remove_integrity returns NotSigned error when called on a block
+    // that is not the target of a BIB
+
+    // Create a simple bundle with no integrity protection (no BIB)
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.1".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"not signed".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+
+    // Verify no BIBs exist
+    let bib_count = count_blocks_of_type(&bundle, crate::block::Type::BlockIntegrity);
+    assert_eq!(bib_count, 0, "Should have 0 BIBs (bundle is not signed)");
+
+    // Attempt to remove integrity from payload block (which is not signed)
+    let result = Editor::new(&bundle, &bundle_bytes).remove_integrity(1);
+
+    // Should fail with NotSigned error
+    match result {
+        Ok(_) => panic!("Expected remove_integrity to fail on unsigned block"),
+        Err((_, e)) => {
+            let err_msg = format!("{}", e);
+            assert!(
+                err_msg.contains("not the target of a BIB"),
+                "Expected NotSigned error, got: {}",
+                err_msg
+            );
+        }
+    }
+}
