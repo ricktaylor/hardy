@@ -996,3 +996,78 @@ fn test_sign_primary_block_with_crc_no_scope_flags() {
         .verify_block(0, &signed_bytes, &keys)
         .expect("Failed to verify signature on primary block with NONE flags");
 }
+
+#[test]
+fn test_sign_removes_crc_from_target_block() {
+    // Test that signing a block properly removes the CRC from the target block
+    // (not just setting the type to None while keeping the CRC value)
+
+    // 1. Create a bundle with CRC on payload block
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.1".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"test payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+
+    // Verify payload block (block 1) has a CRC before signing
+    let payload_block = bundle.blocks.get(&1).expect("Payload block missing");
+    assert!(
+        !matches!(payload_block.crc_type, crate::crc::CrcType::None),
+        "Payload block should have a CRC before signing"
+    );
+
+    // 2. Sign the payload block
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+    }))
+    .unwrap();
+
+    let signer = signer::Signer::new(&bundle, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("Failed to sign payload block");
+
+    let signed_bytes = signer
+        .rebuild()
+        .expect("Failed to rebuild bundle after signing");
+
+    // 3. Parse the signed bundle and verify CRC is removed from payload block
+    let keys = key::KeySet::new(vec![sign_key]);
+    let parsed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &keys)
+        .expect("Failed to parse signed bundle");
+
+    let signed_payload = parsed.bundle.blocks.get(&1).expect("Payload block missing");
+    assert!(
+        matches!(signed_payload.crc_type, crate::crc::CrcType::None),
+        "Payload block CRC type should be None after signing, got {:?}",
+        signed_payload.crc_type
+    );
+
+    // 4. Verify the signature still works
+    parsed
+        .bundle
+        .verify_block(1, &signed_bytes, &keys)
+        .expect("Failed to verify signature on payload block");
+
+    // 5. Verify the payload block has 5 elements (no CRC) by checking raw CBOR
+    // The payload block should be a CBOR array with 5 elements when CRC type is None
+    // Find the payload block extent and check its structure
+    let payload_extent = signed_payload.extent.clone();
+    let payload_cbor = &signed_bytes[payload_extent];
+
+    // First byte should be 0x85 (array of 5 elements) not 0x86 (array of 6 elements)
+    assert_eq!(
+        payload_cbor[0], 0x85,
+        "Payload block CBOR should be array of 5 elements (0x85), got 0x{:02x}",
+        payload_cbor[0]
+    );
+}
