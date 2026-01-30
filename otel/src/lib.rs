@@ -74,23 +74,14 @@ fn init_logs(resource: &Resource) -> SdkLoggerProvider {
         .build()
 }
 
-pub fn init(
-    pkg_name: &'static str,
-    pkg_ver: &'static str,
-    env_var: Option<&str>,
-    config_level: Option<tracing::Level>,
-) -> OtelGuard {
-    let env_filter = || {
+pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level) -> OtelGuard {
+    // Create a filter with the specified level as default
+    let make_filter = || {
         EnvFilter::builder()
             .with_default_directive(
-                tracing_subscriber::filter::LevelFilter::from_level(
-                    config_level.unwrap_or(tracing::Level::ERROR),
-                )
-                .into(),
+                tracing_subscriber::filter::LevelFilter::from_level(level).into(),
             )
-            .with_env_var(env_var.unwrap_or(EnvFilter::DEFAULT_ENV))
-            .from_env_lossy()
-        //.add_directive("metrics=off".parse().unwrap())
+            .parse_lossy("")
     };
 
     let resource = Resource::builder()
@@ -113,20 +104,16 @@ pub fn init(
     // (https://github.com/open-telemetry/opentelemetry-rust/issues/2877),
     // filtering like this is the best way to suppress such logs.
     //
-    // The filter levels are set as follows:
-    // - Allow `info` level and above by default.
-    // - Completely restrict logs from `hyper`, `tonic`, `h2`, and `reqwest`.
-    //
     // Note: This filtering will also drop logs from these components even when
     // they are used outside of the OTLP Exporter.
-    let filter_otel = env_filter()
+    let filter_otel = make_filter()
         .add_directive("reqwest=off".parse().unwrap())
         .add_directive("tonic=off".parse().unwrap())
         .add_directive("tower=off".parse().unwrap())
         .add_directive("h2=off".parse().unwrap());
     let otel_layer = otel_layer.with_filter(filter_otel);
 
-    let filter_fmt = env_filter()
+    let filter_fmt = make_filter()
         .add_directive("opentelemetry=off".parse().unwrap())
         .add_directive("reqwest=off".parse().unwrap())
         .add_directive("tonic=off".parse().unwrap())

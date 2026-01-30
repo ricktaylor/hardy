@@ -7,19 +7,27 @@ use tracing::Level;
 mod log_level_serde {
     use super::*;
 
-    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(level: &Option<Level>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(level.as_str())
+        match level {
+            Some(level) => serializer.serialize_some(level.as_str()),
+            None => serializer.serialize_none(),
+        }
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Level>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).map_err(serde::de::Error::custom)
+        let s: Option<String> = Option::deserialize(deserializer)?;
+        match s {
+            Some(s) => Level::from_str(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
     }
 }
 
@@ -54,8 +62,8 @@ pub enum BundleStorage {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     // Logging level
-    #[serde(default = "default_log_level", with = "log_level_serde")]
-    pub log_level: Level,
+    #[serde(with = "log_level_serde")]
+    pub log_level: Option<Level>,
 
     // Static Routes Configuration
     pub static_routes: Option<static_routes::Config>,
@@ -190,8 +198,4 @@ pub fn init() -> Option<(Config, String)> {
 
     // And parse...
     Some((config, config_source))
-}
-
-fn default_log_level() -> Level {
-    Level::INFO
 }

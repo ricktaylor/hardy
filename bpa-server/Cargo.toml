@@ -9,7 +9,8 @@ name = "hardy-bpa-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4"]
+default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel"]
+otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = []
 localdisk-storage = ["dep:hardy-localdisk-storage"]
@@ -28,6 +29,7 @@ hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
+hardy-otel = { path = "../otel", optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
 tokio-util = "0.7.18"
 tokio-stream = { version = "0.1.18", optional = true }
@@ -39,7 +41,7 @@ getopts = "0.2.24"
 directories = "6.0.0"
 thiserror = "2.0.18"
 tracing = "0.1.44"
-hardy-otel = { path = "../otel" }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 notify-debouncer-full = "0.7.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "0.1.5"

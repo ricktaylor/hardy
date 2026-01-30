@@ -30,8 +30,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
             hardy_otel::init(
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
-                None,
-                Some(tracing::Level::INFO),
+                tracing::Level::INFO,
             )
         });
         (rt, guard)

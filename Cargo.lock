@@ -1102,6 +1102,7 @@ dependencies = [
  "tonic",
  "trace-err",
  "tracing",
+ "tracing-subscriber",
  "winnow",
 ]
 

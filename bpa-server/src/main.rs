@@ -82,15 +82,6 @@ fn start_storage(config: &mut config::Config) {
     }
 }
 
-fn start_logging(config: &config::Config, config_source: String) -> hardy_otel::OtelGuard {
-    let guard = hardy_otel::init(PKG_NAME, PKG_VERSION, None, Some(config.log_level));
-
-    info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
-    info!("{config_source}");
-
-    guard
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command line
@@ -98,8 +89,32 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     };
 
+    // Resolve log level: env var overrides config, default to ERROR
+    let log_level = std::env::var("HARDY_BPA_SERVER_LOG_LEVEL")
+        .ok()
+        .and_then(|s| s.parse::<tracing::Level>().ok())
+        .or(config.log_level)
+        .unwrap_or(tracing::Level::ERROR);
+
     // Start logging - guard must be kept alive for the duration of the program
-    let _guard = start_logging(&config, config_source);
+    #[cfg(feature = "otel")]
+    let _guard = hardy_otel::init(PKG_NAME, PKG_VERSION, log_level);
+
+    #[cfg(not(feature = "otel"))]
+    {
+        use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+        let filter = EnvFilter::builder()
+            .with_default_directive(
+                tracing_subscriber::filter::LevelFilter::from_level(log_level).into(),
+            )
+            .from_env_lossy();
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_filter(filter))
+            .init();
+    }
+
+    info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
+    info!("{config_source}");
 
     inner_main(config).await.inspect_err(|e| error!("{e}"))
 }
