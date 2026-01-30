@@ -347,7 +347,7 @@ impl<'a> BlockParse<'a> {
         }
 
         for (target_number, target_type) in to_check {
-            if self.check_block(target_number, target_type, bundle)? {
+            if self.check_block(key_source, target_number, target_type, bundle)? {
                 report_unsupported = true;
             }
         }
@@ -358,7 +358,14 @@ impl<'a> BlockParse<'a> {
     /// Parses and validates all unencrypted blocks from blocks_to_check.
     /// Processed blocks are removed from the set.
     /// Returns true if any unsupported BIBs were found that need reporting.
-    fn check_unencrypted_blocks(&mut self, bundle: &mut Bundle) -> Result<bool, Error> {
+    fn check_unencrypted_blocks<K>(
+        &mut self,
+        key_source: &K,
+        bundle: &mut Bundle,
+    ) -> Result<bool, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let mut report_unsupported = false;
 
         // Collect unencrypted blocks with their types
@@ -377,7 +384,7 @@ impl<'a> BlockParse<'a> {
             .collect();
 
         for (block_number, block_type) in to_check {
-            if self.check_block(block_number, block_type, bundle)? {
+            if self.check_block(key_source, block_number, block_type, bundle)? {
                 report_unsupported = true;
             }
         }
@@ -387,12 +394,16 @@ impl<'a> BlockParse<'a> {
 
     /// Parses and validates a single block.
     /// Returns true if an unsupported block was found that needs reporting.
-    fn check_block(
+    fn check_block<K>(
         &mut self,
+        key_source: &K,
         block_number: u64,
         block_type: block::Type,
         bundle: &mut Bundle,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         self.blocks_to_check.remove(&block_number);
 
         match block_type {
@@ -429,14 +440,18 @@ impl<'a> BlockParse<'a> {
                 bundle.hop_count = Some(v);
                 Ok(false)
             }
-            block::Type::BlockIntegrity => self.check_bib(block_number),
+            block::Type::BlockIntegrity => self.check_bib(key_source, block_number),
             _ => unreachable!("Unexpected block type in check_block: {:?}", block_type),
         }
     }
 
     /// Parses and validates a single Block Integrity Block (BIB).
+    /// If key_source provides a key for verification, verifies each target.
     /// Returns true if the BIB is unsupported and needs reporting.
-    fn check_bib(&mut self, bib_block_number: u64) -> Result<bool, Error> {
+    fn check_bib<K>(&mut self, key_source: &K, bib_block_number: u64) -> Result<bool, Error>
+    where
+        K: bpsec::key::KeySource + ?Sized,
+    {
         let bib_block = self.blocks.get(&bib_block_number).expect("Missing BIB!");
 
         // Copy these values to release the borrow on self.blocks
@@ -495,6 +510,35 @@ impl<'a> BlockParse<'a> {
 
             // Mark target immediately so decrypt callbacks see fresh BIB info
             target_block.bib = block::BibCoverage::Some(bib_block_number);
+        }
+
+        // Verify each target block if key_source provides a key
+        // NoKey means skip verification (policy decision), other errors are failures
+        // Skip targets that are still encrypted (will be verified after decryption)
+        if !bib.is_unsupported() {
+            for (target_number, op) in &bib.operations {
+                // Skip verification if target is still encrypted and not yet decrypted
+                if let Some(target_block) = self.blocks.get(target_number)
+                    && target_block.bcb.is_some()
+                        && !self.decrypted_data.contains_key(target_number)
+                    {
+                        continue;
+                    }
+
+                match op.verify(
+                    key_source,
+                    bpsec::bib::OperationArgs {
+                        bpsec_source: &bib.source,
+                        target: *target_number,
+                        source: bib_block_number,
+                        blocks: self,
+                    },
+                ) {
+                    Ok(()) => {}                    // Verified successfully
+                    Err(bpsec::Error::NoKey) => {}  // No key provided, skip verification
+                    Err(e) => return Err(e.into()), // Verification failed
+                }
+            }
         }
 
         if self.rewrite {
@@ -670,7 +714,7 @@ fn parse_blocks(
     parser.mark_bcb_targets()?;
 
     // Phase 3: Check all unencrypted blocks (BIBs and extension blocks)
-    if parser.check_unencrypted_blocks(bundle)? {
+    if parser.check_unencrypted_blocks(key_source, bundle)? {
         report_unsupported = true;
     }
 

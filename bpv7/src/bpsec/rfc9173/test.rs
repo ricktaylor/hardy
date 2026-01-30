@@ -647,14 +647,18 @@ fn test_signature_tamper_detection() {
     // Corrupt the last byte of the payload data
     tampered_bytes[payload_range.end - 1] ^= 0xFF;
 
-    let parsed_tampered = bundle::ParsedBundle::parse_with_keys(&tampered_bytes, &keys)
-        .expect("Tampered bundle should still parse successfully");
-
-    // 3. Verify signature fails
-    parsed_tampered
-        .bundle
-        .verify_block(1, &tampered_bytes, &keys)
-        .expect_err("Signature verification should fail when payload is tampered");
+    // 3. Parsing should fail with IntegrityCheckFailed since verification happens during parsing
+    let parse_result = bundle::ParsedBundle::parse_with_keys(&tampered_bytes, &keys);
+    assert!(
+        matches!(
+            parse_result,
+            Err(crate::Error::InvalidBPSec(
+                crate::bpsec::Error::IntegrityCheckFailed
+            ))
+        ),
+        "Tampered bundle should fail to parse with IntegrityCheckFailed, got: {:?}",
+        parse_result
+    );
 }
 
 #[test]
