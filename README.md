@@ -2,6 +2,8 @@
 
 A performant, compliant, and extensible BPv7 DTN solution for the Cloud.
 
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+
 ## Table of Contents
 
 - [Components](#components)
