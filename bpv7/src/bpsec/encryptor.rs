@@ -88,7 +88,7 @@ impl<'a> Encryptor<'a> {
             return Err((self, Error::AlreadyEncrypted(block_number)));
         }
 
-        if let block::Type::BlockSecurity = block.block_type {
+        if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
             return Err((self, Error::InvalidTarget(block_number)));
         }
 

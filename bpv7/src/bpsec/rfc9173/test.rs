@@ -805,3 +805,78 @@ fn test_remove_integrity_fails_on_unsigned_block() {
         e
     );
 }
+
+#[test]
+fn test_encrypt_bib_directly_fails() {
+    // Test that attempting to directly encrypt a BIB block fails.
+    // RFC 9172 Section 3.8: A BCB MUST NOT target a BIB unless it shares a security target.
+    // BIBs should only be encrypted as a side-effect when encrypting a block they protect.
+
+    // 1. Create a bundle
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.1".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"test payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+
+    // 2. Sign the payload (creates a BIB)
+    let sign_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256",
+        "key_ops": ["sign", "verify"],
+        "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+    }))
+    .unwrap();
+
+    let signer = signer::Signer::new(&bundle, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_key,
+        )
+        .map_err(|(_, e)| e)
+        .expect("Failed to sign block");
+    let signed_bytes = signer.rebuild().expect("Failed to rebuild signed bundle");
+
+    let sign_keys = key::KeySet::new(vec![sign_key]);
+    let parsed_signed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &sign_keys)
+        .expect("Failed to parse signed bundle");
+
+    // 3. Find the BIB block number
+    let bib_block_num = parsed_signed
+        .bundle
+        .blocks
+        .get(&1)
+        .and_then(|b| b.bib)
+        .expect("BIB not found on payload block");
+
+    // 4. Attempt to directly encrypt the BIB - this should fail
+    let enc_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "A128KW",
+        "enc": "A128GCM",
+        "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+        "k": "AAAAAAAAAAAAAAAAAAAAAA"
+    }))
+    .unwrap();
+
+    let result = encryptor::Encryptor::new(&parsed_signed.bundle, &signed_bytes).encrypt_block(
+        bib_block_num,
+        encryptor::Context::AES_GCM(ScopeFlags::default()),
+        "ipn:2.1".parse().unwrap(),
+        &enc_key,
+    );
+
+    // Should fail with InvalidTarget error
+    let Err((_, e)) = result else {
+        panic!("Expected encrypt_block to fail when directly targeting a BIB");
+    };
+    assert!(
+        e.to_string().contains("Invalid block target"),
+        "Expected InvalidTarget error, got: {}",
+        e
+    );
+}
