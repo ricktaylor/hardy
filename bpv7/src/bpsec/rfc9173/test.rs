@@ -766,17 +766,14 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
     let result = Editor::new(&bundle, &bundle_bytes).remove_encryption(1, &keys);
 
     // Should fail with NotEncrypted error
-    match result {
-        Ok(_) => panic!("Expected remove_encryption to fail on unencrypted block"),
-        Err((_, e)) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("not the target of a BCB"),
-                "Expected NotEncrypted error, got: {}",
-                err_msg
-            );
-        }
-    }
+    let Err((_, e)) = result else {
+        panic!("Expected remove_encryption to fail on unencrypted block");
+    };
+    assert!(
+        e.to_string().contains("not the target of a BCB"),
+        "Expected NotEncrypted error, got: {}",
+        e
+    );
 }
 
 #[test]
@@ -799,15 +796,12 @@ fn test_remove_integrity_fails_on_unsigned_block() {
     let result = Editor::new(&bundle, &bundle_bytes).remove_integrity(1);
 
     // Should fail with NotSigned error
-    match result {
-        Ok(_) => panic!("Expected remove_integrity to fail on unsigned block"),
-        Err((_, e)) => {
-            let err_msg = format!("{}", e);
-            assert!(
-                err_msg.contains("not the target of a BIB"),
-                "Expected NotSigned error, got: {}",
-                err_msg
-            );
-        }
-    }
+    let Err((_, e)) = result else {
+        panic!("Expected remove_integrity to fail on unsigned block");
+    };
+    assert!(
+        e.to_string().contains("not the target of a BIB"),
+        "Expected NotSigned error, got: {}",
+        e
+    );
 }

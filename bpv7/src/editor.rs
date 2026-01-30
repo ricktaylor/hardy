@@ -487,9 +487,8 @@ impl<'a> Editor<'a> {
             return Err((self, Error::PrimaryBlock));
         }
 
-        let target_block = match self.block(block_number) {
-            Some((block, _)) => block,
-            None => return Err((self, Error::NoSuchBlock(block_number))),
+        let Some((target_block, _)) = self.block(block_number) else {
+            return Err((self, Error::NoSuchBlock(block_number)));
         };
 
         let Some(bib) = target_block.bib else {
@@ -535,9 +534,8 @@ impl<'a> Editor<'a> {
             return Err((self, Error::PrimaryBlock));
         }
 
-        let target_block = match self.block(block_number) {
-            Some((block, _)) => block,
-            None => return Err((self, Error::NoSuchBlock(block_number))),
+        let Some((target_block, _)) = self.block(block_number) else {
+            return Err((self, Error::NoSuchBlock(block_number)));
         };
 
         let Some(bcb) = target_block.bcb else {
