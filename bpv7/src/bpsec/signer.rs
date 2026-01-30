@@ -1,4 +1,5 @@
 use super::*;
+use smallvec::SmallVec;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -114,7 +115,8 @@ impl<'a> Signer<'a> {
         }
 
         // Reorder and accumulate BIB operations
-        let mut blocks = HashMap::<(eid::Eid, Context), Vec<(u64, &'a key::Key)>>::new();
+        type TargetVec<'b> = SmallVec<[(u64, &'b key::Key); 4]>;
+        let mut blocks = HashMap::<(eid::Eid, Context), TargetVec<'a>>::new();
         for (block_number, template) in self.templates {
             blocks
                 .entry((template.source, template.context))

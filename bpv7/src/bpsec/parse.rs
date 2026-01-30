@@ -1,6 +1,7 @@
 use super::*;
 use alloc::rc::Rc;
 use core::ops::Range;
+use smallvec::SmallVec;
 
 fn parse_ranges<const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,
@@ -126,7 +127,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             let targets = seq
                 .parse_array(|a, s, tags| {
                     shortest = shortest && s && tags.is_empty() && a.is_definite();
-                    let mut targets: Vec<u64> = Vec::new();
+                    let mut targets: SmallVec<[u64; 4]> = SmallVec::new();
                     while let Some((block, s, _)) = a.try_parse()? {
                         shortest = shortest && s;
 

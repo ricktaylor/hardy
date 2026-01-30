@@ -7,6 +7,7 @@ canonicalization issues.
 
 use super::*;
 use error::CaptureFieldErr;
+use smallvec::SmallVec;
 use thiserror::Error;
 
 /// A state machine for parsing the blocks of a bundle.
@@ -291,8 +292,8 @@ impl<'a> BlockParse<'a> {
     {
         let mut report_unsupported = false;
         let mut has_undecrypted_bibs = false;
-        let mut to_remove = Vec::new();
-        let mut to_check = Vec::new();
+        let mut to_remove: SmallVec<[u64; 8]> = SmallVec::new();
+        let mut to_check: SmallVec<[(u64, block::Type); 16]> = SmallVec::new();
 
         // Decrypt and immediately check each block
         for &target_number in &self.blocks_to_check {
@@ -369,7 +370,7 @@ impl<'a> BlockParse<'a> {
         let mut report_unsupported = false;
 
         // Collect unencrypted blocks with their types
-        let to_check: Vec<(u64, block::Type)> = self
+        let to_check: SmallVec<[(u64, block::Type); 16]> = self
             .blocks_to_check
             .iter()
             .filter_map(|&block_number| {
@@ -520,10 +521,10 @@ impl<'a> BlockParse<'a> {
                 // Skip verification if target is still encrypted and not yet decrypted
                 if let Some(target_block) = self.blocks.get(target_number)
                     && target_block.bcb.is_some()
-                        && !self.decrypted_data.contains_key(target_number)
-                    {
-                        continue;
-                    }
+                    && !self.decrypted_data.contains_key(target_number)
+                {
+                    continue;
+                }
 
                 match op.verify(
                     key_source,

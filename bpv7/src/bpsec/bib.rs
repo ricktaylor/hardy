@@ -1,4 +1,5 @@
 use super::*;
+use smallvec::SmallVec;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -78,7 +79,8 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
 
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         // Ensure we process operations in the same order
-        let (targets, operations): (Vec<&u64>, Vec<&Operation>) = self.operations.iter().unzip();
+        let (targets, operations): (SmallVec<[&u64; 4]>, SmallVec<[&Operation; 4]>) =
+            self.operations.iter().unzip();
 
         // Targets
         encoder.emit(targets.as_slice());

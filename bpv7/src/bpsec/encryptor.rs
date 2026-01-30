@@ -1,4 +1,5 @@
 use super::*;
+use smallvec::SmallVec;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -182,8 +183,9 @@ impl<'a> Encryptor<'a> {
         }
 
         // Reorder and accumulate BCB operations if sharing is possible
-        let mut bcbs = Vec::new();
-        let mut shared_bcbs = HashMap::<(eid::Eid, Context), Vec<(u64, &'a key::Key)>>::new();
+        type TargetVec<'b> = SmallVec<[(u64, &'b key::Key); 4]>;
+        let mut bcbs: SmallVec<[(eid::Eid, Context, TargetVec<'a>); 4]> = SmallVec::new();
+        let mut shared_bcbs = HashMap::<(eid::Eid, Context), TargetVec<'a>>::new();
         for (block_number, template) in self.templates {
             if template.context.can_share() {
                 shared_bcbs
@@ -194,7 +196,7 @@ impl<'a> Encryptor<'a> {
                 bcbs.push((
                     template.source,
                     template.context,
-                    vec![(block_number, template.key)],
+                    smallvec::smallvec![(block_number, template.key)],
                 ));
             }
         }
