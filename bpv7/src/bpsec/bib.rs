@@ -41,7 +41,7 @@ impl Operation {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.verify(key_source, args),
-            Self::Unrecognised(..) => Err(Error::NoValidKey),
+            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
         }
     }
 

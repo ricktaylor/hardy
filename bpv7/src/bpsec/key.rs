@@ -1,12 +1,11 @@
 use super::*;
 
 pub trait KeySource {
-    /// Get an iterator for keys suitable for decryption, verification, or unwrapping
-    fn keys<'a>(
-        &'a self,
-        source: &eid::Eid,
-        operations: &[Operation],
-    ) -> Box<dyn Iterator<Item = &'a Key> + 'a>;
+    /// Get the key suitable for the specified operations from the given source.
+    /// Returns None if no key is available for this source/operations.
+    /// If a key is returned, it is expected to be valid for the operation;
+    /// verification/decryption failure with a provided key indicates corruption.
+    fn key<'a>(&'a self, source: &eid::Eid, operations: &[Operation]) -> Option<&'a Key>;
 }
 
 #[derive(Debug)]
@@ -24,20 +23,14 @@ impl KeySet {
 }
 
 impl KeySource for KeySet {
-    fn keys<'a>(
-        &'a self,
-        _source: &eid::Eid,
-        operations: &[Operation],
-    ) -> Box<dyn Iterator<Item = &'a Key> + 'a> {
-        // Copy operations to owned vec so the filter closure doesn't borrow from the parameter
-        let operations: Vec<Operation> = operations.to_vec();
-        Box::new(self.keys.iter().filter(move |k| {
+    fn key<'a>(&'a self, _source: &eid::Eid, operations: &[Operation]) -> Option<&'a Key> {
+        self.keys.iter().find(|k| {
             if let Some(key_operations) = &k.operations {
                 operations.iter().any(|op| key_operations.contains(op))
             } else {
                 false
             }
-        }))
+        })
     }
 }
 

@@ -25,7 +25,7 @@ impl Dispatcher {
                 .bundle
                 .block_data(1, &data, &*self.key_source(&bundle.bundle, &data))
             {
-                Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoValidKey)) => {
+                Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                     // TODO: We are unable to decrypt the payload, what do we do?
                     return dispatch::DispatchResult::Wait;
                 }

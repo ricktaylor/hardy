@@ -329,7 +329,7 @@ impl<'a> BlockParse<'a> {
                     // Immediately check the decrypted block
                     to_check.push((target_number, target_type));
                 }
-                Err(bpsec::Error::NoValidKey) => {
+                Err(bpsec::Error::NoKey) => {
                     // Can't decrypt, mark for removal so we don't try to parse it
                     to_remove.push(target_number);
                     // Track if this was a BIB we couldn't decrypt

@@ -44,7 +44,7 @@ impl Operation {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(op) => op.decrypt(key_source, args),
-            Self::Unrecognised(..) => Err(Error::NoValidKey),
+            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
         }
     }
 

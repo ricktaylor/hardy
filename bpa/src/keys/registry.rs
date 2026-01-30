@@ -59,22 +59,17 @@ impl Registry {
 }
 
 /// A composite KeySource that aggregates multiple KeySources.
+/// Returns the first key found from any of the sources.
 pub struct CompositeKeySource {
     sources: Vec<Box<dyn KeySource>>,
 }
 
 impl KeySource for CompositeKeySource {
-    fn keys<'a>(
+    fn key<'a>(
         &'a self,
         source: &hardy_bpv7::eid::Eid,
         operations: &[hardy_bpv7::bpsec::key::Operation],
-    ) -> Box<dyn Iterator<Item = &'a hardy_bpv7::bpsec::key::Key> + 'a> {
-        let source = source.clone();
-        let operations = operations.to_vec();
-        Box::new(
-            self.sources
-                .iter()
-                .flat_map(move |s| s.keys(&source, &operations)),
-        )
+    ) -> Option<&'a hardy_bpv7::bpsec::key::Key> {
+        self.sources.iter().find_map(|s| s.key(source, operations))
     }
 }

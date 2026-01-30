@@ -313,7 +313,8 @@ impl Operation {
             return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
         }
 
-        let variant = as_variant(&jwk.key_algorithm).ok_or(Error::NoValidKey)?;
+        let variant = as_variant(&jwk.key_algorithm)
+            .ok_or_else(|| Error::InvalidKey(key::Operation::Sign, jwk.clone()))?;
         let key_wrap = as_key_wrap(&jwk.key_algorithm);
 
         let cek = if let Some(key_wrap) = &key_wrap {
@@ -348,7 +349,7 @@ impl Operation {
         };
 
         let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
-            return Err(Error::NoValidKey);
+            return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
         };
 
         let active_cek = cek
@@ -401,81 +402,80 @@ impl Operation {
     where
         K: key::KeySource + ?Sized,
     {
-        let mut tried_to_verify = false;
+        if let Some(wrapped_cek) = &self.parameters.key {
+            // Key wrapping mode - need a KEK to unwrap
+            let jwk = key_source
+                .key(
+                    args.bpsec_source,
+                    &[key::Operation::UnwrapKey, key::Operation::Verify],
+                )
+                .ok_or(Error::NoKey)?;
 
-        if let Some(cek) = &self.parameters.key {
-            for jwk in key_source.keys(
-                args.bpsec_source,
-                &[key::Operation::UnwrapKey, key::Operation::Verify],
-            ) {
-                if Some(self.parameters.variant) == as_variant(&jwk.key_algorithm)
-                    && let key::Type::OctetSequence { key } = &jwk.key_type
-                    && let Some(cek) = (match as_key_wrap(&jwk.key_algorithm) {
-                        Some(KeyWrap::Aes128) => aes_kw::KekAes128::try_from(key.as_ref())
-                            .and_then(|key| key.unwrap_vec(cek))
-                            .ok(),
-                        Some(KeyWrap::Aes192) => aes_kw::KekAes192::try_from(key.as_ref())
-                            .and_then(|key| key.unwrap_vec(cek))
-                            .ok(),
-                        Some(KeyWrap::Aes256) => aes_kw::KekAes256::try_from(key.as_ref())
-                            .and_then(|key| key.unwrap_vec(cek))
-                            .ok(),
-                        _ => None,
-                    })
-                    .map(|v| zeroize::Zeroizing::from(Box::from(v)))
-                    && self.verify_inner(&mut tried_to_verify, &cek, &args)? == Some(true)
-                {
-                    return Ok(());
-                }
+            if Some(self.parameters.variant) != as_variant(&jwk.key_algorithm) {
+                return Err(Error::IntegrityCheckFailed);
+            }
+
+            let key::Type::OctetSequence { key } = &jwk.key_type else {
+                return Err(Error::IntegrityCheckFailed);
+            };
+
+            let cek = match as_key_wrap(&jwk.key_algorithm) {
+                Some(KeyWrap::Aes128) => aes_kw::KekAes128::try_from(key.as_ref())
+                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
+                    .map_err(|_| Error::IntegrityCheckFailed)?,
+                Some(KeyWrap::Aes192) => aes_kw::KekAes192::try_from(key.as_ref())
+                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
+                    .map_err(|_| Error::IntegrityCheckFailed)?,
+                Some(KeyWrap::Aes256) => aes_kw::KekAes256::try_from(key.as_ref())
+                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
+                    .map_err(|_| Error::IntegrityCheckFailed)?,
+                None => return Err(Error::IntegrityCheckFailed),
+            };
+            let cek = zeroize::Zeroizing::from(Box::from(cek));
+
+            if self.verify_inner(&cek, &args)? {
+                Ok(())
+            } else {
+                Err(Error::IntegrityCheckFailed)
             }
         } else {
-            for jwk in key_source.keys(args.bpsec_source, &[key::Operation::Verify]) {
-                if Some(self.parameters.variant) == as_variant(&jwk.key_algorithm)
-                    && let key::Type::OctetSequence { key } = &jwk.key_type
-                    && self.verify_inner(&mut tried_to_verify, key, &args)? == Some(true)
-                {
-                    return Ok(());
-                }
-            }
-        }
+            // Direct mode - need a verification key
+            let jwk = key_source
+                .key(args.bpsec_source, &[key::Operation::Verify])
+                .ok_or(Error::NoKey)?;
 
-        if tried_to_verify {
-            Err(Error::IntegrityCheckFailed)
-        } else {
-            Err(Error::NoValidKey)
+            if Some(self.parameters.variant) != as_variant(&jwk.key_algorithm) {
+                return Err(Error::IntegrityCheckFailed);
+            }
+
+            let key::Type::OctetSequence { key } = &jwk.key_type else {
+                return Err(Error::IntegrityCheckFailed);
+            };
+
+            if self.verify_inner(key, &args)? {
+                Ok(())
+            } else {
+                Err(Error::IntegrityCheckFailed)
+            }
         }
     }
 
-    fn verify_inner(
-        &self,
-        tried_to_verify: &mut bool,
-        cek: &[u8],
-        args: &bib::OperationArgs,
-    ) -> Result<Option<bool>, Error> {
+    fn verify_inner(&self, cek: &[u8], args: &bib::OperationArgs) -> Result<bool, Error> {
         match self.parameters.variant {
             ShaVariant::HMAC_256_256 => {
-                if let Ok(mac) = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args) {
-                    *tried_to_verify = true;
-                    return Ok(Some(*mac == *self.results.0));
-                }
+                let mac = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args)?;
+                Ok(*mac == *self.results.0)
             }
             ShaVariant::HMAC_384_384 => {
-                if let Ok(mac) = calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args) {
-                    *tried_to_verify = true;
-                    return Ok(Some(*mac == *self.results.0));
-                }
+                let mac = calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args)?;
+                Ok(*mac == *self.results.0)
             }
             ShaVariant::HMAC_512_512 => {
-                if let Ok(mac) = calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args) {
-                    *tried_to_verify = true;
-                    return Ok(Some(*mac == *self.results.0));
-                }
+                let mac = calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args)?;
+                Ok(*mac == *self.results.0)
             }
-            ShaVariant::Unrecognised(_) => {
-                return Err(Error::UnsupportedOperation);
-            }
+            ShaVariant::Unrecognised(_) => Err(Error::UnsupportedOperation),
         }
-        Ok(None)
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {

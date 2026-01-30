@@ -77,8 +77,8 @@ pub enum Error {
     #[error("Decryption failed")]
     DecryptionFailed,
 
-    #[error("None of the supplied keys were valid for the operation")]
-    NoValidKey,
+    #[error("No key was provided for the operation")]
+    NoKey,
 
     #[error("Integrity check failed")]
     IntegrityCheckFailed,
