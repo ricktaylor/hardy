@@ -159,7 +159,7 @@ impl Dispatcher {
 
             // Check hop count exceeded
             if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
-                && hop_info.count >= hop_info.limit
+                && hop_info.count > hop_info.limit
             {
                 debug!("Bundle hop-limit {} exceeded", hop_info.limit);
                 return self
