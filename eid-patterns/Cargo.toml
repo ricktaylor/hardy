@@ -22,3 +22,4 @@ serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 [dev-dependencies]
 hex-literal = "1.1.0"
+hardy-eid-patterns = { path = ".", features = ["dtn-pat-item"] }

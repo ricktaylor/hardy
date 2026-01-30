@@ -47,12 +47,6 @@ impl CreationTimestamp {
         }
     }
 
-    // Just to make life easier
-    #[cfg(all(not(feature = "std"), test))]
-    pub fn now() -> Self {
-        Self::new_sequential()
-    }
-
     /// Creates a new `CreationTimestamp` without a time value.
     ///
     /// The creation time is set to `None`, indicating the absence of an accurate clock.

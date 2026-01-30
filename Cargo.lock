@@ -1052,6 +1052,7 @@ dependencies = [
 name = "hardy-async"
 version = "0.1.0"
 dependencies = [
+ "hardy-async",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1145,6 +1146,7 @@ dependencies = [
  "aes-kw",
  "base64",
  "crc",
+ "hardy-bpv7",
  "hardy-cbor",
  "hashbrown 0.16.1",
  "hex-literal",
@@ -1222,6 +1224,7 @@ version = "0.1.0"
 dependencies = [
  "glob",
  "hardy-bpv7",
+ "hardy-eid-patterns",
  "hex-literal",
  "serde",
  "thiserror",

@@ -21,3 +21,6 @@ tracing = { version = "0.1.44", optional = true }
 # Future runtime support
 # smol = ["dep:async-executor", "dep:async-channel"]
 # embassy = ["dep:embassy-executor", "dep:embassy-sync", "dep:embassy-time"]
+
+[dev-dependencies]
+hardy-async = { path = ".", features = ["tokio"] }

@@ -4,7 +4,7 @@ use core::ops::Range;
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod test;
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]

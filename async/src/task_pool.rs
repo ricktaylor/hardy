@@ -219,7 +219,7 @@ impl Default for TaskPool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
 
