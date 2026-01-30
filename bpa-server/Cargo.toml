@@ -31,7 +31,7 @@ hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
 tokio-util = "0.7.18"
 tokio-stream = { version = "0.1.18", optional = true }
-tonic = { version = "0.14.2", optional = true }
+tonic = { version = "0.14.3", optional = true }
 prost-types = { version = "0.14.3", optional = true }
 config = { version = "0.15.19", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }

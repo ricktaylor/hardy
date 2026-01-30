@@ -18,7 +18,6 @@ tracing = ["hardy-bpa/tracing","hardy-sqlite-storage?/tracing","hardy-localdisk-
 libfuzzer-sys = "0.4"
 hardy-otel = { path = "../../otel" }
 hardy-bpv7 = { path = "../../bpv7" }
-hardy-cbor = { path = "../../cbor" }
 hardy-bpa = { path = ".." }
 hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
