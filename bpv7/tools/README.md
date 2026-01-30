@@ -18,6 +18,7 @@ A command-line utility for creating, inspecting, and manipulating Bundle Protoco
   - [`extract`](#extract)
   - [`add-block`](#add-block)
   - [`update-block`](#update-block)
+  - [`update-primary`](#update-primary)
   - [`remove-block`](#remove-block)
   - [`sign`](#sign)
   - [`verify`](#verify)
@@ -443,6 +444,74 @@ bundle update-block -n 2 \
 bundle update-block -n 3 \
   --crc-type crc32 \
   input.bundle
+```
+
+---
+
+### `update-primary`
+
+Update the primary block of a bundle, including lifetime, creation timestamp, source, destination, report-to EID, flags, or CRC type. If the primary block is protected by a BIB, use `remove-integrity` first to remove the signature.
+
+**Usage:**
+
+```bash
+bundle update-primary [OPTIONS] [INPUT]
+```
+
+**Arguments:**
+
+- `<INPUT>` - Bundle file path (use `-` for stdin)
+
+**Update Options (at least one required):**
+
+- `-l, --lifetime <DURATION>` - New lifetime duration (e.g., `1year`, `30days`, `24h`)
+- `-t, --reset-timestamp` - Reset creation timestamp to now
+- `-s, --source <EID>` - New source Endpoint ID
+- `-d, --destination <EID>` - New destination Endpoint ID
+- `-r, --report-to <EID>` - New report-to Endpoint ID
+- `-f, --flags <FLAGS>` - Bundle processing flags (comma-separated, replaces existing flags)
+- `-c, --crc-type <TYPE>` - CRC type for the primary block
+
+**Other Arguments:**
+
+- `-o, --output <OUTPUT>` - Output file (default: stdout)
+- `--keys <JWKS>` - Key set for parsing bundles with encrypted blocks (JSON string or file path)
+
+**Examples:**
+
+```bash
+# Extend lifetime to 1 year and reset timestamp
+bundle update-primary \
+  --lifetime 1year \
+  --reset-timestamp \
+  --output refreshed.bundle \
+  input.bundle
+
+# Update just the lifetime (keep original timestamp)
+bundle update-primary \
+  --lifetime 30days \
+  --output updated.bundle \
+  input.bundle
+
+# Change destination EID
+bundle update-primary \
+  --destination dtn://newnode/app \
+  --output redirected.bundle \
+  input.bundle
+
+# Update flags
+bundle update-primary \
+  --flags do-not-fragment,report-delivery \
+  --output updated.bundle \
+  input.bundle
+```
+
+**Note:** If the primary block is signed by a BIB, you must first remove the integrity protection:
+
+```bash
+bundle remove-integrity -b 0 input.bundle | \
+  bundle update-primary --lifetime 1year - \
+  > updated.bundle
 ```
 
 ---
