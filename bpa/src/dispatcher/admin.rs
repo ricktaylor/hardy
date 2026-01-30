@@ -43,6 +43,7 @@ impl Dispatcher {
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
                 // TODO:  This needs to move to a storage::channel
+                debug!("Received administrative record: {report:?}");
 
                 // Find a live service to notify
                 if let Some(service) = self.service_registry.find(&report.bundle_id.source).await {

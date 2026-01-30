@@ -1,6 +1,7 @@
 use super::*;
 use std::hash::{Hash, Hasher};
 
+#[derive(Debug)]
 enum InternalFindResult {
     AdminEndpoint,
     Deliver(Option<Arc<service_registry::Service>>), // Deliver to local service
@@ -97,9 +98,11 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
     for action in inner.locals.actions.get(to).into_iter().flatten() {
         match &action {
             local::Action::AdminEndpoint => {
+                debug!("Deliver to Admin Endpoint");
                 return Some(InternalFindResult::AdminEndpoint);
             }
             local::Action::Local(service) => {
+                debug!("Deliver to Service {service:?}");
                 return Some(InternalFindResult::Deliver(service.clone()));
             }
             local::Action::Forward(peer) => {
@@ -111,6 +114,8 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
             }
         }
     }
+
+    debug!("Forward to CLA peers {peers:?}");
     peers.map(InternalFindResult::Forward)
 }
 
@@ -137,10 +142,12 @@ fn find_recurse<'a>(
                     match &entry.action {
                         routes::Action::Drop(reason) => {
                             // Drop trumps everything else
+                            debug!("Drop {reason:?}");
                             return Some(InternalFindResult::Drop(*reason));
                         }
                         routes::Action::Reflect => {
                             if reflect {
+                                debug!("Reflect");
                                 return Some(InternalFindResult::Reflect);
                             }
                         }
@@ -181,10 +188,13 @@ fn find_recurse<'a>(
     }
 
     if result.is_none() && inner.locals.finals.iter().any(|e| e.matches(to)) {
+        debug!("No route found");
         return Some(InternalFindResult::Drop(Some(
             ReasonCode::DestinationEndpointIDUnavailable,
         )));
     }
+
+    debug!("Forward {result:?}");
     result
 }
 
