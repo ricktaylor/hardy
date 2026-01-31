@@ -26,6 +26,24 @@ impl Operation {
         }
     }
 
+    /// Returns true if multiple security operations can share the same security
+    /// context parameters (and thus be in the same BCB).
+    ///
+    /// BCB-AES-GCM (RFC 9173) returns false because each encryption requires a
+    /// unique IV, which is stored in the context parameters.
+    ///
+    /// Future contexts (e.g., COSE-based) may return true if they store per-target
+    /// IVs in the results rather than shared parameters. The operation instance
+    /// can inspect its parameters to determine this.
+    pub fn can_share(&self) -> bool {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(_) => false, // IV in context parameters requires separate blocks
+            // Unknown contexts: assume they cannot share (conservative default)
+            Self::Unrecognised(..) => false,
+        }
+    }
+
     pub fn decrypt<K>(
         &self,
         key_source: &K,
@@ -75,6 +93,16 @@ pub struct OperationSet {
 impl OperationSet {
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().any(|op| op.is_unsupported())
+    }
+
+    /// Returns true if this BCB's context allows multiple targets to share
+    /// security context parameters.
+    pub fn can_share(&self) -> bool {
+        // All operations in a set share the same context, so check any one
+        self.operations
+            .values()
+            .next()
+            .is_some_and(|op| op.can_share())
     }
 }
 

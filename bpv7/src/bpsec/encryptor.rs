@@ -37,15 +37,6 @@ pub enum Context {
     AES_GCM(rfc9173::ScopeFlags),
 }
 
-impl Context {
-    fn can_share(&self) -> bool {
-        match self {
-            #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(_) => false, // The presence of an IV in context parameters means operations MUST NOT be shared
-        }
-    }
-}
-
 struct BlockTemplate<'a> {
     context: Context,
     source: eid::Eid,
@@ -187,17 +178,27 @@ impl<'a> Encryptor<'a> {
         let mut bcbs: SmallVec<[(eid::Eid, Context, TargetVec<'a>); 4]> = SmallVec::new();
         let mut shared_bcbs = HashMap::<(eid::Eid, Context), TargetVec<'a>>::new();
         for (block_number, template) in self.templates {
-            if template.context.can_share() {
-                shared_bcbs
-                    .entry((template.source, template.context))
-                    .or_default()
-                    .push((block_number, template.key));
-            } else {
+            // Check if this context supports sharing multiple targets in one BCB.
+            // AES_GCM requires unique IVs per target, so each target gets its own BCB.
+            // Future contexts (e.g., COSE-based) may allow sharing if they store
+            // per-target IVs in results rather than shared parameters.
+            //
+            // TODO: When adding new contexts, update this match to check each context's
+            // sharing capability. Consider calling a can_share() method on the built
+            // operation if sharing depends on operation parameters.
+            #[allow(irrefutable_let_patterns)]
+            #[cfg(feature = "rfc9173")]
+            if let Context::AES_GCM(_) = &template.context {
                 bcbs.push((
                     template.source,
                     template.context,
                     smallvec::smallvec![(block_number, template.key)],
                 ));
+            } else {
+                shared_bcbs
+                    .entry((template.source, template.context))
+                    .or_default()
+                    .push((block_number, template.key));
             }
         }
 

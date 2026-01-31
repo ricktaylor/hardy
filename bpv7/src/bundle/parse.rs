@@ -525,6 +525,27 @@ impl<'a> BlockParse<'a> {
             target_block.bib = block::BibCoverage::Some(bib_block_number);
         }
 
+        // RFC 9172 Section 3.8: "A BCB MUST NOT target a BIB unless it shares a
+        // security target with that BIB."
+        //
+        // If this BIB is encrypted by a BCB, verify the BCB shares at least one
+        // target with this BIB. However, this check only applies to contexts that
+        // support sharing (e.g., future COSE-based contexts). BCB-AES-GCM cannot
+        // share due to IV uniqueness requirements, so separate BCBs are expected.
+        if let Some(bcb_block_num) = bib_block_bcb
+            && let Some(bcb) = self.bcbs.get(&bcb_block_num)
+            && bcb.can_share()
+        {
+            // The BCB should share at least one target with the BIB
+            let shares_target = bib
+                .operations
+                .keys()
+                .any(|bib_target| bcb.operations.contains_key(bib_target));
+            if !shares_target {
+                return Err(bpsec::Error::InvalidBCBTarget.into());
+            }
+        }
+
         // Verify each target block if key_source provides a key
         // NoKey means skip verification (policy decision), other errors are failures
         // Skip targets that are still encrypted (will be verified after decryption)
