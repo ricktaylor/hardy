@@ -223,6 +223,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     }
 }
 
+#[cfg(feature = "rfc9173")]
 pub fn decode_box(
     range: Range<usize>,
     data: &[u8],

@@ -26,6 +26,7 @@ impl Operation {
         }
     }
 
+    #[allow(unused_variables)]
     pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
     where
         K: key::KeySource + ?Sized,
@@ -108,6 +109,7 @@ impl hardy_cbor::decode::FromCbor for OperationSet {
             hardy_cbor::decode::parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?;
 
         // Unpack into strong types
+        #[allow(unreachable_patterns)]
         match asb.context {
             #[cfg(feature = "rfc9173")]
             Context::BIB_HMAC_SHA2 => {

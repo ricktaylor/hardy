@@ -35,6 +35,10 @@ impl From<bpsec::Error> for Error {
 pub enum Context {
     #[cfg(feature = "rfc9173")]
     AES_GCM(rfc9173::ScopeFlags),
+
+    /// Placeholder for future context types
+    #[doc(hidden)]
+    __Reserved,
 }
 
 struct BlockTemplate<'a> {
@@ -186,19 +190,21 @@ impl<'a> Encryptor<'a> {
             // TODO: When adding new contexts, update this match to check each context's
             // sharing capability. Consider calling a can_share() method on the built
             // operation if sharing depends on operation parameters.
-            #[allow(irrefutable_let_patterns)]
-            #[cfg(feature = "rfc9173")]
-            if let Context::AES_GCM(_) = &template.context {
-                bcbs.push((
-                    template.source,
-                    template.context,
-                    smallvec::smallvec![(block_number, template.key)],
-                ));
-            } else {
-                shared_bcbs
-                    .entry((template.source, template.context))
-                    .or_default()
-                    .push((block_number, template.key));
+            match &template.context {
+                #[cfg(feature = "rfc9173")]
+                Context::AES_GCM(_) => {
+                    bcbs.push((
+                        template.source,
+                        template.context,
+                        smallvec::smallvec![(block_number, template.key)],
+                    ));
+                }
+                _ => {
+                    shared_bcbs
+                        .entry((template.source, template.context))
+                        .or_default()
+                        .push((block_number, template.key));
+                }
             }
         }
 
@@ -291,7 +297,7 @@ impl<'a> Encryptor<'a> {
     }
 }
 
-#[allow(irrefutable_let_patterns)]
+#[allow(unused_variables)]
 fn build_bcb_data(
     context: Context,
     args: bcb::OperationArgs,

@@ -34,6 +34,10 @@ impl From<bpsec::Error> for Error {
 pub enum Context {
     #[cfg(feature = "rfc9173")]
     HMAC_SHA2(rfc9173::ScopeFlags),
+
+    /// Placeholder for future context types
+    #[doc(hidden)]
+    __Reserved,
 }
 
 struct BlockTemplate<'a> {
@@ -194,7 +198,7 @@ impl<'a> Signer<'a> {
     }
 }
 
-#[allow(irrefutable_let_patterns)]
+#[allow(unused_variables)]
 fn build_bib_data(
     context: Context,
     args: bib::OperationArgs,

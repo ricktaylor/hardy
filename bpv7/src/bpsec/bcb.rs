@@ -44,6 +44,7 @@ impl Operation {
         }
     }
 
+    #[allow(unused_variables)]
     pub fn decrypt<K>(
         &self,
         key_source: &K,
@@ -140,6 +141,7 @@ impl hardy_cbor::decode::FromCbor for OperationSet {
             hardy_cbor::decode::parse::<(parse::AbstractSyntaxBlock, bool, usize)>(data)?;
 
         // Unpack into strong types
+        #[allow(unreachable_patterns)]
         match asb.context {
             #[cfg(feature = "rfc9173")]
             Context::BCB_AES_GCM => {
