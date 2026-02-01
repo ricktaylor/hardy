@@ -52,7 +52,7 @@
 
 /// Manages a group of cancellable tasks with graceful shutdown.
 ///
-/// `TaskPool` combines a [`tokio_util::sync::CancellationToken`] and
+/// `TaskPool` combines a [`CancellationToken`](crate::CancellationToken) and
 /// [`tokio_util::task::TaskTracker`] to provide a consistent shutdown pattern.
 ///
 /// # Shutdown Guarantees
@@ -68,7 +68,7 @@
 /// For hierarchical cancellation (e.g., cancelling a subtask without affecting
 /// the parent pool), use [`child_token()`](TaskPool::child_token).
 pub struct TaskPool {
-    cancel_token: tokio_util::sync::CancellationToken,
+    cancel_token: crate::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
 }
 
@@ -76,7 +76,7 @@ impl TaskPool {
     /// Creates a new task pool.
     pub fn new() -> Self {
         Self {
-            cancel_token: tokio_util::sync::CancellationToken::new(),
+            cancel_token: crate::CancellationToken::new(),
             task_tracker: tokio_util::task::TaskTracker::new(),
         }
     }
@@ -104,7 +104,7 @@ impl TaskPool {
     ///
     /// # async fn do_work() {}
     /// ```
-    pub fn cancel_token(&self) -> &tokio_util::sync::CancellationToken {
+    pub fn cancel_token(&self) -> &crate::CancellationToken {
         &self.cancel_token
     }
 
@@ -127,7 +127,7 @@ impl TaskPool {
     /// // Cancel just this subtask without affecting the parent pool
     /// child.cancel();
     /// ```
-    pub fn child_token(&self) -> tokio_util::sync::CancellationToken {
+    pub fn child_token(&self) -> crate::CancellationToken {
         self.cancel_token.child_token()
     }
 

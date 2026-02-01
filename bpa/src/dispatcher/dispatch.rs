@@ -250,7 +250,7 @@ impl Dispatcher {
         }
     }
 
-    pub async fn poll_waiting(self: &Arc<Self>, cancel_token: tokio_util::sync::CancellationToken) {
+    pub async fn poll_waiting(self: &Arc<Self>, cancel_token: hardy_async::CancellationToken) {
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
         let pool = hardy_async::BoundedTaskPool::default();
 

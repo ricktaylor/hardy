@@ -135,7 +135,7 @@ impl BoundedTaskPool {
     ///
     /// Use this to check cancellation status or pass to tasks that need
     /// to listen for shutdown signals.
-    pub fn cancel_token(&self) -> &tokio_util::sync::CancellationToken {
+    pub fn cancel_token(&self) -> &crate::CancellationToken {
         self.inner.cancel_token()
     }
 
@@ -144,7 +144,7 @@ impl BoundedTaskPool {
     /// Child tokens can be cancelled independently without affecting the parent
     /// pool. However, when the parent pool is cancelled, all child tokens are
     /// also cancelled.
-    pub fn child_token(&self) -> tokio_util::sync::CancellationToken {
+    pub fn child_token(&self) -> crate::CancellationToken {
         self.inner.cancel_token().child_token()
     }
 
