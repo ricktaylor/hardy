@@ -7,6 +7,8 @@
 //! # Features
 //!
 //! - **TaskPool**: Manages cancellable tasks with graceful shutdown
+//! - **BoundedTaskPool**: TaskPool with concurrency limits via semaphore
+//! - **JoinHandle**: Abstracted task handle type for runtime portability
 //!
 //! # Example
 //!
@@ -30,4 +32,10 @@
 
 mod spawn;
 
+pub mod bounded_task_pool;
+pub mod join_handle;
 pub mod task_pool;
+
+// Re-export commonly used types at crate root
+pub use bounded_task_pool::BoundedTaskPool;
+pub use join_handle::JoinHandle;

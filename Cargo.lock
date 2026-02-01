@@ -1035,6 +1035,7 @@ dependencies = [
  "bytes",
  "criterion",
  "flume",
+ "futures",
  "hardy-async",
  "hardy-bpa-fuzz",
  "hardy-bpv7",

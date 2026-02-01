@@ -156,7 +156,7 @@ impl TaskPool {
     /// assert_eq!(result, 42);
     /// # });
     /// ```
-    pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
+    pub fn spawn<F>(&self, task: F) -> crate::JoinHandle<F::Output>
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
