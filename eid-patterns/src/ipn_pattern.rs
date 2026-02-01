@@ -91,8 +91,8 @@ impl IpnPatternItem {
     }
 }
 
-impl std::fmt::Display for IpnPatternItem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for IpnPatternItem {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self == &ANY {
             write!(f, "**")
         } else if self.allocator_id == IpnPattern::Range(vec![IpnInterval::Number(0)]) {
@@ -142,8 +142,8 @@ impl IpnPattern {
     }
 }
 
-impl std::fmt::Display for IpnPattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for IpnPattern {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             IpnPattern::Range(r) if r.len() == 1 => match r[0] {
                 IpnInterval::Number(n) => write!(f, "{n}"),
@@ -170,8 +170,8 @@ pub enum IpnInterval {
     Range(RangeInclusive<u32>),
 }
 
-impl std::fmt::Display for IpnInterval {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for IpnInterval {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             IpnInterval::Number(n) => write!(f, "{n}"),
             IpnInterval::Range(r) if r.end() == &u32::MAX => write!(f, "{}+", r.start()),
@@ -181,13 +181,13 @@ impl std::fmt::Display for IpnInterval {
 }
 
 impl PartialOrd for IpnInterval {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for IpnInterval {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         match (self, other) {
             (IpnInterval::Number(lhs), IpnInterval::Number(rhs)) => lhs.cmp(rhs),
             (IpnInterval::Number(lhs), IpnInterval::Range(rhs)) => lhs

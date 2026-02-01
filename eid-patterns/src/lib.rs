@@ -1,5 +1,15 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
-use std::borrow::Cow;
 use thiserror::Error;
 
 mod ipn_pattern;
@@ -76,12 +86,24 @@ impl From<IpnNodeId> for EidPattern {
 }
 
 impl From<DtnNodeId> for EidPattern {
+    #[cfg(feature = "dtn-pat-item")]
     fn from(value: DtnNodeId) -> Self {
         EidPattern::Set(
             [EidPatternItem::DtnPatternItem(
                 dtn_pattern::DtnPatternItem::new_glob(format!("{}/**", value.node_name).as_str())
                     .expect("Invalid glob"),
             )]
+            .into(),
+        )
+    }
+
+    #[cfg(not(feature = "dtn-pat-item"))]
+    fn from(_: DtnNodeId) -> Self {
+        EidPattern::Set(
+            [
+                EidPatternItem::AnyNumericScheme(1),
+                EidPatternItem::AnyTextScheme("dtn".into()),
+            ]
             .into(),
         )
     }
@@ -182,8 +204,8 @@ impl TryFrom<EidPattern> for Eid {
     }
 }
 
-impl std::fmt::Display for EidPattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for EidPattern {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             EidPattern::Any => write!(f, "*:**"),
             EidPattern::Set(items) => {
@@ -263,8 +285,8 @@ impl EidPatternItem {
     }
 }
 
-impl std::fmt::Display for EidPatternItem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for EidPatternItem {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             EidPatternItem::IpnPatternItem(i) => write!(f, "ipn:{i}"),
             #[cfg(feature = "dtn-pat-item")]

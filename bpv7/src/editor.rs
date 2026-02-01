@@ -715,7 +715,7 @@ impl<'a> Editor<'a> {
                 // Steal the content of the decrypted payload
                 // This is safe as this function is an explicit 'remove the encryption', hence
                 // removing the Zeroizing<> is valid
-                let target_payload: Box<[u8]> = std::mem::take(&mut target_payload);
+                let target_payload: Box<[u8]> = core::mem::take(&mut target_payload);
 
                 // Replace the block payload
                 let mut block = block_set
@@ -803,7 +803,7 @@ impl<'a> Editor<'a> {
                         // Check if the BIB targets the block we just decrypted
                         if bib_opset.operations.contains_key(&block_number) {
                             // The BIB targets our decrypted block - decrypt the BIB and remove signature
-                            let decrypted_bib: Box<[u8]> = std::mem::take(&mut decrypted_bib);
+                            let decrypted_bib: Box<[u8]> = core::mem::take(&mut decrypted_bib);
                             self = self
                                 .update_block_inner(bib_block_num)?
                                 .with_data(decrypted_bib.into_vec().into())

@@ -7,7 +7,7 @@ use winnow::{
     token::{one_of, take_while},
 };
 
-impl std::str::FromStr for EidPattern {
+impl core::str::FromStr for EidPattern {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -88,8 +88,8 @@ fn parse_scheme(input: &mut &str) -> ModalResult<EidPatternItem> {
 // non-zero-decimal = (%x31-39 *DIGIT)
 fn parse_non_zero_decimal<T>(input: &mut &str) -> ModalResult<T>
 where
-    T: std::str::FromStr,
-    <T as std::str::FromStr>::Err: std::error::Error + Send + Sync + 'static,
+    T: core::str::FromStr,
+    <T as core::str::FromStr>::Err: core::error::Error + Send + Sync + 'static,
 {
     (one_of('1'..'9'), digit0)
         .take()
