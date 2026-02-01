@@ -32,7 +32,7 @@ struct RibInner {
 pub struct Rib {
     inner: RwLock<RibInner>,
     tasks: hardy_async::task_pool::TaskPool,
-    poll_waiting_notify: Arc<tokio::sync::Notify>,
+    poll_waiting_notify: Arc<hardy_async::Notify>,
     store: Arc<storage::Store>,
 }
 
@@ -45,7 +45,7 @@ impl Rib {
                 address_types: HashMap::new(),
             }),
             tasks: hardy_async::task_pool::TaskPool::new(),
-            poll_waiting_notify: Arc::new(tokio::sync::Notify::new()),
+            poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
             store,
         }
     }

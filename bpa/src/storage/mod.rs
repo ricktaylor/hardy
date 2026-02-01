@@ -259,7 +259,7 @@ pub(crate) struct Store {
     bundle_storage: Arc<dyn storage::BundleStorage>,
     bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
     reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
-    reaper_wakeup: Arc<tokio::sync::Notify>,
+    reaper_wakeup: Arc<hardy_async::Notify>,
 
     // Config
     max_cached_bundle_size: usize,

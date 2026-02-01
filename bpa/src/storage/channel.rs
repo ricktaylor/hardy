@@ -12,7 +12,7 @@ struct Shared {
     use_tx: std::sync::Mutex<ChannelState>,
     tx: flume::Sender<bundle::Bundle>,
     status: metadata::BundleStatus,
-    notify: Arc<tokio::sync::Notify>,
+    notify: Arc<hardy_async::Notify>,
 }
 
 #[derive(Clone)]
@@ -101,7 +101,7 @@ impl Store {
             use_tx: std::sync::Mutex::new(ChannelState::Open),
             tx,
             status: status.clone(),
-            notify: Arc::new(tokio::sync::Notify::new()),
+            notify: Arc::new(hardy_async::Notify::new()),
         });
 
         let store = self.clone();
