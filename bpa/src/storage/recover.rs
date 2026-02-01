@@ -1,4 +1,5 @@
 use super::*;
+use futures::{FutureExt, join, select_biased};
 
 pub enum RestartResult {
     Missing,
@@ -64,7 +65,7 @@ impl Store {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
 
-        futures::join!(
+        join!(
             // Producer: recover bundles from storage
             async {
                 self.bundle_storage
@@ -75,8 +76,8 @@ impl Store {
             // Consumer: process recovered bundles
             async {
                 loop {
-                    tokio::select! {
-                        r = rx.recv_async() => match r {
+                    select_biased! {
+                        r = rx.recv_async().fuse() => match r {
                             Err(_) => {
                                 break;
                             }
@@ -90,7 +91,7 @@ impl Store {
                                 }
                             }
                         },
-                        _ = cancel_token.cancelled() => {
+                        _ = cancel_token.cancelled().fuse() => {
                             break;
                         }
                     }
@@ -104,7 +105,7 @@ impl Store {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
 
-        futures::join!(
+        join!(
             // Producer: find unconfirmed bundles
             async {
                 self.metadata_storage
@@ -115,8 +116,8 @@ impl Store {
             // Consumer: report orphaned bundles
             async {
                 loop {
-                    tokio::select! {
-                        bundle = rx.recv_async() => match bundle {
+                    select_biased! {
+                        bundle = rx.recv_async().fuse() => match bundle {
                             Err(_) => break,
                             Ok(bundle) => {
                                 metrics::counter!("restart_orphan_bundles").increment(1);
@@ -129,7 +130,7 @@ impl Store {
                                 .await
                             }
                         },
-                        _ = cancel_token.cancelled() => {
+                        _ = cancel_token.cancelled().fuse() => {
                             break;
                         }
                     }

@@ -1,4 +1,5 @@
 use super::*;
+use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 
 pub(super) enum DispatchResult {
@@ -256,14 +257,14 @@ impl Dispatcher {
         let dispatcher = self.clone();
 
         // Run producer and consumer concurrently
-        futures::join!(
+        join!(
             // Producer: feed bundles into channel
             self.store.poll_waiting(tx),
             // Consumer: drain channel into bounded pool
             async {
                 loop {
-                    tokio::select! {
-                        bundle = rx.recv_async() => {
+                    select_biased! {
+                        bundle = rx.recv_async().fuse() => {
                             let Ok(mut bundle) = bundle else {
                                 break;
                             };
@@ -291,7 +292,7 @@ impl Dispatcher {
                                 }).await;
                             }
                         }
-                        _ = cancel_token.cancelled() => {
+                        _ = cancel_token.cancelled().fuse() => {
                             break;
                         }
                     }

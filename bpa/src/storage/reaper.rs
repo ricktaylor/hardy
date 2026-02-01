@@ -1,4 +1,5 @@
 use super::*;
+use futures::{FutureExt, join, select_biased};
 
 // CacheEntry stores the expiry and ID for the heap.
 #[derive(Clone, Eq, PartialEq)]
@@ -106,14 +107,14 @@ impl Store {
                 }
             };
 
-            tokio::select! {
-                _ = tokio::time::sleep(sleep_duration) => {},
-                _ = self.reaper_wakeup.notified() => {},
-                _ = self.tasks.cancel_token().cancelled() => {
+            select_biased! {
+                _ = self.tasks.cancel_token().cancelled().fuse() => {
                     // Shutting down
                     debug!("Reaper task complete");
                     break;
                 }
+                _ = self.reaper_wakeup.notified().fuse() => {},
+                _ = tokio::time::sleep(sleep_duration).fuse() => {},
             }
 
             let mut dead_bundle_ids = Vec::new();
@@ -175,7 +176,7 @@ impl Store {
         let reaper = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.reaper_cache_size);
 
-        futures::join!(
+        join!(
             // Producer: poll for expiring bundles
             async {
                 let _ = self
@@ -188,8 +189,8 @@ impl Store {
             // Consumer: add bundles to cache
             async {
                 loop {
-                    tokio::select! {
-                        bundle = rx.recv_async() => {
+                    select_biased! {
+                        bundle = rx.recv_async().fuse() => {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
@@ -197,7 +198,7 @@ impl Store {
                                 reaper.watch_bundle_inner(bundle, false).await;
                             }
                         },
-                        _ = cancel_token.cancelled() => {
+                        _ = cancel_token.cancelled().fuse() => {
                             break;
                         }
                     }

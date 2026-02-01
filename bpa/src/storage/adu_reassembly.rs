@@ -1,4 +1,5 @@
 use super::*;
+use futures::{FutureExt, join, select_biased};
 use std::{collections::HashMap, ops::Range};
 
 struct ReassemblyResult {
@@ -124,7 +125,7 @@ impl Store {
 
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
 
-        futures::join!(
+        join!(
             // Producer: poll for fragment bundles
             async {
                 let _ = self
@@ -137,8 +138,8 @@ impl Store {
             // Consumer: collect fragments
             async {
                 loop {
-                    tokio::select! {
-                        bundle = rx.recv_async() => {
+                    select_biased! {
+                        bundle = rx.recv_async().fuse() => {
                             let Ok(bundle) = bundle else {
                                 // Done (>= is just so we can capture invalid bundles and handle them at re-dispatch)
                                 break (adu_totals >= total_adu_len).then_some(results);
@@ -169,7 +170,7 @@ impl Store {
                                 );
                             }
                         },
-                        _ = cancel_token.cancelled() => {
+                        _ = cancel_token.cancelled().fuse() => {
                             break None;
                         }
                     }

@@ -1,4 +1,5 @@
 use super::*;
+use futures::{FutureExt, select_biased};
 use hardy_bpv7::{
     eid::{Eid, NodeId},
     status_report::ReasonCode,
@@ -54,13 +55,13 @@ impl Rib {
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
             loop {
-                tokio::select! {
-                    _ = rib.poll_waiting_notify.notified() => {
-                        dispatcher.poll_waiting(cancel_token.clone()).await;
-                    },
-                    _ = cancel_token.cancelled() => {
+                select_biased! {
+                    _ = cancel_token.cancelled().fuse() => {
                         break;
                     }
+                    _ = rib.poll_waiting_notify.notified().fuse() => {
+                        dispatcher.poll_waiting(cancel_token.clone()).await;
+                    },
                 }
             }
 
