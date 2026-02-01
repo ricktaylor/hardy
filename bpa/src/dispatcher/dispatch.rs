@@ -270,7 +270,7 @@ impl Dispatcher {
 
                             if !bundle.has_expired() {
                                 let dispatcher = dispatcher.clone();
-                                pool.spawn(async move {
+                                hardy_async::spawn!(pool,"poll_waiting_dispatcher",async move {
                                     match dispatcher.process_bundle(&mut bundle).await {
                                         DispatchResult::Drop(reason_code) => {
                                             dispatcher.drop_bundle(bundle, reason_code).await;

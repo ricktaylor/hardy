@@ -20,7 +20,7 @@ use trace_err::*;
 use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "tracing")]
-use tracing::{Instrument, instrument};
+use tracing::instrument;
 
 // Re-export for consistency
 pub use async_trait::async_trait;
