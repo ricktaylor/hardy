@@ -250,71 +250,55 @@ impl Dispatcher {
     }
 
     pub async fn poll_waiting(self: &Arc<Self>, cancel_token: tokio_util::sync::CancellationToken) {
-        let dispatcher = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
-        let task = async move {
-            // We're going to spawn a bunch of tasks
-            let parallelism = std::thread::available_parallelism()
-                .map(Into::into)
-                .unwrap_or(1);
-            let mut task_set = tokio::task::JoinSet::new();
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
+        let pool = hardy_async::BoundedTaskPool::default();
 
-            loop {
-                tokio::select! {
-                    bundle = rx.recv_async() => {
-                        let Ok(mut bundle) = bundle else {
-                            break;
-                        };
+        let dispatcher = self.clone();
 
-                        if !bundle.has_expired() {
-                            let permit = semaphore.clone().acquire_owned().await.trace_expect("Failed to acquire permit");
-                            let dispatcher = dispatcher.clone();
-                            task_set.spawn(async move {
-                                // Now process the bundle
-                                match dispatcher.process_bundle(&mut bundle).await {
-                                    DispatchResult::Drop(reason_code) => {
-                                        dispatcher.drop_bundle(bundle, reason_code).await;
+        // Run producer and consumer concurrently
+        futures::join!(
+            // Producer: feed bundles into channel
+            self.store.poll_waiting(tx),
+            // Consumer: drain channel into bounded pool
+            async {
+                loop {
+                    tokio::select! {
+                        bundle = rx.recv_async() => {
+                            let Ok(mut bundle) = bundle else {
+                                break;
+                            };
+
+                            if !bundle.has_expired() {
+                                let dispatcher = dispatcher.clone();
+                                pool.spawn(async move {
+                                    match dispatcher.process_bundle(&mut bundle).await {
+                                        DispatchResult::Drop(reason_code) => {
+                                            dispatcher.drop_bundle(bundle, reason_code).await;
+                                        }
+                                        DispatchResult::Forward(peer) => {
+                                            dispatcher.cla_registry.forward(peer, bundle).await;
+                                        }
+                                        DispatchResult::Wait
+                                        | DispatchResult::Gone
+                                        | DispatchResult::Reassemble => {
+                                            // We are already waiting, and reassembly happens on reception
+                                        }
+                                        DispatchResult::Delivered => {
+                                            dispatcher.report_bundle_delivery(&bundle).await;
+                                            dispatcher.drop_bundle(bundle, None).await;
+                                        }
                                     }
-                                    DispatchResult::Forward(peer) => {
-                                        dispatcher.cla_registry.forward(peer, bundle).await;
-                                    }
-                                    DispatchResult::Wait
-                                    | DispatchResult::Gone => {}
-                                    | DispatchResult::Reassemble => {
-                                        // We are already waiting, and reassembly happens on recepetion, so don't do it again here
-                                    }
-                                    DispatchResult::Delivered => {
-                                        dispatcher.report_bundle_delivery(&bundle).await;
-                                        dispatcher.drop_bundle(bundle, None).await;
-                                    }
-                                }
-                                drop(permit);
-                            });
+                                }).await;
+                            }
                         }
-                    },
-                    Some(_) = task_set.join_next(), if !task_set.is_empty() => {},
-                    _ = cancel_token.cancelled() => {
-                        break;
+                        _ = cancel_token.cancelled() => {
+                            break;
+                        }
                     }
                 }
             }
+        );
 
-            // Wait for all sub-tasks to complete
-            while task_set.join_next().await.is_some() {}
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "poll_waiting_reader");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        let h = tokio::spawn(task);
-
-        self.store.poll_waiting(tx).await;
-
-        _ = h.await;
+        pool.shutdown().await;
     }
 }
