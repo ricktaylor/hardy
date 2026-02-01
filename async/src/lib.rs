@@ -37,6 +37,7 @@ pub mod cancellation_token;
 pub mod join_handle;
 pub mod notify;
 pub mod task_pool;
+pub mod time;
 
 // Re-export commonly used types at crate root
 pub use bounded_task_pool::BoundedTaskPool;

@@ -82,30 +82,16 @@ impl Store {
 
     /// The background task that waits for the next expiry, a notification, or shutdown.
     pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
-        let mut repopulation_task: Option<tokio::task::JoinHandle<()>> = None;
+        let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
 
         loop {
-            let sleep_duration = {
-                if let Some(entry) = self
-                    .reaper_cache
-                    .lock()
-                    .trace_expect("Failed to acquire lock")
-                    .first()
-                {
-                    // Calculate precise duration until the next expiry.
-                    let sleep_duration = entry.expiry - time::OffsetDateTime::now_utc();
-                    if sleep_duration.is_positive() {
-                        sleep_duration
-                            .try_into()
-                            .unwrap_or(std::time::Duration::MAX)
-                    } else {
-                        std::time::Duration::ZERO
-                    }
-                } else {
-                    // Cache is empty. Wait "forever" for a notification.
-                    std::time::Duration::MAX
-                }
-            };
+            let sleep_duration = self
+                .reaper_cache
+                .lock()
+                .trace_expect("Failed to acquire lock")
+                .first()
+                .map(|entry| entry.expiry - time::OffsetDateTime::now_utc())
+                .unwrap_or(time::Duration::MAX);
 
             select_biased! {
                 _ = self.tasks.cancel_token().cancelled().fuse() => {
@@ -114,7 +100,7 @@ impl Store {
                     break;
                 }
                 _ = self.reaper_wakeup.notified().fuse() => {},
-                _ = tokio::time::sleep(sleep_duration).fuse() => {},
+                _ = hardy_async::time::sleep(sleep_duration).fuse() => {},
             }
 
             let mut dead_bundle_ids = Vec::new();
