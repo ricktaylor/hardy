@@ -63,88 +63,78 @@ impl Store {
     async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
-        let task = async move {
-            loop {
-                tokio::select! {
-                    r = rx.recv_async() => match r {
-                        Err(_) => {
+
+        futures::join!(
+            // Producer: recover bundles from storage
+            async {
+                self.bundle_storage
+                    .recover(tx)
+                    .await
+                    .trace_expect("Bundle storage recover failed");
+            },
+            // Consumer: process recovered bundles
+            async {
+                loop {
+                    tokio::select! {
+                        r = rx.recv_async() => match r {
+                            Err(_) => {
+                                break;
+                            }
+                            Ok(r) => {
+                                match dispatcher.restart_bundle(r.0, r.1).await {
+                                    RestartResult::Missing => metrics::counter!("restart_lost_bundles").increment(1),
+                                    RestartResult::Duplicate => metrics::counter!("restart_duplicate_bundles").increment(1),
+                                    RestartResult::Valid => metrics::counter!("restart_valid_bundles").increment(1),
+                                    RestartResult::Orphan => metrics::counter!("restart_orphan_bundles").increment(1),
+                                    RestartResult::Junk => metrics::counter!("restart_junk_bundles").increment(1),
+                                }
+                            }
+                        },
+                        _ = cancel_token.cancelled() => {
                             break;
                         }
-                        Ok(r) => {
-                            match dispatcher.restart_bundle(r.0,r.1).await {
-                                RestartResult::Missing => metrics::counter!("restart_lost_bundles").increment(1),
-                                RestartResult::Duplicate => metrics::counter!("restart_duplicate_bundles").increment(1),
-                                RestartResult::Valid => metrics::counter!("restart_valid_bundles").increment(1),
-                                RestartResult::Orphan => metrics::counter!("restart_orphan_bundles").increment(1),
-                                RestartResult::Junk => metrics::counter!("restart_junk_bundles").increment(1),
-                            }
-                        }
-                    },
-                    _ = cancel_token.cancelled() => {
-                        break;
                     }
                 }
             }
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "bundle_storage_recovery_reader");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        let h = tokio::spawn(task);
-
-        self.bundle_storage
-            .recover(tx)
-            .await
-            .trace_expect("Bundle storage recover failed");
-
-        _ = h.await;
+        );
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
-        let task = async move {
-            loop {
-                tokio::select! {
-                    bundle = rx.recv_async() => match bundle {
-                        Err(_) => break,
-                        Ok(bundle) => {
-                            metrics::counter!("restart_orphan_bundles").increment(1);
 
-                            // The data associated with `bundle` has gone!
-                            dispatcher.report_bundle_deletion(
-                                &bundle,
-                                hardy_bpv7::status_report::ReasonCode::DepletedStorage,
-                            )
-                            .await
+        futures::join!(
+            // Producer: find unconfirmed bundles
+            async {
+                self.metadata_storage
+                    .remove_unconfirmed(tx)
+                    .await
+                    .trace_expect("Remove unconfirmed bundles failed");
+            },
+            // Consumer: report orphaned bundles
+            async {
+                loop {
+                    tokio::select! {
+                        bundle = rx.recv_async() => match bundle {
+                            Err(_) => break,
+                            Ok(bundle) => {
+                                metrics::counter!("restart_orphan_bundles").increment(1);
+
+                                // The data associated with `bundle` has gone!
+                                dispatcher.report_bundle_deletion(
+                                    &bundle,
+                                    hardy_bpv7::status_report::ReasonCode::DepletedStorage,
+                                )
+                                .await
+                            }
+                        },
+                        _ = cancel_token.cancelled() => {
+                            break;
                         }
-                    },
-                    _ = cancel_token.cancelled() => {
-                        break;
                     }
                 }
             }
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "metadata_storage_check_reader");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        let h = tokio::spawn(task);
-
-        self.metadata_storage
-            .remove_unconfirmed(tx)
-            .await
-            .trace_expect("Remove unconfirmed bundles failed");
-
-        _ = h.await;
+        );
     }
 }

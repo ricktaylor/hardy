@@ -83,8 +83,7 @@ impl Store {
         status: &metadata::BundleStatus,
     ) -> Option<ReassemblyResult> {
         // Poll the store for the other fragments
-        let outer_cancel_token = self.tasks.child_token();
-        let cancel_token = outer_cancel_token.clone();
+        let cancel_token = self.tasks.cancel_token().clone();
 
         let source = bundle.bundle.id.source.clone();
         let timestamp = bundle.bundle.id.timestamp.clone();
@@ -124,68 +123,59 @@ impl Store {
         };
 
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
-        let task = async move {
-            loop {
-                tokio::select! {
-                    bundle = rx.recv_async() => {
-                        let Ok(bundle) = bundle else {
-                            // Done (>= is just so we can capture invalid bundles and handle them at re-dispatch)
-                            break (adu_totals >= total_adu_len).then_some(results);
-                        };
 
-                        if source == bundle.bundle.id.source &&
-                            timestamp == bundle.bundle.id.timestamp &&
-                            let Some(fragment_info) = &bundle.bundle.id.fragment_info
-                        {
-                            let payload = &bundle
-                                .bundle
-                                .blocks
-                                .get(&1)
-                                .trace_expect("Bundle fragment without payload?!")
-                                .payload_range();
+        futures::join!(
+            // Producer: poll for fragment bundles
+            async {
+                let _ = self
+                    .metadata_storage
+                    .poll_adu_fragments(tx, status)
+                    .await
+                    .inspect_err(|e| error!("Failed to poll store for fragmented bundles: {e}"));
+                // When tx is dropped, consumer will see channel close and return result
+            },
+            // Consumer: collect fragments
+            async {
+                loop {
+                    tokio::select! {
+                        bundle = rx.recv_async() => {
+                            let Ok(bundle) = bundle else {
+                                // Done (>= is just so we can capture invalid bundles and handle them at re-dispatch)
+                                break (adu_totals >= total_adu_len).then_some(results);
+                            };
 
-                            adu_totals = adu_totals.saturating_add(payload.len() as u64);
+                            if source == bundle.bundle.id.source &&
+                                timestamp == bundle.bundle.id.timestamp &&
+                                let Some(fragment_info) = &bundle.bundle.id.fragment_info
+                            {
+                                let payload = &bundle
+                                    .bundle
+                                    .blocks
+                                    .get(&1)
+                                    .trace_expect("Bundle fragment without payload?!")
+                                    .payload_range();
 
-                            results.received_at = results.received_at.min(bundle.metadata.received_at);
-                            results.adus.insert(fragment_info.offset,
-                                (
-                                    bundle.bundle.id,
-                                    bundle.metadata
-                                        .storage_name
-                                        .trace_expect("Invalid bundle in reassembly?!"),
-                                    payload.clone()
-                                )
-                            );
+                                adu_totals = adu_totals.saturating_add(payload.len() as u64);
+
+                                results.received_at = results.received_at.min(bundle.metadata.received_at);
+                                results.adus.insert(fragment_info.offset,
+                                    (
+                                        bundle.bundle.id,
+                                        bundle.metadata
+                                            .storage_name
+                                            .trace_expect("Invalid bundle in reassembly?!"),
+                                        payload.clone()
+                                    )
+                                );
+                            }
+                        },
+                        _ = cancel_token.cancelled() => {
+                            break None;
                         }
-                    },
-                    _ = cancel_token.cancelled() => {
-                        break None;
                     }
                 }
             }
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "poll_adu_fragments_reader");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        let h = tokio::spawn(task);
-
-        if self
-            .metadata_storage
-            .poll_adu_fragments(tx, status)
-            .await
-            .inspect_err(|e| error!("Failed to poll store for fragmented bundles: {e}"))
-            .is_err()
-        {
-            // Cancel the reader task
-            outer_cancel_token.cancel();
-        }
-
-        h.await.unwrap_or(None)
+        ).1
     }
 
     async fn reassemble(&self, results: &ReassemblyResult) -> Option<(Arc<str>, Bytes)> {

@@ -171,49 +171,39 @@ impl Store {
     }
 
     async fn refill_cache(self: Arc<Self>) {
-        let outer_cancel_token = self.tasks.child_token();
-        let cancel_token = outer_cancel_token.clone();
+        let cancel_token = self.tasks.cancel_token().clone();
         let reaper = self.clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.reaper_cache_size);
-        let task = async move {
-            loop {
-                tokio::select! {
-                    bundle = rx.recv_async() => {
-                        let Ok(bundle) = bundle else {
+
+        futures::join!(
+            // Producer: poll for expiring bundles
+            async {
+                let _ = self
+                    .metadata_storage
+                    .poll_expiry(tx, self.reaper_cache_size)
+                    .await
+                    .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
+                // When tx is dropped, consumer will see channel close and exit
+            },
+            // Consumer: add bundles to cache
+            async {
+                loop {
+                    tokio::select! {
+                        bundle = rx.recv_async() => {
+                            let Ok(bundle) = bundle else {
+                                break;
+                            };
+                            if bundle.metadata.status != metadata::BundleStatus::Dispatching {
+                                reaper.watch_bundle_inner(bundle, false).await;
+                            }
+                        },
+                        _ = cancel_token.cancelled() => {
                             break;
-                        };
-                        if bundle.metadata.status != metadata::BundleStatus::Dispatching {
-                            reaper.watch_bundle_inner(bundle, false).await;
                         }
-                    },
-                    _ = cancel_token.cancelled() => {
-                        break;
                     }
                 }
             }
-        };
-
-        #[cfg(feature = "tracing")]
-        let task = {
-            let span = tracing::trace_span!(parent: None, "poll_expiry_reader");
-            span.follows_from(tracing::Span::current());
-            task.instrument(span)
-        };
-
-        let h = tokio::spawn(task);
-
-        if self
-            .metadata_storage
-            .poll_expiry(tx, self.reaper_cache_size)
-            .await
-            .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"))
-            .is_err()
-        {
-            // Cancel the reader task
-            outer_cancel_token.cancel();
-        }
-
-        _ = h.await;
+        );
     }
 }
 
