@@ -83,7 +83,7 @@ impl Bpa {
     pub async fn register_service(
         &self,
         service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Service>,
+        service: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
             .register(service_id, service, &self.dispatcher)

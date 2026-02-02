@@ -37,7 +37,7 @@ pub struct Msg {
 
 #[derive(Default)]
 pub struct PipeService {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::Sink>>,
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::ApplicationSink>>,
 }
 
 impl PipeService {
@@ -57,8 +57,12 @@ impl PipeService {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for PipeService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::Sink>) {
+impl hardy_bpa::services::Application for PipeService {
+    async fn on_register(
+        &self,
+        _source: &Eid,
+        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
+    ) {
         if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }

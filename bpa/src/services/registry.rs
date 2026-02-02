@@ -10,7 +10,7 @@ use std::{
 };
 
 pub struct Service {
-    pub service: Arc<dyn services::Service>,
+    pub service: Arc<dyn services::Application>,
     pub service_id: Eid,
 }
 
@@ -55,7 +55,7 @@ struct Sink {
 }
 
 #[async_trait]
-impl services::Sink for Sink {
+impl services::ApplicationSink for Sink {
     async fn unregister(&self) {
         if let Some(service) = self.service.upgrade() {
             self.registry.unregister(service).await
@@ -165,7 +165,7 @@ impl ServiceRegistry {
     pub async fn register(
         self: &Arc<Self>,
         service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Service>,
+        service: Arc<dyn services::Application>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         // Scope the lock

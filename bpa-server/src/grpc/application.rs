@@ -3,7 +3,7 @@ use hardy_bpa::async_trait;
 use hardy_proto::{application::*, proxy::*, to_timestamp};
 
 struct ApplicationInner {
-    sink: Box<dyn hardy_bpa::services::Sink>,
+    sink: Box<dyn hardy_bpa::services::ApplicationSink>,
 }
 
 #[derive(Default)]
@@ -89,11 +89,11 @@ impl Application {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for Application {
+impl hardy_bpa::services::Application for Application {
     async fn on_register(
         &self,
         _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::Sink>,
+        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
     ) {
         // Ensure single initialization
         self.inner.get_or_init(|| ApplicationInner { sink });

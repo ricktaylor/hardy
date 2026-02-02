@@ -3,7 +3,7 @@ use crate::application::*;
 use hardy_bpv7::eid;
 
 async fn receive(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::services::Application,
     request: ReceiveBundleRequest,
 ) -> Result<ReceiveBundleResponse, tonic::Status> {
     let source = request
@@ -25,7 +25,7 @@ async fn receive(
 }
 
 async fn status_notify(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::services::Application,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
     let timestamp = if let Some(timestamp) = request.timestamp {
@@ -76,7 +76,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Sink for Sink {
+impl hardy_bpa::services::ApplicationSink for Sink {
     async fn send(
         &self,
         destination: eid::Eid,
@@ -172,7 +172,7 @@ impl hardy_bpa::services::Sink for Sink {
 }
 
 struct Handler {
-    service: Weak<dyn hardy_bpa::services::Service>,
+    service: Weak<dyn hardy_bpa::services::Application>,
 }
 
 #[async_trait]
@@ -231,7 +231,7 @@ impl ProxyHandler for Handler {
 pub async fn register_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::services::Service>,
+    service: Arc<dyn hardy_bpa::services::Application>,
 ) -> hardy_bpa::services::Result<eid::Eid> {
     let mut app_client = application_client::ApplicationClient::connect(grpc_addr.clone())
         .await

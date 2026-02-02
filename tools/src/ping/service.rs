@@ -1,12 +1,10 @@
-use crate::ping::payload::Payload;
-
 use super::*;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 use std::{collections::HashMap, sync::Arc};
 
 pub struct Service {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::Sink>>,
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::ApplicationSink>>,
     node_id: String,
     destination: Eid,
     lifetime: std::time::Duration,
@@ -99,8 +97,12 @@ impl Service {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for Service {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::Sink>) {
+impl hardy_bpa::services::Application for Service {
+    async fn on_register(
+        &self,
+        _source: &Eid,
+        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
+    ) {
         // Ensure single initialization
         self.sink.get_or_init(|| sink);
     }
@@ -128,7 +130,7 @@ impl hardy_bpa::services::Service for Service {
             return;
         };
 
-        let payload = match Payload::from_text_fmt(payload) {
+        let payload = match payload::Payload::from_text_fmt(payload) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Failed to parse ping payload: {e}");

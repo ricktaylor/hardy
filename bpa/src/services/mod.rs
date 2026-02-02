@@ -42,8 +42,8 @@ pub enum StatusNotify {
 }
 
 #[async_trait]
-pub trait Service: Send + Sync {
-    async fn on_register(&self, source: &Eid, sink: Box<dyn Sink>);
+pub trait Application: Send + Sync {
+    async fn on_register(&self, source: &Eid, sink: Box<dyn ApplicationSink>);
 
     async fn on_unregister(&self);
 
@@ -77,7 +77,7 @@ pub struct SendOptions {
 }
 
 #[async_trait]
-pub trait Sink: Send + Sync {
+pub trait ApplicationSink: Send + Sync {
     async fn unregister(&self);
 
     async fn send(
