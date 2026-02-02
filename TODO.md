@@ -1061,7 +1061,7 @@ Before implementing proactive scheduling:
 - RIB routing: `bpa/src/rib/find.rs`
 - Application proto: `proto/application.proto`
 - **BP-ARP Design:** `bpa/docs/bp_arp_design.md`
-- **DPP (DTN Peering Protocol):** `docs/peering.md`
+- **DPP (DTN Peering Protocol):** `docs/dtn_peering_protocol.md`
 
 ### External / Standards
 
