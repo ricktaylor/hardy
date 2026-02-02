@@ -129,7 +129,7 @@ async fn exec_inner(
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     let service = std::sync::Arc::new(service::Service::new(args));
-    bpa.register_service(
+    bpa.register_application(
         args.source.as_ref().and_then(|eid| eid.service()),
         service.clone(),
     )

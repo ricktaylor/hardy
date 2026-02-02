@@ -54,7 +54,6 @@ impl Dispatcher {
                     let on_status_notify = |assertion: Option<StatusAssertion>, code| async {
                         if let Some(assertion) = assertion {
                             service
-                                .service
                                 .on_status_notify(
                                     &bundle_id,
                                     &from,

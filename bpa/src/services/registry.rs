@@ -9,9 +9,39 @@ use std::{
     sync::{RwLock, Weak},
 };
 
+/// Distinguishes between low-level Service and high-level Application registrations
+pub enum ServiceImpl {
+    /// Low-level service with full bundle access
+    LowLevel(Arc<dyn services::Service>),
+    /// High-level application receiving only payload
+    Application(Arc<dyn services::Application>),
+}
+
 pub struct Service {
-    pub service: Arc<dyn services::Application>,
+    pub service: ServiceImpl,
     pub service_id: Eid,
+}
+
+impl Service {
+    pub async fn on_status_notify(
+        &self,
+        bundle_id: &str,
+        from: &str,
+        kind: StatusNotify,
+        reason: hardy_bpv7::status_report::ReasonCode,
+        timestamp: Option<time::OffsetDateTime>,
+    ) {
+        match &self.service {
+            ServiceImpl::LowLevel(svc) => {
+                svc.on_status_notify(bundle_id, from, kind, reason, timestamp)
+                    .await
+            }
+            services::registry::ServiceImpl::Application(app) => {
+                app.on_status_notify(bundle_id, from, kind, reason, timestamp)
+                    .await
+            }
+        }
+    }
 }
 
 impl PartialEq for Service {
@@ -48,51 +78,21 @@ impl std::fmt::Debug for Service {
     }
 }
 
+/// Sink implementation for both Service and Application traits
 struct Sink {
     service: Weak<Service>,
     registry: Arc<ServiceRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
-#[async_trait]
-impl services::ApplicationSink for Sink {
-    async fn unregister(&self) {
+impl Sink {
+    async fn unregister_inner(&self) {
         if let Some(service) = self.service.upgrade() {
             self.registry.unregister(service).await
         }
     }
 
-    async fn send(
-        &self,
-        destination: Eid,
-        data: Bytes,
-        lifetime: std::time::Duration,
-        options: Option<services::SendOptions>,
-    ) -> services::Result<Box<str>> {
-        // Sanity check
-        if destination.is_null() {
-            return Err(services::Error::InvalidDestination(destination));
-        }
-
-        Ok(self
-            .dispatcher
-            .local_dispatch(
-                self.service
-                    .upgrade()
-                    .ok_or(services::Error::Disconnected)?
-                    .service_id
-                    .clone(),
-                destination,
-                data,
-                lifetime,
-                options,
-            )
-            .await?
-            .to_key()
-            .into())
-    }
-
-    async fn cancel(&self, bundle_id: &str) -> services::Result<bool> {
+    async fn cancel_inner(&self, bundle_id: &str) -> services::Result<bool> {
         let Ok(bundle_id) = hardy_bpv7::bundle::Id::from_key(bundle_id) else {
             return Ok(false);
         };
@@ -111,13 +111,69 @@ impl services::ApplicationSink for Sink {
     }
 }
 
+#[async_trait]
+impl services::ServiceSink for Sink {
+    async fn unregister(&self) {
+        self.unregister_inner().await
+    }
+
+    async fn send(&self, data: Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
+        let service = self
+            .service
+            .upgrade()
+            .ok_or(services::Error::Disconnected)?;
+
+        self.dispatcher
+            .local_dispatch_raw(&service.service_id, data)
+            .await
+    }
+
+    async fn cancel(&self, bundle_id: &str) -> services::Result<bool> {
+        self.cancel_inner(bundle_id).await
+    }
+}
+
+#[async_trait]
+impl services::ApplicationSink for Sink {
+    async fn unregister(&self) {
+        self.unregister_inner().await
+    }
+
+    async fn send(
+        &self,
+        destination: Eid,
+        data: Bytes,
+        lifetime: std::time::Duration,
+        options: Option<services::SendOptions>,
+    ) -> services::Result<Box<str>> {
+        let service = self
+            .service
+            .upgrade()
+            .ok_or(services::Error::Disconnected)?;
+
+        let id = self
+            .dispatcher
+            .local_dispatch(
+                service.service_id.clone(),
+                destination,
+                data,
+                lifetime,
+                options,
+            )
+            .await?;
+        Ok(id.to_key().into())
+    }
+
+    async fn cancel(&self, bundle_id: &str) -> services::Result<bool> {
+        self.cancel_inner(bundle_id).await
+    }
+}
+
 impl Drop for Sink {
     fn drop(&mut self) {
         if let Some(service) = self.service.upgrade() {
-            // Spawn async cleanup onto the Registry's TaskPool
-            // This makes the cleanup tracked by the Registry's lifecycle
             let registry = self.registry.clone();
-            hardy_async::spawn!(self.registry.tasks, "service_drop_cleanup", async move {
+            hardy_async::spawn!(self.registry.tasks, "sink_drop_cleanup", async move {
                 registry.unregister(service).await;
             });
         }
@@ -158,14 +214,38 @@ impl ServiceRegistry {
         self.tasks.shutdown().await;
     }
 
+    /// Register an Application (high-level, payload-only access)
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, app, dispatcher)))]
+    pub async fn register_application(
+        self: &Arc<Self>,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        app: Arc<dyn services::Application>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> services::Result<Eid> {
+        self.register_inner(service_id, ServiceImpl::Application(app), dispatcher)
+            .await
+    }
+
+    /// Register a low-level Service directly
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(self, service, dispatcher))
     )]
-    pub async fn register(
+    pub async fn register_service(
         self: &Arc<Self>,
         service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Application>,
+        service: Arc<dyn services::Service>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> services::Result<Eid> {
+        self.register_inner(service_id, ServiceImpl::LowLevel(service), dispatcher)
+            .await
+    }
+
+    /// Internal registration logic shared by both service types
+    async fn register_inner(
+        self: &Arc<Self>,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        service: ServiceImpl,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         // Scope the lock
@@ -274,17 +354,21 @@ impl ServiceRegistry {
             .add_service(service_id.clone(), service.clone())
             .await;
 
-        service
-            .service
-            .on_register(
-                &service_id,
-                Box::new(Sink {
-                    service: Arc::downgrade(&service),
-                    registry: self.clone(),
-                    dispatcher: dispatcher.clone(),
-                }),
-            )
-            .await;
+        // Call on_register with appropriate sink type
+        let sink = Sink {
+            service: Arc::downgrade(&service),
+            registry: self.clone(),
+            dispatcher: dispatcher.clone(),
+        };
+
+        match &service.service {
+            ServiceImpl::LowLevel(svc) => {
+                svc.on_register(&service_id, Box::new(sink)).await;
+            }
+            ServiceImpl::Application(app) => {
+                app.on_register(&service_id, Box::new(sink)).await;
+            }
+        }
 
         Ok(service_id)
     }
@@ -305,7 +389,10 @@ impl ServiceRegistry {
         // Remove local service from RIB
         self.rib.remove_service(&service.service_id, &service);
 
-        service.service.on_unregister().await;
+        match &service.service {
+            ServiceImpl::LowLevel(svc) => svc.on_unregister().await,
+            ServiceImpl::Application(app) => app.on_unregister().await,
+        }
 
         info!("Unregistered service: {}", service.service_id);
     }

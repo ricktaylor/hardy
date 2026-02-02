@@ -30,6 +30,9 @@ pub enum Error {
     InvalidDestination(Eid),
 
     #[error(transparent)]
+    InvalidBundle(#[from] hardy_bpv7::Error),
+
+    #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
@@ -107,7 +110,13 @@ pub trait Service: Send + Sync {
     /// Called when a bundle arrives
     /// - `bundle`: parsed view (BPA already parsed for routing/validation)
     /// - `data`: raw bytes (for block unpacking)
-    async fn on_bundle(&self, bundle: &hardy_bpv7::bundle::Bundle, data: Bytes);
+    /// - `expiry`: calculated from metadata by dispatcher
+    async fn on_bundle(
+        &self,
+        bundle: &hardy_bpv7::bundle::Bundle,
+        data: Bytes,
+        expiry: time::OffsetDateTime,
+    );
 
     /// Called when status report received for a sent bundle
     async fn on_status_notify(

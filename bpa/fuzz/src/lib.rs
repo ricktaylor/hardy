@@ -170,7 +170,7 @@ impl Msg {
                 .await;
 
                 let service = Arc::new(service::PipeService::default());
-                bpa.register_service(None, service.clone())
+                bpa.register_application(None, service.clone())
                     .await
                     .expect("Failed to register service");
 

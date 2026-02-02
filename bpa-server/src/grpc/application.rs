@@ -249,7 +249,7 @@ impl application_server::Application for Service {
                     // Register the Service and respond
                     let endpoint_id = self
                         .bpa
-                        .register_service(
+                        .register_application(
                             request
                                 .service_id
                                 .as_ref()

@@ -31,13 +31,14 @@ impl Bpa {
             rib.clone(),
             store.clone(),
         ));
+
+        // New Keys Registry (TODO: Make this load keys from the Config!)
+        let keys_registry = Arc::new(keys::registry::Registry::new());
+
         let service_registry = Arc::new(services::registry::ServiceRegistry::new(
             config,
             rib.clone(),
         ));
-
-        // New Keys Registry (TODO: Make this laod keys from the Config!)
-        let keys_registry = Arc::new(keys::registry::Registry::new());
 
         // New dispatcher
         let dispatcher = Arc::new(dispatcher::Dispatcher::new(
@@ -79,14 +80,27 @@ impl Bpa {
         info!("BPA stopped");
     }
 
+    /// Register an Application (high-level, payload-only access)
     #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
-    pub async fn register_service(
+    pub async fn register_application(
         &self,
         service_id: Option<hardy_bpv7::eid::Service>,
         service: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
-            .register(service_id, service, &self.dispatcher)
+            .register_application(service_id, service, &self.dispatcher)
+            .await
+    }
+
+    /// Register a low-level Service (full bundle access)
+    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
+    pub async fn register_service(
+        &self,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.service_registry
+            .register_service(service_id, service, &self.dispatcher)
             .await
     }
 

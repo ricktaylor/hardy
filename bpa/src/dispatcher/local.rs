@@ -85,6 +85,111 @@ impl Dispatcher {
         Ok(bundle_id)
     }
 
+    /// Dispatch a bundle from raw bytes (for low-level Service trait)
+    /// Parses and validates the bundle (security boundary)
+    #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
+    pub async fn local_dispatch_raw(
+        self: &Arc<Self>,
+        expected_source: &Eid,
+        data: Bytes,
+    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+        // Parse the bundle (security boundary - can't trust service-provided bytes)
+        // Use CheckedBundle to canonicalize but preserve all blocks (including unknown extensions)
+        let checked = hardy_bpv7::bundle::CheckedBundle::parse(&data, self.key_provider())?;
+
+        // Use rewritten data if canonicalization was needed
+        let (parsed, data) = if let Some(new_data) = checked.new_data {
+            (checked.bundle, Bytes::from(new_data.into_vec()))
+        } else {
+            (checked.bundle, data)
+        };
+
+        // Verify source matches the registered service endpoint
+        // (registration already validated that the EID belongs to our node)
+        if &parsed.id.source != expected_source {
+            return Err(services::Error::InvalidDestination(
+                parsed.id.source.clone(),
+            ));
+        }
+
+        // Check if ipn_2_element encoding is required for this destination
+        let needs_legacy_ipn = self
+            .ipn_2_element
+            .iter()
+            .any(|p| p.matches(&parsed.destination));
+
+        // Apply ipn_2_element rewriting if needed (transparent to service)
+        let (parsed, data) = if needs_legacy_ipn {
+            let needs_source_rewrite = matches!(parsed.id.source, Eid::Ipn { .. });
+            let needs_dest_rewrite = matches!(parsed.destination, Eid::Ipn { .. });
+
+            if needs_source_rewrite || needs_dest_rewrite {
+                // Use Editor to rewrite EIDs
+                let mut editor = hardy_bpv7::editor::Editor::new(&parsed, &data);
+
+                if needs_source_rewrite
+                    && let Eid::Ipn {
+                        fqnn,
+                        service_number,
+                    } = &parsed.id.source
+                {
+                    editor = editor
+                        .with_source(Eid::LegacyIpn {
+                            fqnn: fqnn.clone(),
+                            service_number: *service_number,
+                        })
+                        .map_err(|(_, e)| services::Error::Internal(e.into()))?;
+                }
+
+                if needs_dest_rewrite
+                    && let Eid::Ipn {
+                        fqnn,
+                        service_number,
+                    } = &parsed.destination
+                {
+                    editor = editor
+                        .with_destination(Eid::LegacyIpn {
+                            fqnn: fqnn.clone(),
+                            service_number: *service_number,
+                        })
+                        .map_err(|(_, e)| services::Error::Internal(e.into()))?;
+                }
+
+                // Rebuild the bundle with rewritten EIDs
+                let new_data: Bytes = editor
+                    .rebuild()
+                    .map_err(|e| services::Error::Internal(e.into()))?
+                    .into();
+
+                // Re-parse the rewritten bundle (Editor output is trusted to be correct)
+                (
+                    hardy_bpv7::bundle::ParsedBundle::parse_with_keys(
+                        &new_data,
+                        &hardy_bpv7::bpsec::key::KeySet::EMPTY,
+                    )?
+                    .bundle,
+                    new_data,
+                )
+            } else {
+                (parsed, data)
+            }
+        } else {
+            (parsed, data)
+        };
+
+        // Store and dispatch (store takes hardy_bpv7::bundle::Bundle)
+        if let Some(bundle) = self.store.store(parsed, data).await {
+            let bundle_id = bundle.bundle.id.clone();
+            self.dispatch_bundle(bundle).await;
+            Ok(bundle_id)
+        } else {
+            // Duplicate bundle
+            Err(services::Error::Internal(
+                "Duplicate bundle".to_string().into(),
+            ))
+        }
+    }
+
     pub async fn cancel_local_dispatch(&self, bundle_id: &hardy_bpv7::bundle::Id) -> bool {
         let Some(bundle) = self.store.get_metadata(bundle_id).await else {
             return false;
@@ -107,37 +212,44 @@ impl Dispatcher {
             return dispatch::DispatchResult::Gone;
         };
 
-        let payload =
-            match bundle
-                .bundle
-                .block_data(1, &data, &*self.key_source(&bundle.bundle, &data))
-            {
-                Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
-                    // TODO: We are unable to decrypt the payload, what do we do?
-                    return dispatch::DispatchResult::Wait;
-                }
-                Err(e) => {
-                    debug!("Received an invalid payload: {e}");
-                    return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
-                }
-                Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
-                    data.slice(bundle.bundle.blocks.get(&1).unwrap().payload_range())
-                }
-                Ok(hardy_bpv7::block::Payload::Decrypted(data)) => Bytes::from_owner(data),
-            };
+        match &service.service {
+            services::registry::ServiceImpl::LowLevel(svc) => {
+                // Pass the full bundle to low-level services
+                svc.on_bundle(&bundle.bundle, data, bundle.expiry()).await;
+            }
+            services::registry::ServiceImpl::Application(app) => {
+                // Extract and decrypt payload for Application
+                // key_source is scoped to ensure it's dropped before await (not Send)
+                let payload = {
+                    let key_source = self.key_source(&bundle.bundle, &data);
+                    match bundle.bundle.block_data(1, &data, &*key_source) {
+                        Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
+                            // TODO: We are unable to decrypt the payload, what do we do?
+                            return dispatch::DispatchResult::Wait;
+                        }
+                        Err(e) => {
+                            // Other decryption error - skip delivery
+                            debug!("Received an invalid payload: {e}");
+                            return dispatch::DispatchResult::Delivered;
+                        }
+                        Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
+                            data.slice(bundle.bundle.blocks.get(&1).unwrap().payload_range())
+                        }
+                        Ok(hardy_bpv7::block::Payload::Decrypted(decrypted)) => {
+                            Bytes::from_owner(decrypted)
+                        }
+                    }
+                };
 
-        // Pass the bundle and data to the service
-        service
-            .service
-            .on_receive(
-                bundle.bundle.id.source.clone(),
-                bundle.expiry(),
-                bundle.bundle.flags.app_ack_requested,
-                payload,
-            )
-            .await;
-
-        // And we are done with the bundle
+                app.on_receive(
+                    bundle.bundle.id.source.clone(),
+                    bundle.expiry(),
+                    bundle.bundle.flags.app_ack_requested,
+                    payload,
+                )
+                .await;
+            }
+        }
         dispatch::DispatchResult::Delivered
     }
 }
