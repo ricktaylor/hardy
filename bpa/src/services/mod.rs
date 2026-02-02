@@ -90,3 +90,51 @@ pub trait ApplicationSink: Send + Sync {
 
     async fn cancel(&self, bundle_id: &str) -> Result<bool>;
 }
+
+/// Low-level service trait with full bundle access.
+///
+/// Unlike `Application` which receives only payload, `Service` receives
+/// the full parsed bundle and raw bytes. This enables system services
+/// like echo that need to inspect/modify bundle structure.
+#[async_trait]
+pub trait Service: Send + Sync {
+    /// Called when service is registered; receives Sink for sending
+    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>);
+
+    /// Called when service is unregistered
+    async fn on_unregister(&self);
+
+    /// Called when a bundle arrives
+    /// - `bundle`: parsed view (BPA already parsed for routing/validation)
+    /// - `data`: raw bytes (for block unpacking)
+    async fn on_bundle(&self, bundle: &hardy_bpv7::bundle::Bundle, data: Bytes);
+
+    /// Called when status report received for a sent bundle
+    async fn on_status_notify(
+        &self,
+        bundle_id: &str,
+        from: &str,
+        kind: StatusNotify,
+        reason: hardy_bpv7::status_report::ReasonCode,
+        timestamp: Option<time::OffsetDateTime>,
+    );
+}
+
+/// Sink for low-level services to send bundles.
+///
+/// Unlike `ApplicationSink` which takes destination/payload/options,
+/// `ServiceSink` accepts raw bundle bytes. The service uses `bpv7::Builder`
+/// to construct bundles; BPA parses and validates (security boundary).
+#[async_trait]
+pub trait ServiceSink: Send + Sync {
+    /// Unregister the service
+    async fn unregister(&self);
+
+    /// Send a bundle as raw bytes
+    /// - Service uses bpv7::Builder to construct
+    /// - BPA parses and validates (security boundary - can't trust service)
+    async fn send(&self, data: Bytes) -> Result<hardy_bpv7::bundle::Id>;
+
+    /// Cancel a pending bundle
+    async fn cancel(&self, bundle_id: &str) -> Result<bool>;
+}
