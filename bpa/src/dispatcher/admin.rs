@@ -66,10 +66,10 @@ impl Dispatcher {
                         }
                     };
 
-                    on_status_notify(report.received, service::StatusNotify::Received).await;
-                    on_status_notify(report.forwarded, service::StatusNotify::Forwarded).await;
-                    on_status_notify(report.delivered, service::StatusNotify::Delivered).await;
-                    on_status_notify(report.deleted, service::StatusNotify::Deleted).await;
+                    on_status_notify(report.received, services::StatusNotify::Received).await;
+                    on_status_notify(report.forwarded, services::StatusNotify::Forwarded).await;
+                    on_status_notify(report.delivered, services::StatusNotify::Delivered).await;
+                    on_status_notify(report.deleted, services::StatusNotify::Deleted).await;
                 }
                 dispatch::DispatchResult::Drop(None)
             }

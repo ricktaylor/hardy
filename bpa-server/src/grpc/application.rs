@@ -3,7 +3,7 @@ use hardy_bpa::async_trait;
 use hardy_proto::{application::*, proxy::*, to_timestamp};
 
 struct ApplicationInner {
-    sink: Box<dyn hardy_bpa::service::Sink>,
+    sink: Box<dyn hardy_bpa::services::Sink>,
 }
 
 #[derive(Default)]
@@ -13,16 +13,16 @@ struct Application {
 }
 
 impl Application {
-    async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::service::Result<app_to_bpa::Msg> {
+    async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::services::Result<app_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
-            hardy_bpa::service::Error::Disconnected
+            hardy_bpa::services::Error::Disconnected
         })?;
 
         match proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::service::Error::Disconnected),
+            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::service::Error::Internal(e.into())),
+            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
         }
     }
 
@@ -34,7 +34,7 @@ impl Application {
                 f &= !(f2 as u32);
                 b
             };
-            options = Some(hardy_bpa::service::SendOptions {
+            options = Some(hardy_bpa::services::SendOptions {
                 do_not_fragment: test_bit(send_request::SendOptions::DoNotFragment),
                 request_ack: test_bit(send_request::SendOptions::RequestAck),
                 report_status_time: test_bit(send_request::SendOptions::ReportStatusTime),
@@ -89,11 +89,11 @@ impl Application {
 }
 
 #[async_trait]
-impl hardy_bpa::service::Service for Application {
+impl hardy_bpa::services::Service for Application {
     async fn on_register(
         &self,
         _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::service::Sink>,
+        sink: Box<dyn hardy_bpa::services::Sink>,
     ) {
         // Ensure single initialization
         self.inner.get_or_init(|| ApplicationInner { sink });
@@ -151,7 +151,7 @@ impl hardy_bpa::service::Service for Application {
         &self,
         bundle_id: &str,
         from: &str,
-        kind: hardy_bpa::service::StatusNotify,
+        kind: hardy_bpa::services::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -160,16 +160,16 @@ impl hardy_bpa::service::Service for Application {
                 bundle_id: bundle_id.into(),
                 from: from.into(),
                 kind: match kind {
-                    hardy_bpa::service::StatusNotify::Received => {
+                    hardy_bpa::services::StatusNotify::Received => {
                         status_notify_request::StatusKind::Received
                     }
-                    hardy_bpa::service::StatusNotify::Forwarded => {
+                    hardy_bpa::services::StatusNotify::Forwarded => {
                         status_notify_request::StatusKind::Forwarded
                     }
-                    hardy_bpa::service::StatusNotify::Delivered => {
+                    hardy_bpa::services::StatusNotify::Delivered => {
                         status_notify_request::StatusKind::Delivered
                     }
-                    hardy_bpa::service::StatusNotify::Deleted => {
+                    hardy_bpa::services::StatusNotify::Deleted => {
                         status_notify_request::StatusKind::Deleted
                     }
                 }

@@ -16,9 +16,9 @@ mod route;
 
 pub enum FindResult {
     AdminEndpoint,
-    Deliver(Option<Arc<service_registry::Service>>), // Deliver to local service
-    Forward(u32),                                    // Forward to peer
-    Drop(Option<ReasonCode>),                        // Drop with reason code
+    Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
+    Forward(u32),                                      // Forward to peer
+    Drop(Option<ReasonCode>),                          // Drop with reason code
 }
 
 type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries

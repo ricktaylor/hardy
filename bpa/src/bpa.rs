@@ -6,7 +6,7 @@ pub struct Bpa {
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
     cla_registry: Arc<cla::registry::Registry>,
-    service_registry: Arc<service_registry::ServiceRegistry>,
+    service_registry: Arc<services::registry::ServiceRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -31,8 +31,10 @@ impl Bpa {
             rib.clone(),
             store.clone(),
         ));
-        let service_registry =
-            Arc::new(service_registry::ServiceRegistry::new(config, rib.clone()));
+        let service_registry = Arc::new(services::registry::ServiceRegistry::new(
+            config,
+            rib.clone(),
+        ));
 
         // New Keys Registry (TODO: Make this laod keys from the Config!)
         let keys_registry = Arc::new(keys::registry::Registry::new());
@@ -81,8 +83,8 @@ impl Bpa {
     pub async fn register_service(
         &self,
         service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn service::Service>,
-    ) -> service::Result<hardy_bpv7::eid::Eid> {
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
             .register(service_id, service, &self.dispatcher)
             .await

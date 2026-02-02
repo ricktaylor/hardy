@@ -10,10 +10,10 @@ mod reassemble;
 mod report;
 mod restart;
 
-pub struct Dispatcher {
+pub(crate) struct Dispatcher {
     tasks: hardy_async::task_pool::TaskPool,
     store: Arc<storage::Store>,
-    service_registry: Arc<service_registry::ServiceRegistry>,
+    service_registry: Arc<services::registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
     rib: Arc<rib::Rib>,
     ipn_2_element: Arc<BTreeSet<hardy_eid_patterns::EidPattern>>,
@@ -31,7 +31,7 @@ impl Dispatcher {
         config: &config::Config,
         store: Arc<storage::Store>,
         cla_registry: Arc<cla::registry::Registry>,
-        service_registry: Arc<service_registry::ServiceRegistry>,
+        service_registry: Arc<services::registry::ServiceRegistry>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
     ) -> Self {

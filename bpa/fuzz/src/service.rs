@@ -13,9 +13,9 @@ pub struct SendOptions {
     notify_deletion: bool,
 }
 
-impl From<SendOptions> for hardy_bpa::service::SendOptions {
+impl From<SendOptions> for hardy_bpa::services::SendOptions {
     fn from(val: SendOptions) -> Self {
-        hardy_bpa::service::SendOptions {
+        hardy_bpa::services::SendOptions {
             do_not_fragment: val.do_not_fragment,
             request_ack: val.request_ack,
             report_status_time: val.report_status_time,
@@ -37,7 +37,7 @@ pub struct Msg {
 
 #[derive(Default)]
 pub struct PipeService {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::service::Sink>>,
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::Sink>>,
 }
 
 impl PipeService {
@@ -46,8 +46,8 @@ impl PipeService {
         destination: Eid,
         data: hardy_bpa::Bytes,
         lifetime: std::time::Duration,
-        options: Option<hardy_bpa::service::SendOptions>,
-    ) -> hardy_bpa::service::Result<Box<str>> {
+        options: Option<hardy_bpa::services::SendOptions>,
+    ) -> hardy_bpa::services::Result<Box<str>> {
         self.sink
             .get()
             .unwrap()
@@ -57,8 +57,8 @@ impl PipeService {
 }
 
 #[async_trait]
-impl hardy_bpa::service::Service for PipeService {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::service::Sink>) {
+impl hardy_bpa::services::Service for PipeService {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::Sink>) {
         if self.sink.set(sink).is_err() {
             panic!("Double connect()");
         }
@@ -84,7 +84,7 @@ impl hardy_bpa::service::Service for PipeService {
         &self,
         _bundle_id: &str,
         _from: &str,
-        _kind: hardy_bpa::service::StatusNotify,
+        _kind: hardy_bpa::services::StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {

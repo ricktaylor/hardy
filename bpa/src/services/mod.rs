@@ -1,3 +1,5 @@
+pub mod registry;
+
 use super::*;
 use hardy_bpv7::eid::Eid;
 use thiserror::Error;

@@ -8,8 +8,8 @@ impl Dispatcher {
         mut destination: Eid,
         data: Bytes,
         lifetime: std::time::Duration,
-        flags: Option<service::SendOptions>,
-    ) -> Result<hardy_bpv7::bundle::Id, service::Error> {
+        flags: Option<services::SendOptions>,
+    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Check to see if we should use ipn 2-element encoding
         if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
             if let Eid::Ipn {
@@ -67,7 +67,7 @@ impl Dispatcher {
             let (bundle, data) = builder
                 .with_payload(std::borrow::Cow::Borrowed(&data))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-                .map_err(|e| service::Error::Internal(e.into()))?;
+                .map_err(|e| services::Error::Internal(e.into()))?;
 
             // Store to store
             if let Some(bundle) = self.store.store(bundle, data.into()).await {
@@ -99,7 +99,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn deliver_bundle(
         self: &Arc<Self>,
-        service: Arc<service_registry::Service>,
+        service: Arc<services::registry::Service>,
         bundle: &bundle::Bundle,
     ) -> dispatch::DispatchResult {
         let Some(data) = self.load_data(bundle).await else {

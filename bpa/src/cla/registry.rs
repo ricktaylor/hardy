@@ -98,7 +98,7 @@ impl Drop for Sink {
     }
 }
 
-pub struct Registry {
+pub(crate) struct Registry {
     node_ids: Vec<NodeId>,
     clas: RwLock<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,

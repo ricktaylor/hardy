@@ -6,11 +6,11 @@ use hardy_bpv7::eid::Eid;
 use std::{collections::HashMap, sync::Arc};
 
 pub struct Service {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::service::Sink>>,
+    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::Sink>>,
     node_id: String,
     destination: Eid,
     lifetime: std::time::Duration,
-    flags: hardy_bpa::service::SendOptions,
+    flags: hardy_bpa::services::SendOptions,
     semaphore: Option<Arc<tokio::sync::Semaphore>>,
     count: Option<u32>,
     sent_bundles: std::sync::Mutex<HashMap<Box<str>, u32>>,
@@ -25,7 +25,7 @@ impl Service {
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
             flags: {
-                let mut flags = hardy_bpa::service::SendOptions::default();
+                let mut flags = hardy_bpa::services::SendOptions::default();
                 if !args.flags.is_empty() {
                     flags.report_status_time = true;
                 }
@@ -99,8 +99,8 @@ impl Service {
 }
 
 #[async_trait]
-impl hardy_bpa::service::Service for Service {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::service::Sink>) {
+impl hardy_bpa::services::Service for Service {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::Sink>) {
         // Ensure single initialization
         self.sink.get_or_init(|| sink);
     }
@@ -182,7 +182,7 @@ impl hardy_bpa::service::Service for Service {
         &self,
         bundle_id: &str,
         from: &str,
-        kind: hardy_bpa::service::StatusNotify,
+        kind: hardy_bpa::services::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
@@ -195,16 +195,16 @@ impl hardy_bpa::service::Service for Service {
             let mut output = format!("Ping {seqno}");
 
             match kind {
-                hardy_bpa::service::StatusNotify::Received => {
+                hardy_bpa::services::StatusNotify::Received => {
                     output.push_str(" received");
                 }
-                hardy_bpa::service::StatusNotify::Forwarded => {
+                hardy_bpa::services::StatusNotify::Forwarded => {
                     output.push_str(" forwarded");
                 }
-                hardy_bpa::service::StatusNotify::Delivered => {
+                hardy_bpa::services::StatusNotify::Delivered => {
                     output.push_str(" delivered");
                 }
-                hardy_bpa::service::StatusNotify::Deleted => {
+                hardy_bpa::services::StatusNotify::Deleted => {
                     output.push_str(" deleted");
                     // We're never going to receive a response now
                     if let Some(semaphore) = &self.semaphore {

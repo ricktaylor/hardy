@@ -4,10 +4,10 @@ use std::hash::{Hash, Hasher};
 #[derive(Debug)]
 enum InternalFindResult {
     AdminEndpoint,
-    Deliver(Option<Arc<service_registry::Service>>), // Deliver to local service
-    Forward(HashSet<u32>),                           // Available CLA peers for forwarding
-    Drop(Option<ReasonCode>),                        // Drop with reason code
-    Reflect,                                         // Reflect
+    Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
+    Forward(HashSet<u32>),                             // Available CLA peers for forwarding
+    Drop(Option<ReasonCode>),                          // Drop with reason code
+    Reflect,                                           // Reflect
 }
 
 impl Rib {

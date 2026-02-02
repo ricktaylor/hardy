@@ -2,9 +2,9 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    AdminEndpoint,                                 // Deliver to the admin endpoint
-    Local(Option<Arc<service_registry::Service>>), // Deliver to local service
-    Forward(u32),                                  // Forward to a cla peer
+    AdminEndpoint,                                   // Deliver to the admin endpoint
+    Local(Option<Arc<services::registry::Service>>), // Deliver to local service
+    Forward(u32),                                    // Forward to a cla peer
 }
 
 impl PartialOrd for Action {
@@ -126,7 +126,7 @@ impl Rib {
         self.add_local(node_id.into(), Action::Forward(peer)).await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<service_registry::Service>) -> bool {
+    pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
         self.add_local(eid, Action::Local(Some(service))).await
     }
 
@@ -167,7 +167,7 @@ impl Rib {
         true
     }
 
-    pub fn remove_service(&self, eid: &Eid, service: &service_registry::Service) -> bool {
+    pub fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
         self.remove_local(
             eid,
             |action| matches!(action, Action::Local(Some(svc)) if svc.as_ref() == service),

@@ -10,7 +10,7 @@ use std::{
 };
 
 pub struct Service {
-    pub service: Arc<dyn service::Service>,
+    pub service: Arc<dyn services::Service>,
     pub service_id: Eid,
 }
 
@@ -55,7 +55,7 @@ struct Sink {
 }
 
 #[async_trait]
-impl service::Sink for Sink {
+impl services::Sink for Sink {
     async fn unregister(&self) {
         if let Some(service) = self.service.upgrade() {
             self.registry.unregister(service).await
@@ -67,11 +67,11 @@ impl service::Sink for Sink {
         destination: Eid,
         data: Bytes,
         lifetime: std::time::Duration,
-        options: Option<service::SendOptions>,
-    ) -> service::Result<Box<str>> {
+        options: Option<services::SendOptions>,
+    ) -> services::Result<Box<str>> {
         // Sanity check
         if destination.is_null() {
-            return Err(service::Error::InvalidDestination(destination));
+            return Err(services::Error::InvalidDestination(destination));
         }
 
         Ok(self
@@ -79,7 +79,7 @@ impl service::Sink for Sink {
             .local_dispatch(
                 self.service
                     .upgrade()
-                    .ok_or(service::Error::Disconnected)?
+                    .ok_or(services::Error::Disconnected)?
                     .service_id
                     .clone(),
                 destination,
@@ -92,7 +92,7 @@ impl service::Sink for Sink {
             .into())
     }
 
-    async fn cancel(&self, bundle_id: &str) -> service::Result<bool> {
+    async fn cancel(&self, bundle_id: &str) -> services::Result<bool> {
         let Ok(bundle_id) = hardy_bpv7::bundle::Id::from_key(bundle_id) else {
             return Ok(false);
         };
@@ -101,7 +101,7 @@ impl service::Sink for Sink {
             != self
                 .service
                 .upgrade()
-                .ok_or(service::Error::Disconnected)?
+                .ok_or(services::Error::Disconnected)?
                 .service_id
         {
             return Ok(false);
@@ -124,7 +124,7 @@ impl Drop for Sink {
     }
 }
 
-pub struct ServiceRegistry {
+pub(crate) struct ServiceRegistry {
     node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
     services: RwLock<HashMap<Eid, Arc<Service>>>,
@@ -158,13 +158,16 @@ impl ServiceRegistry {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, service, dispatcher)))]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, service, dispatcher))
+    )]
     pub async fn register(
         self: &Arc<Self>,
         service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn service::Service>,
+        service: Arc<dyn services::Service>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> service::Result<Eid> {
+    ) -> services::Result<Eid> {
         // Scope the lock
         let (service, service_id) = {
             let mut services = self.services.write().trace_expect("Failed to lock mutex");
@@ -203,13 +206,13 @@ impl ServiceRegistry {
                             .node_ids
                             .dtn
                             .as_ref()
-                            .ok_or(service::Error::NoDtnNodeId)?;
+                            .ok_or(services::Error::NoDtnNodeId)?;
 
                         if service_name.is_empty() {
                             new_dtn_service(node_name)
                         } else {
                             if !DtnNodeId::is_valid_service_name(service_name) {
-                                return Err(service::Error::DtnInvalidServiceName(
+                                return Err(services::Error::DtnInvalidServiceName(
                                     service_name.to_string(),
                                 ));
                             }
@@ -220,7 +223,7 @@ impl ServiceRegistry {
                             };
 
                             if services.contains_key(&service_id) {
-                                return Err(service::Error::DtnServiceInUse(
+                                return Err(services::Error::DtnServiceInUse(
                                     service_name.to_string(),
                                 ));
                             }
@@ -232,7 +235,7 @@ impl ServiceRegistry {
                             .node_ids
                             .ipn
                             .as_ref()
-                            .ok_or(service::Error::NoIpnNodeId)?;
+                            .ok_or(services::Error::NoIpnNodeId)?;
 
                         if service_number == &0 {
                             new_ipn_service(fqnn)
@@ -242,7 +245,7 @@ impl ServiceRegistry {
                                 service_number: *service_number,
                             };
                             if services.contains_key(&service_id) {
-                                return Err(service::Error::IpnServiceInUse(*service_number));
+                                return Err(services::Error::IpnServiceInUse(*service_number));
                             }
                             service_id
                         }
@@ -253,7 +256,7 @@ impl ServiceRegistry {
             } else if let Some(node_name) = &self.node_ids.dtn {
                 new_dtn_service(node_name)
             } else {
-                return Err(service::Error::NoIpnNodeId);
+                return Err(services::Error::NoIpnNodeId);
             };
 
             let service = Arc::new(Service {
