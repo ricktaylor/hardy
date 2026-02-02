@@ -682,3 +682,21 @@ pub struct ParsedBundle {
     pub report_unsupported: bool,
     pub non_canonical: bool,
 }
+
+/// Result of parsing a bundle with canonicalization but no block removal.
+///
+/// Used for validating locally-originated bundles from Services.
+/// This variant:
+/// - DOES rewrite to canonical CBOR form (if needed)
+/// - DOES perform BPSec validation (if keys provided)
+/// - DOES NOT remove unknown extension blocks
+/// - DOES NOT remove blocks with `delete_block_on_failure` flag
+#[derive(Debug)]
+pub struct CheckedBundle {
+    /// The parsed bundle structure.
+    pub bundle: Bundle,
+    /// The rewritten bundle data if canonicalization was needed, `None` if already canonical.
+    pub new_data: Option<Box<[u8]>>,
+    /// True if an unsupported block was encountered that requests a report.
+    pub report_unsupported: bool,
+}
