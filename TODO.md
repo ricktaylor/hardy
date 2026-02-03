@@ -2,8 +2,8 @@
 
 This document tracks the implementation path toward:
 
-- **REQ-19**: "A well-featured suite of management and monitoring tools"
-- **REQ-6**: "Time-variant Routing API to allow real-time configuration of contacts and bandwidth"
+- **[REQ-19](docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools)**: "A well-featured suite of management and monitoring tools"
+- **[REQ-6](docs/requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth)**: "Time-variant Routing API to allow real-time configuration of contacts and bandwidth"
 
 The immediate goal is to make the existing `bp ping` tool functional by implementing the missing echo service. This requires foundational work on the Service trait, Filter infrastructure, and Routing Agent API that also satisfies REQ-6.
 
@@ -655,21 +655,21 @@ All new/updated traits must be exposed via gRPC. Summary of proto work:
 
 ## Requirements Traceability
 
-This TODO addresses the following requirements from `docs/requirements.md`:
+This TODO addresses the following requirements from [requirements.md](docs/requirements.md):
 
 | Requirement | Description | How Satisfied |
 |-------------|-------------|---------------|
-| **REQ-19** | Management and monitoring tools | Echo service (Section 3), ping tool (8.1) |
-| **REQ-6** | Time-variant Routing API | RoutingAgent trait (Section 4) + Bandwidth infrastructure (Section 9) |
-| **6.1.4** | EID resolution to CLA addresses | BP-ARP (Section 5) |
-| **6.1.5** | Routes via config file | Static routes (4.5) |
-| **6.1.6** | Add/remove routes at runtime | RoutingAgentSink (4.2) |
-| **6.1.7** | Discard bundles by destination | RIB Drop rules (existing) |
-| **6.1.8** | Reflect bundle to previous node | RIB Reflect rules (existing) |
-| **6.1.9** | Prioritise routing rules | RIB priority (existing, exposed via 4.x) |
-| **6.1.10** | ECMP | RIB (existing) |
-| **REQ-4** | Ongoing standardization | SAND (Section 6) |
-| **REQ-14** | Reliability / Security | Filter infrastructure (Section 2) |
+| **[REQ-19](docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools)** | Management and monitoring tools | Echo service (Section 3), ping tool (8.1) |
+| **[REQ-6](docs/requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth)** | Time-variant Routing API | RoutingAgent trait (Section 4) + Bandwidth infrastructure (Section 9) |
+| **[6.1.4](docs/requirements.md#312-cla-apis-parent-req-6)** | EID resolution to CLA addresses | BP-ARP (Section 5) |
+| **[6.1.5](docs/requirements.md#312-cla-apis-parent-req-6)** | Routes via config file | Static routes (4.5) |
+| **[6.1.6](docs/requirements.md#312-cla-apis-parent-req-6)** | Add/remove routes at runtime | RoutingAgentSink (4.2) |
+| **[6.1.7](docs/requirements.md#312-cla-apis-parent-req-6)** | Discard bundles by destination | RIB Drop rules (existing) |
+| **[6.1.8](docs/requirements.md#312-cla-apis-parent-req-6)** | Reflect bundle to previous node | RIB Reflect rules (existing) |
+| **[6.1.9](docs/requirements.md#312-cla-apis-parent-req-6)** | Prioritise routing rules | RIB priority (existing, exposed via 4.x) |
+| **[6.1.10](docs/requirements.md#312-cla-apis-parent-req-6)** | ECMP | RIB (existing) |
+| **[REQ-4](docs/requirements.md#req-4-alignment-with-on-going-dtn-standardisation)** | Ongoing standardization | SAND (Section 6) |
+| **[REQ-14](docs/requirements.md#req-14-reliability)** | Reliability / Security | Filter infrastructure (Section 2) |
 
 **Notes:**
 

@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Data Serialization (CBOR) |
 | **Module** | `hardy-cbor` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-1), `DTN-LLR_v1.1` (Section 1.1) |
+| **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [LLR 1.1.x](../../docs/requirements.md#32-cbor-encoding-parent-req-1) |
 | **Standard Ref** | RFC 8949 (CBOR) |
 | **Test Suite ID** | UTP-CBOR-01 |
 
@@ -24,7 +24,7 @@ This document details the unit testing strategy for the `hardy-cbor` functional 
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description | RFC Ref |
  | ----- | ----- | ----- |

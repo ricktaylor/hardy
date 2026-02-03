@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Functional Area** | System Interoperability |
 | **Module** | `hardy-bpa-server` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-20) |
+| **Requirements Ref** | [REQ-20](requirements.md#req-20-interoperability-with-existing-implementations) |
 | **Test Suite ID** | PLAN-INTEROP-01 |
 
 ## 1. Introduction

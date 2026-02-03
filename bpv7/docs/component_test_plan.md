@@ -5,7 +5,7 @@
 | **Functional Area** | Bundle Protocol Agent Core Logic |
 | **Component** | `hardy-bpv7` Library |
 | **Test Driver** | `hardy-bpv7-tools` (Binary: `bundle`), `hardy-cbor-tools` (Binary: `cbor`), `jq` |
-| **Requirements Ref** | `DTN-LLR_v1.1` |
+| **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [REQ-2](../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [LLR 1.1.x](../../docs/requirements.md#part-3-low-level-requirements-llr) |
 | **Standard Ref** | RFC 9171 (BPv7), RFC 9172 (BPSec), RFC 9173 (Contexts) |
 | **Scope** | Verification of Library Parsing, Serialization, and Security Logic using the CLI harness. |
 | **Test Suite ID** | COMP-BPV7-CLI-01 |
@@ -30,7 +30,7 @@ The tests are organized into **Functional Suites**, where each suite targets a s
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description |
 | ----- | ----- |

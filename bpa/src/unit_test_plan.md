@@ -4,7 +4,7 @@
 | ----- | ----- |
 | **Functional Area** | BPA Internal Logic & Algorithms |
 | **Module** | `hardy-bpa` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-1, REQ-2, REQ-6, REQ-7), `DTN-LLR_v1.1` (See Section 2) |
+| **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [REQ-2](../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR](../../docs/requirements.md#part-3-low-level-requirements-llr) |
 | **Parent Plan** | `bpa/src/test_plan.md` |
 | **Test Suite ID** | UTP-BPA-01 |
 
@@ -14,18 +14,18 @@ This document details the specific unit test cases for the `hardy-bpa` module. T
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description |
 | ----- | ----- |
-| **1.1.30** | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
-| **1.1.33** | Processing must use Bundle Age block for expiry if Creation Time is zero. |
-| **2.1.2** | Correctly remove BPSec target info when targeted block is removed. |
-| **2.1.3** | Validate that Fragmented bundles do NOT contain BPSec extension blocks. |
-| **6.1.1** | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
-| **6.1.9** | Provide mechanism to prioritise routing rules. |
-| **6.1.10** | Implement Equal Cost Multi-Path (ECMP). |
-| **7.1.3** | Configurable discard policy (FIFO/Priority) when storage full. |
+| [**1.1.30**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
+| [**1.1.33**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Processing must use Bundle Age block for expiry if Creation Time is zero. |
+| [**2.1.2**](../../docs/requirements.md#38-bpsec-parent-req-2---optional-for-initial-development) | Correctly remove BPSec target info when targeted block is removed. |
+| [**2.1.3**](../../docs/requirements.md#38-bpsec-parent-req-2---optional-for-initial-development) | Validate that Fragmented bundles do NOT contain BPSec extension blocks. |
+| [**6.1.1**](../../docs/requirements.md#311-eid-patterns-parent-req-6) | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
+| [**6.1.9**](../../docs/requirements.md#313-routing-parent-req-6) | Provide mechanism to prioritise routing rules. |
+| [**6.1.10**](../../docs/requirements.md#313-routing-parent-req-6) | Implement Equal Cost Multi-Path (ECMP). |
+| [**7.1.3**](../../docs/requirements.md#314-local-disk-storage-parent-req-7) | Configurable discard policy (FIFO/Priority) when storage full. |
 
 ## 3. Unit Test Cases
 

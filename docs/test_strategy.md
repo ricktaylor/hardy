@@ -13,7 +13,7 @@ This document defines the strategic approach for verifying the `hardy` Delay Tol
 
 This strategy employs a **Modular Verification Architecture**, where individual functional areas (CBOR, BPv7, Security, Addressing) have dedicated Test Plans for Unit and Fuzz testing, culminating in System-level verification.
 
-It is designed to verify the High-Level Requirements (HLR) and Low-Level Requirements (LLR) defined in **`requirements.md`**.
+It is designed to verify the High-Level Requirements (HLR) and Low-Level Requirements (LLR) defined in **[requirements.md](requirements.md)**.
 
 ## 2. Document Hierarchy (Test Plan Architecture)
 

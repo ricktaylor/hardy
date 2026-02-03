@@ -16,15 +16,15 @@ This document details the fuzz testing strategy for the `hardy-bpv7` module. Thi
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description |
 | ----- | ----- |
-| **REQ-14** | Fuzz testing of all external APIs. |
-| **1.1.12** | CBOR decoder must indicate if an incomplete item is found at end of buffer. |
-| **1.1.18** | Parser must not fail when presented with unrecognised but correctly encoded flags. |
-| **1.1.21** | Parser must parse and validate all CRC values. |
-| **1.1.30** | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
+| [**REQ-14**](../../docs/requirements.md#req-14-reliability) | Fuzz testing of all external APIs. |
+| [**1.1.12**](../../docs/requirements.md#33-cbor-decoding-parent-req-1) | CBOR decoder must indicate if an incomplete item is found at end of buffer. |
+| [**1.1.18**](../../docs/requirements.md#35-bpv7-parsing-parent-req-1) | Parser must not fail when presented with unrecognised but correctly encoded flags. |
+| [**1.1.21**](../../docs/requirements.md#35-bpv7-parsing-parent-req-1) | Parser must parse and validate all CRC values. |
+| [**1.1.30**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
 
 ## 3. Fuzz Target Definitions
 

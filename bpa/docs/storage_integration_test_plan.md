@@ -5,7 +5,7 @@
 | **Functional Area** | Persistence Layer (Metadata & Payloads) |
 | **Module** | `hardy-bpa` |
 | **Interfaces** | `crate::storage::MetadataStorage`, `crate::storage::BundleStorage` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-7 to REQ-12), `DTN-LLR_v1.1` (Section 7, Section 9) |
+| **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [REQ-8](../../docs/requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage), [REQ-9](../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage), [LLR 7.x](../../docs/requirements.md#314-local-disk-storage-parent-req-7), [LLR 9.x](../../docs/requirements.md#316-s3-storage-parent-req-9) |
 | **Test Suite ID** | PLAN-STORE-01 |
 
 ## 1. Introduction
@@ -21,12 +21,12 @@ The tests defined here are intended to be run against **all** implementations of
 
 | ID | Requirement | Test Coverage |
 | :--- | :--- | :--- |
-| **REQ-7** | Support for local filesystem (SQLite/Local Disk). | Verified by running suite against `sqlite-storage`, `localdisk-storage`. |
-| **REQ-8** | Support for PostgreSQL. | Verified by running suite against `postgres-storage`. |
-| **REQ-9** | Support for S3 (Bundle Storage). | Verified by running suite against `s3-storage`. |
-| **7.2.1** | Store/Retrieve metadata. | Covered by **Suite A (Metadata CRUD)**. |
-| **7.1.1** | Store/Retrieve payloads. | Covered by **Suite D (Bundle CRUD)**. |
-| **7.1.3** | Configurable discard policy. | Covered by **Suite B (Polling)**. |
+| [**REQ-7**](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) | Support for local filesystem (SQLite/Local Disk). | Verified by running suite against `sqlite-storage`, `localdisk-storage`. |
+| [**REQ-8**](../../docs/requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage) | Support for PostgreSQL. | Verified by running suite against `postgres-storage`. |
+| [**REQ-9**](../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) | Support for S3 (Bundle Storage). | Verified by running suite against `s3-storage`. |
+| [**7.2.1**](../../docs/requirements.md#315-sqlite-storage-parent-req-7) | Store/Retrieve metadata. | Covered by **Suite A (Metadata CRUD)**. |
+| [**7.1.1**](../../docs/requirements.md#314-local-disk-storage-parent-req-7) | Store/Retrieve payloads. | Covered by **Suite D (Bundle CRUD)**. |
+| [**7.1.3**](../../docs/requirements.md#314-local-disk-storage-parent-req-7) | Configurable discard policy. | Covered by **Suite B (Polling)**. |
 
 ## 3. Metadata Storage Suites
 

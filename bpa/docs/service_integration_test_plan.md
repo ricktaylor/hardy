@@ -5,7 +5,7 @@
 | **Functional Area** | Application Interface |
 | **Module** | `hardy-bpa` |
 | **Interface** | `crate::services::Application`, `crate::services::Service` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-6, REQ-17, REQ-18), `DTN-LLR_v1.1` (Section 6) |
+| **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [REQ-17](../../docs/requirements.md#req-17-comprehensive-usage-documentation), [REQ-18](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples), [LLR 6.x](../../docs/requirements.md#312-cla-apis-parent-req-6) |
 | **Test Suite ID** | PLAN-SVC-01 |
 
 ## 1. Introduction
@@ -18,7 +18,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 | ID | Requirement | Test Coverage |
 | :--- | :--- | :--- |
-| **REQ-18** | SDK/API Documentation & Examples. | Verified by running suite against `hardy-proto` (gRPC) and native examples. |
+| [**REQ-18**](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples) | SDK/API Documentation & Examples. | Verified by running suite against `hardy-proto` (gRPC) and native examples. |
 
 ## 3. Test Suites
 

@@ -16,13 +16,13 @@ This document details the fuzz testing strategy for the `hardy-cbor` module. Unl
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description |
 | ----- | ----- |
-| **REQ-14** | Fuzz testing of all external APIs. |
-| **1.1.10** | CBOR decoder must parse items within context of Maps/Arrays correctly. |
-| **1.1.12** | CBOR decoder must indicate if an incomplete item is found at end of buffer. |
+| [**REQ-14**](../../docs/requirements.md#req-14-reliability) | Fuzz testing of all external APIs. |
+| [**1.1.10**](../../docs/requirements.md#33-cbor-decoding-parent-req-1) | CBOR decoder must parse items within context of Maps/Arrays correctly. |
+| [**1.1.12**](../../docs/requirements.md#33-cbor-decoding-parent-req-1) | CBOR decoder must indicate if an incomplete item is found at end of buffer. |
 
 ## 3. Fuzz Target Definition
 

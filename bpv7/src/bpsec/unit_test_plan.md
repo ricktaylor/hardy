@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Security (Integrity & Confidentiality) |
 | **Module** | `hardy-bpv7` (Security Submodule) |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-2), `DTN-LLR_v1.1` (Section 2.0) |
+| **Requirements Ref** | [REQ-2](../../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [LLR 2.x](../../../docs/requirements.md#38-bpsec-parent-req-2---optional-for-initial-development) |
 | **Standard Ref** | RFC 9172 (BPSec Core), RFC 9173 (BPSec Contexts) |
 | **Test Suite ID** | UTP-BPSEC-01 |
 
@@ -26,7 +26,7 @@ This document details the unit testing strategy for the BPSec implementation wit
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description | RFC Ref |
  | ----- | ----- | ----- |

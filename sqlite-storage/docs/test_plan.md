@@ -5,7 +5,7 @@
 | **Functional Area** | Persistence Layer (SQLite Backend) |
 | **Module** | `sqlite-storage` |
 | **Implements** | `hardy_bpa::storage::MetadataStorage` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-7), `DTN-LLR_v1.1` (Section 7.2) |
+| **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#315-sqlite-storage-parent-req-7) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
 
@@ -15,7 +15,7 @@ This document details the testing strategy for the `sqlite-storage` crate. This 
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by the unit tests in this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by the unit tests in this plan:
 
 | LLR ID | Description |
 | :--- | :--- |

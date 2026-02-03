@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Functional Area** | Application Runtime & Transport |
 | **Module** | `hardy-tcpclv4-server` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-3, REQ-13, REQ-15, REQ-16), `DTN-LLR_v1.1` (Section 3) |
+| **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [LLR 3.x](../../docs/requirements.md#310-tcpclv4-parent-req-3) |
 | **Test Suite ID** | PLAN-TCPCL-SERVER-01 |
 
 ## 1. Introduction
@@ -23,11 +23,11 @@ Core protocol logic (RFC 9174 state machine, packet parsing) is verified by the 
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by the unit tests in this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by the unit tests in this plan:
 
 | LLR ID | Description |
 | :--- | :--- |
-| **3.1.5** | Allow configuration of default session parameters (Keepalive, Segment Size). |
+| [**3.1.5**](../../docs/requirements.md#310-tcpclv4-parent-req-3) | Allow configuration of default session parameters (Keepalive, Segment Size). |
 
 ## 3. Unit Test Cases
 

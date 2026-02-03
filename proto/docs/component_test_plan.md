@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | gRPC Client Implementation |
 | **Module** | `hardy-proto` (Client Proxies) |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-18) |
+| **Requirements Ref** | [REQ-18](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples) |
 | **Test Suite ID** | COMP-GRPC-CLIENT-01 |
 
 ## 1. Introduction

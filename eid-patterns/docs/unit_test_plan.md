@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Addressing & Routing Logic |
 | **Module** | `hardy-eid-pattern` |
-| **Requirements Ref** | `DTN-LLR_v1.1` (Section 6.1) |
+| **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [LLR 6.1.x](../../docs/requirements.md#311-eid-patterns-parent-req-6) |
 | **Standard Ref** | `draft-ietf-dtn-eid-pattern-05` |
 | **Test Suite ID** | UTP-PAT-01 |
 
@@ -24,7 +24,7 @@ This document details the unit testing strategy for the `hardy-eid-pattern` modu
 
 ## 2. Requirements Mapping
 
-The following requirements from **DTN-LLR_v1.1** are verified by this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by this plan:
 
 | LLR ID | Description | Draft Reference |
  | ----- | ----- | ----- |

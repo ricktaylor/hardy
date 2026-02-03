@@ -4,7 +4,7 @@
  | ----- | ----- |
 | **Functional Area** | Bundle Routing & Processing Pipeline |
 | **Module** | `hardy-bpa` |
-| **Requirements Ref** | `DTN-HLR_v1` (REQ-1, REQ-6, REQ-13, REQ-14), `DTN-LLR_v1.1` (Section 5, 6) |
+| **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-14](../../docs/requirements.md#req-14-reliability), [LLR 6.x](../../docs/requirements.md#311-eid-patterns-parent-req-6) |
 | **Standard Ref** | RFC 9171 (BPv7 Processing) |
 | **Test Suite ID** | PLAN-BPA-01 |
 
