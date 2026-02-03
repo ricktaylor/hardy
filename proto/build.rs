@@ -17,7 +17,7 @@ fn compile_proto(proto: impl AsRef<Path>) -> std::io::Result<()> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     compile_proto("cla.proto")?;
-    compile_proto("application.proto")?;
+    compile_proto("service.proto")?;
     compile_proto("google/rpc/status.proto")?;
 
     Ok(())

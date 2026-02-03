@@ -47,7 +47,7 @@ impl PipeService {
         data: hardy_bpa::Bytes,
         lifetime: std::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
-    ) -> hardy_bpa::services::Result<Box<str>> {
+    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         self.sink
             .get()
             .unwrap()
@@ -86,8 +86,8 @@ impl hardy_bpa::services::Application for PipeService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &str,
-        _from: &str,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &Eid,
         _kind: hardy_bpa::services::StatusNotify,
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,

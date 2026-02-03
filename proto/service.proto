@@ -1,0 +1,421 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
+
+package service;
+
+// =============================================================================
+// Bundle Protocol Endpoint APIs
+// =============================================================================
+//
+// This file defines two endpoint APIs for receiving bundles at registered EIDs:
+//
+// Application API (high-level):
+//   - Receives only payload data; BPA handles bundle construction/parsing
+//   - Suitable for user applications that don't need bundle header access
+//   - Send provides destination, payload, lifetime, and options
+//   - Receive provides source, payload, expiry, and ack flag
+//
+// Service API (low-level):
+//   - Receives complete bundles as raw CBOR-encoded bytes
+//   - Service constructs outgoing bundles using bpv7::Builder
+//   - Suitable for system services like echo, SAND that need header access
+//   - BPA validates service-constructed bundles (security boundary)
+//
+// Both APIs use the same bidirectional streaming pattern and share common
+// messages for registration, status notifications, cancellation, and
+// unregistration.
+//
+// Protocol flow:
+//   1. Client calls Register() to establish bidirectional stream
+//   2. Client sends RegisterRequest as first message
+//   3. BPA responds with RegisterResponse containing assigned endpoint ID
+//   4. Client and BPA exchange messages asynchronously using msg_id correlation
+//   5. Either side can initiate unregistration
+
+// =============================================================================
+// RPC Definitions
+// =============================================================================
+
+// Application provides a high-level endpoint API for user applications.
+// Applications work with payload data only; the BPA handles all bundle
+// construction and parsing.
+service Application {
+  // Register establishes a bidirectional stream for bundle exchange.
+  // The first client message must be a RegisterRequest.
+  rpc Register(stream AppToBpa) returns (stream BpaToApp);
+}
+
+// Service provides a low-level endpoint API for system services that need
+// full bundle access. Services construct and parse bundles directly using
+// the bpv7 crate; the BPA validates all service-constructed bundles.
+service Service {
+  // Register establishes a bidirectional stream for bundle exchange.
+  // The first client message must be a RegisterRequest.
+  rpc Register(stream ServiceToBpa) returns (stream BpaToService);
+}
+
+// =============================================================================
+// Application Stream Messages
+// =============================================================================
+
+// AppToBpa wraps all messages sent from an application to the BPA.
+message AppToBpa {
+  // Unique identifier for request/response correlation. The BPA echoes this
+  // ID in the corresponding response message.
+  uint32 msg_id = 1;
+
+  // The message payload. Exactly one field must be set.
+  oneof msg {
+    // Error status from the application (e.g., failed to process a bundle).
+    google.rpc.Status status = 2;
+
+    // Initial registration request. Must be the first message on the stream.
+    RegisterRequest register = 3;
+
+    // Request to send a bundle. BPA constructs the bundle from parameters.
+    AppSendRequest send = 4;
+
+    // Acknowledgement of a received bundle (response to AppReceiveRequest).
+    ReceiveResponse receive = 5;
+
+    // Acknowledgement of a status notification (response to StatusNotifyRequest).
+    StatusNotifyResponse status_notify = 6;
+
+    // Request to cancel a pending bundle transmission.
+    CancelRequest cancel = 7;
+
+    // Acknowledgement of forced unregistration (response to OnUnregisterRequest).
+    OnUnregisterResponse on_unregister = 8;
+
+    // Request to voluntarily unregister this endpoint.
+    UnregisterRequest unregister = 9;
+  }
+}
+
+// BpaToApp wraps all messages sent from the BPA to an application.
+message BpaToApp {
+  // Unique identifier for request/response correlation. For responses, this
+  // matches the msg_id from the corresponding request.
+  uint32 msg_id = 1;
+
+  // The message payload. Exactly one field must be set.
+  oneof msg {
+    // Error status from the BPA (e.g., invalid request, internal error).
+    google.rpc.Status status = 2;
+
+    // Response to RegisterRequest with the assigned endpoint ID.
+    RegisterResponse register = 3;
+
+    // Response to AppSendRequest confirming bundle acceptance.
+    SendResponse send = 4;
+
+    // Notification that a bundle has arrived for this endpoint.
+    AppReceiveRequest receive = 5;
+
+    // Notification of a status report for a previously sent bundle.
+    StatusNotifyRequest status_notify = 6;
+
+    // Response to CancelRequest indicating success or failure.
+    CancelResponse cancel = 7;
+
+    // Notification that this endpoint has been forcibly unregistered
+    // (e.g., due to BPA shutdown or administrative action).
+    OnUnregisterRequest on_unregister = 8;
+
+    // Response to UnregisterRequest confirming voluntary unregistration.
+    UnregisterResponse unregister = 9;
+  }
+}
+
+// =============================================================================
+// Service Stream Messages
+// =============================================================================
+
+// ServiceToBpa wraps all messages sent from a service to the BPA.
+message ServiceToBpa {
+  // Unique identifier for request/response correlation. The BPA echoes this
+  // ID in the corresponding response message.
+  uint32 msg_id = 1;
+
+  // The message payload. Exactly one field must be set.
+  oneof msg {
+    // Error status from the service (e.g., failed to process a bundle).
+    google.rpc.Status status = 2;
+
+    // Initial registration request. Must be the first message on the stream.
+    RegisterRequest register = 3;
+
+    // Request to send a service-constructed bundle (raw CBOR bytes).
+    ServiceSendRequest send = 4;
+
+    // Acknowledgement of a received bundle (response to ServiceReceiveRequest).
+    ReceiveResponse receive = 5;
+
+    // Acknowledgement of a status notification (response to StatusNotifyRequest).
+    StatusNotifyResponse status_notify = 6;
+
+    // Request to cancel a pending bundle transmission.
+    CancelRequest cancel = 7;
+
+    // Acknowledgement of forced unregistration (response to OnUnregisterRequest).
+    OnUnregisterResponse on_unregister = 8;
+
+    // Request to voluntarily unregister this endpoint.
+    UnregisterRequest unregister = 9;
+  }
+}
+
+// BpaToService wraps all messages sent from the BPA to a service.
+message BpaToService {
+  // Unique identifier for request/response correlation. For responses, this
+  // matches the msg_id from the corresponding request.
+  uint32 msg_id = 1;
+
+  // The message payload. Exactly one field must be set.
+  oneof msg {
+    // Error status from the BPA (e.g., invalid bundle, internal error).
+    google.rpc.Status status = 2;
+
+    // Response to RegisterRequest with the assigned endpoint ID.
+    RegisterResponse register = 3;
+
+    // Response to ServiceSendRequest confirming bundle acceptance.
+    SendResponse send = 4;
+
+    // Notification that a bundle has arrived for this endpoint (full bundle data).
+    ServiceReceiveRequest receive = 5;
+
+    // Notification of a status report for a previously sent bundle.
+    StatusNotifyRequest status_notify = 6;
+
+    // Response to CancelRequest indicating success or failure.
+    CancelResponse cancel = 7;
+
+    // Notification that this endpoint has been forcibly unregistered
+    // (e.g., due to BPA shutdown or administrative action).
+    OnUnregisterRequest on_unregister = 8;
+
+    // Response to UnregisterRequest confirming voluntary unregistration.
+    UnregisterResponse unregister = 9;
+  }
+}
+
+// =============================================================================
+// Common Messages (shared by Application and Service)
+// =============================================================================
+
+// RegisterRequest requests registration of an endpoint with the BPA.
+// Must be the first message sent on a new stream.
+message RegisterRequest {
+  // The requested service identifier. If not set or set to a "wildcard" value,
+  // the BPA assigns a random identifier.
+  oneof service_id {
+    // DTN scheme service name (e.g., "echo" for "dtn://node/echo").
+    // If empty string, the BPA assigns a random service name.
+    string dtn = 1;
+
+    // IPN scheme service number (e.g., 42 for "ipn:1.42").
+    // If 0, the BPA assigns a random service number.
+    uint32 ipn = 2;
+  }
+}
+
+// RegisterResponse confirms successful registration and provides the
+// fully-qualified endpoint ID assigned by the BPA.
+message RegisterResponse {
+  // The complete endpoint ID in URI format.
+  // Examples: "ipn:1.42", "dtn://mynode/echo"
+  string endpoint_id = 1;
+}
+
+// SendResponse confirms that a bundle has been accepted for transmission.
+// This does not guarantee delivery; use status notifications for delivery
+// confirmation.
+message SendResponse {
+  // The unique bundle identifier, formatted as specified in RFC 9171.
+  // Can be used for cancellation or status correlation.
+  string bundle_id = 1;
+}
+
+// ReceiveResponse acknowledges receipt of a bundle. The application/service
+// sends this after processing AppReceiveRequest or ServiceReceiveRequest.
+message ReceiveResponse {}
+
+// StatusNotifyRequest delivers a status report to the endpoint. Sent by
+// the BPA when it receives a status report for a bundle originated by
+// this endpoint.
+message StatusNotifyRequest {
+  // StatusKind indicates the type of status report received.
+  enum StatusKind {
+    // Unused/invalid value.
+    STATUS_KIND_UNUSED = 0;
+
+    // Bundle was received at reporting node (reception report).
+    STATUS_KIND_RECEIVED = 1;
+
+    // Bundle was forwarded by reporting node (forwarding report).
+    STATUS_KIND_FORWARDED = 2;
+
+    // Bundle was delivered to destination endpoint (delivery report).
+    STATUS_KIND_DELIVERED = 3;
+
+    // Bundle was deleted by reporting node (deletion report).
+    STATUS_KIND_DELETED = 4;
+  }
+
+  // The bundle ID this status report refers to.
+  string bundle_id = 1;
+
+  // The EID of the node that generated this status report.
+  string from = 2;
+
+  // The type of status being reported.
+  StatusKind kind = 3;
+
+  // The reason code from RFC 9171 Section 6.1.1.
+  // 0 = No additional information.
+  // See RFC 9171 for the complete list of reason codes.
+  uint64 reason = 4;
+
+  // The timestamp when the reported event occurred (if status time was
+  // requested in the original bundle flags).
+  optional google.protobuf.Timestamp timestamp = 5;
+}
+
+// StatusNotifyResponse acknowledges receipt of a status notification.
+message StatusNotifyResponse {}
+
+// CancelRequest requests cancellation of a pending bundle. Only bundles
+// that have not yet been transmitted can be cancelled.
+message CancelRequest {
+  // The bundle ID to cancel (as returned by SendResponse).
+  string bundle_id = 1;
+}
+
+// CancelResponse indicates whether the cancellation was successful.
+message CancelResponse {
+  // True if the bundle was successfully cancelled; false if the bundle
+  // was not found or had already been transmitted.
+  bool cancelled = 1;
+}
+
+// UnregisterRequest initiates voluntary unregistration of the endpoint.
+// After sending this, the client should wait for UnregisterResponse
+// before closing the stream.
+message UnregisterRequest {}
+
+// UnregisterResponse confirms that the endpoint has been unregistered.
+// The stream will be closed after this message.
+message UnregisterResponse {}
+
+// OnUnregisterRequest notifies the endpoint that it has been forcibly
+// unregistered by the BPA (e.g., due to shutdown, resource limits, or
+// administrative action).
+message OnUnregisterRequest {}
+
+// OnUnregisterResponse acknowledges the forced unregistration notification.
+// The stream will be closed after this message.
+message OnUnregisterResponse {}
+
+// =============================================================================
+// Application-Specific Messages
+// =============================================================================
+
+// AppSendRequest requests transmission of a bundle. The BPA constructs
+// the complete bundle from the provided parameters.
+message AppSendRequest {
+  // SendOptions is a bitmask of flags controlling bundle behavior.
+  // Multiple options can be combined using bitwise OR.
+  enum SendOptions {
+    // No options (default behavior).
+    SEND_OPTIONS_UNUSED = 0;
+
+    // Do not fragment this bundle if it exceeds the path MTU.
+    // Maps to BP "do not fragment" flag.
+    SEND_OPTIONS_DO_NOT_FRAGMENT = 4;
+
+    // Request application-layer acknowledgement from the destination.
+    // Maps to BP "application acknowledgement requested" flag.
+    SEND_OPTIONS_REQUEST_ACK = 0x20;
+
+    // Include timestamps in any status reports generated for this bundle.
+    // Maps to BP "report status time" flag.
+    SEND_OPTIONS_REPORT_STATUS_TIME = 0x40;
+
+    // Request a reception status report when the bundle is received.
+    SEND_OPTIONS_NOTIFY_RECEPTION = 0x4000;
+
+    // Request a forwarding status report when the bundle is forwarded.
+    SEND_OPTIONS_NOTIFY_FORWARDING = 0x10000;
+
+    // Request a delivery status report when the bundle is delivered.
+    SEND_OPTIONS_NOTIFY_DELIVERY = 0x20000;
+
+    // Request a deletion status report if the bundle is deleted.
+    SEND_OPTIONS_NOTIFY_DELETION = 0x40000;
+  }
+
+  // The destination endpoint ID in URI format (e.g., "ipn:2.1", "dtn://dest/svc").
+  string destination = 1;
+
+  // The application payload to send.
+  bytes payload = 2;
+
+  // Bundle lifetime in milliseconds. The bundle expires and may be deleted
+  // after (creation_time + lifetime).
+  uint64 lifetime = 3;
+
+  // Optional flags controlling bundle behavior (see SendOptions enum).
+  // Combine multiple options using bitwise OR.
+  optional uint32 options = 4;
+}
+
+// AppReceiveRequest delivers a received bundle to the application.
+// Only the payload and essential metadata are provided; full bundle
+// headers are not accessible via the Application API.
+message AppReceiveRequest {
+  // The source endpoint ID of the bundle sender.
+  string source = 1;
+
+  // True if the sender requested an application-layer acknowledgement.
+  // The application should send a response bundle if this is set.
+  bool ack_requested = 2;
+
+  // The absolute time when this bundle expires and should be discarded.
+  // Computed from the bundle's creation timestamp plus lifetime.
+  google.protobuf.Timestamp expiry = 3;
+
+  // The application payload extracted from the bundle.
+  bytes payload = 4;
+}
+
+// =============================================================================
+// Service-Specific Messages
+// =============================================================================
+
+// ServiceSendRequest requests transmission of a service-constructed bundle.
+// The service is responsible for building the complete bundle using the
+// bpv7 crate's Builder. The BPA parses and validates the bundle before
+// accepting it (security boundary - the BPA cannot trust raw bytes from
+// external services).
+message ServiceSendRequest {
+  // The complete bundle as CBOR-encoded bytes, as produced by bpv7::Builder.
+  // Must be a valid BPv7 bundle; the BPA will reject malformed bundles.
+  bytes data = 1;
+}
+
+// ServiceReceiveRequest delivers a received bundle to the service.
+// The complete bundle data is provided, allowing the service to parse
+// and inspect all bundle blocks and headers.
+message ServiceReceiveRequest {
+  // The complete bundle as CBOR-encoded bytes. The service can parse this
+  // using bpv7::Bundle::parse() to access all blocks and headers.
+  bytes data = 1;
+
+  // The absolute time when this bundle expires and should be discarded.
+  // Computed from the bundle's creation timestamp plus lifetime.
+  // Provided as a convenience; also available in the parsed bundle.
+  google.protobuf.Timestamp expiry = 2;
+}

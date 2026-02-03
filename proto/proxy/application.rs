@@ -3,21 +3,29 @@ use crate::service::*;
 use hardy_bpv7::eid;
 
 async fn receive(
-    service: &dyn hardy_bpa::services::Service,
-    request: ServiceReceiveRequest,
+    service: &dyn hardy_bpa::services::Application,
+    request: AppReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
+    let source = request
+        .source
+        .parse::<hardy_bpv7::eid::Eid>()
+        .map_err(|e| tonic::Status::from_error(e.into()))?;
+
     let expiry = request
         .expiry
         .map(from_timestamp)
-        .ok_or(tonic::Status::invalid_argument("Missing expiry"))??;
+        .ok_or(tonic::Status::invalid_argument("Missing expiry"))?
+        .map_err(|e| tonic::Status::from_error(e.into()))?;
 
-    service.on_receive(request.data, expiry).await;
+    service
+        .on_receive(source, expiry, request.ack_requested, request.payload)
+        .await;
 
     Ok(ReceiveResponse {})
 }
 
 async fn status_notify(
-    service: &dyn hardy_bpa::services::Service,
+    service: &dyn hardy_bpa::services::Application,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
     let timestamp = if let Some(timestamp) = request.timestamp {
@@ -62,14 +70,11 @@ async fn status_notify(
 }
 
 struct Sink {
-    proxy: RpcProxy<ServiceToBpa, BpaToService>,
+    proxy: RpcProxy<AppToBpa, BpaToApp>,
 }
 
 impl Sink {
-    async fn call(
-        &self,
-        msg: service_to_bpa::Msg,
-    ) -> hardy_bpa::services::Result<bpa_to_service::Msg> {
+    async fn call(&self, msg: app_to_bpa::Msg) -> hardy_bpa::services::Result<bpa_to_app::Msg> {
         match self.proxy.call(msg).await {
             Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
@@ -79,16 +84,57 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::services::ServiceSink for Sink {
+impl hardy_bpa::services::ApplicationSink for Sink {
     async fn send(
         &self,
+        destination: eid::Eid,
         data: hardy_bpa::Bytes,
+        lifetime: std::time::Duration,
+        options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         match self
-            .call(service_to_bpa::Msg::Send(ServiceSendRequest { data }))
+            .call(app_to_bpa::Msg::Send(AppSendRequest {
+                destination: destination.to_string(),
+                payload: data,
+                lifetime: lifetime.as_millis() as u64,
+                options: options.map(|o| {
+                    let mut options = 0;
+                    if o.do_not_fragment {
+                        options |= app_send_request::SendOptions::DoNotFragment as u32;
+                    }
+                    if o.request_ack {
+                        options |= app_send_request::SendOptions::RequestAck as u32;
+                    }
+                    if o.notify_reception {
+                        options |= app_send_request::SendOptions::NotifyReception as u32;
+                        if o.report_status_time {
+                            options |= app_send_request::SendOptions::ReportStatusTime as u32;
+                        }
+                    }
+                    if o.notify_forwarding {
+                        options |= app_send_request::SendOptions::NotifyForwarding as u32;
+                        if o.report_status_time {
+                            options |= app_send_request::SendOptions::ReportStatusTime as u32;
+                        }
+                    }
+                    if o.notify_delivery {
+                        options |= app_send_request::SendOptions::NotifyDelivery as u32;
+                        if o.report_status_time {
+                            options |= app_send_request::SendOptions::ReportStatusTime as u32;
+                        }
+                    }
+                    if o.notify_deletion {
+                        options |= app_send_request::SendOptions::NotifyDeletion as u32;
+                        if o.report_status_time {
+                            options |= app_send_request::SendOptions::ReportStatusTime as u32;
+                        }
+                    }
+                    options
+                }),
+            }))
             .await?
         {
-            bpa_to_service::Msg::Send(response) => {
+            bpa_to_app::Msg::Send(response) => {
                 hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
                     .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
             }
@@ -106,12 +152,12 @@ impl hardy_bpa::services::ServiceSink for Sink {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> hardy_bpa::services::Result<bool> {
         match self
-            .call(service_to_bpa::Msg::Cancel(CancelRequest {
+            .call(app_to_bpa::Msg::Cancel(CancelRequest {
                 bundle_id: bundle_id.to_key(),
             }))
             .await?
         {
-            bpa_to_service::Msg::Cancel(response) => Ok(response.cancelled),
+            bpa_to_app::Msg::Cancel(response) => Ok(response.cancelled),
             msg => {
                 warn!("Unexpected response: {msg:?}");
                 Err(hardy_bpa::services::Error::Internal(
@@ -123,10 +169,10 @@ impl hardy_bpa::services::ServiceSink for Sink {
 
     async fn unregister(&self) {
         match self
-            .call(service_to_bpa::Msg::Unregister(UnregisterRequest {}))
+            .call(app_to_bpa::Msg::Unregister(UnregisterRequest {}))
             .await
         {
-            Ok(bpa_to_service::Msg::Unregister(_)) => {}
+            Ok(bpa_to_app::Msg::Unregister(_)) => {}
             Ok(msg) => {
                 warn!("Unexpected response: {msg:?}");
             }
@@ -140,45 +186,45 @@ impl hardy_bpa::services::ServiceSink for Sink {
 }
 
 struct Handler {
-    service: Weak<dyn hardy_bpa::services::Service>,
+    service: Weak<dyn hardy_bpa::services::Application>,
 }
 
 #[async_trait]
 impl ProxyHandler for Handler {
-    type SMsg = service_to_bpa::Msg;
-    type RMsg = bpa_to_service::Msg;
+    type SMsg = app_to_bpa::Msg;
+    type RMsg = bpa_to_app::Msg;
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         match msg {
-            bpa_to_service::Msg::Receive(request) => {
+            bpa_to_app::Msg::Receive(request) => {
                 if let Some(service) = self.service.upgrade() {
                     match receive(service.as_ref(), request).await {
-                        Ok(msg) => Some(service_to_bpa::Msg::Receive(msg)),
-                        Err(e) => Some(service_to_bpa::Msg::Status(e.into())),
+                        Ok(msg) => Some(app_to_bpa::Msg::Receive(msg)),
+                        Err(e) => Some(app_to_bpa::Msg::Status(e.into())),
                     }
                 } else {
-                    Some(service_to_bpa::Msg::Status(
+                    Some(app_to_bpa::Msg::Status(
                         tonic::Status::unavailable("Service has disconnected").into(),
                     ))
                 }
             }
-            bpa_to_service::Msg::StatusNotify(request) => {
+            bpa_to_app::Msg::StatusNotify(request) => {
                 if let Some(service) = self.service.upgrade() {
                     match status_notify(service.as_ref(), request).await {
-                        Ok(_) => Some(service_to_bpa::Msg::StatusNotify(StatusNotifyResponse {})),
-                        Err(e) => Some(service_to_bpa::Msg::Status(e.into())),
+                        Ok(_) => Some(app_to_bpa::Msg::StatusNotify(StatusNotifyResponse {})),
+                        Err(e) => Some(app_to_bpa::Msg::Status(e.into())),
                     }
                 } else {
-                    Some(service_to_bpa::Msg::Status(
+                    Some(app_to_bpa::Msg::Status(
                         tonic::Status::unavailable("Service has disconnected").into(),
                     ))
                 }
             }
-            bpa_to_service::Msg::OnUnregister(_) => {
+            bpa_to_app::Msg::OnUnregister(_) => {
                 if let Some(service) = self.service.upgrade() {
                     service.on_unregister().await;
                 }
-                Some(service_to_bpa::Msg::OnUnregister(OnUnregisterResponse {}))
+                Some(app_to_bpa::Msg::OnUnregister(OnUnregisterResponse {}))
             }
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
@@ -194,16 +240,12 @@ impl ProxyHandler for Handler {
     }
 }
 
-/// Register a low-level Service with the BPA via gRPC.
-///
-/// This connects to the BPA's Service gRPC endpoint and establishes a
-/// bidirectional streaming connection for the service lifecycle.
-pub async fn register_endpoint_service(
+pub async fn register_application_service(
     grpc_addr: String,
     service_id: Option<eid::Service>,
-    service: Arc<dyn hardy_bpa::services::Service>,
+    service: Arc<dyn hardy_bpa::services::Application>,
 ) -> hardy_bpa::services::Result<eid::Eid> {
-    let mut svc_client = service_client::ServiceClient::connect(grpc_addr.clone())
+    let mut app_client = application_client::ApplicationClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
@@ -214,7 +256,7 @@ pub async fn register_endpoint_service(
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 
     // Call the service's streaming method
-    let mut channel_receiver = svc_client
+    let mut channel_receiver = app_client
         .register(tokio_stream::wrappers::ReceiverStream::new(rx))
         .await
         .map_err(|e| {
@@ -227,7 +269,7 @@ pub async fn register_endpoint_service(
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,
-        service_to_bpa::Msg::Register(RegisterRequest {
+        app_to_bpa::Msg::Register(RegisterRequest {
             service_id: service_id.map(|service_id| match service_id {
                 eid::Service::Ipn(service_number) => {
                     register_request::ServiceId::Ipn(service_number)
@@ -244,7 +286,7 @@ pub async fn register_endpoint_service(
         hardy_bpa::services::Error::Internal(e.into())
     })? {
         None => return Err(hardy_bpa::services::Error::Disconnected),
-        Some(bpa_to_service::Msg::Register(response)) => response,
+        Some(bpa_to_app::Msg::Register(response)) => response,
         Some(msg) => {
             error!("Service Registration failed: Unexpected response: {msg:?}");
             return Err(hardy_bpa::services::Error::Internal(
@@ -272,6 +314,6 @@ pub async fn register_endpoint_service(
     // Call on_register()
     service.on_register(&eid, Box::new(Sink { proxy })).await;
 
-    info!("Proxy Service {eid} started");
+    info!("Proxy Application service {eid} started");
     Ok(eid)
 }

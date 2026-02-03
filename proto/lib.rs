@@ -110,8 +110,8 @@ pub mod cla {
     }
 }
 
-pub mod application {
-    tonic::include_proto!("application");
+pub mod service {
+    tonic::include_proto!("service");
 
     impl crate::proxy::RecvMsg for BpaToApp {
         type Msg = bpa_to_app::Msg;
@@ -167,18 +167,60 @@ pub mod application {
         }
     }
 
-    // impl From<register_application_request::ServiceId> for hardy_bpv7::eid::Service {
-    //     fn from(value: register_application_request::ServiceId) -> Self {
-    //         match value {
-    //             register_application_request::ServiceId::Dtn(service_name) => {
-    //                 Self::Dtn(service_name.into())
-    //             }
-    //             register_application_request::ServiceId::Ipn(service_number) => {
-    //                 Self::Ipn(service_number)
-    //             }
-    //         }
-    //     }
-    // }
+    // Low-level Service message impls
+    impl crate::proxy::RecvMsg for BpaToService {
+        type Msg = bpa_to_service::Msg;
+
+        fn msg_id(&self) -> u32 {
+            self.msg_id
+        }
+
+        fn msg(self) -> Result<Self::Msg, tonic::Status> {
+            match self.msg {
+                None => Err(tonic::Status::invalid_argument("Unknown message")),
+                Some(Self::Msg::Status(status)) => Err(status.into()),
+                Some(msg) => Ok(msg),
+            }
+        }
+    }
+
+    impl crate::proxy::RecvMsg for ServiceToBpa {
+        type Msg = service_to_bpa::Msg;
+
+        fn msg_id(&self) -> u32 {
+            self.msg_id
+        }
+
+        fn msg(self) -> Result<Self::Msg, tonic::Status> {
+            match self.msg {
+                None => Err(tonic::Status::invalid_argument("Unknown message")),
+                Some(Self::Msg::Status(status)) => Err(status.into()),
+                Some(msg) => Ok(msg),
+            }
+        }
+    }
+
+    impl crate::proxy::SendMsg for ServiceToBpa {
+        type Msg = service_to_bpa::Msg;
+
+        fn compose(msg_id: u32, msg: Self::Msg) -> Self {
+            Self {
+                msg_id,
+                msg: Some(msg),
+            }
+        }
+    }
+
+    impl crate::proxy::SendMsg for BpaToService {
+        type Msg = bpa_to_service::Msg;
+
+        fn compose(msg_id: u32, msg: Self::Msg) -> Self {
+            Self {
+                msg_id,
+                msg: Some(msg),
+            }
+        }
+    }
 }
 
 pub mod google {

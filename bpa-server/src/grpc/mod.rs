@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 mod application;
 mod cla;
+mod service;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -31,6 +32,9 @@ pub fn init(
             }
             "cla" => {
                 routes.add_service(cla::new_service(bpa));
+            }
+            "service" => {
+                routes.add_service(service::new_service(bpa));
             }
             s => {
                 warn!("Ignoring unknown gRPC service {s}");

@@ -4,11 +4,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tracing::{debug, error, info, warn};
 
+mod application;
 mod cla;
 mod service;
 
+pub use application::register_application_service;
 pub use cla::register_cla;
-pub use service::register_service;
+pub use service::register_endpoint_service;
 
 pub trait SendMsg {
     type Msg;

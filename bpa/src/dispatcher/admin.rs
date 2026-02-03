@@ -48,15 +48,12 @@ impl Dispatcher {
                 // Find a live service to notify
                 if let Some(service) = self.service_registry.find(&report.bundle_id.source).await {
                     // Notify the service
-                    let bundle_id = report.bundle_id.to_key();
-                    let from = bundle.bundle.id.source.to_string();
-
                     let on_status_notify = |assertion: Option<StatusAssertion>, code| async {
                         if let Some(assertion) = assertion {
                             service
                                 .on_status_notify(
-                                    &bundle_id,
-                                    &from,
+                                    &report.bundle_id,
+                                    &bundle.bundle.id.source,
                                     code,
                                     report.reason,
                                     assertion.0,

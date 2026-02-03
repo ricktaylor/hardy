@@ -163,11 +163,7 @@ impl Dispatcher {
 
                 // Re-parse the rewritten bundle (Editor output is trusted to be correct)
                 (
-                    hardy_bpv7::bundle::ParsedBundle::parse_with_keys(
-                        &new_data,
-                        &hardy_bpv7::bpsec::key::KeySet::EMPTY,
-                    )?
-                    .bundle,
+                    hardy_bpv7::bundle::ParsedBundle::parse(&new_data, self.key_provider())?.bundle,
                     new_data,
                 )
             } else {
@@ -214,8 +210,8 @@ impl Dispatcher {
 
         match &service.service {
             services::registry::ServiceImpl::LowLevel(svc) => {
-                // Pass the full bundle to low-level services
-                svc.on_bundle(&bundle.bundle, data, bundle.expiry()).await;
+                // Pass raw bundle bytes to low-level services
+                svc.on_receive(data, bundle.expiry()).await;
             }
             services::registry::ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application

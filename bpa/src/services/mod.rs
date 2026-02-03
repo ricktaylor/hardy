@@ -60,8 +60,8 @@ pub trait Application: Send + Sync {
 
     async fn on_status_notify(
         &self,
-        bundle_id: &str,
-        from: &str,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        from: &Eid,
         kind: StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
@@ -89,16 +89,17 @@ pub trait ApplicationSink: Send + Sync {
         data: Bytes,
         lifetime: std::time::Duration,
         options: Option<SendOptions>,
-    ) -> Result<Box<str>>;
+    ) -> Result<hardy_bpv7::bundle::Id>;
 
-    async fn cancel(&self, bundle_id: &str) -> Result<bool>;
+    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
 }
 
-/// Low-level service trait with full bundle access.
+/// Low-level service trait with raw bundle access.
 ///
 /// Unlike `Application` which receives only payload, `Service` receives
-/// the full parsed bundle and raw bytes. This enables system services
-/// like echo that need to inspect/modify bundle structure.
+/// the raw bundle bytes. This enables system services like echo that need
+/// to inspect/modify bundle structure. Services can parse the bundle
+/// themselves using `CheckedBundle::parse()` if they have key access.
 #[async_trait]
 pub trait Service: Send + Sync {
     /// Called when service is registered; receives Sink for sending
@@ -108,21 +109,15 @@ pub trait Service: Send + Sync {
     async fn on_unregister(&self);
 
     /// Called when a bundle arrives
-    /// - `bundle`: parsed view (BPA already parsed for routing/validation)
-    /// - `data`: raw bytes (for block unpacking)
-    /// - `expiry`: calculated from metadata by dispatcher
-    async fn on_bundle(
-        &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
-        data: Bytes,
-        expiry: time::OffsetDateTime,
-    );
+    /// - `data`: raw bundle bytes (service can parse if needed)
+    /// - `expiry`: calculated from bundle metadata by dispatcher
+    async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime);
 
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
         &self,
-        bundle_id: &str,
-        from: &str,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        from: &Eid,
         kind: StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
@@ -145,5 +140,5 @@ pub trait ServiceSink: Send + Sync {
     async fn send(&self, data: Bytes) -> Result<hardy_bpv7::bundle::Id>;
 
     /// Cancel a pending bundle
-    async fn cancel(&self, bundle_id: &str) -> Result<bool>;
+    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
 }

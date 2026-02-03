@@ -25,8 +25,8 @@ pub struct Service {
 impl Service {
     pub async fn on_status_notify(
         &self,
-        bundle_id: &str,
-        from: &str,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        from: &Eid,
         kind: StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
@@ -92,11 +92,7 @@ impl Sink {
         }
     }
 
-    async fn cancel_inner(&self, bundle_id: &str) -> services::Result<bool> {
-        let Ok(bundle_id) = hardy_bpv7::bundle::Id::from_key(bundle_id) else {
-            return Ok(false);
-        };
-
+    async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
         if bundle_id.source
             != self
                 .service
@@ -107,7 +103,7 @@ impl Sink {
             return Ok(false);
         }
 
-        Ok(self.dispatcher.cancel_local_dispatch(&bundle_id).await)
+        Ok(self.dispatcher.cancel_local_dispatch(bundle_id).await)
     }
 }
 
@@ -128,7 +124,7 @@ impl services::ServiceSink for Sink {
             .await
     }
 
-    async fn cancel(&self, bundle_id: &str) -> services::Result<bool> {
+    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
         self.cancel_inner(bundle_id).await
     }
 }
@@ -145,14 +141,13 @@ impl services::ApplicationSink for Sink {
         data: Bytes,
         lifetime: std::time::Duration,
         options: Option<services::SendOptions>,
-    ) -> services::Result<Box<str>> {
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
         let service = self
             .service
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
 
-        let id = self
-            .dispatcher
+        self.dispatcher
             .local_dispatch(
                 service.service_id.clone(),
                 destination,
@@ -160,11 +155,10 @@ impl services::ApplicationSink for Sink {
                 lifetime,
                 options,
             )
-            .await?;
-        Ok(id.to_key().into())
+            .await
     }
 
-    async fn cancel(&self, bundle_id: &str) -> services::Result<bool> {
+    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
         self.cancel_inner(bundle_id).await
     }
 }
