@@ -10,10 +10,10 @@ The immediate goal is to make the existing `bp ping` tool functional by implemen
 ## Background
 
 - **Ping tool**: `tools/src/ping/` - sends PING bundles, expects PONG responses
-- **Current Service trait**: `bpa/src/service.rs` - payload-only access, insufficient for echo
+- **Current Service trait**: `bpa/src/services/mod.rs` - defines both Application (payload-only) and Service (full bundle) traits
 - **Admin endpoint**: `bpa/src/dispatcher/admin.rs` - has full bundle access, only handles status reports
 - **Current routing model**: Static routes only, no dynamic/ad-hoc routing agents
-- **Proto definitions**: `proto/application.proto` (endpoint API)
+- **Proto definitions**: `proto/service.proto` (consolidated Application and Service endpoint APIs)
 
 ---
 
@@ -25,24 +25,24 @@ Align the Rust traits with the gRPC proto definitions. Both Application and Serv
 
 | Trait       | Access Level   | Use Case                          | Proto Equivalent      |
 |-------------|----------------|-----------------------------------|-----------------------|
-| Application | Payload-only   | User applications (high-level)    | `application.proto`   |
-| Service     | Full bundle    | System services like echo         | *(new)*               |
+| Application | Payload-only   | User applications (high-level)    | `service.proto` (Application RPC) |
+| Service     | Full bundle    | System services like echo         | `service.proto` (Service RPC)     |
 
 Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not an endpoint API. CLAs handle bundle transmission/reception over network links, not bundle delivery to endpoints.
 
-- [ ] **1.0 Create `bpa/src/services/` directory and reorganize**
+- [x] **1.0 Create `bpa/src/services/` directory and reorganize**
   - Move `service.rs` → `services/mod.rs` (traits)
   - Move `service_registry.rs` → `services/registry.rs`
   - Move relevant parts of `dispatcher/local.rs` → `services/`
   - Update all imports
 
-- [ ] **1.1 Rename current `Service` trait to `Application`**
+- [x] **1.1 Rename current `Service` trait to `Application`**
   - Location: `bpa/src/services/mod.rs` (after 1.0)
   - Update all references
-  - Mirrors `proto/application.proto` naming
+  - Mirrors `proto/service.proto` Application RPC naming
   - Maintains payload-only semantics: `on_receive(source, expiry, ack_requested, payload)`
 
-- [ ] **1.2 Define new `Service` trait with full bundle access**
+- [x] **1.2 Define new `Service` trait with full bundle access**
   - Follows same bidirectional pattern as existing Service (to be renamed Application)
   - Low-level: works with `Bytes` + parsed `Bundle` view
   - Signature concept (aligned with existing pattern):
@@ -57,15 +57,15 @@ Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not 
         async fn on_unregister(&self);
 
         /// Called when a bundle arrives
-        /// - `bundle`: parsed view (BPA already parsed for routing/validation)
-        /// - `data`: raw bytes (for forwarding/echo without re-serialization)
-        async fn on_bundle(&self, bundle: &Bundle, data: Bytes);
+        /// - `data`: raw bundle bytes (service can parse if needed with CheckedBundle::parse())
+        /// - `expiry`: calculated from bundle metadata by dispatcher
+        async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime);
 
         /// Called when status report received for a sent bundle
         async fn on_status_notify(
             &self,
-            bundle_id: &str,
-            from: &str,
+            bundle_id: &bundle::Id,
+            from: &Eid,
             kind: StatusNotify,
             reason: ReasonCode,
             timestamp: Option<time::OffsetDateTime>,
@@ -80,40 +80,42 @@ Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not 
         /// Send a bundle as raw bytes
         /// - Service uses bpv7::Builder to construct
         /// - BPA parses and validates (security boundary - can't trust service)
-        async fn send(&self, data: Bytes) -> Result<BundleId>;
+        async fn send(&self, data: Bytes) -> Result<bundle::Id>;
 
         /// Cancel a pending bundle
-        async fn cancel(&self, bundle_id: &str) -> Result<bool>;
+        async fn cancel(&self, bundle_id: &bundle::Id) -> Result<bool>;
     }
     ```
 
   - Key differences from Application:
-    - `on_bundle(bundle, data)` vs `on_receive(source, expiry, ack_requested, payload)`
+    - `on_receive(data, expiry)` vs `on_receive(source, expiry, ack_requested, payload)`
     - `send(data: Bytes)` vs `send(destination, data, lifetime, options)`
+    - Service receives raw bundle bytes; Application receives extracted payload
   - Rationale for `Bytes` on send:
     - `bpv7::Builder` returns `Bytes`
     - BPA must parse anyway to validate (security boundary)
   - Location: `bpa/src/services/` (after 1.0)
 
-- [ ] **1.3 Create ServiceRegistry (unified)**
+- [x] **1.3 Create ServiceRegistry (unified)**
   - Single registry for all endpoints - RIB only deals with `Service` trait
   - Services registered at specific endpoints (e.g., `dtn://node/echo`)
 
-- [ ] **1.4 Create Application→Service proxy adapter**
+- [x] **1.4 Create Application→Service proxy adapter**
   - Wraps `Application` trait to expose as `Service` internally
   - Inbound: extracts payload from bundle for Application
   - Outbound: wraps Application payload into bundle
 
-- [ ] **1.5 Update dispatcher to handle new Service trait**
+- [x] **1.5 Update dispatcher to handle new Service trait**
   - Add `FindResult::Service(...)` for low-level services (or extend `Deliver`)
   - Keep `FindResult::AdminEndpoint` as-is (works, not blocking)
-  - Dispatcher calls `Service::on_bundle()` for low-level services
+  - Dispatcher calls `Service::on_receive(data, expiry)` for low-level services
   - Dispatcher calls `Application::on_receive()` (via proxy) for applications
 
-- [ ] **1.6 Create `service.proto` for new Service trait**
-  - New gRPC proto alongside `application.proto`
-  - Bundle-in, bundle-out semantics (full bundle bytes, not just payload)
-  - Mirror the Rust `Service` trait API
+- [x] **1.6 Create `service.proto` for new Service trait**
+  - Consolidated `service.proto` with both Application and Service RPCs
+  - Shared messages (RegisterRequest, StatusNotifyRequest, etc.)
+  - Service-specific messages for raw bundle bytes (ServiceSendRequest, ServiceReceiveRequest)
+  - Full proxy and gRPC server implementations in `proto/proxy/service.rs` and `bpa-server/src/grpc/service.rs`
 
 ---
 
@@ -257,7 +259,7 @@ The current RIB uses function-based `add_route`/`remove_route` APIs. To support 
   - Handle agent disconnect (withdraw all its routes, notify others)
 
 - [ ] **4.4 Create `routing.proto` for gRPC interface**
-  - Bidirectional stream like `application.proto` and `cla.proto`
+  - Bidirectional stream like `service.proto` and `cla.proto`
   - Agent→BPA: route install/withdraw requests (using `EidPattern`)
   - BPA→Agent: route change notifications from other agents
   - Enables external routing agents like DPP, hardy-tvr
@@ -581,7 +583,7 @@ All new/updated traits must be exposed via gRPC. Summary of proto work:
 
 | Item | Proto File | Action | Trait/Feature |
 |------|------------|--------|---------------|
-| 1.6 | `service.proto` | **Create** | `Service` (new low-level endpoint API) |
+| 1.6 | `service.proto` | **Done** | Consolidated `Application` + `Service` endpoint APIs |
 | 2.4 | `filter.proto` | **Create** (optional) | External filters via gRPC |
 | 4.4 | `routing.proto` | **Create** | `RoutingAgent` + `RoutingAgentSink` |
 | 5.1 | `cla.proto` | **Update** | Change `AddPeer` to use repeated EID field (empty = Neighbour) |
@@ -1056,10 +1058,10 @@ Before implementing proactive scheduling:
 - REQ-6: Time-variant Routing API requirement
 - REQ-19: Management and monitoring tools requirement
 - Ping tool: `tools/src/ping/`
-- Current Service trait: `bpa/src/service.rs:43-64`
+- Service traits: `bpa/src/services/mod.rs` (Application and Service)
 - Admin dispatcher: `bpa/src/dispatcher/admin.rs`
 - RIB routing: `bpa/src/rib/find.rs`
-- Application proto: `proto/application.proto`
+- Endpoint proto: `proto/service.proto` (consolidated Application and Service APIs)
 - **BP-ARP Design:** `bpa/docs/bp_arp_design.md`
 - **DPP (DTN Peering Protocol):** `docs/dtn_peering_protocol.md`
 
