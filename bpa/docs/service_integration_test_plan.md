@@ -4,13 +4,13 @@
 | :--- | :--- |
 | **Functional Area** | Application Interface |
 | **Module** | `hardy-bpa` |
-| **Interface** | `crate::service::Service` |
+| **Interface** | `crate::services::Application`, `crate::services::Service` |
 | **Requirements Ref** | `DTN-HLR_v1` (REQ-6, REQ-17, REQ-18), `DTN-LLR_v1.1` (Section 6) |
 | **Test Suite ID** | PLAN-SVC-01 |
 
 ## 1. Introduction
 
-This document details the integration testing strategy for implementations of the `Service` trait. This trait abstracts the application layer from the BPA, allowing various application bindings (Native, gRPC, WASM, etc.) to be plugged in.
+This document details the integration testing strategy for implementations of the `Application` and `Service` traits. These traits abstract the application layer from the BPA, allowing various application bindings (Native, gRPC, WASM, etc.) to be plugged in. The `Application` trait provides payload-only access, while the `Service` trait provides full bundle access.
 
 The tests defined here are intended to be run against **all** implementations of the trait via a common harness.
 
@@ -26,7 +26,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify the initialization and shutdown of the Service.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **SVC-01** | **Register & Unregister** | 1. Instantiate Service.<br>2. Call `on_register(source, sink)`.<br>3. Call `on_unregister()`. | 1. Service initializes.<br>2. Service cleans up resources. |
 | **SVC-02** | **Sink Unregister** | 1. Register Service.<br>2. Service calls `sink.unregister()`. | 1. BPA receives unregister request. |
@@ -35,7 +35,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify the Service correctly handles incoming data from the BPA.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **SVC-03** | **Receive Bundle** | 1. BPA calls `on_receive(src, expiry, ack, payload)`. | 1. Service processes payload.<br>2. Service acknowledges (if applicable). |
 | **SVC-04** | **Receive Status** | 1. BPA calls `on_status_notify(id, from, kind, reason, time)`. | 1. Service correlates ID with sent bundle.<br>2. Service handles status update. |
@@ -44,7 +44,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify the Service can transmit bundles via the Sink.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **SVC-05** | **Send Bundle** | 1. Service calls `sink.send(dest, payload, ttl, opts)`. | 1. Returns `Ok(bundle_id)`.<br>2. BPA accepts bundle for routing. |
 | **SVC-06** | **Send Invalid** | 1. Service calls `sink.send` with invalid EID. | 1. Returns `Err(InvalidDestination)`. |
@@ -54,7 +54,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify robustness against disconnected sinks.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **SVC-08** | **Disconnected Sink** | 1. Unregister Service.<br>2. Service calls `sink.send()`. | 1. Returns `Err(Disconnected)` or similar. |
 

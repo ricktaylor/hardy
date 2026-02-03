@@ -5,7 +5,7 @@
 | **Functional Area** | Convergence Layer (Transport) |
 | **Module** | `tcpclv4` |
 | **Implements** | `hardy_bpa::cla::Cla` |
-| **Parent Plan** | `hardy-bpa/tests/cla_integration_test_plan.md` |
+| **Parent Plan** | [`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md) |
 | **Requirements Ref** | `DTN-HLR_v1` (REQ-3), `DTN-LLR_v1.1` (Section 3) |
 | **Test Suite ID** | `PLAN-TCPCL-01` |
 
@@ -17,12 +17,12 @@ This document details the testing strategy for the `tcpclv4` crate. This crate p
 
 The verification strategy is two-fold:
 
-1. **Generic Trait Compliance:** The `tcpclv4` implementation is run against the generic test harness for the `Cla` trait (`PLAN-CLA-01`) to ensure it correctly interfaces with the BPA's routing and dispatch logic.
+1. **Generic Trait Compliance:** The `tcpclv4` implementation is run against the generic test harness for the `Cla` trait ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)) to ensure it correctly interfaces with the BPA's routing and dispatch logic.
 2. **Protocol Compliance:** Specific component tests are defined to verify the on-the-wire behavior of the TCPCLv4 state machine, including session management, data segmentation, and TLS. These tests use a `duplex` harness to simulate a peer and inspect the byte stream.
 
 ## 3. Generic Test Coverage
 
-The following suites from the parent plan (`PLAN-CLA-01`) are executed against `tcpclv4` to verify its compliance with the `Cla` trait:
+The following suites from the parent plan ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)) are executed against `tcpclv4` to verify its compliance with the `Cla` trait:
 
 * **Suite A: Lifecycle** (Register/Unregister)
 * **Suite B: Forwarding** (Forward Success/Failure)

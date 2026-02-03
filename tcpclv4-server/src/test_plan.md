@@ -19,7 +19,7 @@ This document details the testing strategy for the `hardy-tcpclv4-server` module
 * **Packaging:** OCI Images and Helm Charts.
 
 **Delegation:**
-Core protocol logic (RFC 9174 state machine, packet parsing) is verified by the `hardy-tcpclv4` component test plan (`PLAN-TCPCL-01`). This plan focuses on the server wrapper.
+Core protocol logic (RFC 9174 state machine, packet parsing) is verified by the `hardy-tcpclv4` component test plan ([`PLAN-TCPCL-01`](../../tcpclv4/docs/component_test_plan.md)). This plan focuses on the server wrapper.
 
 ## 2. Requirements Mapping
 
@@ -47,11 +47,11 @@ The following requirements from **DTN-LLR_v1.1** are verified by the unit tests 
 
 *Objective: Verify the server starts, connects to BPA, and shuts down.*
 
-| Test ID | Procedure | Expected Result |
-| ----- | ----- | ----- |
-| **SYS-01** | **Startup & Listen** | 1. Run server. | Process runs, TCP port 4556 is LISTEN. |
-| **SYS-02** | **BPA Registration** | 1. Start Mock BPA (gRPC).<br>2. Start Server. | Server connects to BPA.<br>Sends `RegisterClaRequest`. |
-| **SYS-03** | **Graceful Shutdown** | 1. Send `SIGINT`. | Logs show "Shutting down".<br>Process exits 0. |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **SYS-01** | **Startup & Listen** | 1. Run `./hardy-tcpclv4-server`.<br>2. Check `netstat` for listening ports. | Process runs.<br>TCP port 4556 is LISTEN. |
+| **SYS-02** | **BPA Registration** | 1. Start Mock BPA (gRPC).<br>2. Start Server.<br>3. Check mock BPA received message. | Server connects to BPA.<br>Sends `RegisterClaRequest`. |
+| **SYS-03** | **Graceful Shutdown** | 1. Start Server.<br>2. Send `SIGINT` to process. | Logs show "Shutting down".<br>Process exits 0. |
 
 ### 4.2 Performance (REQ-13)
 

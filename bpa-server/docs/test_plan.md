@@ -54,35 +54,35 @@ The following requirements from **DTN-LLR_v1.1** are verified by the unit tests 
 
 *Objective: Verify the application behaves like a good Cloud Native citizen.*
 
-| Test ID | Procedure | Expected Result |
- | ----- | ----- | ----- |
-| **SYS-01** | **Startup Smoke Test** | 1. Run `./hardy-bpa-server`.<br>2. Check `netstat`. | Process stays running.<br>TCP ports 4556 (TCPCL) and 50051 (gRPC) are LISTEN. |
-| **SYS-02** | **Graceful Shutdown (SIGINT)** | 1. Send `Ctrl+C` (SIGINT) to running process. | Logs show "Shutting down...".<br>Process exits with code 0.<br>Storage lockfiles (if any) are cleaned up. |
-| **SYS-03** | **Configuration Error** | 1. Run with invalid config path. | Process exits immediately with non-zero code.<br>Stderr prints readable error message. |
-| **SYS-04** | **CLI Arguments** | 1. Run with `--help` and `--version`. | Prints usage info/version and exits 0. |
-| **SYS-05** | **Panic Propagation** | 1. Trigger panic in sub-task (e.g. via debug API). | Process exits non-zero (Fail-fast). |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **SYS-01** | **Startup Smoke Test** | 1. Run `./hardy-bpa-server`.<br>2. Check `netstat` for listening ports. | Process stays running.<br>TCP ports 4556 (TCPCL) and 50051 (gRPC) are LISTEN. |
+| **SYS-02** | **Graceful Shutdown (SIGINT)** | 1. Start server.<br>2. Send `Ctrl+C` (SIGINT) to running process. | Logs show "Shutting down...".<br>Process exits with code 0.<br>Storage lockfiles (if any) are cleaned up. |
+| **SYS-03** | **Configuration Error** | 1. Run with invalid config path (`-c /nonexistent`). | Process exits immediately with non-zero code.<br>Stderr prints readable error message. |
+| **SYS-04** | **CLI Arguments** | 1. Run with `--help`.<br>2. Run with `--version`. | Prints usage info/version respectively and exits 0. |
+| **SYS-05** | **Panic Propagation** | 1. Start server.<br>2. Trigger panic in sub-task (e.g., via debug API). | Process exits non-zero (Fail-fast). |
 
 ### 4.2 Observability & OpenTelemetry (REQ-19)
 
 *Objective: Verify integration with `hardy-otel` and the OTLP exporter.*
 *Harness: Run a local **Grafana LGTM** (Loki, Grafana, Tempo, Mimir) container to receive data.*
 
-| Test ID | Procedure | Expected Result |
- | ----- | ----- | ----- |
-| **OTEL-01** | **Trace Emission** | 1. Configure `otel_endpoint = "http://localhost:4317"`.<br>2. Start Server.<br>3. Send a Bundle via `bping`. | Grafana (Tempo) shows a Trace for the bundle transmission.<br>Trace contains spans: `bpa.receive`, `bpa.route`, `tcpcl.forward`. |
-| **OTEL-02** | **Metric Export** | 1. Run Server under load (100 bundles).<br>2. Check Prometheus/OTEL metrics endpoint. | Metric `dtn_bundles_processed_total` increases.<br>Metric `dtn_storage_bytes` reflects usage. |
-| **OTEL-03** | **Structured Logging** | 1. Configure `log_format = "json"`.<br>2. Trigger an error (e.g., bad auth). | Stdout shows JSON formatted logs with `trace_id` and `span_id` correlated. |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **OTEL-01** | **Trace Emission** | 1. Configure `otel_endpoint = "http://localhost:4317"`.<br>2. Start Server.<br>3. Send a Bundle via `bping`.<br>4. Query Grafana Tempo for traces. | Trace exists for bundle transmission.<br>Trace contains spans: `bpa.receive`, `bpa.route`, `tcpcl.forward`. |
+| **OTEL-02** | **Metric Export** | 1. Start Server.<br>2. Send 100 bundles via `bping`.<br>3. Query Prometheus/OTEL metrics endpoint. | Metric `dtn_bundles_processed_total` increases.<br>Metric `dtn_storage_bytes` reflects usage. |
+| **OTEL-03** | **Structured Logging** | 1. Configure `log_format = "json"`.<br>2. Start Server.<br>3. Trigger an error (e.g., bad auth). | Stdout shows JSON formatted logs with `trace_id` and `span_id` correlated. |
 
 ### 4.3 Integration Verification
 
 *Objective: Ensure sub-modules are wired correctly.*
 
-| Test ID | Procedure | Expected Result |
- | ----- | ----- | ----- |
-| **INT-01** | **Storage Backend Loading** | 1. Config `storage_type = "sqlite"`.<br>2. Start Server. | Logs show "Initializing SQLite Storage".<br>`.db` file created on disk. |
-| **INT-02** | **TCPCL Listener** | 1. Config `tcpcl_port = 9999`.<br>2. Start Server. | Logs show "TCPCL listening on 0.0.0.0:9999".<br>`telnet localhost 9999` connects. |
-| **INT-03** | **Management API** | 1. Config `management_port = 50051`.<br>2. Start Server. | Logs show "Management Service listening".<br>`grpcurl` or client can connect. |
-| **INT-04** | **Health Check** | 1. Query `/health` (HTTP) or gRPC Health. | Returns `SERVING` / 200 OK. |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-01** | **Storage Backend Loading** | 1. Configure `storage_type = "sqlite"`.<br>2. Start Server.<br>3. Check logs and filesystem. | Logs show "Initializing SQLite Storage".<br>`.db` file created on disk. |
+| **INT-02** | **TCPCL Listener** | 1. Configure `tcpcl_port = 9999`.<br>2. Start Server.<br>3. Run `telnet localhost 9999`. | Logs show "TCPCL listening on 0.0.0.0:9999".<br>Telnet connection succeeds. |
+| **INT-03** | **Management API** | 1. Configure `management_port = 50051`.<br>2. Start Server.<br>3. Run `grpcurl` against endpoint. | Logs show "Management Service listening".<br>gRPC client connects successfully. |
+| **INT-04** | **Health Check** | 1. Start Server.<br>2. Query `/health` (HTTP) or gRPC Health service. | Returns `SERVING` / 200 OK. |
 
 ### 4.4 Performance & Scalability (REQ-13)
 

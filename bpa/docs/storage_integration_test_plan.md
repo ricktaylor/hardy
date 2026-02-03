@@ -34,7 +34,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify the fundamental lifecycle of a bundle's metadata.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **META-01** | **Insert & Get** | 1. Create a random `Bundle`.<br>2. Call `insert()`.<br>3. Call `get()` with the ID. | 1. `insert` returns `true`.<br>2. `get` returns `Some(bundle)`.<br>3. Fields match original. |
 | **META-02** | **Duplicate Insert** | 1. Insert a bundle.<br>2. Insert the same bundle again. | 1. First `insert` returns `true`.<br>2. Second `insert` returns `false`. |
@@ -46,7 +46,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify that the storage engine correctly indexes and retrieves bundles based on time and status.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **META-06** | **Poll Waiting (FIFO)** | 1. Insert Bundle A (Received T=100, Status=Waiting).<br>2. Insert Bundle B (Received T=200, Status=Waiting).<br>3. Call `poll_waiting()`. | 1. Returns Bundle A, then Bundle B (Ordered by Received Time). |
 | **META-07** | **Poll Expiry** | 1. Insert Bundle A (Expiry T=500).<br>2. Insert Bundle B (Expiry T=300).<br>3. Call `poll_expiry()`. | 1. Returns Bundle B, then Bundle A (Ordered by Expiry Time). |
@@ -58,7 +58,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify complex state management operations required by the BPA.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=ForwardPending, Peer=100).<br>2. Insert Bundle B (Status=ForwardPending, Peer=200).<br>3. Call `reset_peer_queue(100)`. | 1. Bundle A status becomes `Waiting`.<br>2. Bundle B status remains `ForwardPending`. |
 | **META-12** | **Recovery** | 1. Call `start_recovery()`. | 1. Returns `()` (No panic/error). |
@@ -70,7 +70,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 *Objective: Verify the storage and retrieval of binary bundle data.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **BLOB-01** | **Save & Load** | 1. Generate random bytes (1KB).<br>2. Call `save(bytes)`.<br>3. Call `load(name)`. | 1. `save` returns a storage name (string).<br>2. `load` returns `Some(bytes)`.<br>3. Bytes match exactly. |
 | **BLOB-02** | **Delete** | 1. Save bytes.<br>2. Call `delete(name)`.<br>3. Call `load(name)`. | 1. `delete` returns `Ok`.<br>2. `load` returns `None`. |

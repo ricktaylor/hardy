@@ -6,7 +6,7 @@
 | **Module** | `sqlite-storage` |
 | **Implements** | `hardy_bpa::storage::MetadataStorage` |
 | **Requirements Ref** | `DTN-HLR_v1` (REQ-7), `DTN-LLR_v1.1` (Section 7.2) |
-| **Parent Plan** | `hardy-bpa/src/storage_integration_test_plan.md` |
+| **Parent Plan** | [`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
 
 ## 1. Introduction

@@ -74,8 +74,8 @@ The following requirements from **DTN-LLR_v1.1** are verified by this plan:
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Duplicate Reg** | Attempt to register an active ID. | `src/service_registry.rs` | 1. Reg `ipn:1.1` (Success)<br>2. Reg `ipn:1.1` | Result: `Error(AlreadyRegistered)` |
-| **Cleanup** | Verify ID is freed on disconnect. | `src/service_registry.rs` | 1. Reg `ipn:1.1`<br>2. Drop Handle<br>3. Reg `ipn:1.1` | Result: `Success` |
+| **Duplicate Reg** | Attempt to register an active ID. | `src/services/registry.rs` | 1. Reg `ipn:1.1` (Success)<br>2. Reg `ipn:1.1` | Result: `Error(AlreadyRegistered)` |
+| **Cleanup** | Verify ID is freed on disconnect. | `src/services/registry.rs` | 1. Reg `ipn:1.1`<br>2. Drop Handle<br>3. Reg `ipn:1.1` | Result: `Success` |
 
 ### 3.5 Dispatcher Logic (Reassembly)
 

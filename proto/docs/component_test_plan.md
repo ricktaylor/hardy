@@ -34,7 +34,7 @@ The tests utilize a **Mock Server** approach:
 
 ### Suite 1: Application Client Proxy
 
-*Objective: Verify the `ApplicationClient` correctly maps Rust types to `application.proto` messages.*
+*Objective: Verify the `ApplicationClient` correctly maps Rust types to `service.proto` messages (Application RPC).*
 
 | Test ID | Scenario | Client Action (Rust) | Mock Server Assertion | Status |
 | ----- | ----- | ----- | ----- | ----- |

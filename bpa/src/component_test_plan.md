@@ -19,7 +19,7 @@ Unlike the parser modules (`bpv7`, `cbor`), the BPA is tested primarily through 
 
 *Scope: Deterministic algorithms that do not require the Tokio runtime.*
 
-Detailed test cases are defined in **`bpa/src/unit_test_plan.md`**.
+Detailed test cases are defined in **[`UTP-BPA-01`](unit_test_plan.md)**.
 
 The unit testing strategy focuses on isolating complex logic from the async runtime. Key areas include:
 
@@ -33,7 +33,7 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 *Scope: Robustness of the main processing loop.*
 *Target: `bpa/fuzz/fuzz_targets/bpa.rs`*
-*Detailed Plan: `bpa/fuzz/fuzz_test_plan.md`*
+*Detailed Plan: [`FUZZ-BPA-01`](../docs/fuzz_test_plan.md)*
 
 | Target Name | Description | Vulnerability Class | Pass Criteria |
  | ----- | ----- | ----- | ----- |
@@ -52,25 +52,25 @@ The unit testing strategy focuses on isolating complex logic from the async runt
 
 *Objective: Verify the BPA can accept a bundle from an application and route it to a CLA.*
 
-| Test ID | Steps | Expected Result |
- | ----- | ----- | ----- |
-| **INT-BPA-01** | 1. Configure BPA with route `ipn:2.1` -> `file-cla` (Dir: `./outbox`).<br>2. Run `tools/ping -d ipn:2.1 -m "Hello"`. | 1. `ping` exits successfully.<br>2. A new file appears in `./outbox`.<br>3. File content is a valid Bundle with payload "Hello". |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-01** | **App-to-CLA Routing** | 1. Configure BPA with route `ipn:2.1` -> `file-cla` (Dir: `./outbox`).<br>2. Run `tools/ping -d ipn:2.1 -m "Hello"`.<br>3. Check `./outbox` directory. | 1. `ping` exits successfully.<br>2. A new file appears in `./outbox`.<br>3. File content is a valid Bundle with payload "Hello". |
 
 ### Suite B: Round-Trip Echo
 
 *Objective: Verify bi-directional flow (App -> BPA -> CLA -> BPA -> App).*
 
-| Test ID | Steps | Expected Result |
- | ----- | ----- | ----- |
-| **INT-BPA-02** | 1. Configure BPA with loopback route.<br>2. Run `tools/ping` in "Echo Mode". | 1. Ping sends bundle.<br>2. BPA routes to CLA.<br>3. CLA "receives" (loopback) to BPA.<br>4. BPA delivers to Ping.<br>5. Ping reports `RTT = X ms`. |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-02** | **Echo Round-Trip** | 1. Configure BPA with loopback route.<br>2. Run `tools/ping` in "Echo Mode".<br>3. Observe ping output. | 1. Ping sends bundle.<br>2. BPA routes to CLA.<br>3. CLA "receives" (loopback) to BPA.<br>4. BPA delivers to Ping.<br>5. Ping reports `RTT = X ms`. |
 
 ### Suite C: Reassembly Logic
 
 *Objective: Verify the BPA reassembles incoming fragments into a full bundle.*
 
-| Test ID | Steps | Expected Result |
- | ----- | ----- | ----- |
-| **INT-BPA-03** | 1. Manually generate 2 fragments for a "Hello" bundle.<br>2. Place fragments into `file-cla` inbox.<br>3. Run `tools/ping` in receive mode. | 1. BPA accepts fragments.<br>2. BPA reassembles payload.<br>3. `ping` receives single "Hello" bundle. |
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **INT-BPA-03** | **Fragment Reassembly** | 1. Manually generate 2 fragments for a "Hello" bundle.<br>2. Place fragments into `file-cla` inbox.<br>3. Run `tools/ping` in receive mode. | 1. BPA accepts fragments.<br>2. BPA reassembles payload.<br>3. `ping` receives single "Hello" bundle. |
 
 ## 5. Performance Benchmarks (REQ-13)
 

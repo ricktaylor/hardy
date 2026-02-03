@@ -6,7 +6,7 @@
 | **Module** | `localdisk-storage` |
 | **Implements** | `hardy_bpa::storage::BundleStorage` |
 | **Requirements Ref** | `DTN-HLR_v1` (REQ-7), `DTN-LLR_v1.1` (Section 7.1) |
-| **Parent Plan** | `hardy-bpa/src/storage_integration_test_plan.md` |
+| **Parent Plan** | [`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md) |
 | **Test Suite ID** | PLAN-LD-01 |
 
 ## 1. Introduction
@@ -24,7 +24,7 @@ The following requirements from **DTN-LLR_v1.1** are verified by the unit tests 
 
 ## 3. Generic Test Coverage
 
-The following suites from the parent plan (`PLAN-STORE-01`) are executed against `localdisk-storage`:
+The following suites from the parent plan ([`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md)) are executed against `localdisk-storage`:
 
 ### Suite D: Payload Operations
 

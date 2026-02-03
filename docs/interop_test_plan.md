@@ -21,7 +21,7 @@ The following suites define the *behavior* to be tested, independent of the spec
 
 *Objective: Verify the Convergence Layer (CL) session establishment.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **IOP-01** | **Session Init** | 1. Start Peer (Passive).<br>2. Start Hardy (Active). | 1. Hardy connects to Peer.<br>2. Session established.<br>3. Logs show successful handshake. |
 | **IOP-02** | **Keepalive** | 1. Establish Session.<br>2. Idle for 2x Keepalive interval. | 1. Session remains active.<br>2. Keepalives observed (if supported by CL). |
@@ -31,7 +31,7 @@ The following suites define the *behavior* to be tested, independent of the spec
 
 *Objective: Verify basic data transfer.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **IOP-04** | **Hardy to Peer** | 1. Hardy sends bundle to `ipn:2.1`. | 1. Peer receives bundle.<br>2. Peer utility prints payload. |
 | **IOP-05** | **Peer to Hardy** | 1. Peer sends bundle to `ipn:1.1`. | 1. Hardy receives bundle.<br>2. Hardy delivers to registered application. |
@@ -41,7 +41,7 @@ The following suites define the *behavior* to be tested, independent of the spec
 
 *Objective: Verify Status Reports and Extension Block handling.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **IOP-07** | **Status Report (Delivered)** | 1. Hardy sends bundle to `ipn:2.1` with "Report Delivery" flag. | 1. Peer accepts bundle.<br>2. Peer generates Status Report.<br>3. Hardy receives Report (Reason: Delivered). |
 | **IOP-08** | **Hop Count Exceeded** | 1. Hardy sends bundle to `ipn:2.1` with Hop Limit = 1.<br>2. Configure Peer to forward to Node C (Simulated). | 1. Peer drops bundle (Hop Count Exceeded).<br>2. Peer sends Status Report (Reason: Hop Limit Exceeded). |
@@ -51,7 +51,7 @@ The following suites define the *behavior* to be tested, independent of the spec
 
 *Objective: Verify security protocol interactions.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **IOP-10** | **BPSec Integrity** | 1. Hardy signs bundle (BIB-HMAC-SHA256).<br>2. Send to Peer (configured with same key). | 1. Peer verifies signature.<br>2. Peer accepts bundle. |
 
@@ -59,7 +59,7 @@ The following suites define the *behavior* to be tested, independent of the spec
 
 *Objective: Verify reassembly of fragmented bundles.*
 
-| Test ID | Scenario | Steps | Expected Result |
+| Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **IOP-11** | **Reassembly** | 1. Peer fragments a large bundle (1MB) into 100KB chunks.<br>2. Peer sends fragments to Hardy. | 1. Hardy accepts fragments.<br>2. Hardy reassembles and delivers 1MB payload. |
 
