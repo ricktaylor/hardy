@@ -697,6 +697,4 @@ pub struct CheckedBundle {
     pub bundle: Bundle,
     /// The rewritten bundle data if canonicalization was needed, `None` if already canonical.
     pub new_data: Option<Box<[u8]>>,
-    /// True if an unsupported block was encountered that requests a report.
-    pub report_unsupported: bool,
 }

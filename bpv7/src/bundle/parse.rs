@@ -1093,11 +1093,7 @@ impl CheckedBundle {
                 tags,
                 ParseMode::Canonicalize,
             )
-            .map(|(bundle, new_data, _, report_unsupported)| Self {
-                bundle,
-                new_data,
-                report_unsupported,
-            })
+            .map(|(bundle, new_data, _, _)| Self { bundle, new_data })
             .map_err(|(_, e)| e)
         })?;
 
@@ -1112,11 +1108,7 @@ impl CheckedBundle {
     pub fn parse_with_keys(data: &[u8], keys: &dyn bpsec::key::KeySource) -> Result<Self, Error> {
         let (b, len) = hardy_cbor::decode::parse_array(data, |a, canonical, tags| {
             parse_bundle_with_keys(data, keys, a, canonical, tags, ParseMode::Canonicalize)
-                .map(|(bundle, new_data, _, report_unsupported)| Self {
-                    bundle,
-                    new_data,
-                    report_unsupported,
-                })
+                .map(|(bundle, new_data, _, _)| Self { bundle, new_data })
                 .map_err(|(_, e)| e)
         })?;
 
