@@ -585,10 +585,9 @@ impl<'a> Editor<'a> {
                 let block = self.original.blocks.get(&block_number)?;
                 Some((block, block.payload(self.source_data)))
             }
-            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => Some((
-                &template.block,
-                template.data.as_ref().map(|data| data.as_ref()),
-            )),
+            BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                Some((&template.block, template.data.as_deref()))
+            }
         }
     }
 
