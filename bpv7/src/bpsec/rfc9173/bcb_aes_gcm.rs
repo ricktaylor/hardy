@@ -405,14 +405,14 @@ impl Operation {
             };
             let cek = zeroize::Zeroizing::from(Box::<[u8]>::from(cek));
 
-            self.decrypt_middle(&jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
+            self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
         } else {
             // Direct mode - need a decryption key
             let jwk = key_source
                 .key(args.bpsec_source, &[key::Operation::Decrypt])
                 .ok_or(Error::NoKey)?;
 
-            if let Some(key_algorithm) = &jwk.key_algorithm
+            if let Some(key_algorithm) = jwk.key_algorithm
                 && !matches!(key_algorithm, key::KeyAlgorithm::Direct)
             {
                 return Err(Error::DecryptionFailed);
@@ -422,13 +422,13 @@ impl Operation {
                 return Err(Error::DecryptionFailed);
             };
 
-            self.decrypt_middle(&jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
+            self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
         }
     }
 
     fn decrypt_middle(
         &self,
-        enc_algorithm: &Option<key::EncAlgorithm>,
+        enc_algorithm: Option<key::EncAlgorithm>,
         cek: &[u8],
         aad: &[u8],
         data: &[u8],

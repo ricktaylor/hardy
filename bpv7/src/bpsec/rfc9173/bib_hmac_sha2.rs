@@ -245,7 +245,7 @@ enum KeyWrap {
     Aes256,
 }
 
-fn as_key_wrap(alg: &Option<key::KeyAlgorithm>) -> Option<KeyWrap> {
+fn as_key_wrap(alg: Option<key::KeyAlgorithm>) -> Option<KeyWrap> {
     match alg {
         Some(key::KeyAlgorithm::A128KW)
         | Some(key::KeyAlgorithm::HS256_A128KW)
@@ -266,7 +266,7 @@ fn as_key_wrap(alg: &Option<key::KeyAlgorithm>) -> Option<KeyWrap> {
     }
 }
 
-fn as_variant(alg: &Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
+fn as_variant(alg: Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
     match alg {
         Some(key::KeyAlgorithm::HS256)
         | Some(key::KeyAlgorithm::HS256_A128KW)
@@ -313,9 +313,9 @@ impl Operation {
             return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
         }
 
-        let variant = as_variant(&jwk.key_algorithm)
+        let variant = as_variant(jwk.key_algorithm)
             .ok_or_else(|| Error::InvalidKey(key::Operation::Sign, jwk.clone()))?;
-        let key_wrap = as_key_wrap(&jwk.key_algorithm);
+        let key_wrap = as_key_wrap(jwk.key_algorithm);
 
         let cek = if let Some(key_wrap) = &key_wrap {
             match key_wrap {
@@ -411,7 +411,7 @@ impl Operation {
                 )
                 .ok_or(Error::NoKey)?;
 
-            if Some(self.parameters.variant) != as_variant(&jwk.key_algorithm) {
+            if Some(self.parameters.variant) != as_variant(jwk.key_algorithm) {
                 return Err(Error::IntegrityCheckFailed);
             }
 
@@ -419,7 +419,7 @@ impl Operation {
                 return Err(Error::IntegrityCheckFailed);
             };
 
-            let cek = match as_key_wrap(&jwk.key_algorithm) {
+            let cek = match as_key_wrap(jwk.key_algorithm) {
                 Some(KeyWrap::Aes128) => aes_kw::KekAes128::try_from(key.as_ref())
                     .and_then(|kek| kek.unwrap_vec(wrapped_cek))
                     .map_err(|_| Error::IntegrityCheckFailed)?,
@@ -444,7 +444,7 @@ impl Operation {
                 .key(args.bpsec_source, &[key::Operation::Verify])
                 .ok_or(Error::NoKey)?;
 
-            if Some(self.parameters.variant) != as_variant(&jwk.key_algorithm) {
+            if Some(self.parameters.variant) != as_variant(jwk.key_algorithm) {
                 return Err(Error::IntegrityCheckFailed);
             }
 

@@ -142,7 +142,7 @@ pub enum Operation {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "alg"))]
 pub enum KeyAlgorithm {
@@ -176,7 +176,7 @@ pub enum KeyAlgorithm {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "enc"))]
 pub enum EncAlgorithm {
