@@ -183,7 +183,7 @@ impl Store {
         let first = results.adus.get(&0).or_else(|| {
             info!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
-                &results.adus.iter().next().unwrap().1.0
+                &results.adus.values().next().unwrap().0
             );
             None
         })?;
