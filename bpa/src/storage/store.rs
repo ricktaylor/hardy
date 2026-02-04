@@ -8,12 +8,12 @@ impl Store {
             metadata_storage: config
                 .metadata_storage
                 .as_ref()
-                .map(|s| s.clone())
+                .cloned()
                 .unwrap_or(metadata_mem::new(&metadata_mem::Config::default())),
             bundle_storage: config
                 .bundle_storage
                 .as_ref()
-                .map(|s| s.clone())
+                .cloned()
                 .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
             bundle_cache: Mutex::new(LruCache::new(config.storage_config.lru_capacity)),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
