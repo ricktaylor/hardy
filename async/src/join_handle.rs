@@ -14,7 +14,7 @@
 //! use hardy_async::JoinHandle;
 //!
 //! async fn example() {
-//!     let pool = hardy_async::task_pool::TaskPool::new();
+//!     let pool = hardy_async::TaskPool::new();
 //!     let handle: JoinHandle<i32> = pool.spawn(async { 42 });
 //!     let result = handle.await.unwrap();
 //!     assert_eq!(result, 42);

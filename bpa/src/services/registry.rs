@@ -178,7 +178,7 @@ pub(crate) struct ServiceRegistry {
     node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
     services: RwLock<HashMap<Eid, Arc<Service>>>,
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
 }
 
 impl ServiceRegistry {
@@ -187,7 +187,7 @@ impl ServiceRegistry {
             node_ids: config.node_ids.clone(),
             rib,
             services: Default::default(),
-            tasks: hardy_async::task_pool::TaskPool::new(),
+            tasks: hardy_async::TaskPool::new(),
         }
     }
 

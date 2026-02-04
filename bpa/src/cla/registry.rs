@@ -105,7 +105,7 @@ pub(crate) struct Registry {
     store: Arc<storage::Store>,
     peers: peers::PeerTable,
     poll_channel_depth: usize,
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
 }
 
 impl Registry {
@@ -117,7 +117,7 @@ impl Registry {
             store,
             peers: peers::PeerTable::new(),
             poll_channel_depth: config.poll_channel_depth.into(),
-            tasks: hardy_async::task_pool::TaskPool::new(),
+            tasks: hardy_async::TaskPool::new(),
         }
     }
 

@@ -148,7 +148,7 @@ where
     S::Msg: Send,
 {
     tx: tokio::sync::mpsc::Sender<Option<Msg<S::Msg, R::Msg>>>,
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
 }
 
 impl<S, R> RpcProxy<S, R>
@@ -210,7 +210,7 @@ where
         // Now create the worker
         let (tx, rx) = tokio::sync::mpsc::channel(16);
 
-        let tasks = hardy_async::task_pool::TaskPool::new();
+        let tasks = hardy_async::TaskPool::new();
         hardy_async::spawn!(tasks, "rpc_proxy_run", async move {
             run(channel_receiver, rx, channel_sender, handler).await;
         });

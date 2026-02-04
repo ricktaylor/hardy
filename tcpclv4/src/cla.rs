@@ -5,7 +5,7 @@ impl ClaInner {
     fn start_listeners(
         &self,
         config: &config::Config,
-        tasks: &Arc<hardy_async::task_pool::TaskPool>,
+        tasks: &Arc<hardy_async::TaskPool>,
         tls_config: &Option<Arc<tls::TlsConfig>>,
     ) {
         // Start the listeners

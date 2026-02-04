@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use hardy_async::task_pool::TaskPool;
+//! use hardy_async::TaskPool;
 //!
 //! let pool = TaskPool::new();
 //! let cancel = pool.cancel_token().clone();
@@ -44,3 +44,4 @@ pub use bounded_task_pool::BoundedTaskPool;
 pub use cancellation_token::CancellationToken;
 pub use join_handle::JoinHandle;
 pub use notify::Notify;
+pub use task_pool::TaskPool;

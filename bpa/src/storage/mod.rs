@@ -254,7 +254,7 @@ pub trait BundleStorage: Send + Sync {
 
 // Storage helper
 pub(crate) struct Store {
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
     bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,

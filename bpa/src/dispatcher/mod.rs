@@ -11,7 +11,7 @@ mod report;
 mod restart;
 
 pub(crate) struct Dispatcher {
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
     store: Arc<storage::Store>,
     service_registry: Arc<services::registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
@@ -36,7 +36,7 @@ impl Dispatcher {
         keys_registry: Arc<keys::registry::Registry>,
     ) -> Self {
         Self {
-            tasks: hardy_async::task_pool::TaskPool::new(),
+            tasks: hardy_async::TaskPool::new(),
             store,
             service_registry,
             cla_registry,

@@ -35,7 +35,7 @@ pub struct Cla {
     _name: String,
     config: Config,
     inner: std::sync::OnceLock<ClaInner>,
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
 }
 
 impl Cla {
@@ -50,7 +50,7 @@ impl Cla {
             config,
             _name: name,
             inner: std::sync::OnceLock::new(),
-            tasks: hardy_async::task_pool::TaskPool::new(),
+            tasks: hardy_async::TaskPool::new(),
         }
     }
 

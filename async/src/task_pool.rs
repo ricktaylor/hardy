@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use hardy_async::task_pool::TaskPool;
+//! use hardy_async::TaskPool;
 //!
 //! struct MyService {
 //!     tasks: TaskPool,
@@ -89,7 +89,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_async::task_pool::TaskPool;
+    /// # use hardy_async::TaskPool;
     /// let pool = TaskPool::new();
     /// let cancel = pool.cancel_token().clone();
     ///
@@ -120,7 +120,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_async::task_pool::TaskPool;
+    /// # use hardy_async::TaskPool;
     /// let pool = TaskPool::new();
     /// let child = pool.child_token();
     ///
@@ -144,7 +144,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_async::task_pool::TaskPool;
+    /// # use hardy_async::TaskPool;
     /// let pool = TaskPool::new();
     /// let handle = pool.spawn(async {
     ///     // Do work
@@ -177,7 +177,7 @@ impl TaskPool {
     /// # Example
     ///
     /// ```no_run
-    /// # use hardy_async::task_pool::TaskPool;
+    /// # use hardy_async::TaskPool;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let pool = TaskPool::new();
     ///

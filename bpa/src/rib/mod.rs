@@ -31,7 +31,7 @@ struct RibInner {
 
 pub struct Rib {
     inner: RwLock<RibInner>,
-    tasks: hardy_async::task_pool::TaskPool,
+    tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
     store: Arc<storage::Store>,
 }
@@ -44,7 +44,7 @@ impl Rib {
                 routes: BTreeMap::new(),
                 address_types: HashMap::new(),
             }),
-            tasks: hardy_async::task_pool::TaskPool::new(),
+            tasks: hardy_async::TaskPool::new(),
             poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
             store,
         }

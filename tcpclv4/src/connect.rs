@@ -8,7 +8,7 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 
 pub struct Connector {
-    pub tasks: Arc<hardy_async::task_pool::TaskPool>,
+    pub tasks: Arc<hardy_async::TaskPool>,
     pub contact_timeout: u16,
     pub must_use_tls: bool,
     pub keepalive_interval: Option<u16>,

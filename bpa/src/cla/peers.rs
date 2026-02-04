@@ -28,7 +28,7 @@ impl Peer {
         cla_addr: ClaAddress,
         store: Arc<storage::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        tasks: &hardy_async::task_pool::TaskPool,
+        tasks: &hardy_async::TaskPool,
     ) {
         let controller = cla
             .policy
@@ -76,7 +76,7 @@ impl Peer {
         poll_channel_depth: usize,
         controller: Arc<dyn policy::EgressController>,
         store: Arc<storage::Store>,
-        tasks: &hardy_async::task_pool::TaskPool,
+        tasks: &hardy_async::TaskPool,
         peer: u32,
         queue: Option<u32>,
     ) -> storage::channel::Sender {

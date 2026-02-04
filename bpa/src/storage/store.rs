@@ -4,7 +4,7 @@ impl Store {
     pub fn new(config: &config::Config) -> Self {
         // Init pluggable storage engines
         Self {
-            tasks: hardy_async::task_pool::TaskPool::new(),
+            tasks: hardy_async::TaskPool::new(),
             metadata_storage: config
                 .metadata_storage
                 .as_ref()
