@@ -42,8 +42,9 @@ impl Store {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.id)))]
     pub async fn store(
         &self,
+        status: metadata::BundleStatus,
         bundle: hardy_bpv7::bundle::Bundle,
-        data: Bytes,
+        data: &Bytes,
     ) -> Option<bundle::Bundle> {
         // Write to bundle storage
         let storage_name = self.save_data(data).await;
@@ -52,6 +53,7 @@ impl Store {
         let bundle = bundle::Bundle {
             metadata: metadata::BundleMetadata {
                 storage_name: Some(storage_name.clone()),
+                status,
                 ..Default::default()
             },
             bundle,
@@ -98,7 +100,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn save_data(&self, data: Bytes) -> Arc<str> {
+    pub async fn save_data(&self, data: &Bytes) -> Arc<str> {
         let storage_name = self
             .bundle_storage
             .save(data.clone())
@@ -109,7 +111,7 @@ impl Store {
             self.bundle_cache
                 .lock()
                 .trace_expect("LRU cache lock error")
-                .put(storage_name.clone(), data);
+                .put(storage_name.clone(), data.clone());
         }
 
         storage_name

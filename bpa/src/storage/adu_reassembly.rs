@@ -46,10 +46,7 @@ struct ReassemblyResult {
 // }
 
 impl Store {
-    pub async fn adu_reassemble(
-        &self,
-        bundle: &mut bundle::Bundle,
-    ) -> Option<(metadata::BundleMetadata, Bytes)> {
+    pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
         let status = metadata::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
@@ -65,17 +62,15 @@ impl Store {
         // Now try to reassemble
         let result = self.reassemble(&results).await;
 
-        // Remove the fragments from bundle_storage even if we failed to reassemble
+        // Remove the fragments from bundle_storage even if we failed to fully reassemble
         for (bundle_id, storage_name, _) in results.adus.values() {
             self.delete_data(storage_name).await;
             self.tombstone_metadata(bundle_id).await;
         }
 
-        result.map(|(storage_name, data)| {
-            let mut metadata = bundle.metadata.clone();
-            metadata.storage_name = Some(storage_name);
-            (metadata, data)
-        })
+        // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
+
+        result
     }
 
     async fn poll_fragments(
@@ -274,9 +269,8 @@ impl Store {
         };
 
         // Write the rewritten bundle now for safety
-        let new_data: Bytes = new_data.into();
-        let new_storage_name = self.save_data(new_data.clone()).await;
-
+        let new_data = Bytes::from(new_data);
+        let new_storage_name = self.save_data(&new_data).await;
         Some((new_storage_name, new_data))
     }
 }

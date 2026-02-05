@@ -12,7 +12,7 @@ enum InternalFindResult {
 
 impl Rib {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn find(&self, bundle: &bundle::Bundle) -> Option<FindResult> {
+    pub fn find(&self, bundle: &bundle::Bundle) -> Option<FindResult> {
         let inner = self.inner.read().trace_expect("Failed to lock mutex");
 
         // TODO: this is where route table switching can occur

@@ -5,7 +5,7 @@ pub mod bpa;
 pub mod bundle;
 pub mod cla;
 pub mod config;
-pub mod filter;
+pub mod filters;
 pub mod keys;
 pub mod metadata;
 pub mod node_ids;

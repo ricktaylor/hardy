@@ -121,7 +121,7 @@ Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not 
 
 ## 2. Filter Infrastructure
 
-Filters are core infrastructure enabling security filters, policy enforcement, flow-labelling, and future features like ad-hoc routing. The filter system (`bpa/src/filter/`) has trait definitions but needs registry and ingress tracking.
+Filters are core infrastructure enabling security filters, policy enforcement, flow-labelling, and future features like ad-hoc routing.
 
 **Use cases:**
 
@@ -133,10 +133,15 @@ Filters are core infrastructure enabling security filters, policy enforcement, f
 
 ### Current State
 
-- `Filter` trait defined with `filter()` and `rewrite()` methods
-- `register_filter()` is `todo!()`
-- `dispatch.rs:171` has `// TODO: Pluggable ingress filters!`
-- **No ingress tracking**: `receive_bundle(data: Bytes)` discards CLA/peer info
+- **Implemented**: `ReadFilter` and `WriteFilter` async traits in `bpa/src/filters/mod.rs`
+- **Implemented**: `FilterRegistry` with DAG-based ordering, dependency checking
+- **Implemented**: `FilterNode` with `prepare()/exec()` pattern for lock-free async execution
+- **Implemented**: `Bpa::register_filter()` and `Bpa::unregister_filter()` public API
+- **Implemented**: Hook stubs in dispatcher (Ingress, Deliver, Originate, Egress)
+- **Not implemented**: Ingress metadata tracking (CLA/peer info on bundles)
+- **Not implemented**: Actual filter invocation at hook points (stubs only)
+
+See `bpa/docs/filter_subsystem_design.md` for design details.
 
 ### Tasks
 
@@ -152,19 +157,34 @@ Filters are core infrastructure enabling security filters, policy enforcement, f
   - Update `receive_bundle()` to accept and store ingress info
   - Thread through dispatcher to filter invocation points
 
-- [ ] **2.2 Implement FilterRegistry**
+- [x] **2.2 Implement FilterRegistry**
   - Registry pattern like CLA/Service registries
   - Add to `Bpa` struct
   - Support filter ordering via `after` parameter (dependency chain)
   - Detect circular dependencies (error already defined)
   - Methods: `register_filter()`, `unregister_filter()`
+  - **Implementation details:**
+    - `FilterNode` linked list structure for DAG ordering
+    - `PreparedFilters` for lock-free async execution
+    - Async traits via `#[async_trait::async_trait]`
+    - ReadFilters run in parallel, WriteFilters run sequentially
+    - Dependency checking on removal (`HasDependants` error)
 
-- [ ] **2.3 Integrate filters into dispatcher**
-  - Ingress filter chain: after bundle received, before processing
-  - Egress filter chain: before bundle sent (if needed)
-  - Pass `bundle`, `data`, and ingress metadata to filters
-  - Handle `FilterResult::Drop` with optional reason code
-  - Handle `RewriteResult::Continue(Some(new_data))`
+- [x] **2.3 Integrate filters into dispatcher**
+  - Hook stubs added at: Ingress, Deliver, Originate, Egress (placement TBD)
+  - **Completed:**
+    - Filter invocation implemented at Ingress, Originate, and Deliver hooks
+    - `bundle`, `data`, and key provider passed to filters
+    - `ExecResult::Drop` handled with optional reason code and bundle deletion
+    - `ExecResult::Continue` mutation flags processed via `persist_filter_mutation()`:
+      - If `mutation.metadata`: updates metadata in store
+      - If `mutation.bundle`: saves new bundle data, updates storage_name, deletes old data
+    - Originate filter runs after store (bundle has valid metadata)
+    - Deliver filter uses in-memory modified data (no persistence needed - bundle dropped after delivery)
+    - Added `processing_pool` (BoundedTaskPool) for rate-limited filter/bundle processing
+  - **Remaining:**
+    - Egress filter hook (placement TBD - in dispatcher or cla/peers.rs)
+    - Ingress metadata (CLA/peer info) not yet tracked on bundles
 
 - [ ] **2.4 Add filter.proto for external filters (optional)**
   - gRPC interface for out-of-process filters
@@ -345,7 +365,7 @@ CLA discovers link-layer adjacency (Neighbour)
 
 ### Design Document
 
-See **[bpa/docs/bp_arp_design.md](bpa/docs/bp_arp_design.md)** for the full BP-ARP protocol design, including:
+**Design document**: `bpa/docs/bp_arp_design.md` (TBD) will cover the full BP-ARP protocol design, including:
 
 - Normative specification
 - Security considerations
@@ -426,7 +446,7 @@ With SAND providing 1-hop and 2-hop neighbor discovery, and BP-ARP handling EID 
 
 1. **Return path verification**: Bundle from unknown source doesn't imply bidirectional route
 2. **Probe mechanism**: May require echo service on all nodes, or explicit next-hop send API
-3. **Filter integration**: Would use `bpa/src/filter/` to observe incoming bundles
+3. **Filter integration**: Would use `bpa/src/filters/` to observe incoming bundles
 4. **Ingress metadata required**: Previous Node block does NOT identify the immediate sender
 
 ### Previous Node Block vs Ingress Metadata
@@ -467,12 +487,13 @@ Bundle arrives from source S, no return route exists
     - Update `receive_bundle()` signature to accept ingress info
     - Thread through dispatcher to filters
   - Required because Previous Node block gives 2-hop info, not immediate sender
-  - Note: `dispatch.rs:171` has `// TODO: Pluggable ingress filters!`
+  - Note: `dispatch.rs:171` has `// TODO: Ingress filter hook`
 
-- [ ] **7.1 Complete filter registry implementation**
-  - Current state: `Filter` trait defined, `register_filter()` is `todo!()`
-  - Implement `FilterRegistry` (like CLA/Service registries)
-  - Integrate into bundle receive path (after 7.0 for ingress-aware filters)
+- [x] **7.1 Complete filter registry implementation**
+  - ~~Current state: `Filter` trait defined, `register_filter()` is `todo!()`~~
+  - ~~Implement `FilterRegistry` (like CLA/Service registries)~~
+  - **Done**: See Section 2.2 - FilterRegistry fully implemented
+  - Remaining: Integrate into bundle receive path (after 7.0 for ingress-aware filters)
 
 - [ ] **7.2 Explicit next-hop send API**
   - `send_via(bundle, next_hop: Peer)` - bypass RIB lookup
@@ -584,7 +605,7 @@ All new/updated traits must be exposed via gRPC. Summary of proto work:
 | Item | Proto File | Action | Trait/Feature |
 |------|------------|--------|---------------|
 | 1.6 | `service.proto` | **Done** | Consolidated `Application` + `Service` endpoint APIs |
-| 2.4 | `filter.proto` | **Create** (optional) | External filters via gRPC |
+| 2.4 | `filter.proto` | **Create** (optional) | External filters via gRPC (in-process registry done) |
 | 4.4 | `routing.proto` | **Create** | `RoutingAgent` + `RoutingAgentSink` |
 | 5.1 | `cla.proto` | **Update** | Change `AddPeer` to use repeated EID field (empty = Neighbour) |
 | 5.4 | `cla.proto` | **Update** | Add resolution completion callbacks |
@@ -1051,6 +1072,28 @@ Before implementing proactive scheduling:
 
 ---
 
+## Recent Completions
+
+For reference when closing external issues:
+
+### 2025-02-05: Filter Integration & Dispatcher Improvements
+
+- **2.3 Integrate filters into dispatcher** - Filters now invoked at Ingress, Originate, Deliver hooks
+  - `ExecResult::Drop` properly deletes bundle with reason code
+  - `ExecResult::Continue` mutation flags trigger metadata/data persistence via `persist_filter_mutation()`
+  - Originate filter runs after store (bundle has valid metadata for filter to inspect)
+  - `processing_pool` (BoundedTaskPool) added for rate-limited bundle processing
+  - Configurable via `processing_pool_size` (default: 4 × CPU cores)
+
+- **Dispatcher refactoring:**
+  - Extracted `ingest_bundle` wrapper for consistent spawn-into-pool pattern
+  - `ingest_bundle_inner` does actual work; `ingest_bundle` handles spawn
+  - Commonalized Originate filter logic into `run_originate_filter()` helper
+  - Store-first-then-filter pattern ensures filters see real metadata
+  - Changed 14 functions from `&Arc<Self>` to `&self` (only entry points need Arc)
+
+---
+
 ## References
 
 ### Internal
@@ -1062,7 +1105,7 @@ Before implementing proactive scheduling:
 - Admin dispatcher: `bpa/src/dispatcher/admin.rs`
 - RIB routing: `bpa/src/rib/find.rs`
 - Endpoint proto: `proto/service.proto` (consolidated Application and Service APIs)
-- **BP-ARP Design:** `bpa/docs/bp_arp_design.md`
+- **BP-ARP Design:** `bpa/docs/bp_arp_design.md` (TBD)
 - **DPP (DTN Peering Protocol):** `docs/dtn_peering_protocol.md`
 
 ### External / Standards

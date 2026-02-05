@@ -2,18 +2,11 @@ use super::*;
 use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 
-pub(super) enum DispatchResult {
-    Gone,
-    Drop(Option<ReasonCode>),
-    Forward(u32),
-    Wait,
-    Reassemble,
-    Delivered,
-}
-
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn receive_bundle(self: &Arc<Self>, data: Bytes) -> cla::Result<()> {
+    pub async fn receive_bundle(self: &Arc<Self>, mut data: Bytes) -> cla::Result<()> {
+        // TODO: Really should not return errors when the bundle content is garbage - it's not the CLAs responsibility to fix it!
+
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
@@ -56,7 +49,7 @@ impl Dispatcher {
                 } => (
                     bundle::Bundle {
                         metadata: BundleMetadata {
-                            storage_name: Some(self.store.save_data(data).await),
+                            storage_name: Some(self.store.save_data(&data).await),
                             received_at,
                             ..Default::default()
                         },
@@ -72,10 +65,14 @@ impl Dispatcher {
                     non_canonical,
                 } => {
                     debug!("Received bundle has been rewritten");
+
+                    data = Bytes::from(new_data);
+                    let storage_name = Some(self.store.save_data(&data).await);
+
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
-                                storage_name: Some(self.store.save_data(new_data.into()).await),
+                                storage_name,
                                 received_at,
                                 non_canonical,
                                 ..Default::default()
@@ -135,124 +132,165 @@ impl Dispatcher {
             // Not valid, drop it
             self.drop_bundle(bundle, reason).await;
         } else {
-            // Now process the bundle
-            self.dispatch_bundle(bundle).await;
+            // Spawn into processing pool for rate limiting
+            self.ingest_bundle(bundle, data).await;
         }
         Ok(())
     }
 
+    /// Spawn bundle ingestion into the processing pool for rate limiting
+    pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
+        let dispatcher = self.clone();
+        hardy_async::spawn!(self.processing_pool, "ingest_bundle", async move {
+            dispatcher.ingest_bundle_inner(bundle, data).await
+        })
+        .await;
+    }
+
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn dispatch_bundle(self: &Arc<Self>, mut bundle: bundle::Bundle) {
+    pub(super) async fn ingest_bundle_inner(&self, mut bundle: bundle::Bundle, mut data: Bytes) {
         if let Some(u) = bundle.bundle.flags.unrecognised {
             debug!("Bundle primary block has unrecognised flag bits set: {u:#x}");
         }
 
-        // We loop here because of reassembly
-        let mut reassemble = false;
-        loop {
-            // Check some basic semantic validity, lifetime first
-            if bundle.has_expired() {
-                debug!("Bundle lifetime has expired");
-                return self
-                    .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
-                    .await;
-            }
+        // Check lifetime first
+        if bundle.has_expired() {
+            debug!("Bundle lifetime has expired");
+            return self
+                .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
+                .await;
+        }
 
-            // Check hop count exceeded
-            if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
-                && hop_info.count > hop_info.limit
+        // Check hop count exceeded
+        if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
+            && hop_info.count > hop_info.limit
+        {
+            debug!("Bundle hop-limit {} exceeded", hop_info.limit);
+            return self
+                .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
+                .await;
+        }
+
+        // Ingress filter hook
+        if self.filter_registry.has_filters(filters::Hook::Ingress) {
+            (bundle, data) = match self
+                .filter_registry
+                .exec(
+                    filters::Hook::Ingress,
+                    bundle,
+                    data,
+                    self.key_provider(),
+                    &self.processing_pool,
+                )
+                .await
+                .trace_expect("Ingress filter execution failed")
             {
-                debug!("Bundle hop-limit {} exceeded", hop_info.limit);
-                return self
-                    .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
-                    .await;
-            }
+                filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
+                    self.persist_filter_mutation(mutation, &mut bundle, &data)
+                        .await;
+                    (bundle, data)
+                }
+                filters::registry::ExecResult::Drop(bundle, reason) => {
+                    debug!("Ingress filter dropped bundle {}", bundle.bundle.id);
+                    return self.drop_bundle(bundle, reason).await;
+                }
+            };
+        }
 
-            // TODO: Pluggable ingress filters!
+        self.process_bundle(bundle, data).await;
+    }
 
-            // Check for reassembly
-            if bundle.bundle.id.fragment_info.is_some() && reassemble {
-                let Some(reassembled_bundle) = self.reassemble(&mut bundle).await else {
-                    // Nothing more to do, all the fragments have yet to arrive
-                    return self.store.watch_bundle(bundle).await;
-                };
+    /// Queue a bundle for dispatch processing
+    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
+        if bundle.metadata.status != BundleStatus::Dispatching {
+            bundle.metadata.status = BundleStatus::Dispatching;
+            self.store.update_metadata(&bundle).await;
+        }
 
-                // Dispatch the reassembled bundle
-                bundle = reassembled_bundle;
-                continue;
-            }
-
-            // Now process the bundle
-            match self.process_bundle(&mut bundle).await {
-                DispatchResult::Gone => {
-                    break;
-                }
-                DispatchResult::Drop(reason_code) => {
-                    return self.drop_bundle(bundle, reason_code).await;
-                }
-                DispatchResult::Forward(peer) => {
-                    return self.cla_registry.forward(peer, bundle).await;
-                }
-                DispatchResult::Wait => {
-                    return self.store.watch_bundle(bundle).await;
-                }
-                DispatchResult::Reassemble => {
-                    reassemble = true;
-                }
-                DispatchResult::Delivered => {
-                    self.report_bundle_delivery(&bundle).await;
-                    return self.drop_bundle(bundle, None).await;
-                }
-            }
+        if self
+            .dispatch_tx
+            .get()
+            .trace_expect("Dispatcher not started")
+            .send(bundle)
+            .await
+            .is_err()
+        {
+            debug!("Dispatch queue closed, bundle dropped");
         }
     }
 
+    /// Consumer task for the dispatch queue
+    pub(super) async fn run_dispatch_queue(
+        self: Arc<Self>,
+        dispatch_rx: storage::channel::Receiver,
+    ) {
+        while let Ok(bundle) = dispatch_rx.recv_async().await {
+            if bundle.has_expired() {
+                debug!("Bundle lifetime has expired while queued");
+                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
+                    .await;
+                continue;
+            }
+
+            let dispatcher = self.clone();
+            hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
+                if let Some(data) = dispatcher.load_data(&bundle).await {
+                    dispatcher.process_bundle(bundle, data).await;
+                } else {
+                    // Bundle data was deleted while queued
+                    dispatcher.drop_bundle(bundle, None).await;
+                }
+            })
+            .await;
+        }
+
+        debug!("Dispatch queue consumer exiting");
+    }
+
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn process_bundle(
-        self: &Arc<Self>,
-        bundle: &mut bundle::Bundle,
-    ) -> DispatchResult {
+    async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
         // Perform RIB lookup
-        match self.rib.find(bundle).await {
+        match self.rib.find(&bundle) {
             Some(rib::FindResult::Drop(reason)) => {
                 debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
-                DispatchResult::Drop(reason)
+                self.drop_bundle(bundle, reason).await
             }
             Some(rib::FindResult::AdminEndpoint) => {
                 // The bundle is for the Administrative Endpoint
-                self.administrative_bundle(bundle).await
+                self.administrative_bundle(bundle, data).await
             }
             Some(rib::FindResult::Deliver(Some(service))) => {
                 // Check for reassembly
                 if bundle.bundle.id.fragment_info.is_some() {
-                    DispatchResult::Reassemble
+                    // Reassemble the bundle before delivery
+                    self.reassemble(bundle).await
                 } else {
-                    // TODO:  This needs to move to a storage::channel
-
                     // Bundle is for a local service
-                    self.deliver_bundle(service, bundle).await
+                    self.deliver_bundle(service, bundle, data).await
                 }
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                DispatchResult::Forward(peer)
+
+                // TODO: Egress filter hook - placement TBD (here vs cla/peers.rs)
+
+                self.cla_registry.forward(peer, bundle).await
             }
             _ => {
-                // Just wait
+                // No route available - wait for one
                 debug!("Storing bundle until a forwarding opportunity arises");
 
                 if bundle.metadata.status != BundleStatus::Waiting {
                     bundle.metadata.status = BundleStatus::Waiting;
-                    self.store.update_metadata(bundle).await;
+                    self.store.update_metadata(&bundle).await;
                 }
-                DispatchResult::Wait
+                self.store.watch_bundle(bundle).await
             }
         }
     }
 
     pub async fn poll_waiting(self: &Arc<Self>, cancel_token: hardy_async::CancellationToken) {
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
-        let pool = hardy_async::BoundedTaskPool::default();
 
         let dispatcher = self.clone();
 
@@ -260,37 +298,30 @@ impl Dispatcher {
         join!(
             // Producer: feed bundles into channel
             self.store.poll_waiting(tx),
-            // Consumer: drain channel into bounded pool
+            // Consumer: drain channel into shared processing pool
             async {
                 loop {
                     select_biased! {
                         bundle = rx.recv_async().fuse() => {
-                            let Ok(mut bundle) = bundle else {
+                            let Ok(bundle) = bundle else {
                                 break;
                             };
 
-                            if !bundle.has_expired() {
-                                let dispatcher = dispatcher.clone();
-                                hardy_async::spawn!(pool,"poll_waiting_dispatcher",async move {
-                                    match dispatcher.process_bundle(&mut bundle).await {
-                                        DispatchResult::Drop(reason_code) => {
-                                            dispatcher.drop_bundle(bundle, reason_code).await;
-                                        }
-                                        DispatchResult::Forward(peer) => {
-                                            dispatcher.cla_registry.forward(peer, bundle).await;
-                                        }
-                                        DispatchResult::Wait
-                                        | DispatchResult::Gone
-                                        | DispatchResult::Reassemble => {
-                                            // We are already waiting, and reassembly happens on reception
-                                        }
-                                        DispatchResult::Delivered => {
-                                            dispatcher.report_bundle_delivery(&bundle).await;
-                                            dispatcher.drop_bundle(bundle, None).await;
-                                        }
-                                    }
-                                }).await;
+                            if bundle.has_expired() {
+                                debug!("Bundle lifetime has expired");
+                                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired)).await;
+                                continue;
                             }
+
+                            let dispatcher = dispatcher.clone();
+                            hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
+                                if let Some(data) = dispatcher.load_data(&bundle).await {
+                                    dispatcher.process_bundle(bundle, data).await
+                                } else {
+                                    // Bundle data was deleted sometime while we waited, drop the bundle
+                                    dispatcher.drop_bundle(bundle, None).await
+                                }
+                            }).await;
                         }
                         _ = cancel_token.cancelled().fuse() => {
                             break;
@@ -299,7 +330,5 @@ impl Dispatcher {
                 }
             }
         );
-
-        pool.shutdown().await;
     }
 }

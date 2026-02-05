@@ -165,7 +165,7 @@ fn from_status(
     status: &hardy_bpa::metadata::BundleStatus,
 ) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
-        hardy_bpa::metadata::BundleStatus::Dispatching => (0, None, None, None),
+        hardy_bpa::metadata::BundleStatus::New => (0, None, None, None),
         hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None, None),
         hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
             (2, Some(*peer as i64), queue.map(|q| q as i64), None)
@@ -183,6 +183,7 @@ fn from_status(
             Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
         ),
+        hardy_bpa::metadata::BundleStatus::Dispatching => (5, None, None, None),
     }
 }
 
@@ -432,7 +433,7 @@ impl storage::MetadataStorage for Storage {
         limit: usize,
     ) -> storage::Result<()> {
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::Dispatching).0 == 0,
+            from_status(&hardy_bpa::metadata::BundleStatus::New).0 == 0,
             "Status code mismatch"
         ); // Ensure status codes match
 
@@ -547,8 +548,8 @@ impl storage::MetadataStorage for Storage {
         let bundles = self
             .read(move |conn| {
                 conn.prepare_cached(
-                    "SELECT bundle FROM bundles 
-                        WHERE status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+                    "SELECT bundle FROM bundles
+                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
                         ORDER BY received_at ASC",
                 )?
                 .query_map((status, status_param1, status_param2,status_param3), |row| {
@@ -586,8 +587,8 @@ impl storage::MetadataStorage for Storage {
         let bundles = self
             .read(move |conn| {
                 conn.prepare_cached(
-                    "SELECT bundle FROM bundles 
-                        WHERE status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+                    "SELECT bundle FROM bundles
+                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
                         ORDER BY received_at ASC
                         LIMIT ?5",
                 )?

@@ -117,7 +117,7 @@ impl storage::MetadataStorage for Storage {
             .iter()
         {
             if let Some(v) = v
-                && v.metadata.status != metadata::BundleStatus::Dispatching
+                && v.metadata.status != metadata::BundleStatus::New
             {
                 entries.insert(v.expiry(), v.clone());
             }

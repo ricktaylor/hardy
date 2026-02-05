@@ -1,51 +1,38 @@
 use super::*;
 
 impl Dispatcher {
-    pub async fn reassemble(&self, bundle: &mut bundle::Bundle) -> Option<bundle::Bundle> {
-        let Some((mut metadata, data)) = self.store.adu_reassemble(bundle).await else {
+    pub async fn reassemble(&self, mut bundle: bundle::Bundle) {
+        let Some((storage_name, data)) = self.store.adu_reassemble(&mut bundle).await else {
             // Nothing more to do, all the fragments have yet to arrive
-            return None;
+            return self.store.watch_bundle(bundle).await;
+        };
+
+        let metadata = metadata::BundleMetadata {
+            storage_name: Some(storage_name),
+            ..Default::default()
         };
 
         // Reparse the reconstituted bundle, for sanity
-        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Valid { bundle, .. }) => {
-                let bundle = bundle::Bundle { metadata, bundle };
-                self.store.insert_metadata(&bundle).await;
-                Some(bundle)
-            }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
-                bundle,
-                new_data,
-                non_canonical,
-                ..
-            }) => {
-                debug!("Reassembled bundle has been rewritten");
 
-                // Update the metadata
-                metadata.non_canonical = non_canonical;
-
-                let old_storage_name = metadata
-                    .storage_name
-                    .replace(self.store.save_data(new_data.into()).await);
-
+        match hardy_bpv7::bundle::ParsedBundle::parse(&data, self.key_provider()) {
+            Ok(hardy_bpv7::bundle::ParsedBundle { bundle, .. }) => {
                 let bundle = bundle::Bundle { metadata, bundle };
                 self.store.insert_metadata(&bundle).await;
 
-                // And drop the original bundle data
-                if let Some(old_storage_name) = old_storage_name {
-                    self.store.delete_data(&old_storage_name).await;
-                }
-                Some(bundle)
+                // Box::pin breaks the type recursion; call inner directly (already in pool)
+                Box::pin(self.ingest_bundle_inner(bundle, data)).await;
             }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. }) | Err(error) => {
+            Err(error) => {
                 // Reconstituted bundle is garbage
                 debug!("Reassembled bundle is invalid: {error}");
+
+                // TODO: Report this as a reception failure for all the fragments, if we can identify them (we can at least report the fragment we just received)
+
+                // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
                 if let Some(storage_name) = metadata.storage_name {
                     self.store.delete_data(&storage_name).await;
                 }
-                None
             }
         }
     }

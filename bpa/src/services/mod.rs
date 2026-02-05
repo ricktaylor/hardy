@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    #[error("Bundle dropped by filter: {0:?}")]
+    Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
+
     #[error(transparent)]
     InvalidBundle(#[from] hardy_bpv7::Error),
 

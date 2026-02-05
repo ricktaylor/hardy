@@ -3,43 +3,41 @@ use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn administrative_bundle(
-        self: &Arc<Self>,
-        bundle: &bundle::Bundle,
-    ) -> dispatch::DispatchResult {
+    pub(super) async fn administrative_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             debug!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
-            return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
+            return self
+                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                .await;
         }
 
-        let Some(data) = self.load_data(bundle).await else {
-            // Bundle data was deleted sometime during processing
-            return dispatch::DispatchResult::Gone;
-        };
+        let payload_result = {
+            let key_source = self.key_source(&bundle.bundle, &data);
+            bundle.bundle.block_data(1, &data, &*key_source)
+        }; // key_source dropped here, before any await
 
-        let data =
-            match bundle
-                .bundle
-                .block_data(1, &data, &*self.key_source(&bundle.bundle, &data))
-            {
-                Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
-                    // TODO: We are unable to decrypt the payload, what do we do?
-                    return dispatch::DispatchResult::Wait;
-                }
-                Err(e) => {
-                    debug!("Received an invalid administrative record: {e}");
-                    return dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible));
-                }
-                Ok(data) => data,
-            };
+        let data = match payload_result {
+            Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
+                // TODO: We are unable to decrypt the payload, what do we do?
+                return self.store.watch_bundle(bundle).await;
+            }
+            Err(e) => {
+                debug!("Received an invalid administrative record: {e}");
+                return self
+                    .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                    .await;
+            }
+            Ok(data) => data,
+        };
 
         match hardy_cbor::decode::parse(data.as_ref()) {
             Err(e) => {
                 debug!("Failed to parse administrative record: {e}");
-                dispatch::DispatchResult::Drop(Some(ReasonCode::BlockUnintelligible))
+                self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                    .await
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
                 // TODO:  This needs to move to a storage::channel
@@ -67,7 +65,7 @@ impl Dispatcher {
                     on_status_notify(report.delivered, services::StatusNotify::Delivered).await;
                     on_status_notify(report.deleted, services::StatusNotify::Deleted).await;
                 }
-                dispatch::DispatchResult::Drop(None)
+                self.drop_bundle(bundle, None).await
             }
         }
     }

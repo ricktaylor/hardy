@@ -25,6 +25,10 @@
 # The depth of the channel used for polling for new bundles.
 #poll_channel_depth = 16
 
+# The maximum number of concurrent bundle processing tasks.
+# Controls parallelism for ingestion, dispatch, and filter execution.
+# Default is 4 * number of CPU cores.
+#processing_pool_size = 16
 
 # A list of EID patterns that require a 2-element IPN encoding scheme
 # for compatibility with older or constrained nodes.

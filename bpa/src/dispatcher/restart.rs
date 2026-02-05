@@ -63,8 +63,8 @@ impl Dispatcher {
                     )
                     .await;
 
-                    // Dispatch the 'new' bundle
-                    self.dispatch_bundle(bundle).await;
+                    // Dispatch the 'new' bundle via processing pool
+                    self.ingest_bundle(bundle, data).await;
 
                     // Report the bundle as an orphan
                     RestartResult::Orphan
@@ -102,7 +102,8 @@ impl Dispatcher {
                 };
 
                 // Write the rewritten bundle now for safety
-                let new_storage_name = self.store.save_data(new_data.into()).await;
+                let data = Bytes::from(new_data);
+                let new_storage_name = self.store.save_data(&data).await;
 
                 // Remove the previous from bundle_storage
                 self.store.delete_data(&storage_name).await;
@@ -138,8 +139,8 @@ impl Dispatcher {
                     self.store.update_metadata(&bundle).await;
                 }
 
-                // Dispatch the 'new' bundle
-                self.dispatch_bundle(bundle).await;
+                // Dispatch the 'new' bundle via processing pool
+                self.ingest_bundle(bundle, data).await;
 
                 // Report the bundle as an orphan
                 RestartResult::Orphan
@@ -209,6 +210,8 @@ impl Dispatcher {
             Err(e) => {
                 // Parse failed badly, no idea who to report to
                 warn!("Junk data found: {storage_name}, {e}");
+
+                // TODO:  This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
                 // Drop the bundle
                 self.store.delete_data(&storage_name).await;

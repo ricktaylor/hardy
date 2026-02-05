@@ -7,6 +7,7 @@ pub struct Bpa {
     rib: Arc<rib::Rib>,
     cla_registry: Arc<cla::registry::Registry>,
     service_registry: Arc<services::registry::ServiceRegistry>,
+    filter_registry: Arc<filters::registry::Registry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -40,6 +41,9 @@ impl Bpa {
             rib.clone(),
         ));
 
+        // New filter registry
+        let filter_registry = Arc::new(filters::registry::Registry::new(config));
+
         // New dispatcher
         let dispatcher = Arc::new(dispatcher::Dispatcher::new(
             config,
@@ -48,7 +52,11 @@ impl Bpa {
             service_registry.clone(),
             rib.clone(),
             keys_registry,
+            filter_registry.clone(),
         ));
+
+        // Start the dispatcher
+        dispatcher.start();
 
         // Start the store
         store.start(dispatcher.clone(), recover_storage);
@@ -63,6 +71,7 @@ impl Bpa {
             rib,
             cla_registry,
             service_registry,
+            filter_registry,
             dispatcher,
         })
     }
@@ -143,5 +152,27 @@ impl Bpa {
         priority: u32,
     ) -> bool {
         self.rib.remove(pattern, source, action, priority).await
+    }
+
+    /// Register a filter at a hook point
+    #[cfg_attr(feature = "tracing", instrument(skip(self, filter)))]
+    pub fn register_filter(
+        &self,
+        hook: filters::Hook,
+        name: &str,
+        after: &[&str],
+        filter: filters::Filter,
+    ) -> Result<(), filters::Error> {
+        self.filter_registry.register(hook, name, after, filter)
+    }
+
+    /// Unregister a filter by name from a hook point
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    pub fn unregister_filter(
+        &self,
+        hook: filters::Hook,
+        name: &str,
+    ) -> Result<Option<filters::Filter>, filters::Error> {
+        self.filter_registry.unregister(hook, name)
     }
 }
