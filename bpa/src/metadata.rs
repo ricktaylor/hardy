@@ -11,9 +11,6 @@ pub enum BundleStatus {
         peer: u32,
         queue: Option<u32>,
     },
-    LocalPending {
-        service: u32,
-    },
     AduFragment {
         source: Eid,
         timestamp: CreationTimestamp,

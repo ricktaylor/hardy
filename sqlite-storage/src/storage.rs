@@ -170,11 +170,8 @@ fn from_status(
         hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
             (2, Some(*peer as i64), queue.map(|q| q as i64), None)
         }
-        hardy_bpa::metadata::BundleStatus::LocalPending { service } => {
-            (3, Some(*service as i64), None, None)
-        }
         hardy_bpa::metadata::BundleStatus::AduFragment { source, timestamp } => (
-            4,
+            3,
             Some(
                 timestamp
                     .creation_time()
@@ -183,7 +180,7 @@ fn from_status(
             Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
         ),
-        hardy_bpa::metadata::BundleStatus::Dispatching => (5, None, None, None),
+        hardy_bpa::metadata::BundleStatus::Dispatching => (4, None, None, None),
     }
 }
 
