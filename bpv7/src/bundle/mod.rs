@@ -99,7 +99,7 @@ impl Id {
     /// This is useful for using the bundle ID as a key in databases or other systems.
     pub fn from_key(k: &str) -> Result<Self, id::Error> {
         hardy_cbor::decode::parse_array(
-            &BASE64_STANDARD_NO_PAD
+            &BASE64_URL_SAFE_NO_PAD
                 .decode(k)
                 .map_err(id::Error::BadBase64)?,
             |array, _, _| {
@@ -131,7 +131,7 @@ impl Id {
     ///
     /// This is useful for using the bundle ID as a key in databases or other systems.
     pub fn to_key(&self) -> String {
-        BASE64_STANDARD_NO_PAD.encode(
+        BASE64_URL_SAFE_NO_PAD.encode(
             if let Some(fragment_info) = &self.fragment_info {
                 hardy_cbor::encode::emit(&(
                     &self.source,

@@ -158,7 +158,7 @@ fn b64_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
         )
         .then_ignore(just('\''))
         .try_map(|b64_str, span| {
-            BASE64_STANDARD
+            BASE64_URL_SAFE_NO_PAD
                 .decode(&b64_str)
                 .map(CdnValue::ByteString)
                 .map_err(|e| Rich::custom(span, format!("Invalid base64 string: {}", e)))

@@ -43,7 +43,7 @@ fn gen_migrations(src_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
             out,
             "({seq}isize,r###\"{}\"###,\"{}\",",
             file_path.to_string_lossy(),
-            BASE64_STANDARD_NO_PAD.encode(sha1::Sha1::digest(&data))
+            BASE64_URL_SAFE_NO_PAD.encode(sha1::Sha1::digest(&data))
         )?;
         out.write_all("r###\"".as_bytes())?;
         out.write_all(&data)?;
