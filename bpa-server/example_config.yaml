@@ -6,40 +6,40 @@
 # log_level: "info"
 
 # Configuration for the gRPC management interface. This section is optional.
+# The gRPC server only starts if at least one service is enabled.
 grpc:
   # The local IP address and port to listen on for gRPC requests.
-  # If not specified, the gRPC server will not be started.
-  grpc_address: "[::1]:50051"
+  # address: "[::1]:50051"
+  # List of gRPC services to enable. Available: "application", "cla", "service"
+  # The gRPC server will not start if this list is empty.
+  services: ["application", "cla", "service"]
 
-# Core Bundle Protocol Agent (BPA) configuration.
-bpa:
-  # The Endpoint IDs (EIDs) that identify this node.
-  # This can be a single string or a list of strings.
-  # If not provided, a random IPN-formatted node ID will be generated.
-  # node_ids: "ipn:1.0"
-  # node_ids: ["ipn:1.0", "dtn://my-node/"]
+# The Endpoint IDs (EIDs) that identify this node.
+# This can be a single string or a list of strings.
+# If not provided, a random IPN-formatted node ID will be generated.
+# node_ids: "ipn:1.0"
+# node_ids: ["ipn:1.0", "dtn://my-node/"]
 
-  # Whether this node should generate and dispatch bundle status reports.
-  # status_reports: false
+# Whether this node should generate and dispatch bundle status reports.
+# status_reports: false
 
-  # The depth of the channel used for polling for new bundles.
-  # poll_channel_depth: 16
+# The depth of the channel used for polling for new bundles.
+# poll_channel_depth: 16
 
-  # A list of EID patterns that require a 2-element IPN encoding scheme
-  # for compatibility with older or constrained nodes.
-  ipn_2_element:
-    # - "ipn:1.[7-10].*"
-    # - "ipn:*.[1-100].3"
+# The maximum number of concurrent bundle processing tasks.
+# Controls parallelism for ingestion, dispatch, and filter execution.
+# Default is 4 * number of CPU cores.
+# processing_pool_size: 16
 
-  # Configuration for the BPA's internal bundle caching and storage management.
-  storage:
-    # The maximum number of bundles to hold in the in-memory LRU cache.
-    # This cache speeds up access to frequently used bundles.
-    # lru_capacity: 1024
+# Configuration for the BPA's internal bundle caching and storage management.
+storage:
+  # The maximum number of bundles to hold in the in-memory LRU cache.
+  # This cache speeds up access to frequently used bundles.
+  # lru_capacity: 1024
 
-    # The maximum size (in bytes) of a bundle that can be stored in the LRU cache.
-    # Bundles larger than this will not be cached in memory.
-    # max_cached_bundle_size: 16384
+  # The maximum size (in bytes) of a bundle that can be stored in the LRU cache.
+  # Bundles larger than this will not be cached in memory.
+  # max_cached_bundle_size: 16384
 
 # Configuration for the metadata storage backend.
 # This section is optional. If not provided, an in-memory store is used.
@@ -47,14 +47,11 @@ metadata_storage:
   # Specifies the type of storage engine to use for bundle metadata.
   # Supported types depend on compiled features.
   type: "sqlite" # or "memory"
-
-  # Configuration specific to the chosen storage type.
-  config:
-    # --- SQLite Configuration (`type: "sqlite"`) ---
-    # The directory where the SQLite database file will be stored.
-    # db_dir: "/var/lib/hardy-bpa-server/db" # Default varies by OS
-    # The name of the SQLite database file.
-    # db_name: "metadata.db"
+  # --- SQLite Configuration (`type: "sqlite"`) ---
+  # The directory where the SQLite database file will be stored.
+  # db_dir: "/var/lib/hardy-bpa-server/db" # Default varies by OS
+  # The name of the SQLite database file.
+  # db_name: "metadata.db"
 
 # Configuration for the bundle data storage backend.
 # This section is optional. If not provided, an in-memory store is used.
@@ -62,14 +59,35 @@ bundle_storage:
   # Specifies the type of storage engine to use for bundle data.
   # Supported types depend on compiled features.
   type: "localdisk" # or "memory"
+  # --- Local Disk Configuration (`type: "localdisk"`) ---
+  # The root directory where bundle files will be stored.
+  # store_dir: "/var/spool/hardy-bpa-server/bundles" # Default varies by OS
+  # Whether to do a full fsync on each write
+  # fsync: true
 
-  # Configuration specific to the chosen storage type.
-  config:
-    # --- Local Disk Configuration (`type: "localdisk"`) ---
-    # The root directory where bundle files will be stored.
-    # store_dir: "/var/spool/hardy-bpa-server/bundles" # Default varies by OS
-    # Whether to do a full fsync on each write
-    # fsync: true
+# A list of filters to apply during bundle processing.
+# Filters are executed at specific hook points: ingress, originate, deliver, egress.
+# Each filter has a name, hook, optional dependencies (after), type, and type-specific config.
+
+# Example: IPN Legacy Filter (requires `ipn-legacy-filter` feature)
+# This filter rewrites IPN 3-element EIDs to legacy 2-element format
+# for peers that require the older encoding. Typically used at the egress hook.
+# filters:
+#   - # A user-defined name for this filter instance. Used for logging and identification.
+#     name: "ipn-legacy-rewrite"
+#     # The hook point where this filter runs.
+#     # Options: ingress, originate, deliver, egress
+#     hook: "egress"
+#     # Optional: filters that must run before this one (dependency ordering).
+#     after: []
+#     # Specifies the type of filter.
+#     type: "ipn-legacy"
+#     # EID patterns matching next-hop peers that require legacy encoding.
+#     # Bundles forwarded to matching peers will have their IPN EIDs rewritten.
+#     legacy-nodes:
+#       - "ipn:10.*"           # All endpoints on node 10
+#       - "ipn:20.0"           # Node 20's admin endpoint
+#       - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)
 
 # Configuration for the static routing module. This section is optional.
 static_routes:
@@ -77,6 +95,10 @@ static_routes:
   routes_file: "/etc/hardy-bpa-server/static_routes.yaml"
   # Whether to monitor the routes file for changes and automatically reload it.
   # watch: true
+  # Default priority for routes loaded from this file.
+  # priority: 100
+  # Protocol identifier used when registering routes with the RIB.
+  # protocol_id: "static_routes"
 
 # A list of Convergence Layer Adapters (CLAs) to enable.
 # Each item in the list defines a CLA instance.
@@ -87,44 +109,39 @@ clas:
     # Specifies the type of CLA to configure.
     type: "tcpclv4"
 
-    # Configuration specific to the chosen CLA type.
-    config:
-      # --- TCPCLv4 Configuration (`type: "tcpclv4"`) ---
-      # The local IP address and port for the CLA to listen on for incoming connections.
-      # address: "[::]:4556"
+    # --- TCPCLv4 Configuration (`type: "tcpclv4"`) ---
+    # The local IP address and port for the CLA to listen on for incoming connections.
+    # address: "[::]:4556"
 
-      # The Maximum Receive Unit (MRU) for a single TCP segment payload, in bytes.
-      # This defines the largest single block of data that can be received in one go.
-      # segment_mru: 16384
+    # The Maximum Receive Unit (MRU) for a single TCP segment payload, in bytes.
+    # This defines the largest single block of data that can be received in one go.
+    # segment_mru: 16384
 
-      # The MRU for a total bundle transfer, in bytes. This is the largest
-      # bundle that can be received over this CLA.
-      # transfer_mru: 562949953421312 # (2^49)
+    # The MRU for a total bundle transfer, in bytes. This is the largest
+    # bundle that can be received over this CLA.
+    # transfer_mru: 562949953421312 # (2^49)
 
-      # The maximum number of idle incoming connections to keep open per remote IP address.
-      # max_idle_connections: 6
+    # The maximum number of idle incoming connections to keep open per remote IP address.
+    # max_idle_connections: 6
 
-      # --- Default Session Parameters for TCPCLv4 ---
-      # These settings apply to all sessions unless overridden by a specific peer configuration.
+    # --- Default Session Parameters for TCPCLv4 ---
+    # These settings apply to all sessions unless overridden by a specific peer configuration.
 
-      # The time in seconds to wait for a CONTACT header from a connecting peer.
-      # contact_timeout: 15
+    # The time in seconds to wait for a CONTACT header from a connecting peer.
+    # contact_timeout: 15
 
-      # The interval in seconds for sending keepalive signals on an idle connection.
-      # A value of `null` or `0` disables keepalives.
-      # keepalive_interval: 60
+    # The interval in seconds for sending keepalive signals on an idle connection.
+    # A value of `null` or `0` disables keepalives.
+    # keepalive_interval: 60
 
-      # TLS configuration (optional, TLS disabled if not set)
-      # tls:
-      #   Whether to enforce TLS for encrypting the connection.
-      #   must_use_tls = true
-      
-      #   server_cert: "/etc/hardy/certs/server.crt"
-      #   server_key: "/etc/hardy/private/server.key"
-      #   ca_bundle: "/etc/hardy/ca"
-      #   server_name: "dtn.example.com"
-
-      #   # Debug options for TLS (testing only, INSECURE)
-      #   debug:
-      #     accept_self_signed: false
-
+    # TLS configuration (optional, TLS disabled if not set)
+    # tls:
+    #   server_cert: "/etc/hardy/certs/server.crt"
+    #   server_key: "/etc/hardy/private/server.key"
+    #   ca_bundle: "/etc/hardy/ca"
+    #   server_name: "dtn.example.com"
+    #   # Whether to enforce TLS for encrypting the connection.
+    #   must_use_tls: true
+    #   # Debug options for TLS (testing only, INSECURE)
+    #   debug:
+    #     accept_self_signed: false

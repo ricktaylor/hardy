@@ -6,13 +6,14 @@
 #log_level = "info"
 
 # Configuration for the gRPC management interface. This section is optional.
+# The gRPC server only starts if at least one service is enabled.
 [grpc]
 # The local IP address and port to listen on for gRPC requests.
-# If not specified, the gRPC server will not be started.
-#grpc_address = "[::1]:50051"
+#address = "[::1]:50051"
+# List of gRPC services to enable. Available: "application", "cla", "service"
+# The gRPC server will not start if this list is empty.
+#services = ["application", "cla", "service"]
 
-# Core Bundle Protocol Agent (BPA) configuration.
-[bpa]
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
 # If not provided, a random IPN-formatted node ID will be generated.
@@ -30,15 +31,8 @@
 # Default is 4 * number of CPU cores.
 #processing_pool_size = 16
 
-# A list of EID patterns that require a 2-element IPN encoding scheme
-# for compatibility with older or constrained nodes.
-#ipn_2_element = [
-#    "ipn:1.[7-10].*",
-#    "ipn:*.[1-100].3",
-#]
-
 # Configuration for the BPA's internal bundle caching and storage management.
-[bpa.storage]
+[storage]
 # The maximum number of bundles to hold in the in-memory LRU cache.
 # This cache speeds up access to frequently used bundles.
 #lru_capacity = 1024
@@ -53,9 +47,6 @@
 # Specifies the type of storage engine to use for bundle metadata.
 # Supported types depend on compiled features.
 #type = "sqlite" # or "memory"
-
-# Configuration specific to the chosen storage type.
-[metadata_storage.config]
 # --- SQLite Configuration (`type = "sqlite"`) ---
 # The directory where the SQLite database file will be stored.
 #db_dir = "/var/lib/hardy-bpa-server/db" # Default varies by OS
@@ -63,17 +54,39 @@
 #db_name = "metadata.db"
 
 # Configuration for the bundle data storage backend.
-# This section is optional. If not provided, an in--memory store is used.
+# This section is optional. If not provided, an in-memory store is used.
 [bundle_storage]
 # Specifies the type of storage engine to use for bundle data.
 # Supported types depend on compiled features.
 #type = "localdisk" # or "memory"
-
-# Configuration specific to the chosen storage type.
-[bundle_storage.config]
 # --- Local Disk Configuration (`type = "localdisk"`) ---
 # The root directory where bundle files will be stored.
 #store_dir = "/var/spool/hardy-bpa-server/bundles" # Default varies by OS
+
+# A list of filters to apply during bundle processing.
+# Filters are executed at specific hook points: ingress, originate, deliver, egress.
+# Each filter has a name, hook, optional dependencies (after), type, and type-specific config.
+
+# Example: IPN Legacy Filter (requires `ipn-legacy-filter` feature)
+# This filter rewrites IPN 3-element EIDs to legacy 2-element format
+# for peers that require the older encoding. Typically used at the egress hook.
+#[[filters]]
+# A user-defined name for this filter instance. Used for logging and identification.
+#name = "ipn-legacy-rewrite"
+# The hook point where this filter runs.
+# Options: ingress, originate, deliver, egress
+#hook = "egress"
+# Optional: filters that must run before this one (dependency ordering).
+#after = []
+# Specifies the type of filter.
+#type = "ipn-legacy"
+# EID patterns matching next-hop peers that require legacy encoding.
+# Bundles forwarded to matching peers will have their IPN EIDs rewritten.
+#legacy-nodes = [
+#  "ipn:10.*",           # All endpoints on node 10
+#  "ipn:20.0",           # Node 20's admin endpoint
+#  "ipn:[100-199].*",    # Nodes 100-199 (range pattern)
+#]
 
 # Configuration for the static routing module. This section is optional.
 [static_routes]
@@ -81,6 +94,10 @@
 #routes_file = "/etc/hardy-bpa-server/static_routes.yaml"
 # Whether to monitor the routes file for changes and automatically reload it.
 #watch = true
+# Default priority for routes loaded from this file.
+#priority = 100
+# Protocol identifier used when registering routes with the RIB.
+#protocol_id = "static_routes"
 
 # A list of Convergence Layer Adapters (CLAs) to enable.
 # Each item in the list defines a CLA instance.
@@ -91,8 +108,6 @@ name = "tcp-cla-1"
 # Specifies the type of CLA to configure.
 type = "tcpclv4"
 
-# Configuration specific to the chosen CLA type.
-[clas.config]
 # --- TCPCLv4 Configuration (`type = "tcpclv4"`) ---
 # The local IP address and port for the CLA to listen on for incoming connections.
 #address = "[::]:4556"
@@ -119,15 +134,11 @@ type = "tcpclv4"
 #keepalive_interval = 60
 
 # TLS configuration (optional, TLS disabled if not set)
-[clas.config.tls]
+#tls.server_cert = "/etc/hardy/certs/server.crt"
+#tls.server_key = "/etc/hardy/private/server.key"
+#tls.ca_bundle = "/etc/hardy/ca"
+#tls.server_name = "dtn.example.com"
 # Whether to enforce TLS for encrypting the connection.
-# must_use_tls = true
-
-# server_cert = "/etc/hardy/certs/server.crt"
-# server_key = "/etc/hardy/private/server.key"
-# ca_bundle = "/etc/hardy/ca"
-# server_name = "dtn.example.com"
-
+#tls.must_use_tls = true
 # Debug options for TLS (testing only, INSECURE)
-[clas.config.tls.debug]
-# accept_self_signed = false
+#tls.debug.accept_self_signed = false

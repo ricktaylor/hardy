@@ -32,7 +32,7 @@ mod log_level_serde {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type", content = "config")]
+#[serde(tag = "type")]
 pub enum MetadataStorage {
     #[serde(rename = "memory")]
     Memory(Option<hardy_bpa::storage::metadata_mem::Config>),
@@ -46,7 +46,7 @@ pub enum MetadataStorage {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type", content = "config")]
+#[serde(tag = "type")]
 pub enum BundleStorage {
     #[serde(rename = "memory")]
     Memory(Option<hardy_bpa::storage::bundle_mem::Config>),
@@ -62,10 +62,11 @@ pub enum BundleStorage {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     // Logging level
-    #[serde(with = "log_level_serde")]
+    #[serde(default, with = "log_level_serde")]
     pub log_level: Option<Level>,
 
     // Static Routes Configuration
+    #[serde(default)]
     pub static_routes: Option<static_routes::Config>,
 
     // Flattened BPA settings

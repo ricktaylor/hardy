@@ -8,11 +8,12 @@ pub struct Cla {
     #[serde(flatten)]
     pub config: ClaConfig,
 
+    #[serde(default)]
     pub policy: Option<policy::EgressPolicyConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", content = "config")]
+#[serde(tag = "type")]
 pub enum ClaConfig {
     #[cfg(feature = "tcpclv4")]
     #[serde(rename = "tcpclv4")]

@@ -6,11 +6,22 @@ mod cla;
 mod service;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
-    pub address: core::net::SocketAddr,
-
-    #[serde(default)]
+    pub address: std::net::SocketAddr,
     pub services: Vec<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            address: std::net::SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                50051,
+            ),
+            services: Vec::new(),
+        }
+    }
 }
 
 pub fn init(

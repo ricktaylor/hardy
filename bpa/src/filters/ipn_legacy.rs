@@ -11,18 +11,14 @@ use hardy_bpv7::eid::Eid;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Default)]
-pub struct Config(
+pub struct Config {
     /// EID patterns for next-hops requiring legacy IPN encoding
-    Vec<hardy_eid_patterns::EidPattern>,
-);
+    #[cfg_attr(feature = "serde", serde(rename = "legacy-nodes"))]
+    legacy_nodes: Vec<hardy_eid_patterns::EidPattern>,
+}
 
-pub fn register_filter(bpa: &Arc<bpa::Bpa>, config: Config) -> Result<(), filters::Error> {
-    bpa.register_filter(
-        Hook::Egress,
-        "ipn-legacy",
-        &[],
-        filters::Filter::Write(Arc::new(IpnLegacyFilter::new(config))),
-    )
+pub fn init(config: Config) -> filters::Filter {
+    filters::Filter::Write(Arc::new(IpnLegacyFilter::new(config)))
 }
 
 /// Egress WriteFilter that rewrites IPN 3-element EIDs to legacy 2-element format
@@ -33,7 +29,7 @@ struct IpnLegacyFilter {
 impl IpnLegacyFilter {
     fn new(config: Config) -> Self {
         Self {
-            peer_patterns: config.0,
+            peer_patterns: config.legacy_nodes,
         }
     }
 

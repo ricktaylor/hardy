@@ -71,10 +71,32 @@ pub enum Filter {
 }
 
 /// Hook points in bundle processing
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 #[derive(Debug)]
 pub enum Hook {
     Ingress,
     Deliver,
     Originate,
     Egress,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Hook {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "ingress" => Ok(Hook::Ingress),
+            "deliver" => Ok(Hook::Deliver),
+            "originate" => Ok(Hook::Originate),
+            "egress" => Ok(Hook::Egress),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &["ingress", "deliver", "originate", "egress"],
+            )),
+        }
+    }
 }

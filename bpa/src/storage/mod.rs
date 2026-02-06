@@ -18,6 +18,7 @@ pub(crate) mod store;
 mod reaper;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub lru_capacity: std::num::NonZeroUsize,
     pub max_cached_bundle_size: std::num::NonZeroUsize,

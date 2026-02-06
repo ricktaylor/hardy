@@ -4,14 +4,10 @@ use super::*;
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub status_reports: bool,
-
-    #[cfg_attr(feature = "serde", serde(default = "default_poll_channel_depth"))]
     pub poll_channel_depth: std::num::NonZeroUsize,
-
-    #[cfg_attr(feature = "serde", serde(default = "default_processing_pool_size"))]
     pub processing_pool_size: std::num::NonZeroUsize,
 
-    #[cfg_attr(feature = "serde", serde(default, rename = "storage"))]
+    #[cfg_attr(feature = "serde", serde(rename = "storage"))]
     pub storage_config: storage::Config,
 
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -23,26 +19,18 @@ pub struct Config {
     pub node_ids: node_ids::NodeIds,
 }
 
-fn default_poll_channel_depth() -> std::num::NonZeroUsize {
-    std::num::NonZeroUsize::new(16).unwrap()
-}
-
-fn default_processing_pool_size() -> std::num::NonZeroUsize {
-    std::num::NonZeroUsize::new(
-        std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1)
-            * 4,
-    )
-    .unwrap()
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
-            poll_channel_depth: default_poll_channel_depth(),
-            processing_pool_size: default_processing_pool_size(),
             status_reports: false,
+            poll_channel_depth: std::num::NonZeroUsize::new(16).unwrap(),
+            processing_pool_size: std::num::NonZeroUsize::new(
+                std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(1)
+                    * 4,
+            )
+            .unwrap(),
             storage_config: storage::Config::default(),
             metadata_storage: None,
             bundle_storage: None,
