@@ -21,7 +21,6 @@ pub struct Config {
     pub bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
 
     pub node_ids: node_ids::NodeIds,
-    pub ipn_2_element: Vec<hardy_eid_patterns::EidPattern>,
 }
 
 fn default_poll_channel_depth() -> std::num::NonZeroUsize {
@@ -48,7 +47,6 @@ impl Default for Config {
             metadata_storage: None,
             bundle_storage: None,
             node_ids: node_ids::NodeIds::default(),
-            ipn_2_element: Vec::new(),
         }
     }
 }
@@ -58,7 +56,6 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("status_reports", &self.status_reports)
             .field("node_ids", &self.node_ids)
-            .field("ipn_2_element", &self.ipn_2_element)
             .finish()
     }
 }
