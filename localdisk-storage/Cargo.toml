@@ -19,7 +19,7 @@ tokio = { version = "1.49.0", features = ["fs"] }
 rand = "0.9.2"
 directories = "6.0.0"
 tracing = "0.1.44"
-time = "0.3.46"
+time = "0.3.47"
 trace-err = "0.1.5"
 memmap2 = { version = "0.9.9", optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }

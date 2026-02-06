@@ -20,12 +20,12 @@ tokio = "1.49.0"
 thiserror = "2.0.18"
 directories = "6.0.0"
 tracing = "0.1.44"
-time = "0.3.46"
+time = "0.3.47"
 trace-err = "0.1.5"
 serde = { version = "1.0.228", default-features = false }
 serde_json = "1.0.149"
 
 [build-dependencies]
-regex = "1.12.2"
+regex = "1.12.3"
 sha1 = "0.10.6"
 base64 = "0.22.1"
