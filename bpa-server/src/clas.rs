@@ -6,7 +6,7 @@ pub struct Cla {
     pub name: String,
 
     #[serde(flatten)]
-    pub cla: ClaConfig,
+    pub config: ClaConfig,
 
     pub policy: Option<policy::EgressPolicyConfig>,
 }
@@ -35,7 +35,7 @@ pub async fn init(config: Vec<Cla>, bpa: &Arc<hardy_bpa::bpa::Bpa>) -> anyhow::R
             None
         };
 
-        match cla_config.cla {
+        match cla_config.config {
             ClaConfig::Unknown => {
                 warn!("Ignoring unknown CLA type for CLA: {}", cla_config.name);
             }
