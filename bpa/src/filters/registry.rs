@@ -38,6 +38,17 @@ impl Registry {
         }
     }
 
+    pub fn clear(&self) {
+        let mut inner = self
+            .inner
+            .write()
+            .trace_expect("Failed to write lock mutex during shutdown");
+        inner.ingress.clear();
+        inner.deliver.clear();
+        inner.originate.clear();
+        inner.egress.clear();
+    }
+
     pub fn register(
         &self,
         hook: Hook,

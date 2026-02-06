@@ -82,6 +82,7 @@ impl Bpa {
         self.cla_registry.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
+        self.filter_registry.clear();
     }
 
     /// Register an Application (high-level, payload-only access)

@@ -50,6 +50,14 @@ impl FilterNode {
         }
     }
 
+    pub fn clear(&mut self) {
+        if let Some(mut next) = self.next.take() {
+            next.clear();
+        }
+        self.read_only.clear();
+        self.read_write.clear();
+    }
+
     // Registers a filter with the given name and dependencies.
     // The filter is placed in the node chain based on its `after` dependencies.
     // Errors if a filter with this name already exists or any dependency is not found.
