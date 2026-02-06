@@ -21,6 +21,7 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 | **Result Semantics** | `Continue` = "no objection"; `Drop` = veto (stops processing) |
 
 **Hook naming:**
+
 - **Ingress** / **Egress**: Network boundary (CLA)
 - **Deliver** / **Originate**: Service boundary
 
@@ -153,6 +154,7 @@ Two async traits with identical signatures, differing only in return type:
 - **`WriteFilter`**: May modify bundle, returns `RewriteResult` with optional new metadata/data
 
 The `RewriteResult::Continue` variant carries optional modifications:
+
 - `(None, None)` — no change
 - `(Some(meta), None)` — metadata changed, bundle bytes unchanged
 - `(None, Some(data))` — bundle bytes changed (rare)
@@ -179,6 +181,7 @@ After `ExecResult::Continue`, persistence depends on the hook:
 | **Egress** | No persistence (bundle leaving node, may re-run on retry) |
 
 For Ingress (the only hook that persists):
+
 1. **If `mutation.bundle`**: Save new bundle data to store, delete old data (crash-safe order), update `storage_name` in metadata
 2. **Always**: Checkpoint status to `Dispatching` to prevent filter re-run on restart
 
@@ -209,6 +212,7 @@ Filters are registered with a unique name and optional `after` dependencies. Fil
 ### DAG-Based Ordering
 
 Filters declare dependencies via `after`. The DAG executor:
+
 1. Resolves dependencies at registration time
 2. Groups filters by "level" (same dependencies satisfied)
 3. Runs ReadFilters in parallel within a level
@@ -339,7 +343,7 @@ Egress path:
 | `source_validator` | Read | Validate bundle source against policy |
 | `destination_acl` | Read | Enforce destination access control |
 | `flow_classifier` | Write | Set flow label based on bundle properties |
-| `ipn_2_element` | Write | Rewrite IPN EIDs to legacy encoding |
+| `ipn-legacy` | Write | Rewrite IPN EIDs to legacy encoding |
 | `add_bib` | Write | Add Bundle Integrity Block |
 | `add_bcb` | Write | Add Bundle Confidentiality Block |
 
@@ -354,6 +358,7 @@ Filters may need CLA/peer information for policy decisions. The `BundleMetadata`
 ### External Filters via gRPC
 
 A `filter.proto` could enable out-of-process filters for:
+
 - Language-agnostic filter implementations
 - Isolated security-sensitive filters
 - Third-party policy engines

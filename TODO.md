@@ -137,9 +137,9 @@ Filters are core infrastructure enabling security filters, policy enforcement, f
 - **Implemented**: `FilterRegistry` with DAG-based ordering, dependency checking
 - **Implemented**: `FilterNode` with `prepare()/exec()` pattern for lock-free async execution
 - **Implemented**: `Bpa::register_filter()` and `Bpa::unregister_filter()` public API
-- **Implemented**: Hook stubs in dispatcher (Ingress, Deliver, Originate, Egress)
+- **Implemented**: Filter invocation at all hook points (Ingress, Deliver, Originate, Egress)
+- **Implemented**: First production filter - IPN Legacy (`bpa/src/filters/ipn_legacy.rs`)
 - **Not implemented**: Ingress metadata tracking (CLA/peer info on bundles)
-- **Not implemented**: Actual filter invocation at hook points (stubs only)
 
 See `bpa/docs/filter_subsystem_design.md` for design details.
 
@@ -1075,6 +1075,20 @@ Before implementing proactive scheduling:
 ## Recent Completions
 
 For reference when closing external issues:
+
+### 2026-02-06: IPN Legacy Filter & Config Improvements
+
+- **IPN Legacy Filter completed** (`bpa/src/filters/ipn_legacy.rs`)
+  - Feature-gated with `ipn-legacy-filter` Cargo feature
+  - Egress WriteFilter that rewrites IPN 3-element EIDs to legacy 2-element format
+  - Configurable `legacy-nodes` patterns for next-hop matching
+  - Integrated via `bpa-server/src/filters.rs` FilterConfig tagged enum
+
+- **Config/Serde improvements:**
+  - Case-insensitive Hook enum deserialization (custom Deserialize impl)
+  - Flattened tagged enums for filters, CLAs, storage (removed `content = "config"`)
+  - Cleaned up redundant `#[serde(default)]` patterns
+  - Updated example_config.toml and example_config.yaml with complete examples
 
 ### 2025-02-06: Egress Filter & Crash Safety Improvements
 
