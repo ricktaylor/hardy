@@ -60,6 +60,11 @@ impl Bpa {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub fn start(&self, recover_storage: bool) {
+        if self.dispatcher.has_started() {
+            warn!("BPA already started, ignoring start request");
+            return;
+        }
+
         // Start the dispatcher
         self.dispatcher.start();
 
@@ -86,6 +91,10 @@ impl Bpa {
         service_id: Option<hardy_bpv7::eid::Service>,
         service: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
+        if !self.dispatcher.has_started() {
+            panic!("BPA must be started before registering applications");
+        }
+
         self.service_registry
             .register_application(service_id, service, &self.dispatcher)
             .await
@@ -98,6 +107,10 @@ impl Bpa {
         service_id: Option<hardy_bpv7::eid::Service>,
         service: Arc<dyn services::Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
+        if !self.dispatcher.has_started() {
+            panic!("BPA must be started before registering services");
+        }
+
         self.service_registry
             .register_service(service_id, service, &self.dispatcher)
             .await
@@ -111,6 +124,10 @@ impl Bpa {
         cla: Arc<dyn cla::Cla>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
+        if !self.dispatcher.has_started() {
+            panic!("BPA must be started before registering CLAs");
+        }
+
         self.cla_registry
             .register(name, address_type, cla, &self.dispatcher, policy)
             .await

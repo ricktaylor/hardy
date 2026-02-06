@@ -12,7 +12,6 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
         ..Default::default()
     });
-    bpa.start(false);
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.add_route(
@@ -24,6 +23,8 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         1000,
     )
     .await;
+
+    bpa.start(false);
 
     // Register TCPCLv4 CLA
     let cla_name = "tcp0".to_string();

@@ -55,7 +55,15 @@ impl Dispatcher {
         }
     }
 
+    pub fn has_started(&self) -> bool {
+        self.dispatch_tx.get().is_some()
+    }
+
     pub fn start(self: &Arc<Self>) {
+        if self.status_reports {
+            warn!("Bundle status reports are enabled");
+        }
+
         // Create the dispatch queue channel
         let (dispatch_tx, dispatch_rx) = self
             .store
