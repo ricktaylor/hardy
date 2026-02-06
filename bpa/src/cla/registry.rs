@@ -61,8 +61,16 @@ impl cla::Sink for Sink {
         }
     }
 
-    async fn dispatch(&self, bundle: Bytes) -> cla::Result<()> {
-        self.dispatcher.receive_bundle(bundle).await
+    async fn dispatch(
+        &self,
+        bundle: Bytes,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&ClaAddress>,
+    ) -> cla::Result<()> {
+        let cla_name = self.cla.upgrade().map(|c| c.name.clone().into());
+        self.dispatcher
+            .receive_bundle(bundle, cla_name, peer_node.cloned(), peer_addr.cloned())
+            .await
     }
 
     async fn add_peer(&self, node_id: NodeId, cla_addr: ClaAddress) -> cla::Result<bool> {

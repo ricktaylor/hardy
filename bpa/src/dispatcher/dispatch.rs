@@ -4,7 +4,13 @@ use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn receive_bundle(self: &Arc<Self>, mut data: Bytes) -> cla::Result<()> {
+    pub async fn receive_bundle(
+        self: &Arc<Self>,
+        mut data: Bytes,
+        ingress_cla: Option<Arc<str>>,
+        ingress_peer_node: Option<hardy_bpv7::eid::NodeId>,
+        ingress_peer_addr: Option<cla::ClaAddress>,
+    ) -> cla::Result<()> {
         // TODO: Really should not return errors when the bundle content is garbage - it's not the CLAs responsibility to fix it!
 
         // Capture received_at as soon as possible
@@ -51,6 +57,9 @@ impl Dispatcher {
                         metadata: BundleMetadata {
                             storage_name: Some(self.store.save_data(&data).await),
                             received_at,
+                            ingress_cla: ingress_cla.clone(),
+                            ingress_peer_node: ingress_peer_node.clone(),
+                            ingress_peer_addr: ingress_peer_addr.clone(),
                             ..Default::default()
                         },
                         bundle,
@@ -74,6 +83,9 @@ impl Dispatcher {
                             metadata: BundleMetadata {
                                 storage_name,
                                 received_at,
+                                ingress_cla: ingress_cla.clone(),
+                                ingress_peer_node: ingress_peer_node.clone(),
+                                ingress_peer_addr: ingress_peer_addr.clone(),
                                 non_canonical,
                                 ..Default::default()
                             },
@@ -95,6 +107,9 @@ impl Dispatcher {
                         bundle::Bundle {
                             metadata: BundleMetadata {
                                 received_at,
+                                ingress_cla,
+                                ingress_peer_node,
+                                ingress_peer_addr,
                                 ..Default::default()
                             },
                             bundle,

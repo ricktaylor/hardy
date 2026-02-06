@@ -36,6 +36,8 @@ where
 {
     transport: T,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
+    peer_node: Option<hardy_bpv7::eid::NodeId>,
+    peer_addr: Option<hardy_bpa::cla::ClaAddress>,
     keepalive_interval: Option<tokio::time::Duration>,
     last_sent: tokio::time::Instant,
     segment_mtu: usize,
@@ -56,9 +58,12 @@ where
         + std::marker::Unpin,
     <T as futures::Sink<codec::Message>>::Error: Into<session::Error> + std::fmt::Debug,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         transport: T,
         sink: Arc<dyn hardy_bpa::cla::Sink>,
+        peer_node: Option<hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<hardy_bpa::cla::ClaAddress>,
         keepalive_interval: Option<tokio::time::Duration>,
         segment_mtu: usize,
         transfer_mru: usize,
@@ -70,6 +75,8 @@ where
         Self {
             transport,
             sink,
+            peer_node,
+            peer_addr,
             keepalive_interval,
             last_sent: tokio::time::Instant::now(),
             segment_mtu,
@@ -158,10 +165,17 @@ where
             let bundle = self.ingress_bundle.take().unwrap();
 
             // Send the bundle to the BPA
-            self.sink.dispatch(bundle.freeze()).await.map_err(|e| {
-                warn!("CLA dispatch failed: {e:?}");
-                Error::Shutdown(codec::SessionTermReasonCode::Unknown)
-            })?;
+            self.sink
+                .dispatch(
+                    bundle.freeze(),
+                    self.peer_node.as_ref(),
+                    self.peer_addr.as_ref(),
+                )
+                .await
+                .map_err(|e| {
+                    warn!("CLA dispatch failed: {e:?}");
+                    Error::Shutdown(codec::SessionTermReasonCode::Unknown)
+                })?;
         }
 
         // Acknowledge the transfer

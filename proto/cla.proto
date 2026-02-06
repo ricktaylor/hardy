@@ -113,6 +113,12 @@ message RegisterClaResponse {
 message DispatchBundleRequest {
   // The bundle to dispatch. This should be a complete BPv7 bundle.
   bytes bundle = 1;
+  // The node identifier of the peer that sent this bundle, if known.
+  // For CLAs like TCPCLv4, this is learned during session establishment.
+  optional string peer_node_id = 2;
+  // The convergence layer address of the peer, if applicable.
+  // For TCP-based CLAs, this would be the remote socket address.
+  optional ClaAddress peer_addr = 3;
 }
 
 // A response to a dispatch bundle request.

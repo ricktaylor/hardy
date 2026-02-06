@@ -267,6 +267,10 @@ impl PreparedFilters {
                 storage_name: bundle.metadata.storage_name.clone(),
                 status: bundle.metadata.status.clone(),
                 received_at: bundle.metadata.received_at,
+                ingress_peer_node: bundle.metadata.ingress_peer_node.clone(),
+                ingress_peer_addr: bundle.metadata.ingress_peer_addr.clone(),
+                ingress_cla: bundle.metadata.ingress_cla.clone(),
+                next_hop: bundle.metadata.next_hop.clone(),
                 ..Default::default()
             },
         };
@@ -358,6 +362,10 @@ impl PreparedFilters {
         bundle.metadata.storage_name = drop_bundle.metadata.storage_name;
         bundle.metadata.status = drop_bundle.metadata.status;
         bundle.metadata.received_at = drop_bundle.metadata.received_at;
+        bundle.metadata.ingress_peer_node = drop_bundle.metadata.ingress_peer_node;
+        bundle.metadata.ingress_peer_addr = drop_bundle.metadata.ingress_peer_addr;
+        bundle.metadata.ingress_cla = drop_bundle.metadata.ingress_cla;
+        bundle.metadata.next_hop = drop_bundle.metadata.next_hop;
 
         Ok(registry::ExecResult::Continue(mutation, bundle, data))
     }

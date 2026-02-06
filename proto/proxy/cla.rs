@@ -42,9 +42,18 @@ impl Sink {
 
 #[async_trait]
 impl hardy_bpa::cla::Sink for Sink {
-    async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
+    async fn dispatch(
+        &self,
+        bundle: hardy_bpa::Bytes,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+    ) -> hardy_bpa::cla::Result<()> {
         match self
-            .call(cla_to_bpa::Msg::Dispatch(DispatchBundleRequest { bundle }))
+            .call(cla_to_bpa::Msg::Dispatch(DispatchBundleRequest {
+                bundle,
+                peer_node_id: peer_node.map(|n| n.to_string()),
+                peer_addr: peer_addr.map(|a| a.clone().into()),
+            }))
             .await?
         {
             bpa_to_cla::Msg::Dispatch(_) => Ok(()),

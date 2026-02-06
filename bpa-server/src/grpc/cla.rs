@@ -30,10 +30,22 @@ impl Cla {
         &self,
         request: DispatchBundleRequest,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
+        let peer_node: Option<hardy_bpv7::eid::NodeId> = request
+            .peer_node_id
+            .map(|s| {
+                s.parse().map_err(|e| {
+                    tonic::Status::invalid_argument(format!("Invalid peer_node_id: {e}"))
+                })
+            })
+            .transpose()?;
+
+        let peer_addr: Option<hardy_bpa::cla::ClaAddress> =
+            request.peer_addr.map(|a| a.try_into()).transpose()?;
+
         self.inner
             .wait()
             .sink
-            .dispatch(request.bundle)
+            .dispatch(request.bundle, peer_node.as_ref(), peer_addr.as_ref())
             .await
             .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))

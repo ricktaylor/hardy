@@ -34,6 +34,7 @@ pub enum Error {
 ///
 /// This is used to identify the protocol associated with a `ClaAddress`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ClaAddressType {
     /// IPv4 and IPv6 address + port.
     Tcp,
@@ -43,11 +44,32 @@ pub enum ClaAddressType {
 
 /// Represents a network address for a specific Convergence Layer Adapter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ClaAddress {
     /// An TCP address, represented as a standard socket address.
     Tcp(core::net::SocketAddr),
     /// An address for an unknown or custom CLA, containing the type identifier and the raw address bytes.
+    #[cfg_attr(feature = "serde", serde(with = "private_addr_serde"))]
     Private(Bytes),
+}
+
+#[cfg(feature = "serde")]
+mod private_addr_serde {
+    use super::Bytes;
+    use base64::prelude::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Bytes, s: S) -> Result<S::Ok, S::Error> {
+        BASE64_URL_SAFE_NO_PAD.encode(bytes).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
+        let s = String::deserialize(d)?;
+        BASE64_URL_SAFE_NO_PAD
+            .decode(&s)
+            .map(|v| v.into())
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ClaAddress {
@@ -166,7 +188,21 @@ pub trait Sink: Send + Sync {
     async fn unregister(&self);
 
     /// Dispatches a received bundle (as raw bytes) to the BPA's `Dispatcher` for processing.
-    async fn dispatch(&self, bundle: Bytes) -> Result<()>;
+    ///
+    /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
+    /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
+    ///   (e.g., learned during TCPCLv4 session establishment).
+    /// - `peer_addr`: The convergence layer address of the peer, if applicable
+    ///   (e.g., remote socket address for TCP-based CLAs).
+    ///
+    /// These may be `None` for CLAs without peer concepts (e.g., file-based) or
+    /// unidirectional links.
+    async fn dispatch(
+        &self,
+        bundle: Bytes,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&ClaAddress>,
+    ) -> Result<()>;
 
     /// Notifies the BPA that a new peer has been discovered at a given `ClaAddress`.
     /// The BPA will update its routing information accordingly.

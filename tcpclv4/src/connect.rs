@@ -277,9 +277,13 @@ impl Connector {
         }
 
         let (tx, rx) = channel(1);
+        let peer_node = peer_init.node_id.clone();
+        let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(*remote_addr));
         let session = session::Session::new(
             transport,
             self.sink.clone(),
+            peer_node,
+            peer_addr,
             if keepalive_interval != 0 {
                 Some(tokio::time::Duration::from_secs(keepalive_interval as u64))
             } else {

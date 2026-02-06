@@ -55,7 +55,7 @@ pub struct NullCla {
 
 impl NullCla {
     pub async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
-        self.sink.get().unwrap().dispatch(bundle).await
+        self.sink.get().unwrap().dispatch(bundle, None, None).await
     }
 }
 
