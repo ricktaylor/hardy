@@ -13,28 +13,22 @@ impl Dispatcher {
         bundle: bundle::Bundle,
         data: Bytes,
     ) -> Result<Option<(bundle::Bundle, Bytes)>, bpa::Error> {
-        if self.filter_registry.has_filters(filters::Hook::Originate) {
-            match self
-                .filter_registry
-                .exec(
-                    filters::Hook::Originate,
-                    bundle,
-                    data,
-                    self.key_provider(),
-                    &self.processing_pool,
-                )
-                .await?
-            {
-                filters::registry::ExecResult::Continue(_mutation, bundle, data) => {
-                    Ok(Some((bundle, data)))
-                }
-                filters::registry::ExecResult::Drop(_bundle, _reason) => {
-                    debug!("Originate filter dropped bundle");
-                    Ok(None)
-                }
+        match self
+            .filter_registry
+            .exec(
+                filters::Hook::Originate,
+                bundle,
+                data,
+                self.key_provider(),
+                &self.processing_pool,
+            )
+            .await
+            .inspect_err(|_e| error!("Originate filter execution failed"))?
+        {
+            filters::registry::ExecResult::Continue(_mutation, bundle, data) => {
+                Ok(Some((bundle, data)))
             }
-        } else {
-            Ok(Some((bundle, data)))
+            filters::registry::ExecResult::Drop(_bundle, _reason) => Ok(None),
         }
     }
 
@@ -259,28 +253,22 @@ impl Dispatcher {
         data: Bytes,
     ) {
         // Deliver filter hook
-        // Clone is required here because process_bundle passes &bundle and needs it for other arms.
-        // The clone only happens when filters are registered.
-        let (bundle, data) = if self.filter_registry.has_filters(filters::Hook::Deliver) {
-            match self
-                .filter_registry
-                .exec(
-                    filters::Hook::Deliver,
-                    bundle,
-                    data,
-                    self.key_provider(),
-                    &self.processing_pool,
-                )
-                .await
-                .trace_expect("Deliver filter execution failed")
-            {
-                filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
-                filters::registry::ExecResult::Drop(bundle, reason) => {
-                    return self.drop_bundle(bundle, reason).await;
-                }
+        let (bundle, data) = match self
+            .filter_registry
+            .exec(
+                filters::Hook::Deliver,
+                bundle,
+                data,
+                self.key_provider(),
+                &self.processing_pool,
+            )
+            .await
+            .trace_expect("Deliver filter execution failed")
+        {
+            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
+            filters::registry::ExecResult::Drop(bundle, reason) => {
+                return self.drop_bundle(bundle, reason).await;
             }
-        } else {
-            (bundle, data)
         };
 
         match &service.service {

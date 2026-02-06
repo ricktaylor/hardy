@@ -172,43 +172,36 @@ impl Dispatcher {
         }
 
         // Ingress filter hook
-        if self.filter_registry.has_filters(filters::Hook::Ingress) {
-            (bundle, data) = match self
-                .filter_registry
-                .exec(
-                    filters::Hook::Ingress,
-                    bundle,
-                    data,
-                    self.key_provider(),
-                    &self.processing_pool,
-                )
-                .await
-                .trace_expect("Ingress filter execution failed")
-            {
-                filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
-                    // Persist any bundle data mutations
-                    if mutation.bundle {
-                        let new_storage_name = self.store.save_data(&data).await;
-                        if let Some(old_storage_name) = bundle.metadata.storage_name.take() {
-                            self.store.delete_data(&old_storage_name).await;
-                        }
-                        bundle.metadata.storage_name = Some(new_storage_name);
+        (bundle, data) = match self
+            .filter_registry
+            .exec(
+                filters::Hook::Ingress,
+                bundle,
+                data,
+                self.key_provider(),
+                &self.processing_pool,
+            )
+            .await
+            .trace_expect("Ingress filter execution failed")
+        {
+            filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
+                // Persist any bundle data mutations
+                if mutation.bundle {
+                    let new_storage_name = self.store.save_data(&data).await;
+                    if let Some(old_storage_name) = bundle.metadata.storage_name.take() {
+                        self.store.delete_data(&old_storage_name).await;
                     }
-                    // Always checkpoint to Dispatching (crash safety)
-                    bundle.metadata.status = BundleStatus::Dispatching;
-                    self.store.update_metadata(&bundle).await;
-                    (bundle, data)
+                    bundle.metadata.storage_name = Some(new_storage_name);
                 }
-                filters::registry::ExecResult::Drop(bundle, reason) => {
-                    debug!("Ingress filter dropped bundle {}", bundle.bundle.id);
-                    return self.drop_bundle(bundle, reason).await;
-                }
-            };
-        } else {
-            // No filter registered, still checkpoint
-            bundle.metadata.status = BundleStatus::Dispatching;
-            self.store.update_metadata(&bundle).await;
-        }
+                // Always checkpoint to Dispatching (crash safety)
+                bundle.metadata.status = BundleStatus::Dispatching;
+                self.store.update_metadata(&bundle).await;
+                (bundle, data)
+            }
+            filters::registry::ExecResult::Drop(bundle, reason) => {
+                return self.drop_bundle(bundle, reason).await;
+            }
+        };
 
         self.process_bundle(bundle, data).await;
     }

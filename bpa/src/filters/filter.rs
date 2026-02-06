@@ -50,13 +50,6 @@ impl FilterNode {
         }
     }
 
-    // Returns true if any filters are registered in this node or subsequent nodes
-    pub fn has_filters(&self) -> bool {
-        !self.read_only.is_empty()
-            || !self.read_write.is_empty()
-            || self.next.as_ref().is_some_and(|n| n.has_filters())
-    }
-
     // Registers a filter with the given name and dependencies.
     // The filter is placed in the node chain based on its `after` dependencies.
     // Errors if a filter with this name already exists or any dependency is not found.

@@ -75,18 +75,6 @@ impl Registry {
         }
     }
 
-    // Returns true if any filters are registered for the specified hook.
-    // Briefly acquires the read lock to check.
-    pub fn has_filters(&self, hook: Hook) -> bool {
-        let inner = self.inner.read().trace_expect("Failed to read lock mutex");
-        match hook {
-            Hook::Ingress => inner.ingress.has_filters(),
-            Hook::Deliver => inner.deliver.has_filters(),
-            Hook::Originate => inner.originate.has_filters(),
-            Hook::Egress => inner.egress.has_filters(),
-        }
-    }
-
     // Executes the filter chain for the specified hook on the given bundle.
     // Briefly holds the read lock to prepare (clone Arc refs), then releases
     // before execution. This avoids holding a sync lock across await points
