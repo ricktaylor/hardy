@@ -361,7 +361,7 @@ safety guarantees for filter execution.
 | **Ingress** | `ingest_bundle_inner()` | Async (spawned task) | Always (checkpoint to `Dispatching`) |
 | **Originate** | `run_originate_filter()` | Sync (in caller context) | None (bundle stored after filter) |
 | **Deliver** | `deliver_bundle()` | Sync (before delivery) | None (bundle dropped after) |
-| **Egress** | TBD | TBD | TBD |
+| **Egress** | `forward_bundle()` | Sync (after dequeue) | None (bundle leaving node) |
 
 ### Checkpoint Model
 

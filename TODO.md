@@ -171,19 +171,19 @@ See `bpa/docs/filter_subsystem_design.md` for design details.
     - Dependency checking on removal (`HasDependants` error)
 
 - [x] **2.3 Integrate filters into dispatcher**
-  - Hook stubs added at: Ingress, Deliver, Originate, Egress (placement TBD)
+  - All four hooks implemented: Ingress, Originate, Deliver, Egress
   - **Completed:**
-    - Filter invocation implemented at Ingress, Originate, and Deliver hooks
+    - Filter invocation at all hook points
     - `bundle`, `data`, and key provider passed to filters
     - `ExecResult::Drop` handled with optional reason code and bundle deletion
-    - `ExecResult::Continue` mutation flags processed via `persist_filter_mutation()`:
-      - If `mutation.metadata`: updates metadata in store
-      - If `mutation.bundle`: saves new bundle data, updates storage_name, deletes old data
-    - Originate filter runs after store (bundle has valid metadata)
-    - Deliver filter uses in-memory modified data (no persistence needed - bundle dropped after delivery)
+    - `ExecResult::Continue` mutation handling per-hook:
+      - **Ingress**: Persists mutations inline, checkpoints to `Dispatching` status
+      - **Originate**: No persistence (bundle stored after filter with modified metadata)
+      - **Deliver**: No persistence (bundle consumed immediately after)
+      - **Egress**: No persistence (bundle leaving node, may re-run on retry)
     - Added `processing_pool` (BoundedTaskPool) for rate-limited filter/bundle processing
+    - Single lock acquisition per filter execution (removed `has_filters()` optimization)
   - **Remaining:**
-    - Egress filter hook (placement TBD - in dispatcher or cla/peers.rs)
     - Ingress metadata (CLA/peer info) not yet tracked on bundles
 
 - [ ] **2.4 Add filter.proto for external filters (optional)**
@@ -1076,12 +1076,26 @@ Before implementing proactive scheduling:
 
 For reference when closing external issues:
 
+### 2025-02-06: Egress Filter & Crash Safety Improvements
+
+- **Egress filter implemented** (`dispatcher/forward.rs:forward_bundle`)
+  - Runs after dequeue from ForwardPending, just before CLA send
+  - In-memory only (like Deliver) - no persistence
+  - May re-run on retry to different peer (correct for peer-specific BPSec)
+
+- **Filter crash safety model finalized:**
+  - Ingress: Checkpoints to `Dispatching` after filter (prevents re-run on restart)
+  - Originate: Filter-then-store pattern (bundle stored after filter passes)
+  - Deliver/Egress: No persistence (bundle consumed/leaving immediately)
+  - Removed `has_filters()` optimization - single lock acquisition per filter execution
+
+- **Removed `LocalPending` status** - unused; local delivery uses `Waiting` queue with service registration notifications
+
 ### 2025-02-05: Filter Integration & Dispatcher Improvements
 
 - **2.3 Integrate filters into dispatcher** - Filters now invoked at Ingress, Originate, Deliver hooks
   - `ExecResult::Drop` properly deletes bundle with reason code
-  - `ExecResult::Continue` mutation flags trigger metadata/data persistence via `persist_filter_mutation()`
-  - Originate filter runs after store (bundle has valid metadata for filter to inspect)
+  - `ExecResult::Continue` mutation flags handled per-hook (see crash safety model above)
   - `processing_pool` (BoundedTaskPool) added for rate-limited bundle processing
   - Configurable via `processing_pool_size` (default: 4 × CPU cores)
 
@@ -1089,7 +1103,7 @@ For reference when closing external issues:
   - Extracted `ingest_bundle` wrapper for consistent spawn-into-pool pattern
   - `ingest_bundle_inner` does actual work; `ingest_bundle` handles spawn
   - Commonalized Originate filter logic into `run_originate_filter()` helper
-  - Store-first-then-filter pattern ensures filters see real metadata
+  - Filter-then-store pattern for Originate (bundle not stored until filter passes)
   - Changed 14 functions from `&Arc<Self>` to `&self` (only entry points need Arc)
 
 ---

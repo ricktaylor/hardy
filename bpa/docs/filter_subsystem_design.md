@@ -127,7 +127,6 @@ Core filter infrastructure is implemented in `bpa/src/filters/`:
 | `PreparedFilters` (lock-free execution) | `filter.rs` | ✅ Implemented |
 | `Registry` (per-hook filter storage) | `registry.rs` | ✅ Implemented |
 | `Bpa::register_filter()` | `bpa.rs` | ✅ Implemented |
-| `persist_filter_mutation()` | `dispatcher/mod.rs` | ✅ Implemented |
 
 **Hook integration status:**
 
@@ -136,7 +135,7 @@ Core filter infrastructure is implemented in `bpa/src/filters/`:
 | Ingress | `dispatcher/dispatch.rs:ingest_bundle_inner` | ✅ Implemented |
 | Deliver | `dispatcher/local.rs:deliver_bundle` | ✅ Implemented |
 | Originate | `dispatcher/local.rs:run_originate_filter` | ✅ Implemented |
-| Egress | TBD | 🔲 Stub added, placement TBD |
+| Egress | `dispatcher/forward.rs:forward_bundle` | ✅ Implemented |
 
 **Rate limiting:**
 
@@ -170,14 +169,18 @@ pub struct Mutation {
 }
 ```
 
-After `ExecResult::Continue`, the dispatcher calls `persist_filter_mutation()` to save changes:
+After `ExecResult::Continue`, persistence depends on the hook:
 
+| Hook | Persistence Strategy |
+|------|---------------------|
+| **Ingress** | Persist mutations inline, then checkpoint to `Dispatching` status |
+| **Originate** | No persistence (bundle stored after filter with modified metadata) |
+| **Deliver** | No persistence (bundle consumed immediately after) |
+| **Egress** | No persistence (bundle leaving node, may re-run on retry) |
+
+For Ingress (the only hook that persists):
 1. **If `mutation.bundle`**: Save new bundle data to store, delete old data (crash-safe order), update `storage_name` in metadata
-2. **If `mutation.metadata` or `mutation.bundle`**: Update metadata in store
-
-This ensures filter modifications survive restarts and are visible to subsequent processing stages.
-
-**Exception:** The Deliver hook does not persist changes because the bundle is immediately delivered (using in-memory modified data) and then dropped.
+2. **Always**: Checkpoint status to `Dispatching` to prevent filter re-run on restart
 
 ---
 
@@ -276,7 +279,7 @@ CLA.on_receive(data)
               └─▶ ingest_bundle_inner(bundle)
                     ├─ check lifetime/hop count
                     ├─ ◀── HOOK: Ingress
-                    ├─ persist_filter_mutation() if changes
+                    ├─ persist mutations + checkpoint to Dispatching
                     └─▶ process_bundle(bundle)
                           ├─ RIB lookup
                           ├─ Deliver:
@@ -288,26 +291,25 @@ CLA.on_receive(data)
 Local origination:
   └─▶ local_dispatch(...)
         ├─ Builder::build() or CheckedBundle::parse()
-        ├─ store.store(bundle, data)  ← store FIRST
-        ├─ ◀── HOOK: Originate (via run_originate_filter)
-        ├─ persist_filter_mutation() if changes
+        ├─ ◀── HOOK: Originate (in-memory, may set flow_label)
+        ├─ store.store(bundle, data)  ← store AFTER filter
         └─▶ ingest_bundle(bundle)
 
-Status reports:
+Status reports (internal bundles, skip Originate):
   └─▶ dispatch_status_report(...)
         ├─ Builder::build()
-        ├─ store.store(bundle, data)  ← store FIRST
-        ├─ ◀── HOOK: Originate (via run_originate_filter)
-        ├─ persist_filter_mutation() if changes
-        └─▶ dispatch_bundle(bundle)
+        ├─ store.store(bundle, data)
+        └─▶ ingest_bundle_inner(bundle)  ← runs Ingress filter
 
 Egress path:
-  └─▶ peers.forward(bundle)
-        ├─ ◀── HOOK: Egress (TBD)
-        └─ Peer queue → CLA.send()
+  └─▶ forward_bundle(bundle)  ← after dequeue from ForwardPending
+        ├─ load bundle data
+        ├─ update extension blocks (hop count, previous node, bundle age)
+        ├─ ◀── HOOK: Egress (in-memory only, like Deliver)
+        └─ CLA.send()
 ```
 
-**Store-first-then-filter pattern:** For Originate hooks, the bundle is stored before filtering. This ensures filters see real metadata (storage_name, status) rather than placeholder values. If the filter drops the bundle, it is deleted from the store.
+**Filter-then-store pattern:** For Originate hooks, the filter runs on an in-memory bundle before storing. If the filter drops the bundle, nothing is persisted. Filter modifications (e.g., flow_label) are preserved in the single store operation.
 
 ### Hook Placement
 
@@ -315,8 +317,8 @@ Egress path:
 |------|----------|-----------|
 | **Ingress** | After parse, before routing | Size limits, source validation, flow classification |
 | **Deliver** | After RIB "Deliver", before service | Service access control, metadata injection |
-| **Originate** | After store, before dispatch | Source policy, add security blocks (sees real metadata) |
-| **Egress** | Before CLA send | Final validation, encryption, logging |
+| **Originate** | Before store, in-memory | Source policy, flow label (caller handles crash/retry) |
+| **Egress** | After dequeue, before CLA send | BPSec (BIB/BCB), final validation, logging |
 
 ---
 

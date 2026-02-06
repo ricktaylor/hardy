@@ -26,8 +26,32 @@ impl Dispatcher {
             Ok(data) => data,
         };
 
+        // - Runs after dequeue from ForwardPending, just before CLA send
+        // - Modifications are in-memory only (like Deliver), NOT persisted
+        // - If send fails or peer goes down, bundle returns to Waiting and may
+        //   route to a different peer, so Egress will run again with fresh context
+        // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
+        // - On Drop result: call drop_bundle() and return early
+        let (bundle, data) = match self
+            .filter_registry
+            .exec(
+                filters::Hook::Egress,
+                bundle,
+                Bytes::from(data),
+                self.key_provider(),
+                &self.processing_pool,
+            )
+            .await
+            .trace_expect("Egress filter execution failed")
+        {
+            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
+            filters::registry::ExecResult::Drop(bundle, reason) => {
+                return self.drop_bundle(bundle, reason).await;
+            }
+        };
+
         // And pass to CLA
-        match cla.forward(queue, cla_addr, data.into()).await {
+        match cla.forward(queue, cla_addr, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 self.report_bundle_forwarded(&bundle).await;
                 self.drop_bundle(bundle, None).await;
