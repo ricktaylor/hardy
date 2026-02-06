@@ -1,5 +1,6 @@
 mod clas;
 mod config;
+mod filters;
 mod policy;
 mod static_routes;
 
@@ -125,11 +126,21 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Start the BPA
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(&config.bpa));
-    bpa.start(config.recover_storage);
+
+    // Load filters
+    filters::init(config.filters, &bpa)?;
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let task_tracker = tokio_util::task::TaskTracker::new();
+
+    // Load static routes
+    if let Some(config) = config.static_routes {
+        static_routes::init(config, &bpa, &cancel_token, &task_tracker).await?;
+    }
+
+    // Start the BPA
+    bpa.start(config.recover_storage);
 
     // Start CLAs
     clas::init(config.clas, &bpa).await?;
@@ -138,11 +149,6 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     #[cfg(feature = "grpc")]
     if let Some(config) = &config.grpc {
         grpc::init(config, &bpa, &cancel_token, &task_tracker);
-    }
-
-    // Load static routes
-    if let Some(config) = config.static_routes {
-        static_routes::init(config, &bpa, &cancel_token, &task_tracker).await?;
     }
 
     // And wait for shutdown signal

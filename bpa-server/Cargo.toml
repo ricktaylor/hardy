@@ -9,7 +9,7 @@ name = "hardy-bpa-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel"]
+default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter"]
 otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = []
@@ -19,6 +19,7 @@ packaged-installation = []
 grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic", "dep:prost-types"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
+ipn-legacy-filter = ["hardy-bpa/ipn-legacy-filter"]
 
 [dependencies]
 hardy-bpv7 = { path = "../bpv7", features = ["serde"] }

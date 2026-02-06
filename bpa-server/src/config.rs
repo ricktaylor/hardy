@@ -85,6 +85,10 @@ pub struct Config {
     #[serde(default)]
     pub bundle_storage: Option<BundleStorage>,
 
+    // Filters
+    #[serde(default)]
+    pub filters: Vec<filters::Filter>,
+
     // Convergence Layer Adaptors (CLAs)
     #[serde(default)]
     pub clas: Vec<clas::Cla>,

@@ -9,6 +9,7 @@ rfc9173 = ["hardy-bpv7/rfc9173"]
 tokio = ["hardy-async/tokio"]
 serde = ["dep:serde","hardy-bpv7/serde","hardy-eid-patterns/serde"]
 tracing = ["hardy-async/tracing"]
+ipn-legacy-filter = []
 
 [lib]
 path = "src/lib.rs"
