@@ -79,27 +79,26 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     ));
 
     // New BPA
-    let bpa = hardy_bpa::bpa::Bpa::start(
-        &hardy_bpa::config::Config {
-            status_reports: true,
-            node_ids: [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            })]
-            .as_slice()
-            .try_into()
-            .unwrap(),
-            metadata_storage,
-            bundle_storage,
-            ..Default::default()
-        },
+    let bpa = hardy_bpa::bpa::Bpa::new(&hardy_bpa::config::Config {
+        status_reports: true,
+        node_ids: [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice()
+        .try_into()
+        .unwrap(),
+        metadata_storage,
+        bundle_storage,
+        ..Default::default()
+    });
+
+    bpa.start(
         #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]
         true,
         #[cfg(not(all(feature = "localdisk-storage", feature = "sqlite-storage")))]
         false,
-    )
-    .await
-    .expect("Failed to start BPA");
+    );
 
     #[cfg(feature = "file-cla")]
     bpa.register_cla(

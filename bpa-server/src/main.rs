@@ -124,11 +124,8 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     start_storage(&mut config);
 
     // Start the BPA
-    let bpa = Arc::new(
-        hardy_bpa::bpa::Bpa::start(&config.bpa, config.recover_storage)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?,
-    );
+    let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(&config.bpa));
+    bpa.start(config.recover_storage);
 
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();

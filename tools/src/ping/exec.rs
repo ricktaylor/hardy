@@ -7,16 +7,12 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         args.source.as_ref().unwrap()
     );
 
-    let bpa = hardy_bpa::bpa::Bpa::start(
-        &hardy_bpa::config::Config {
-            status_reports: args.report_to.is_some(),
-            node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
-            ..Default::default()
-        },
-        false,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to start BPA: {e}"))?;
+    let bpa = hardy_bpa::bpa::Bpa::new(&hardy_bpa::config::Config {
+        status_reports: args.report_to.is_some(),
+        node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
+        ..Default::default()
+    });
+    bpa.start(false);
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.add_route(

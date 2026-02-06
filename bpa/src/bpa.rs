@@ -12,14 +12,7 @@ pub struct Bpa {
 }
 
 impl Bpa {
-    #[cfg_attr(feature = "tracing", instrument)]
-    pub async fn start(config: &config::Config, recover_storage: bool) -> Result<Self, Error> {
-        info!("Starting new BPA");
-
-        if config.status_reports {
-            warn!("Bundle status reports are enabled");
-        }
-
+    pub fn new(config: &config::Config) -> Self {
         // New store
         let store = Arc::new(storage::Store::new(config));
 
@@ -55,38 +48,35 @@ impl Bpa {
             filter_registry.clone(),
         ));
 
-        // Start the dispatcher
-        dispatcher.start();
-
-        // Start the store
-        store.start(dispatcher.clone(), recover_storage);
-
-        // Start the RIB
-        rib.start(dispatcher.clone());
-
-        info!("BPA started");
-
-        Ok(Self {
+        Self {
             store,
             rib,
             cla_registry,
             service_registry,
             filter_registry,
             dispatcher,
-        })
+        }
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    pub fn start(&self, recover_storage: bool) {
+        // Start the dispatcher
+        self.dispatcher.start();
+
+        // Start the store
+        self.store.start(self.dispatcher.clone(), recover_storage);
+
+        // Start the RIB
+        self.rib.start(self.dispatcher.clone());
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
-        info!("Shutting down BPA");
-
         self.dispatcher.shutdown().await;
         self.service_registry.shutdown().await;
         self.cla_registry.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
-
-        info!("BPA stopped");
     }
 
     /// Register an Application (high-level, payload-only access)
