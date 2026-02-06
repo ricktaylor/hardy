@@ -186,8 +186,17 @@ impl Dispatcher {
                 .trace_expect("Ingress filter execution failed")
             {
                 filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
-                    self.persist_filter_mutation(mutation, &mut bundle, &data)
-                        .await;
+                    // Persist any bundle data mutations
+                    if mutation.bundle {
+                        let new_storage_name = self.store.save_data(&data).await;
+                        if let Some(old_storage_name) = bundle.metadata.storage_name.take() {
+                            self.store.delete_data(&old_storage_name).await;
+                        }
+                        bundle.metadata.storage_name = Some(new_storage_name);
+                    }
+                    // Always checkpoint to Dispatching (crash safety)
+                    bundle.metadata.status = BundleStatus::Dispatching;
+                    self.store.update_metadata(&bundle).await;
                     (bundle, data)
                 }
                 filters::registry::ExecResult::Drop(bundle, reason) => {
@@ -195,6 +204,10 @@ impl Dispatcher {
                     return self.drop_bundle(bundle, reason).await;
                 }
             };
+        } else {
+            // No filter registered, still checkpoint
+            bundle.metadata.status = BundleStatus::Dispatching;
+            self.store.update_metadata(&bundle).await;
         }
 
         self.process_bundle(bundle, data).await;

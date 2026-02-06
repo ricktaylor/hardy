@@ -35,8 +35,26 @@ impl Dispatcher {
                         self.store.delete_data(&storage_name).await;
                         RestartResult::Duplicate
                     } else {
-                        // All good, no further action required
-                        RestartResult::Valid
+                        // Resume processing based on checkpoint status
+                        match &metadata.status {
+                            BundleStatus::New => {
+                                // Ingress filter not yet complete - run full ingestion
+                                let bundle = bundle::Bundle { metadata, bundle };
+                                self.ingest_bundle(bundle, data).await;
+                                RestartResult::Valid
+                            }
+                            BundleStatus::Dispatching => {
+                                // Ingress filter done - enqueue for routing
+                                let bundle = bundle::Bundle { metadata, bundle };
+                                self.dispatch_bundle(bundle).await;
+                                RestartResult::Valid
+                            }
+                            // Other statuses are handled by their respective recovery mechanisms:
+                            // - ForwardPending: CLA peer queue recovery
+                            // - Waiting: poll_waiting recovery
+                            // - AduFragment: fragment reassembly polling
+                            _ => RestartResult::Valid,
+                        }
                     }
                 } else {
                     // Effectively a new bundle

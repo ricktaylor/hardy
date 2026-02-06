@@ -39,35 +39,27 @@ impl Store {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.id)))]
-    pub async fn store(
-        &self,
-        status: metadata::BundleStatus,
-        bundle: hardy_bpv7::bundle::Bundle,
-        data: &Bytes,
-    ) -> Option<bundle::Bundle> {
+    /// Store bundle data and metadata atomically.
+    /// Takes a bundle with pre-populated metadata (e.g., from filter processing).
+    /// Updates the storage_name field after saving data.
+    /// Returns false if duplicate bundle already exists.
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn store(&self, bundle: &mut bundle::Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
         let storage_name = self.save_data(data).await;
 
-        // Compose metadata
-        let bundle = bundle::Bundle {
-            metadata: metadata::BundleMetadata {
-                storage_name: Some(storage_name.clone()),
-                status,
-                ..Default::default()
-            },
-            bundle,
-        };
+        // Update storage_name in existing metadata
+        bundle.metadata.storage_name = Some(storage_name);
 
         // Write to metadata store
-        match self.metadata_storage.insert(&bundle).await {
-            Ok(true) => Some(bundle),
+        match self.metadata_storage.insert(bundle).await {
+            Ok(true) => true,
             Ok(false) => {
                 // We have a duplicate, remove the duplicate from the bundle store
                 if let Some(storage_name) = &bundle.metadata.storage_name {
                     self.delete_data(storage_name).await;
                 }
-                None
+                false
             }
             Err(e) => {
                 error!("Failed to insert metadata: {e}");

@@ -125,35 +125,6 @@ impl Dispatcher {
         self.store.tombstone_metadata(&bundle.bundle.id).await
     }
 
-    /// Persist changes made by a filter based on mutation flags.
-    /// If bundle data was modified, saves new data and updates storage_name in metadata.
-    /// If metadata was modified (or data changed), updates metadata in store.
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub(super) async fn persist_filter_mutation(
-        &self,
-        mutation: filters::registry::Mutation,
-        bundle: &mut bundle::Bundle,
-        data: &Bytes,
-    ) {
-        if mutation.bundle {
-            // Save new bundle data
-            let new_storage_name = self.store.save_data(data).await;
-
-            // Delete old data if it exists (save new before delete for crash safety)
-            if let Some(old_storage_name) = bundle.metadata.storage_name.take() {
-                self.store.delete_data(&old_storage_name).await;
-            }
-
-            // Update storage_name in metadata
-            bundle.metadata.storage_name = Some(new_storage_name);
-        }
-
-        // Update metadata if either flag is set (data change implies metadata change)
-        if mutation.metadata || mutation.bundle {
-            self.store.update_metadata(bundle).await;
-        }
-    }
-
     fn key_provider(
         &self,
     ) -> impl Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone

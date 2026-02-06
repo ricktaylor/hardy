@@ -336,7 +336,7 @@ impl PreparedFilters {
 
                         let parsed =
                             hardy_bpv7::bundle::CheckedBundle::parse(&new_data, &key_provider)?;
-                        let data = Bytes::from(parsed.new_data.unwrap_or(new_data).into_vec());
+                        let data = Bytes::from(parsed.new_data.unwrap_or(new_data));
                         (
                             bundle::Bundle {
                                 bundle: parsed.bundle,

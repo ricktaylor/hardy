@@ -32,6 +32,9 @@ pub enum Error {
     #[error("Bundle dropped by filter: {0:?}")]
     Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
 
+    #[error("Duplicate bundle already exists")]
+    DuplicateBundle,
+
     #[error(transparent)]
     InvalidBundle(#[from] hardy_bpv7::Error),
 

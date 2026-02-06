@@ -146,31 +146,25 @@ impl Dispatcher {
             .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
             .trace_expect("Failed to create new bundle");
 
-            let data = Bytes::from(data);
+            // Wrap in bundle::Bundle with initial metadata (not stored yet)
+            let mut bundle = bundle::Bundle {
+                metadata: metadata::BundleMetadata {
+                    status: metadata::BundleStatus::New,
+                    ..Default::default()
+                },
+                bundle,
+            };
 
-            // Store first so bundle has valid metadata for filter
-            let Some(bundle) = self
-                .store
-                .store(metadata::BundleStatus::Dispatching, bundle, &data)
-                .await
-            else {
+            // Store (no Originate filter - not user-originated)
+            let data = Bytes::from(data);
+            if !self.store.store(&mut bundle, &data).await {
                 // Duplicate status report - shouldn't happen but handle gracefully
                 debug!("Duplicate status report bundle");
                 return;
-            };
+            }
 
-            // Run Originate filter on stored bundle
-            let Some((bundle, _data)) = self
-                .run_originate_filter(bundle, data)
-                .await
-                .trace_expect("Originate filter execution failed")
-            else {
-                // Filter dropped - bundle already deleted by helper
-                return;
-            };
-
-            // Queue up the bundle for dispatching
-            self.dispatch_bundle(bundle).await;
+            // Just fire the report off now - it ensures sequential reporting (ish)
+            Box::pin(self.ingest_bundle_inner(bundle, data)).await
         }
     }
 }
