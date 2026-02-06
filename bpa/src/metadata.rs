@@ -30,6 +30,10 @@ pub struct BundleMetadata {
     pub non_canonical: bool,
     pub flow_label: Option<u32>,
     // TODO: Add a 'trace' mark that will trigger local feedback
+
+    // Transient routing context (not persisted, set during RIB lookup)
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub next_hop: Option<Eid>,
 }
 
 impl Default for BundleMetadata {
@@ -40,6 +44,7 @@ impl Default for BundleMetadata {
             received_at: time::OffsetDateTime::now_utc(),
             non_canonical: false,
             flow_label: None,
+            next_hop: None,
         }
     }
 }
