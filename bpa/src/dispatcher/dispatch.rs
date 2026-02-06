@@ -277,9 +277,6 @@ impl Dispatcher {
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-
-                // TODO: Egress filter hook - placement TBD (here vs cla/peers.rs)
-
                 self.cla_registry.forward(peer, bundle).await
             }
             _ => {

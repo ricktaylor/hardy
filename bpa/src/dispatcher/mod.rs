@@ -1,6 +1,5 @@
 use super::{metadata::*, *};
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
-use std::collections::BTreeSet;
 
 mod admin;
 mod dispatch;
@@ -17,7 +16,6 @@ pub(crate) struct Dispatcher {
     service_registry: Arc<services::registry::ServiceRegistry>,
     cla_registry: Arc<cla::registry::Registry>,
     rib: Arc<rib::Rib>,
-    ipn_2_element: Arc<BTreeSet<hardy_eid_patterns::EidPattern>>,
     keys_registry: Arc<keys::registry::Registry>,
     filter_registry: Arc<filters::registry::Registry>,
 
@@ -48,13 +46,6 @@ impl Dispatcher {
             service_registry,
             cla_registry,
             rib,
-            ipn_2_element: Arc::new(
-                config
-                    .ipn_2_element
-                    .iter()
-                    .cloned()
-                    .collect::<BTreeSet<_>>(),
-            ),
             keys_registry,
             filter_registry,
             dispatch_tx: std::sync::OnceLock::new(),

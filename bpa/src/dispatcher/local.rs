@@ -35,37 +35,12 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self, payload)))]
     pub async fn local_dispatch(
         self: &Arc<Self>,
-        mut source: Eid,
-        mut destination: Eid,
+        source: Eid,
+        destination: Eid,
         payload: Bytes,
         lifetime: std::time::Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-        // Check to see if we should use ipn 2-element encoding
-        if self.ipn_2_element.iter().any(|p| p.matches(&destination)) {
-            if let Eid::Ipn {
-                fqnn,
-                service_number,
-            } = source
-            {
-                source = Eid::LegacyIpn {
-                    fqnn,
-                    service_number,
-                };
-            }
-
-            if let Eid::Ipn {
-                fqnn,
-                service_number,
-            } = destination
-            {
-                destination = Eid::LegacyIpn {
-                    fqnn,
-                    service_number,
-                };
-            }
-        }
-
         // Build bundle and run Originate filter before storing
         loop {
             let mut builder =
@@ -135,68 +110,6 @@ impl Dispatcher {
                 bundle.id.source.clone(),
             ));
         }
-
-        // Check if ipn_2_element encoding is required for this destination
-        // TODO: Move this to a Filter
-        let needs_legacy_ipn = self
-            .ipn_2_element
-            .iter()
-            .any(|p| p.matches(&bundle.destination));
-
-        // Apply ipn_2_element rewriting if needed (transparent to service)
-        let (bundle, data) = if needs_legacy_ipn {
-            let needs_source_rewrite = matches!(bundle.id.source, Eid::Ipn { .. });
-            let needs_dest_rewrite = matches!(bundle.destination, Eid::Ipn { .. });
-
-            if needs_source_rewrite || needs_dest_rewrite {
-                // Use Editor to rewrite EIDs
-                let mut editor = hardy_bpv7::editor::Editor::new(&bundle, &data);
-
-                if needs_source_rewrite
-                    && let Eid::Ipn {
-                        fqnn,
-                        service_number,
-                    } = &bundle.id.source
-                {
-                    editor = editor
-                        .with_source(Eid::LegacyIpn {
-                            fqnn: fqnn.clone(),
-                            service_number: *service_number,
-                        })
-                        .map_err(|(_, e)| services::Error::Internal(e.into()))?;
-                }
-
-                if needs_dest_rewrite
-                    && let Eid::Ipn {
-                        fqnn,
-                        service_number,
-                    } = &bundle.destination
-                {
-                    editor = editor
-                        .with_destination(Eid::LegacyIpn {
-                            fqnn: fqnn.clone(),
-                            service_number: *service_number,
-                        })
-                        .map_err(|(_, e)| services::Error::Internal(e.into()))?;
-                }
-
-                // Rebuild the bundle with rewritten EIDs
-                let new_data: Bytes = editor
-                    .rebuild()
-                    .map_err(|e| services::Error::Internal(e.into()))?
-                    .into();
-
-                // Re-parse the rewritten bundle (Editor output is trusted to be correct)
-                (
-                    hardy_bpv7::bundle::ParsedBundle::parse(&new_data, self.key_provider())?.bundle,
-                    new_data,
-                )
-            } else {
-                (bundle, data)
-            }
-        } else {
-            (bundle, data)
-        };
 
         self.originate_bundle(bundle, data).await
     }
