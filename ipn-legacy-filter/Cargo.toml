@@ -1,0 +1,19 @@
+[package]
+name = "hardy-ipn-legacy-filter"
+description = "A rewriting bundle filter to support ipn 2-element encoding"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = []
+serde = ["dep:serde","hardy-bpa/serde","hardy-bpv7/serde"]
+
+[dependencies]
+hardy-bpa = { path = "../bpa" }
+hardy-bpv7 = { path = "../bpv7" }
+hardy-eid-patterns = { path = "../eid-patterns" }
+serde = { version = "1.0.228", features = ["derive"], optional = true }

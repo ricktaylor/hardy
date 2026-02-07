@@ -1,6 +1,5 @@
 mod clas;
 mod config;
-mod filters;
 mod policy;
 mod static_routes;
 
@@ -127,9 +126,6 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     // Start the BPA
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(&config.bpa));
 
-    // Load filters
-    filters::init(config.filters, &bpa)?;
-
     // Prepare for graceful shutdown
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let task_tracker = tokio_util::task::TaskTracker::new();
@@ -138,6 +134,10 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     if let Some(config) = config.static_routes {
         static_routes::init(config, &bpa, &cancel_token, &task_tracker).await?;
     }
+
+    // Load ip-legacy-filter
+    #[cfg(feature = "ipn-legacy-filter")]
+    hardy_ipn_legacy_filter::init(&bpa, config.ipn_legacy_nodes)?;
 
     // Start the BPA
     bpa.start(config.recover_storage);

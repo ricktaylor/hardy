@@ -86,9 +86,9 @@ pub struct Config {
     #[serde(default)]
     pub bundle_storage: Option<BundleStorage>,
 
-    // Filters
-    #[serde(default)]
-    pub filters: Vec<filters::Filter>,
+    #[cfg(feature = "ipn-legacy-filter")]
+    #[serde(default, rename = "ipn-legacy-nodes")]
+    pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
 
     // Convergence Layer Adaptors (CLAs)
     #[serde(default)]

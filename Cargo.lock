@@ -1085,6 +1085,7 @@ dependencies = [
  "hardy-bpv7",
  "hardy-eid-patterns",
  "hardy-file-cla",
+ "hardy-ipn-legacy-filter",
  "hardy-localdisk-storage",
  "hardy-otel",
  "hardy-proto",
@@ -1224,6 +1225,16 @@ dependencies = [
  "tokio-util",
  "trace-err",
  "tracing",
+]
+
+[[package]]
+name = "hardy-ipn-legacy-filter"
+version = "0.1.0"
+dependencies = [
+ "hardy-bpa",
+ "hardy-bpv7",
+ "hardy-eid-patterns",
+ "serde",
 ]
 
 [[package]]

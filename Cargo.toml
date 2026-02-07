@@ -14,6 +14,7 @@ members = [
     "eid-patterns",
     "eid-patterns/fuzz",
     "file-cla",
+    "ipn-legacy-filter",
     "localdisk-storage",
     "otel",
     "proto",

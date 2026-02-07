@@ -5,9 +5,6 @@ pub(crate) mod registry;
 
 mod filter;
 
-#[cfg(feature = "ipn-legacy-filter")]
-pub mod ipn_legacy;
-
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Filter with name '{0}' already exists")]
