@@ -56,10 +56,13 @@ impl Dispatcher {
                     bundle::Bundle {
                         metadata: BundleMetadata {
                             storage_name: Some(self.store.save_data(&data).await),
-                            received_at,
-                            ingress_cla: ingress_cla.clone(),
-                            ingress_peer_node: ingress_peer_node.clone(),
-                            ingress_peer_addr: ingress_peer_addr.clone(),
+                            read_only: ReadOnlyMetadata {
+                                received_at,
+                                ingress_peer_node,
+                                ingress_peer_addr,
+                                ingress_cla,
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
                         bundle,
@@ -71,7 +74,7 @@ impl Dispatcher {
                     bundle,
                     new_data,
                     report_unsupported,
-                    non_canonical,
+                    non_canonical: _,
                 } => {
                     debug!("Received bundle has been rewritten");
 
@@ -82,11 +85,13 @@ impl Dispatcher {
                         bundle::Bundle {
                             metadata: BundleMetadata {
                                 storage_name,
-                                received_at,
-                                ingress_cla: ingress_cla.clone(),
-                                ingress_peer_node: ingress_peer_node.clone(),
-                                ingress_peer_addr: ingress_peer_addr.clone(),
-                                non_canonical,
+                                read_only: ReadOnlyMetadata {
+                                    received_at,
+                                    ingress_peer_node,
+                                    ingress_peer_addr,
+                                    ingress_cla,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
                             },
                             bundle,
@@ -106,10 +111,13 @@ impl Dispatcher {
                     (
                         bundle::Bundle {
                             metadata: BundleMetadata {
-                                received_at,
-                                ingress_cla,
-                                ingress_peer_node,
-                                ingress_peer_addr,
+                                read_only: ReadOnlyMetadata {
+                                    received_at,
+                                    ingress_peer_node,
+                                    ingress_peer_addr,
+                                    ingress_cla,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
                             },
                             bundle,

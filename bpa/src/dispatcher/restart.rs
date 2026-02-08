@@ -61,7 +61,10 @@ impl Dispatcher {
                     let bundle = bundle::Bundle {
                         metadata: BundleMetadata {
                             storage_name: Some(storage_name),
-                            received_at: file_time,
+                            read_only: ReadOnlyMetadata {
+                                received_at: file_time,
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
                         bundle,
@@ -92,7 +95,7 @@ impl Dispatcher {
                 bundle,
                 new_data,
                 report_unsupported,
-                non_canonical,
+                non_canonical: _,
             }) => {
                 warn!("Bundle in non-canonical format found: {storage_name}");
 
@@ -129,8 +132,10 @@ impl Dispatcher {
                 let bundle = bundle::Bundle {
                     metadata: BundleMetadata {
                         storage_name: Some(new_storage_name),
-                        received_at: file_time,
-                        non_canonical,
+                        read_only: ReadOnlyMetadata {
+                            received_at: file_time,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                     bundle,
@@ -198,7 +203,10 @@ impl Dispatcher {
 
                 let bundle = bundle::Bundle {
                     metadata: BundleMetadata {
-                        received_at: file_time,
+                        read_only: ReadOnlyMetadata {
+                            received_at: file_time,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                     bundle,

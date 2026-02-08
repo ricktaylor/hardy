@@ -22,7 +22,7 @@ impl Dispatcher {
                         bundle_id: bundle.bundle.id.clone(),
                         received: Some(StatusAssertion(
                             if bundle.bundle.flags.report_status_time {
-                                Some(bundle.metadata.received_at)
+                                Some(bundle.metadata.read_only.received_at)
                             } else {
                                 None
                             },

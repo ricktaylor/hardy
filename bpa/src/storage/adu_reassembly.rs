@@ -102,7 +102,7 @@ impl Store {
 
         let mut adu_totals = payload.len() as u64;
         let mut results = ReassemblyResult {
-            received_at: bundle.metadata.received_at,
+            received_at: bundle.metadata.read_only.received_at,
             adus: [(
                 fragment_info.offset,
                 (
@@ -153,7 +153,7 @@ impl Store {
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
-                                results.received_at = results.received_at.min(bundle.metadata.received_at);
+                                results.received_at = results.received_at.min(bundle.metadata.read_only.received_at);
                                 results.adus.insert(fragment_info.offset,
                                     (
                                         bundle.bundle.id,

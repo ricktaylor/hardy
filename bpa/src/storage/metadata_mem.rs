@@ -147,7 +147,7 @@ impl storage::MetadataStorage for Storage {
             if let Some(v) = v
                 && v.metadata.status == metadata::BundleStatus::Waiting
             {
-                entries.insert(v.metadata.received_at, v.clone());
+                entries.insert(v.metadata.read_only.received_at, v.clone());
             }
         }
 
@@ -203,7 +203,7 @@ impl storage::MetadataStorage for Storage {
             if let Some(v) = v
                 && &v.metadata.status == state
             {
-                entries.insert(v.metadata.received_at, v.clone());
+                entries.insert(v.metadata.read_only.received_at, v.clone());
             }
         }
 

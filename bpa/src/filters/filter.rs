@@ -254,27 +254,6 @@ impl PreparedFilters {
             + Clone
             + Send,
     {
-        // Create a drop_bundle with just enough of the Bundle that we can reply with something suitable for dispatcher::drop_bundle() if needed.  See report_bundle_deletion() for details
-        // We also capture any 'immutable' metadata fields that we need to preserve, since mangle filters are allowed to modify metadata and we want to make sure that the fields are preserved.
-        let drop_bundle = bundle::Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
-                id: bundle.bundle.id.clone(),
-                flags: bundle.bundle.flags.clone(),
-                report_to: bundle.bundle.report_to.clone(),
-                ..Default::default()
-            },
-            metadata: metadata::BundleMetadata {
-                storage_name: bundle.metadata.storage_name.clone(),
-                status: bundle.metadata.status.clone(),
-                received_at: bundle.metadata.received_at,
-                ingress_peer_node: bundle.metadata.ingress_peer_node.clone(),
-                ingress_peer_addr: bundle.metadata.ingress_peer_addr.clone(),
-                ingress_cla: bundle.metadata.ingress_cla.clone(),
-                next_hop: bundle.metadata.next_hop.clone(),
-                ..Default::default()
-            },
-        };
-
         // Capture what has changed
         let mut mutation = registry::Mutation::default();
 
@@ -302,6 +281,20 @@ impl PreparedFilters {
                         result.await.trace_expect("filter spawn failed!")?
                     {
                         debug!("ReadFilter dropped bundle: {reason:?}");
+
+                        // Create a drop_bundle with just enough of the Bundle that we can reply with something suitable for dispatcher::drop_bundle() if needed.  See report_bundle_deletion() for details.
+                        let drop_bundle = bundle::Bundle {
+                            bundle: hardy_bpv7::bundle::Bundle {
+                                id: bd.0.bundle.id.clone(),
+                                flags: bd.0.bundle.flags.clone(),
+                                report_to: bd.0.bundle.report_to.clone(),
+                                ..Default::default()
+                            },
+                            metadata: metadata::BundleMetadata {
+                                storage_name: bd.0.metadata.storage_name.clone(),
+                                ..Default::default()
+                            },
+                        };
                         return Ok(registry::ExecResult::Drop(drop_bundle, reason));
                     }
                 }
@@ -314,7 +307,7 @@ impl PreparedFilters {
             for filter in node.read_write {
                 (bundle, data) = match filter.filter(&bundle, &data).await? {
                     RewriteResult::Continue(None, None) => (bundle, data),
-                    RewriteResult::Continue(Some(metadata), None) => {
+                    RewriteResult::Continue(Some(writable), None) => {
                         debug!("WriteFilter rewrote bundle metadata");
 
                         mutation.metadata = true;
@@ -322,16 +315,26 @@ impl PreparedFilters {
                         (
                             bundle::Bundle {
                                 bundle: bundle.bundle,
-                                metadata,
+                                metadata: metadata::BundleMetadata {
+                                    storage_name: bundle.metadata.storage_name,
+                                    status: bundle.metadata.status,
+                                    read_only: bundle.metadata.read_only,
+                                    writable,
+                                },
                             },
                             data,
                         )
                     }
                     RewriteResult::Continue(metadata, Some(new_data)) => {
-                        let metadata = if let Some(metadata) = metadata {
+                        let metadata = if let Some(writable) = metadata {
                             debug!("WriteFilter rewrote bundle data and metadata");
                             mutation.metadata = true;
-                            metadata
+                            metadata::BundleMetadata {
+                                storage_name: bundle.metadata.storage_name,
+                                status: bundle.metadata.status,
+                                read_only: bundle.metadata.read_only,
+                                writable,
+                            }
                         } else {
                             debug!("WriteFilter rewrote bundle data");
                             bundle.metadata
@@ -352,20 +355,11 @@ impl PreparedFilters {
                     }
                     RewriteResult::Drop(reason) => {
                         debug!("WriteFilter dropped bundle: {reason:?}");
-                        return Ok(registry::ExecResult::Drop(drop_bundle, reason));
+                        return Ok(registry::ExecResult::Drop(bundle, reason));
                     }
                 };
             }
         }
-
-        // Restore any metadata fields we have stashed
-        bundle.metadata.storage_name = drop_bundle.metadata.storage_name;
-        bundle.metadata.status = drop_bundle.metadata.status;
-        bundle.metadata.received_at = drop_bundle.metadata.received_at;
-        bundle.metadata.ingress_peer_node = drop_bundle.metadata.ingress_peer_node;
-        bundle.metadata.ingress_peer_addr = drop_bundle.metadata.ingress_peer_addr;
-        bundle.metadata.ingress_cla = drop_bundle.metadata.ingress_cla;
-        bundle.metadata.next_hop = drop_bundle.metadata.next_hop;
 
         Ok(registry::ExecResult::Continue(mutation, bundle, data))
     }

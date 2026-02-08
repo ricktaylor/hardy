@@ -33,7 +33,7 @@ pub enum RewriteResult {
     /// - (Some(meta), None): metadata changed, bundle bytes unchanged
     /// - (None, Some(data)): bundle bytes changed (rare)
     /// - (Some(meta), Some(data)): both changed
-    Continue(Option<metadata::BundleMetadata>, Option<Box<[u8]>>),
+    Continue(Option<metadata::WritableMetadata>, Option<Box<[u8]>>),
     Drop(Option<hardy_bpv7::status_report::ReasonCode>),
 }
 

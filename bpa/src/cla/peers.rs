@@ -103,7 +103,7 @@ impl Peer {
         &self,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        let queue = if let Some(flow_label) = bundle.metadata.flow_label {
+        let queue = if let Some(flow_label) = bundle.metadata.writable.flow_label {
             let Some(cla) = self.cla.upgrade() else {
                 return Err(bundle);
             };

@@ -77,7 +77,12 @@ fn map_result(
             let peers: Vec<_> = peer_map.iter().collect();
             let &(&peer, &next_hop) = if peers.len() > 1 {
                 let mut hasher = std::hash::DefaultHasher::default();
-                (&bundle.id.source, &bundle.destination, &metadata.flow_label).hash(&mut hasher);
+                (
+                    &bundle.id.source,
+                    &bundle.destination,
+                    &metadata.writable.flow_label,
+                )
+                    .hash(&mut hasher);
 
                 peers
                     .get((hasher.finish() % (peers.len() as u64)) as usize)
@@ -87,7 +92,7 @@ fn map_result(
             };
 
             // Set the next-hop for Egress filters
-            metadata.next_hop = Some(next_hop.clone());
+            metadata.read_only.next_hop = Some(next_hop.clone());
 
             Some(FindResult::Forward(peer))
         }
