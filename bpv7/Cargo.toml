@@ -9,8 +9,8 @@ crate-type = ["rlib"]
 
 [features]
 default = ["rfc9173"]
-std = ["time/std", "thiserror/std", "serde?/std", "percent-encoding/std"]
-rfc9173 = ["dep:hmac", "dep:aes-gcm", "dep:aes-kw"]
+std = ["time/std", "thiserror/std", "serde?/std", "percent-encoding/std", "rand?/std"]
+rfc9173 = ["dep:hmac", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
 serde = ["dep:serde","hashbrown/serde"]
 
 [dependencies]
@@ -21,7 +21,7 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc"] }
 crc = "3.4.0"
 sha2 = "0.10.9"
-rand = { version = "0.10.0", default-features = false, features = ["alloc","sys_rng"] }
+rand = { version = "0.10.0", default-features = false, features = ["alloc","sys_rng"], optional = true }
 zeroize = { version = "1.8.2", features = ["derive"] }
 winnow = { version = "0.7.14", default-features = false, features = ["alloc"] }
 hashbrown = "0.16.1"
