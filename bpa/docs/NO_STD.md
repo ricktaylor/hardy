@@ -14,363 +14,292 @@ This document outlines the work required to make the `bpa` package `no_std` comp
 
 | Category | Status | Severity |
 |----------|--------|----------|
-| Async Runtime (`hardy-async`) | **bpa fully abstracted** - zero direct tokio deps | ✅ DONE |
-| Synchronization (`std::sync`) | 130+ Arc uses, 6 RwLock, 5 Mutex | CRITICAL |
-| Collections | HashMap (6), BTreeMap/BTreeSet (multiple) | HIGH |
-| Error handling | `Box<dyn std::error::Error>` | MODERATE |
-| Time | `std::time::Duration` (3 uses) | LOW |
+| Async Runtime (`hardy-async`) | **bpa fully abstracted** - zero direct tokio deps, `std` feature added | DONE |
+| Cargo.toml Feature Flags | `std` feature with proper dependency forwarding, tokio implies std | DONE |
+| Collections | HashMap/HashSet gated (std/hashbrown), BTreeMap/BTreeSet from alloc | DONE |
+| Arc/Weak | Using `alloc::sync::{Arc, Weak}` | DONE |
+| Time Types | `core::time::Duration` for durations | DONE |
+| Error handling | Using `core::error::Error` (requires Rust 1.81+) | DONE |
+| std:: to core:: migration | Migrated (fmt, cmp, ops, mem, num, etc.) | DONE |
+| Prelude consistency | Simplified where possible (Default, Result) | DONE |
+| Synchronization (Mutex/RwLock) | `hardy_async::sync` wrappers available, bpa migrated | DONE |
+| Synchronization (OnceLock) | Still uses `std::sync::OnceLock` in one location | REMAINING |
 | Allocator | Requires `alloc` (Vec, String, Arc, Box) | EXPECTED |
 
-### What's Already Done
+### Minimum Rust Version
+
+The workspace requires **Rust 1.85** due to:
+- Edition 2024
+- `core::error::Error` (stabilized in Rust 1.81)
+
+This is set in `Cargo.toml` via `rust-version = "1.85"`.
+
+---
+
+## What's Complete
+
+### Async Runtime Abstraction
 
 The `bpa` crate now has **zero direct tokio dependencies**. All async primitives are accessed through `hardy-async` abstractions:
 
 | Primitive | hardy-async Abstraction | Status |
 |-----------|------------------------|--------|
-| `tokio::spawn` | `hardy_async::spawn!` macro | ✅ Migrated |
-| `tokio::task::JoinHandle` | `hardy_async::JoinHandle` | ✅ Migrated |
-| `tokio::task::JoinSet` + `Semaphore` | `hardy_async::BoundedTaskPool` | ✅ Migrated |
-| `tokio::sync::Notify` | `hardy_async::Notify` | ✅ Migrated |
-| `tokio::time::sleep` | `hardy_async::time::sleep` | ✅ Migrated |
-| `tokio::select!` | `futures::select_biased!` | ✅ Migrated |
-| `tokio_util::CancellationToken` | `hardy_async::CancellationToken` | ✅ Migrated |
+| `tokio::spawn` | `hardy_async::spawn!` macro | DONE |
+| `tokio::task::JoinHandle` | `hardy_async::JoinHandle` | DONE |
+| `tokio::task::JoinSet` + `Semaphore` | `hardy_async::BoundedTaskPool` | DONE |
+| `tokio::sync::Notify` | `hardy_async::Notify` | DONE |
+| `tokio::time::sleep` | `hardy_async::time::sleep` | DONE |
+| `tokio::select!` | `futures::select_biased!` | DONE |
+| `tokio_util::CancellationToken` | `hardy_async::CancellationToken` | DONE |
 
 This means bpa is ready for Embassy support once hardy-async has Embassy backends.
 
-## Workspace Precedent
+### Synchronization Abstraction
 
-Several workspace crates already support `no_std`:
-- `hardy-cbor` - fully `no_std` compatible
-- `hardy-bpv7` - has `no_std` with conditional `std` feature
-- `hardy-eid-patterns` - has `no_std` with optional `std` feature
+The `hardy-async` crate now provides synchronization primitives:
 
-These provide patterns to follow.
+| Primitive | Location | Use Case |
+|-----------|----------|----------|
+| `sync::Mutex` | `hardy_async::sync::Mutex` | O(n) operations, may block |
+| `sync::RwLock` | `hardy_async::sync::RwLock` | O(n) read-heavy, may block |
+| `sync::spin::Mutex` | `hardy_async::sync::spin::Mutex` | O(1) hot paths, no blocking |
+| `sync::spin::RwLock` | `hardy_async::sync::spin::RwLock` | O(1) read-heavy hot paths |
 
----
+**bpa Usage:**
+- `cla/peers.rs`: Uses `hardy_async::sync::spin::RwLock` for PeerTable (O(1) HashMap ops, hot forwarding path)
+- `cla/registry.rs`: Uses `hardy_async::sync::spin::Mutex` for CLA HashMap (O(1) lifecycle operations)
 
-## Phase 1: Cargo.toml Feature Gating
+**Note:** `OnceLock` is NOT yet abstracted in hardy-async. For CLAs needing spin-based OnceLock on hot paths (like forward()), they should add `spin` as a direct dependency.
 
-### Actions
+### Dispatcher Refactoring
 
-1. **Add feature flags**:
-   ```toml
-   [features]
-   default = ["std"]
-   std = [
-       "hardy-bpv7/std",
-       "hardy-eid-patterns/std",
-       "hardy-async/std",
-       "time/std",
-       "thiserror/std",
-   ]
-   alloc = []  # For no_std + alloc
-   ```
-
-2. **Update dependencies with `default-features = false`**:
-   ```toml
-   [dependencies]
-   hardy-bpv7 = { path = "../bpv7", default-features = false }
-   hardy-eid-patterns = { path = "../eid-patterns", default-features = false }
-   time = { version = "0.3", default-features = false }
-   thiserror = { version = "2", default-features = false }
-   ```
-
-3. **Add no_std alternatives**:
-   ```toml
-   hashbrown = "0.14"  # HashMap replacement (already used in bpv7)
-   # Note: spin/once_cell are handled via hardy-async (see Phase 2)
-   ```
-
----
-
-## Phase 2: Synchronization Abstraction via `hardy-async` (CRITICAL)
-
-This is the largest blocker. The crate uses `std::sync::{Mutex, RwLock, Arc, Weak, OnceLock}` extensively.
-
-**Strategy**: Wrap `Mutex` and `RwLock` in `hardy-async` alongside existing abstractions (`Notify`, `CancellationToken`, `JoinHandle`). This centralizes sync primitives and enables target-appropriate implementations.
-
-### Files Requiring Changes in `bpa`
-
-| File | Primitives Used |
-|------|-----------------|
-| `keys/registry.rs` | `RwLock<HashMap<...>>` |
-| `cla/peers.rs` | `RwLock`, `Weak`, `OnceLock` |
-| `cla/registry.rs` | `Mutex`, `RwLock`, `Weak`, `HashMap` |
-| `rib/mod.rs` | `RwLock`, `HashMap`, `BTreeMap`, `BTreeSet` |
-| `storage/mod.rs` | `Mutex`, `BTreeSet` |
-| `storage/bundle_mem.rs` | `Mutex` |
-| `storage/channel.rs` | `Mutex` |
-| `services/registry.rs` | `HashMap`, `RwLock`, `Weak` |
-
-### Actions in `hardy-async`
-
-1. **Add sync module** (`async/src/sync.rs`):
-   ```rust
-   //! Synchronization primitives with target-appropriate implementations.
-
-   extern crate alloc;
-
-   // Arc/Weak: always from alloc (std re-exports these anyway)
-   pub use alloc::sync::{Arc, Weak};
-
-   // Mutex/RwLock: std for std targets, spin for no_std
-   #[cfg(feature = "std")]
-   pub use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-   #[cfg(not(feature = "std"))]
-   pub use spin::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-   // OnceLock: std 1.70+ or once_cell for no_std
-   #[cfg(feature = "std")]
-   pub use std::sync::OnceLock;
-   #[cfg(not(feature = "std"))]
-   pub use once_cell::race::OnceBox as OnceLock;  // Or spin::Once
-   ```
-
-2. **Update `async/Cargo.toml`**:
-   ```toml
-   [features]
-   default = ["std", "tokio"]
-   std = []
-   tokio = ["std", "dep:tokio", "dep:tokio-util"]
-   tracing = ["dep:tracing"]
-
-   [dependencies]
-   spin = { version = "0.9", optional = true }
-   once_cell = { version = "1", default-features = false, optional = true }
-
-   # Enable spin/once_cell for no_std
-   [target.'cfg(not(feature = "std"))'.dependencies]
-   spin = "0.9"
-   once_cell = { version = "1", default-features = false, features = ["race"] }
-   ```
-
-3. **Export from `async/src/lib.rs`**:
-   ```rust
-   pub mod sync;
-   ```
-
-### Actions in `bpa`
-
-1. **Update imports** across all affected files:
-   ```rust
-   // Before
-   use std::sync::{Arc, Mutex, RwLock};
-
-   // After
-   use hardy_async::sync::{Arc, Mutex, RwLock};
-   ```
-
-2. **Handle `OnceLock`** in `cla/peers.rs`:
-   ```rust
-   use hardy_async::sync::OnceLock;
-   ```
-
-3. **Update all 130+ Arc usages** to use `hardy_async::sync::Arc`
-
-### API Considerations
-
-The `spin` crate's `Mutex` and `RwLock` have slightly different APIs:
-
-| Operation | `std::sync` | `spin` |
-|-----------|-------------|--------|
-| Lock | `.lock().unwrap()` | `.lock()` (infallible) |
-| Try lock | `.try_lock()` → `Result` | `.try_lock()` → `Option` |
-| Poisoning | Yes | No |
-
-**Recommendation**: Create thin wrappers in `hardy-async` that normalize the API, or update `bpa` call sites to handle both patterns via a trait.
-
----
-
-## Phase 3: Runtime Abstraction (IN PROGRESS)
-
-**Status:** bpa is fully abstracted; Embassy backends are the remaining work.
-
-The `bpa` crate now has zero direct tokio dependencies - all async primitives go through `hardy-async`. This phase is about adding Embassy backends to `hardy-async`.
-
-### Current `hardy-async` Abstractions
-
-| Abstraction | Current Implementation | no_std Status |
-|-------------|------------------------|---------------|
-| `TaskPool` | tokio TaskTracker | ✅ bpa migrated, needs Embassy backend |
-| `BoundedTaskPool` | TaskPool + tokio Semaphore | ✅ bpa migrated, needs Embassy backend |
-| `CancellationToken` | tokio_util | ✅ bpa migrated, needs Embassy backend |
-| `JoinHandle` | tokio | ✅ bpa migrated, needs Embassy backend |
-| `Notify` | tokio::sync::Notify | ✅ bpa migrated, needs Embassy backend |
-| `sleep()` | tokio::time::sleep | ✅ bpa migrated, needs Embassy backend |
-
-### Actions
-
-1. **Add `std` feature flag** to `hardy-async`:
-   - `tokio` feature implies `std`
-   - New features: `embassy` for embedded async runtime
-
-2. **Feature-gate runtime components**:
-   ```rust
-   #[cfg(feature = "tokio")]
-   mod tokio_impl;
-
-   #[cfg(feature = "embassy")]
-   mod embassy_impl;
-
-   // Re-export based on active feature
-   #[cfg(feature = "tokio")]
-   pub use tokio_impl::*;
-
-   #[cfg(feature = "embassy")]
-   pub use embassy_impl::*;
-   ```
-
-3. **Embassy equivalents** (for no_std async):
-
-   | tokio | Embassy |
-   |-------|---------|
-   | `tokio::sync::Notify` | `embassy_sync::signal::Signal` |
-   | `tokio::sync::Semaphore` | `embassy_sync::semaphore::Semaphore` |
-   | `tokio::time::sleep` | `embassy_time::Timer::after` |
-   | `CancellationToken` | Custom or `embassy_sync::signal` |
-
-4. **Alternative**: For simpler no_std support, provide sync-only API (no async runtime)
-
----
-
-## Phase 4: Collections Replacement
-
-### HashMap Usage (6 files)
-
-| File | Usage |
-|------|-------|
-| `keys/registry.rs` | `HashMap<KeyId, ...>` |
-| `cla/registry.rs` | `HashMap<String, ...>` |
-| `cla/mod.rs` | `HashMap<...>` |
-| `rib/mod.rs` | `HashMap<...>` |
-| `policy/mod.rs` | `HashMap<...>` |
-| `services/registry.rs` | `HashMap<...>` |
-
-### Actions
-
-1. **Add hashbrown**:
-   ```toml
-   hashbrown = { version = "0.14", default-features = false }
-   ```
-
-2. **Create collections abstraction** (`src/collections.rs`):
-   ```rust
-   #[cfg(feature = "std")]
-   pub use std::collections::{HashMap, HashSet};
-
-   #[cfg(not(feature = "std"))]
-   pub use hashbrown::{HashMap, HashSet};
-
-   // BTreeMap/BTreeSet are in alloc
-   #[cfg(feature = "std")]
-   pub use std::collections::{BTreeMap, BTreeSet};
-
-   #[cfg(not(feature = "std"))]
-   pub use alloc::collections::{BTreeMap, BTreeSet};
-   ```
-
-3. **Update all imports** to use `crate::collections::*`
-
----
-
-## Phase 5: Error Handling
-
-### Current Pattern
+The `Dispatcher` previously used `OnceLock` for deferred initialization. This has been replaced with a "return closure" pattern that avoids both OnceLock and the race conditions of `Arc::new_cyclic`:
 
 ```rust
-// bpa.rs, services/mod.rs, cla/mod.rs, storage/mod.rs
-Box<dyn std::error::Error + Send + Sync>
+pub fn new(config: &Config, ...) -> Arc<Self> {
+    let (dispatcher, start) = Self::new_inner(config, ...);
+    start(&dispatcher);
+    dispatcher
+}
+
+fn new_inner(config: &Config, ...) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
+    // ... setup ...
+    let dispatcher = Arc::new(Self { dispatch_tx, ... });
+
+    (dispatcher, |d| {
+        let dispatcher = d.clone();
+        hardy_async::spawn!(d.tasks, "dispatch_queue_consumer", async move {
+            dispatcher.run_dispatch_queue(dispatch_rx).await
+        });
+    })
+}
 ```
 
-### Actions
+This pattern:
+- Eliminates OnceLock OS synchronization overhead
+- Avoids Arc::new_cyclic race conditions (task starting before Arc construction completes)
+- Provides clear ownership and initialization order
 
-1. **Use `core::error::Error`** (stabilized in Rust 1.81):
-   - `storage/mod.rs` already uses `core::error::Error`
-   - Update other files to match
+### Cargo.toml Feature Flags (Phase 1)
 
-2. **Feature-gate thiserror**:
-   ```rust
-   #[cfg(feature = "std")]
-   use thiserror::Error;
+The `bpa/Cargo.toml` now has proper no_std feature gating:
 
-   #[cfg(not(feature = "std"))]
-   // Use manual impl or thiserror with no_std feature
-   ```
+```toml
+[features]
+default = ["rfc9173", "tokio"]  # tokio implies std
+rfc9173 = ["hardy-bpv7/rfc9173"]
+tokio = ["std", "hardy-async/tokio"]  # tokio implies std
+std = ["time/std", "hardy-bpv7/std", "hardy-eid-patterns/std", "serde?/std"]
+serde = ["dep:serde", "hardy-bpv7/serde", "hardy-eid-patterns/serde", ...]
 
-3. **Consider replacing dyn errors** with concrete enum types for no_std
+[dependencies]
+hardy-async = { path = "../async", default-features = false }
+hardy-bpv7 = { path = "../bpv7", default-features = false }
+hardy-eid-patterns = { path = "../eid-patterns", default-features = false }
+hashbrown = "0.16.1"
+serde = { version = "1.0", default-features = false, features = ["derive", "rc", "alloc"], optional = true }
+```
+
+The `hardy-async/Cargo.toml` also has the `std` feature:
+
+```toml
+[features]
+default = ["tokio"]
+std = ["time/std"]
+tokio = ["std", "dep:tokio", "dep:tokio-util"]  # tokio implies std
+
+[dependencies]
+time = { version = "0.3", default-features = false }
+```
+
+**Feature Chain:**
+```
+bpa default = ["rfc9173", "tokio"]
+    └── tokio = ["std", "hardy-async/tokio"]
+            ├── std = ["time/std", "hardy-bpv7/std", "hardy-eid-patterns/std", "serde?/std"]
+            └── hardy-async/tokio = ["std", "dep:tokio", "dep:tokio-util"]
+                    └── std = ["time/std"]
+```
+
+### Collections (Phase 4)
+
+Collections are now properly abstracted in `lib.rs`:
+
+```rust
+#[cfg(feature = "std")]
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map, hash_map};
+
+#[cfg(not(feature = "std"))]
+use hashbrown::{HashMap, HashSet, hash_map};
+
+#[cfg(not(feature = "std"))]
+use alloc::collections::{BTreeMap, BTreeSet, btree_map};
+```
+
+### Arc/Weak Migration
+
+All `Arc` and `Weak` imports now use `alloc::sync`:
+
+```rust
+use alloc::sync::{Arc, Weak};
+```
+
+This works for both std and no_std since `std::sync::Arc` is just a re-export of `alloc::sync::Arc`.
+
+### std:: to core:: Migration
+
+All applicable `std::` types have been migrated to `core::`:
+
+| Before | After |
+|--------|-------|
+| `std::time::Duration` | `core::time::Duration` |
+| `std::fmt::*` | `core::fmt::*` |
+| `std::cmp::Ordering` | `core::cmp::Ordering` |
+| `std::hash::Hasher` | `core::hash::Hasher` |
+| `std::ops::Range` | `core::ops::Range` |
+| `std::mem::take` | `core::mem::take` |
+| `std::num::NonZeroUsize` | `core::num::NonZeroUsize` |
+| `std::borrow::Cow` | `alloc::borrow::Cow` |
+| `std::error::Error` | `core::error::Error` |
+| `std::net::SocketAddr` | `core::net::SocketAddr` |
+
+### Prelude Consistency
+
+Prelude items use unqualified names where possible:
+- `Default` - unqualified (in prelude)
+- `Result` - unqualified except in type alias definitions (would be recursive)
+
+Non-prelude items remain fully qualified:
+- `core::fmt::Display`, `core::fmt::Formatter`
+- `core::fmt::Debug` (kept qualified by preference)
+- `core::hash::Hash`, `core::hash::Hasher`
+- `core::cmp::Ordering`
+- `core::error::Error`
+
+### Crate-Level Setup (Phase 7 - Partial)
+
+The `lib.rs` has the no_std foundation:
+
+```rust
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    string::{String, ToString},
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
+```
 
 ---
 
-## Phase 6: Time Types
+## Workspace Consistency
 
-### Usage Locations
+All workspace crates follow the same patterns:
 
-| File | Line | Usage |
-|------|------|-------|
-| `services/mod.rs` | - | `std::time::Duration` lifetime param |
-| `services/registry.rs` | - | `std::time::Duration` lifetime param |
-| `dispatcher/local.rs` | 10 | `std::time::Duration` lifetime param |
+| Crate | no_std Support | Notes |
+|-------|----------------|-------|
+| `hardy-cbor` | `#![no_std]` unconditionally | Fully no_std |
+| `hardy-bpv7` | `#![cfg_attr(not(feature = "std"), no_std)]` | std feature gates HashMap/HashSet |
+| `hardy-eid-patterns` | `#![cfg_attr(not(feature = "std"), no_std)]` | Optional std feature |
+| `hardy-async` | Feature-gated via `std` | tokio implies std, time uses default-features = false |
+| `hardy-bpa` | `#![cfg_attr(not(feature = "std"), no_std)]` | In progress, tokio implies std |
 
-### Actions
-
-1. **Use `core::time::Duration`** (available since Rust 1.25):
-   ```rust
-   use core::time::Duration;
-   ```
-
-2. **Ensure `time` crate is configured**:
-   ```toml
-   time = { version = "0.3", default-features = false }
-   ```
+All crates use:
+- `core::fmt::Display`, `core::fmt::Formatter` (not in prelude)
+- `core::cmp::Ordering` (not in prelude)
+- `core::error::Error` (Rust 1.81+)
+- `alloc::sync::Arc` where applicable
 
 ---
 
-## Phase 7: Crate-Level Changes
+## Remaining Work
 
-### Actions
+### Unguarded std Dependencies
 
-1. **Add no_std attribute** to `lib.rs`:
-   ```rust
-   #![cfg_attr(not(feature = "std"), no_std)]
+The following `std::` usages are NOT behind `#[cfg(feature = "std")]`:
 
-   #[cfg(not(feature = "std"))]
-   extern crate alloc;
-   ```
+| File | Usage | Fix Required |
+|------|-------|--------------|
+| `config.rs:28` | `std::thread::available_parallelism()` | cfg-gate with fallback constant |
+| `cla/peers.rs:15,22` | `std::sync::OnceLock` | Use `spin::once::Once` for no_std |
+| `rib/find.rs:79` | `std::hash::DefaultHasher` | Use portable hasher (e.g., `siphasher`) |
 
-2. **Replace std prelude imports**:
-   ```rust
-   #[cfg(not(feature = "std"))]
-   use alloc::{boxed::Box, string::String, vec::Vec, vec};
-   ```
+### Phase 2c: Channel Abstraction
 
-3. **Remove/gate any remaining std usage**:
-   - `std::fmt::*` → `core::fmt::*`
-   - `std::hash::*` → `core::hash::*`
-   - `std::cmp::*` → `core::cmp::*`
-   - `std::num::NonZeroUsize` → `core::num::NonZeroUsize`
+The crate uses `flume` channels extensively for inter-task communication. However, flume depends on `fastrand` -> `getrandom` -> `libc`, which means it cannot work on bare-metal no_std targets.
+
+**Strategy:** Abstract channels through `hardy-async` with feature-gated implementations:
+- For std: flume (current implementation)
+- For Embassy: `embassy_sync::channel::Channel` (static allocation)
+
+**Note:** Embassy channels require static allocation with compile-time capacity, which is a different model than flume's dynamic allocation. This will require careful API design.
+
+**See:** `async/HARDY_ASYNC_PROPOSAL.md` Phase 2.6 for detailed channel abstraction design.
+
+### Phase 3b: Embassy Backends (HIGH effort)
+
+Once remaining phases are complete, Embassy backends need to be added to `hardy-async`:
+
+| tokio | Embassy |
+|-------|---------|
+| `tokio::sync::Notify` | `embassy_sync::signal::Signal` |
+| `tokio::sync::Semaphore` | `embassy_sync::semaphore::Semaphore` |
+| `tokio::time::sleep` | `embassy_time::Timer::after` |
+| `CancellationToken` | Custom or `embassy_sync::signal` |
+| `flume` channels | `embassy_sync::channel::Channel` |
 
 ---
 
 ## Implementation Order
 
-### Already Complete
+### Complete
 
-- ✅ **Runtime abstraction in bpa** - All async primitives abstracted via hardy-async
-  - TaskPool, BoundedTaskPool, spawn! macro
-  - Notify, sleep, CancellationToken, JoinHandle
-  - select! → select_biased! migration
+1. Async runtime abstraction (bpa) - All async primitives via hardy-async
+2. Phase 6: Time types - `core::time::Duration` for service API
+3. Phase 1: Cargo.toml feature flags - Feature flags and dependency updates
+4. Phase 4: Collections - hashbrown integration
+5. Phase 5: Error handling - `core::error::Error` migration
+6. Phase 7 (Partial): Crate-level setup - `#![no_std]` + alloc, Arc/Weak migration
+7. Prelude consistency - Simplified qualifications
+8. hardy-async `std` feature - Added with proper tokio implication
+9. Phase 2a: Add `sync` module to `hardy-async` - Mutex, RwLock, spin::Mutex, spin::RwLock
+10. Phase 2b: Update `bpa` imports - Uses `hardy_async::sync::spin::*` for hot paths
+11. Dispatcher refactoring - Eliminated OnceLock via "return closure" pattern
 
-### Remaining Work
+### Remaining
 
-1. **Phase 6**: Time types (LOW effort) - `std::time::Duration` → `core::time::Duration`
-2. **Phase 5**: Error handling (MEDIUM effort) - `core::error::Error` migration
-3. **Phase 4**: Collections (MEDIUM effort) - hashbrown integration
-4. **Phase 2a**: Add `sync` module to `hardy-async` (MEDIUM effort) - Arc, Mutex, RwLock abstraction
-5. **Phase 2b**: Update `bpa` imports to use `hardy_async::sync` (MEDIUM effort)
-6. **Phase 1**: Cargo.toml feature flags (LOW effort) - after dependencies are ready
-7. **Phase 3b**: Embassy backends in `hardy-async` (HIGH effort) - runtime alternatives
-8. **Phase 7**: Crate-level finalization - `#![no_std]` + alloc setup
+1. **cfg-gate unguarded std usages** (LOW effort)
+   - `std::thread::available_parallelism()` in config.rs
+   - `std::sync::OnceLock` in cla/peers.rs
+   - `std::hash::DefaultHasher` in rib/find.rs
+
+2. **Phase 2c**: Add `channel` module to `hardy-async` with flume re-exports (LOW effort)
+
+3. **Phase 3b**: Embassy backends in `hardy-async` (HIGH effort)
 
 ---
 
@@ -393,10 +322,6 @@ Box<dyn std::error::Error + Send + Sync>
 ## Open Questions
 
 1. **Async runtime for no_std**: Embassy is the leading candidate. See HARDY_ASYNC_PROPOSAL.md Phase 3.
-2. **Spinlocks acceptable?**: `spin` crate works but has performance implications for contended locks
-3. **API normalization**: Should `hardy-async::sync` provide wrapper types that unify `std` and `spin` APIs (e.g., handling poisoning differences)?
-4. ~~**Bounded collections**: Should `heapless` be used for truly no-alloc scenarios?~~ **Resolved:** Not needed; `no_std + alloc` is the target.
-5. ~~**Scope**: Is `no_std + alloc` sufficient, or is pure `no_std` (no heap) required?~~ **Resolved:** `no_std + alloc` is the only viable path. Pure no_std is impractical for a BPA, and custom allocators are not yet mainstream in embedded Rust.
 
 ---
 
@@ -404,14 +329,22 @@ Box<dyn std::error::Error + Send + Sync>
 
 | Phase | Effort | Status | Notes |
 |-------|--------|--------|-------|
-| Runtime abstraction (bpa) | High | ✅ **DONE** | All async primitives via hardy-async |
-| Phase 1 (Cargo.toml) | Low | Pending | Feature flags and dependency updates |
-| Phase 2a (hardy-async sync module) | Medium | Pending | New `sync.rs` module with feature-gated exports |
-| Phase 2b (bpa sync imports) | Medium | Pending | Update 130+ Arc uses, 11 Mutex/RwLock uses |
+| Runtime abstraction (bpa) | High | DONE | All async primitives via hardy-async |
+| Phase 1 (Cargo.toml) | Low | DONE | Feature flags and dependency updates |
+| hardy-async `std` feature | Low | DONE | tokio implies std, time default-features = false |
+| Phase 4 (Collections) | Medium | DONE | hashbrown integration |
+| Phase 5 (Errors) | Medium | DONE | core::error::Error migration |
+| Phase 6 (Time) | Low | DONE | `core::time::Duration` for service API |
+| Phase 7 (Crate setup) | Low | DONE | `#![no_std]` + alloc, Arc/Weak, std->core |
+| Phase 2a (hardy-async sync) | Medium | DONE | Mutex, RwLock, spin::Mutex, spin::RwLock |
+| Phase 2b (bpa sync imports) | Medium | DONE | Uses hardy_async::sync::spin for hot paths |
+| Dispatcher refactoring | Medium | DONE | Eliminated OnceLock via closure pattern |
+| Prelude consistency | Low | DONE | Simplified qualifications |
+| cfg-gate remaining std | Low | Pending | 3 unguarded usages remain |
+| Phase 2c (Channels) | Low | Pending | flume re-exports in hardy-async |
 | Phase 3b (Embassy backends) | High | Pending | Embassy integration for hardy-async |
-| Phase 4 (Collections) | Medium | Pending | hashbrown integration, 6 files |
-| Phase 5 (Errors) | Medium | Pending | core::error::Error migration |
-| Phase 6 (Time) | Low | Pending | core::time::Duration swap |
-| Phase 7 (Finalization) | Low | Pending | #![no_std] + alloc setup |
 
-**Overall**: The critical async runtime abstraction for bpa is complete. Centralizing sync primitives in `hardy-async` is the next major step, followed by Embassy backends. The remaining work is mechanical but requires careful API compatibility.
+**Overall**: The majority of the no_std groundwork is complete. The remaining work is:
+1. cfg-gating 3 unguarded std usages (available_parallelism, OnceLock, DefaultHasher)
+2. Channel abstraction through hardy-async
+3. Embassy backends (high effort, future work)

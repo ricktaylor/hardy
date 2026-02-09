@@ -139,23 +139,25 @@ Filters are core infrastructure enabling security filters, policy enforcement, f
 - **Implemented**: `Bpa::register_filter()` and `Bpa::unregister_filter()` public API
 - **Implemented**: Filter invocation at all hook points (Ingress, Deliver, Originate, Egress)
 - **Implemented**: First production filter - IPN Legacy (`bpa/src/filters/ipn_legacy.rs`)
-- **Not implemented**: Ingress metadata tracking (CLA/peer info on bundles)
+- **Implemented**: Ingress metadata tracking (CLA/peer info on bundles) in `ReadOnlyMetadata`
 
 See `bpa/docs/filter_subsystem_design.md` for design details.
 
 ### Tasks
 
-- [ ] **2.1 Add ingress metadata to bundle reception path**
+- [x] **2.1 Add ingress metadata to bundle reception path**
   - Extend `Sink::dispatch()` signature to pass ingress info
-  - Add fields to `BundleMetadata`:
+  - Add fields to `BundleMetadata` (in `ReadOnlyMetadata` struct):
 
     ```rust
-    pub ingress_cla: Option<Arc<str>>,      // CLA name
-    pub ingress_peer: Option<ClaAddress>,   // Peer CL address
+    pub ingress_cla: Option<Arc<str>>,           // CLA name
+    pub ingress_peer_node: Option<NodeId>,       // Peer node ID
+    pub ingress_peer_addr: Option<ClaAddress>,   // Peer CL address
     ```
 
   - Update `receive_bundle()` to accept and store ingress info
   - Thread through dispatcher to filter invocation points
+  - **Completed:** All ingress metadata is now tracked and available to filters
 
 - [x] **2.2 Implement FilterRegistry**
   - Registry pattern like CLA/Service registries
@@ -183,8 +185,7 @@ See `bpa/docs/filter_subsystem_design.md` for design details.
       - **Egress**: No persistence (bundle leaving node, may re-run on retry)
     - Added `processing_pool` (BoundedTaskPool) for rate-limited filter/bundle processing
     - Single lock acquisition per filter execution (removed `has_filters()` optimization)
-  - **Remaining:**
-    - Ingress metadata (CLA/peer info) not yet tracked on bundles
+    - Ingress metadata (CLA/peer info) tracked on bundles via `ReadOnlyMetadata`
 
 - [ ] **2.4 Add filter.proto for external filters (optional)**
   - gRPC interface for out-of-process filters
@@ -479,15 +480,15 @@ Bundle arrives from source S, no return route exists
 
 ### Prerequisites (if implemented later)
 
-- [ ] **7.0 Add ingress CLA/peer metadata to bundles**
-  - **Current state: NOT TRACKED** - `receive_bundle(data: Bytes)` discards CLA/peer info
-  - Changes required:
-    - Extend `Sink::dispatch()` to pass ingress metadata
-    - Add fields to `BundleMetadata`: `ingress_cla`, `ingress_peer_address`
-    - Update `receive_bundle()` signature to accept ingress info
-    - Thread through dispatcher to filters
+- [x] **7.0 Add ingress CLA/peer metadata to bundles**
+  - ~~**Current state: NOT TRACKED** - `receive_bundle(data: Bytes)` discards CLA/peer info~~
+  - **COMPLETED:** Ingress metadata is now tracked via `ReadOnlyMetadata`:
+    - `ingress_cla: Option<Arc<str>>` - CLA name
+    - `ingress_peer_node: Option<NodeId>` - Peer node ID
+    - `ingress_peer_addr: Option<ClaAddress>` - Peer CL address
+  - `receive_bundle()` accepts ingress info and stores in bundle metadata
+  - Threaded through dispatcher to filter invocation points
   - Required because Previous Node block gives 2-hop info, not immediate sender
-  - Note: `dispatch.rs:171` has `// TODO: Ingress filter hook`
 
 - [x] **7.1 Complete filter registry implementation**
   - ~~Current state: `Filter` trait defined, `register_filter()` is `todo!()`~~
@@ -1075,6 +1076,18 @@ Before implementing proactive scheduling:
 ## Recent Completions
 
 For reference when closing external issues:
+
+### 2026-02-09: Ingress Metadata Implementation
+
+- **Task 2.1 completed** - Ingress metadata tracking fully implemented
+  - Added `ReadOnlyMetadata` struct with ingress fields:
+    - `ingress_cla: Option<Arc<str>>` - CLA that received the bundle
+    - `ingress_peer_node: Option<NodeId>` - Peer node ID
+    - `ingress_peer_addr: Option<ClaAddress>` - Peer CL address
+  - Extended `receive_bundle()` signature to accept ingress parameters
+  - Ingress data captured and stored during bundle reception
+  - Available to filters at all hook points
+  - Also completes prerequisite 7.0 for ad-hoc routing
 
 ### 2026-02-06: IPN Legacy Filter & Config Improvements
 
