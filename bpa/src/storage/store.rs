@@ -15,7 +15,9 @@ impl Store {
                 .as_ref()
                 .cloned()
                 .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
-            bundle_cache: spin::Mutex::new(LruCache::new(config.storage_config.lru_capacity)),
+            bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(
+                config.storage_config.lru_capacity,
+            )),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),
             max_cached_bundle_size: config.storage_config.max_cached_bundle_size.into(),
@@ -76,7 +78,7 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
-        // spin::Mutex::lock() returns guard directly (no Result)
+        // sync::spin::Mutex::lock() returns guard directly (no Result)
         if let Some(data) = self.bundle_cache.lock().peek(storage_name) {
             return Some(data.clone());
         }
@@ -96,7 +98,7 @@ impl Store {
             .trace_expect("Failed to save bundle data");
 
         if data.len() < self.max_cached_bundle_size {
-            // spin::Mutex::lock() returns guard directly (no Result)
+            // sync::spin::Mutex::lock() returns guard directly (no Result)
             self.bundle_cache
                 .lock()
                 .put(storage_name.clone(), data.clone());
@@ -107,7 +109,7 @@ impl Store {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
-        // spin::Mutex::lock() returns guard directly (no Result)
+        // sync::spin::Mutex::lock() returns guard directly (no Result)
         self.bundle_cache.lock().pop(storage_name);
 
         self.bundle_storage

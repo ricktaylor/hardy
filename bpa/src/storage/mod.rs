@@ -2,7 +2,7 @@ use super::*;
 use lru::LruCache;
 use std::sync::Mutex;
 
-// For bundle_cache we use spin::Mutex because:
+// For bundle_cache we use hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1): peek, put, pop
 // 2. Critical sections are very short (LRU HashMap lookups)
 // 3. No blocking/sleeping/syscalls while holding lock
@@ -267,8 +267,8 @@ pub(crate) struct Store {
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
 
-    // Using spin::Mutex for bundle_cache - see comment at top of file
-    bundle_cache: spin::Mutex<LruCache<Arc<str>, Bytes>>,
+    // Using sync::spin::Mutex for bundle_cache - see comment at top of file
+    bundle_cache: hardy_async::sync::spin::Mutex<LruCache<Arc<str>, Bytes>>,
 
     reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
     reaper_wakeup: Arc<hardy_async::Notify>,

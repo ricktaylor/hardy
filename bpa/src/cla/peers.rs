@@ -1,6 +1,6 @@
 use super::*;
 
-// PeerTable uses spin::RwLock because:
+// PeerTable uses hardy_async::sync::spin::RwLock because:
 // 1. All operations are O(1) HashMap lookups/inserts
 // 2. Read-heavy pattern (forward is called frequently)
 // 3. No blocking/iteration while holding lock
@@ -141,18 +141,18 @@ struct PeerTableInner {
 }
 
 pub struct PeerTable {
-    inner: spin::RwLock<PeerTableInner>,
+    inner: hardy_async::sync::spin::RwLock<PeerTableInner>,
 }
 
 impl PeerTable {
     pub fn new() -> Self {
         Self {
-            inner: spin::RwLock::new(PeerTableInner::default()),
+            inner: hardy_async::sync::spin::RwLock::new(PeerTableInner::default()),
         }
     }
 
     pub fn insert(&self, peer: Arc<Peer>) -> u32 {
-        // spin::RwLock::write() returns guard directly (no Result)
+        // sync::spin::RwLock::write() returns guard directly (no Result)
         let mut inner = self.inner.write();
         let peer_id = loop {
             inner.next = inner.next.wrapping_add(1);
@@ -178,7 +178,7 @@ impl PeerTable {
         peer_id: u32,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        // spin::RwLock::read() returns guard directly (no Result)
+        // sync::spin::RwLock::read() returns guard directly (no Result)
         let Some(peer) = self.inner.read().peers.get(&peer_id).cloned() else {
             return Err(bundle);
         };

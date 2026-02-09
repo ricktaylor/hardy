@@ -36,6 +36,7 @@ pub mod bounded_task_pool;
 pub mod cancellation_token;
 pub mod join_handle;
 pub mod notify;
+pub mod sync;
 pub mod task_pool;
 pub mod time;
 

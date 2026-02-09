@@ -5,7 +5,7 @@ use rand::{
     distr::{Alphanumeric, SampleString},
 };
 
-// ServiceRegistry uses spin::Mutex because:
+// ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
 // 2. RNG for auto-generated IDs is called OUTSIDE the lock
 // 3. Lock only protects contains_key + insert (both O(1))
@@ -179,8 +179,8 @@ impl Drop for Sink {
 pub(crate) struct Registry {
     node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
-    // spin::Mutex for O(1) service HashMap operations
-    services: spin::Mutex<HashMap<Eid, Arc<Service>>>,
+    // sync::spin::Mutex for O(1) service HashMap operations
+    services: hardy_async::sync::spin::Mutex<HashMap<Eid, Arc<Service>>>,
     tasks: hardy_async::TaskPool,
 }
 
@@ -195,7 +195,7 @@ impl Registry {
     }
 
     pub async fn shutdown(&self) {
-        // spin::Mutex::lock() returns guard directly (no Result)
+        // sync::spin::Mutex::lock() returns guard directly (no Result)
         let services = self
             .services
             .lock()
@@ -442,7 +442,7 @@ impl Registry {
     }
 
     async fn unregister(&self, service: Arc<Service>) {
-        // spin::Mutex::lock() returns guard directly (no Result)
+        // sync::spin::Mutex::lock() returns guard directly (no Result)
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
@@ -463,7 +463,7 @@ impl Registry {
     }
 
     pub async fn find(&self, service_id: &Eid) -> Option<Arc<Service>> {
-        // spin::Mutex::lock() returns guard directly (no Result)
+        // sync::spin::Mutex::lock() returns guard directly (no Result)
         self.services.lock().get(service_id).cloned()
     }
 }

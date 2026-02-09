@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpv7::eid::NodeId;
 
-// CLA registry uses spin::Mutex because:
+// CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
 // 2. No read-only access pattern (RwLock not needed)
 // 3. No blocking/RNG/iteration while holding lock
@@ -12,8 +12,8 @@ pub struct Cla {
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
 
     name: String,
-    // spin::Mutex for O(1) peer HashMap operations
-    peers: spin::Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
+    // sync::spin::Mutex for O(1) peer HashMap operations
+    peers: hardy_async::sync::spin::Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
     address_type: Option<ClaAddressType>,
 }
 
@@ -114,8 +114,8 @@ impl Drop for Sink {
 
 pub(crate) struct Registry {
     node_ids: Vec<NodeId>,
-    // spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
-    clas: spin::Mutex<HashMap<String, Arc<Cla>>>,
+    // sync::spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
+    clas: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
     store: Arc<storage::Store>,
     peers: peers::PeerTable,
@@ -137,7 +137,7 @@ impl Registry {
     }
 
     pub async fn shutdown(&self) {
-        // spin::Mutex::lock() returns guard directly (no Result)
+        // sync::spin::Mutex::lock() returns guard directly (no Result)
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
         for cla in clas {
