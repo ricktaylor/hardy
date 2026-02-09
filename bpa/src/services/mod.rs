@@ -93,7 +93,7 @@ pub trait ApplicationSink: Send + Sync {
         &self,
         destination: Eid,
         data: Bytes,
-        lifetime: std::time::Duration,
+        lifetime: core::time::Duration,
         options: Option<SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id>;
 

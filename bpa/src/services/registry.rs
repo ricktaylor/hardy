@@ -139,7 +139,7 @@ impl services::ApplicationSink for Sink {
         &self,
         destination: Eid,
         data: Bytes,
-        lifetime: std::time::Duration,
+        lifetime: core::time::Duration,
         options: Option<services::SendOptions>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         let service = self

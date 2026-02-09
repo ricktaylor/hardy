@@ -38,7 +38,7 @@ impl Dispatcher {
         source: Eid,
         destination: Eid,
         payload: Bytes,
-        lifetime: std::time::Duration,
+        lifetime: core::time::Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Build bundle and run Originate filter before storing

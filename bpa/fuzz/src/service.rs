@@ -45,7 +45,7 @@ impl PipeService {
         &self,
         destination: Eid,
         data: hardy_bpa::Bytes,
-        lifetime: std::time::Duration,
+        lifetime: core::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         self.sink
