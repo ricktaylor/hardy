@@ -20,11 +20,13 @@ impl DtnTime {
     }
 
     /// Creates a new `DtnTime` instance from the given number of milliseconds since the DTN epoch.
+    #[inline]
     pub fn new(millisecs: u64) -> Self {
         Self(millisecs)
     }
 
     /// Returns the number of milliseconds since the DTN epoch.
+    #[inline]
     pub fn millisecs(&self) -> u64 {
         self.0
     }

@@ -161,6 +161,7 @@ pub enum Eid {
 
 impl Eid {
     /// Returns `true` the Eid is the 'null endpoint' as defined in RFC 9171.
+    #[inline]
     pub fn is_null(&self) -> bool {
         matches!(self, Eid::Null)
     }
@@ -179,6 +180,7 @@ impl Eid {
         }
     }
 
+    #[inline]
     pub fn is_admin_endpoint(&self) -> bool {
         match self {
             Eid::LocalNode(service_number)

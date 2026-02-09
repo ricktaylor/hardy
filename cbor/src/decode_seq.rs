@@ -29,11 +29,13 @@ impl<'a, const D: usize> Series<'a, D> {
     ///
     /// For an array, this is the number of items. For a map, it's the number of key-value pairs.
     /// Returns `None` for indefinite-length sequences until they have been fully parsed.
+    #[inline]
     pub fn count(&self) -> Option<usize> {
         self.count.map(|c| c / D)
     }
 
     /// Returns `true` if the sequence has a definite length.
+    #[inline]
     pub fn is_definite(&self) -> bool {
         self.count.is_some()
     }
@@ -68,6 +70,7 @@ impl<'a, const D: usize> Series<'a, D> {
     }
 
     /// Returns the current byte offset from the start of the containing data slice.
+    #[inline]
     pub fn offset(&self) -> usize {
         *self.offset
     }

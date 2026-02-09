@@ -26,6 +26,7 @@ pub enum DtnPatternItem {
 }
 
 impl DtnPatternItem {
+    #[inline]
     pub(super) fn matches(&self, eid: &Eid) -> bool {
         match self {
             DtnPatternItem::None => eid.is_null(),

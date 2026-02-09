@@ -38,6 +38,7 @@ impl IpnPatternItem {
         }
     }
 
+    #[inline]
     pub(super) fn matches(&self, eid: &Eid) -> bool {
         match eid {
             Eid::Null => {
@@ -116,6 +117,7 @@ pub enum IpnPattern {
 }
 
 impl IpnPattern {
+    #[inline]
     fn matches(&self, v: u32) -> bool {
         let IpnPattern::Range(r) = self else {
             return true;
@@ -206,6 +208,7 @@ impl Ord for IpnInterval {
 }
 
 impl IpnInterval {
+    #[inline]
     fn matches(&self, v: u32) -> bool {
         match self {
             IpnInterval::Number(n) => *n == v,

@@ -616,6 +616,7 @@ macro_rules! impl_uint_from_cbor {
             impl FromCbor for $ty {
                 type Error = self::Error;
 
+                #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
                     let (v,shortest,len) = u64::from_cbor(data)?;
                     Ok((v.try_into()?, shortest, len))
@@ -648,6 +649,7 @@ macro_rules! impl_int_from_cbor {
             impl FromCbor for $ty {
                 type Error = self::Error;
 
+                #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
                     let (v,shortest,len) = i64::from_cbor(data)?;
                     Ok((v.try_into()?, shortest, len))
@@ -683,6 +685,7 @@ macro_rules! impl_float_from_cbor {
             impl FromCbor for $ty {
                 type Error = self::Error;
 
+                #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
                     let (v, shortest, len) = f64::from_cbor(data)?;
                     Ok((
@@ -706,6 +709,7 @@ impl_float_from_cbor!(
 impl FromCbor for f64 {
     type Error = self::Error;
 
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         parse_value(data, |value, shortest, tags| match value {
             Value::Float(f) => Ok((f, shortest && tags.is_empty())),
@@ -721,6 +725,7 @@ impl FromCbor for f64 {
 impl FromCbor for bool {
     type Error = self::Error;
 
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         parse_value(data, |value, shortest, tags| match value {
             Value::False => Ok((false, shortest && tags.is_empty())),

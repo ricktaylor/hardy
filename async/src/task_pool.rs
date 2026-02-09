@@ -104,6 +104,7 @@ impl TaskPool {
     ///
     /// # async fn do_work() {}
     /// ```
+    #[inline]
     pub fn cancel_token(&self) -> &crate::CancellationToken {
         &self.cancel_token
     }
@@ -127,6 +128,7 @@ impl TaskPool {
     /// // Cancel just this subtask without affecting the parent pool
     /// child.cancel();
     /// ```
+    #[inline]
     pub fn child_token(&self) -> crate::CancellationToken {
         self.cancel_token.child_token()
     }
@@ -208,6 +210,7 @@ impl TaskPool {
     ///
     /// Returns `true` if [`shutdown()`](TaskPool::shutdown) has been called
     /// or if the cancellation token has been cancelled manually.
+    #[inline]
     pub fn is_cancelled(&self) -> bool {
         self.cancel_token.is_cancelled()
     }

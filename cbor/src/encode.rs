@@ -106,11 +106,13 @@ impl Default for Encoder {
 
 impl Encoder {
     /// Creates a new, empty `Encoder`.
+    #[inline]
     pub fn new() -> Self {
         Self { data: Vec::new() }
     }
 
     /// Consumes the encoder and returns the generated CBOR byte vector.
+    #[inline]
     pub fn build(self) -> Vec<u8> {
         self.data
     }
@@ -161,6 +163,7 @@ impl Encoder {
     /// Encodes a value that implements the [`ToCbor`] trait.
     ///
     /// This is the primary method for writing data to the encoder.
+    #[inline]
     pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
@@ -496,6 +499,7 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     /// Returns the number of bytes written for this sequence so far.
+    #[inline]
     pub fn offset(&self) -> usize {
         self.encoder.offset() - self.start
     }
@@ -524,11 +528,13 @@ impl<'a, const D: usize> Sequence<'a, D> {
     }
 
     /// Skips emitting a value.
+    #[inline]
     pub fn skip_value(&mut self) {
         self.next_field();
     }
 
     /// Emits a value into the sequence.
+    #[inline]
     pub fn emit<T>(&mut self, value: &T) -> T::Result
     where
         T: ToCbor + ?Sized,
@@ -602,6 +608,8 @@ macro_rules! impl_uint_to_cbor {
         $(
             impl ToCbor for $ty {
                 type Result = ();
+
+                #[inline]
                 fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
                     encoder.emit_uint_minor(0, *self as u64)
                 }
@@ -617,6 +625,8 @@ macro_rules! impl_int_to_cbor {
         $(
             impl ToCbor for $ty {
                 type Result = ();
+
+                #[inline]
                 fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
                     if *self >= 0 {
                         encoder.emit_uint_minor(0, *self as u64)
@@ -675,6 +685,7 @@ impl ToCbor for f32 {
 impl ToCbor for half::f16 {
     type Result = ();
 
+    #[inline]
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.data.push((7 << 5) | 25);
         encoder.data.extend(self.to_be_bytes())
@@ -684,6 +695,7 @@ impl ToCbor for half::f16 {
 impl ToCbor for bool {
     type Result = ();
 
+    #[inline]
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.data.push((7 << 5) | if *self { 21 } else { 20 })
     }
@@ -694,6 +706,8 @@ macro_rules! impl_string_to_cbor {
         $(
             impl ToCbor for $value_type {
                 type Result = Range<usize>;
+
+                #[inline]
                 fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
                     encoder.emit_string(self)
                 }
@@ -710,6 +724,7 @@ where
 {
     type Result = ();
 
+    #[inline]
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit_array_slice(self)
     }
@@ -721,6 +736,7 @@ where
 {
     type Result = ();
 
+    #[inline]
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit_array_slice(self)
     }

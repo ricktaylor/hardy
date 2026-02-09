@@ -40,6 +40,7 @@ pub enum EidPattern {
 }
 
 impl EidPattern {
+    #[inline]
     pub fn matches(&self, eid: &Eid) -> bool {
         match self {
             EidPattern::Any => true,
@@ -231,6 +232,7 @@ pub enum EidPatternItem {
 }
 
 impl EidPatternItem {
+    #[inline]
     fn matches(&self, eid: &Eid) -> bool {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.matches(eid),

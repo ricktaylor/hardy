@@ -27,6 +27,7 @@ impl Bundle {
         )
     }
 
+    #[inline]
     pub fn has_expired(&self) -> bool {
         self.expiry() <= time::OffsetDateTime::now_utc()
     }
