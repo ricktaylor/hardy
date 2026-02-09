@@ -10,7 +10,7 @@ use hmac::{
         typenum,
     },
 };
-use rand::{TryRngCore, rngs::OsRng};
+use rand::TryRng;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -233,7 +233,7 @@ where
 }
 
 fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-    OsRng
+    rand::rngs::SysRng
         .try_fill_bytes(&mut cek)
         .map_err(|e| Error::Algorithm(e.to_string()))?;
     Ok(zeroize::Zeroizing::from(cek))

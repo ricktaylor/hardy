@@ -17,7 +17,7 @@ serde = ["dep:serde","hardy-bpv7/serde"]
 hardy-bpv7 = { path = "../bpv7", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 winnow = { version = "0.7.14", default-features = false, features = ["alloc"] }
-percent-encoding = { version = "2.3", default-features = false, features = ["alloc"], optional = true }
+percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc"], optional = true }
 glob = { version = "0.3.3", optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"], optional = true }
 

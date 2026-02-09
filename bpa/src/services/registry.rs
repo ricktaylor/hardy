@@ -1,7 +1,7 @@
 use super::*;
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId};
 use rand::{
-    Rng,
+    RngExt,
     distr::{Alphanumeric, SampleString},
 };
 use std::{

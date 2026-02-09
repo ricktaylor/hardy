@@ -1,5 +1,6 @@
 use super::*;
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId};
+use percent_encoding::percent_decode_str;
 
 pub struct ArbitraryEid(pub Eid);
 
@@ -24,7 +25,8 @@ impl<'a> Arbitrary<'a> for ArbitraryEid {
                 }))
             }
         } else {
-            let node_name: Box<str> = urlencoding::decode(u.arbitrary()?)
+            let node_name: Box<str> = percent_decode_str(u.arbitrary()?)
+                .decode_utf8()
                 .map_err(|_| arbitrary::Error::IncorrectFormat)?
                 .into();
             if node_name.as_ref() == "none" {

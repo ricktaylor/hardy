@@ -4,10 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
-default = ["rfc9173", "tokio"]
+default = ["rfc9173", "tokio", "std"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
 tokio = ["hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
+std = ["time/std", "hardy-bpv7/std", "hardy-eid-patterns/std", "serde?/std"]
 tracing = ["hardy-async/tracing"]
 
 [lib]
@@ -16,20 +17,21 @@ crate-type = ["rlib"]
 
 [dependencies]
 hardy-async = { path = "../async" }
-hardy-bpv7 = { path = "../bpv7", features = ["std"] }
+hardy-bpv7 = { path = "../bpv7", default-features = false }
 hardy-cbor = { path = "../cbor" }
-hardy-eid-patterns = { path = "../eid-patterns" }
+hardy-eid-patterns = { path = "../eid-patterns", default-features = false }
 time = { version = "0.3.47", features = ["serde-human-readable"] }
 bytes = "1.11.1"
 tracing = "0.1.44"
 metrics = "0.24.3"
 trace-err = "0.1.5"
-rand = "0.9.2"
+rand = "0.10.0"
+hashbrown = "0.16.1"
 lru = "0.16.3"
 thiserror = "2.0.18"
 flume = "0.12.0"
 futures = "0.3"
-serde = { version = "1.0.228", features = ["derive","rc"], optional = true }
+serde = { version = "1.0.228", default-features = false, features = ["derive","rc","alloc"], optional = true }
 base64 = { version = "0.22.1", optional = true }
 
 [dev-dependencies]

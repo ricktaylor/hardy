@@ -1,5 +1,5 @@
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
-use rand::Rng;
+use rand::RngExt;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

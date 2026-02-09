@@ -16,7 +16,7 @@ tracing = ["hardy-bpa/tracing"]
 [dependencies]
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.49.0", features = ["fs"] }
-rand = "0.9.2"
+rand = "0.10.0"
 directories = "6.0.0"
 tracing = "0.1.44"
 time = "0.3.47"
