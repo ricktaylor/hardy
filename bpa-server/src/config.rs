@@ -22,12 +22,8 @@ mod log_level_serde {
         D: Deserializer<'de>,
     {
         let s: Option<String> = Option::deserialize(deserializer)?;
-        match s {
-            Some(s) => Level::from_str(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
-        }
+        s.map(|s| Level::from_str(&s).map_err(serde::de::Error::custom))
+            .transpose()
     }
 }
 

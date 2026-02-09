@@ -127,7 +127,7 @@ impl<'a, const D: usize> Series<'a, D> {
         if self.at_end()? {
             Ok(None)
         } else {
-            self.parse_value(f).map(|v| Some(v))
+            self.parse_value(f).map(Some)
         }
     }
 
@@ -189,7 +189,7 @@ impl<'a, const D: usize> Series<'a, D> {
         if self.at_end()? {
             Ok(None)
         } else {
-            self.parse().map(|v| Some(v))
+            self.parse().map(Some)
         }
     }
 

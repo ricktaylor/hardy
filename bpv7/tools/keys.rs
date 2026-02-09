@@ -82,8 +82,7 @@ impl TryFrom<KeyInput> for Key {
     type Error = anyhow::Error;
 
     fn try_from(args: KeyInput) -> Result<Self, Self::Error> {
-        let (_, key) = args.try_into_keyset_and_key()?;
-        Ok(key)
+        args.try_into_keyset_and_key().map(|(_, key)| key)
     }
 }
 

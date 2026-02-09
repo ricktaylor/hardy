@@ -20,11 +20,10 @@ async fn status_notify(
     service: &dyn hardy_bpa::services::Service,
     request: StatusNotifyRequest,
 ) -> Result<(), tonic::Status> {
-    let timestamp = if let Some(timestamp) = request.timestamp {
-        Some(from_timestamp(timestamp).map_err(|e| tonic::Status::from_error(Box::new(e)))?)
-    } else {
-        None
-    };
+    let timestamp = request
+        .timestamp
+        .map(|t| from_timestamp(t).map_err(|e| tonic::Status::from_error(Box::new(e))))
+        .transpose()?;
 
     let kind = match status_notify_request::StatusKind::try_from(request.kind)
         .map_err(|e| tonic::Status::from_error(e.into()))?
