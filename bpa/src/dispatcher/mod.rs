@@ -19,8 +19,8 @@ pub(crate) struct Dispatcher {
     keys_registry: Arc<keys::registry::Registry>,
     filter_registry: Arc<filters::registry::Registry>,
 
-    // Dispatch queue (initialized in start())
-    dispatch_tx: std::sync::OnceLock<storage::channel::Sender>,
+    // Dispatch queue
+    dispatch_tx: storage::channel::Sender,
 
     // Config options
     status_reports: bool,
@@ -38,8 +38,41 @@ impl Dispatcher {
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_registry: Arc<filters::registry::Registry>,
-    ) -> Self {
-        Self {
+    ) -> Arc<Self> {
+        let (dispatcher, start) = Self::new_inner(
+            config,
+            store,
+            cla_registry,
+            service_registry,
+            rib,
+            keys_registry,
+            filter_registry,
+        );
+        start(&dispatcher);
+        dispatcher
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        config: &config::Config,
+        store: Arc<storage::Store>,
+        cla_registry: Arc<cla::registry::Registry>,
+        service_registry: Arc<services::registry::Registry>,
+        rib: Arc<rib::Rib>,
+        keys_registry: Arc<keys::registry::Registry>,
+        filter_registry: Arc<filters::registry::Registry>,
+    ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
+        if config.status_reports {
+            warn!("Bundle status reports are enabled");
+        }
+
+        let poll_channel_depth: usize = config.poll_channel_depth.into();
+
+        // Create the dispatch queue channel
+        let (dispatch_tx, dispatch_rx) =
+            store.channel(BundleStatus::Dispatching, poll_channel_depth);
+
+        let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),
             processing_pool: hardy_async::BoundedTaskPool::new(config.processing_pool_size),
             store,
@@ -48,45 +81,22 @@ impl Dispatcher {
             rib,
             keys_registry,
             filter_registry,
-            dispatch_tx: std::sync::OnceLock::new(),
+            dispatch_tx,
             status_reports: config.status_reports,
             node_ids: config.node_ids.clone(),
-            poll_channel_depth: config.poll_channel_depth.into(),
-        }
-    }
-
-    pub fn has_started(&self) -> bool {
-        self.dispatch_tx.get().is_some()
-    }
-
-    pub fn start(self: &Arc<Self>) {
-        if self.status_reports {
-            warn!("Bundle status reports are enabled");
-        }
-
-        // Create the dispatch queue channel
-        let (dispatch_tx, dispatch_rx) = self
-            .store
-            .channel(BundleStatus::Dispatching, self.poll_channel_depth);
-
-        self.dispatch_tx
-            .set(dispatch_tx)
-            .ok()
-            .trace_expect("Dispatcher already started");
-
-        // Spawn the dispatch queue consumer
-        let dispatcher = self.clone();
-        hardy_async::spawn!(self.tasks, "dispatch_queue_consumer", async move {
-            dispatcher.run_dispatch_queue(dispatch_rx).await
+            poll_channel_depth,
         });
+
+        (dispatcher, |d| {
+            let dispatcher = d.clone();
+            hardy_async::spawn!(d.tasks, "dispatch_queue_consumer", async move {
+                dispatcher.run_dispatch_queue(dispatch_rx).await
+            });
+        })
     }
 
     pub async fn shutdown(&self) {
-        self.dispatch_tx
-            .get()
-            .trace_expect("Dispatcher not started")
-            .close()
-            .await;
+        self.dispatch_tx.close().await;
         self.processing_pool.shutdown().await;
         self.tasks.shutdown().await;
     }

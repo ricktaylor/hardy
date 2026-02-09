@@ -236,14 +236,7 @@ impl Dispatcher {
             self.store.update_metadata(&bundle).await;
         }
 
-        if self
-            .dispatch_tx
-            .get()
-            .trace_expect("Dispatcher not started")
-            .send(bundle)
-            .await
-            .is_err()
-        {
+        if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");
         }
     }
