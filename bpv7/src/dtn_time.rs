@@ -16,7 +16,7 @@ impl DtnTime {
     /// Creates a new `DtnTime` instance representing the current time.
     #[cfg(feature = "std")]
     pub fn now() -> Self {
-        Self(((time::OffsetDateTime::now_utc() - DTN_EPOCH).whole_milliseconds()) as u64)
+        Self::saturating_from(time::OffsetDateTime::now_utc())
     }
 
     /// Creates a new `DtnTime` instance from the given number of milliseconds since the DTN epoch.
@@ -31,13 +31,14 @@ impl DtnTime {
 
     pub fn saturating_from(t: time::OffsetDateTime) -> Self {
         let millisecs = (t - DTN_EPOCH).whole_milliseconds();
-        if millisecs < 0 {
-            Self::new(0)
+        let millisecs = if millisecs < 0 {
+            0
         } else if millisecs > u64::MAX as i128 {
-            Self::new(u64::MAX)
+            u64::MAX
         } else {
-            Self(millisecs as u64)
-        }
+            millisecs as u64
+        };
+        Self(millisecs)
     }
 }
 
