@@ -21,6 +21,7 @@ tokio = { version = "1.49.0", optional = true, features = ["rt", "macros", "time
 tokio-util = { version = "0.7.18", optional = true, features = ["rt"] }
 tracing = { version = "0.1.44", optional = true }
 spin = "0.9.8"
+trace-err = "0.1.5"
 
 # Future runtime support
 # smol = ["dep:async-executor", "dep:async-channel"]
