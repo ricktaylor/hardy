@@ -40,6 +40,7 @@ pub mod task_pool;
 pub mod time;
 
 // Re-export commonly used types at crate root
+pub use async_trait::async_trait;
 pub use bounded_task_pool::BoundedTaskPool;
 pub use cancellation_token::CancellationToken;
 pub use join_handle::JoinHandle;

@@ -1021,6 +1021,7 @@ dependencies = [
 name = "hardy-async"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "hardy-async",
  "time",
  "tokio",
@@ -1032,7 +1033,6 @@ dependencies = [
 name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "base64",
  "bytes",
  "criterion",

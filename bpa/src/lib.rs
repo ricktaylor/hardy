@@ -22,5 +22,5 @@ use tracing::{debug, error, info, warn};
 use tracing::instrument;
 
 // Re-export for consistency
-pub use async_trait::async_trait;
 pub use bytes::Bytes;
+pub use hardy_async::async_trait;
