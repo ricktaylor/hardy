@@ -99,14 +99,7 @@ impl Rib {
     async fn add_local(&self, eid: Eid, action: Action) -> bool {
         info!("Adding local route {eid} => {action}");
 
-        if !match self
-            .inner
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .locals
-            .actions
-            .entry(eid.clone())
-        {
+        if !match self.inner.write().locals.actions.entry(eid.clone()) {
             hash_map::Entry::Occupied(mut occupied_entry) => {
                 occupied_entry.get_mut().insert(action)
             }
@@ -133,7 +126,6 @@ impl Rib {
     fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&Action) -> bool) -> bool {
         self.inner
             .write()
-            .trace_expect("Failed to lock mutex")
             .locals
             .actions
             .get_mut(eid)

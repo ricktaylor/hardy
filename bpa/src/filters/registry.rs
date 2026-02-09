@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::RwLock;
+use hardy_async::sync::RwLock;
 
 #[derive(Default)]
 pub struct Mutation {
@@ -39,10 +39,7 @@ impl Registry {
     }
 
     pub fn clear(&self) {
-        let mut inner = self
-            .inner
-            .write()
-            .trace_expect("Failed to write lock mutex during shutdown");
+        let mut inner = self.inner.write();
         inner.ingress.clear();
         inner.deliver.clear();
         inner.originate.clear();
@@ -56,10 +53,7 @@ impl Registry {
         after: &[&str],
         filter: Filter,
     ) -> Result<(), Error> {
-        let mut inner = self
-            .inner
-            .write()
-            .trace_expect("Failed to write lock mutex");
+        let mut inner = self.inner.write();
 
         match hook {
             Hook::Ingress => inner.ingress.add_filter(name, filter, after),
@@ -73,10 +67,7 @@ impl Registry {
     // Returns Ok(Some(filter)) if found and removed, Ok(None) if not found,
     // or Err(HasDependants) if other filters depend on it.
     pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>, Error> {
-        let mut inner = self
-            .inner
-            .write()
-            .trace_expect("Failed to write lock mutex");
+        let mut inner = self.inner.write();
 
         match hook {
             Hook::Ingress => inner.ingress.remove_filter(name),
@@ -105,7 +96,7 @@ impl Registry {
             + Send,
     {
         let prepared = {
-            let inner = self.inner.read().trace_expect("Failed to read lock mutex");
+            let inner = self.inner.read();
             match hook {
                 Hook::Ingress => inner.ingress.prepare(),
                 Hook::Deliver => inner.deliver.prepare(),

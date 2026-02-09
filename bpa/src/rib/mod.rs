@@ -1,11 +1,11 @@
 use super::*;
 use futures::{FutureExt, select_biased};
+use hardy_async::sync::RwLock;
 use hardy_bpv7::{
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
-use std::sync::RwLock;
 
 mod find;
 mod local;
@@ -79,19 +79,11 @@ impl Rib {
         address_type: cla::ClaAddressType,
         cla: Arc<cla::registry::Cla>,
     ) {
-        self.inner
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .address_types
-            .insert(address_type, cla);
+        self.inner.write().address_types.insert(address_type, cla);
     }
 
     pub fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
-        self.inner
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .address_types
-            .remove(address_type);
+        self.inner.write().address_types.remove(address_type);
     }
 }
 

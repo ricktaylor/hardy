@@ -1,6 +1,6 @@
 use super::*;
+use hardy_async::sync::Mutex;
 use rand::distr::{Alphanumeric, SampleString};
-use std::sync::Mutex;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -38,7 +38,6 @@ impl storage::BundleStorage for Storage {
         let snapshot = self
             .inner
             .lock()
-            .trace_expect("Failed to lock mutex")
             .cache
             .iter()
             .map(|(n, (t, _))| (n.clone().into(), *t))
@@ -54,7 +53,6 @@ impl storage::BundleStorage for Storage {
         Ok(self
             .inner
             .lock()
-            .trace_expect("Failed to lock mutex")
             .cache
             .peek(storage_name)
             .map(|(_, b)| b.clone()))
@@ -62,7 +60,7 @@ impl storage::BundleStorage for Storage {
 
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let mut rng = rand::rng();
-        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        let mut inner = self.inner.lock();
         let storage_name = loop {
             let storage_name = Alphanumeric.sample_string(&mut rng, 64);
             if !inner.cache.contains(&storage_name) {
@@ -96,7 +94,7 @@ impl storage::BundleStorage for Storage {
     }
 
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
-        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        let mut inner = self.inner.lock();
         if let Some((_, d)) = inner.cache.pop(storage_name) {
             inner.capacity = inner.capacity.saturating_sub(d.len());
         }

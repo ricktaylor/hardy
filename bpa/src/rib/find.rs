@@ -17,7 +17,7 @@ impl Rib {
         bundle: &hardy_bpv7::bundle::Bundle,
         metadata: &mut metadata::BundleMetadata,
     ) -> Option<FindResult> {
-        let inner = self.inner.read().trace_expect("Failed to lock mutex");
+        let inner = self.inner.read();
 
         // TODO: this is where route table switching can occur
         let table = &inner.routes;
@@ -49,7 +49,7 @@ impl Rib {
     /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
     pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
-        let inner = self.inner.read().trace_expect("Failed to lock mutex");
+        let inner = self.inner.read();
 
         // TODO: this is should be for *all* tables
         let table = &inner.routes;

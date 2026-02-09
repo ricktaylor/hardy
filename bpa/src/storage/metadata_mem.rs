@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Mutex;
+use hardy_async::sync::Mutex;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -27,21 +27,11 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<bundle::Bundle>> {
-        if let Some(bundle) = self
-            .entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .peek(bundle_id)
-            .cloned()
-        {
-            Ok(bundle)
-        } else {
-            Ok(None)
-        }
+        Ok(self.entries.lock().peek(bundle_id).cloned().flatten())
     }
 
     async fn insert(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
-        let mut entries = self.entries.lock().trace_expect("Failed to lock mutex");
+        let mut entries = self.entries.lock();
         if entries.get(&bundle.bundle.id).is_some() {
             Ok(false)
         } else {
@@ -53,16 +43,12 @@ impl storage::MetadataStorage for Storage {
     async fn replace(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
         self.entries
             .lock()
-            .trace_expect("Failed to lock mutex")
             .put(bundle.bundle.id.clone(), Some(bundle.clone()));
         Ok(())
     }
 
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        self.entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .put(bundle_id.clone(), None);
+        self.entries.lock().put(bundle_id.clone(), None);
         Ok(())
     }
 
@@ -86,12 +72,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         let mut updated = false;
-        for (_, v) in self
-            .entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .iter_mut()
-        {
+        for (_, v) in self.entries.lock().iter_mut() {
             if let Some(v) = v
                 && let metadata::BundleStatus::ForwardPending { peer: p, queue: _ } =
                     v.metadata.status
@@ -110,12 +91,7 @@ impl storage::MetadataStorage for Storage {
         mut limit: usize,
     ) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for (_, v) in self
-            .entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .iter()
-        {
+        for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
                 && v.metadata.status != metadata::BundleStatus::New
             {
@@ -138,12 +114,7 @@ impl storage::MetadataStorage for Storage {
 
     async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for (_, v) in self
-            .entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .iter()
-        {
+        for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
                 && v.metadata.status == metadata::BundleStatus::Waiting
             {
@@ -165,12 +136,7 @@ impl storage::MetadataStorage for Storage {
         status: &metadata::BundleStatus,
     ) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for (_, v) in self
-            .entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .iter()
-        {
+        for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
                 && &v.metadata.status == status
                 && let Some(fi) = &v.bundle.id.fragment_info
@@ -194,12 +160,7 @@ impl storage::MetadataStorage for Storage {
         mut limit: usize,
     ) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for (_, v) in self
-            .entries
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .iter()
-        {
+        for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
                 && &v.metadata.status == state
             {

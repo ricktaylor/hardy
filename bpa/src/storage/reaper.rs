@@ -40,10 +40,7 @@ impl Store {
 
         let new_expiry = new_entry.expiry;
         let old_expiry = {
-            let mut cache = self
-                .reaper_cache
-                .lock()
-                .trace_expect("Failed to acquire lock");
+            let mut cache = self.reaper_cache.lock();
             let old_expiry = cache.first().map(|e| e.expiry);
 
             if !cap || cache.len() < self.reaper_cache_size {
@@ -88,7 +85,6 @@ impl Store {
             let sleep_duration = self
                 .reaper_cache
                 .lock()
-                .trace_expect("Failed to acquire lock")
                 .first()
                 .map(|entry| entry.expiry - time::OffsetDateTime::now_utc())
                 .unwrap_or(time::Duration::MAX);
@@ -105,10 +101,7 @@ impl Store {
 
             let mut dead_bundle_ids = Vec::new();
             let check_store = {
-                let mut cache = self
-                    .reaper_cache
-                    .lock()
-                    .trace_expect("Failed to acquire lock");
+                let mut cache = self.reaper_cache.lock();
 
                 let now = time::OffsetDateTime::now_utc();
                 while let Some(entry) = cache.first() {

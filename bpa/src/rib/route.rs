@@ -45,7 +45,7 @@ impl Rib {
             };
 
             // Scope the lock
-            let mut inner = self.inner.write().trace_expect("Failed to lock mutex");
+            let mut inner = self.inner.write();
             match inner.routes.entry(priority) {
                 btree_map::Entry::Vacant(e) => {
                     e.insert([(pattern.clone(), [new_entry].into())].into());
@@ -104,7 +104,7 @@ impl Rib {
     ) -> bool {
         // Remove the entry
         {
-            let mut inner = self.inner.write().trace_expect("Failed to lock mutex");
+            let mut inner = self.inner.write();
             if let Some(patterns) = inner.routes.get_mut(&priority)
                 && let Some(actions) = patterns.get_mut(pattern)
                 && actions.remove(&Entry {

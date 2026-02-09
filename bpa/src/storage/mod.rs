@@ -1,6 +1,6 @@
 use super::*;
+use hardy_async::sync::Mutex;
 use lru::LruCache;
-use std::sync::Mutex;
 
 // For bundle_cache we use hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1): peek, put, pop
@@ -8,7 +8,7 @@ use std::sync::Mutex;
 // 3. No blocking/sleeping/syscalls while holding lock
 // 4. Avoids OS mutex overhead on hot path
 //
-// Other caches (metadata_mem, bundle_mem) use std::sync::Mutex because
+// Other caches (metadata_mem, bundle_mem) use hardy_async::sync::Mutex because
 // they perform O(n) iteration while holding the lock.
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
