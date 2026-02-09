@@ -9,15 +9,15 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-std = ["thiserror/std", "hardy-bpv7/std"]
-dtn-pat-item = ["std","dep:urlencoding","dep:glob"]
+std = ["thiserror/std", "hardy-bpv7/std", "percent-encoding?/std"]
+dtn-pat-item = ["std","dep:percent-encoding","dep:glob"]
 serde = ["dep:serde","hardy-bpv7/serde"]
 
 [dependencies]
 hardy-bpv7 = { path = "../bpv7", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 winnow = { version = "0.7.14", default-features = false, features = ["alloc"] }
-urlencoding = { version = "2.1.3", optional = true }
+percent-encoding = { version = "2.3", default-features = false, features = ["alloc"], optional = true }
 glob = { version = "0.3.3", optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"], optional = true }
 

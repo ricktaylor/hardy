@@ -1,5 +1,6 @@
 use super::*;
 use error::CaptureFieldErr;
+use percent_encoding::percent_decode_str;
 use winnow::{
     ModalResult, Parser,
     ascii::dec_uint,
@@ -74,7 +75,7 @@ fn parse_regname(input: &mut &str) -> ModalResult<DtnNodeId> {
         ),
     )
     .try_map(|v| {
-        urlencoding::decode(v).map(|s| DtnNodeId {
+        percent_decode_str(v).decode_utf8().map(|s| DtnNodeId {
             node_name: s.into_owned().into(),
         })
     })

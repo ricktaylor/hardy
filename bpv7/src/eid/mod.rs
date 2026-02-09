@@ -1,6 +1,14 @@
 use super::*;
 use alloc::borrow::Cow;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_encode};
 use thiserror::Error;
+
+// Encode set matching RFC 3986 unreserved characters (keeps alphanumerics, -, _, ., ~)
+const URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
 
 mod error;
 mod parse;
@@ -234,7 +242,7 @@ impl hardy_cbor::encode::ToCbor for Eid {
                 1,
                 format!(
                     "//{}/{service_name}",
-                    urlencoding::encode(&node_name.node_name)
+                    percent_encode(node_name.node_name.as_bytes(), URI_ENCODE_SET)
                 ),
             )),
             Eid::LegacyIpn {
@@ -311,7 +319,7 @@ impl core::fmt::Display for Eid {
                 write!(
                     f,
                     "dtn://{}/{service_name}",
-                    urlencoding::encode(&node_name.node_name)
+                    percent_encode(node_name.node_name.as_bytes(), URI_ENCODE_SET)
                 )
             }
             Eid::Unknown { scheme, data } => {

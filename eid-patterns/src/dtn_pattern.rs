@@ -1,10 +1,18 @@
 use super::*;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, percent_encode};
 use winnow::{
     ModalResult, Parser,
     combinator::{alt, preceded, terminated},
     stream::AsChar,
     token::take_while,
 };
+
+// Encode set matching RFC 3986 unreserved characters (keeps alphanumerics, -, _, ., ~)
+const URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
 
 // TODO:  The whole Glob thing needs more work.  Probably splitting into 2 parts, a node_name glob and demux glob
 // Also need to ensure proper parsing of globs so we can have [|] an not interfere with set pipe splitting
@@ -71,7 +79,9 @@ impl DtnPatternItem {
     pub(crate) fn new_glob(pattern: &str) -> Result<Self, Error> {
         Ok(Self::Glob(
             glob::Pattern::new(
-                &urlencoding::decode(pattern).map_err(|e| Error::ParseError(e.to_string()))?,
+                &percent_decode_str(pattern)
+                    .decode_utf8()
+                    .map_err(|e| Error::ParseError(e.to_string()))?,
             )
             .map_err(|e| Error::ParseError(e.to_string()))?,
         ))
@@ -84,10 +94,15 @@ impl core::fmt::Display for DtnPatternItem {
             Self::None => write!(f, "none"),
             Self::Any => write!(f, "**"),
             Self::Exact(node_name, demux) => {
-                write!(f, "//{}/{demux}", urlencoding::encode(node_name))
+                write!(
+                    f,
+                    "//{}/{demux}",
+                    percent_encode(node_name.as_bytes(), URI_ENCODE_SET)
+                )
             }
             Self::Glob(pattern) => {
-                let pattern = urlencoding::encode(pattern.as_str())
+                let pattern = percent_encode(pattern.as_str().as_bytes(), URI_ENCODE_SET)
+                    .to_string()
                     .replace("%2A", "*")
                     .replace("%2F", "/")
                     .replace("%3F", "?")
@@ -128,7 +143,9 @@ fn parse_dtn_exact_ssp(input: &mut &str) -> ModalResult<DtnPatternItem> {
                 // Looks like a glob
                 DtnPatternItem::new_glob(&format!(
                     "{node_name}/{}",
-                    urlencoding::decode(demux).map_err(|e| Error::ParseError(e.to_string()))?
+                    percent_decode_str(demux)
+                        .decode_utf8()
+                        .map_err(|e| Error::ParseError(e.to_string()))?
                 ))
             } else {
                 Ok(DtnPatternItem::Exact(node_name, demux.into()))
@@ -160,7 +177,11 @@ fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
             ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
         ),
     )
-    .try_map(|v| urlencoding::decode(v).map(|s| s.into_owned().into()))
+    .try_map(|v| {
+        percent_decode_str(v)
+            .decode_utf8()
+            .map(|s| s.into_owned().into())
+    })
     .parse_next(input)
 }
 
@@ -198,8 +219,12 @@ fn parse_dtn_glob(input: &mut &str) -> ModalResult<DtnPatternItem> {
         .try_map(|(node_name, demux)| {
             DtnPatternItem::new_glob(&format!(
                 "{}/{}",
-                urlencoding::decode(node_name).map_err(|e| Error::ParseError(e.to_string()))?,
-                urlencoding::decode(demux).map_err(|e| Error::ParseError(e.to_string()))?
+                percent_decode_str(node_name)
+                    .decode_utf8()
+                    .map_err(|e| Error::ParseError(e.to_string()))?,
+                percent_decode_str(demux)
+                    .decode_utf8()
+                    .map_err(|e| Error::ParseError(e.to_string()))?
             ))
         })
         .parse_next(input)
