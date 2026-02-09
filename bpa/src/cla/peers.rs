@@ -1,18 +1,22 @@
 use super::*;
-use registry::Cla;
-use std::sync::RwLock;
+
+// PeerTable uses spin::RwLock because:
+// 1. All operations are O(1) HashMap lookups/inserts
+// 2. Read-heavy pattern (forward is called frequently)
+// 3. No blocking/iteration while holding lock
+// 4. Avoids OS rwlock overhead on hot forwarding path
 
 struct PeerInner {
     queues: HashMap<Option<u32>, storage::channel::Sender>,
 }
 
 pub struct Peer {
-    cla: Weak<Cla>,
+    cla: Weak<registry::Cla>,
     inner: std::sync::OnceLock<PeerInner>,
 }
 
 impl Peer {
-    pub fn new(cla: Weak<Cla>) -> Self {
+    pub fn new(cla: Weak<registry::Cla>) -> Self {
         Self {
             cla,
             inner: std::sync::OnceLock::new(),
@@ -23,7 +27,7 @@ impl Peer {
     pub async fn start(
         &self,
         poll_channel_depth: usize,
-        cla: Arc<Cla>,
+        cla: Arc<registry::Cla>,
         peer: u32,
         cla_addr: ClaAddress,
         store: Arc<storage::Store>,
@@ -137,18 +141,19 @@ struct PeerTableInner {
 }
 
 pub struct PeerTable {
-    inner: RwLock<PeerTableInner>,
+    inner: spin::RwLock<PeerTableInner>,
 }
 
 impl PeerTable {
     pub fn new() -> Self {
         Self {
-            inner: RwLock::new(PeerTableInner::default()),
+            inner: spin::RwLock::new(PeerTableInner::default()),
         }
     }
 
     pub fn insert(&self, peer: Arc<Peer>) -> u32 {
-        let mut inner = self.inner.write().trace_expect("Failed to lock mutex");
+        // spin::RwLock::write() returns guard directly (no Result)
+        let mut inner = self.inner.write();
         let peer_id = loop {
             inner.next = inner.next.wrapping_add(1);
             if !inner.peers.contains_key(&inner.next) {
@@ -161,12 +166,7 @@ impl PeerTable {
     }
 
     pub async fn remove(&self, peer_id: u32) {
-        let peer = self
-            .inner
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .peers
-            .remove(&peer_id);
+        let peer = self.inner.write().peers.remove(&peer_id);
 
         if let Some(peer) = peer {
             peer.close().await;
@@ -178,14 +178,8 @@ impl PeerTable {
         peer_id: u32,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        let Some(peer) = self
-            .inner
-            .read()
-            .trace_expect("Failed to lock mutex")
-            .peers
-            .get(&peer_id)
-            .cloned()
-        else {
+        // spin::RwLock::read() returns guard directly (no Result)
+        let Some(peer) = self.inner.read().peers.get(&peer_id).cloned() else {
             return Err(bundle);
         };
 

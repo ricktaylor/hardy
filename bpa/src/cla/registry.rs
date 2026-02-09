@@ -1,13 +1,19 @@
 use super::*;
 use hardy_bpv7::eid::NodeId;
-use std::sync::{Mutex, RwLock};
+
+// CLA registry uses spin::Mutex because:
+// 1. All operations are O(1) HashMap lookups/inserts
+// 2. No read-only access pattern (RwLock not needed)
+// 3. No blocking/RNG/iteration while holding lock
+// 4. Avoids OS mutex overhead on CLA lifecycle operations
 
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
 
     name: String,
-    peers: Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
+    // spin::Mutex for O(1) peer HashMap operations
+    peers: spin::Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
     address_type: Option<ClaAddressType>,
 }
 
@@ -64,7 +70,7 @@ impl cla::Sink for Sink {
     async fn dispatch(
         &self,
         bundle: Bytes,
-        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_node: Option<&NodeId>,
         peer_addr: Option<&ClaAddress>,
     ) -> cla::Result<()> {
         let cla_name = self.cla.upgrade().map(|c| c.name.clone().into());
@@ -108,7 +114,8 @@ impl Drop for Sink {
 
 pub(crate) struct Registry {
     node_ids: Vec<NodeId>,
-    clas: RwLock<HashMap<String, Arc<Cla>>>,
+    // spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
+    clas: spin::Mutex<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
     store: Arc<storage::Store>,
     peers: peers::PeerTable,
@@ -130,13 +137,8 @@ impl Registry {
     }
 
     pub async fn shutdown(&self) {
-        let clas = self
-            .clas
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .drain()
-            .map(|(_, v)| v)
-            .collect::<Vec<_>>();
+        // spin::Mutex::lock() returns guard directly (no Result)
+        let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
         for cla in clas {
             self.unregister_cla(cla).await;
@@ -156,7 +158,7 @@ impl Registry {
     ) -> cla::Result<Vec<NodeId>> {
         // Scope lock
         let cla = {
-            let mut clas = self.clas.write().trace_expect("Failed to lock mutex");
+            let mut clas = self.clas.lock();
             let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
                 return Err(cla::Error::AlreadyExists(name));
             };
@@ -194,11 +196,7 @@ impl Registry {
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {
-        let cla = self
-            .clas
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .remove(&cla.name);
+        let cla = self.clas.lock().remove(&cla.name);
 
         if let Some(cla) = cla {
             self.unregister_cla(cla).await;
@@ -212,7 +210,7 @@ impl Registry {
             self.rib.remove_address_type(address_type);
         }
 
-        let peers = core::mem::take(&mut *cla.peers.lock().trace_expect("Failed to lock mutex"));
+        let peers = core::mem::take(&mut *cla.peers.lock());
 
         for (node_id, peers) in peers {
             for (_, peer_id) in peers {
@@ -239,27 +237,35 @@ impl Registry {
 
         let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
 
-        // We search here because it results in better lookups than linear searching the peers table
-        let peer_id = {
-            match cla
-                .peers
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .entry(node_id.clone())
-            {
+        // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
+        // If the cla.peers entry already exists, we clean up the orphaned peer_id.
+        let peer_id = self.peers.insert(peer.clone());
+
+        // Now try to insert into cla.peers (separate lock acquisition, no nesting)
+        let inserted = {
+            let mut peers = cla.peers.lock();
+            match peers.entry(node_id.clone()) {
                 hash_map::Entry::Occupied(mut e) => {
-                    let hash_map::Entry::Vacant(e) = e.get_mut().entry(cla_addr.clone()) else {
-                        return false;
-                    };
-                    *e.insert(self.peers.insert(peer.clone()))
+                    match e.get_mut().entry(cla_addr.clone()) {
+                        hash_map::Entry::Vacant(inner_e) => {
+                            inner_e.insert(peer_id);
+                            true
+                        }
+                        hash_map::Entry::Occupied(_) => false, // Already exists
+                    }
                 }
                 hash_map::Entry::Vacant(e) => {
-                    let peer_id = self.peers.insert(peer.clone());
                     e.insert([(cla_addr.clone(), peer_id)].into());
-                    peer_id
+                    true
                 }
             }
         };
+
+        // If entry already existed, clean up the orphaned peer_id
+        if !inserted {
+            self.peers.remove(peer_id).await;
+            return false;
+        }
 
         info!(
             "Added new peer {peer_id}: {node_id} at {cla_addr} via CLA {}",
@@ -288,7 +294,6 @@ impl Registry {
         let Some(peer_id) = cla
             .peers
             .lock()
-            .trace_expect("Failed to lock mutex")
             .get_mut(&node_id)
             .and_then(|m| m.remove(cla_addr))
         else {
