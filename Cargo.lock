@@ -1082,6 +1082,7 @@ dependencies = [
  "metrics",
  "rand 0.10.0",
  "serde",
+ "spin",
  "thiserror",
  "time",
  "trace-err",

@@ -2,6 +2,15 @@ use super::*;
 use lru::LruCache;
 use std::sync::Mutex;
 
+// For bundle_cache we use spin::Mutex because:
+// 1. All operations are O(1): peek, put, pop
+// 2. Critical sections are very short (LRU HashMap lookups)
+// 3. No blocking/sleeping/syscalls while holding lock
+// 4. Avoids OS mutex overhead on hot path
+//
+// Other caches (metadata_mem, bundle_mem) use std::sync::Mutex because
+// they perform O(n) iteration while holding the lock.
+
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
 pub type Sender<T> = flume::Sender<T>;
@@ -257,7 +266,10 @@ pub(crate) struct Store {
     tasks: hardy_async::TaskPool,
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
-    bundle_cache: Mutex<LruCache<Arc<str>, Bytes>>,
+
+    // Using spin::Mutex for bundle_cache - see comment at top of file
+    bundle_cache: spin::Mutex<LruCache<Arc<str>, Bytes>>,
+
     reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
     reaper_wakeup: Arc<hardy_async::Notify>,
 
