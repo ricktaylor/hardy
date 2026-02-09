@@ -5,9 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["rfc9173", "tokio", "std"]
+default = ["rfc9173", "tokio"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
-tokio = ["hardy-async/tokio"]
+tokio = ["std", "hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
 std = ["time/std", "hardy-bpv7/std", "hardy-eid-patterns/std", "serde?/std"]
 tracing = ["hardy-async/tracing"]
@@ -17,7 +17,7 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-hardy-async = { path = "../async" }
+hardy-async = { path = "../async", default-features = false }
 hardy-bpv7 = { path = "../bpv7", default-features = false }
 hardy-cbor = { path = "../cbor" }
 hardy-eid-patterns = { path = "../eid-patterns", default-features = false }
