@@ -6,7 +6,7 @@ pub struct Bpa {
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
     cla_registry: Arc<cla::registry::Registry>,
-    service_registry: Arc<services::registry::ServiceRegistry>,
+    service_registry: Arc<services::registry::Registry>,
     filter_registry: Arc<filters::registry::Registry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
@@ -29,10 +29,7 @@ impl Bpa {
         // New Keys Registry (TODO: Make this load keys from the Config!)
         let keys_registry = Arc::new(keys::registry::Registry::new());
 
-        let service_registry = Arc::new(services::registry::ServiceRegistry::new(
-            config,
-            rib.clone(),
-        ));
+        let service_registry = Arc::new(services::registry::Registry::new(config, rib.clone()));
 
         // New filter registry
         let filter_registry = Arc::new(filters::registry::Registry::new(config));

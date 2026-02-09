@@ -4,7 +4,12 @@ use rand::{
     RngExt,
     distr::{Alphanumeric, SampleString},
 };
-use std::sync::RwLock;
+
+// ServiceRegistry uses spin::Mutex because:
+// 1. All operations are O(1) HashMap lookups/inserts
+// 2. RNG for auto-generated IDs is called OUTSIDE the lock
+// 3. Lock only protects contains_key + insert (both O(1))
+// 4. No blocking/sleeping while holding lock
 
 /// Distinguishes between low-level Service and high-level Application registrations
 pub enum ServiceImpl {
@@ -78,7 +83,7 @@ impl core::fmt::Debug for Service {
 /// Sink implementation for both Service and Application traits
 struct Sink {
     service: Weak<Service>,
-    registry: Arc<ServiceRegistry>,
+    registry: Arc<Registry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -171,14 +176,15 @@ impl Drop for Sink {
     }
 }
 
-pub(crate) struct ServiceRegistry {
+pub(crate) struct Registry {
     node_ids: node_ids::NodeIds,
     rib: Arc<rib::Rib>,
-    services: RwLock<HashMap<Eid, Arc<Service>>>,
+    // spin::Mutex for O(1) service HashMap operations
+    services: spin::Mutex<HashMap<Eid, Arc<Service>>>,
     tasks: hardy_async::TaskPool,
 }
 
-impl ServiceRegistry {
+impl Registry {
     pub fn new(config: &config::Config, rib: Arc<rib::Rib>) -> Self {
         Self {
             node_ids: config.node_ids.clone(),
@@ -189,10 +195,10 @@ impl ServiceRegistry {
     }
 
     pub async fn shutdown(&self) {
+        // spin::Mutex::lock() returns guard directly (no Result)
         let services = self
             .services
-            .write()
-            .trace_expect("Failed to lock mutex")
+            .lock()
             .drain()
             .map(|(_, v)| v)
             .collect::<Vec<_>>();
@@ -239,103 +245,174 @@ impl ServiceRegistry {
         service: ServiceImpl,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        // Scope the lock
-        let (service, service_id) = {
-            let mut services = self.services.write().trace_expect("Failed to lock mutex");
+        // Categorize the request: explicit ID vs auto-generated
+        enum IdRequest {
+            ExplicitIpn {
+                fqnn: IpnNodeId,
+                service_number: u32,
+            },
+            ExplicitDtn {
+                node_name: DtnNodeId,
+                service_name: Box<str>,
+            },
+            AutoIpn {
+                fqnn: IpnNodeId,
+            },
+            AutoDtn {
+                node_name: DtnNodeId,
+            },
+        }
 
-            let new_ipn_service = |fqnn: &IpnNodeId| {
-                let mut rng = rand::rng();
+        // Determine what kind of ID we need (no lock held yet)
+        let id_request = if let Some(service_id) = service_id {
+            match service_id {
+                hardy_bpv7::eid::Service::Dtn(service_name) => {
+                    let node_name = self
+                        .node_ids
+                        .dtn
+                        .as_ref()
+                        .ok_or(services::Error::NoDtnNodeId)?
+                        .clone();
+
+                    if service_name.is_empty() {
+                        IdRequest::AutoDtn { node_name }
+                    } else {
+                        if !DtnNodeId::is_valid_service_name(&service_name) {
+                            return Err(services::Error::DtnInvalidServiceName(
+                                service_name.to_string(),
+                            ));
+                        }
+                        IdRequest::ExplicitDtn {
+                            node_name,
+                            service_name,
+                        }
+                    }
+                }
+                hardy_bpv7::eid::Service::Ipn(service_number) => {
+                    let fqnn = self
+                        .node_ids
+                        .ipn
+                        .as_ref()
+                        .ok_or(services::Error::NoIpnNodeId)?
+                        .clone();
+
+                    if service_number == 0 {
+                        IdRequest::AutoIpn { fqnn }
+                    } else {
+                        IdRequest::ExplicitIpn {
+                            fqnn,
+                            service_number,
+                        }
+                    }
+                }
+            }
+        } else if let Some(fqnn) = &self.node_ids.ipn {
+            IdRequest::AutoIpn { fqnn: fqnn.clone() }
+        } else if let Some(node_name) = &self.node_ids.dtn {
+            IdRequest::AutoDtn {
+                node_name: node_name.clone(),
+            }
+        } else {
+            return Err(services::Error::NoIpnNodeId);
+        };
+
+        // For auto-generated IDs, we need Option to allow retry loop
+        let mut service_impl = Some(service);
+
+        let (service, service_id) = match id_request {
+            // Explicit IDs: single attempt, error on collision
+            IdRequest::ExplicitIpn {
+                fqnn,
+                service_number,
+            } => {
+                let candidate = Eid::Ipn {
+                    fqnn,
+                    service_number,
+                };
+                let mut services = self.services.lock();
+                if services.contains_key(&candidate) {
+                    return Err(services::Error::IpnServiceInUse(service_number));
+                }
+                let service = Arc::new(Service {
+                    service: service_impl.take().unwrap(),
+                    service_id: candidate.clone(),
+                });
+                services.insert(candidate.clone(), service.clone());
+                (service, candidate)
+            }
+
+            IdRequest::ExplicitDtn {
+                node_name,
+                service_name,
+            } => {
+                let candidate = Eid::Dtn {
+                    node_name,
+                    service_name: service_name.clone(),
+                };
+                let mut services = self.services.lock();
+                if services.contains_key(&candidate) {
+                    return Err(services::Error::DtnServiceInUse(service_name.to_string()));
+                }
+                let service = Arc::new(Service {
+                    service: service_impl.take().unwrap(),
+                    service_id: candidate.clone(),
+                });
+                services.insert(candidate.clone(), service.clone());
+                (service, candidate)
+            }
+
+            // Auto-generated IDs: loop with RNG OUTSIDE lock, check+insert inside
+            IdRequest::AutoIpn { fqnn } => {
                 loop {
-                    let service_id = Eid::Ipn {
+                    // Generate candidate OUTSIDE the lock (RNG call here)
+                    let candidate = Eid::Ipn {
                         fqnn: fqnn.clone(),
-                        service_number: rng.random_range(0x10000..=u32::MAX),
+                        service_number: rand::rng().random_range(0x10000..=u32::MAX),
                     };
-                    if !services.contains_key(&service_id) {
-                        break service_id;
+
+                    // Lock scope: O(1) check + insert only
+                    let mut services = self.services.lock();
+                    if services.contains_key(&candidate) {
+                        // Collision - drop lock and try new random value
+                        continue;
                     }
+
+                    let service = Arc::new(Service {
+                        service: service_impl.take().unwrap(),
+                        service_id: candidate.clone(),
+                    });
+                    services.insert(candidate.clone(), service.clone());
+                    break (service, candidate);
                 }
-            };
-            let new_dtn_service = |node_name: &DtnNodeId| {
-                let mut rng = rand::rng();
+            }
+
+            IdRequest::AutoDtn { node_name } => {
                 loop {
-                    let service_id = Eid::Dtn {
+                    // Generate candidate OUTSIDE the lock (RNG call here)
+                    let candidate = Eid::Dtn {
                         node_name: node_name.clone(),
-                        service_name: format!("auto/{}", Alphanumeric.sample_string(&mut rng, 16))
-                            .into(),
+                        service_name: format!(
+                            "auto/{}",
+                            Alphanumeric.sample_string(&mut rand::rng(), 16)
+                        )
+                        .into(),
                     };
-                    if !services.contains_key(&service_id) {
-                        break service_id;
+
+                    // Lock scope: O(1) check + insert only
+                    let mut services = self.services.lock();
+                    if services.contains_key(&candidate) {
+                        // Collision - drop lock and try new random value
+                        continue;
                     }
+
+                    let service = Arc::new(Service {
+                        service: service_impl.take().unwrap(),
+                        service_id: candidate.clone(),
+                    });
+                    services.insert(candidate.clone(), service.clone());
+                    break (service, candidate);
                 }
-            };
-
-            // Compose service EID
-            let service_id = if let Some(service_id) = service_id {
-                match &service_id {
-                    hardy_bpv7::eid::Service::Dtn(service_name) => {
-                        let node_name = self
-                            .node_ids
-                            .dtn
-                            .as_ref()
-                            .ok_or(services::Error::NoDtnNodeId)?;
-
-                        if service_name.is_empty() {
-                            new_dtn_service(node_name)
-                        } else {
-                            if !DtnNodeId::is_valid_service_name(service_name) {
-                                return Err(services::Error::DtnInvalidServiceName(
-                                    service_name.to_string(),
-                                ));
-                            }
-
-                            let service_id = Eid::Dtn {
-                                node_name: node_name.clone(),
-                                service_name: service_name.clone(),
-                            };
-
-                            if services.contains_key(&service_id) {
-                                return Err(services::Error::DtnServiceInUse(
-                                    service_name.to_string(),
-                                ));
-                            }
-                            service_id
-                        }
-                    }
-                    hardy_bpv7::eid::Service::Ipn(service_number) => {
-                        let fqnn = self
-                            .node_ids
-                            .ipn
-                            .as_ref()
-                            .ok_or(services::Error::NoIpnNodeId)?;
-
-                        if service_number == &0 {
-                            new_ipn_service(fqnn)
-                        } else {
-                            let service_id = Eid::Ipn {
-                                fqnn: fqnn.clone(),
-                                service_number: *service_number,
-                            };
-                            if services.contains_key(&service_id) {
-                                return Err(services::Error::IpnServiceInUse(*service_number));
-                            }
-                            service_id
-                        }
-                    }
-                }
-            } else if let Some(fqnn) = &self.node_ids.ipn {
-                new_ipn_service(fqnn)
-            } else if let Some(node_name) = &self.node_ids.dtn {
-                new_dtn_service(node_name)
-            } else {
-                return Err(services::Error::NoIpnNodeId);
-            };
-
-            let service = Arc::new(Service {
-                service,
-                service_id: service_id.clone(),
-            });
-            services.insert(service_id.clone(), service.clone());
-            (service, service_id)
+            }
         };
 
         info!("Registered new service: {service_id}");
@@ -365,11 +442,8 @@ impl ServiceRegistry {
     }
 
     async fn unregister(&self, service: Arc<Service>) {
-        let service = self
-            .services
-            .write()
-            .trace_expect("Failed to lock mutex")
-            .remove(&service.service_id);
+        // spin::Mutex::lock() returns guard directly (no Result)
+        let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
             self.unregister_service(service).await
@@ -389,11 +463,8 @@ impl ServiceRegistry {
     }
 
     pub async fn find(&self, service_id: &Eid) -> Option<Arc<Service>> {
-        self.services
-            .read()
-            .trace_expect("Failed to lock mutex")
-            .get(service_id)
-            .cloned()
+        // spin::Mutex::lock() returns guard directly (no Result)
+        self.services.lock().get(service_id).cloned()
     }
 }
 
