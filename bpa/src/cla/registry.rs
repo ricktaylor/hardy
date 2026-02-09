@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpv7::eid::NodeId;
-use std::sync::{Mutex, RwLock, Weak};
+use std::sync::{Mutex, RwLock};
 
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
@@ -20,25 +20,25 @@ impl PartialEq for Cla {
 impl Eq for Cla {}
 
 impl PartialOrd for Cla {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Cla {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.name.cmp(&other.name)
     }
 }
 
-impl std::hash::Hash for Cla {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for Cla {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl std::fmt::Debug for Cla {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Cla {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Cla")
             .field("name", &self.name)
             .field("address_type", &self.address_type)
@@ -157,7 +157,7 @@ impl Registry {
         // Scope lock
         let cla = {
             let mut clas = self.clas.write().trace_expect("Failed to lock mutex");
-            let std::collections::hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
+            let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
                 return Err(cla::Error::AlreadyExists(name));
             };
 
@@ -212,7 +212,7 @@ impl Registry {
             self.rib.remove_address_type(address_type);
         }
 
-        let peers = std::mem::take(&mut *cla.peers.lock().trace_expect("Failed to lock mutex"));
+        let peers = core::mem::take(&mut *cla.peers.lock().trace_expect("Failed to lock mutex"));
 
         for (node_id, peers) in peers {
             for (_, peer_id) in peers {
@@ -237,7 +237,7 @@ impl Registry {
     ) -> bool {
         // TODO: This should ideally do a replace and return the previous
 
-        let peer = Arc::new(peers::Peer::new(std::sync::Arc::downgrade(&cla)));
+        let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
 
         // We search here because it results in better lookups than linear searching the peers table
         let peer_id = {
@@ -247,15 +247,13 @@ impl Registry {
                 .trace_expect("Failed to lock mutex")
                 .entry(node_id.clone())
             {
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    let std::collections::hash_map::Entry::Vacant(e) =
-                        e.get_mut().entry(cla_addr.clone())
-                    else {
+                hash_map::Entry::Occupied(mut e) => {
+                    let hash_map::Entry::Vacant(e) = e.get_mut().entry(cla_addr.clone()) else {
                         return false;
                     };
                     *e.insert(self.peers.insert(peer.clone()))
                 }
-                std::collections::hash_map::Entry::Vacant(e) => {
+                hash_map::Entry::Vacant(e) => {
                     let peer_id = self.peers.insert(peer.clone());
                     e.insert([(cla_addr.clone(), peer_id)].into());
                     peer_id

@@ -132,7 +132,7 @@ impl Store {
             //    new senders that arrive while we are busy draining the store.
             let old_state = {
                 let mut state = shared.use_tx.lock().trace_expect("Failed to lock mutex");
-                std::mem::replace(&mut *state, ChannelState::Draining)
+                core::mem::replace(&mut *state, ChannelState::Draining)
             };
             if let ChannelState::Closing = old_state {
                 // If we were notified because we are closing down, exit the loop.

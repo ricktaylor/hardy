@@ -94,7 +94,7 @@ where
 }
 
 #[cfg(feature = "serde")]
-fn deserialize_key<'de, D>(deserializer: D) -> core::result::Result<Box<[u8]>, D::Error>
+fn deserialize_key<'de, D>(deserializer: D) -> Result<Box<[u8]>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

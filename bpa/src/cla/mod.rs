@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 use thiserror::Error;
 
 pub(crate) mod registry;
@@ -27,7 +26,7 @@ pub enum Error {
 
     /// An internal error occurred.
     #[error(transparent)]
-    Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
+    Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
 /// An enumeration of known CLA address types.
@@ -110,8 +109,8 @@ impl From<ClaAddress> for (ClaAddressType, Bytes) {
     }
 }
 
-impl std::fmt::Display for ClaAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ClaAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ClaAddress::Tcp(socket_addr) => write!(f, "tcp:{socket_addr}"),
             ClaAddress::Private(bytes) => {

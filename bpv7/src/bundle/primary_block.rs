@@ -180,7 +180,7 @@ impl PrimaryBlock {
     /// and the first error encountered is returned as an `Option<Error>`.
     pub fn into_bundle(self, extent: core::ops::Range<usize>) -> (bundle::Bundle, Option<Error>) {
         // Unpack the value or default
-        fn unpack<T: core::default::Default>(
+        fn unpack<T: Default>(
             r: Result<T, Error>,
             e: &mut Option<Error>,
             field: &'static str,

@@ -8,28 +8,28 @@ pub enum Action {
 }
 
 impl PartialOrd for Action {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Action {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // The order is critical, hence done long-hand
         match (self, other) {
-            (Action::AdminEndpoint, Action::AdminEndpoint) => std::cmp::Ordering::Equal,
-            (Action::AdminEndpoint, _) => std::cmp::Ordering::Less,
-            (Action::Local(_), Action::AdminEndpoint) => std::cmp::Ordering::Greater,
+            (Action::AdminEndpoint, Action::AdminEndpoint) => core::cmp::Ordering::Equal,
+            (Action::AdminEndpoint, _) => core::cmp::Ordering::Less,
+            (Action::Local(_), Action::AdminEndpoint) => core::cmp::Ordering::Greater,
             (Action::Local(lhs), Action::Local(rhs)) => lhs.cmp(rhs),
-            (Action::Local(_), Action::Forward(..)) => std::cmp::Ordering::Less,
+            (Action::Local(_), Action::Forward(..)) => core::cmp::Ordering::Less,
             (Action::Forward(lhs), Action::Forward(rhs)) => lhs.cmp(rhs),
-            (Action::Forward(_), _) => std::cmp::Ordering::Greater,
+            (Action::Forward(_), _) => core::cmp::Ordering::Greater,
         }
     }
 }
 
-impl std::fmt::Display for Action {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Action {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Action::AdminEndpoint => write!(f, "administrative endpoint"),
             Action::Local(Some(service)) => write!(f, "local service {}", &service.service_id),
@@ -43,13 +43,13 @@ impl std::fmt::Display for Action {
 
 pub struct LocalInner {
     pub actions: HashMap<Eid, BTreeSet<local::Action>>,
-    pub finals: BTreeSet<EidPattern>,
+    pub finals: HashSet<EidPattern>,
 }
 
 impl LocalInner {
     pub fn new(config: &config::Config) -> Self {
         let mut actions = HashMap::new();
-        let mut finals = BTreeSet::new();
+        let mut finals = HashSet::new();
 
         // Add localnode admin endpoint
         actions.insert(
@@ -107,10 +107,10 @@ impl Rib {
             .actions
             .entry(eid.clone())
         {
-            std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+            hash_map::Entry::Occupied(mut occupied_entry) => {
                 occupied_entry.get_mut().insert(action)
             }
-            std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+            hash_map::Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert([action].into());
                 true
             }

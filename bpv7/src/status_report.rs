@@ -35,9 +35,7 @@ trait CaptureFieldErr<T> {
     fn map_field_err(self, field: &'static str) -> Result<T, Error>;
 }
 
-impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T>
-    for core::result::Result<T, E>
-{
+impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T> for Result<T, E> {
     fn map_field_err(self, field: &'static str) -> Result<T, Error> {
         self.map_err(|e| Error::InvalidField {
             field,

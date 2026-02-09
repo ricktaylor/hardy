@@ -6,7 +6,7 @@ use std::sync::Mutex;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
-    pub capacity: std::num::NonZeroUsize,
+    pub capacity: core::num::NonZeroUsize,
 
     #[cfg_attr(feature = "serde", serde(rename = "min-bundles"))]
     pub min_bundles: usize,
@@ -15,7 +15,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            capacity: std::num::NonZero::new(256 * 1_048_576).unwrap(),
+            capacity: core::num::NonZero::new(256 * 1_048_576).unwrap(),
             min_bundles: 32,
         }
     }
@@ -28,7 +28,7 @@ struct Inner {
 
 struct Storage {
     inner: Mutex<Inner>,
-    max_capacity: std::num::NonZeroUsize,
+    max_capacity: core::num::NonZeroUsize,
     min_bundles: usize,
 }
 

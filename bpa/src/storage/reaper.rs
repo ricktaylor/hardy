@@ -10,13 +10,13 @@ pub struct CacheEntry {
 }
 
 impl PartialOrd for CacheEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for CacheEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.expiry
             .cmp(&other.expiry)
             .then_with(|| self.destination.cmp(&other.destination))

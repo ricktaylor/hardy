@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashSet;
 
 // A single node's worth of filters, ready for execution (just Arc clones)
 struct PreparedNode {

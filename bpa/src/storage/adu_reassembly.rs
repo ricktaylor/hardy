@@ -1,6 +1,6 @@
 use super::*;
+use core::ops::Range;
 use futures::{FutureExt, join, select_biased};
-use std::{collections::HashMap, ops::Range};
 
 struct ReassemblyResult {
     received_at: time::OffsetDateTime,

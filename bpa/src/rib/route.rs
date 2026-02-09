@@ -7,23 +7,23 @@ pub struct Entry {
 }
 
 impl PartialOrd for Entry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Entry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // The order is critical, hence done long-hand
         match (&self.action, &other.action) {
             (routes::Action::Drop(lhs), routes::Action::Drop(rhs)) => lhs.cmp(rhs),
             (routes::Action::Drop(_), routes::Action::Reflect)
-            | (routes::Action::Drop(_), routes::Action::Via(_)) => std::cmp::Ordering::Less,
-            (routes::Action::Reflect, routes::Action::Drop(_)) => std::cmp::Ordering::Greater,
-            (routes::Action::Reflect, routes::Action::Reflect) => std::cmp::Ordering::Equal,
-            (routes::Action::Reflect, routes::Action::Via(_)) => std::cmp::Ordering::Less,
+            | (routes::Action::Drop(_), routes::Action::Via(_)) => core::cmp::Ordering::Less,
+            (routes::Action::Reflect, routes::Action::Drop(_)) => core::cmp::Ordering::Greater,
+            (routes::Action::Reflect, routes::Action::Reflect) => core::cmp::Ordering::Equal,
+            (routes::Action::Reflect, routes::Action::Via(_)) => core::cmp::Ordering::Less,
             (routes::Action::Via(_), routes::Action::Drop(_))
-            | (routes::Action::Via(_), routes::Action::Reflect) => std::cmp::Ordering::Greater,
+            | (routes::Action::Via(_), routes::Action::Reflect) => core::cmp::Ordering::Greater,
             (routes::Action::Via(lhs), routes::Action::Via(rhs)) => lhs.cmp(rhs),
         }
         .then_with(|| self.source.cmp(&other.source))
@@ -47,21 +47,19 @@ impl Rib {
             // Scope the lock
             let mut inner = self.inner.write().trace_expect("Failed to lock mutex");
             match inner.routes.entry(priority) {
-                std::collections::btree_map::Entry::Vacant(e) => {
+                btree_map::Entry::Vacant(e) => {
                     e.insert([(pattern.clone(), [new_entry].into())].into());
                 }
-                std::collections::btree_map::Entry::Occupied(mut e) => {
-                    match e.get_mut().entry(pattern.clone()) {
-                        std::collections::btree_map::Entry::Vacant(pe) => {
-                            pe.insert([new_entry].into());
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut pe) => {
-                            if !pe.get_mut().insert(new_entry) {
-                                return false;
-                            }
+                btree_map::Entry::Occupied(mut e) => match e.get_mut().entry(pattern.clone()) {
+                    btree_map::Entry::Vacant(pe) => {
+                        pe.insert([new_entry].into());
+                    }
+                    btree_map::Entry::Occupied(mut pe) => {
+                        if !pe.get_mut().insert(new_entry) {
+                            return false;
                         }
                     }
-                }
+                },
             }
 
             info!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");

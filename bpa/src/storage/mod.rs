@@ -1,6 +1,5 @@
 use super::*;
 use lru::LruCache;
-use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
@@ -20,15 +19,15 @@ mod reaper;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
-    pub lru_capacity: std::num::NonZeroUsize,
-    pub max_cached_bundle_size: std::num::NonZeroUsize,
+    pub lru_capacity: core::num::NonZeroUsize,
+    pub max_cached_bundle_size: core::num::NonZeroUsize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            lru_capacity: std::num::NonZeroUsize::new(1024).unwrap(),
-            max_cached_bundle_size: std::num::NonZeroUsize::new(16 * 1024).unwrap(),
+            lru_capacity: core::num::NonZeroUsize::new(1024).unwrap(),
+            max_cached_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
         }
     }
 }

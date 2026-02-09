@@ -5,10 +5,7 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::RwLock,
-};
+use std::sync::RwLock;
 
 mod find;
 mod local;

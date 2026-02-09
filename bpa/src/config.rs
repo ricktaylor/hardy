@@ -4,8 +4,8 @@ use super::*;
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     pub status_reports: bool,
-    pub poll_channel_depth: std::num::NonZeroUsize,
-    pub processing_pool_size: std::num::NonZeroUsize,
+    pub poll_channel_depth: core::num::NonZeroUsize,
+    pub processing_pool_size: core::num::NonZeroUsize,
 
     #[cfg_attr(feature = "serde", serde(rename = "storage"))]
     pub storage_config: storage::Config,
@@ -23,8 +23,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             status_reports: false,
-            poll_channel_depth: std::num::NonZeroUsize::new(16).unwrap(),
-            processing_pool_size: std::num::NonZeroUsize::new(
+            poll_channel_depth: core::num::NonZeroUsize::new(16).unwrap(),
+            processing_pool_size: core::num::NonZeroUsize::new(
                 std::thread::available_parallelism()
                     .map(|p| p.get())
                     .unwrap_or(1)
@@ -39,8 +39,8 @@ impl Default for Config {
     }
 }
 
-impl std::fmt::Debug for Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Config {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Config")
             .field("status_reports", &self.status_reports)
             .field("node_ids", &self.node_ids)

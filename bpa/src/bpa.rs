@@ -1,6 +1,6 @@
 use super::*;
 
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type Error = Box<dyn core::error::Error + Send + Sync>;
 
 pub struct Bpa {
     store: Arc<storage::Store>,

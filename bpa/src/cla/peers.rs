@@ -1,6 +1,6 @@
 use super::*;
 use registry::Cla;
-use std::sync::{RwLock, Weak};
+use std::sync::RwLock;
 
 struct PeerInner {
     queues: HashMap<Option<u32>, storage::channel::Sender>,

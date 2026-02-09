@@ -71,7 +71,7 @@ impl Dispatcher {
             }
 
             let (bundle, data) = builder
-                .with_payload(std::borrow::Cow::Borrowed(&payload))
+                .with_payload(alloc::borrow::Cow::Borrowed(&payload))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| services::Error::Internal(e.into()))?;
 

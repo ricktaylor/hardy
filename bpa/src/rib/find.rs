@@ -1,5 +1,5 @@
 use super::*;
-use std::hash::{Hash, Hasher};
+use core::hash::{Hash, Hasher};
 
 #[derive(Debug)]
 enum InternalFindResult<'a> {

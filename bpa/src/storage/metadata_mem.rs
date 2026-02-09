@@ -1,18 +1,18 @@
 use super::*;
-use std::{collections::BTreeMap, sync::Mutex};
+use std::sync::Mutex;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     #[cfg_attr(feature = "serde", serde(rename = "max-bundles"))]
-    pub max_bundles: std::num::NonZeroUsize,
+    pub max_bundles: core::num::NonZeroUsize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_bundles: std::num::NonZero::new(1_048_576).unwrap(),
+            max_bundles: core::num::NonZero::new(1_048_576).unwrap(),
         }
     }
 }

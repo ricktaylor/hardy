@@ -39,7 +39,7 @@ pub enum Error {
     InvalidBundle(#[from] hardy_bpv7::Error),
 
     #[error(transparent)]
-    Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
+    Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
 #[derive(Debug)]

@@ -4,10 +4,7 @@ use rand::{
     RngExt,
     distr::{Alphanumeric, SampleString},
 };
-use std::{
-    collections::HashMap,
-    sync::{RwLock, Weak},
-};
+use std::sync::RwLock;
 
 /// Distinguishes between low-level Service and high-level Application registrations
 pub enum ServiceImpl {
@@ -53,25 +50,25 @@ impl PartialEq for Service {
 impl Eq for Service {}
 
 impl PartialOrd for Service {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Service {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.service_id.cmp(&other.service_id)
     }
 }
 
-impl std::hash::Hash for Service {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl core::hash::Hash for Service {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.service_id.hash(state);
     }
 }
 
-impl std::fmt::Debug for Service {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Service {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Service")
             .field("eid", &self.service_id)
             .finish()

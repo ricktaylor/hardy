@@ -158,7 +158,7 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
         impl<'de> serde::de::Visitor<'de> for AdminEndpointsVisitor {
             type Value = NodeIds;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
                 formatter.write_str("a single NodeId or a sequence of NodeIds")
             }
 
@@ -205,8 +205,8 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
     }
 }
 
-impl std::fmt::Display for NodeIds {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for NodeIds {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match (&self.ipn, &self.dtn) {
             (None, None) => write!(f, "[]"),
             (None, Some(node_id)) => write!(f, "[ {node_id} ]"),
