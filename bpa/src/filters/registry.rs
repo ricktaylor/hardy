@@ -89,7 +89,7 @@ impl Registry {
         data: Bytes,
         key_provider: F,
         pool: &hardy_async::BoundedTaskPool,
-    ) -> Result<ExecResult, bpa::Error>
+    ) -> Result<ExecResult, crate::Error>
     where
         F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
             + Clone

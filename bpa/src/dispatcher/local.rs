@@ -12,7 +12,7 @@ impl Dispatcher {
         &self,
         bundle: bundle::Bundle,
         data: Bytes,
-    ) -> Result<Option<(bundle::Bundle, Bytes)>, bpa::Error> {
+    ) -> Result<Option<(bundle::Bundle, Bytes)>, crate::Error> {
         match self
             .filter_registry
             .exec(

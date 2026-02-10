@@ -46,7 +46,7 @@ pub trait ReadFilter: Send + Sync {
         &self,
         bundle: &bundle::Bundle,
         data: &[u8],
-    ) -> Result<FilterResult, bpa::Error>;
+    ) -> Result<FilterResult, crate::Error>;
 }
 
 /// Read-write filter: runs sequentially, may modify metadata or bundle data
@@ -56,7 +56,7 @@ pub trait WriteFilter: Send + Sync {
         &self,
         bundle: &bundle::Bundle,
         data: &[u8],
-    ) -> Result<RewriteResult, bpa::Error>;
+    ) -> Result<RewriteResult, crate::Error>;
 }
 
 // Registration types

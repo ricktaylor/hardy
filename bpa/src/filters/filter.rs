@@ -247,7 +247,7 @@ impl PreparedFilters {
         mut bundle: bundle::Bundle,
         mut data: Bytes,
         key_provider: F,
-    ) -> Result<registry::ExecResult, bpa::Error>
+    ) -> Result<registry::ExecResult, crate::Error>
     where
         F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
             + Clone

@@ -1,7 +1,5 @@
 use super::*;
 
-pub type Error = Box<dyn core::error::Error + Send + Sync>;
-
 pub struct Bpa {
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
