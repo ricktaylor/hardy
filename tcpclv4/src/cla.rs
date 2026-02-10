@@ -68,7 +68,7 @@ impl hardy_bpa::cla::Cla for Cla {
         }
 
         // Ensure single initialization
-        self.inner.get_or_init(|| inner);
+        self.inner.call_once(|| inner);
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]

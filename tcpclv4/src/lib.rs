@@ -27,7 +27,7 @@ struct ClaInner {
 pub struct Cla {
     _name: String,
     config: config::Config,
-    inner: std::sync::OnceLock<ClaInner>,
+    inner: spin::once::Once<ClaInner>,
     tasks: Arc<hardy_async::TaskPool>,
 }
 
@@ -55,7 +55,7 @@ impl Cla {
         Self {
             config,
             _name: name,
-            inner: std::sync::OnceLock::new(),
+            inner: spin::once::Once::new(),
             tasks: Arc::new(hardy_async::TaskPool::new()),
         }
     }

@@ -1360,6 +1360,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "serde",
+ "spin",
  "thiserror",
  "tokio",
  "tokio-rustls",
