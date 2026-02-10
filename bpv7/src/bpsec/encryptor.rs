@@ -17,15 +17,15 @@ pub enum Error {
     Editor(#[from] editor::Error),
 }
 
-impl From<crate::error::Error> for Error {
-    fn from(e: crate::error::Error) -> Self {
+impl From<crate::Error> for Error {
+    fn from(e: crate::Error) -> Self {
         Error::Editor(e.into())
     }
 }
 
 impl From<bpsec::Error> for Error {
     fn from(e: bpsec::Error) -> Self {
-        crate::error::Error::from(e).into()
+        crate::Error::from(e).into()
     }
 }
 
@@ -105,14 +105,14 @@ impl<'a> Encryptor<'a> {
                 let bib = match self.original.blocks.get(&bib_block) {
                     Some(b) => b,
                     None => {
-                        return Err((self, crate::error::Error::Altered.into()));
+                        return Err((self, crate::Error::Altered.into()));
                     }
                 };
 
                 let bib_payload = match bib.payload(self.source_data) {
                     Some(p) => p,
                     None => {
-                        return Err((self, crate::error::Error::Altered.into()));
+                        return Err((self, crate::Error::Altered.into()));
                     }
                 };
 
@@ -122,7 +122,7 @@ impl<'a> Encryptor<'a> {
                     Err(e) => {
                         return Err((
                             self,
-                            crate::error::Error::InvalidField {
+                            crate::Error::InvalidField {
                                 field: "BIB Abstract Syntax Block",
                                 source: e.into(),
                             }

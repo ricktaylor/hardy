@@ -91,8 +91,8 @@ pub mod creation_timestamp;
 pub mod dtn_time;
 pub mod editor;
 pub mod eid;
-pub mod error;
 pub mod hop_info;
 pub mod status_report;
 
+mod error;
 pub use error::Error;
