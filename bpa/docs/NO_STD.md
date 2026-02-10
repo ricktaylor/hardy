@@ -23,7 +23,7 @@ This document outlines the work required to make the `bpa` package `no_std` comp
 | std:: to core:: migration | Migrated (fmt, cmp, ops, mem, num, etc.) | DONE |
 | Prelude consistency | Simplified where possible (Default, Result) | DONE |
 | Synchronization (Mutex/RwLock) | `hardy_async::sync` wrappers available, bpa migrated | DONE |
-| Synchronization (OnceLock) | Still uses `std::sync::OnceLock` in one location | REMAINING |
+| Synchronization (Once) | `hardy_async::sync::spin::Once` available | DONE |
 | Allocator | Requires `alloc` (Vec, String, Arc, Box) | EXPECTED |
 
 ### Minimum Rust Version
@@ -69,7 +69,7 @@ The `hardy-async` crate now provides synchronization primitives:
 - `cla/peers.rs`: Uses `hardy_async::sync::spin::RwLock` for PeerTable (O(1) HashMap ops, hot forwarding path)
 - `cla/registry.rs`: Uses `hardy_async::sync::spin::Mutex` for CLA HashMap (O(1) lifecycle operations)
 
-**Note:** `OnceLock` is NOT yet abstracted in hardy-async. For CLAs needing spin-based OnceLock on hot paths (like forward()), they should add `spin` as a direct dependency.
+**Note:** `Once` is now available via `hardy_async::sync::spin::Once` as a wrapper around `spin::once::Once`.
 
 ### Dispatcher Refactoring
 
@@ -245,7 +245,7 @@ The following `std::` usages are NOT behind `#[cfg(feature = "std")]`:
 | File | Usage | Fix Required |
 |------|-------|--------------|
 | `config.rs:28` | `std::thread::available_parallelism()` | cfg-gate with fallback constant |
-| `cla/peers.rs:15,22` | `std::sync::OnceLock` | Use `spin::once::Once` for no_std |
+| `cla/peers.rs:15,22` | `std::sync::OnceLock` | Use `hardy_async::sync::spin::Once` |
 | `rib/find.rs:79` | `std::hash::DefaultHasher` | Use portable hasher (e.g., `siphasher`) |
 
 ### Phase 2c: Channel Abstraction
@@ -294,7 +294,7 @@ Once remaining phases are complete, Embassy backends need to be added to `hardy-
 
 1. **cfg-gate unguarded std usages** (LOW effort)
    - `std::thread::available_parallelism()` in config.rs
-   - `std::sync::OnceLock` in cla/peers.rs
+   - `std::sync::OnceLock` in cla/peers.rs → use `hardy_async::sync::spin::Once`
    - `std::hash::DefaultHasher` in rib/find.rs
 
 2. **Phase 2c**: Add `channel` module to `hardy-async` with flume re-exports (LOW effort)
@@ -345,6 +345,6 @@ Once remaining phases are complete, Embassy backends need to be added to `hardy-
 | Phase 3b (Embassy backends) | High | Pending | Embassy integration for hardy-async |
 
 **Overall**: The majority of the no_std groundwork is complete. The remaining work is:
-1. cfg-gating 3 unguarded std usages (available_parallelism, OnceLock, DefaultHasher)
+1. cfg-gating 2 unguarded std usages (available_parallelism, DefaultHasher) - OnceLock replaced with `hardy_async::sync::spin::Once`
 2. Channel abstraction through hardy-async
 3. Embassy backends (high effort, future work)

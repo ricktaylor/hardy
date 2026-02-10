@@ -41,6 +41,91 @@ pub use spin::MutexGuard;
 pub use spin::RwLockReadGuard;
 pub use spin::RwLockWriteGuard;
 
+/// A spinlock-based one-time initialization cell for O(1) operations.
+///
+/// This is a thin wrapper around `spin::once::Once` that provides a consistent API
+/// for potential future Embassy support.
+///
+/// # Platform Implementations
+///
+/// - **std**: Uses `spin::once::Once` (busy-wait spinlock)
+/// - **embassy** (future): Will use appropriate single-init primitive
+///
+/// # Usage Guidelines
+///
+/// Use this for lazy one-time initialization where:
+/// 1. Initialization is O(1) or happens once at startup
+/// 2. Access after initialization is O(1)
+/// 3. No blocking, I/O, or syscalls during initialization
+///
+/// # Example
+///
+/// ```
+/// use hardy_async::sync::spin::Once;
+///
+/// struct Config {
+///     value: i32,
+/// }
+///
+/// let config: Once<Config> = Once::new();
+///
+/// // Initialize once
+/// config.call_once(|| Config { value: 42 });
+///
+/// // Subsequent calls return the same value
+/// assert_eq!(config.get().unwrap().value, 42);
+/// ```
+pub struct Once<T>(spin::once::Once<T>);
+
+impl<T> Once<T> {
+    /// Creates a new uninitialized `Once`.
+    #[inline]
+    pub const fn new() -> Self {
+        Self(spin::once::Once::new())
+    }
+
+    /// Returns a reference to the inner value if initialized.
+    ///
+    /// Returns `None` if the cell has not been initialized yet.
+    #[inline]
+    pub fn get(&self) -> Option<&T> {
+        self.0.get()
+    }
+
+    /// Initializes the cell with the result of `f` if not already initialized.
+    ///
+    /// If the cell is already initialized, returns the existing value.
+    /// If multiple threads call this concurrently, only one will run `f`,
+    /// and others will spin until initialization completes.
+    ///
+    /// Returns a reference to the initialized value.
+    #[inline]
+    pub fn call_once<F: FnOnce() -> T>(&self, f: F) -> &T {
+        self.0.call_once(f)
+    }
+
+    /// Returns `true` if the cell has been initialized.
+    #[inline]
+    pub fn is_completed(&self) -> bool {
+        self.0.is_completed()
+    }
+}
+
+impl<T> Default for Once<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: core::fmt::Debug> core::fmt::Debug for Once<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.get() {
+            Some(v) => f.debug_tuple("Once").field(v).finish(),
+            None => f.write_str("Once(<uninitialized>)"),
+        }
+    }
+}
+
 /// A spinlock-based mutex for O(1) operations.
 ///
 /// This is a thin wrapper around `spin::Mutex` that provides a consistent API
@@ -185,6 +270,44 @@ impl<T> RwLock<T> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn once_basic() {
+        let once: Once<i32> = Once::new();
+        assert!(once.get().is_none());
+        assert!(!once.is_completed());
+
+        let val = once.call_once(|| 42);
+        assert_eq!(*val, 42);
+        assert!(once.is_completed());
+        assert_eq!(once.get(), Some(&42));
+    }
+
+    #[test]
+    fn once_multiple_calls() {
+        let once: Once<i32> = Once::new();
+
+        let val1 = once.call_once(|| 42);
+        let val2 = once.call_once(|| 100); // Should not run, returns existing
+
+        assert_eq!(*val1, 42);
+        assert_eq!(*val2, 42);
+    }
+
+    #[test]
+    fn once_default() {
+        let once: Once<i32> = Once::default();
+        assert!(once.get().is_none());
+    }
+
+    #[test]
+    fn once_debug() {
+        let once: Once<i32> = Once::new();
+        assert!(format!("{:?}", once).contains("uninitialized"));
+
+        once.call_once(|| 42);
+        assert!(format!("{:?}", once).contains("42"));
+    }
 
     #[test]
     fn mutex_basic() {
