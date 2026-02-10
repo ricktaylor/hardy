@@ -72,6 +72,9 @@
 #  "ipn:[100-199].*",    # Nodes 100-199 (range pattern)
 #]
 
+# Echo service IPN service number, or "off" to disable.
+#echo = 7
+
 # Configuration for the static routing module. This section is optional.
 [static_routes]
 # The path to the file containing static route definitions.

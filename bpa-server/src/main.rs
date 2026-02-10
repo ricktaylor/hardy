@@ -1,5 +1,6 @@
 mod clas;
 mod config;
+mod echo_config;
 mod policy;
 mod static_routes;
 
@@ -138,6 +139,16 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     // Load ip-legacy-filter
     #[cfg(feature = "ipn-legacy-filter")]
     hardy_ipn_legacy_filter::init(&bpa, config.ipn_legacy_nodes)?;
+
+    // Register echo service
+    #[cfg(feature = "echo")]
+    if let echo_config::EchoConfig::Enabled(service_num) = config.echo {
+        let echo = Arc::new(hardy_echo_service::EchoService::new());
+        bpa.register_service(Some(hardy_bpv7::eid::Service::Ipn(service_num)), echo)
+            .await
+            .trace_expect("Failed to register echo service");
+        info!("Echo service registered on service number {service_num}");
+    }
 
     // Start the BPA
     bpa.start(config.recover_storage);

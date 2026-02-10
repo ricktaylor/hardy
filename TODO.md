@@ -187,11 +187,6 @@ See `bpa/docs/filter_subsystem_design.md` for design details.
     - Single lock acquisition per filter execution (removed `has_filters()` optimization)
     - Ingress metadata (CLA/peer info) tracked on bundles via `ReadOnlyMetadata`
 
-- [ ] **2.4 Add filter.proto for external filters (optional)**
-  - gRPC interface for out-of-process filters
-  - Bidirectional stream pattern
-  - May not be needed if filters are in-process only
-
 ---
 
 ## 3. Echo Service Implementation
@@ -201,24 +196,19 @@ Implement echo as a `Service` (low-level) that reflects bundles back to sender.
 **Note:** Unlike IP where echo is ICMP (control-plane), BP echo is a **non-administrative service**. This aligns with BP's data-plane service model and will require an IETF RFC to standardize behavior.
 
 - [ ] **3.1 Draft/track IETF RFC for BP Echo Service**
-  - Define echo request/response bundle format
   - Define well-known service endpoint (e.g., `dtn://node/echo` or service demux)
+  - Payload is opaque - echo service reflects bundles without interpreting content
   - Coordinate with DTN working group
 
-- [ ] **3.2 Define echo request/response payload format**
-  - NOT an administrative record (no `is_admin_record` flag)
-  - Payload structure: sequence number, timestamp, optional echo data
-  - Location: `bpv7/src/` or separate `echo/` crate
+- [x] **3.2 Implement echo service**
+  - Implementation complete in `echo-service/` crate
+  - Implements `Service` trait, swaps source ↔ destination, reflects bundle
+  - no_std compatible using `hardy_async::sync::spin::Once`
 
-- [ ] **3.3 Implement echo service**
-  - Implements new `Service` trait
-  - Receives bundle, swaps source ↔ destination
-  - Preserves timing information for RTT calculation
-  - Returns response bundle (BPA validates before sending)
-
-- [ ] **3.4 Register echo service during BPA initialization**
-  - Built-in service, always available
-  - Well-known endpoint per RFC (once standardized)
+- [x] **3.3 Register echo service during BPA initialization**
+  - Feature-gated with `echo` feature (default enabled)
+  - Config: omit for default (service 7), number for custom, "off" to disable
+  - Registered as `Service::Ipn(n)` - service number updatable when IETF assigns
 
 ### Design Rationale: Echo and Routing Separation
 
@@ -511,7 +501,8 @@ Bundle arrives from source S, no return route exists
 
 - [ ] **8.1 Update ping tool for new echo service**
   - Verify `tools/src/ping/` works with new Service-based echo
-  - May need payload format changes
+  - Define ping request/response payload format (sequence number, timestamp for RTT)
+  - Payload format is ping tool's concern - echo service is payload-agnostic
 
 - [ ] **8.2 Add integration tests**
   - Single-hop ping/echo
@@ -547,7 +538,7 @@ Bundle arrives from source S, no return route exists
          ▼                  │               │               │                        │
 ┌──────────────────────┐    │               │               │                        │
 │  3. Echo Service     │    │               │               │                        ▼
-│  3.1-3.4             │    │               │               │               ┌──────────────┐
+│  3.1-3.3             │    │               │               │               ┌──────────────┐
 └──────────────────────┘    │               │               │               │ hardy-tvr/   │
                             │               │               │               │ hardy-cgr    │
                             ▼               ▼               ▼               └──────────────┘
@@ -567,7 +558,7 @@ Bundle arrives from source S, no return route exists
 The shortest path to a working `bp ping` tool:
 
 ```
-1.0 → 1.1 → 1.2 → 1.3 → 1.5 → 1.6 → 3.2 → 3.3 → 3.4 → 8.1
+1.0 → 1.1 → 1.2 → 1.3 → 1.5 → 1.6 → 3.2 → 3.3 → 8.1
 ```
 
 (1.4 proxy adapter not needed for echo - it's a native Service)
@@ -606,7 +597,6 @@ All new/updated traits must be exposed via gRPC. Summary of proto work:
 | Item | Proto File | Action | Trait/Feature |
 |------|------------|--------|---------------|
 | 1.6 | `service.proto` | **Done** | Consolidated `Application` + `Service` endpoint APIs |
-| 2.4 | `filter.proto` | **Create** (optional) | External filters via gRPC (in-process registry done) |
 | 4.4 | `routing.proto` | **Create** | `RoutingAgent` + `RoutingAgentSink` |
 | 5.1 | `cla.proto` | **Update** | Change `AddPeer` to use repeated EID field (empty = Neighbour) |
 | 5.4 | `cla.proto` | **Update** | Add resolution completion callbacks |
@@ -1076,6 +1066,32 @@ Before implementing proactive scheduling:
 ## Recent Completions
 
 For reference when closing external issues:
+
+### 2026-02-10: Echo Service & hardy-async Once Abstraction
+
+- **Task 3.2 completed** - Echo service implementation
+  - New `echo-service/` crate implementing `Service` trait
+  - Swaps source ↔ destination, reflects bundle unchanged
+  - Payload-agnostic design (ping tool defines payload format)
+  - no_std compatible with `std` feature flag
+
+- **hardy-async `Once<T>` abstraction added** (`async/src/sync/spin.rs`)
+  - Wrapper around `spin::once::Once<T>` for platform abstraction
+  - Methods: `new()`, `get()`, `call_once()`, `is_completed()`
+  - Enables no_std compatibility for lazy initialization patterns
+  - Used by echo-service, available for other crates
+
+- **OnceLock → spin::once::Once migration** in bpa-server gRPC modules
+  - `application.rs`, `cla.rs`, `service.rs` - proxy field uses `spin::once::Once`
+  - Inner field uses `.get().ok_or()` pattern instead of `.wait()`
+
+- **tcpclv4 OnceLock migration** - Uses `spin::once::Once` for CLA inner
+
+- **Task 3.3 completed** - Echo service registration in bpa-server
+  - Feature-gated `echo` feature (default enabled)
+  - `EchoConfig` enum with custom deserializer in `echo_config.rs`
+  - Config options: omit (service 7), number (custom), "off" (disabled)
+  - Registered before `bpa.start()` as `Service::Ipn(n)`
 
 ### 2026-02-09: Ingress Metadata Implementation
 

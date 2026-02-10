@@ -86,6 +86,11 @@ pub struct Config {
     #[serde(default, rename = "ipn-legacy-nodes")]
     pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
 
+    // Echo service
+    #[cfg(feature = "echo")]
+    #[serde(default)]
+    pub echo: echo_config::EchoConfig,
+
     // Convergence Layer Adaptors (CLAs)
     #[serde(default)]
     pub clas: Vec<clas::Cla>,

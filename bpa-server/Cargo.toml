@@ -9,7 +9,7 @@ name = "hardy-bpa-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter"]
+default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
 otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = []
@@ -20,6 +20,7 @@ grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic", "dep:prost-types"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
+echo = ["dep:hardy-echo-service"]
 
 [dependencies]
 hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
@@ -32,6 +33,7 @@ hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"], optional = true }
+hardy-echo-service = { path = "../echo-service", optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
 tokio-util = "0.7.18"
 tokio-stream = { version = "0.1.18", optional = true }
