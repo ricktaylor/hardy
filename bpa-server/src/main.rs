@@ -142,13 +142,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Register echo service
     #[cfg(feature = "echo")]
-    if let echo_config::EchoConfig::Enabled(service_num) = config.echo {
-        let echo = Arc::new(hardy_echo_service::EchoService::new());
-        bpa.register_service(Some(hardy_bpv7::eid::Service::Ipn(service_num)), echo)
-            .await
-            .trace_expect("Failed to register echo service");
-        info!("Echo service registered on service number {service_num}");
-    }
+    echo_config::init(config.echo, &bpa).await;
 
     // Start the BPA
     bpa.start(config.recover_storage);

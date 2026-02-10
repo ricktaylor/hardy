@@ -207,8 +207,9 @@ Implement echo as a `Service` (low-level) that reflects bundles back to sender.
 
 - [x] **3.3 Register echo service during BPA initialization**
   - Feature-gated with `echo` feature (default enabled)
-  - Config: omit for default (service 7), number for custom, "off" to disable
-  - Registered as `Service::Ipn(n)` - service number updatable when IETF assigns
+  - Flexible config: number, string, array of mixed, or "off" to disable
+  - Default: IPN service 7 + DTN service "echo"
+  - Updatable when IETF assigns official service number
 
 ### Design Rationale: Echo and Routing Separation
 
@@ -1089,9 +1090,10 @@ For reference when closing external issues:
 
 - **Task 3.3 completed** - Echo service registration in bpa-server
   - Feature-gated `echo` feature (default enabled)
-  - `EchoConfig` enum with custom deserializer in `echo_config.rs`
-  - Config options: omit (service 7), number (custom), "off" (disabled)
-  - Registered before `bpa.start()` as `Service::Ipn(n)`
+  - `EchoConfig` enum with flexible deserializer in `echo_config.rs`
+  - Supports: number, string, array of mixed types, or "off" to disable
+  - Default: IPN service 7 + DTN service "echo"
+  - `echo_config::init()` handles registration logic
 
 ### 2026-02-09: Ingress Metadata Implementation
 

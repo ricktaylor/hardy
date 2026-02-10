@@ -76,8 +76,8 @@ ipn-legacy-nodes:
 #  - "ipn:20.0"           # Node 20's admin endpoint
 #  - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)
 
-# Echo service IPN service number, or "off" to disable.
-# echo: 7
+# Echo service endpoints, or "off" to disable.
+# echo: [7, "echo"]
 
 # Configuration for the static routing module. This section is optional.
 static_routes:
