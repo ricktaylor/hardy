@@ -11,12 +11,6 @@ use base64::prelude::*;
 mod parse;
 mod primary_block;
 
-/// A key provider function that returns no keys.
-/// Use this when parsing bundles that don't require decryption.
-pub fn no_keys(_bundle: &Bundle, _data: &[u8]) -> Box<dyn bpsec::key::KeySource> {
-    Box::new(bpsec::key::KeySet::EMPTY)
-}
-
 /// Holds fragmentation information for a bundle.
 ///
 /// As defined in RFC 9171 Section 4.2.1, this information is present in the

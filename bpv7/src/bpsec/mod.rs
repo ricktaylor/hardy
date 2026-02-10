@@ -15,7 +15,12 @@ pub mod rfc9173;
 use error::CaptureFieldErr;
 
 pub use error::Error;
-pub use key::Key;
+
+/// A key provider function that returns no keys.
+/// Use this when parsing bundles that don't require decryption.
+pub fn no_keys(_bundle: &bundle::Bundle, _data: &[u8]) -> Box<dyn key::KeySource> {
+    Box::new(key::KeySet::EMPTY)
+}
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]

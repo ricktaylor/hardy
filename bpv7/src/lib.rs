@@ -56,7 +56,7 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .unwrap();
 
 // Parse the bundle from the CBOR data (no keys needed for this bundle).
-let bundle = ParsedBundle::parse(&cbor, hardy_bpv7::bundle::no_keys).unwrap().bundle;
+let bundle = ParsedBundle::parse(&cbor, hardy_bpv7::bpsec::no_keys).unwrap().bundle;
 
 assert_eq!(bundle.id, original_bundle.id);
 assert_eq!(bundle.destination, original_bundle.destination);

@@ -236,7 +236,7 @@ impl Operation {
     }
 
     pub fn encrypt(
-        jwk: &Key,
+        jwk: &key::Key,
         scope_flags: ScopeFlags,
         args: bcb::OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {

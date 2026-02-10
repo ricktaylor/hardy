@@ -32,7 +32,7 @@ impl Registry {
         &self,
         bundle: &hardy_bpv7::bundle::Bundle,
         data: &[u8],
-    ) -> Box<dyn KeySource> {
+    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
         // Collect KeySources from all providers
         let sources: Vec<_> = self.providers.read().values().cloned().collect();
 
@@ -48,10 +48,10 @@ impl Registry {
 /// A composite KeySource that aggregates multiple KeySources.
 /// Returns the first key found from any of the sources.
 pub struct CompositeKeySource {
-    sources: Vec<Box<dyn KeySource>>,
+    sources: Vec<Box<dyn hardy_bpv7::bpsec::key::KeySource>>,
 }
 
-impl KeySource for CompositeKeySource {
+impl hardy_bpv7::bpsec::key::KeySource for CompositeKeySource {
     fn key<'a>(
         &'a self,
         source: &hardy_bpv7::eid::Eid,

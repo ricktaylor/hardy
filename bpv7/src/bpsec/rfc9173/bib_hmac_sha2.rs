@@ -303,7 +303,7 @@ impl Operation {
     }
 
     pub fn sign(
-        jwk: &Key,
+        jwk: &key::Key,
         scope_flags: ScopeFlags,
         args: bib::OperationArgs,
     ) -> Result<Self, Error> {

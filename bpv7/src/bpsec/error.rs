@@ -89,7 +89,7 @@ pub enum Error {
     EncryptionFailed,
 
     #[error("Invalid key material {1:?} for operation {0:?}")]
-    InvalidKey(key::Operation, Key),
+    InvalidKey(key::Operation, key::Key),
 
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
