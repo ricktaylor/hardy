@@ -131,6 +131,15 @@ pub enum Service {
     Dtn(DtnServiceName),
 }
 
+impl core::fmt::Display for Service {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Service::Ipn(n) => write!(f, "{n}"),
+            Service::Dtn(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
