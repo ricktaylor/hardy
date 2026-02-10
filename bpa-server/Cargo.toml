@@ -47,6 +47,7 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 notify-debouncer-full = "0.7.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "0.1.5"
+spin = "0.9.8"
 winnow = "0.7.14"
 anyhow = "1.0.101"
 flume = "0.12.0"

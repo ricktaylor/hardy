@@ -6,10 +6,9 @@ struct ApplicationInner {
     sink: Box<dyn hardy_bpa::services::ApplicationSink>,
 }
 
-#[derive(Default)]
 struct Application {
-    inner: std::sync::OnceLock<ApplicationInner>,
-    proxy: std::sync::OnceLock<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
+    inner: spin::once::Once<ApplicationInner>,
+    proxy: spin::once::Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
@@ -49,7 +48,8 @@ impl Application {
         }
 
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .send(
                 request
@@ -75,7 +75,8 @@ impl Application {
         let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .cancel(&bundle_id)
             .await
@@ -98,7 +99,7 @@ impl hardy_bpa::services::Application for Application {
         sink: Box<dyn hardy_bpa::services::ApplicationSink>,
     ) {
         // Ensure single initialization
-        self.inner.get_or_init(|| ApplicationInner { sink });
+        self.inner.call_once(|| ApplicationInner { sink });
     }
 
     async fn on_unregister(&self) {
@@ -240,7 +241,10 @@ impl application_server::Application for Service {
         let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let mut channel_receiver = request.into_inner();
 
-        let app = Arc::new(Application::default());
+        let app = Arc::new(Application {
+            inner: spin::once::Once::new(),
+            proxy: spin::once::Once::new(),
+        });
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
             match msg {
                 app_to_bpa::Msg::Register(request) => {
@@ -280,7 +284,7 @@ impl application_server::Application for Service {
         // Start the proxy
         let handler = Box::new(Handler { app: app.clone() });
         app.proxy
-            .get_or_init(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+            .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 
         Ok(tonic::Response::new(
             tokio_stream::wrappers::ReceiverStream::new(rx),

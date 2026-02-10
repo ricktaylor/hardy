@@ -6,10 +6,9 @@ struct ClaInner {
     sink: Box<dyn hardy_bpa::cla::Sink>,
 }
 
-#[derive(Default)]
 struct Cla {
-    inner: std::sync::OnceLock<ClaInner>,
-    proxy: std::sync::OnceLock<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
+    inner: spin::once::Once<ClaInner>,
+    proxy: spin::once::Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
 }
 
 impl Cla {
@@ -43,7 +42,8 @@ impl Cla {
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .dispatch(request.bundle, peer_node.as_ref(), peer_addr.as_ref())
             .await
@@ -63,7 +63,8 @@ impl Cla {
             .try_into()?;
 
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .add_peer(node_id, cla_addr)
             .await
@@ -86,7 +87,8 @@ impl Cla {
             .try_into()?;
 
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .remove_peer(node_id, &cla_addr)
             .await
@@ -109,7 +111,7 @@ impl hardy_bpa::cla::Cla for Cla {
         _node_ids: &[hardy_bpv7::eid::NodeId],
     ) {
         // Ensure single initialization
-        self.inner.get_or_init(|| ClaInner { sink });
+        self.inner.call_once(|| ClaInner { sink });
     }
 
     async fn on_unregister(&self) {
@@ -218,7 +220,10 @@ impl cla_server::Cla for Service {
         let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let mut channel_receiver = request.into_inner();
 
-        let cla = Arc::new(Cla::default());
+        let cla = Arc::new(Cla {
+            inner: spin::once::Once::new(),
+            proxy: spin::once::Once::new(),
+        });
 
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
             match msg {
@@ -260,7 +265,7 @@ impl cla_server::Cla for Service {
         // Start the proxy
         let handler = Box::new(Handler { cla: cla.clone() });
         cla.proxy
-            .get_or_init(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+            .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 
         Ok(tonic::Response::new(
             tokio_stream::wrappers::ReceiverStream::new(rx),

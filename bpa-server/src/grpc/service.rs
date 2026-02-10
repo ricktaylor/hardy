@@ -6,10 +6,9 @@ struct LowLevelServiceInner {
     sink: Box<dyn hardy_bpa::services::ServiceSink>,
 }
 
-#[derive(Default)]
 struct LowLevelService {
-    inner: std::sync::OnceLock<LowLevelServiceInner>,
-    proxy: std::sync::OnceLock<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
+    inner: spin::once::Once<LowLevelServiceInner>,
+    proxy: spin::once::Once<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
 }
 
 impl LowLevelService {
@@ -34,7 +33,8 @@ impl LowLevelService {
         request: ServiceSendRequest,
     ) -> Result<bpa_to_service::Msg, tonic::Status> {
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .send(request.data)
             .await
@@ -50,7 +50,8 @@ impl LowLevelService {
         let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
         self.inner
-            .wait()
+            .get()
+            .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
             .cancel(&bundle_id)
             .await
@@ -73,7 +74,7 @@ impl hardy_bpa::services::Service for LowLevelService {
         sink: Box<dyn hardy_bpa::services::ServiceSink>,
     ) {
         // Ensure single initialization
-        self.inner.get_or_init(|| LowLevelServiceInner { sink });
+        self.inner.call_once(|| LowLevelServiceInner { sink });
     }
 
     async fn on_unregister(&self) {
@@ -208,7 +209,10 @@ impl service_server::Service for GrpcService {
         let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let mut channel_receiver = request.into_inner();
 
-        let svc = Arc::new(LowLevelService::default());
+        let svc = Arc::new(LowLevelService {
+            inner: spin::once::Once::new(),
+            proxy: spin::once::Once::new(),
+        });
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
             match msg {
                 service_to_bpa::Msg::Register(request) => {
@@ -250,7 +254,7 @@ impl service_server::Service for GrpcService {
         // Start the proxy
         let handler = Box::new(Handler { svc: svc.clone() });
         svc.proxy
-            .get_or_init(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+            .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 
         Ok(tonic::Response::new(
             tokio_stream::wrappers::ReceiverStream::new(rx),
