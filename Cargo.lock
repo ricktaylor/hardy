@@ -1226,6 +1226,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-echo-service"
+version = "0.1.0"
+dependencies = [
+ "hardy-async",
+ "hardy-bpa",
+ "hardy-bpv7",
+ "time",
+ "tracing",
+]
+
+[[package]]
 name = "hardy-eid-patterns"
 version = "0.1.0"
 dependencies = [

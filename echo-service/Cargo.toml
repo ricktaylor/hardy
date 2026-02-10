@@ -1,0 +1,21 @@
+[package]
+name = "hardy-echo-service"
+description = "AN in-process echo service"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+default = ["std"]
+std = ["hardy-async/std", "hardy-bpa/std", "hardy-bpv7/std"]
+tracing = ["hardy-bpa/tracing", "hardy-async/tracing"]
+
+[dependencies]
+hardy-async = { path = "../async", default-features = false }
+hardy-bpa = { path = "../bpa", default-features = false }
+hardy-bpv7 = { path = "../bpv7", default-features = false }
+tracing = "0.1.44"
+time = { version = "0.3.47", default-features = false }
