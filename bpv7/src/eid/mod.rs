@@ -126,6 +126,11 @@ pub type IpnServiceNumber = u32;
 pub type DtnServiceName = Box<str>;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(untagged)
+)]
 pub enum Service {
     Ipn(IpnServiceNumber),
     Dtn(DtnServiceName),
