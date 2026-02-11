@@ -43,58 +43,9 @@ Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not 
   - Maintains payload-only semantics: `on_receive(source, expiry, ack_requested, payload)`
 
 - [x] **1.2 Define new `Service` trait with full bundle access**
-  - Follows same bidirectional pattern as existing Service (to be renamed Application)
-  - Low-level: works with `Bytes` + parsed `Bundle` view
-  - Signature concept (aligned with existing pattern):
-
-    ```rust
-    #[async_trait]
-    pub trait Service: Send + Sync {
-        /// Called when service is registered; receives Sink for sending
-        async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>);
-
-        /// Called when service is unregistered
-        async fn on_unregister(&self);
-
-        /// Called when a bundle arrives
-        /// - `data`: raw bundle bytes (service can parse if needed with CheckedBundle::parse())
-        /// - `expiry`: calculated from bundle metadata by dispatcher
-        async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime);
-
-        /// Called when status report received for a sent bundle
-        async fn on_status_notify(
-            &self,
-            bundle_id: &bundle::Id,
-            from: &Eid,
-            kind: StatusNotify,
-            reason: ReasonCode,
-            timestamp: Option<time::OffsetDateTime>,
-        );
-    }
-
-    #[async_trait]
-    pub trait ServiceSink: Send + Sync {
-        /// Unregister the service
-        async fn unregister(&self);
-
-        /// Send a bundle as raw bytes
-        /// - Service uses bpv7::Builder to construct
-        /// - BPA parses and validates (security boundary - can't trust service)
-        async fn send(&self, data: Bytes) -> Result<bundle::Id>;
-
-        /// Cancel a pending bundle
-        async fn cancel(&self, bundle_id: &bundle::Id) -> Result<bool>;
-    }
-    ```
-
-  - Key differences from Application:
-    - `on_receive(data, expiry)` vs `on_receive(source, expiry, ack_requested, payload)`
-    - `send(data: Bytes)` vs `send(destination, data, lifetime, options)`
-    - Service receives raw bundle bytes; Application receives extracted payload
-  - Rationale for `Bytes` on send:
-    - `bpv7::Builder` returns `Bytes`
-    - BPA must parse anyway to validate (security boundary)
-  - Location: `bpa/src/services/` (after 1.0)
+  - Location: `bpa/src/services/mod.rs`
+  - Low-level trait with `Bytes` + parsed `Bundle` view
+  - Key differences from Application: receives raw bundle bytes, not extracted payload
 
 - [x] **1.3 Create ServiceRegistry (unified)**
   - Single registry for all endpoints - RIB only deals with `Service` trait
@@ -189,46 +140,17 @@ See `bpa/docs/filter_subsystem_design.md` for design details.
 ### Tasks
 
 - [x] **2.1 Add ingress metadata to bundle reception path**
-  - Extend `Sink::dispatch()` signature to pass ingress info
-  - Add fields to `BundleMetadata` (in `ReadOnlyMetadata` struct):
-
-    ```rust
-    pub ingress_cla: Option<Arc<str>>,           // CLA name
-    pub ingress_peer_node: Option<NodeId>,       // Peer node ID
-    pub ingress_peer_addr: Option<ClaAddress>,   // Peer CL address
-    ```
-
-  - Update `receive_bundle()` to accept and store ingress info
-  - Thread through dispatcher to filter invocation points
-  - **Completed:** All ingress metadata is now tracked and available to filters
+  - Ingress CLA/peer info tracked in `ReadOnlyMetadata` struct
+  - Available to filters at all hook points
 
 - [x] **2.2 Implement FilterRegistry**
-  - Registry pattern like CLA/Service registries
-  - Add to `Bpa` struct
-  - Support filter ordering via `after` parameter (dependency chain)
-  - Detect circular dependencies (error already defined)
-  - Methods: `register_filter()`, `unregister_filter()`
-  - **Implementation details:**
-    - `FilterNode` linked list structure for DAG ordering
-    - `PreparedFilters` for lock-free async execution
-    - Async traits via `#[async_trait::async_trait]`
-    - ReadFilters run in parallel, WriteFilters run sequentially
-    - Dependency checking on removal (`HasDependants` error)
+  - Location: `bpa/src/filters/registry.rs`
+  - DAG-based ordering with `after` parameter, circular dependency detection
+  - `FilterNode` linked list, `PreparedFilters` for lock-free async execution
 
 - [x] **2.3 Integrate filters into dispatcher**
-  - All four hooks implemented: Ingress, Originate, Deliver, Egress
-  - **Completed:**
-    - Filter invocation at all hook points
-    - `bundle`, `data`, and key provider passed to filters
-    - `ExecResult::Drop` handled with optional reason code and bundle deletion
-    - `ExecResult::Continue` mutation handling per-hook:
-      - **Ingress**: Persists mutations inline, checkpoints to `Dispatching` status
-      - **Originate**: No persistence (bundle stored after filter with modified metadata)
-      - **Deliver**: No persistence (bundle consumed immediately after)
-      - **Egress**: No persistence (bundle leaving node, may re-run on retry)
-    - Added `processing_pool` (BoundedTaskPool) for rate-limited filter/bundle processing
-    - Single lock acquisition per filter execution (removed `has_filters()` optimization)
-    - Ingress metadata (CLA/peer info) tracked on bundles via `ReadOnlyMetadata`
+  - All four hooks: Ingress, Originate, Deliver, Egress
+  - See `bpa/docs/filter_subsystem_design.md` for mutation handling per hook
 
 ---
 
@@ -515,20 +437,11 @@ Bundle arrives from source S, no return route exists
 ### Prerequisites (if implemented later)
 
 - [x] **7.0 Add ingress CLA/peer metadata to bundles**
-  - ~~**Current state: NOT TRACKED** - `receive_bundle(data: Bytes)` discards CLA/peer info~~
-  - **COMPLETED:** Ingress metadata is now tracked via `ReadOnlyMetadata`:
-    - `ingress_cla: Option<Arc<str>>` - CLA name
-    - `ingress_peer_node: Option<NodeId>` - Peer node ID
-    - `ingress_peer_addr: Option<ClaAddress>` - Peer CL address
-  - `receive_bundle()` accepts ingress info and stores in bundle metadata
-  - Threaded through dispatcher to filter invocation points
-  - Required because Previous Node block gives 2-hop info, not immediate sender
+  - Ingress metadata tracked via `ReadOnlyMetadata` (CLA name, peer node ID, peer address)
+  - See Section 2.1
 
 - [x] **7.1 Complete filter registry implementation**
-  - ~~Current state: `Filter` trait defined, `register_filter()` is `todo!()`~~
-  - ~~Implement `FilterRegistry` (like CLA/Service registries)~~
-  - **Done**: See Section 2.2 - FilterRegistry fully implemented
-  - Remaining: Integrate into bundle receive path (after 7.0 for ingress-aware filters)
+  - See Section 2.2 - FilterRegistry fully implemented
 
 - [ ] **7.2 Explicit next-hop send API**
   - `send_via(bundle, next_hop: Peer)` - bypass RIB lookup
@@ -1107,92 +1020,238 @@ Before implementing proactive scheduling:
 
 ---
 
+## 11. BPSec Integration
+
+BPSec (Bundle Protocol Security, RFC 9172/9173) implementation for the BPA. The `bpv7` crate has BPSec parsing/validation. The BPA has key provider infrastructure in place but lacks concrete implementations.
+
+### Current State
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| BPSec parsing/validation | **Implemented** | `bpv7/src/bpsec/` |
+| Key types (JWK) | **Implemented** | `bpv7/src/bpsec/key.rs` |
+| RFC 9173 contexts (AES-GCM, HMAC-SHA2) | **Implemented** | `bpv7/src/bpsec/rfc9173/` |
+| `KeySource` trait | **Implemented** | `bpv7/src/bpsec/key.rs` - core key lookup interface |
+| `KeyProvider` trait | **Implemented** | `bpa/src/keys/mod.rs` - bundle-context-aware provider |
+| `Registry` + `CompositeKeySource` | **Implemented (WIP)** | `bpa/src/keys/registry.rs` - aggregates multiple providers |
+| Dispatcher integration | **Wired** | `keys_registry` field, `key_source()` method used in `admin.rs`, `local.rs` |
+| Concrete KeyProvider impls | **Missing** | No config-based or file-based providers |
+| BPSec reason codes in status reports | **Missing** | Dispatcher doesn't generate them |
+| Decrypt failure handling | **Partial** | TODOs at `admin.rs:24`, `local.rs:202` |
+
+### Existing Infrastructure
+
+The key provider architecture follows a layered design:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  KeySource trait (bpv7/src/bpsec/key.rs)                        │
+│  - fn key(&self, source: &Eid, operations: &[Operation])        │
+│  - Core interface used by bpv7 BPSec operations                 │
+└─────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────┐
+│  KeyProvider trait (bpa/src/keys/mod.rs)                        │
+│  - fn key_source(&self, bundle, data) -> Box<dyn KeySource>     │
+│  - Bundle-context-aware: can make key decisions per-bundle      │
+└─────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────┐
+│  Registry (bpa/src/keys/registry.rs)                            │
+│  - add_provider(name, Arc<dyn KeyProvider>)                     │
+│  - remove_provider(name)                                        │
+│  - key_source() returns CompositeKeySource aggregating all      │
+└─────────────────────────────────────────────────────────────────┘
+                              ▲
+┌─────────────────────────────────────────────────────────────────┐
+│  Dispatcher (bpa/src/dispatcher/mod.rs)                         │
+│  - keys_registry: keys::registry::Registry                      │
+│  - key_source() method called by admin.rs, local.rs             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The registry is marked `#![allow(dead_code)]` because no concrete `KeyProvider` implementations are registered yet.
+
+### Tasks
+
+- [x] **11.1 KeyProvider trait and BPA integration**
+  - `KeySource` trait defined in `bpv7/src/bpsec/key.rs`
+  - `KeyProvider` trait defined in `bpa/src/keys/mod.rs`
+  - `Registry` with `CompositeKeySource` in `bpa/src/keys/registry.rs`
+  - Dispatcher has `keys_registry` field and `key_source()` method
+  - Integration wired in `admin.rs:18-19`, `local.rs:195-196`
+
+- [ ] **11.2 Config-based KeyProvider**
+  - Implement `KeyProvider` that loads JWKS set from configuration
+  - Loaded at BPA startup via config
+  - Register with `keys_registry.add_provider("config", ...)`
+
+- [ ] **11.3 File watcher KeyProvider**
+  - Implement `KeyProvider` that watches JWK/JWKS files or directory
+  - File watcher for runtime key updates (hot reload)
+  - Register with `keys_registry.add_provider("files", ...)`
+
+- [x] **11.4 Layered KeyProvider API**
+  - `CompositeKeySource` in `bpa/src/keys/registry.rs` aggregates all registered providers
+  - First key found from any source is returned
+  - Provider registration order determines priority
+
+- [ ] **11.5 Ingest error handling (junk bundles, parse failures, lost+found)**
+
+  Handling for bundles that can't be parsed or processed during ingest/forwarding.
+
+  **Scope:**
+  - Corrupted/unintelligible bundles and blocks
+  - Reassembly failures (damaged fragments)
+  - BPSec signature validation failures
+  - General parse errors
+
+  **Code locations:**
+  - `dispatch.rs:14` - Don't return errors for garbage content to CLA
+  - `reassemble.rs:29` - Report reception failure for identifiable fragments
+  - `reassemble.rs:31` - Junk bundle wrapping
+  - `local.rs:210` - Junk bundle wrapping
+  - `restart.rs:240` - Junk bundle recovery
+
+  **Design decisions:**
+  1. **Status report reason codes**: Generate RFC 9172 BPSec-specific reason codes for security failures
+  2. **Lost+found endpoint**: Wrap damaged/unintelligible bundles for diagnostic endpoint
+  3. **CLA responsibility**: Garbage content errors stay in dispatcher, not propagated to CLA
+
+  **Requirements:** REQ-2 (BPSec compliance), REQ-14 (reliability)
+
+- [ ] **11.6 Delivery-time decrypt failure (NoKey)**
+
+  Handling when bundle reaches destination but payload can't be decrypted for local service.
+
+  **Context:** Bundle is valid, parsed, and routed correctly. At final delivery, the payload block is encrypted but we don't have the decryption key. This is distinct from ingest errors - the bundle made progress through the network.
+
+  **Code locations:**
+  - `admin.rs:24` - NoKey when delivering to admin endpoint
+  - `local.rs:202` - NoKey when delivering to local service
+
+  **Design decisions:**
+  1. **Drop with status report**: Generate status report with BPSec reason code, drop bundle
+  2. **Hold for key availability**: Similar to `WaitingForService` (section 1.7), hold bundle until key becomes available via KeyProvider hot-reload
+
+  **Requirements:** REQ-2 (BPSec compliance)
+
+- [ ] **11.7 Document BPSec key provider design**
+  - Create `bpa/docs/bpsec_key_provider_design.md`
+  - Document the layered architecture (`KeySource` → `KeyProvider` → `Registry` → `Dispatcher`)
+  - Explain bundle-context-aware key lookup pattern
+  - Document `CompositeKeySource` aggregation behavior (first match wins)
+  - Include examples for implementing custom `KeyProvider`
+  - Reference RFC 9172/9173 security contexts
+
+### Related
+
+- REQ-2: Full compliance with RFC 9172 and RFC 9173
+- Appendix: `bpv7/src/bpsec/encryptor.rs:190` - Update match when adding new contexts
+
+---
+
+## 12. Trust Model and Access Control
+
+Access control for remote gRPC clients. In-process components (CLAs, services, routing agents compiled into the BPA) are already inside the trust perimeter - authorization checks there provide no protection.
+
+**Design document:** `bpa/docs/trust_model_design.md`
+
+### Architectural Decision
+
+**Trust boundary is at the gRPC layer, not within the BPA core.**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  bpa-server process                                         │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  bpa (core) - TRUSTED ZONE                            │  │
+│  │  In-process CLAs, Services, Routing - no authz needed │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                          ▲                                   │
+│  ┌───────────────────────┼───────────────────────────────┐  │
+│  │  bpa-server/src/grpc/ │ ◄── TRUST BOUNDARY           │  │
+│  │  All security enforcement happens here                │  │
+│  └───────────────────────┼───────────────────────────────┘  │
+└──────────────────────────┼──────────────────────────────────┘
+                           │ gRPC (untrusted)
+              Remote CLA / Service / Router
+```
+
+**Implications:**
+- `bpa/` crate remains security-agnostic, trusts all callers
+- All validation code goes in `bpa-server/src/grpc/`
+- In-process components bypass security checks (same process = trusted)
+
+### Threat Summary (Remote gRPC Only)
+
+- **T1: Malicious Remote CLA** - Source spoofing, peer impersonation
+- **T2: Malicious Remote Service** - Destination scanning, resource exhaustion
+- **T3: Malicious Remote Router** - Traffic redirection (future, when routing.proto exists)
+
+### Tasks
+
+All implementation in `bpa-server/src/grpc/`:
+
+- [ ] **12.1 mTLS authentication**
+  - Enable mTLS on gRPC server (require client certificates)
+  - Extract certificate CN/SAN as client identity
+  - Reject connections without valid certificate
+  - Same mechanism for local (`localhost`) and remote connections
+  - Location: `bpa-server/src/grpc/mod.rs`
+
+- [ ] **12.2 Policy file infrastructure**
+  - Define policy file format (TOML) in `bpa-server`
+  - Map certificate identity to policy entry
+  - Implement policy loading and hot-reload
+  - Pass policy context to gRPC handlers
+  - Default policy: allow-all (backwards compatible)
+
+- [ ] **12.3 Service authorization**
+  - Validate EID namespace on registration
+  - Validate destination namespace on send
+  - Validate bundle ownership on cancel
+  - Location: `bpa-server/src/grpc/service.rs`
+
+- [ ] **12.4 CLA authorization**
+  - Validate peer EID namespace on `add_peer`
+  - Validate source EID namespace on `dispatch`
+  - Location: `bpa-server/src/grpc/cla.rs`
+
+- [ ] **12.5 Routing agent authorization** (future)
+  - Validate pattern namespace on route add
+  - Validate priority bounds
+  - Location: `bpa-server/src/grpc/routing.rs` (when created)
+
+- [ ] **12.6 Rate limiting**
+  - Per-connection rate limiting in gRPC layer
+  - Integrate with TBF/HTB policy framework
+  - Backpressure signaling to clients
+
+- [ ] **12.7 BPSec source verification policy** (optional, in bpa core)
+  - Orthogonal to gRPC security - provides end-to-end source auth
+  - Add source verification to ingress path
+  - Policy options: require, prefer, ignore signatures
+  - Location: `bpa/src/dispatcher/` (exception to "no authz in bpa" - this is bundle-level)
+
+### Requirements
+
+- REQ-14: Reliability (security aspect)
+- REQ-2: BPSec compliance (for 12.8)
+
+---
+
 ## Recent Completions
 
 For reference when closing external issues:
 
-### 2026-02-10: Echo Service & hardy-async Once Abstraction
-
-- **Task 3.2 completed** - Echo service implementation
-  - New `echo-service/` crate implementing `Service` trait
-  - Swaps source ↔ destination, reflects bundle unchanged
-  - Payload-agnostic design (ping tool defines payload format)
-  - no_std compatible with `std` feature flag
-
-- **hardy-async `Once<T>` abstraction added** (`async/src/sync/spin.rs`)
-  - Wrapper around `spin::once::Once<T>` for platform abstraction
-  - Methods: `new()`, `get()`, `call_once()`, `is_completed()`
-  - Enables no_std compatibility for lazy initialization patterns
-  - Used by echo-service, available for other crates
-
-- **OnceLock → spin::once::Once migration** in bpa-server gRPC modules
-  - `application.rs`, `cla.rs`, `service.rs` - proxy field uses `spin::once::Once`
-  - Inner field uses `.get().ok_or()` pattern instead of `.wait()`
-
-- **tcpclv4 OnceLock migration** - Uses `spin::once::Once` for CLA inner
-
-- **Task 3.3 completed** - Echo service registration in bpa-server
-  - Feature-gated `echo` feature (default enabled)
-  - `EchoConfig` enum with flexible deserializer in `echo_config.rs`
-  - Supports: number, string, array of mixed types, or "off" to disable
-  - Default: IPN service 7 + DTN service "echo"
-  - `echo_config::init()` handles registration logic
-
-### 2026-02-09: Ingress Metadata Implementation
-
-- **Task 2.1 completed** - Ingress metadata tracking fully implemented
-  - Added `ReadOnlyMetadata` struct with ingress fields:
-    - `ingress_cla: Option<Arc<str>>` - CLA that received the bundle
-    - `ingress_peer_node: Option<NodeId>` - Peer node ID
-    - `ingress_peer_addr: Option<ClaAddress>` - Peer CL address
-  - Extended `receive_bundle()` signature to accept ingress parameters
-  - Ingress data captured and stored during bundle reception
-  - Available to filters at all hook points
-  - Also completes prerequisite 7.0 for ad-hoc routing
-
-### 2026-02-06: IPN Legacy Filter & Config Improvements
-
-- **IPN Legacy Filter completed** (`bpa/src/filters/ipn_legacy.rs`)
-  - Feature-gated with `ipn-legacy-filter` Cargo feature
-  - Egress WriteFilter that rewrites IPN 3-element EIDs to legacy 2-element format
-  - Configurable `legacy-nodes` patterns for next-hop matching
-  - Integrated via `bpa-server/src/filters.rs` FilterConfig tagged enum
-
-- **Config/Serde improvements:**
-  - Case-insensitive Hook enum deserialization (custom Deserialize impl)
-  - Flattened tagged enums for filters, CLAs, storage (removed `content = "config"`)
-  - Cleaned up redundant `#[serde(default)]` patterns
-  - Updated example_config.toml and example_config.yaml with complete examples
-
-### 2025-02-06: Egress Filter & Crash Safety Improvements
-
-- **Egress filter implemented** (`dispatcher/forward.rs:forward_bundle`)
-  - Runs after dequeue from ForwardPending, just before CLA send
-  - In-memory only (like Deliver) - no persistence
-  - May re-run on retry to different peer (correct for peer-specific BPSec)
-
-- **Filter crash safety model finalized:**
-  - Ingress: Checkpoints to `Dispatching` after filter (prevents re-run on restart)
-  - Originate: Filter-then-store pattern (bundle stored after filter passes)
-  - Deliver/Egress: No persistence (bundle consumed/leaving immediately)
-  - Removed `has_filters()` optimization - single lock acquisition per filter execution
-
-- **Removed `LocalPending` status** - unused; local delivery uses `Waiting` queue with service registration notifications
-
-### 2025-02-05: Filter Integration & Dispatcher Improvements
-
-- **2.3 Integrate filters into dispatcher** - Filters now invoked at Ingress, Originate, Deliver hooks
-  - `ExecResult::Drop` properly deletes bundle with reason code
-  - `ExecResult::Continue` mutation flags handled per-hook (see crash safety model above)
-  - `processing_pool` (BoundedTaskPool) added for rate-limited bundle processing
-  - Configurable via `processing_pool_size` (default: 4 × CPU cores)
-
-- **Dispatcher refactoring:**
-  - Extracted `ingest_bundle` wrapper for consistent spawn-into-pool pattern
-  - `ingest_bundle_inner` does actual work; `ingest_bundle` handles spawn
-  - Commonalized Originate filter logic into `run_originate_filter()` helper
-  - Filter-then-store pattern for Originate (bundle not stored until filter passes)
-  - Changed 14 functions from `&Arc<Self>` to `&self` (only entry points need Arc)
+| Date | Tasks | Summary |
+|------|-------|---------|
+| 2026-02-10 | 3.2, 3.3 | Echo service (`echo-service/`), hardy-async `Once<T>`, OnceLock migrations |
+| 2026-02-09 | 2.1, 7.0 | Ingress metadata in `ReadOnlyMetadata`, available to filters |
+| 2026-02-06 | - | IPN Legacy Filter, config/serde improvements |
+| 2026-02-06 | 2.3 | Egress filter, crash safety model finalized |
+| 2026-02-05 | 2.3 | Filter integration, dispatcher refactoring, `processing_pool` |
 
 ---
 
@@ -1200,53 +1259,33 @@ For reference when closing external issues:
 
 This section captures TODO comments found throughout the codebase that aren't yet tracked in the main sections above. Last updated: 2026-02-11.
 
-### Requirements Traceability Summary
+### Functional TODOs (Production Code)
 
-| Requirement | Related TODOs |
-|-------------|---------------|
-| **REQ-1** (RFC9171) | Bundle Age/Expiry tests, CRC validation, extension blocks, bundle rewriting |
-| **REQ-2** (BPSec) | Wrapped key tests, decrypt failure handling, encryptor context updates |
-| **REQ-3** (TCPCLv4) | mTLS implementation, parameter negotiation, fragment logic, reason codes |
-| **REQ-4** (Standardisation) | Custody transfer signalling |
-| **REQ-6** (Routing API) | Resolver implementation, route table switching, DNS resolution |
-| **REQ-7** (Local Storage) | Atomic save, recovery logic, filesystem structure tests |
-| **REQ-14** (Reliability) | Error handling, access control, fuzzing improvements |
-| **REQ-19** (Tools) | DNS resolution for ping, trace marks, benchmarking |
-
-### Active Code TODOs (Production Impact)
-
-These are in active code paths and represent work that affects runtime behavior.
+These are TODO comments in production code representing features or fixes that need implementation.
 
 #### Dispatcher & Bundle Processing
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `bpa/src/dispatcher/dispatch.rs:14` | Should not return errors when bundle content is garbage - not CLA's responsibility | REQ-14 |
-| `bpa/src/dispatcher/dispatch.rs:134` | Custody transfer signalling may need to happen here | REQ-4 |
-| `bpa/src/dispatcher/admin.rs:24` | Unable to decrypt payload - what do we do? | REQ-2 |
-| `bpa/src/dispatcher/admin.rs:43` | **See section 1.7** - WaitingForService status for disconnected applications | REQ-1 |
-| `bpa/src/dispatcher/reassemble.rs:29` | Report reception failure for fragments if identifiable | REQ-1 |
-| `bpa/src/dispatcher/reassemble.rs:31` | Wrap damaged bundle in "Junk Bundle Payload" for lost+found endpoint | - |
-| `bpa/src/dispatcher/local.rs:155` | Need access control in metadata | REQ-14 |
-| `bpa/src/dispatcher/local.rs:202` | Unable to decrypt payload handling | REQ-2 |
-| `bpa/src/dispatcher/local.rs:210` | Junk Bundle Payload for lost+found endpoint | - |
-| `bpa/src/dispatcher/restart.rs:240` | Junk Bundle Payload for lost+found endpoint | - |
+| Topic | Locations | Description | Req |
+|-------|-----------|-------------|-----|
+| Ingest error handling | `dispatch.rs:14`, `reassemble.rs:29,31`, `local.rs:210`, `restart.rs:240` | **See Section 11.5** - junk bundles, parse failures, lost+found | REQ-2, REQ-14 |
+| Delivery decrypt failure | `admin.rs:24`, `local.rs:202` | **See Section 11.6** - NoKey at final delivery | REQ-2 |
+| Status report delivery | `admin.rs:43` | **See Section 1.7** - WaitingForService for disconnected apps | REQ-1 |
+| Custody transfer | `dispatch.rs:134` | Custody transfer signalling may need to happen here | REQ-4 |
+| Access control | `local.rs:155` | **See Section 12.3** - Service authorization (cancel validation in gRPC layer) | REQ-14 |
 
 #### RIB & Routing
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `bpa/src/rib/find.rs:22` | Route table switching can occur here | REQ-6 |
-| `bpa/src/rib/find.rs:54` | Should be for *all* tables | REQ-6 |
-| `bpa/src/rib/find.rs:191` | Kick off resolver lookup for `via` | 6.1.4 |
-| `bpa/src/rib/local.rs:61,74,88` | Drive from a services file | - |
+| Topic | Locations | Description | Req |
+|-------|-----------|-------------|-----|
+| Route table switching | `find.rs:22,54` | Support multiple route tables and switching between them | REQ-6 |
+| Resolver lookup | `find.rs:191`, `bpa-server/clas.rs:56` | EID→CLA address resolution for `via` routes | 6.1.4 |
+| Services file | `local.rs:61,74,88` | Drive local routes from a services config file | - |
 
 #### CLA & Peers
 
 | Location | Description | Req |
 |----------|-------------|-----|
 | `bpa/src/cla/registry.rs:236` | Should ideally do a replace and return the previous | - |
-| `bpa-server/src/clas.rs:56` | Resolver implementation needed | 6.1.4 |
 
 #### Storage
 
@@ -1260,24 +1299,21 @@ These are in active code paths and represent work that affects runtime behavior.
 
 | Location | Description | Req |
 |----------|-------------|-----|
-| `bpv7/src/bpsec/encryptor.rs:190` | Update match when adding new contexts | REQ-2 |
+| `bpv7/src/bpsec/encryptor.rs:190` | Update match when adding new contexts (**See Section 11**) | REQ-2 |
 | `bpv7/src/bundle/primary_block.rs:231` | Null Report-To EID handling | REQ-1 |
 
 #### TCPCLv4
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `tcpclv4/src/listen.rs:376` | mTLS: Verify client certificate if mTLS enabled | 3.1.7 |
-| `tcpclv4/src/connect.rs:183` | mTLS: Verify server accepted client certificate | 3.1.7 |
-| `tcpclv4/src/config.rs:45` | mTLS: Client certificate and key for mutual TLS | 3.1.7 |
-| `tcpclv4-server/src/main.rs:30` | Connect to BPA via gRPC and register CLA | REQ-18 |
+| Topic | Locations | Description | Req |
+|-------|-----------|-------------|-----|
+| mTLS support | `listen.rs:376`, `connect.rs:183`, `config.rs:45` | Client/server certificate verification and config | 3.1.7 |
+| gRPC registration | `tcpclv4-server/main.rs:30` | Connect to BPA via gRPC and register CLA | REQ-18 |
 
 #### EID Patterns
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `eid-patterns/src/dtn_pattern.rs:17` | Glob needs more work - split into node_name glob and demux glob | 6.1.1 |
-| `eid-patterns/src/dtn_pattern.rs:60` | Just return true here, everything else is too hard | 6.1.2 |
+| Topic | Locations | Description | Req |
+|-------|-----------|-------------|-----|
+| DTN glob patterns | `dtn_pattern.rs:17,60` | Glob matching needs work - split node_name/demux globs | 6.1.1, 6.1.2 |
 
 #### Tools
 
@@ -1286,16 +1322,13 @@ These are in active code paths and represent work that affects runtime behavior.
 | `tools/src/ping/exec.rs:76` | DNS resolution for EIDs | 19.2.3 |
 | `file-cla/src/watcher.rs:106` | Could implement "Sent Items" folder instead of deleting | - |
 
-#### Fuzzing
+### Test Coverage Gaps (Functionality Exists, Tests Missing)
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `bpa/fuzz/src/lib.rs:16` | Implement `Msg::TickTimer` to advance mock clock and test expiry | REQ-14 |
-| `bpa/fuzz/src/lib.rs:17` | Implement `Msg::UpdateRoute` to test dynamic routing changes | REQ-14 |
+These are placeholder test functions for functionality that **already exists** but lacks test coverage. The underlying features work; these tests would verify and document the behavior.
 
-### Test TODOs (Commented-out Test Stubs)
+Note: These are distinct from Functional TODOs above - no production code changes needed, only test additions.
 
-These are placeholder test functions that need implementation. They're currently commented out.
+**See also:** `bpa/docs/fuzz_test_recovery.md` - Plan to convert BPA fuzz infrastructure into proper integration tests. This migration will address many RIB/routing, local delivery, and status report test gaps listed below.
 
 #### eid-patterns (REQ-6: 6.1.1, 6.1.2)
 
@@ -1343,6 +1376,8 @@ These are placeholder test functions that need implementation. They're currently
 
 **BPSec (REQ-2: 2.2.4, 2.2.7):**
 - `bpsec/rfc9173/test.rs:166,169` - Wrapped Key Unwrap, Wrapped Key Fail
+  - Key wrapping **is implemented** in `bib_hmac_sha2.rs` and `bcb_aes_gcm.rs`
+  - Tests needed: (1) successful unwrap with valid KEK, (2) failure on corrupted wrapped key
 
 **Bundle Parsing (REQ-1: 1.1.x):**
 - `bundle/parse.rs:1196-1217` - LLR 1.1.33 (Age block), LLR 1.1.34 (Hop Count), LLR 1.1.14 (bundle rewriting), LLR 1.1.19 (extension blocks), LLR 1.1.1 (CCSDS compliance), LLR 1.1.30 (rewriting rules), LLR 1.1.12 (incomplete CBOR), Trailing Data
