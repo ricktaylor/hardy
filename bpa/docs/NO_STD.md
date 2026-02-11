@@ -1,6 +1,6 @@
 # Making `bpa` no_std Compatible
 
-**Last Updated:** 2026-02-09
+**Last Updated:** 2026-02-11
 
 This document outlines the work required to make the `bpa` package `no_std` compatible as an optional feature.
 
@@ -246,7 +246,9 @@ The following `std::` usages are NOT behind `#[cfg(feature = "std")]`:
 |------|-------|--------------|
 | `config.rs:28` | `std::thread::available_parallelism()` | cfg-gate with fallback constant |
 | `cla/peers.rs:15,22` | `std::sync::OnceLock` | Use `hardy_async::sync::spin::Once` |
-| `rib/find.rs:79` | `std::hash::DefaultHasher` | Use portable hasher (e.g., `siphasher`) |
+
+**Resolved:**
+- `rib/find.rs` - Now uses `foldhash::quality::RandomState::default().hash_one()` with `core::hash::BuildHasher`, which is no_std compatible
 
 ### Phase 2c: Channel Abstraction
 
@@ -289,13 +291,13 @@ Once remaining phases are complete, Embassy backends need to be added to `hardy-
 9. Phase 2a: Add `sync` module to `hardy-async` - Mutex, RwLock, spin::Mutex, spin::RwLock
 10. Phase 2b: Update `bpa` imports - Uses `hardy_async::sync::spin::*` for hot paths
 11. Dispatcher refactoring - Eliminated OnceLock via "return closure" pattern
+12. Portable hasher in rib/find.rs - Uses `foldhash::quality::RandomState` with `core::hash::BuildHasher`
 
 ### Remaining
 
 1. **cfg-gate unguarded std usages** (LOW effort)
    - `std::thread::available_parallelism()` in config.rs
    - `std::sync::OnceLock` in cla/peers.rs → use `hardy_async::sync::spin::Once`
-   - `std::hash::DefaultHasher` in rib/find.rs
 
 2. **Phase 2c**: Add `channel` module to `hardy-async` with flume re-exports (LOW effort)
 
@@ -340,11 +342,11 @@ Once remaining phases are complete, Embassy backends need to be added to `hardy-
 | Phase 2b (bpa sync imports) | Medium | DONE | Uses hardy_async::sync::spin for hot paths |
 | Dispatcher refactoring | Medium | DONE | Eliminated OnceLock via closure pattern |
 | Prelude consistency | Low | DONE | Simplified qualifications |
-| cfg-gate remaining std | Low | Pending | 3 unguarded usages remain |
+| cfg-gate remaining std | Low | Pending | 2 unguarded usages remain |
 | Phase 2c (Channels) | Low | Pending | flume re-exports in hardy-async |
 | Phase 3b (Embassy backends) | High | Pending | Embassy integration for hardy-async |
 
 **Overall**: The majority of the no_std groundwork is complete. The remaining work is:
-1. cfg-gating 2 unguarded std usages (available_parallelism, DefaultHasher) - OnceLock replaced with `hardy_async::sync::spin::Once`
+1. cfg-gating 2 unguarded std usages (available_parallelism, OnceLock)
 2. Channel abstraction through hardy-async
 3. Embassy backends (high effort, future work)

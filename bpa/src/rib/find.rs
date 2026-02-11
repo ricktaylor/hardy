@@ -1,5 +1,5 @@
 use super::*;
-use core::hash::{Hash, Hasher};
+use core::hash::BuildHasher;
 
 #[derive(Debug)]
 enum InternalFindResult<'a> {
@@ -76,16 +76,14 @@ fn map_result(
         InternalFindResult::Forward(peer_map) => {
             let peers: Vec<_> = peer_map.iter().collect();
             let &(&peer, &next_hop) = if peers.len() > 1 {
-                let mut hasher = std::hash::DefaultHasher::default();
-                (
-                    &bundle.id.source,
-                    &bundle.destination,
-                    &metadata.writable.flow_label,
-                )
-                    .hash(&mut hasher);
-
                 peers
-                    .get((hasher.finish() % (peers.len() as u64)) as usize)
+                    .get(
+                        (foldhash::quality::RandomState::default().hash_one((
+                            &bundle.id.source,
+                            &bundle.destination,
+                            &metadata.writable.flow_label,
+                        )) % (peers.len() as u64)) as usize,
+                    )
                     .trace_expect("ECMP hash has picked an invalid entry")
             } else {
                 peers.first().trace_expect("Empty CLA result from find?!?")

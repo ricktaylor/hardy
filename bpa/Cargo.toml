@@ -9,7 +9,7 @@ default = ["rfc9173", "tokio"]
 rfc9173 = ["hardy-bpv7/rfc9173"]
 tokio = ["std", "hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
-std = ["time/std", "hardy-bpv7/std", "hardy-eid-patterns/std", "serde?/std"]
+std = ["time/std", "hardy-bpv7/std", "hardy-eid-patterns/std", "serde?/std", "foldhash/std"]
 tracing = ["hardy-async/tracing"]
 
 [lib]
@@ -28,6 +28,7 @@ metrics = "0.24.3"
 trace-err = "0.1.5"
 rand = "0.10.0"
 hashbrown = "0.16.1"
+foldhash = { version = "0.2.0", default-features = false }
 lru = "0.16.3"
 thiserror = "2.0.18"
 flume = "0.12.0"

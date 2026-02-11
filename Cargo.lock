@@ -1073,6 +1073,7 @@ dependencies = [
  "bytes",
  "criterion",
  "flume",
+ "foldhash 0.2.0",
  "futures",
  "hardy-async",
  "hardy-bpa-fuzz",
