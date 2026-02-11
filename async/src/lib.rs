@@ -30,6 +30,8 @@
 //! # async fn do_work() {}
 //! ```
 
+extern crate alloc;
+
 mod spawn;
 
 pub mod bounded_task_pool;
@@ -47,3 +49,21 @@ pub use cancellation_token::CancellationToken;
 pub use join_handle::JoinHandle;
 pub use notify::Notify;
 pub use task_pool::TaskPool;
+
+/// Returns the number of available hardware threads.
+///
+/// With the `std` feature enabled, this queries the OS via
+/// `std::thread::available_parallelism()`. Without `std`, returns 1.
+#[cfg(feature = "std")]
+pub fn available_parallelism() -> core::num::NonZeroUsize {
+    std::thread::available_parallelism().unwrap_or(core::num::NonZeroUsize::new(1).unwrap())
+}
+
+/// Returns the number of available hardware threads.
+///
+/// With the `std` feature enabled, this queries the OS via
+/// `std::thread::available_parallelism()`. Without `std`, returns 1.
+#[cfg(not(feature = "std"))]
+pub fn available_parallelism() -> core::num::NonZeroUsize {
+    core::num::NonZeroUsize::new(1).unwrap()
+}

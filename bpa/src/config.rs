@@ -25,10 +25,7 @@ impl Default for Config {
             status_reports: false,
             poll_channel_depth: core::num::NonZeroUsize::new(16).unwrap(),
             processing_pool_size: core::num::NonZeroUsize::new(
-                std::thread::available_parallelism()
-                    .map(|p| p.get())
-                    .unwrap_or(1)
-                    * 4,
+                hardy_async::available_parallelism().get() * 4,
             )
             .unwrap(),
             storage_config: storage::Config::default(),

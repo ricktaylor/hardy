@@ -20,7 +20,7 @@
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! // Create a pool with at most 4 concurrent tasks
-//! let pool = BoundedTaskPool::new(std::num::NonZeroUsize::new(4).unwrap());
+//! let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
 //!
 //! for i in 0..100 {
 //!     // spawn() waits if 4 tasks are already running
@@ -33,8 +33,8 @@
 //! # });
 //! ```
 
-use std::future::Future;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::future::Future;
 
 use crate::join_handle::JoinHandle;
 use crate::task_pool::TaskPool;
@@ -54,8 +54,8 @@ use crate::task_pool::TaskPool;
 ///
 /// # Default Implementation
 ///
-/// The [`Default`] implementation uses [`std::thread::available_parallelism()`]
-/// to set the concurrency limit, matching the number of CPU cores.
+/// The [`Default`] implementation uses [`crate::available_parallelism()`]
+/// to set the concurrency limit, matching the number of CPU cores (or 1 in no_std).
 ///
 /// # Shutdown
 ///
@@ -81,9 +81,9 @@ impl BoundedTaskPool {
     /// use hardy_async::bounded_task_pool::BoundedTaskPool;
     ///
     /// // Allow up to 8 concurrent tasks
-    /// let pool = BoundedTaskPool::new(std::num::NonZeroUsize::new(8).unwrap());
+    /// let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(8).unwrap());
     /// ```
-    pub fn new(max_concurrent: std::num::NonZeroUsize) -> Self {
+    pub fn new(max_concurrent: core::num::NonZeroUsize) -> Self {
         Self {
             inner: TaskPool::new(),
             semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent.into())),
@@ -102,7 +102,7 @@ impl BoundedTaskPool {
     /// ```no_run
     /// # use hardy_async::bounded_task_pool::BoundedTaskPool;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// let pool = BoundedTaskPool::new(std::num::NonZeroUsize::new(2).unwrap());
+    /// let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
     ///
     /// // These two spawn immediately
     /// pool.spawn(async { /* task 1 */ }).await;
@@ -172,24 +172,22 @@ impl BoundedTaskPool {
 impl Default for BoundedTaskPool {
     /// Creates a bounded task pool with concurrency equal to available parallelism.
     ///
-    /// Uses [`std::thread::available_parallelism()`] to determine the limit,
-    /// falling back to 1 if unavailable.
+    /// Uses [`crate::available_parallelism()`] to determine the limit,
+    /// which queries the OS when the `std` feature is enabled, or returns 1 otherwise.
     fn default() -> Self {
-        let parallelism =
-            std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(1).unwrap());
-        Self::new(parallelism)
+        Self::new(crate::available_parallelism())
     }
 }
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::time::Duration;
 
     #[tokio::test]
     async fn test_bounded_pool_limits_concurrency() {
-        let pool = BoundedTaskPool::new(std::num::NonZeroUsize::new(2).unwrap());
+        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
         let concurrent = Arc::new(AtomicUsize::new(0));
         let max_concurrent = Arc::new(AtomicUsize::new(0));
 
@@ -237,9 +235,7 @@ mod tests {
     #[tokio::test]
     async fn test_bounded_pool_default_uses_available_parallelism() {
         let pool = BoundedTaskPool::default();
-        let expected = std::thread::available_parallelism()
-            .map(Into::into)
-            .unwrap_or(1);
+        let expected: usize = crate::available_parallelism().into();
 
         // We can't directly inspect the semaphore, but we can verify the pool works
         assert!(!pool.is_cancelled());
@@ -257,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bounded_pool_shutdown() {
-        let pool = BoundedTaskPool::new(std::num::NonZeroUsize::new(4).unwrap());
+        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
         let completed = Arc::new(AtomicUsize::new(0));
 
         for _ in 0..4 {
