@@ -117,6 +117,49 @@ Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not 
   - Service-specific messages for raw bundle bytes (ServiceSendRequest, ServiceReceiveRequest)
   - Full proxy and gRPC server implementations in `proto/proxy/service.rs` and `bpa-server/src/grpc/service.rs`
 
+- [ ] **1.7 Status Report Delivery for Disconnected Applications**
+
+  **Problem:** When a status report arrives at the BPA admin endpoint, the BPA looks up the originating service by `bundle_id.source`. For Applications (vs low-level Services), the Report-To is the BPA admin endpoint, not the application itself. If the application isn't currently registered, the status report is silently dropped.
+
+  **Design:** Add `WaitingForService { source: Eid }` status variant:
+
+  ```rust
+  // In bpa/src/metadata.rs
+  pub enum BundleStatus {
+      // ... existing variants ...
+      WaitingForService { source: Eid },  // Waiting for specific service to register
+  }
+  ```
+
+  **Flow:**
+  1. Status report arrives at admin endpoint → `administrative_bundle()`
+  2. Service lookup by `report.bundle_id.source` fails (app not registered)
+  3. Set `bundle.metadata.status = WaitingForService { source: report.bundle_id.source }`
+  4. Persist and call `watch_bundle()` - bundle survives restarts
+  5. When service registers, `ServiceRegistry::register()` calls `poll_service_waiting(&eid)`
+  6. `poll_service_waiting` queries bundles with matching `WaitingForService` status
+  7. Matching bundles re-processed via `ingest_bundle()` → status report delivered
+
+  **Reaper integration:**
+  - `WaitingForService` bundles are monitored by the reaper like any other bundle
+  - When bundle lifetime expires, reaper drops it via `drop_bundle(bundle, ReasonCode::LifetimeExpired)`
+  - Stale status reports for applications that never reconnect are automatically cleaned up
+  - No special handling needed - existing reaper logic applies
+
+  **SQLite storage impact (minimal):**
+  - `from_status()`: Add case for status_code=5, source EID in `status_param3`
+  - New query: `get_waiting_for_service(eid)` - `WHERE status_code = 5 AND status_param3 = ?`
+  - No schema migration needed - existing columns sufficient
+
+  **Changes required:**
+  - `bpa/src/metadata.rs`: Add `WaitingForService { source: Eid }` variant
+  - `bpa/src/dispatcher/admin.rs`: Use new status when service not found
+  - `bpa/src/services/registry.rs`: Call `poll_service_waiting()` on registration
+  - `bpa/src/dispatcher/mod.rs`: Add `poll_service_waiting()` method
+  - `bpa/src/storage/mod.rs`: Add `get_waiting_for_service()` trait method
+  - `sqlite-storage/src/storage.rs`: Implement status_code=5 and query
+  - `bpa/src/dispatcher/restart.rs`: Handle `WaitingForService` in recovery
+
 ---
 
 ## 2. Filter Infrastructure
@@ -1150,6 +1193,181 @@ For reference when closing external issues:
   - Commonalized Originate filter logic into `run_originate_filter()` helper
   - Filter-then-store pattern for Originate (bundle not stored until filter passes)
   - Changed 14 functions from `&Arc<Self>` to `&self` (only entry points need Arc)
+
+---
+
+## Appendix: Scattered Code TODOs
+
+This section captures TODO comments found throughout the codebase that aren't yet tracked in the main sections above. Last updated: 2026-02-11.
+
+### Requirements Traceability Summary
+
+| Requirement | Related TODOs |
+|-------------|---------------|
+| **REQ-1** (RFC9171) | Bundle Age/Expiry tests, CRC validation, extension blocks, bundle rewriting |
+| **REQ-2** (BPSec) | Wrapped key tests, decrypt failure handling, encryptor context updates |
+| **REQ-3** (TCPCLv4) | mTLS implementation, parameter negotiation, fragment logic, reason codes |
+| **REQ-4** (Standardisation) | Custody transfer signalling |
+| **REQ-6** (Routing API) | Resolver implementation, route table switching, DNS resolution |
+| **REQ-7** (Local Storage) | Atomic save, recovery logic, filesystem structure tests |
+| **REQ-14** (Reliability) | Error handling, access control, fuzzing improvements |
+| **REQ-19** (Tools) | DNS resolution for ping, trace marks, benchmarking |
+
+### Active Code TODOs (Production Impact)
+
+These are in active code paths and represent work that affects runtime behavior.
+
+#### Dispatcher & Bundle Processing
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpa/src/dispatcher/dispatch.rs:14` | Should not return errors when bundle content is garbage - not CLA's responsibility | REQ-14 |
+| `bpa/src/dispatcher/dispatch.rs:134` | Custody transfer signalling may need to happen here | REQ-4 |
+| `bpa/src/dispatcher/admin.rs:24` | Unable to decrypt payload - what do we do? | REQ-2 |
+| `bpa/src/dispatcher/admin.rs:43` | **See section 1.7** - WaitingForService status for disconnected applications | REQ-1 |
+| `bpa/src/dispatcher/reassemble.rs:29` | Report reception failure for fragments if identifiable | REQ-1 |
+| `bpa/src/dispatcher/reassemble.rs:31` | Wrap damaged bundle in "Junk Bundle Payload" for lost+found endpoint | - |
+| `bpa/src/dispatcher/local.rs:155` | Need access control in metadata | REQ-14 |
+| `bpa/src/dispatcher/local.rs:202` | Unable to decrypt payload handling | REQ-2 |
+| `bpa/src/dispatcher/local.rs:210` | Junk Bundle Payload for lost+found endpoint | - |
+| `bpa/src/dispatcher/restart.rs:240` | Junk Bundle Payload for lost+found endpoint | - |
+
+#### RIB & Routing
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpa/src/rib/find.rs:22` | Route table switching can occur here | REQ-6 |
+| `bpa/src/rib/find.rs:54` | Should be for *all* tables | REQ-6 |
+| `bpa/src/rib/find.rs:191` | Kick off resolver lookup for `via` | 6.1.4 |
+| `bpa/src/rib/local.rs:61,74,88` | Drive from a services file | - |
+
+#### CLA & Peers
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpa/src/cla/registry.rs:236` | Should ideally do a replace and return the previous | - |
+| `bpa-server/src/clas.rs:56` | Resolver implementation needed | 6.1.4 |
+
+#### Storage
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpa/src/metadata.rs:58` | Add 'trace' mark that will trigger local feedback | REQ-19 |
+| `bpa/src/storage/adu_reassembly.rs:71` | Capture aggregate received_at across fragments | REQ-1 |
+| `bpa/src/storage/adu_reassembly.rs:197` | Lots of memory copies happening here | REQ-13 |
+
+#### BPSec
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpv7/src/bpsec/encryptor.rs:190` | Update match when adding new contexts | REQ-2 |
+| `bpv7/src/bundle/primary_block.rs:231` | Null Report-To EID handling | REQ-1 |
+
+#### TCPCLv4
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `tcpclv4/src/listen.rs:376` | mTLS: Verify client certificate if mTLS enabled | 3.1.7 |
+| `tcpclv4/src/connect.rs:183` | mTLS: Verify server accepted client certificate | 3.1.7 |
+| `tcpclv4/src/config.rs:45` | mTLS: Client certificate and key for mutual TLS | 3.1.7 |
+| `tcpclv4-server/src/main.rs:30` | Connect to BPA via gRPC and register CLA | REQ-18 |
+
+#### EID Patterns
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `eid-patterns/src/dtn_pattern.rs:17` | Glob needs more work - split into node_name glob and demux glob | 6.1.1 |
+| `eid-patterns/src/dtn_pattern.rs:60` | Just return true here, everything else is too hard | 6.1.2 |
+
+#### Tools
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `tools/src/ping/exec.rs:76` | DNS resolution for EIDs | 19.2.3 |
+| `file-cla/src/watcher.rs:106` | Could implement "Sent Items" folder instead of deleting | - |
+
+#### Fuzzing
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpa/fuzz/src/lib.rs:16` | Implement `Msg::TickTimer` to advance mock clock and test expiry | REQ-14 |
+| `bpa/fuzz/src/lib.rs:17` | Implement `Msg::UpdateRoute` to test dynamic routing changes | REQ-14 |
+
+### Test TODOs (Commented-out Test Stubs)
+
+These are placeholder test functions that need implementation. They're currently commented out.
+
+#### eid-patterns (REQ-6: 6.1.1, 6.1.2)
+
+- `str_tests.rs:15` - Legacy IPN format (2-element) parsing: "ipn:1.2"
+- `str_tests.rs:182` - Invalid syntax: "ipn:1-1", "ipn:[10-5]", "http://*"
+- `str_tests.rs:221` - DTN matching logic: Exact, Prefix, Recursive
+
+#### bpa
+
+**Bundle Processing (REQ-1: 1.1.33):**
+- `bundle.rs:40` - Age Fallback: Verify creation time derived from Age
+- `bundle.rs:46` - Expiry Calculation: Verify expiry time summation
+
+**RIB/Routing (REQ-6: 6.1.7-6.1.10):**
+- `rib/find.rs:216-246` - Exact Match, Longest Prefix, Default Route, ECMP Hashing, Recursion Loop, Reflection
+- `rib/route.rs:153,159` - Action Precedence, Route Entry Sort
+- `rib/mod.rs:94` - Impacted Subsets: Verify `Rib::add` detects affected sub-routes
+- `rib/local.rs:174-186` - Local Ephemeral, Local Action Sort, Implicit Routes
+
+**CLA/Peers:**
+- `cla/peers.rs:194,200` - Queue Selection, Queue Fallback
+- `cla/mod.rs:227` - Address Parsing: Verify ClaAddress conversion
+- `cla/registry.rs:323-335` - Duplicate Registration, Peer Lifecycle, Cascading Cleanup
+
+**Policy (REQ-4: QoS):**
+- `policy/mod.rs:55,61` - Flow Classification, Queue Bounds
+
+**Services:**
+- `services/registry.rs:475,481` - Duplicate Reg, Cleanup
+
+**Node IDs (REQ-1: 1.1.23):**
+- `node_ids.rs:223-241` - Single Scheme Enforce, Invalid Types, Admin Resolution (IPN/DTN)
+
+**Storage (REQ-7, REQ-14):**
+- `storage/reaper.rs:194-212` - Cache Ordering, Cache Saturation, Cache Rejection, Wakeup Trigger
+- `storage/channel.rs:426-480` - Fast Path Saturation, Congestion Signal, Hysteresis Recovery, Lazy Expiry, Close Safety, Drop-to-Storage Integrity, Hybrid Duplication, Ordering Preservation, Status Consistency, Zombie Task Leak
+- `storage/bundle_mem.rs:120-132` - Eviction Policy (FIFO/Priority), Min Bundles Protection
+- `storage/store.rs:196-208` - Quota Enforcement, Double Delete, Transaction Rollback
+
+#### cbor (REQ-1: 1.1.2-1.1.12)
+
+- `decode_tests.rs:449` - Missing requirements tests
+
+#### bpv7
+
+**BPSec (REQ-2: 2.2.4, 2.2.7):**
+- `bpsec/rfc9173/test.rs:166,169` - Wrapped Key Unwrap, Wrapped Key Fail
+
+**Bundle Parsing (REQ-1: 1.1.x):**
+- `bundle/parse.rs:1196-1217` - LLR 1.1.33 (Age block), LLR 1.1.34 (Hop Count), LLR 1.1.14 (bundle rewriting), LLR 1.1.19 (extension blocks), LLR 1.1.1 (CCSDS compliance), LLR 1.1.30 (rewriting rules), LLR 1.1.12 (incomplete CBOR), Trailing Data
+- `bundle/primary_block.rs:304-310` - LLR 1.1.21 (CRC values), LLR 1.1.22 (CRC types), LLR 1.1.15 (Primary Block valid)
+
+#### tcpclv4 (REQ-3: 3.1.x)
+
+- `session.rs:632-647` - UT-TCP-03 (Parameter Negotiation), UT-TCP-04 (Fragment Logic), UT-TCP-05 (Reason Codes)
+
+#### sqlite-storage (REQ-7: 7.2.x)
+
+- `migrate.rs:146,153` - SQL-01 (Migration Logic), SQL-04 (Migration Errors)
+- `storage.rs:620-642` - SQL-02 (Concurrency), SQL-03 (Persistence), SQL-05 (Corrupt Data), SQL-06 (waiting_queue Invalidation)
+
+#### localdisk-storage (REQ-7: 7.1.x)
+
+- `storage.rs:328-365` - LD-01 (Atomic Save), LD-02 (Recovery Logic), LD-03 (Filesystem Structure), LD-04 (mmap Feature Flag), LD-05 (Persistence)
+
+### Design/Architecture TODOs
+
+These are higher-level design considerations captured in code.
+
+| Location | Description | Req |
+|----------|-------------|-----|
+| `bpa/benches/bundle_bench.rs:3` | Entire benchmarking suite needs statistical significance work | REQ-13 |
 
 ---
 

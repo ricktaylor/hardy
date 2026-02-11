@@ -40,7 +40,10 @@ impl Dispatcher {
                     .await
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
-                // TODO:  This needs to move to a storage::channel
+                // TODO: Implement WaitingForService status for disconnected applications
+                // See TODO.md section 1.7 "Status Report Delivery for Disconnected Applications"
+                // Currently, if the originating service isn't registered, the status report is dropped.
+                // Design: Set BundleStatus::WaitingForService { source } and persist until service registers.
                 debug!("Received administrative record: {report:?}");
 
                 // Find a live service to notify
