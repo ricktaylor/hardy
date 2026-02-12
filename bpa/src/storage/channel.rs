@@ -1,89 +1,31 @@
+//! Hybrid memory/storage channel with backpressure.
+//!
+//! Provides a fast path (in-memory flume channel) and slow path (storage-backed)
+//! for bundle queuing. When the memory channel fills, bundles are persisted and
+//! a background poller drains them back into memory.
+//!
+//! # State Machine
+//!
+//! ```text
+//!     ┌──────────┐  channel full   ┌──────────┐  drain complete  ┌──────────┐
+//!     │   Open   │ ───────────────►│ Draining │ ────────────────►│   Open   │
+//!     └──────────┘                 └────┬─────┘                  └──────────┘
+//!                                       │ new bundle arrives
+//!                                       ▼
+//!                                  ┌───────────┐
+//!                                  │ Congested │ ──► (poller loops)
+//!                                  └───────────┘
+//!
+//!     Any state ──► Closing (shutdown)
+//! ```
+//!
+//! Uses lock-free CAS operations for state transitions on the hot path.
+
 use super::*;
 use core::result::Result;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-// =============================================================================
-// Channel State Machine
-// =============================================================================
-//
-// This module implements a hybrid memory/storage channel with a lock-free state
-// machine. The state machine controls whether bundles are sent via a fast path
-// (direct to in-memory flume channel) or a slow path (persisted to storage and
-// polled by a background task).
-//
-// ## Why Lock-Free?
-//
-// We use atomic Compare-And-Swap (CAS) operations instead of a mutex because:
-//
-// 1. **Performance**: CAS is a single CPU instruction (CMPXCHG on x86, LDXR/STXR
-//    on ARM), whereas mutex acquisition involves syscalls under contention.
-//
-// 2. **No blocking**: Lock-free operations never block the calling thread. Even
-//    under contention, all threads make progress (lock-free guarantee).
-//
-// 3. **Portability**: Using `#[repr(usize)]` with `AtomicUsize` ensures we use
-//    the processor's native word size, which has guaranteed atomic operations
-//    on all platforms. Sub-word atomics (u8) may require emulation on some
-//    embedded architectures.
-//
-// 4. **Simplicity**: Our state transitions are simple enough that CAS is cleaner
-//    than a mutex. We don't need mutual exclusion - we just need atomic state
-//    transitions where "last writer wins" is acceptable.
-//
-// ## State Transitions
-//
-// ```text
-//                    ┌─────────────────────────────────────────────┐
-//                    │                                             │
-//                    ▼                                             │
-//     ┌──────────────────────────┐                                 │
-//     │          Open            │ ◄───────────────────────────────┤
-//     │  (fast path available)   │                                 │
-//     └────────────┬─────────────┘                                 │
-//                  │                                               │
-//                  │ channel full (try_send fails)                 │
-//                  ▼                                               │
-//     ┌──────────────────────────┐                                 │
-//     │        Draining          │ ─── drain complete ─────────────┘
-//     │  (poller taking over)    │     (CAS: Draining → Open)
-//     └────────────┬─────────────┘
-//                  │
-//                  │ new bundle arrives during drain
-//                  ▼
-//     ┌──────────────────────────┐
-//     │        Congested         │ ─── (poller loops back to drain)
-//     │  (work arrived while     │
-//     │   draining)              │
-//     └──────────────────────────┘
-//
-//                    ┌──────────────────────────┐
-//     Any state ───► │        Closing           │
-//                    │  (channel shutting down) │
-//                    └──────────────────────────┘
-// ```
-//
-// ## Memory Ordering
-//
-// We use the following orderings:
-//
-// - `Acquire` on loads: Ensures we see all writes that happened before the
-//   corresponding Release store.
-//
-// - `Release` on stores: Ensures all our prior writes are visible to threads
-//   that subsequently Acquire-load this value.
-//
-// - `AcqRel` on CAS: Combines Acquire (for the load) and Release (for the store).
-//
-// - `Relaxed` on CAS failure: The failed load doesn't establish synchronization.
-//
-// =============================================================================
-
-/// Channel state machine states.
-///
-/// Using `#[repr(usize)]` ensures the enum has the same size as `AtomicUsize`,
-/// allowing direct casting without conversion overhead. This also guarantees
-/// native atomic operations on all architectures (some embedded platforms
-/// lack native sub-word atomics for u8/u16).
+/// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChannelState {
@@ -128,20 +70,9 @@ impl ChannelState {
 
 /// Shared state between Sender and the background poller task.
 struct Shared {
-    /// Atomic state machine controlling fast/slow path routing.
-    ///
-    /// We use `AtomicUsize` with lock-free CAS operations instead of a mutex
-    /// because state transitions are simple (single enum value) and this is
-    /// on the hot path for every bundle send.
     state: AtomicUsize,
-
-    /// The in-memory channel for fast path sends.
     tx: flume::Sender<bundle::Bundle>,
-
-    /// The bundle status that this channel handles (e.g., ForwardPending).
     status: metadata::BundleStatus,
-
-    /// Notification primitive to wake the background poller.
     notify: Arc<hardy_async::Notify>,
 }
 
@@ -183,41 +114,25 @@ impl Shared {
     }
 }
 
+/// Sender handle for a hybrid channel.
 #[derive(Clone)]
 pub struct Sender {
     store: Arc<Store>,
     shared: Arc<Shared>,
 }
 
+/// Error returned when a bundle cannot be sent.
 pub struct SendError(pub bundle::Bundle);
 
 impl Sender {
+    /// Send a bundle, updating its status to match the channel's target status.
     pub async fn send(&self, mut bundle: bundle::Bundle) -> Result<(), SendError> {
         if bundle.metadata.status != self.shared.status {
             bundle.metadata.status = self.shared.status.clone();
             self.store.update_metadata(&bundle).await;
         }
 
-        // ---------------------------------------------------------------------
-        // Lock-free state machine dispatch
-        // ---------------------------------------------------------------------
-        //
-        // We load the current state and handle each case. Note that the state
-        // can change between our load and any subsequent operations - this is
-        // intentional and correct:
-        //
-        // - If Open → Draining between load and try_send: Our try_send might
-        //   still succeed (channel has room) or fail (full). Either is correct.
-        //
-        // - If we see Open but someone else already transitioned to Draining:
-        //   Our CAS(Open → Draining) will fail, which is fine - someone else
-        //   already did it.
-        //
-        // - Multiple concurrent CAS attempts are safe: exactly one succeeds,
-        //   others fail and the overall state is still correct.
-        //
-        // ---------------------------------------------------------------------
-
+        // State can change between load and CAS - this is fine, CAS handles races
         let state = self.shared.load_state(Ordering::Acquire);
 
         match state {
@@ -234,16 +149,7 @@ impl Sender {
                     }
 
                     Err(flume::TrySendError::Full(_)) => {
-                        // The channel is full. Transition to the Draining state to
-                        // signal the slow path poller to take over.
-                        //
-                        // If this CAS fails, another sender already did the
-                        // transition, which is fine - the poller will be notified
-                        // and will drain the storage.
-                        //
-                        // We use AcqRel ordering:
-                        // - Acquire: see any prior state changes
-                        // - Release: our transition is visible to the poller
+                        // Channel full - trigger slow path
                         let _ = self.shared.compare_exchange_state(
                             ChannelState::Open,
                             ChannelState::Draining,
@@ -253,14 +159,8 @@ impl Sender {
                     }
                 }
             }
-
-            // The poller is draining the store. If a new bundle arrives now, we move
-            // to the Congested state to signal that new work arrived during the drain.
-            //
-            // If this CAS fails (state changed to Congested or Open), that's
-            // fine - either another sender already signaled congestion, or
-            // the poller finished and reopened the fast path.
             ChannelState::Draining => {
+                // Signal new work arrived during drain
                 let _ = self.shared.compare_exchange_state(
                     ChannelState::Draining,
                     ChannelState::Congested,
@@ -268,15 +168,8 @@ impl Sender {
                     Ordering::Relaxed,
                 );
             }
-
-            // The channel is already congested. We don't need to do anything further;
-            // the notification will ensure the poller runs again.
             ChannelState::Congested => {}
-
-            // The channel is closing down. We cannot accept new bundles.
-            ChannelState::Closing => {
-                return Err(SendError(bundle));
-            }
+            ChannelState::Closing => return Err(SendError(bundle)),
         }
 
         // Notify the poll_queue task that it has work to do on the slow path.
@@ -284,22 +177,19 @@ impl Sender {
         Ok(())
     }
 
+    /// Close the channel, preventing further sends.
     pub async fn close(&self) {
-        // Mark the channel as closing.
-        //
-        // We use Release ordering to ensure any prior bundle writes are visible
-        // to the poller when it sees the Closing state.
         self.shared
             .store_state(ChannelState::Closing, Ordering::Release);
-
-        // Wake up the poller task so it can exit
         self.shared.notify.notify_one();
     }
 }
 
+/// Receiver handle (re-export of flume::Receiver).
 pub type Receiver = flume::Receiver<bundle::Bundle>;
 
 impl Store {
+    /// Create a hybrid channel with the given target status and memory capacity.
     pub fn channel(
         self: &Arc<Self>,
         status: metadata::BundleStatus,
@@ -329,34 +219,18 @@ impl Store {
         )
     }
 
+    /// Background poller: drains storage into memory channel when congested.
     async fn poll_queue(self: Arc<Self>, shared: Arc<Shared>, cap: usize) {
-        // This is the main worker loop for the channel's slow path. It will run for the
-        // lifetime of the channel, waking up when notified that the channel is congested.
         loop {
-            // 1. Wait for a notification to start work. This can come from a sender that
-            //    finds the channel full, or from a sender that arrives when the channel
-            //    is already in a Draining or Congested state.
             shared.notify.notified().await;
 
-            // 2. Set the state to Draining. This acts as a baseline for detecting any
-            //    new senders that arrive while we are busy draining the store.
-            //
-            //    We use swap() which atomically returns the old state - this replaces
-            //    the mutex lock + mem::replace pattern.
-            //
-            //    AcqRel ordering:
-            //    - Acquire: see any bundle writes from senders
-            //    - Release: senders see that we're now draining
             let old_state = shared.swap_state(ChannelState::Draining, Ordering::AcqRel);
-
             if old_state == ChannelState::Closing {
-                // If we were notified because we are closing down, exit the loop.
                 break;
             }
 
-            // 3. Drain the store completely by repeatedly calling poll_once.
+            // Drain storage
             loop {
-                // Keep polling until the store is empty.
                 match self.poll_once(&shared, cap).await {
                     Ok(true) => {}
                     Ok(false) => break,
@@ -367,28 +241,19 @@ impl Store {
                 }
             }
 
-            // 4. After draining, check if it's safe to re-open the fast path.
-            //    This provides hysteresis, preventing rapid switching between states.
-            if shared.tx.len() < (cap / 2) {
-                // CRITICAL: Check if any senders arrived *while* we were draining (step 3).
-                // If the state is still Draining, it means no new senders arrived,
-                // and it is safe to re-open the fast path.
-                //
-                // We use CAS instead of mutex: only transition if still Draining.
-                let result = shared.compare_exchange_state(
-                    ChannelState::Draining,
-                    ChannelState::Open,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                );
-
-                if result.is_err() {
-                    // If the state was changed to Congested, we do nothing here. The
-                    // notification from that new sender will cause this loop to run again,
-                    // ensuring the new items are processed before the fast path re-opens.
-                    continue;
+            // Re-open fast path if channel <50% full and no new work arrived
+            if shared.tx.len() < (cap / 2)
+                && shared
+                    .compare_exchange_state(
+                        ChannelState::Draining,
+                        ChannelState::Open,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_err()
+                {
+                    continue; // Congested - loop again
                 }
-            }
         }
     }
 

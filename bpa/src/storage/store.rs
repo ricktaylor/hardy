@@ -1,6 +1,9 @@
 use super::*;
 
 impl Store {
+    /// Create a new Store with the configured storage backends.
+    ///
+    /// Uses in-memory storage if no backends are specified in config.
     pub fn new(config: &config::Config) -> Self {
         // Init pluggable storage engines
         Self {
@@ -25,6 +28,10 @@ impl Store {
         }
     }
 
+    /// Start storage subsystem tasks.
+    ///
+    /// Optionally runs crash recovery, then starts the reaper background task
+    /// for bundle lifetime monitoring.
     pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>, recover_storage: bool) {
         if recover_storage {
             self.recover(&dispatcher);
@@ -76,6 +83,10 @@ impl Store {
         }
     }
 
+    /// Load bundle data by storage name (cache-first strategy).
+    ///
+    /// Checks the LRU cache first (peek without updating order), then falls
+    /// back to the bundle storage backend if not cached.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
         // sync::spin::Mutex::lock() returns guard directly (no Result)
@@ -89,6 +100,10 @@ impl Store {
             .trace_expect("Failed to load bundle data")
     }
 
+    /// Save bundle data (persist-first, then cache small bundles).
+    ///
+    /// Always persists to the bundle storage backend first, then caches
+    /// in the LRU if the data size is below `max_cached_bundle_size`.
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn save_data(&self, data: &Bytes) -> Arc<str> {
         let storage_name = self
@@ -107,6 +122,9 @@ impl Store {
         storage_name
     }
 
+    /// Delete bundle data from cache and storage backend.
+    ///
+    /// Removes from the LRU cache first, then deletes from the backend.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
         // sync::spin::Mutex::lock() returns guard directly (no Result)

@@ -2,6 +2,13 @@
 
 This document describes the bundle processing state machine in the BPA dispatcher, which tracks bundles as they transit through the processing pipeline using `metadata::BundleStatus`.
 
+## Related Documents
+
+- **[Routing Design](routing_design.md)**: RIB lookup and forwarding decisions in `process_bundle()`
+- **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter hooks that run at various state transitions
+- **[Policy Subsystem Design](policy_subsystem_design.md)**: Queue assignment in `ForwardPending` status
+- **[Storage Subsystem Design](storage_subsystem_design.md)**: Bundle persistence and crash recovery mechanisms
+
 ## Overview
 
 The dispatcher implements a state machine that governs bundle lifecycle from ingestion to final disposition. Bundle state is persisted via the metadata storage backend, enabling crash recovery and resumption of in-flight bundles.
@@ -118,41 +125,47 @@ The `BundleStatus` enum (defined in `bpa/src/metadata.rs`) defines all possible 
 
 - Lifetime validation (immediate expiry check)
 - Hop count validation
-- **Ingress Filter Hook** execution (may drop bundle)
+- **Ingress Filter Hook** execution (may drop bundle) — see [Filter Subsystem Design](filter_subsystem_design.md)
+- Checkpoint: status transitions to `Dispatching`
 - Proceeds to `process_bundle()`
 
 ### Phase 2: Routing Decision
 
 **Router:** `process_bundle()` (`dispatch.rs`)
 
-The routing lookup determines the next state:
+The routing lookup determines the next state. See [Routing Design](routing_design.md) for details on the RIB lookup algorithm and peer resolution.
 
 | Route Result | Action | State Transition |
 |--------------|--------|------------------|
-| Drop | Bundle invalid/rejected | `New` → Tombstone |
-| Admin Endpoint | Administrative handling | `New` → Tombstone |
-| Local Delivery (no fragments) | Deliver to service | `New` → Tombstone |
-| Local Delivery (fragments) | Fragment reassembly | `New` → `AduFragment` |
-| Forward to CLA Peer | Queue for forwarding | `New` → `Dispatching` |
-| No Route Available | Wait for route | `New` → `Waiting` |
+| Drop | Bundle invalid/rejected | `Dispatching` → Tombstone |
+| Admin Endpoint | Administrative handling | `Dispatching` → Tombstone |
+| Local Delivery (no fragments) | Deliver to service | `Dispatching` → Tombstone |
+| Local Delivery (fragments) | Fragment reassembly | `Dispatching` → `AduFragment` |
+| Forward to CLA Peer | Queue for forwarding | `Dispatching` → `ForwardPending` |
+| No Route Available | Wait for route | `Dispatching` → `Waiting` |
+
+Note: Bundle enters `process_bundle()` in `Dispatching` status after the Ingress filter checkpoint.
 
 ### Phase 3: Forwarding Pipeline
 
+See [Routing Design](routing_design.md) for details on peer table structure and queue assignment.
+
 **Dispatch Queue:** `dispatch_bundle()` (`dispatch.rs`)
 
-- Status set to **`Dispatching`**
+- Bundle already in **`Dispatching`** status (from Ingress checkpoint)
 - Bundle sent to dispatch queue channel
 
 **CLA Peer Queue:** (`cla/peers.rs`)
 
 - Status transitions to **`ForwardPending { peer, queue }`**
-- Bundle enters CLA-specific priority queue
+- Bundle enters CLA-specific priority queue (see [Routing Design: Queue Assignment](routing_design.md#queue-assignment))
 
 **Forward Execution:** `forward_bundle()` (`forward.rs`)
 
 1. Load bundle data from store
 2. Update extension blocks (Hop Count, Previous Node, Bundle Age)
-3. Pass to CLA for transmission
+3. **Egress Filter Hook** execution — see [Filter Subsystem Design](filter_subsystem_design.md)
+4. Pass to CLA for transmission
 
 | Result | Action | State Transition |
 |--------|--------|------------------|
@@ -188,11 +201,11 @@ Bundle state is persisted at these critical moments:
 | Location | Status After | Function |
 |----------|--------------|----------|
 | Initial storage | `New` | `receive_bundle()` |
-| Dispatch queue entry | `Dispatching` | `dispatch_bundle()` |
+| After Ingress filter | `Dispatching` | `ingest_bundle_inner()` |
 | Waiting state | `Waiting` | `process_bundle()` |
 | CLA queue entry | `ForwardPending` | `Sender::send()` |
 | Fragment accumulation | `AduFragment` | `adu_reassemble()` |
-| Filter mutations | Various | `persist_filter_mutation()` |
+| Filter mutations | Various | `ingest_bundle_inner()` |
 
 ## Error Handling and Recovery
 
@@ -245,21 +258,9 @@ Bundle state is persisted at these critical moments:
 
 ## Channel-Based Status Management
 
-The dispatcher uses channels with embedded status for efficient state tracking:
+The dispatcher uses channels with embedded status for efficient state tracking. Each channel is configured with an expected `BundleStatus`, and bundles are automatically transitioned to that status when sent through the channel. This provides implicit persistence checkpoints without explicit status management at each call site.
 
-```rust
-// Channel stores expected status
-struct ChannelShared {
-    status: metadata::BundleStatus,
-    // ...
-}
-
-// On send, status is updated if different
-if bundle.metadata.status != self.shared.status {
-    bundle.metadata.status = self.shared.status.clone();
-    self.store.update_metadata(&bundle).await;
-}
-```
+See `src/storage/channel.rs` for the `ChannelShared` implementation.
 
 **Channel Types:**
 
@@ -354,6 +355,8 @@ The dispatcher supports filter hooks at various points in the bundle lifecycle. 
 inspect bundles (read-only) or mutate them (read-write). This section documents the crash
 safety guarantees for filter execution.
 
+For filter traits, registration API, and execution model, see [Filter Subsystem Design](filter_subsystem_design.md).
+
 ### Filter Hooks
 
 | Hook | Location | Execution | Persistence |
@@ -399,27 +402,9 @@ If a crash occurs during or after the Ingress filter but before the status chang
 bundle would still be in `New` status. Without proper checkpointing, the Ingress filter
 would re-run on restart, potentially applying mutations twice.
 
-**Solution:** Transition to `Dispatching` immediately after Ingress filter completes,
-before calling `process_bundle()`. This checkpoint is always persisted, even if the
-filter made no mutations.
+**Solution:** Transition to `Dispatching` immediately after Ingress filter completes, before calling `process_bundle()`. This checkpoint is always persisted, even if the filter made no mutations. If the filter modified bundle data, the new data is saved before the old is deleted (crash-safe ordering).
 
-```rust
-// In ingest_bundle_inner(), after Ingress filter:
-ExecResult::Continue(mutation, mut bundle, data) => {
-    // Persist any bundle data mutations
-    if mutation.bundle {
-        let new_name = self.store.save_data(&data).await;
-        if let Some(old) = bundle.metadata.storage_name.take() {
-            self.store.delete_data(&old).await;
-        }
-        bundle.metadata.storage_name = Some(new_name);
-    }
-    // Always checkpoint to Dispatching
-    bundle.metadata.status = BundleStatus::Dispatching;
-    self.store.update_metadata(&bundle).await;
-    (bundle, data)
-}
-```
+See `ingest_bundle_inner()` in `src/dispatcher/dispatch.rs` for implementation.
 
 ### Originate Filter Crash Safety
 
@@ -438,48 +423,13 @@ No checkpoint is needed because:
 2. The caller handles retry semantics
 3. The Ingress filter checkpoint protects against double-filtering
 
-```rust
-// In originate_bundle():
-pub(super) async fn originate_bundle(
-    self: &Arc<Self>,
-    bundle: hardy_bpv7::bundle::Bundle,
-    data: Bytes,
-) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-    // 1. Wrap in bundle::Bundle with initial metadata (not stored yet)
-    let bundle = bundle::Bundle {
-        metadata: BundleMetadata { status: New, ..Default::default() },
-        bundle,
-    };
+The `originate_bundle()` function in `src/dispatcher/local.rs` implements this pattern:
+1. Wrap bundle with initial metadata (in-memory only)
+2. Run Originate filter (may modify metadata like flow_label)
+3. Store bundle and metadata atomically
+4. Queue for Ingress filter processing
 
-    // 2. Run Originate filter (pure in-memory, may modify metadata like flow_label)
-    let Some((mut bundle, data)) = self.run_originate_filter(bundle, data).await? else {
-        return Err(Dropped);  // Nothing to clean up
-    };
-
-    // 3. Store (single persist, preserves filter-modified metadata)
-    if !self.store.store(&mut bundle, &data).await {
-        return Err(DuplicateBundle);
-    }
-
-    // 4. Ingest (runs Ingress filter, checkpoints to Dispatching)
-    let bundle_id = bundle.bundle.id.clone();
-    self.ingest_bundle(bundle, data).await;
-    Ok(bundle_id)
-}
-
-// local_dispatch() retries on DuplicateBundle (timestamp collision):
-loop {
-    let (bundle, data) = builder.build(CreationTimestamp::now())?;
-    let r = self.originate_bundle(bundle, Bytes::from(data)).await;
-    if !matches!(r, Err(DuplicateBundle)) {
-        break r;
-    }
-    warn!("Duplicate bundle, retrying with new timestamp");
-}
-
-// local_dispatch_raw() calls directly (fixed bundle ID, no retry):
-self.originate_bundle(bundle, data).await
-```
+The `local_dispatch()` wrapper handles timestamp collisions by retrying with a new timestamp, while `local_dispatch_raw()` uses a fixed bundle ID without retry.
 
 ### Deliver Filter Crash Safety
 
@@ -490,10 +440,7 @@ No persistence is needed because:
 2. If crash occurs, the bundle will be re-processed from its last checkpoint
 3. Re-running the Deliver filter is acceptable (idempotent delivery assumed)
 
-```rust
-// In deliver_bundle():
-ExecResult::Continue(_mutation, bundle, data) => (bundle, data),  // No persistence
-```
+See `deliver_bundle()` in `src/dispatcher/local.rs` for implementation.
 
 ### Restart Behavior
 

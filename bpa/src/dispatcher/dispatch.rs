@@ -3,6 +3,18 @@ use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
+    /// Entry point for bundles received from CLAs.
+    ///
+    /// Parses the CBOR-encoded bundle, validates the format, stores bundle data,
+    /// inserts initial metadata with `New` status, and queues for ingestion.
+    ///
+    /// # Bundle State
+    ///
+    /// - Initial status: `New`
+    /// - Next: `ingest_bundle()` → Ingress filter → `Dispatching`
+    ///
+    /// See [Bundle State Machine Design](../../docs/bundle_state_machine_design.md)
+    /// for the complete state transition diagram.
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn receive_bundle(
         self: &Arc<Self>,
@@ -161,7 +173,16 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Spawn bundle ingestion into the processing pool for rate limiting
+    /// Spawn bundle ingestion into the processing pool for rate limiting.
+    ///
+    /// This is a rate-limiting wrapper that spawns `ingest_bundle_inner()` into
+    /// the bounded processing pool. The function returns once the task *starts*,
+    /// not when it completes.
+    ///
+    /// # Crash Safety
+    ///
+    /// Because this returns before the Ingress filter completes, bundles remain
+    /// in `New` status until `ingest_bundle_inner()` checkpoints to `Dispatching`.
     pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
         let dispatcher = self.clone();
         hardy_async::spawn!(self.processing_pool, "ingest_bundle", async move {
@@ -170,6 +191,25 @@ impl Dispatcher {
         .await;
     }
 
+    /// Core bundle ingestion logic: validation, Ingress filter, and checkpoint.
+    ///
+    /// # Processing Steps
+    ///
+    /// 1. Validate lifetime (drop if expired)
+    /// 2. Validate hop count (drop if exceeded)
+    /// 3. Execute Ingress filter hook
+    /// 4. Persist any filter mutations (crash-safe ordering)
+    /// 5. **Checkpoint**: Transition status to `Dispatching`
+    /// 6. Call `process_bundle()` for routing decision
+    ///
+    /// # Crash Safety
+    ///
+    /// The checkpoint to `Dispatching` is always persisted after the Ingress
+    /// filter completes. On restart, bundles in `New` status re-run from step 1,
+    /// while bundles in `Dispatching` skip directly to routing.
+    ///
+    /// See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
+    /// filter execution details.
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn ingest_bundle_inner(&self, mut bundle: bundle::Bundle, mut data: Bytes) {
         if let Some(u) = bundle.bundle.flags.unrecognised {
@@ -269,6 +309,20 @@ impl Dispatcher {
         debug!("Dispatch queue consumer exiting");
     }
 
+    /// Routing decision hub: determines bundle disposition based on RIB lookup.
+    ///
+    /// # Route Results
+    ///
+    /// | Result | Action | Status Transition |
+    /// |--------|--------|-------------------|
+    /// | `Drop` | Delete bundle with reason | `Dispatching` → Tombstone |
+    /// | `AdminEndpoint` | Handle administrative record | `Dispatching` → Tombstone |
+    /// | `Deliver` (fragment) | Queue for reassembly | `Dispatching` → `AduFragment` |
+    /// | `Deliver` (whole) | Deliver to service | `Dispatching` → Tombstone |
+    /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
+    /// | `None` | Wait for route | `Dispatching` → `Waiting` |
+    ///
+    /// See [Routing Design](../../docs/routing_design.md) for RIB lookup details.
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)

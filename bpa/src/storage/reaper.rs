@@ -1,7 +1,27 @@
+//! Bundle lifetime expiration monitoring (Reaper).
+//!
+//! The reaper monitors bundle lifetimes and triggers deletion when bundles
+//! expire. It maintains a bounded in-memory cache of the bundles with the
+//! soonest expiry times, refilling from storage when depleted.
+//!
+//! # Two-Level Architecture
+//!
+//! - **In-memory cache**: BTreeSet of `CacheEntry` ordered by expiry time
+//! - **Persistent storage**: MetadataStorage.poll_expiry() for refill
+//!
+//! The cache keeps bundles with the soonest expiry. When full, entries with
+//! later expiry times are evicted to make room for sooner ones.
+//!
+//! See [Storage Subsystem Design](../../docs/storage_subsystem_design.md)
+//! for architectural context.
+
 use super::*;
 use futures::{FutureExt, join, select_biased};
 
-// CacheEntry stores the expiry and ID for the heap.
+/// Cache entry for the reaper's expiry monitoring.
+///
+/// Ordered by: expiry time → destination → bundle ID (for deterministic
+/// BTreeSet ordering when expiry times collide).
 #[derive(Clone, Eq, PartialEq)]
 pub struct CacheEntry {
     expiry: time::OffsetDateTime,
@@ -77,7 +97,16 @@ impl Store {
         }
     }
 
-    /// The background task that waits for the next expiry, a notification, or shutdown.
+    /// Background task for bundle lifetime monitoring.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Sleep until the next bundle expiry (or indefinitely if cache empty)
+    /// 2. Wake on: shutdown signal, new bundle notification, or expiry timeout
+    /// 3. Expire all bundles past their lifetime via `drop_bundle()`
+    /// 4. Spawn `refill_cache()` if cache is depleted
+    ///
+    /// Uses `select_biased!` to prioritize shutdown handling.
     pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
 

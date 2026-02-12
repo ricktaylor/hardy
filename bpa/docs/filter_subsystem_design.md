@@ -6,6 +6,13 @@ The BPA filter subsystem provides hook points at strategic locations in the bund
 
 The design draws heavily from Linux netfilter's architecture—see the "Netfilter Reference" appendix for the patterns that influenced this design.
 
+## Related Documents
+
+- **[Routing Design](routing_design.md)**: RIB lookup and forwarding decisions that determine which filter hooks run
+- **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status transitions and filter checkpoint semantics
+- **[Policy Subsystem Design](policy_subsystem_design.md)**: Ingress filters can set flow_label for queue classification
+- **[Storage Subsystem Design](storage_subsystem_design.md)**: Filter mutation persistence
+
 ---
 
 ## Design Summary
@@ -34,7 +41,7 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 The four hooks map to the natural decision boundaries in bundle processing:
 
 - **Ingress**: First opportunity to reject invalid or malicious bundles before wasting resources on routing or storage. This is where size limits, source validation, and early policy checks belong.
-- **Deliver**: Policy decisions that depend on the routing outcome. For example, "allow delivery to service X but not Y" can only be evaluated after the RIB determines the bundle is destined for local delivery.
+- **Deliver**: Policy decisions that depend on the routing outcome (see [Routing Design](routing_design.md) for RIB lookup details). For example, "allow delivery to service X but not Y" can only be evaluated after the RIB returns `FindResult::Deliver`.
 - **Originate**: Enforce policy on locally-generated bundles before they enter the system. Services may attempt to send bundles that violate policy; this hook catches them early.
 - **Egress**: Final validation and modification before network transmission. This is the last chance to add security blocks, validate the final bundle state, or log outbound traffic.
 
@@ -171,7 +178,7 @@ pub struct Mutation {
 }
 ```
 
-After `ExecResult::Continue`, persistence depends on the hook:
+After `ExecResult::Continue`, persistence depends on the hook (see [Bundle State Machine Design](bundle_state_machine_design.md) for checkpoint semantics):
 
 | Hook | Persistence Strategy |
 |------|---------------------|
@@ -285,7 +292,7 @@ CLA.on_receive(data)
                     ├─ ◀── HOOK: Ingress
                     ├─ persist mutations + checkpoint to Dispatching
                     └─▶ process_bundle(bundle)
-                          ├─ RIB lookup
+                          ├─ RIB lookup (see routing_design.md)
                           ├─ Deliver:
                           │     ├─ ◀── HOOK: Deliver
                           │     └─ deliver_bundle(service)
@@ -342,7 +349,7 @@ Egress path:
 | `size_check` | Read | Reject oversized bundles |
 | `source_validator` | Read | Validate bundle source against policy |
 | `destination_acl` | Read | Enforce destination access control |
-| `flow_classifier` | Write | Set flow label based on bundle properties |
+| `flow_classifier` | Write | Set flow label for queue classification (see [Policy Subsystem Design](policy_subsystem_design.md)) |
 | `ipn-legacy` | Write | Rewrite IPN EIDs to legacy encoding |
 | `add_bib` | Write | Add Bundle Integrity Block |
 | `add_bcb` | Write | Add Bundle Confidentiality Block |
