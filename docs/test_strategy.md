@@ -29,7 +29,7 @@ This Strategy is the parent document. Verification is executed according to the 
 | **BPSec** | Unit | [`UTP-BPSEC-01`](../bpv7/src/bpsec/unit_test_plan.md) | RFC 9172/3 Integrity & Confidentiality. |
 | **EID Patterns** | Unit | [`UTP-PAT-01`](../eid-patterns/docs/unit_test_plan.md) | Draft-05 Pattern matching logic. |
 | **EID Patterns** | Fuzz | [`FUZZ-PAT-01`](../eid-patterns/docs/fuzz_test_plan.md) | Pattern DSL parser robustness. |
-| **BPA Logic** | Unit | [`UTP-BPA-01`](../bpa/src/unit_test_plan.md) | BPA internal algorithms (Routing, Policy). |
+| **BPA Logic** | Unit | [`UTP-BPA-01`](../bpa/docs/unit_test_plan.md) | BPA internal algorithms (Routing, Policy). |
 | **BPA Logic** | Integration | [`PLAN-BPA-01`](../bpa/src/component_test_plan.md) | Routing, Pipeline, Performance Benchmarks. |
 | **BPA Pipeline** | Fuzz | [`FUZZ-BPA-01`](../bpa/docs/fuzz_test_plan.md) | Async pipeline stability and deadlocks. |
 | **TCPCLv4** | Component | [`PLAN-TCPCL-01`](../tcpclv4/docs/component_test_plan.md) | Session state machine via `duplex` harness. |

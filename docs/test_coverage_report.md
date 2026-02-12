@@ -24,7 +24,9 @@ This report summarizes the test planning status for the Hardy project. The testi
 | **cbor** | Unit | [`UTP-CBOR-01`](../cbor/docs/unit_test_plan.md) | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171) (RFC 8949) | **Complete** |
 | **bpv7** | Unit | [`UTP-BPV7-01`](../bpv7/docs/unit_test_plan.md) | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171) (RFC 9171) | **Complete** |
 | **bpv7** | Component | [`COMP-BPV7-CLI-01`](../bpv7/docs/component_test_plan.md) | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171), [REQ-2](requirements.md#req-2-support-for-bpsec-rfc9172-and-default-security-contexts-rfc9173) (BPSec) | **Complete** |
-| **bpa** | Unit | [`UTP-BPA-01`](../bpa/src/unit_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (Routing), [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Storage) | **Complete** |
+| **bpsec** | Unit | [`UTP-BPSEC-01`](../bpv7/src/bpsec/unit_test_plan.md) | [REQ-2](requirements.md#req-2-support-for-bpsec-rfc9172-and-default-security-contexts-rfc9173) (RFC 9172/3) | **Complete** |
+| **eid-patterns** | Unit | [`UTP-PAT-01`](../eid-patterns/docs/unit_test_plan.md) | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171) (EID Pattern Matching) | **Complete** |
+| **bpa** | Unit | [`UTP-BPA-01`](../bpa/docs/unit_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (Routing), [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Storage) | **Complete** |
 | **bpa** | Integration | [`PLAN-BPA-01`](../bpa/src/component_test_plan.md) | [REQ-13](requirements.md#req-13-performance) (Perf), Pipeline | **Complete** |
 | **bpa** | Trait | [`PLAN-CLA-01`](../bpa/docs/cla_integration_test_plan.md) | [REQ-3](requirements.md#req-3-full-compliance-with-rfc9174), [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Complete** |
 | **bpa** | Trait | [`PLAN-SVC-01`](../bpa/docs/service_integration_test_plan.md) | [REQ-18](requirements.md#req-18-grpc-based-internal-apis-for-component-communication) | **Complete** |
@@ -36,6 +38,16 @@ This report summarizes the test planning status for the Hardy project. The testi
 | **proto** | Component | [`COMP-GRPC-CLIENT-01`](../proto/docs/component_test_plan.md) | [REQ-18](requirements.md#req-18-grpc-based-internal-apis-for-component-communication) (API) | **Complete** |
 | **bpa-server** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | [REQ-14](requirements.md#req-14-reliability), [REQ-15](requirements.md#req-15-independent-component-packaging), [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) | **Complete** |
 | **System** | Interop | [`PLAN-INTEROP-01`](interop_test_plan.md) | [REQ-20](requirements.md#req-20-interoperability-with-reference-implementations) (ION/DTNME) | **Complete** |
+
+### 2.1 Fuzz Test Plans
+
+| Module | Plan ID | Scope | Status |
+| :--- | :--- | :--- | :--- |
+| **cbor** | [`FUZZ-CBOR-01`](../cbor/docs/fuzz_test_plan.md) | Decoder robustness (Stack/OOM) | **Complete** |
+| **bpv7** | [`FUZZ-BPV7-01`](../bpv7/docs/fuzz_test_plan.md) | Bundle parsing, EID string/CBOR parsing | **Complete** |
+| **eid-patterns** | [`FUZZ-PAT-01`](../eid-patterns/docs/fuzz_test_plan.md) | Pattern DSL parser robustness | **Complete** |
+| **bpa** | [`FUZZ-BPA-01`](../bpa/docs/fuzz_test_plan.md) | Async pipeline stability and deadlocks | **Complete** |
+| **tcpclv4** | [`FUZZ-TCPCL-01`](../tcpclv4/docs/fuzz_test_plan.md) | Protocol stream parsing and state machine robustness | **Complete** |
 
 ## 3. Implementation Gaps
 
