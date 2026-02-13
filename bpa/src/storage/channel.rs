@@ -251,9 +251,9 @@ impl Store {
                         Ordering::Relaxed,
                     )
                     .is_err()
-                {
-                    continue; // Congested - loop again
-                }
+            {
+                continue; // Congested - loop again
+            }
         }
     }
 
