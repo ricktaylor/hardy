@@ -4,7 +4,7 @@ This document describes the egress policy subsystem in the BPA, covering flow cl
 
 ## Related Documents
 
-- **[Routing Design](routing_design.md)**: RIB lookup and peer selection (ECMP uses flow_label)
+- **[Routing Design](routing_subsystem_design.md)**: RIB lookup and peer selection (ECMP uses flow_label)
 - **[Bundle State Machine Design](bundle_state_machine_design.md)**: `ForwardPending { peer, queue }` status
 - **[Filter Subsystem Design](filter_subsystem_design.md)**: Ingress filters can set flow_label
 - **[Storage Subsystem Design](storage_subsystem_design.md)**: Hybrid channel implementation and bundle persistence
@@ -84,101 +84,29 @@ The policy subsystem controls **how** and **when** bundles are transmitted to pe
 
 ## Policy Traits
 
-### EgressPolicy
+The policy subsystem defines three traits. See rustdoc for full API details.
 
-The main policy interface (`src/policy/mod.rs`):
+**EgressPolicy** is the main policy interface that defines queue count, flow classification logic, and creates controllers for peer queue sets.
 
-```rust
-pub trait EgressPolicy: Send + Sync {
-    /// Number of priority queues (0 = single best-effort queue)
-    fn queue_count(&self) -> u32;
+**EgressController** is the policy enforcement point created per-peer. It mediates all `forward(queue, bundle)` calls, allowing rate limiting and scheduling.
 
-    /// Classify flow_label to queue index
-    fn classify(&self, flow_label: Option<u32>) -> Option<u32>;
-
-    /// Create controller for a peer's queue set
-    async fn new_controller(
-        &self,
-        queues: HashMap<Option<u32>, Arc<dyn EgressQueue>>,
-    ) -> Arc<dyn EgressController>;
-}
-```
-
-### EgressController
-
-Policy enforcement point created per-peer:
-
-```rust
-pub trait EgressController: Send + Sync {
-    /// Forward bundle through policy logic
-    async fn forward(&self, queue: Option<u32>, bundle: bundle::Bundle);
-}
-```
-
-### EgressQueue
-
-Actual transmission endpoint:
-
-```rust
-pub trait EgressQueue: Send + Sync {
-    /// Transmit bundle via dispatcher
-    async fn forward(&self, bundle: bundle::Bundle);
-}
-```
+**EgressQueue** is the transmission endpoint that forwards bundles through the dispatcher to the CLA.
 
 ## Flow Classification
 
 ### Flow Label Source
 
-The `flow_label` is stored in bundle metadata and can be set by Ingress filters:
-
-```rust
-pub struct WritableMetadata {
-    pub flow_label: Option<u32>,
-}
-```
-
-See [Filter Subsystem Design](filter_subsystem_design.md) for filter implementation details.
+The `flow_label` is stored in bundle metadata (`WritableMetadata`) and can be set by Ingress filters. See [Filter Subsystem Design](filter_subsystem_design.md) for filter implementation details.
 
 ### Classification Process
 
-When a bundle reaches a peer for forwarding (`src/cla/peers.rs`):
-
-```rust
-pub async fn forward(&self, bundle: bundle::Bundle) -> Result<(), bundle::Bundle> {
-    // 1. Extract flow_label
-    let queue = if let Some(flow_label) = bundle.metadata.writable.flow_label {
-        // 2. Classify to queue index
-        cla.policy.classify(Some(flow_label))
-    } else {
-        None  // No label → best-effort
-    };
-
-    // 3. Lookup queue channel (fallback to None if invalid)
-    let queue = queues.get(&queue)
-        .unwrap_or_else(|| queues.get(&None).expect("No None queue"));
-
-    // 4. Send to queue
-    queue.send(bundle).await
-}
-```
+When a bundle reaches a peer for forwarding, the policy's `classify()` method maps the flow_label to a queue index. Bundles without a flow_label default to the best-effort queue (`None`). If classification returns an invalid queue index, it falls back to the best-effort queue.
 
 ### ECMP Peer Selection
 
-Flow labels also affect peer selection during routing. See [Routing Design](routing_design.md) for details.
+Flow labels also affect peer selection during routing. See [Routing Design](routing_subsystem_design.md) for details.
 
-When multiple peers can reach a destination, the RIB uses a hash including `flow_label` for deterministic peer selection:
-
-```rust
-// In src/rib/find.rs
-hash_one((
-    &bundle.id.source,
-    &bundle.destination,
-    &metadata.writable.flow_label,  // Flow affinity
-)) % peers.len()
-```
-
-This ensures bundles with the same flow_label always route to the same peer, preventing out-of-order delivery.
+When multiple peers can reach a destination, the RIB uses a hash of bundle source, destination, and flow_label for deterministic peer selection. This ensures bundles with the same flow_label always route to the same peer, preventing out-of-order delivery.
 
 ## Queue Management
 
@@ -199,58 +127,11 @@ From `src/cla/mod.rs`:
 
 ### Queue Creation
 
-For each peer, queues are created via `src/cla/egress_queue.rs`:
-
-```rust
-pub fn new_queue_set(
-    cla: Arc<dyn Cla>,
-    dispatcher: Arc<Dispatcher>,
-    peer: u32,
-    cla_addr: ClaAddress,
-    queue_count: u32,
-) -> HashMap<Option<u32>, Arc<dyn EgressQueue>> {
-    let mut h = HashMap::new();
-
-    // Always create best-effort queue
-    h.insert(None, EgressQueue::create(shared.clone(), None));
-
-    // Create priority queues
-    for i in 0..queue_count {
-        h.insert(Some(i), EgressQueue::create(shared.clone(), Some(i)));
-    }
-    h
-}
-```
+For each peer, queues are created based on the policy's `queue_count()`. A best-effort queue (`None`) is always created, plus numbered priority queues `Some(0)` through `Some(queue_count-1)`.
 
 ### Queue Pollers
 
-Each queue has a dedicated background task (`src/cla/peers.rs`):
-
-```rust
-fn start_queue_poller(
-    poll_channel_depth: usize,
-    controller: Arc<dyn EgressController>,
-    store: Arc<Store>,
-    tasks: &TaskPool,
-    peer: u32,
-    queue: Option<u32>,
-) -> Sender {
-    let (tx, rx) = store.channel(
-        BundleStatus::ForwardPending { peer, queue },
-        poll_channel_depth,
-    );
-
-    spawn!(tasks, "egress_queue_poller", async move {
-        while let Ok(bundle) = rx.recv_async().await {
-            controller.forward(queue, bundle).await;
-        }
-    });
-
-    tx
-}
-```
-
-The bundle status `ForwardPending { peer, queue }` persists the queue assignment for crash recovery. See [Bundle State Machine Design](bundle_state_machine_design.md).
+Each queue has a dedicated background task that receives bundles from the channel and forwards them through the controller. The bundle status `ForwardPending { peer, queue }` persists the queue assignment for crash recovery. See [Bundle State Machine Design](bundle_state_machine_design.md).
 
 ## Hybrid Channel Architecture
 
@@ -277,7 +158,7 @@ The queue channels implement a fast/slow path hybrid for backpressure (`src/stor
 
 ### Fast Path
 
-- Direct flume channel send
+- Direct channel send
 - Sub-millisecond latency
 - Capacity: `poll_channel_depth` configuration
 
@@ -292,44 +173,11 @@ The queue channels implement a fast/slow path hybrid for backpressure (`src/stor
 
 ### Policy Registration
 
-When registering a CLA with the BPA (`src/bpa.rs`):
-
-```rust
-pub async fn register_cla(
-    &self,
-    name: String,
-    address_type: Option<ClaAddressType>,
-    cla: Arc<dyn Cla>,
-    policy: Option<Arc<dyn EgressPolicy>>,  // Optional policy
-) -> Result<Vec<NodeId>> {
-    // ...
-}
-```
-
-If `policy` is `None`, the default null policy (FIFO) is used.
+When registering a CLA with the BPA, an optional `EgressPolicy` can be provided. If `None`, the default null policy (FIFO) is used.
 
 ### CLA Queue Count
 
-CLAs can also declare their own queue count (`src/cla/mod.rs`):
-
-```rust
-pub trait Cla: Send + Sync {
-    /// Number of priority queues this CLA supports
-    fn queue_count(&self) -> u32 {
-        0  // Default: single best-effort queue
-    }
-
-    /// Forward bundle to peer
-    async fn forward(
-        &self,
-        queue: Option<u32>,  // Queue index passed through
-        cla_addr: &ClaAddress,
-        bundle: Bytes,
-    ) -> Result<ForwardBundleResult>;
-}
-```
-
-The queue parameter allows CLAs to implement priority scheduling at the transport level.
+CLAs can declare their own queue count via `queue_count()` (default: 0, meaning single best-effort queue). The queue index is passed to `forward()`, allowing CLAs to implement priority scheduling at the transport level.
 
 ### Controller Lifecycle
 
@@ -339,31 +187,7 @@ The queue parameter allows CLAs to implement priority scheduling at the transpor
 
 ## Default Policy (Null Policy)
 
-The null policy (`src/policy/null_policy.rs`) provides simple FIFO behavior:
-
-```rust
-impl EgressPolicy for EgressPolicy {
-    fn queue_count(&self) -> u32 { 0 }
-
-    fn classify(&self, _flow_label: Option<u32>) -> Option<u32> {
-        None  // All bundles → best-effort queue
-    }
-
-    async fn new_controller(
-        &self,
-        queues: HashMap<Option<u32>, Arc<dyn EgressQueue>>,
-    ) -> Arc<dyn EgressController> {
-        let queue = queues.get(&None).expect("No None queue").clone();
-        Arc::new(EgressController { queue })
-    }
-}
-
-impl EgressController for EgressController {
-    async fn forward(&self, _queue: Option<u32>, bundle: bundle::Bundle) {
-        self.queue.forward(bundle).await  // Pass through
-    }
-}
-```
+The null policy provides simple FIFO behavior: it declares zero priority queues, classifies all bundles to the best-effort queue (`None`), and its controller simply passes bundles through without rate limiting or scheduling.
 
 ## Advanced Policy Patterns
 
@@ -379,27 +203,12 @@ The HTB policy (`src/policy/htb_policy.rs`) provides a partial implementation of
 
 ## Forwarding Failure Handling
 
-When CLA transmission fails, bundles are re-routed:
-
-```rust
-// In src/dispatcher/forward.rs
-match cla.forward(queue, cla_addr, data).await {
-    Ok(ForwardBundleResult::Sent) => {
-        self.drop_bundle(bundle, None).await;  // Success
-    }
-    Ok(ForwardBundleResult::NoNeighbour) | Err(_) => {
-        // Reset all bundles for this peer
-        self.store.reset_peer_queue(peer).await;
-    }
-}
-```
-
-The `reset_peer_queue()` operation:
+When CLA transmission fails (either `NoNeighbour` result or error), `reset_peer_queue()` is called. The operation:
 1. Transitions all `ForwardPending { peer, _ }` bundles to `Waiting`
 2. Bundles re-enter routing via `poll_waiting()`
 3. May route to different peer with fresh classification
 
-See [Routing Design: Route Change Handling](routing_design.md#route-change-handling).
+See [Routing Design: Route Change Handling](routing_subsystem_design.md#route-change-handling).
 
 ## Data Flow Summary
 
@@ -434,15 +243,3 @@ See [Routing Design: Route Change Handling](routing_design.md#route-change-handl
    Failure: reset_peer_queue() → bundles return to Waiting
 ```
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/policy/mod.rs` | Policy trait definitions |
-| `src/policy/null_policy.rs` | Default FIFO policy |
-| `src/policy/htb_policy.rs` | Hierarchical token bucket (partial) |
-| `src/cla/peers.rs` | Flow classification and queue forwarding |
-| `src/cla/egress_queue.rs` | Queue set creation |
-| `src/cla/registry.rs` | CLA and policy registration |
-| `src/storage/channel.rs` | Hybrid fast/slow path channels |
-| `src/dispatcher/forward.rs` | CLA transmission and failure handling |

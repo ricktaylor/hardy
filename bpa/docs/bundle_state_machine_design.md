@@ -4,7 +4,7 @@ This document describes the bundle processing state machine in the BPA dispatche
 
 ## Related Documents
 
-- **[Routing Design](routing_design.md)**: RIB lookup and forwarding decisions in `process_bundle()`
+- **[Routing Design](routing_subsystem_design.md)**: RIB lookup and forwarding decisions in `process_bundle()`
 - **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter hooks that run at various state transitions
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Queue assignment in `ForwardPending` status
 - **[Storage Subsystem Design](storage_subsystem_design.md)**: Bundle persistence and crash recovery mechanisms
@@ -133,7 +133,7 @@ The `BundleStatus` enum (defined in `bpa/src/metadata.rs`) defines all possible 
 
 **Router:** `process_bundle()` (`dispatch.rs`)
 
-The routing lookup determines the next state. See [Routing Design](routing_design.md) for details on the RIB lookup algorithm and peer resolution.
+The routing lookup determines the next state. See [Routing Design](routing_subsystem_design.md) for details on the RIB lookup algorithm and peer resolution.
 
 | Route Result | Action | State Transition |
 |--------------|--------|------------------|
@@ -148,7 +148,7 @@ Note: Bundle enters `process_bundle()` in `Dispatching` status after the Ingress
 
 ### Phase 3: Forwarding Pipeline
 
-See [Routing Design](routing_design.md) for details on peer table structure and queue assignment.
+See [Routing Design](routing_subsystem_design.md) for details on peer table structure and queue assignment.
 
 **Dispatch Queue:** `dispatch_bundle()` (`dispatch.rs`)
 
@@ -158,7 +158,7 @@ See [Routing Design](routing_design.md) for details on peer table structure and 
 **CLA Peer Queue:** (`cla/peers.rs`)
 
 - Status transitions to **`ForwardPending { peer, queue }`**
-- Bundle enters CLA-specific priority queue (see [Routing Design: Queue Assignment](routing_design.md#queue-assignment))
+- Bundle enters CLA-specific priority queue (see [Routing Design: Queue Assignment](routing_subsystem_design.md#queue-assignment))
 
 **Forward Execution:** `forward_bundle()` (`forward.rs`)
 
@@ -320,7 +320,7 @@ See `src/storage/channel.rs` for the `ChannelShared` implementation.
 - Bundle cache (LRU): Mutex-protected in-memory data
 - Reaper cache: Mutex-protected expiry queue (BTreeSet)
 - Metadata entries: Mutex-protected storage entries
-- Channels: Flume bounded channels for producer/consumer
+- Channels: Bounded channels for producer/consumer
 
 ### Async Patterns
 
@@ -328,24 +328,6 @@ See `src/storage/channel.rs` for the `ChannelShared` implementation.
 - `await` points for I/O operations
 - `select_biased!()` for multi-branch waiting
 - `Notify` for wakeup signals
-
-## Key Functions Reference
-
-| Function | File | Role |
-|----------|------|------|
-| `receive_bundle()` | `dispatch.rs` | Entry point for CLA-received bundles |
-| `ingest_bundle()` | `dispatch.rs` | Rate-limiting wrapper, spawns processing task |
-| `ingest_bundle_inner()` | `dispatch.rs` | Lifetime/hop checks, Ingress filter, checkpoint |
-| `process_bundle()` | `dispatch.rs` | Routing decision hub |
-| `dispatch_bundle()` | `dispatch.rs` | Queues bundle for routing |
-| `originate_bundle()` | `local.rs` | Local bundle creation, Originate filter, store |
-| `run_originate_filter()` | `local.rs` | Pure in-memory Originate filter execution |
-| `deliver_bundle()` | `local.rs` | Local service delivery, Deliver filter |
-| `forward_bundle()` | `forward.rs` | CLA submission |
-| `reassemble()` | `reassemble.rs` | Fragment collection |
-| `drop_bundle()` | `mod.rs` | Final deletion + reporting |
-| `delete_bundle()` | `mod.rs` | Silent deletion |
-| `restart_bundle()` | `restart.rs` | Recovery processing based on status checkpoint |
 
 ## Filter Execution and Crash Safety
 

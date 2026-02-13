@@ -136,20 +136,62 @@ pub enum ForwardBundleResult {
 ///
 /// CLAs are often wrapped by an [`EgressPolicy`] to add more complex behaviors like
 /// rate limiting or prioritization.
+///
+/// # Sink Lifecycle
+///
+/// The CLA receives a [`Sink`] in [`on_register`](Self::on_register) which it **must store**
+/// for its entire active lifetime. The Sink provides the communication channel back to the BPA.
+///
+/// **Critical**: If the Sink is dropped (either explicitly or by not storing it), the BPA
+/// interprets this as the CLA requesting disconnection and will call [`on_unregister`](Self::on_unregister).
+/// This means `on_register` must store the Sink before returning.
+///
+/// Two disconnection paths exist:
+/// - **CLA-initiated**: CLA drops its Sink or calls `sink.unregister()` → BPA calls `on_unregister()`
+/// - **BPA-initiated**: BPA shuts down → calls `on_unregister()` → Sink becomes non-functional
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyCla {
+///     inner: Once<ClaInner>,
+/// }
+///
+/// struct ClaInner {
+///     sink: Arc<dyn Sink>,  // Stored for CLA lifetime
+/// }
+///
+/// impl Cla for MyCla {
+///     async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
+///         self.inner.call_once(|| ClaInner { sink: sink.into() });
+///     }
+///     // ...
+/// }
+/// ```
 #[async_trait]
 pub trait Cla: Send + Sync {
-    /// Called when the CLA is first registered.
+    /// Called when the CLA is first registered with the BPA.
     ///
     /// The CLA should perform any necessary initialization, such as opening sockets
-    /// or starting listener tasks. It is given a `sink` to communicate back to the
-    /// BPA (e.g., to dispatch received bundles or report peer changes) and a list
-    /// of the BPA's own node EIDs.
+    /// or starting listener tasks.
+    ///
+    /// **Important**: The `sink` must be stored for the CLA's entire active lifetime.
+    /// Dropping the sink triggers automatic unregistration. Convert to `Arc` for sharing:
+    /// `let sink: Arc<dyn Sink> = sink.into();`
+    ///
+    /// # Arguments
+    /// * `sink` - Communication channel back to the BPA. Must be stored.
+    /// * `node_ids` - The BPA's own node identifiers.
     async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[hardy_bpv7::eid::NodeId]);
 
     /// Called when the CLA is being unregistered.
     ///
-    /// The CLA should perform any necessary cleanup, such as closing connections,
-    /// stopping background tasks, and releasing resources.
+    /// This is called in two scenarios:
+    /// 1. The CLA dropped its Sink (CLA-initiated disconnection)
+    /// 2. The BPA is shutting down (BPA-initiated disconnection)
+    ///
+    /// The CLA should perform cleanup: close connections, stop background tasks,
+    /// and release resources. After this returns, the Sink is no longer functional.
     async fn on_unregister(&self);
 
     /// Returns the number of egress queues this policy manages.
@@ -180,10 +222,27 @@ pub trait Cla: Send + Sync {
 /// internal implementation of the BPA. It provides a stable interface for a CLA to
 /// dispatch incoming bundles and manage peer connections without needing direct access
 /// to the BPA internals.
+///
+/// # Lifecycle
+///
+/// The Sink is provided to the CLA in [`Cla::on_register`]. The CLA **must store** this
+/// Sink for its entire active lifetime. When the Sink is dropped, the BPA interprets
+/// this as the CLA requesting disconnection.
+///
+/// Two disconnection paths exist:
+/// - **CLA drops Sink**: BPA detects the drop and calls [`Cla::on_unregister`]
+/// - **BPA shuts down**: BPA calls [`Cla::on_unregister`], then Sink operations return [`Error::Disconnected`]
+///
+/// After disconnection, all Sink operations return [`Error::Disconnected`].
 #[async_trait]
 pub trait Sink: Send + Sync {
-    /// Unregisters the associated CLA from the BPA. This is typically called by the CLA itself
-    /// if it encounters a fatal error and needs to shut down.
+    /// Explicitly unregisters the associated CLA from the BPA.
+    ///
+    /// This is equivalent to dropping the Sink, but allows explicit cleanup timing.
+    /// After calling this, the BPA will call [`Cla::on_unregister`] and this Sink
+    /// becomes non-functional.
+    ///
+    /// Typically called when the CLA encounters a fatal error and needs to shut down.
     async fn unregister(&self);
 
     /// Dispatches a received bundle (as raw bytes) to the BPA's `Dispatcher` for processing.

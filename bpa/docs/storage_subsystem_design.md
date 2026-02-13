@@ -7,7 +7,7 @@ This document describes the storage subsystem in the BPA, covering the dual stor
 - **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status values stored in metadata
 - **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter checkpoint persistence
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Hybrid channels for queue management
-- **[Routing Design](routing_design.md)**: Route changes trigger `reset_peer_queue()`
+- **[Routing Design](routing_subsystem_design.md)**: Route changes trigger `reset_peer_queue()`
 
 ## Overview
 
@@ -45,22 +45,9 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 └─────────────────────┘  └─────────────────┘  └─────────────────────┘
 ```
 
-## Store Struct
+## Store Coordinator
 
-The `Store` is the central coordinator (`src/storage/store.rs`):
-
-```rust
-pub struct Store {
-    tasks: TaskPool,
-    metadata_storage: Arc<dyn MetadataStorage>,
-    bundle_storage: Arc<dyn BundleStorage>,
-    bundle_cache: spin::Mutex<LruCache<Arc<str>, Bytes>>,
-    reaper_cache: Arc<Mutex<BTreeSet<CacheEntry>>>,
-    reaper_wakeup: Arc<Notify>,
-    max_cached_bundle_size: usize,
-    reaper_cache_size: usize,
-}
-```
+The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends, manages the LRU cache and reaper cache, and coordinates recovery.
 
 **Lock Strategy:**
 - `spin::Mutex` for bundle_cache (O(1) operations, no blocking)
@@ -68,66 +55,20 @@ pub struct Store {
 
 ## Storage Traits
 
+The storage subsystem defines two core traits that backends must implement. See rustdoc for full API details.
+
 ### BundleStorage
 
-Manages binary bundle data (`src/storage/mod.rs`):
-
-```rust
-pub trait BundleStorage: Send + Sync {
-    /// Recover all stored bundles (returns storage_name + timestamp)
-    async fn recover(&self, tx: Sender<(Arc<str>, SystemTime)>) -> Result<()>;
-
-    /// Load binary data by storage_name
-    async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
-
-    /// Save binary data, returns generated storage_name
-    async fn save(&self, data: &[u8]) -> Result<Arc<str>>;
-
-    /// Delete binary data
-    async fn delete(&self, storage_name: &str) -> Result<()>;
-}
-```
+The `BundleStorage` trait manages binary bundle data as opaque blobs. Implementations handle recovery (walking stored files), load/save by storage name, and deletion. The trait is designed for large data with infrequent access.
 
 ### MetadataStorage
 
-Manages bundle lifecycle state (`src/storage/mod.rs`):
+The `MetadataStorage` trait manages bundle lifecycle state with indexed queries. Key operations include:
 
-```rust
-pub trait MetadataStorage: Send + Sync {
-    /// Get bundle metadata by ID
-    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>>;
-
-    /// Insert new bundle (returns false on duplicate)
-    async fn insert(&self, bundle: &Bundle) -> Result<bool>;
-
-    /// Update existing bundle metadata
-    async fn replace(&self, bundle: &Bundle) -> Result<()>;
-
-    /// Mark as deleted (prevents re-insertion)
-    async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
-
-    /// Confirm bundle exists (for recovery)
-    async fn confirm_exists(&self, bundle_id: &Id) -> Result<bool>;
-
-    /// Start recovery process
-    async fn start_recovery(&self) -> Result<()>;
-
-    /// Find orphaned bundles during restart
-    async fn remove_unconfirmed(&self, tx: Sender<Bundle>) -> Result<()>;
-
-    /// Reset bundles pending to a peer (ForwardPending → Waiting)
-    async fn reset_peer_queue(&self, peer: u32) -> Result<bool>;
-
-    /// Poll bundles by expiration time
-    async fn poll_expiry(&self, tx: Sender<CacheEntry>, limit: usize) -> Result<()>;
-
-    /// Poll bundles in Waiting status
-    async fn poll_waiting(&self, tx: Sender<Bundle>) -> Result<()>;
-
-    /// Poll bundles in specific status
-    async fn poll_pending(&self, tx: Sender<Bundle>, status: &BundleStatus, limit: usize) -> Result<()>;
-}
-```
+- **CRUD**: get, insert, replace, tombstone (prevents re-insertion)
+- **Recovery**: start_recovery, confirm_exists, remove_unconfirmed
+- **Queue management**: reset_peer_queue (ForwardPending → Waiting)
+- **Polling**: poll_expiry, poll_waiting, poll_pending for background processing
 
 ## Dual Storage Model
 
@@ -181,13 +122,7 @@ store_dir/
 - **Memory-mapped loading** (with `mmap` feature): Zero-copy via `memmap2::Mmap`
 - **Parallel recovery**: Thread pool walks directories concurrently
 
-**Configuration:**
-```rust
-pub struct Config {
-    pub store_dir: PathBuf,  // Default: /var/spool/hardy-localdisk-storage
-    pub fsync: bool,         // Default: true (atomic writes)
-}
-```
+Configuration includes the storage directory path and whether to use atomic writes (fsync). See the [localdisk-storage design doc](../../localdisk-storage/docs/design.md) for details.
 
 ### SQLite Storage (Metadata)
 
@@ -207,13 +142,7 @@ pub struct Config {
 | `AduFragment` | 3 | timestamp, sequence, source_eid |
 | `Dispatching` | 4 | - |
 
-**Configuration:**
-```rust
-pub struct Config {
-    pub db_dir: PathBuf,
-    pub db_name: String,  // Default: "metadata.db"
-}
-```
+Configuration includes the database directory and name. See the [sqlite-storage design doc](../../sqlite-storage/docs/design.md) for details.
 
 ### In-Memory Storage (Testing)
 
@@ -222,20 +151,7 @@ pub struct Config {
 
 ## LRU Cache Management
 
-The Store maintains an in-memory LRU cache for frequently accessed bundle data:
-
-```rust
-bundle_cache: spin::Mutex<LruCache<Arc<str>, Bytes>>
-```
-
-### Configuration
-
-```rust
-pub struct Config {
-    pub lru_capacity: NonZeroUsize,           // Default: 1024 entries
-    pub max_cached_bundle_size: NonZeroUsize, // Default: 16 KB
-}
-```
+The Store maintains an in-memory LRU cache for frequently accessed bundle data. Configuration controls the cache capacity (default: 1024 entries) and maximum bundle size to cache (default: 16 KB).
 
 ### Cache Operations
 
@@ -273,17 +189,9 @@ The reaper monitors bundle lifetimes and triggers deletion on expiry (`src/stora
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### CacheEntry Structure
+### Cache Entries
 
-```rust
-struct CacheEntry {
-    expiry: OffsetDateTime,
-    id: bundle::Id,
-    destination: Eid,
-}
-```
-
-Ordered by: expiry time → destination → ID (deterministic BTreeSet ordering)
+Each cache entry tracks a bundle's expiry time, ID, and destination. The BTreeSet orders entries by expiry time → destination → ID for deterministic ordering.
 
 ### Reaper Loop
 
@@ -413,54 +321,15 @@ tombstone(bundle_id)
    → metadata_storage.tombstone(bundle_id)
 ```
 
-## Configuration Summary
+## Configuration
 
-### Store Config
+Each storage component is configured separately:
 
-```rust
-pub struct Config {
-    pub lru_capacity: NonZeroUsize,           // LRU cache slots (default: 1024)
-    pub max_cached_bundle_size: NonZeroUsize, // Max size to cache (default: 16KB)
-}
-```
+| Component | Key Settings |
+|-----------|-------------|
+| **Store** | LRU cache capacity (default: 1024), max cached bundle size (default: 16 KB) |
+| **Localdisk** | Storage directory, atomic writes (fsync) |
+| **SQLite** | Database directory and name |
+| **In-memory** | Capacity limit, minimum bundle count |
 
-### Localdisk Config
-
-```rust
-pub struct Config {
-    pub store_dir: PathBuf,  // Base directory
-    pub fsync: bool,         // Atomic writes (default: true)
-}
-```
-
-### SQLite Config
-
-```rust
-pub struct Config {
-    pub db_dir: PathBuf,
-    pub db_name: String,     // Default: "metadata.db"
-}
-```
-
-### Bundle Memory Config
-
-```rust
-pub struct Config {
-    pub capacity: NonZeroUsize,  // Max bytes (default: 256 MB)
-    pub min_bundles: usize,      // Keep minimum (default: 32)
-}
-```
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/storage/mod.rs` | Trait definitions, Config, type aliases |
-| `src/storage/store.rs` | Store struct, cache management |
-| `src/storage/reaper.rs` | Expiry monitoring, BTreeSet cache |
-| `src/storage/recover.rs` | Three-phase recovery |
-| `src/storage/channel.rs` | Hybrid fast/slow path channels |
-| `src/storage/bundle_mem.rs` | In-memory BundleStorage |
-| `src/storage/metadata_mem.rs` | In-memory MetadataStorage |
-| `sqlite-storage/src/storage.rs` | SQLite MetadataStorage |
-| `localdisk-storage/src/storage.rs` | Filesystem BundleStorage |
+See rustdoc for `Config` structs and the respective storage backend design docs for configuration details.

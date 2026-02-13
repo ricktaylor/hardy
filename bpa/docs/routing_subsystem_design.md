@@ -70,33 +70,9 @@ There is no separate FIB. Instead, forwarding decisions are recorded in bundle m
 
 ### Data Structures
 
-**RibInner** (`src/rib/mod.rs`):
+The RIB contains a local endpoint table and a pattern-based route table. The route table uses a three-level nested structure: `BTreeMap<priority, BTreeMap<EidPattern, BTreeSet<Entry>>>`. Lower priority numbers are checked first. Within a priority level, patterns are matched in order.
 
-```rust
-struct RibInner {
-    locals: local::LocalInner,      // Local endpoints
-    routes: RouteTable,             // Pattern-based routes
-    address_types: HashMap<ClaAddressType, Arc<Cla>>,
-}
-```
-
-**Route Table** - Three-level nested structure:
-
-```rust
-type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<Entry>>>;
-//                priority -> pattern -> entries
-```
-
-Lower priority numbers are checked first. Within a priority level, patterns are matched in order.
-
-**Route Entry** (`src/rib/route.rs`):
-
-```rust
-pub struct Entry {
-    pub action: routes::Action,  // Drop, Reflect, or Via(Eid)
-    pub source: String,          // Origin (e.g., "static_routes", "control")
-}
-```
+Each route entry contains an action (Drop, Reflect, or Via) and a source identifier for debugging (e.g., "static_routes", "control").
 
 ### Route Actions
 
@@ -110,20 +86,7 @@ When multiple entries match at the same priority, precedence is: Drop > Reflect 
 
 ### Local Table
 
-The local table provides fast O(1) lookup for known local endpoints:
-
-```rust
-pub struct LocalInner {
-    pub actions: HashMap<Eid, BTreeSet<local::Action>>,
-    pub finals: HashSet<EidPattern>,  // Catch-all patterns
-}
-
-pub enum Action {
-    AdminEndpoint,                     // Deliver to admin endpoint
-    Local(Option<Arc<Service>>),       // Deliver to registered service
-    Forward(u32),                      // Forward to CLA peer (next hop)
-}
-```
+The local table provides fast O(1) lookup for known local endpoints using a HashMap of EIDs to actions. Actions include delivering to the admin endpoint, delivering to a registered service, or forwarding to a CLA peer.
 
 Local entries are populated by:
 
@@ -135,43 +98,11 @@ Local entries are populated by:
 
 ### Structure
 
-**PeerTable** (`src/cla/peers.rs`):
-
-```rust
-pub struct PeerTable {
-    inner: RwLock<PeerTableInner>,
-}
-
-struct PeerTableInner {
-    peers: HashMap<u32, Arc<Peer>>,
-    next: u32,  // Auto-incrementing peer ID
-}
-```
-
-**Peer**:
-
-```rust
-pub struct Peer {
-    cla: Weak<Cla>,
-    inner: OnceLock<PeerInner>,
-}
-
-struct PeerInner {
-    queues: HashMap<Option<u32>, Sender>,  // Queue pollers
-}
-```
+The peer table maps auto-incrementing peer IDs to `Peer` structs. Each peer holds a weak reference to its CLA and a set of queue pollers (one per priority queue).
 
 ### CLA Registry Mapping
 
-The CLA registry maintains a three-level lookup:
-
-```rust
-// In CLA struct
-peers: Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>
-//            NodeId -> ClaAddress -> peer_id
-```
-
-This allows multiple addresses per node (multi-homing) and multiple nodes per CLA.
+The CLA registry maintains a three-level lookup: `NodeId → ClaAddress → peer_id`. This allows multiple addresses per node (multi-homing) and multiple nodes per CLA.
 
 ### Peer Registration Flow
 
@@ -227,14 +158,7 @@ Local table: NodeId → Forward(peer_id)
 
 ### FindResult
 
-```rust
-pub enum FindResult {
-    AdminEndpoint,
-    Deliver(Option<Arc<Service>>),
-    Forward(u32),           // peer_id
-    Drop(Option<ReasonCode>),
-}
-```
+The `FindResult` enum indicates the routing decision: `AdminEndpoint` for administrative bundles, `Deliver` for local services, `Forward` with a peer ID for remote destinations, or `Drop` with an optional reason code.
 
 ### Recursion and Via Resolution
 
@@ -377,27 +301,4 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
 
 ### Notification Flow
 
-```rust
-// Route change triggers re-routing
-rib.add_route() or rib.remove_route()
-    → reset_peer_queue() for affected peers
-    → poll_waiting_notify.notify_one()
-
-// Background task responds
-loop {
-    poll_waiting_notify.notified().await;
-    dispatcher.poll_waiting().await;
-}
-```
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/rib/mod.rs` | RIB structure and management |
-| `src/rib/route.rs` | Route entry and add/remove logic |
-| `src/rib/find.rs` | Route lookup algorithm |
-| `src/rib/local.rs` | Local endpoint routing |
-| `src/cla/peers.rs` | Peer table and queue management |
-| `src/cla/registry.rs` | CLA registration and peer mapping |
-| `src/metadata.rs` | Bundle status and forwarding state |
+Route changes trigger re-routing through a notification mechanism. When `add_route()` or `remove_route()` is called, affected peers have their queues reset via `reset_peer_queue()`, and the `poll_waiting_notify` signal wakes the background task. The dispatcher's `poll_waiting()` then re-evaluates bundles with the updated routes.

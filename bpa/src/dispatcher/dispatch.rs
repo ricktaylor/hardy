@@ -322,7 +322,7 @@ impl Dispatcher {
     /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
     /// | `None` | Wait for route | `Dispatching` → `Waiting` |
     ///
-    /// See [Routing Design](../../docs/routing_design.md) for RIB lookup details.
+    /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)

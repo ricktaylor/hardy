@@ -8,7 +8,7 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 
 ## Related Documents
 
-- **[Routing Design](routing_design.md)**: RIB lookup and forwarding decisions that determine which filter hooks run
+- **[Routing Design](routing_subsystem_design.md)**: RIB lookup and forwarding decisions that determine which filter hooks run
 - **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status transitions and filter checkpoint semantics
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Ingress filters can set flow_label for queue classification
 - **[Storage Subsystem Design](storage_subsystem_design.md)**: Filter mutation persistence
@@ -41,7 +41,7 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 The four hooks map to the natural decision boundaries in bundle processing:
 
 - **Ingress**: First opportunity to reject invalid or malicious bundles before wasting resources on routing or storage. This is where size limits, source validation, and early policy checks belong.
-- **Deliver**: Policy decisions that depend on the routing outcome (see [Routing Design](routing_design.md) for RIB lookup details). For example, "allow delivery to service X but not Y" can only be evaluated after the RIB returns `FindResult::Deliver`.
+- **Deliver**: Policy decisions that depend on the routing outcome (see [Routing Design](routing_subsystem_design.md) for RIB lookup details). For example, "allow delivery to service X but not Y" can only be evaluated after the RIB returns `FindResult::Deliver`.
 - **Originate**: Enforce policy on locally-generated bundles before they enter the system. Services may attempt to send bundles that violate policy; this hook catches them early.
 - **Egress**: Final validation and modification before network transmission. This is the last chance to add security blocks, validate the final bundle state, or log outbound traffic.
 
@@ -121,36 +121,6 @@ The optional `ReasonCode` in `Drop` allows filters to indicate why the bundle wa
 
 ---
 
-## Implementation Status
-
-Core filter infrastructure is implemented in `bpa/src/filters/`:
-
-| Component | File | Status |
-|-----------|------|--------|
-| Filter traits (`ReadFilter`, `WriteFilter`) | `filter.rs` | ✅ Implemented |
-| Result types (`FilterResult`, `RewriteResult`) | `filter.rs` | ✅ Implemented |
-| `Mutation` flags for persistence | `registry.rs` | ✅ Implemented |
-| Error types | `mod.rs` | ✅ Implemented |
-| `FilterNode` (DAG-based execution) | `filter.rs` | ✅ Implemented |
-| `PreparedFilters` (lock-free execution) | `filter.rs` | ✅ Implemented |
-| `Registry` (per-hook filter storage) | `registry.rs` | ✅ Implemented |
-| `Bpa::register_filter()` | `bpa.rs` | ✅ Implemented |
-
-**Hook integration status:**
-
-| Hook | Location | Status |
-|------|----------|--------|
-| Ingress | `dispatcher/dispatch.rs:ingest_bundle_inner` | ✅ Implemented |
-| Deliver | `dispatcher/local.rs:deliver_bundle` | ✅ Implemented |
-| Originate | `dispatcher/local.rs:run_originate_filter` | ✅ Implemented |
-| Egress | `dispatcher/forward.rs:forward_bundle` | ✅ Implemented |
-
-**Rate limiting:**
-
-Filter execution runs through a `BoundedTaskPool` (`processing_pool`) to prevent resource exhaustion. The pool size is configurable via `processing_pool_size` (default: 4 × CPU cores).
-
----
-
 ## Filter Traits
 
 See `bpa/src/filters/filter.rs` for trait definitions and result types.
@@ -169,16 +139,7 @@ The `RewriteResult::Continue` variant carries optional modifications:
 
 ### Mutation Tracking and Persistence
 
-The filter chain aggregates modifications into a `Mutation` struct (see `registry.rs`):
-
-```rust
-pub struct Mutation {
-    pub metadata: bool,  // true if any filter modified metadata
-    pub bundle: bool,    // true if any filter modified bundle data
-}
-```
-
-After `ExecResult::Continue`, persistence depends on the hook (see [Bundle State Machine Design](bundle_state_machine_design.md) for checkpoint semantics):
+The filter chain aggregates modifications into a `Mutation` struct that tracks whether metadata and/or bundle data were modified. After `ExecResult::Continue`, persistence depends on the hook (see [Bundle State Machine Design](bundle_state_machine_design.md) for checkpoint semantics):
 
 | Hook | Persistence Strategy |
 |------|---------------------|
@@ -292,7 +253,7 @@ CLA.on_receive(data)
                     ├─ ◀── HOOK: Ingress
                     ├─ persist mutations + checkpoint to Dispatching
                     └─▶ process_bundle(bundle)
-                          ├─ RIB lookup (see routing_design.md)
+                          ├─ RIB lookup (see routing_subsystem_design.md)
                           ├─ Deliver:
                           │     ├─ ◀── HOOK: Deliver
                           │     └─ deliver_bundle(service)
