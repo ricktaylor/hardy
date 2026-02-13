@@ -210,6 +210,9 @@ impl Store {
             Self::poll_queue(store, shared_cloned, cap).await
         });
 
+        // Signal initial poll to pick up any pre-existing bundles in storage
+        shared.notify.notify_one();
+
         (
             Sender {
                 store: self.clone(),

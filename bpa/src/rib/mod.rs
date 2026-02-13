@@ -64,6 +64,9 @@ impl Rib {
 
             debug!("Poll waiting task complete");
         });
+
+        // Signal initial poll to pick up any pre-existing Waiting bundles
+        self.poll_waiting_notify.notify_one();
     }
 
     pub async fn shutdown(&self) {
