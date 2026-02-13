@@ -106,7 +106,7 @@ impl hardy_bpa::cla::Cla for Cla {
             && let Ok(path) = str::from_utf8(remote_addr.as_ref())
             && inner.inboxes.contains(path)
         {
-            // Put bundle into outbox
+            // Write bundle to peer's inbox directory
             let path = match hardy_bpv7::bundle::Id::parse(&bundle) {
                 Ok(id) => {
                     let mut filename = format!("{}_{}", id.source, id.timestamp)
