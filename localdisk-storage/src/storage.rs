@@ -76,39 +76,51 @@ fn walk_dirs(
                 if file_type.is_dir() {
                     subdirs.push(entry.path());
                 } else if file_type.is_file() {
-                    // Drop anything .tmp
-                    if let Some(extension) = entry.path().extension()
-                        && extension == "tmp"
-                    {
-                        std::fs::remove_file(entry.path())
-                            .trace_expect("Failed to remove tmp file");
-                        continue;
-                    }
-
-                    // There is a small race when restarting, whereby bundles expire during walk_dirs,
-                    // So it is perfectly valid for the file to no longer exist
+                    // There is a race during restart: bundles may expire, concurrent
+                    // save() operations may be in progress, so file state can change.
+                    // It is valid for the file to no longer exist.
 
                     let Ok(metadata) = entry.metadata() else {
                         continue;
                     };
 
-                    // Drop 0-length files
-                    if metadata.len() == 0 {
+                    // Prefer creation time, fall back to modification time
+                    // (some filesystems like older ext4 don't track creation time)
+                    let Ok(file_time) = metadata.created().or_else(|_| metadata.modified()) else {
+                        warn!("Failed to get timestamp for {}", entry.path().display());
+                        continue;
+                    };
+
+                    // Skip anything created after we began our walk - these are new
+                    // bundles being saved concurrently, not recovery candidates
+                    if &file_time > before {
+                        continue;
+                    }
+
+                    // Drop .tmp files left by interrupted save()
+                    if let Some(extension) = entry.path().extension()
+                        && extension == "tmp"
+                    {
                         if let Err(e) = std::fs::remove_file(entry.path())
-                            && e.kind() == std::io::ErrorKind::NotFound
+                            && e.kind() != std::io::ErrorKind::NotFound
                         {
-                            // This is fatal as we need to abort early if there are restart issues
-                            Err::<(), _>(e).trace_expect("Failed to remove placeholder file");
+                            // NotFound is benign (concurrent save() or reaper removed it)
+                            warn!("Failed to remove tmp file {}: {e}", entry.path().display());
                         }
                         continue;
                     }
 
-                    let Ok(received_at) = metadata.created() else {
-                        continue;
-                    };
-
-                    // Ignore anything created after we began our walk
-                    if &received_at > before {
+                    // Drop 0-length placeholder files left by interrupted save()
+                    if metadata.len() == 0 {
+                        if let Err(e) = std::fs::remove_file(entry.path())
+                            && e.kind() != std::io::ErrorKind::NotFound
+                        {
+                            // NotFound is benign (concurrent save() completed and overwrote it)
+                            warn!(
+                                "Failed to remove placeholder {}: {e}",
+                                entry.path().display()
+                            );
+                        }
                         continue;
                     }
 
@@ -120,7 +132,7 @@ fn walk_dirs(
                                 .trace_expect("Failed to strip prefix?!")
                                 .to_string_lossy()
                                 .into(),
-                            time::OffsetDateTime::from(received_at),
+                            time::OffsetDateTime::from(file_time),
                         ))
                         .is_err()
                     {
@@ -211,15 +223,13 @@ impl BundleStorage for Storage {
         }
 
         #[cfg(not(feature = "mmap"))]
-        match tokio::fs::read(storage_name).await {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(None);
-            }
-            Err(e) => {
-                return Err(e.into());
-            }
-            Ok(data) => Ok(Bytes::from_owner(data)),
-        }
+        tokio::fs::read(storage_name)
+            .await
+            .map(|data| Some(Bytes::from_owner(data)))
+            .or_else(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => Ok(None),
+                _ => Err(e.into()),
+            })
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -307,15 +317,15 @@ impl BundleStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
-        match tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?)).await
-        {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                warn!("Failed to remove {storage_name}");
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-            Ok(_) => Ok(()),
-        }
+        tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?))
+            .await
+            .or_else(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    warn!("Failed to remove {storage_name}");
+                    Ok(())
+                }
+                _ => Err(e.into()),
+            })
     }
 }
 
