@@ -50,6 +50,7 @@ pub struct Listener {
     pub keepalive_interval: Option<u16>,
     pub segment_mru: u64,
     pub transfer_mru: u64,
+    pub connection_rate_limit: u32,
     pub node_ids: Arc<[NodeId]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
@@ -66,6 +67,7 @@ impl std::fmt::Debug for Listener {
             .field("keepalive_interval", &self.keepalive_interval)
             .field("segment_mru", &self.segment_mru)
             .field("transfer_mru", &self.transfer_mru)
+            .field("connection_rate_limit", &self.connection_rate_limit)
             .field("node_ids", &self.node_ids)
             //.field("sink", &self.sink)
             //.field("registry", &self.registry)
@@ -86,7 +88,10 @@ impl Listener {
 
         // We can layer services here
         let mut svc = tower::ServiceBuilder::new()
-            .rate_limit(1024, std::time::Duration::from_secs(1))
+            .rate_limit(
+                self.connection_rate_limit as u64,
+                std::time::Duration::from_secs(1),
+            )
             .service(ListenerService::new(listener));
 
         info!("TCP server listening on {address}");

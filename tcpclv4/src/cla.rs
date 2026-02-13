@@ -18,6 +18,7 @@ impl ClaInner {
                     keepalive_interval: config.session_defaults.keepalive_interval,
                     segment_mru: config.segment_mru,
                     transfer_mru: config.transfer_mru,
+                    connection_rate_limit: config.connection_rate_limit,
                     node_ids: self.node_ids.clone(),
                     sink: self.sink.clone(),
                     registry: self.registry.clone(),

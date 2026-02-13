@@ -75,6 +75,9 @@ pub struct Config {
     // Maximum number of idle connections, per remote address
     pub max_idle_connections: usize,
 
+    // Maximum incoming connection rate (connections per second)
+    pub connection_rate_limit: u32,
+
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub session_defaults: SessionConfig,
 
@@ -90,8 +93,9 @@ impl Default for Config {
                 4556,
             )),
             segment_mru: 16384,
-            transfer_mru: 0x2_0000_0000_0000,
+            transfer_mru: 0x4000_0000, // 1GB
             max_idle_connections: 6,
+            connection_rate_limit: 64,
             session_defaults: Default::default(),
             tls: Default::default(),
         }

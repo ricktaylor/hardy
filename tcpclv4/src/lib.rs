@@ -43,8 +43,10 @@ impl Cla {
 
         match config.session_defaults.keepalive_interval {
             None | Some(0) => info!("{name}: Session keepalive disabled"),
-            Some(x) if x < 15 => {
-                warn!("{name}: RFC9174 specifies contact timeout SHOULD be a minimum of 15 seconds")
+            Some(x) if x < 30 => {
+                warn!(
+                    "{name}: RFC9174 Section 5.1.1 specifies keepalive SHOULD be a minimum of 30 seconds for shared networks"
+                )
             }
             Some(x) if x > 600 => {
                 warn!("{name}: RFC9174 specifies keepalive SHOULD be a maximum of 600 seconds")
