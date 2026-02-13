@@ -54,8 +54,8 @@ impl EidPattern {
             (_, EidPattern::Any) => true,
             (EidPattern::Any, _) => false,
             (EidPattern::Set(lhs), EidPattern::Set(rhs)) => {
-                // Every member must be a subset of at least one member in rhs
-                !lhs.iter().any(|l| rhs.iter().any(|r| !l.is_subset(r)))
+                // Every member of lhs must be a subset of at least one member in rhs
+                lhs.iter().all(|l| rhs.iter().any(|r| l.is_subset(r)))
             }
         }
     }

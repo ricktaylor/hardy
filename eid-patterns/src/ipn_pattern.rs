@@ -130,8 +130,8 @@ impl IpnPattern {
             (_, IpnPattern::Wildcard) => true,
             (IpnPattern::Wildcard, IpnPattern::Range(_)) => false,
             (IpnPattern::Range(lhs), IpnPattern::Range(rhs)) => {
-                // Every member must be a subset of at least one member in rhs
-                !lhs.iter().any(|l| rhs.iter().any(|r| !l.is_subset(r)))
+                // Every member of lhs must be a subset of at least one member in rhs
+                lhs.iter().all(|l| rhs.iter().any(|r| l.is_subset(r)))
             }
         }
     }

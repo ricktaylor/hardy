@@ -310,3 +310,77 @@ fn dtn_parse(s: &str, expected: DtnPatternItem) {
         EidPattern::Any => panic!("Not an dtn pattern item!"),
     }
 }
+
+/// Helper to parse pattern and check subset relationship
+fn is_subset(lhs: &str, rhs: &str) -> bool {
+    let lhs_pattern: EidPattern = lhs.parse().expect("Failed to parse lhs");
+    let rhs_pattern: EidPattern = rhs.parse().expect("Failed to parse rhs");
+    lhs_pattern.is_subset(&rhs_pattern)
+}
+
+#[test]
+fn test_subset_single_intervals() {
+    // Single interval subset checks
+    assert!(is_subset("ipn:0.3.4", "ipn:0.3.4")); // exact match
+    assert!(is_subset("ipn:0.3.4", "ipn:0.3.*")); // single value subset of wildcard
+    assert!(is_subset("ipn:0.3.4", "ipn:0.3.[0-10]")); // single value subset of range
+    assert!(is_subset("ipn:0.3.[5-7]", "ipn:0.3.[0-10]")); // range subset of larger range
+
+    assert!(!is_subset("ipn:0.3.*", "ipn:0.3.4")); // wildcard not subset of single
+    assert!(!is_subset("ipn:0.3.[0-10]", "ipn:0.3.[5-7]")); // larger range not subset of smaller
+    assert!(!is_subset("ipn:0.3.4", "ipn:0.4.4")); // different node
+}
+
+#[test]
+fn test_subset_multiple_intervals_in_lhs() {
+    // Multiple intervals in lhs, each must be covered by some interval in rhs
+    // This is the bug case: lhs=[1-3, 7-9], rhs=[1-5, 6-10]
+    // 1-3 is subset of 1-5, 7-9 is subset of 6-10 => should be true
+    assert!(is_subset("ipn:0.3.[1-3,7-9]", "ipn:0.3.[1-5,6-10]"));
+
+    // Another case: lhs=[1-3, 7-9], rhs=[0-10] (single interval covers both)
+    assert!(is_subset("ipn:0.3.[1-3,7-9]", "ipn:0.3.[0-10]"));
+
+    // Case where one lhs interval is not covered
+    // lhs=[1-3, 15-20], rhs=[1-5, 6-10] => 15-20 not covered => false
+    assert!(!is_subset("ipn:0.3.[1-3,15-20]", "ipn:0.3.[1-5,6-10]"));
+}
+
+#[test]
+fn test_subset_multiple_intervals_in_rhs() {
+    // Single lhs interval covered by one of multiple rhs intervals
+    // Note: [1-5,6-10] merges to [1-10] due to adjacency, so use [1-4,6-10] for gap
+    assert!(is_subset("ipn:0.3.[7-9]", "ipn:0.3.[1-4,6-10]")); // 7-9 subset of 6-10
+
+    // Single lhs interval NOT covered by any single rhs interval
+    // lhs=[1-7], rhs=[1-4, 6-10] (gap at 5) => 1-7 spans across both, not subset of either
+    assert!(!is_subset("ipn:0.3.[1-7]", "ipn:0.3.[1-4,6-10]"));
+
+    // Adjacent intervals merge: [1-5,6-10] becomes [1-10], so [1-7] IS a subset
+    assert!(is_subset("ipn:0.3.[1-7]", "ipn:0.3.[1-5,6-10]"));
+}
+
+#[test]
+fn test_subset_wildcard() {
+    // Wildcard is superset of everything
+    assert!(is_subset("ipn:0.3.4", "ipn:0.3.*"));
+    assert!(is_subset("ipn:0.3.[1-100]", "ipn:0.3.*"));
+    assert!(is_subset("ipn:0.3.*", "ipn:0.3.*"));
+
+    // Wildcard is not subset of non-wildcard
+    assert!(!is_subset("ipn:0.3.*", "ipn:0.3.[1-100]"));
+}
+
+#[test]
+fn test_subset_eid_pattern_set() {
+    // Multiple pattern items in the set
+    // lhs has two items, both must be subsets of some item in rhs
+    assert!(is_subset("ipn:0.3.4|ipn:0.5.6", "ipn:0.*.*"));
+
+    // Any pattern is superset of everything
+    assert!(is_subset("ipn:0.3.4", "*:**"));
+    assert!(is_subset("ipn:0.3.4|ipn:0.5.6", "*:**"));
+
+    // Any pattern is not subset of non-Any (unless rhs also covers all)
+    assert!(!is_subset("*:**", "ipn:0.*.*"));
+}
