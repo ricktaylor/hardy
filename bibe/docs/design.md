@@ -1,17 +1,18 @@
-# BIBE Design Document
+# hardy-bibe Design
 
 Bundle-in-Bundle Encapsulation (BIBE) for the Hardy BPA.
 
-## Overview
+## Design Goals
 
-BIBE provides tunnel endpoints for encapsulating bundles inside other bundles. This enables:
+- **Tunnel abstraction.** Provide transparent bundle tunneling - inner bundles traverse the tunnel without modification, and applications are unaware of encapsulation.
 
-- **Security domains**: Tunnel traffic through untrusted networks with outer bundle encryption
-- **Addressing abstraction**: Hide inner bundle addressing from intermediate nodes
-- **Protocol bridging**: Connect BP networks with different addressing schemes
-- **Traffic aggregation**: Multiple inner bundles via single outer path
+- **Correct filter semantics.** Ensure encapsulation triggers egress filters (forwarding path), not deliver filters. This matches how IP tunnel interfaces work and preserves filter semantics.
 
-### Architecture Summary
+- **Standard routing integration.** Use the existing RIB and peer infrastructure rather than requiring new routing mechanisms. Tunnels should be configurable via standard `via` routes.
+
+- **NHRP-like multipoint.** Support multiple tunnel destinations through a single CLA, analogous to Linux mGRE with NHRP resolution.
+
+## Architecture Overview
 
 BIBE uses a **hybrid architecture**: a CLA for encapsulation, a Service for decapsulation.
 
@@ -19,28 +20,46 @@ BIBE uses a **hybrid architecture**: a CLA for encapsulation, a Service for deca
 ┌─────────────────────────────────────────────────────────────────┐
 │  BIBE Package                                                   │
 │                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
+│  ┌──────────────────────────────────────────────────────────┐   │
 │  │  BibeCla (encapsulation)                                 │   │
 │  │                                                          │   │
 │  │  forward(cla_addr, bundle):                              │   │
 │  │    outer_dest = parse(cla_addr)   # ClaAddress::Private  │   │
 │  │    outer = encapsulate(bundle, outer_dest)               │   │
 │  │    dispatch(outer)                # Re-inject to BPA     │   │
-│  └─────────────────────────────────────────────────────────┘   │
+│  └──────────────────────────────────────────────────────────┘   │
 │                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
+│  ┌──────────────────────────────────────────────────────────┐   │
 │  │  DecapService (decapsulation)                            │   │
 │  │                                                          │   │
 │  │  on_receive(outer_bundle):                               │   │
 │  │    inner = decapsulate(outer_bundle)                     │   │
 │  │    cla.dispatch(inner)            # Re-inject to BPA     │   │
-│  └─────────────────────────────────────────────────────────┘   │
+│  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Virtual Peers Model
+Encapsulation is triggered via `CLA.forward()` when the RIB routes a bundle to a virtual peer. Decapsulation occurs when outer bundles are delivered to the registered decap service endpoint.
 
-BIBE uses **virtual peers** for tunnel configuration - each tunnel destination is registered as a peer with the CLA. This mirrors how Linux handles multipoint GRE tunnels with NHRP/DMVPN:
+## Key Design Decisions
+
+### Hybrid Architecture (CLA + Service)
+
+The hybrid architecture (CLA for encapsulation, Service for decapsulation) was chosen over a pure Service approach for several reasons:
+
+1. **Correct filter behavior.** Encapsulation is forwarding, not delivery. Inner bundles on the encap path trigger Egress filters, matching IP tunnel semantics.
+
+2. **Natural RIB integration.** Virtual peers integrate with existing local table infrastructure. No RIB changes required.
+
+3. **Flexible routing.** Multiple tunnel destinations via virtual peers, not multiple service instances.
+
+4. **Simpler registration.** One service (decap) + one CLA, instead of two services + one CLA.
+
+A pure CLA approach was rejected because decapsulation requires receiving locally-destined bundles, which only Services can do.
+
+### Virtual Peers for Tunnel Destinations
+
+Each tunnel destination is registered as a "virtual peer" with the CLA. This mirrors how Linux handles multipoint GRE tunnels with NHRP/DMVPN:
 
 | NHRP/DMVPN | BIBE Virtual Peers |
 |------------|-------------------|
@@ -49,11 +68,9 @@ BIBE uses **virtual peers** for tunnel configuration - each tunnel destination i
 | Protocol address → NBMA address | NodeId → ClaAddress::Private |
 | `ip nhrp map 10.0.1.0/24 203.0.113.10` | `add_tunnel(dtn://tunnel1, ipn:100.12)` |
 
-The BPA's **local table** serves the same role as NHRP - resolving "where I want to go" (Via Eid) to "where to encapsulate to" (ClaAddress).
+The BPA's local table serves the same role as NHRP - resolving "where I want to go" (Via Eid) to "where to encapsulate to" (ClaAddress).
 
-### Route Configuration
-
-Routes use standard `via` syntax pointing to the virtual peer's NodeId:
+Routes use standard `via` syntax:
 
 ```
 # static_routes file
@@ -61,45 +78,48 @@ ipn:200.* via dtn://tunnel1
 ipn:300.* via dtn://tunnel2
 ```
 
-The tunnel destination is not in the route - it's encoded in the peer's ClaAddress at registration time.
+The tunnel destination is encoded in the peer's ClaAddress at registration time, not in the route.
 
-### References
+### ClaAddress::Private for Tunnel Endpoints
+
+Tunnel destinations are encoded as CBOR-serialized EIDs within `ClaAddress::Private`. This reuses the existing ClaAddress infrastructure without requiring new address types. The `forward()` implementation decodes the CBOR to determine the outer bundle's destination.
+
+## Standards Compliance
 
 - RFC 9171 Section 5.6 (Bundle-in-Bundle Encapsulation)
 - draft-ietf-dtn-bibect (BIBE Convergence Layer)
 
----
+## Integration
 
-## Architecture Decision
+### With hardy-bpa
 
-The **hybrid architecture** (CLA for encapsulation, Service for decapsulation) was chosen for the following reasons:
+BIBE registers two components with the BPA:
 
-1. **Semantically correct filter behavior**: Encapsulation is forwarding, not delivery. Egress filters (not Deliver filters) apply to inner bundles entering the tunnel.
+- `BibeCla` registered as CLA named "bibe"
+- `DecapService` registered at a configured service endpoint
 
-2. **Linux netfilter alignment**: Matches the established model for tunnel handling in network stacks.
+Virtual peers are registered via `add_tunnel()` which calls `sink.add_peer()`.
 
-3. **Natural RIB integration**: Virtual peers integrate with existing local table infrastructure. No RIB changes required.
+### With hardy-bpa-server
 
-4. **Flexible routing**: Multiple tunnel destinations via virtual peers, not multiple service instances.
-
-5. **Simpler registration**: One service (decap) + one CLA, instead of two services + one CLA.
-
-6. **NHRP-like model**: Virtual peers mirror the established DMVPN pattern - local table acts as the resolution layer.
+When the `bibe` feature is enabled, the server initializes BIBE from configuration and registers it with the BPA. Tunnel destinations are configured in the server config.
 
 ---
 
-## Appendix: Architecture Options Considered
+## Appendix: Architecture Analysis
 
-Two architectures were evaluated. A pure CLA approach was also considered but found non-viable for decapsulation.
+Two architectures were evaluated for BIBE. A pure CLA approach was also considered but found non-viable for decapsulation (CLAs cannot receive locally-destined bundles).
 
 ### Option A: Service+CLA (Not Selected)
 
 **Components:**
+
 - EncapService: Registered at encap endpoint (e.g., `ipn:1.10`)
 - DecapService: Registered at decap endpoint (e.g., `ipn:1.11`)
 - BibeCla: dispatch() only, forward() returns Error
 
 **Encapsulation flow:**
+
 ```
 # static_routes: ipn:200.* via ipn:1.10
 #                (route to service EID, not CLA)
@@ -115,6 +135,7 @@ Route ──→ Egress ──→ Real CLA ──→ Network
 ```
 
 **Decapsulation flow:**
+
 ```
 Outer bundle ──→ Ingress ──→ Route ──→ Deliver ──→ DecapService
                                          │              │
@@ -127,6 +148,7 @@ Route ──→ (local delivery or forward)
 ```
 
 **Characteristics:**
+
 - Tunnel destination specified in service configuration
 - Inner bundle on encap path triggers **Deliver** filters
 - Two service registrations + one CLA registration
@@ -137,10 +159,12 @@ Route ──→ (local delivery or forward)
 ### Option B: Hybrid (Selected)
 
 **Components:**
+
 - BibeCla: forward() does encapsulation, dispatch() injects result
 - DecapService: Registered at decap endpoint (e.g., `ipn:100.12`)
 
 **Encapsulation flow:**
+
 ```
 # static_routes: ipn:200.* via dtn://tunnel1
 #                (tunnel is a virtual peer with ClaAddress encoding decap endpoint)
@@ -157,6 +181,7 @@ Route ──→ Egress ──→ Real CLA ──→ Network
 ```
 
 **Decapsulation flow:**
+
 ```
 Outer bundle ──→ Ingress ──→ Route ──→ Deliver ──→ DecapService
                                          │              │
@@ -169,6 +194,7 @@ Route ──→ (local delivery or forward)
 ```
 
 **Characteristics:**
+
 - Tunnel destination encoded in ClaAddress at peer registration
 - Inner bundle on encap path triggers **Egress** filters
 - One service registration + one CLA registration
@@ -185,6 +211,7 @@ A pure CLA approach (no services) was considered but is not viable:
 3. **No interception mechanism**: Without a Service, there's no way to receive the outer bundle for decapsulation
 
 The fundamental asymmetry:
+
 - **Encap**: Outgoing path → CLA.forward() is natural
 - **Decap**: Incoming path → requires local delivery, i.e., Service
 
@@ -212,10 +239,12 @@ The fundamental asymmetry:
 The key architectural question is: what type of operation is encapsulation?
 
 **Service+CLA interpretation**: Encap is "local delivery" to a tunnel service
+
 - Inner bundle triggers **Deliver** filters
 - The tunnel endpoint is treated as a local application
 
 **Hybrid interpretation**: Encap is "forwarding" through a tunnel CLA
+
 - Inner bundle triggers **Egress** filters
 - The tunnel is treated as a convergence layer
 
@@ -224,6 +253,7 @@ The key architectural question is: what type of operation is encapsulation?
 Linux handles tunnel interfaces (GRE, IPIP, IPsec) with a clear model:
 
 **Outgoing (encapsulation):**
+
 ```
 Inner packet ──→ OUTPUT ──→ Routing ──→ POSTROUTING ──→ Tunnel driver
                                                              │
@@ -240,6 +270,7 @@ POSTROUTING ──→ Physical NIC
 - Encapsulation is a forwarding operation, not delivery
 
 **Incoming (decapsulation):**
+
 ```
 Outer packet ──→ PREROUTING ──→ Routing ──→ INPUT ──→ Tunnel driver
                                                            │
@@ -304,6 +335,7 @@ ipn:500.* via dtn://tunnel-c    # Tunnel to ipn:202.12
 ```
 
 **Advantages of hybrid:**
+
 - Standard `via` routing pattern
 - Tunnel lifecycle = peer lifecycle
 - Single CLA handles all tunnels
@@ -390,23 +422,27 @@ bibe_cla_sink.add_peer(
 ```
 
 **Route config:**
+
 ```
 # static_routes file
 ipn:200.* via dtn://tunnel1    # Resolves to BIBE peer via local table
 ```
 
 **Flow:**
+
 1. Route: `ipn:200.*` → `Via(dtn://tunnel1)`
 2. Local: `dtn://tunnel1` → `Forward(peer_id)`
 3. EgressQueue retrieves `ClaAddress::Private(<CBOR-encoded EID>)`
 4. `bibe_cla.forward(queue, cla_addr, data)` decodes CBOR to get outer destination
 
 **Pros:**
+
 - Works with existing RIB infrastructure
 - ClaAddress passed to forward() as expected
 - Peer lifecycle maps to tunnel lifecycle
 
 **Cons:**
+
 - Must register peer per tunnel destination
 - "Peer" is really a tunnel endpoint (slight semantic stretch)
 
@@ -455,11 +491,13 @@ The virtual peers approach closely mirrors how Linux handles multipoint GRE tunn
 ### Point-to-Point vs Multipoint
 
 **Point-to-point GRE**: One interface, one fixed remote endpoint
+
 ```bash
 ip tunnel add gre1 mode gre local 192.168.1.1 remote 10.0.0.1
 ```
 
 **Multipoint GRE (mGRE)**: One interface, many destinations via resolution
+
 ```bash
 ip tunnel add mgre0 mode gre local 192.168.1.1  # No remote specified
 ```
@@ -657,6 +695,7 @@ ipn:100.* via ipn:100
 ```
 
 **How it works:**
+
 1. Route lookup: `ipn:200.*` → `Via(dtn://tunnel1)`
 2. Local table: `dtn://tunnel1` → `Forward(bibe_peer_id)`
 3. EgressQueue has `ClaAddress::Private(<CBOR: ipn:100.12>)`
@@ -753,6 +792,7 @@ ipn:100.* via ipn:100
 - **Outer bundle BPSec**: Applied by Egress filters if configured
 
 This separation allows:
+
 - End-to-end security on inner bundle (source to final destination)
 - Hop-by-hop security on outer bundle (tunnel endpoints)
 
@@ -768,6 +808,7 @@ if metadata.read_only.ingress_cla.as_deref() == Some("bibe") {
 ```
 
 This allows policies like:
+
 - Skip certain filters for tunnel traffic
 - Apply additional validation to decapsulated bundles
 - Log tunnel traffic separately
@@ -798,12 +839,14 @@ BIBE-PDU = [
 For complete (non-segmented) bundles, `transmission-id`, `total-length`, and `segmented-offset` are all set to zero. This adds 3 bytes overhead but simplifies processing since BIBE-PDU is always a 4-element array, and enables future segmentation support.
 
 **Example (complete bundle):**
+
 ```cbor
 [0, 0, 0, h'<inner-bundle-bytes>']
 ```
 
 **Future segmentation support:**
 When segmentation is implemented, the fields will be used as follows:
+
 - `transmission-id`: Unique identifier for reassembly
 - `total-length`: Total length of the original bundle
 - `segmented-offset`: Byte offset of this segment within the original bundle
@@ -834,6 +877,7 @@ Rejected because decapsulation requires receiving locally-destined bundles, whic
 ### Service-Only (No CLA)
 
 Would require using ServiceSink.send() for injecting processed bundles. This works but:
+
 - send() is for bundles originating from the service
 - dispatch() (CLA) is semantically correct for bundles entering from "outside"
 - CLA provides ingress_cla metadata for filter identification
