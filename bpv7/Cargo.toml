@@ -11,8 +11,11 @@ crate-type = ["rlib"]
 [features]
 default = ["rfc9173"]
 std = ["time/std", "thiserror/std", "serde?/std", "percent-encoding/std", "rand?/std"]
-rfc9173 = ["dep:hmac", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
+rfc9173 = ["bpsec", "dep:hmac", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
 serde = ["dep:serde","hashbrown/serde"]
+# Internal feature: enables BPSec signing/encryption modules.
+# Automatically enabled by security context features (rfc9173, and future cose).
+bpsec = []
 
 [dependencies]
 hardy-cbor = { path = "../cbor" }

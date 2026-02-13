@@ -2,15 +2,21 @@ use super::*;
 
 pub mod bcb;
 pub mod bib;
-pub mod encryptor;
 pub mod key;
-pub mod signer;
 
 mod error;
 mod parse;
 
 #[cfg(feature = "rfc9173")]
 pub mod rfc9173;
+
+// Signer and encryptor require at least one security context to be enabled.
+// The internal "bpsec" feature is automatically enabled by context features
+// (rfc9173, and future cose).
+#[cfg(feature = "bpsec")]
+pub mod encryptor;
+#[cfg(feature = "bpsec")]
+pub mod signer;
 
 use error::CaptureFieldErr;
 

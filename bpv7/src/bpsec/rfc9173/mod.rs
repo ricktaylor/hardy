@@ -8,7 +8,6 @@ pub(crate) mod bib_hmac_sha2;
 mod test;
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct ScopeFlags {
     pub include_primary_block: bool,
     pub include_target_header: bool,
