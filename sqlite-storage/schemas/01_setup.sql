@@ -16,6 +16,8 @@ STRICT;
 
 CREATE INDEX idx_bundles_expiry ON bundles(expiry ASC);
 CREATE INDEX idx_bundles_status ON bundles(status_code);
+CREATE INDEX idx_bundles_status_peer ON bundles(status_code, status_param1);
+CREATE INDEX idx_bundles_received_at ON bundles(received_at ASC);
 
 CREATE TABLE unconfirmed_bundles (
     id INTEGER UNIQUE NOT NULL REFERENCES bundles(id) ON DELETE CASCADE
