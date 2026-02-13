@@ -26,14 +26,14 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                            Store                                     │
-│                                                                      │
+│                            Store                                    │
+│                                                                     │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
 │  │   LRU Cache     │  │  Reaper Cache   │  │  Channel Manager    │  │
 │  │  (bundle data)  │  │  (expiry times) │  │  (fast/slow path)   │  │
 │  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
-│           │                    │                      │              │
-└───────────┼────────────────────┼──────────────────────┼──────────────┘
+│           │                    │                      │             │
+└───────────┼────────────────────┼──────────────────────┼─────────────┘
             │                    │                      │
             ▼                    ▼                      ▼
 ┌─────────────────────┐  ┌─────────────────┐  ┌─────────────────────┐
@@ -50,6 +50,7 @@ The storage subsystem provides persistent and cached storage for bundles, coordi
 The `Store` struct is the central coordinator for all storage operations. It holds references to both storage backends, manages the LRU cache and reaper cache, and coordinates recovery.
 
 **Lock Strategy:**
+
 - `spin::Mutex` for bundle_cache (O(1) operations, no blocking)
 - Standard `Mutex` for reaper_cache (requires O(n) iteration)
 
@@ -76,8 +77,8 @@ Bundle data and metadata are stored separately:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Bundle                                   │
-│                                                                  │
+│                         Bundle                                  │
+│                                                                 │
 │  ┌─────────────────────────┐  ┌──────────────────────────────┐  │
 │  │     Binary Data         │  │        Metadata              │  │
 │  │                         │  │                              │  │
@@ -91,7 +92,7 @@ Bundle data and metadata are stored separately:
 │  │                         │  │  - sqlite-storage            │  │
 │  │                         │  │  - metadata_mem              │  │
 │  └─────────────────────────┘  └──────────────────────────────┘  │
-│                                                                  │
+│                                                                 │
 │  Linked by: metadata.storage_name → bundle_storage key          │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -110,6 +111,7 @@ Bundle data and metadata are stored separately:
 **Location:** `/workspace/localdisk-storage/src/storage.rs`
 
 Directory structure with 2-level hierarchy:
+
 ```
 store_dir/
   XX/
@@ -118,6 +120,7 @@ store_dir/
 ```
 
 **Features:**
+
 - **Atomic writes** (with `fsync=true`): Write to `.tmp`, fsync, rename, fsync directory
 - **Memory-mapped loading** (with `mmap` feature): Zero-copy via `memmap2::Mmap`
 - **Parallel recovery**: Thread pool walks directories concurrently
@@ -129,11 +132,13 @@ Configuration includes the storage directory path and whether to use atomic writ
 **Location:** `/workspace/sqlite-storage/src/storage.rs`
 
 **Features:**
+
 - Connection pool with write lock
 - Prepared statement caching
 - Status encoding as (code, param1, param2, param3) tuple
 
 **Status Encoding:**
+
 | Status | Code | Params |
 |--------|------|--------|
 | `New` | 0 | - |
@@ -171,19 +176,19 @@ The reaper monitors bundle lifetimes and triggers deletion on expiry (`src/stora
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Reaper Cache (in-memory)                      │
-│                                                                  │
+│                    Reaper Cache (in-memory)                     │
+│                                                                 │
 │  BTreeSet<CacheEntry> ordered by expiry time                    │
 │  Limited size (= poll_channel_depth)                            │
 │  Keeps bundles with soonest expiry                              │
-│                                                                  │
+│                                                                 │
 │  When full: evict entry with latest expiry (keep soonest)       │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │ refill when empty
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                  MetadataStorage (persistent)                    │
-│                                                                  │
+│                  MetadataStorage (persistent)                   │
+│                                                                 │
 │  poll_expiry(tx, limit) returns bundles ordered by expiry       │
 │  Full list of all bundles with lifetimes                        │
 └─────────────────────────────────────────────────────────────────┘
@@ -221,6 +226,7 @@ Three-phase recovery process on startup (`src/storage/recover.rs`):
 ### Phase 1: Start Recovery
 
 Call `start_metadata_storage_recovery()` to prepare the metadata backend:
+
 - **SQLite**: Marks all bundle entries as "unconfirmed"
 - **In-memory**: No-op
 
@@ -252,28 +258,28 @@ See `src/storage/recover.rs` for implementation details.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ Phase 1: start_metadata_storage_recovery()                       │
-│                                                                  │
-│ Mark all metadata entries as "unconfirmed"                       │
+│ Phase 1: start_metadata_storage_recovery()                      │
+│                                                                 │
+│ Mark all metadata entries as "unconfirmed"                      │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Phase 2: bundle_storage_recovery()                               │
-│                                                                  │
-│ For each bundle data file:                                       │
-│   ├─ Parse bundle                                                │
-│   ├─ Check metadata exists?                                      │
+│ Phase 2: bundle_storage_recovery()                              │
+│                                                                 │
+│ For each bundle data file:                                      │
+│   ├─ Parse bundle                                               │
+│   ├─ Check metadata exists?                                     │
 │   │   ├─ Yes: confirm_exists(), resume from status              │
 │   │   └─ No: insert metadata, re-ingest as orphan               │
-│   └─ Mark metadata as "confirmed"                                │
+│   └─ Mark metadata as "confirmed"                               │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Phase 3: metadata_storage_recovery()                             │
-│                                                                  │
-│ For each still-unconfirmed metadata entry:                       │
+│ Phase 3: metadata_storage_recovery()                            │
+│                                                                 │
+│ For each still-unconfirmed metadata entry:                      │
 │   └─ Report deletion (data was lost)                            │
 └─────────────────────────────────────────────────────────────────┘
 ```

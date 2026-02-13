@@ -30,7 +30,7 @@ There is no separate FIB. Instead, forwarding decisions are recorded in bundle m
 ┌──────────────────┐      │  ┌────────────────┐    ┌─────────────────┐  │
 │  Route Sources   │      │  │  Local Table   │    │   Route Table   │  │
 │                  │      │  │                │    │                 │  │
-│  - static_routes │─────>│  │ Eid → Actions  │    │ Priority →      │  │
+│  - static_routes │─────►│  │ Eid → Actions  │    │ Priority →      │  │
 │  - control plane │      │  │                │    │   Pattern →     │  │
 │  - CLA peers     │      │  │ - AdminEndpoint│    │     Actions     │  │
 └──────────────────┘      │  │ - Local(svc)   │    │                 │  │
@@ -206,7 +206,7 @@ The bundle status tracks where a bundle is in the processing pipeline. See [Bund
      service  │         │               │
               ▼         │               ▼
                         │        ┌─────────────────────────────┐
-                        └───────▶│ Egress filter + CLA.forward │
+                        └───────►│ Egress filter + CLA.forward │
                                  └─────────────────────────────┘
 ```
 

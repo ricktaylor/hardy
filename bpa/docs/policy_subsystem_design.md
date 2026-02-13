@@ -24,61 +24,61 @@ The policy subsystem controls **how** and **when** bundles are transmitted to pe
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         Dispatcher                                   │
-│                                                                      │
+│                         Dispatcher                                  │
+│                                                                     │
 │  process_bundle() → RIB::find() → FindResult::Forward(peer_id)      │
-│                                                                      │
+│                                                                     │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                       CLA Registry                                   │
-│                                                                      │
+│                       CLA Registry                                  │
+│                                                                     │
 │  forward(peer_id, bundle) → PeerTable lookup                        │
-│                                                                      │
+│                                                                     │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          Peer                                        │
-│                                                                      │
+│                          Peer                                       │
+│                                                                     │
 │  1. Extract flow_label from bundle.metadata.writable.flow_label     │
 │  2. policy.classify(flow_label) → queue index                       │
 │  3. Send to queue channel                                           │
-│                                                                      │
+│                                                                     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
 │  │  Queue 0    │  │  Queue 1    │  │  Queue None │                  │
 │  │  (highest)  │  │  (medium)   │  │  (best-eff) │                  │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                  │
-│         │                │                │                          │
+│         │                │                │                         │
 └─────────┼────────────────┼────────────────┼─────────────────────────┘
           │                │                │
           ▼                ▼                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Queue Pollers (per queue)                         │
-│                                                                      │
+│                    Queue Pollers (per queue)                        │
+│                                                                     │
 │  recv_async() → controller.forward(queue, bundle)                   │
-│                                                                      │
+│                                                                     │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      EgressController                                │
-│                                                                      │
+│                      EgressController                               │
+│                                                                     │
 │  Policy enforcement: rate limiting, scheduling, etc.                │
 │  Calls egress_queue.forward(bundle)                                 │
-│                                                                      │
+│                                                                     │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                   Dispatcher.forward_bundle()                        │
-│                                                                      │
+│                   Dispatcher.forward_bundle()                       │
+│                                                                     │
 │  1. Load bundle data                                                │
 │  2. Update extension blocks (Hop Count, Previous Node, Bundle Age)  │
 │  3. Run Egress filters (see filter_subsystem_design.md)             │
 │  4. CLA.forward(queue, cla_addr, data)                              │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -204,6 +204,7 @@ The HTB policy (`src/policy/htb_policy.rs`) provides a partial implementation of
 ## Forwarding Failure Handling
 
 When CLA transmission fails (either `NoNeighbour` result or error), `reset_peer_queue()` is called. The operation:
+
 1. Transitions all `ForwardPending { peer, _ }` bundles to `Waiting`
 2. Bundles re-enter routing via `poll_waiting()`
 3. May route to different peer with fresh classification
@@ -242,4 +243,3 @@ See [Routing Design: Route Change Handling](routing_subsystem_design.md#route-ch
    Success: delete bundle
    Failure: reset_peer_queue() → bundles return to Waiting
 ```
-

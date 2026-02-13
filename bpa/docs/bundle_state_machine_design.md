@@ -31,9 +31,9 @@ The `BundleStatus` enum (defined in `bpa/src/metadata.rs`) defines all possible 
                               ┌──────────────────────────────────────────┐
                               │                                          │
                               ▼                                          │
-┌─────────┐    receive_    ┌─────┐    ingest_     ┌─────────────┐       │
-│ Receive │───────────────▶│ New │───────────────▶│ process_    │       │
-└─────────┘   bundle()     └─────┘   bundle()     │ bundle()    │       │
+┌─────────┐    receive_    ┌─────┐    ingest_      ┌─────────────┐       │
+│ Receive │───────────────►│ New │────────────────►│ process_    │       │
+└─────────┘   bundle()     └─────┘   bundle()      │ bundle()    │       │
                               │                    └──────┬──────┘       │
                               │                           │              │
                               │         ┌─────────────────┼──────────────┼───────────────┐
@@ -234,10 +234,12 @@ Bundle state is persisted at these critical moments:
 ### Duplicate Bundle Detection
 
 **Point 1:** CLA receive (`dispatch.rs`)
+
 - `store.insert_metadata()` returns false
 - Duplicate discarded without further processing
 
 **Point 2:** Restart recovery (`restart.rs`)
+
 - Bundle already in metadata store
 - Spurious copy deleted
 
@@ -270,6 +272,7 @@ See `src/storage/channel.rs` for the `ChannelShared` implementation.
 | CLA Peer Queues | `ForwardPending { peer, queue }` | CLA peer handlers |
 
 **Channel States:**
+
 - **Open:** In-memory channel accepts direct sends (fast path)
 - **Draining:** Channel full, draining from storage (slow path)
 - **Congested:** New bundles arrived during drain
@@ -355,19 +358,19 @@ For filter traits, registration API, and execution model, see [Filter Subsystem 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         CHECKPOINT MODEL                                 │
+│                         CHECKPOINT MODEL                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
+│                                                                         │
 │   [Receive/Create] ──► [Status: New] ──► [Ingress Filter] ──►           │
-│                         (checkpoint)                                     │
-│                                                                          │
+│                         (checkpoint)                                    │
+│                                                                         │
 │   ──► [Status: Dispatching] ──► [process_bundle()] ──► [Next State]     │
-│        (checkpoint)                                                      │
-│                                                                          │
-│   On restart:                                                            │
+│        (checkpoint)                                                     │
+│                                                                         │
+│   On restart:                                                           │
 │     • Status=New        → Run Ingress filter, then route                │
 │     • Status=Dispatching → Skip filters, go directly to routing         │
-│                                                                          │
+│                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -401,11 +404,13 @@ This design provides clean crash semantics:
 - **Crash after store:** Bundle is in system, Ingress filter will run on restart
 
 No checkpoint is needed because:
+
 1. The bundle isn't stored until after the filter passes
 2. The caller handles retry semantics
 3. The Ingress filter checkpoint protects against double-filtering
 
 The `originate_bundle()` function in `src/dispatcher/local.rs` implements this pattern:
+
 1. Wrap bundle with initial metadata (in-memory only)
 2. Run Originate filter (may modify metadata like flow_label)
 3. Store bundle and metadata atomically
@@ -447,6 +452,7 @@ Originated bundles don't need a separate checkpoint state because:
    checkpoint protects against re-running Ingress on restart
 
 The transaction boundary for originated bundles is:
+
 - Caller gets `Ok(bundle_id)` → Bundle stored and queued for Ingress filter
 - Caller gets `Err` or crash → Nothing persisted, caller can retry
 
