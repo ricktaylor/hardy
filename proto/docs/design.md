@@ -53,6 +53,7 @@ message ClaToBpa {
 ```
 
 Each direction has a wrapper message containing:
+
 - `msg_id` - Correlation identifier for request/response matching
 - `oneof msg` - The actual payload, one of several message types
 
@@ -118,15 +119,15 @@ The gRPC layer is the **security boundary** for the BPA. Two deployment modes ex
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  bpa (core) - trusts all callers                          │  │
 │  └───────────────────────────────────────────────────────────┘  │
-│                              ▲                                   │
+│                              ▲                                  │
 │                              │ (direct Rust calls)              │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  gRPC handlers ◄── TRUST BOUNDARY                         │  │
 │  │  ├─ mTLS authentication (certificate = identity)          │  │
-│  │  ├─ Namespace validation at registration                   │  │
-│  │  └─ Policy enforcement (rate limits, quotas)               │  │
+│  │  ├─ Namespace validation at registration                  │  │
+│  │  └─ Policy enforcement (rate limits, quotas)              │  │
 │  └───────────────────────────────────────────────────────────┘  │
-│                              ▲                                   │
+│                              ▲                                  │
 │                              │ gRPC + mTLS                      │
 └──────────────────────────────┼──────────────────────────────────┘
                                │
@@ -165,6 +166,7 @@ The `proxy` module provides Rust implementations of BPA traits that communicate 
 - `register_endpoint_service()` - Connect a Service to a remote BPA
 
 Internal traits abstract over message handling:
+
 - `SendMsg` - Compose messages with correlation IDs
 - `RecvMsg` - Extract message content and handle status errors
 - `ProxyHandler` - Handle incoming notifications and manage lifecycle
