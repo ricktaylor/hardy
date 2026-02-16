@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-std = ["thiserror/std", "hardy-bpv7/std", "percent-encoding?/std"]
+std = ["thiserror/std", "hardy-bpv7/std", "winnow/std", "percent-encoding?/std", "serde?/std"]
 dtn-pat-item = ["std","dep:percent-encoding","dep:glob"]
 serde = ["dep:serde","hardy-bpv7/serde"]
 
