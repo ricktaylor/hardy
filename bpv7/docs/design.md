@@ -158,35 +158,28 @@ Feature flags control optional functionality:
 - **`std`**: Enables system clock access for `CreationTimestamp` generation and propagates `std` to cryptographic dependencies. Without this feature, timestamps follow RFC 9171's "no accurate clock" behaviour.
 - **`serde`**: Enables serde-based serialization of bundle structures. Requires `std`.
 - **`rfc9173`**: Enables RFC 9173 default security contexts (HMAC-SHA and AES-GCM variants). Enables `bpsec`.
+- **`critical-section`**: Enables the `portable-atomic` critical-section fallback for targets without native 64-bit atomics (e.g., thumbv6m). Requires a `critical-section` implementation from your HAL or runtime.
 - **`bpsec`** (internal): Enables the `signer` and `encryptor` modules for BPSec operations. Automatically enabled by security context features (`rfc9173`, and future `cose`). Not intended for direct use.
 
 ### Embedded Targets and Custom RNG
 
 The `rfc9173` feature requires random number generation for cryptographic operations (key generation, nonces). This is provided by the `getrandom` crate, which uses OS-provided entropy by default.
 
-For embedded targets without OS RNG support, you must provide a custom entropy source using getrandom's [custom backend](https://docs.rs/getrandom/latest/getrandom/#custom-backend):
+See [getrandom's documentation](https://docs.rs/getrandom/latest/getrandom/) for the full list of supported targets and custom backend details.  For embedded targets without OS RNG support, you must provide a custom entropy source using getrandom's [custom backend](https://docs.rs/getrandom/latest/getrandom/#custom-backend):
 
-1. Enable the `custom` feature on getrandom in your Cargo.toml:
-   ```toml
-   [dependencies]
-   getrandom = { version = "0.3", features = ["custom"] }
-   ```
+### Targets Without 64-bit Atomics
 
-2. Implement the custom backend function:
-   ```rust
-   use getrandom::Error;
+Some embedded targets (e.g., thumbv6m-none-eabi) don't support native 64-bit atomic operations. The library uses [`portable-atomic`](https://docs.rs/portable-atomic) to provide `AtomicU64` on all platforms.
 
-   #[unsafe(no_mangle)]
-   unsafe extern "Rust" fn __getrandom_v03_custom(
-       dest: *mut u8,
-       len: usize,
-   ) -> Result<(), Error> {
-       // Fill dest with entropy from your hardware RNG, TRNG, etc.
-       todo!()
-   }
-   ```
+On targets without native 64-bit atomics, enable the `critical-section` feature and provide a critical-section implementation:
 
-See [getrandom's documentation](https://docs.rs/getrandom/latest/getrandom/) for the full list of supported targets and custom backend details.
+```toml
+[dependencies]
+hardy-bpv7 = { version = "...", features = ["critical-section"] }
+critical-section = "1.0"  # Your HAL typically provides the implementation
+```
+
+See [portable-atomic's documentation](https://docs.rs/portable-atomic) for details on supported targets and fallback mechanisms.
 
 ## Standards Compliance
 

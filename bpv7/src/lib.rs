@@ -74,6 +74,7 @@ optional functionality:
 - **`std`**: Enables system clock access and propagates `std` to dependencies.
 - **`rfc9173`** (default): Enables RFC 9173 security contexts, which require random number generation.
 - **`serde`**: Enables serialization support. Requires `std`.
+- **`critical-section`**: Enables fallback for targets without native 64-bit atomics.
 
 ## Embedded Targets
 

@@ -7,7 +7,7 @@ given source node can be uniquely identified, even if created at the same time.
 use super::*;
 use error::CaptureFieldErr;
 
-static GLOBAL_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+static GLOBAL_COUNTER: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(1);
 
 /// Represents the BPv7 Creation Timestamp, a tuple of creation time and a sequence number.
 ///
@@ -56,7 +56,7 @@ impl CreationTimestamp {
     pub fn new_sequential() -> Self {
         Self {
             creation_time: None,
-            sequence_number: GLOBAL_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+            sequence_number: GLOBAL_COUNTER.fetch_add(1, portable_atomic::Ordering::Relaxed),
         }
     }
 
