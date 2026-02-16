@@ -32,11 +32,11 @@ hardy-async = { path = "../async", default-features = false }
 hardy-bpv7 = { path = "../bpv7", default-features = false }
 hardy-cbor = { path = "../cbor" }
 hardy-eid-patterns = { path = "../eid-patterns", default-features = false }
-time = { version = "0.3.47", default-features = false, features = ["serde-human-readable"] }
+time = { version = "0.3.45", default-features = false, features = ["serde-human-readable"] }
 bytes = "1.11.1"
 tracing = { version = "0.1.44", default-features = false }
 metrics = "0.24.3"
-trace-err = "0.1.5"
+trace-err = "1.0.0"
 rand = { version = "0.10.0", default-features = false, features = ["alloc", "sys_rng"] }
 hashbrown = "0.16.1"
 foldhash = { version = "0.2.0", default-features = false }

@@ -10,7 +10,7 @@ path = "bundle.rs"
 [dependencies]
 hardy-bpv7 = { path = "..", features = ["std","serde","rfc9173"] }
 hardy-cbor = { path = "../../cbor" }
-clap = { version = "4.5.57", features = ["derive"] }
+clap = { version = "4.5.58", features = ["derive"] }
 humantime = "2.3.0"
 anyhow = "1.0.101"
 serde = { version = "1.0.228", features = ["derive"] }

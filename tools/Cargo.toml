@@ -19,7 +19,7 @@ anyhow = "1.0.101"
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-tcpclv4 = { path = "../tcpclv4" }
-clap = { version = "4.5.57", features = ["derive"] }
+clap = { version = "4.5.58", features = ["derive"] }
 humantime = "2.3.0"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "time", "signal"] }
 tokio-util = "0.7.18"
@@ -27,7 +27,7 @@ time = { version = "0.3.47", features = ["parsing"] }
 rand = "0.10.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
-trace-err = "0.1.5"
+trace-err = "1.0.0"
 
 # --- Linux-specific dependencies ---
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -39,4 +39,4 @@ check_elevation = "0.2.7"
 
 # --- Other Unix (e.g., macOS, BSD) dependencies ---
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
-libc = "0.2.180"
+libc = "0.2.182"
