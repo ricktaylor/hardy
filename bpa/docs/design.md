@@ -165,6 +165,25 @@ impl ComponentTrait for MyComponent {
 }
 ```
 
+#### Authorization and Ownership
+
+The Sink pattern provides **structural authorization enforcement**. Each component receives a Sink bound to its own resources, preventing cross-component interference without explicit authorization tokens.
+
+**How it works:**
+
+1. **Per-registration Sink**: Each registered component gets its own Sink instance containing weak references to that component's resources (e.g., `Weak<Service>`, the CLA's peer map).
+
+2. **Scoped operations**: Sink methods operate only on the bound resources:
+   - `ServiceSink::unregister()` unregisters only the service it was created for
+   - `ServiceSink::cancel()` validates `bundle_id.source == service.service_id`
+   - `cla::Sink::remove_peer()` operates on the CLA's own peer map
+
+3. **No cross-access possible**: A component cannot affect another component's resources because it has no reference to them.
+
+This design means **no authorization token is required** for ownership enforcement—it's enforced by the object reference graph. A malicious or buggy component can only affect its own registrations.
+
+For deployments requiring additional authorization (namespace restrictions, audit logging), the gRPC layer can add identity validation at registration time. See the [hardy-proto design](../../proto/docs/design.md#trust-model) for details.
+
 ### Routing Information Base
 
 The RIB maintains routing rules as a priority-ordered collection of EID patterns mapping to actions. When a route changes, the RIB notifies a background task to re-evaluate bundles in `Waiting` status. This ensures bundles aren't stranded when new routes become available.

@@ -104,6 +104,46 @@ Two BPA interfaces are intentionally kept in-process only:
 
 The service protocol exposes both the Application API (payload-only) and Service API (full bundle access) described in the [BPA design](../../bpa/docs/design.md). The gRPC messages mirror the trait method signatures, with the BPA validating all service-constructed bundles as a security boundary.
 
+### Trust Model
+
+The gRPC layer is the **security boundary** for the BPA. Two deployment modes exist:
+
+**In-process components** (CLAs, services, filters compiled into the BPA) are fully trusted. They share the same process—if compromised, the entire BPA is compromised. No authorization checks are performed on in-process calls.
+
+**Remote components** (connecting via gRPC) are authenticated and authorized at the gRPC layer:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  bpa-server process                                             │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  bpa (core) - trusts all callers                          │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                              ▲                                   │
+│                              │ (direct Rust calls)              │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  gRPC handlers ◄── TRUST BOUNDARY                         │  │
+│  │  ├─ mTLS authentication (certificate = identity)          │  │
+│  │  ├─ Namespace validation at registration                   │  │
+│  │  └─ Policy enforcement (rate limits, quotas)               │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                              ▲                                   │
+│                              │ gRPC + mTLS                      │
+└──────────────────────────────┼──────────────────────────────────┘
+                               │
+                    Remote CLA / Service / App
+```
+
+**Resource ownership** is enforced structurally by the Sink pattern (see [BPA design](../../bpa/docs/design.md#authorization-and-ownership)). Each gRPC connection receives a Sink bound to its own resources—a client cannot affect another client's registrations because it has no reference to them.
+
+**Security layers** (when mTLS is enabled):
+
+1. **Authentication**: Client certificate required; CN/SAN establishes identity
+2. **Registration validation**: Namespace checks on requested EIDs
+3. **Ownership enforcement**: Structural via Sink pattern (no token needed)
+4. **Policy enforcement**: Rate limits and quotas per connection
+
+The `bpa/` crate remains security-agnostic—all authorization logic lives in `bpa-server/src/grpc/`.
+
 ### Error Handling via google.rpc.Status
 
 Errors are embedded in the stream as `google.rpc.Status` messages rather than terminating the stream. This allows granular error reporting for individual operations. Fatal errors (like registration failure) close the stream.
