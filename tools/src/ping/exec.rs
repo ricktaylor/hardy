@@ -1,14 +1,16 @@
 use super::*;
 
 async fn exec_async(args: &Command) -> anyhow::Result<()> {
-    println!(
-        "Pinging {} from {}",
-        args.destination,
-        args.source.as_ref().unwrap()
-    );
+    if !args.quiet {
+        eprintln!(
+            "Pinging {} from {}",
+            args.destination,
+            args.source.as_ref().unwrap()
+        );
+    }
 
     let bpa = hardy_bpa::bpa::Bpa::new(&hardy_bpa::config::Config {
-        status_reports: args.report_to.is_some(),
+        status_reports: true,
         node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
         ..Default::default()
     });
@@ -37,26 +39,26 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    // Configure TLS if accept_self_signed or CA bundle is specified
-    if args.tls_accept_self_signed || args.tls_ca_bundle.is_some() {
+    // Configure TLS if --tls-insecure or --tls-ca is specified
+    if args.tls_insecure || args.tls_ca.is_some() {
         let mut tls_config = hardy_tcpclv4::config::TlsConfig::default();
-        if args.tls_accept_self_signed {
+        if args.tls_insecure {
             tls_config.debug.accept_self_signed = true;
         }
-        if let Some(ca_bundle) = &args.tls_ca_bundle {
-            if !ca_bundle.exists() {
+        if let Some(ca_dir) = &args.tls_ca {
+            if !ca_dir.exists() {
                 return Err(anyhow::anyhow!(
                     "CA bundle directory not found: {}",
-                    ca_bundle.display()
+                    ca_dir.display()
                 ));
             }
-            if !ca_bundle.is_dir() {
+            if !ca_dir.is_dir() {
                 return Err(anyhow::anyhow!(
                     "CA bundle must be a directory, not a file: {}",
-                    ca_bundle.display()
+                    ca_dir.display()
                 ));
             }
-            tls_config.ca_bundle = Some(ca_bundle.clone());
+            tls_config.ca_bundle = Some(ca_dir.clone());
         }
         tcpclv4_config.tls = Some(tls_config);
         tcpclv4_config.session_defaults.must_use_tls = true;
@@ -68,22 +70,21 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{cla_name}': {e}"))?;
 
-    let address = if let Some(address) = &args.address {
-        address
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Failed to parse CLA address: {e}"))?
+    let peer_addr = if let Some(peer) = &args.peer {
+        peer.parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse peer address: {e}"))?
     } else {
         // TODO: DNS resolution for EIDs
         // https://datatracker.ietf.org/doc/draft-ek-dtn-ipn-arpa/
 
         return Err(anyhow::anyhow!(
-            "No CLA address specified for destination EID, and no DNS support currently available"
+            "No peer address specified for destination EID, and no DNS support currently available"
         ));
     };
 
-    cla.connect(&address)
+    cla.connect(&peer_addr)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to {address}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to connect to {peer_addr}: {e}"))?;
     drop(cla);
 
     let peer: NodeId = args.destination.clone().try_into().map_err(|_| {
@@ -126,7 +127,7 @@ async fn exec_inner(
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     let service = std::sync::Arc::new(service::Service::new(args));
-    bpa.register_application(
+    bpa.register_service(
         args.source.as_ref().and_then(|eid| eid.service()),
         service.clone(),
     )
@@ -145,23 +146,29 @@ async fn exec_inner(
         }
     }
 
+    // Wait for responses after sending all pings
     if !cancel_token.is_cancelled()
         && args.count.is_some()
-        && let Some(wait) = args.wait
+        && let Some(wait) = &args.wait
     {
-        if let Some(wait) = wait {
-            println!(
+        if !args.quiet {
+            eprintln!(
                 "Waiting up to {} for responses...",
-                humantime::format_duration(*wait)
+                humantime::format_duration(**wait)
             );
-            tokio::time::timeout(*wait, service.wait_for_responses(cancel_token))
-                .await
-                .map_err(|_| anyhow::anyhow!("Timeout waiting for responses"))?;
-        } else {
-            println!("Waiting for responses...");
-            service.wait_for_responses(cancel_token).await;
+        }
+        if tokio::time::timeout(**wait, service.wait_for_responses(cancel_token))
+            .await
+            .is_err()
+            && !args.quiet
+        {
+            eprintln!("Timeout waiting for responses");
         }
     }
+
+    // Print summary statistics
+    service.print_summary();
+
     Ok(())
 }
 

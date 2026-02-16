@@ -1,134 +1,161 @@
 use super::*;
+use hardy_bpv7::{builder::Builder, hop_info::HopInfo};
+use hardy_cbor::{decode, encode};
 
-// Payload structure for ping service
+/// CBOR payload format per PING_SPEC.md Appendix C.
+///
+/// Structure: `[sequence, options_map]`
+///
+/// Options map keys:
+/// - 0: Padding (bstr) - for MTU testing
+#[repr(u64)]
+enum OptionKey {
+    Padding = 0,
+}
 
-/* (1 byte)
- * A "service" or "type" flag.
- * 0x01 = PING (This is what bping sends)
- * 0x02 = PONG (This is what the reply service sends back)
- */
-//pub service_flag: u8,
-
-/*
- * (4 bytes, unsigned integer)
- * The sequence number of this specific ping packet,
- * starting from 0 or 1.
- */
-//pub seqno: u32,
-
-/*
- * The time the ping was sent (seconds part).
- * This is the 'sec' field from a timeval struct.
- */
-//pub timeval_sec: i64,
-
-/*
- * The time the ping was sent (microseconds or nanoseconds part).
- * This is the 'usec' or 'nsec' field from a timeval/timespec struct.
- * The bping client and pong server must agree on the unit.
- */
-//pub timeval_nsec: i64,
-
+/// Parsed ping payload.
 pub struct Payload {
-    pub service_flag: u8,
     pub seqno: u32,
-    pub creation: time::OffsetDateTime,
+    pub padding_len: usize,
 }
 
 impl Payload {
     pub fn new(seqno: u32) -> Self {
         Self {
-            service_flag: 1,
             seqno,
-            creation: time::OffsetDateTime::now_utc(),
+            padding_len: 0,
         }
     }
 
-    // /// This is the microsDTN and DTN2 format
-    // pub fn to_bin_fmt(&self) -> Vec<u8> {
-    //     let mut buf = Vec::new();
-    //     let timeval_sec = self.creation.unix_timestamp() as u32;
-    //     let timeval_msec = self.creation.microsecond();
-
-    //     buf.push(self.service_flag);
-    //     buf.extend_from_slice(&self.seqno.to_be_bytes());
-    //     // (4 bytes, unsigned integer)
-    //     buf.extend_from_slice(&timeval_sec.to_be_bytes());
-    //     // (4 bytes, unsigned integer)
-    //     buf.extend_from_slice(&timeval_msec.to_be_bytes());
-    //     buf
-    // }
-
-    /// This is the ION format
-    pub fn to_text_fmt(&self) -> String {
-        let timeval_sec = self.creation.unix_timestamp();
-        let timeval_nsec = self.creation.nanosecond();
-
-        format!(
-            "{} {} {} {}",
-            self.service_flag,
-            self.seqno,
-            timeval_sec,  // %ld
-            timeval_nsec  // %ld
-        )
+    pub fn with_padding(mut self, padding_len: usize) -> Self {
+        self.padding_len = padding_len;
+        self
     }
+}
 
-    // pub fn from_bin_fmt(data: &[u8]) -> anyhow::Result<Self> {
-    //     if data.len() < 12 {
-    //         return Err(anyhow::anyhow!("Payload too short"));
-    //     }
+impl encode::ToCbor for Payload {
+    type Result = ();
 
-    //     let timeval_sec = u32::from_be_bytes(data[5..9].try_into()?);
-    //     let timeval_msec = u32::from_be_bytes(data[9..13].try_into()?) * 1000;
+    fn to_cbor(&self, encoder: &mut encode::Encoder) -> Self::Result {
+        // Count options for definite-length map
+        let opt_count = if self.padding_len > 0 { 1 } else { 0 };
 
-    //     Ok(Self {
-    //         service_flag: data[0],
-    //         seqno: u32::from_be_bytes(data[1..5].try_into()?),
-    //         creation: time::OffsetDateTime::from_unix_timestamp(timeval_sec as i64)?
-    //             + time::Duration::microseconds(timeval_msec as i64),
-    //     })
-    // }
+        // Emit 2-element array: [sequence, options_map]
+        encoder.emit_array(Some(2), |a| {
+            a.emit(&self.seqno);
 
-    pub fn from_text_fmt(data: &str) -> anyhow::Result<Self> {
-        let data = data.trim_matches('\0');
-        let parts = data
-            .split(' ')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<&str>>();
-        if parts.len() != 4 {
-            return Err(anyhow::anyhow!("Invalid payload: '{data}'"));
-        }
+            a.emit_map(Some(opt_count), |m| {
+                // Padding (key 0)
+                if self.padding_len > 0 {
+                    m.emit(&(OptionKey::Padding as u64));
+                    // Zero-filled padding
+                    m.emit(&encode::Bytes(&vec![0u8; self.padding_len]));
+                }
+            });
+        });
+    }
+}
 
-        let timeval_sec = parts[2]
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid seconds field: {e}"))?;
-        let timeval_nsec = parts[3]
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid nanoseconds field: {e}"))?;
+impl decode::FromCbor for Payload {
+    type Error = decode::Error;
 
-        Ok(Self {
-            service_flag: parts[0]
-                .parse()
-                .map_err(|e| anyhow::anyhow!("Invalid service flag: {e}"))?,
-            seqno: parts[1]
-                .parse()
-                .map_err(|e| anyhow::anyhow!("Invalid seqno field: {e}"))?,
-            creation: time::OffsetDateTime::from_unix_timestamp(timeval_sec)?
-                + time::Duration::nanoseconds(timeval_nsec),
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        decode::parse_array(data, |arr, _shortest, _tags| {
+            // Parse sequence number
+            let seqno: u32 = arr.parse()?;
+
+            // Parse options map
+            let mut padding_len = 0;
+
+            arr.parse_map(|map, _shortest, _tags| {
+                while !map.at_end()? {
+                    let key: u64 = map.parse()?;
+                    match key {
+                        k if k == OptionKey::Padding as u64 => {
+                            // Parse padding bytes, just record length
+                            map.parse_value(|value, _shortest, _tags| {
+                                if let decode::Value::Bytes(bytes) = value {
+                                    padding_len = bytes.len();
+                                    Ok(())
+                                } else {
+                                    Err(decode::Error::IncorrectType(
+                                        "bytes".into(),
+                                        value.type_name(false),
+                                    ))
+                                }
+                            })?;
+                        }
+                        _ => {
+                            // Skip unknown options
+                            map.skip_value(16)?;
+                        }
+                    }
+                }
+                Ok::<_, decode::Error>(())
+            })?;
+
+            Ok((Payload { seqno, padding_len }, true))
         })
+        .map(|((payload, shortest), len)| (payload, shortest, len))
     }
+}
+
+/// Build a bundle with the payload, optionally targeting a specific total bundle size.
+///
+/// If `args.size` is specified, uses binary search to find the exact padding needed
+/// to achieve the target bundle size. This accounts for all overhead including:
+/// - CBOR length field encoding (variable 1/2/4/8 bytes)
+/// - Bundle primary block
+/// - Extension blocks (HopCount)
+fn build_bundle_with_padding(
+    args: &Command,
+    seq_no: u32,
+    padding: usize,
+    creation: time::OffsetDateTime,
+) -> anyhow::Result<Box<[u8]>> {
+    let payload = Payload::new(seq_no).with_padding(padding);
+    let payload_bytes = encode::emit(&payload).0;
+
+    let source = args.source.clone().unwrap();
+
+    // Always request all status reports - receiver decides whether to generate them
+    let bundle_flags = hardy_bpv7::bundle::Flags {
+        report_status_time: true,
+        receipt_report_requested: true,
+        forward_report_requested: true,
+        delivery_report_requested: true,
+        delete_report_requested: true,
+        ..Default::default()
+    };
+
+    let mut builder = Builder::new(source.clone(), args.destination.clone())
+        .with_report_to(source)
+        .with_flags(bundle_flags)
+        .with_lifetime(args.lifetime());
+
+    // Add HopCount block if TTL specified (like IP TTL)
+    if let Some(ttl) = args.ttl {
+        builder = builder.with_hop_count(&HopInfo {
+            limit: ttl,
+            count: 0,
+        });
+    }
+
+    Ok(builder
+        .with_payload(payload_bytes.into())
+        .build(
+            creation
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to convert creation time"))?,
+        )?
+        .1)
 }
 
 pub fn build_payload(
     args: &Command,
     seq_no: u32,
 ) -> anyhow::Result<(Box<[u8]>, time::OffsetDateTime)> {
-    let mut builder =
-        hardy_bpv7::builder::Builder::new(args.source.clone().unwrap(), args.destination.clone());
-
-    if let Some(report_to) = &args.report_to {
-        builder = builder.with_report_to(report_to.clone());
-    }
+    let creation = time::OffsetDateTime::now_utc();
 
     (args.lifetime().as_millis() <= u64::MAX as u128)
         .then_some(())
@@ -137,20 +164,56 @@ pub fn build_payload(
             humantime::format_duration(args.lifetime())
         ))?;
 
-    builder = builder.with_lifetime(args.lifetime());
+    let bundle = if let Some(target_size) = args.size {
+        // Binary search for exact bundle size
+        // First check if minimum bundle size (no padding) already exceeds target
+        let min_bundle = build_bundle_with_padding(args, seq_no, 0, creation)?;
+        if min_bundle.len() > target_size {
+            return Err(anyhow::anyhow!(
+                "Minimum bundle size ({} bytes) exceeds target size ({} bytes)",
+                min_bundle.len(),
+                target_size
+            ));
+        }
+        if min_bundle.len() == target_size {
+            min_bundle
+        } else {
+            // Binary search: padding in [0, target_size]
+            // More padding = larger bundle (monotonic)
+            let mut low = 0usize;
+            let mut high = target_size;
 
-    let payload = Payload::new(seq_no);
+            loop {
+                let mid = (low + high) / 2;
+                let bundle = build_bundle_with_padding(args, seq_no, mid, creation)?;
 
-    Ok((
-        builder
-            .with_payload(payload.to_text_fmt().into_bytes().into())
-            .build(
-                payload
-                    .creation
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("Failed to convert creation time"))?,
-            )?
-            .1,
-        payload.creation,
-    ))
+                match bundle.len().cmp(&target_size) {
+                    std::cmp::Ordering::Equal => break bundle,
+                    std::cmp::Ordering::Less => low = mid + 1,
+                    std::cmp::Ordering::Greater => high = mid.saturating_sub(1),
+                }
+
+                // Convergence check - if we can't make progress, take closest match
+                if low > high {
+                    // Try both bounds and pick the one that gets us closest
+                    let bundle_low = build_bundle_with_padding(args, seq_no, low, creation)?;
+                    if bundle_low.len() == target_size {
+                        break bundle_low;
+                    }
+                    // We couldn't hit exact target (shouldn't happen for reasonable sizes)
+                    return Err(anyhow::anyhow!(
+                        "Cannot achieve exact target size {} bytes (closest: {} bytes with {} padding)",
+                        target_size,
+                        bundle_low.len(),
+                        low
+                    ));
+                }
+            }
+        }
+    } else {
+        // No size target - build without padding
+        build_bundle_with_padding(args, seq_no, 0, creation)?
+    };
+
+    Ok((bundle, creation))
 }

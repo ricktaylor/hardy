@@ -18,6 +18,7 @@ tracing = ["hardy-bpa/tracing","hardy-tcpclv4/tracing"]
 anyhow = "1.0.101"
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
+hardy-cbor = { path = "../cbor" }
 hardy-tcpclv4 = { path = "../tcpclv4" }
 clap = { version = "4.5.58", features = ["derive"] }
 humantime = "2.3.0"

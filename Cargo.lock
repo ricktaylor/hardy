@@ -1429,6 +1429,7 @@ dependencies = [
  "clap",
  "hardy-bpa",
  "hardy-bpv7",
+ "hardy-cbor",
  "hardy-tcpclv4",
  "humantime",
  "libc",

@@ -9,39 +9,24 @@ mod payload;
 mod service;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Flags {
-    /// Request reception status reports
-    #[value(name = "rcv")]
-    Reception,
-    /// Request forwarding status reports
-    #[value(name = "fwd")]
-    Forwarded,
-    /// Request delivery status reports
-    #[value(name = "dlv")]
-    Delivered,
-    /// Request deletion status reports
-    #[value(name = "del")]
-    Deleted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Verbosity {
-    /// Designates very low priority, often extremely verbose, information.
+    /// Most verbose, all internal details
     #[value(name = "trace")]
     Trace,
 
-    /// Designates lower priority information.
+    /// Debug information
     #[value(name = "debug")]
     Debug,
 
-    /// Designates useful information.
+    /// Informational messages
     #[value(name = "info")]
     Info,
-    /// Designates hazardous situations.
+
+    /// Warnings only
     #[value(name = "warn")]
     Warn,
 
-    /// Designates very serious errors.
+    /// Errors only
     #[value(name = "error")]
     Error,
 }
@@ -58,67 +43,91 @@ impl From<Verbosity> for tracing::Level {
     }
 }
 
+/// Send ping bundles to a destination endpoint and measure round-trip times.
+///
+/// Embeds a minimal BPA and establishes a direct TCPCLv4 connection. Bundles are
+/// signed by default to detect corruption. Press Ctrl+C to stop and show statistics.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
-    /// Output additional information, default 'info'.
-    #[arg(short, long, num_args = 0..=1, require_equals = true, default_missing_value = "info")]
-    verbose: Option<Verbosity>,
-
-    /// The optional lifetime of the bundle, or calculated based on --interval and --wait if not supplied
-    #[arg(short, long)]
-    lifetime: Option<humantime::Duration>,
-
-    /// The number of bundles to send
+    /// Number of pings to send
     #[arg(short, long)]
     count: Option<u32>,
 
-    /// The time interval to wait between sending bundles
+    /// Interval between pings
     #[arg(short, long, default_value = "1s")]
     interval: humantime::Duration,
 
-    /// The optional time to wait for responses after sending the last bundle, no value means forever
-    #[arg(short, long, num_args = 0..=1, require_equals = true)]
-    wait: Option<Option<humantime::Duration>>,
-
-    /// One or more status reporting flags, seperated by ','
-    #[arg(short('r'), long, value_delimiter = ',')]
-    flags: Vec<Flags>,
-
-    /// The optional "Report To" Endpoint ID (EID) of the bundle
-    #[arg(short('R'), long = "report-to")]
-    report_to: Option<Eid>,
-
-    /// The source Endpoint ID (EID) of the bundle
+    /// Target bundle size in bytes (for MTU testing)
     #[arg(short, long)]
+    size: Option<usize>,
+
+    /// Total time limit for the session
+    #[arg(short = 'w', long)]
+    timeout: Option<humantime::Duration>,
+
+    /// Time to wait for responses after last ping
+    #[arg(short = 'W', long)]
+    wait: Option<humantime::Duration>,
+
+    /// Only show summary statistics
+    #[arg(short, long)]
+    quiet: bool,
+
+    /// Verbose output [trace, debug, info, warn, error]
+    #[arg(short, long, num_args = 0..=1, require_equals = true, default_missing_value = "info")]
+    verbose: Option<Verbosity>,
+
+    /// Hop limit (like IP TTL)
+    #[arg(short = 't', long)]
+    ttl: Option<u64>,
+
+    /// Bundle lifetime
+    #[arg(long)]
+    lifetime: Option<humantime::Duration>,
+
+    /// Disable BIB signing
+    #[arg(long)]
+    no_sign: bool,
+
+    /// Source EID
+    #[arg(short = 'S', long)]
     source: Option<Eid>,
 
-    /// The destination Endpoint ID (EID) of the bundle
+    /// Destination EID to ping
     destination: Eid,
 
-    /// The CLA address of the next hop.
-    address: Option<String>,
+    /// TCPCLv4 peer address (host:port)
+    peer: Option<String>,
 
-    /// Accept self-signed TLS certificates (for testing only, insecure)
-    #[arg(long = "tls-accept-self-signed")]
-    tls_accept_self_signed: bool,
+    /// Accept self-signed TLS certificates
+    #[arg(long = "tls-insecure")]
+    tls_insecure: bool,
 
-    /// Path to CA bundle directory (all .crt/.pem files in the directory will be loaded) for TLS certificate validation
-    #[arg(long = "tls-ca-bundle")]
-    tls_ca_bundle: Option<std::path::PathBuf>,
+    /// CA bundle directory for TLS
+    #[arg(long = "tls-ca")]
+    tls_ca: Option<std::path::PathBuf>,
 }
 
 impl Command {
     pub fn lifetime(&self) -> std::time::Duration {
         self.lifetime.map_or_else(
             || {
-                if let Some(Some(wait)) = &self.wait
-                    && let Some(count) = &self.count
-                {
-                    let interval: std::time::Duration = self.interval.into();
-                    interval.saturating_mul(*count) + **wait
+                // Calculate lifetime from session parameters if not explicitly specified
+                let interval: std::time::Duration = self.interval.into();
+
+                // Wait time after sending (default to one interval if not specified)
+                let wait_time = self.wait.map(|w| *w).unwrap_or(interval);
+
+                if let Some(count) = self.count {
+                    // Finite mode: lifetime = time to send all + wait time
+                    interval.saturating_mul(count) + wait_time
                 } else {
-                    std::time::Duration::from_secs(86_400)
+                    // Infinite mode: use timeout if set, otherwise default to 5 minutes
+                    // This covers the common case of Ctrl+C'ing after a few pings
+                    self.timeout
+                        .map(|t| *t)
+                        .unwrap_or(std::time::Duration::from_secs(300))
                 }
             },
             |l| l.into(),
@@ -154,10 +163,6 @@ impl Command {
                 },
                 service_number: rng.random_range(1..=127),
             })
-        }
-
-        if !self.flags.is_empty() && self.report_to.is_none() {
-            self.report_to = self.source.clone();
         }
 
         exec::exec(self)
