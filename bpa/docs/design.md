@@ -282,6 +282,8 @@ When storage capacity is exhausted, bundles must be evicted. The filter subsyste
 
 ## Dependencies
 
+The library is `no_std` compatible with a heap allocator, though full support is currently blocked by `flume` and `metrics` which require `std`. See the crate documentation for embedded target requirements.
+
 Feature flags control optional functionality:
 
 - **`tokio`** (default): Tokio async runtime. Implies `std`.

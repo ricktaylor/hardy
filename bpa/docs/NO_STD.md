@@ -1,6 +1,6 @@
 # Making `bpa` no_std Compatible
 
-**Last Updated:** 2026-02-11
+**Last Updated:** 2026-02-16
 
 This document outlines the work required to make the `bpa` package `no_std` compatible as an optional feature.
 
@@ -252,7 +252,7 @@ The following `std::` usages are NOT behind `#[cfg(feature = "std")]`:
 
 ### Phase 2c: Channel Abstraction
 
-The crate uses `flume` channels extensively for inter-task communication. However, flume depends on `fastrand` -> `getrandom` -> `libc`, which means it cannot work on bare-metal no_std targets.
+The crate uses `flume` channels extensively for inter-task communication. Flume is std-only and cannot work on bare-metal no_std targets.
 
 **Strategy:** Abstract channels through `hardy-async` with feature-gated implementations:
 - For std: flume (current implementation)
@@ -261,6 +261,45 @@ The crate uses `flume` channels extensively for inter-task communication. Howeve
 **Note:** Embassy channels require static allocation with compile-time capacity, which is a different model than flume's dynamic allocation. This will require careful API design.
 
 **See:** `async/HARDY_ASYNC_PROPOSAL.md` Phase 2.6 for detailed channel abstraction design.
+
+### Phase 2d: Metrics Abstraction
+
+The crate uses the `metrics` crate for observability. Metrics is std-only.
+
+**Strategy:** Abstract metrics through a trait with feature-gated implementations:
+- For std: metrics crate (current implementation)
+- For no_std: no-op implementation or compile-time feature to disable
+
+**Alternative:** Consider `tinymetrics` for no_std environments if actual metrics collection is needed.
+
+### Embedded Platform Support
+
+**Completed:** Dependency cleanup for no_std compatibility.
+
+All dependencies now have `default-features = false` where applicable, with proper `std` feature propagation:
+
+```toml
+std = [
+    "time/std",
+    "hardy-bpv7/std",
+    "hardy-eid-patterns/std",
+    "tracing/std",
+    "rand/std",
+    "thiserror/std",
+    "futures/std",
+    "serde?/std",
+    "base64?/std",
+    "foldhash/std",
+]
+```
+
+**Embedded targets require:**
+
+1. **Custom RNG backend**: The `rand` crate uses `getrandom` for entropy. Embedded targets must provide a custom backend via [getrandom's custom backend mechanism](https://docs.rs/getrandom/latest/getrandom/#custom-backend).
+
+2. **64-bit atomics**: The `hardy-bpv7` crate uses `portable-atomic` for `AtomicU64`. On targets without native 64-bit atomics (e.g., thumbv6m), enable `hardy-bpv7/critical-section` and provide a critical-section implementation from your HAL.
+
+See [hardy-bpv7 documentation](../../bpv7/docs/design.md#embedded-targets-and-custom-rng) for detailed instructions.
 
 ### Phase 3b: Embassy Backends (HIGH effort)
 
@@ -342,11 +381,15 @@ Once remaining phases are complete, Embassy backends need to be added to `hardy-
 | Phase 2b (bpa sync imports) | Medium | DONE | Uses hardy_async::sync::spin for hot paths |
 | Dispatcher refactoring | Medium | DONE | Eliminated OnceLock via closure pattern |
 | Prelude consistency | Low | DONE | Simplified qualifications |
+| Dependency cleanup | Low | DONE | default-features = false, std propagation |
+| Embedded platform docs | Low | DONE | getrandom custom backend, portable-atomic |
 | cfg-gate remaining std | Low | Pending | 1 unguarded usage remains (OnceLock) |
-| Phase 2c (Channels) | Low | Pending | flume re-exports in hardy-async |
+| Phase 2c (Channels) | Medium | Pending | flume abstraction in hardy-async |
+| Phase 2d (Metrics) | Medium | Pending | metrics abstraction or removal |
 | Phase 3b (Embassy backends) | High | Pending | Embassy integration for hardy-async |
 
-**Overall**: The majority of the no_std groundwork is complete. The remaining work is:
+**Overall**: The majority of the no_std groundwork is complete. The remaining blockers are:
 1. cfg-gating 1 unguarded std usage (OnceLock in cla/peers.rs)
-2. Channel abstraction through hardy-async
-3. Embassy backends (high effort, future work)
+2. Channel abstraction through hardy-async (flume is std-only)
+3. Metrics abstraction or removal (metrics is std-only)
+4. Embassy backends (high effort, future work)
