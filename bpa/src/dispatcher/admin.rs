@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::status_report::{AdministrativeRecord, StatusAssertion};
+use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
@@ -48,25 +48,50 @@ impl Dispatcher {
 
                 // Find a live service to notify
                 if let Some(service) = self.service_registry.find(&report.bundle_id.source).await {
-                    // Notify the service
-                    let on_status_notify = |assertion: Option<StatusAssertion>, code| async {
-                        if let Some(assertion) = assertion {
-                            service
-                                .on_status_notify(
-                                    &report.bundle_id,
-                                    &bundle.bundle.id.source,
-                                    code,
-                                    report.reason,
-                                    assertion.0,
-                                )
-                                .await
-                        }
-                    };
-
-                    on_status_notify(report.received, services::StatusNotify::Received).await;
-                    on_status_notify(report.forwarded, services::StatusNotify::Forwarded).await;
-                    on_status_notify(report.delivered, services::StatusNotify::Delivered).await;
-                    on_status_notify(report.deleted, services::StatusNotify::Deleted).await;
+                    if let Some(assertion) = report.received {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Received,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
+                    }
+                    if let Some(assertion) = report.forwarded {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Forwarded,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
+                    }
+                    if let Some(assertion) = report.delivered {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Delivered,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
+                    }
+                    if let Some(assertion) = report.deleted {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Deleted,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
+                    }
                 }
                 self.drop_bundle(bundle, None).await
             }
