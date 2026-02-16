@@ -151,14 +151,42 @@ This feature requires `std` and is disabled by default to maintain `no_std` comp
 
 ## Dependencies
 
-The library is marked `no_std` by default, suitable for embedded platforms with only a heap allocator.
+The library is `no_std` compatible, suitable for embedded platforms with only a heap allocator.
 
 Feature flags control optional functionality:
 
-- **`std`**: Enables system clock access for `CreationTimestamp` generation. Without this feature, timestamps follow RFC 9171's "no accurate clock" behaviour.
+- **`std`**: Enables system clock access for `CreationTimestamp` generation and propagates `std` to cryptographic dependencies. Without this feature, timestamps follow RFC 9171's "no accurate clock" behaviour.
 - **`serde`**: Enables serde-based serialization of bundle structures. Requires `std`.
 - **`rfc9173`**: Enables RFC 9173 default security contexts (HMAC-SHA and AES-GCM variants). Enables `bpsec`.
 - **`bpsec`** (internal): Enables the `signer` and `encryptor` modules for BPSec operations. Automatically enabled by security context features (`rfc9173`, and future `cose`). Not intended for direct use.
+
+### Embedded Targets and Custom RNG
+
+The `rfc9173` feature requires random number generation for cryptographic operations (key generation, nonces). This is provided by the `getrandom` crate, which uses OS-provided entropy by default.
+
+For embedded targets without OS RNG support, you must provide a custom entropy source using getrandom's [custom backend](https://docs.rs/getrandom/latest/getrandom/#custom-backend):
+
+1. Enable the `custom` feature on getrandom in your Cargo.toml:
+   ```toml
+   [dependencies]
+   getrandom = { version = "0.3", features = ["custom"] }
+   ```
+
+2. Implement the custom backend function:
+   ```rust
+   use getrandom::Error;
+
+   #[unsafe(no_mangle)]
+   unsafe extern "Rust" fn __getrandom_v03_custom(
+       dest: *mut u8,
+       len: usize,
+   ) -> Result<(), Error> {
+       // Fill dest with entropy from your hardware RNG, TRNG, etc.
+       todo!()
+   }
+   ```
+
+See [getrandom's documentation](https://docs.rs/getrandom/latest/getrandom/) for the full list of supported targets and custom backend details.
 
 ## Standards Compliance
 

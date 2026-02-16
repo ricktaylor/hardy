@@ -10,8 +10,20 @@ crate-type = ["rlib"]
 
 [features]
 default = ["rfc9173"]
-std = ["time/std", "thiserror/std", "serde?/std", "percent-encoding/std", "rand?/std"]
-rfc9173 = ["bpsec", "dep:hmac", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
+std = [
+    "time/std",
+    "thiserror/std",
+    "serde?/std",
+    "percent-encoding/std",
+    "winnow/std",
+    "zeroize/std",
+    "rand?/std",
+    "hmac?/std",
+    "sha2?/std",
+    "aes-gcm?/std",
+    "aes-kw?/std",
+]
+rfc9173 = ["bpsec", "dep:hmac", "dep:sha2", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
 serde = ["dep:serde","hashbrown/serde"]
 # Internal feature: enables BPSec signing/encryption modules.
 # Automatically enabled by security context features (rfc9173, and future cose).
@@ -24,14 +36,14 @@ time = { version = "0.3.47", default-features = false, features = ["macros"] }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc"] }
 crc = "3.4.0"
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.10.9", default-features = false, optional = true }
 rand = { version = "0.10.0", default-features = false, features = ["alloc","sys_rng"], optional = true }
 zeroize = { version = "1.8.2", features = ["derive"] }
 winnow = { version = "0.7.14", default-features = false, features = ["alloc"] }
 hashbrown = "0.16.1"
 smallvec = "1.15"
-hmac = { version = "0.12.1", optional = true }
-aes-gcm = { version = "0.10.3", features = ["zeroize"], optional = true }
+hmac = { version = "0.12.1", default-features = false, optional = true }
+aes-gcm = { version = "0.10.3", default-features = false, features = ["alloc", "aes", "getrandom", "zeroize"], optional = true }
 aes-kw = { version = "0.2.1", default-features = false, features = ["alloc"], optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc","derive"], optional = true }
 

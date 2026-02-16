@@ -65,6 +65,32 @@ assert_eq!(bundle.destination, original_bundle.destination);
 let keys = hardy_bpv7::bpsec::key::KeySet::EMPTY;
 let bundle2 = ParsedBundle::parse_with_keys(&cbor, &keys).unwrap().bundle;
 ```
+
+# `no_std` Support
+
+This crate is `no_std` compatible with only a heap allocator required. Feature flags control
+optional functionality:
+
+- **`std`**: Enables system clock access and propagates `std` to dependencies.
+- **`rfc9173`** (default): Enables RFC 9173 security contexts, which require random number generation.
+- **`serde`**: Enables serialization support. Requires `std`.
+
+## Embedded Targets
+
+When using the `rfc9173` feature on embedded targets without OS-provided entropy, you must
+provide a custom RNG backend. The cryptographic dependencies use the [`getrandom`] crate,
+which supports [custom backends](https://docs.rs/getrandom/latest/getrandom/#custom-backend)
+for targets not supported out of the box.
+
+To use a custom entropy source:
+
+1. Add `getrandom` with the `custom` feature to your `Cargo.toml`
+2. Implement the `__getrandom_v03_custom` function to provide entropy from your hardware RNG
+
+See the [design documentation](https://github.com/example/hardy/blob/main/bpv7/docs/design.md#embedded-targets-and-custom-rng)
+for detailed instructions.
+
+[`getrandom`]: https://docs.rs/getrandom
 */
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
