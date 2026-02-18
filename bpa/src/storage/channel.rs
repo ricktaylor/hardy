@@ -71,7 +71,7 @@ impl ChannelState {
 /// Shared state between Sender and the background poller task.
 struct Shared {
     state: AtomicUsize,
-    tx: flume::Sender<bundle::Bundle>,
+    tx: flume::Sender<Option<bundle::Bundle>>,
     status: metadata::BundleStatus,
     notify: Arc<hardy_async::Notify>,
 }
@@ -138,14 +138,18 @@ impl Sender {
         match state {
             // Fast path is open, try to send directly to the in-memory channel.
             ChannelState::Open => {
-                match self.shared.tx.try_send(bundle) {
+                match self.shared.tx.try_send(Some(bundle)) {
                     // Success! The bundle is sent, and we can return immediately.
                     Ok(()) => return Ok(()),
 
-                    Err(flume::TrySendError::Disconnected(b)) => {
+                    Err(flume::TrySendError::Disconnected(Some(b))) => {
                         // Wake up the poller task so it can exit
                         self.shared.notify.notify_one();
                         return Err(SendError(b));
+                    }
+
+                    Err(flume::TrySendError::Disconnected(None)) => {
+                        unreachable!("sent Some but got None back");
                     }
 
                     Err(flume::TrySendError::Full(_)) => {
@@ -178,15 +182,18 @@ impl Sender {
     }
 
     /// Close the channel, preventing further sends.
+    /// Sends `None` to signal receivers that the channel is closing.
     pub async fn close(&self) {
         self.shared
             .store_state(ChannelState::Closing, Ordering::Release);
+        // Send None to signal close to the receiver
+        let _ = self.shared.tx.send_async(None).await;
         self.shared.notify.notify_one();
     }
 }
 
-/// Receiver handle (re-export of flume::Receiver).
-pub type Receiver = flume::Receiver<bundle::Bundle>;
+///// Receiver handle. Receives `Some(bundle)` for data, `None` signals channel close.
+pub type Receiver = flume::Receiver<Option<bundle::Bundle>>;
 
 impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
@@ -195,7 +202,7 @@ impl Store {
         status: metadata::BundleStatus,
         cap: usize,
     ) -> (Sender, Receiver) {
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(cap);
+        let (tx, rx) = flume::bounded::<Option<bundle::Bundle>>(cap);
 
         let shared = Arc::new(Shared {
             state: AtomicUsize::new(ChannelState::Open.as_usize()),
@@ -270,7 +277,11 @@ impl Store {
                 // Just do some checks
                 if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
                     // Send into queue
-                    shared_cloned.tx.send_async(bundle).await.map_err(|_| ())?;
+                    shared_cloned
+                        .tx
+                        .send_async(Some(bundle))
+                        .await
+                        .map_err(|_| ())?;
 
                     pushed_one = true;
                 }

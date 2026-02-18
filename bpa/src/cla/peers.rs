@@ -94,7 +94,7 @@ impl Peer {
             "egress_queue_poller",
             (peer = peer, queue = queue),
             async move {
-                while let Ok(bundle) = rx.recv_async().await {
+                while let Ok(Some(bundle)) = rx.recv_async().await {
                     controller.forward(queue, bundle).await;
                 }
             }

@@ -64,9 +64,21 @@ impl Bpa {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
-        self.dispatcher.shutdown().await;
-        self.service_registry.shutdown().await;
+        // Shutdown order is critical for clean termination:
+        //
+        // 1. CLAs - Stop external bundle sources (network I/O)
+        // 2. Services - Stop internal bundle sources (applications calling sink.send())
+        // 3. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
+        // 4. RIB - No more routing lookups needed
+        // 5. Store - No more data access needed
+        //
+        // CLAs and Services must shut down BEFORE dispatcher because they are
+        // bundle sources. The dispatcher's processing pool may have tasks blocked
+        // on CLA forwarding or waiting for service responses.
+
         self.cla_registry.shutdown().await;
+        self.service_registry.shutdown().await;
+        self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
         self.filter_registry.clear();

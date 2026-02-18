@@ -291,7 +291,7 @@ impl Dispatcher {
         self: Arc<Self>,
         dispatch_rx: storage::channel::Receiver,
     ) {
-        while let Ok(bundle) = dispatch_rx.recv_async().await {
+        while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
                 debug!("Bundle lifetime has expired while queued");
                 self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
