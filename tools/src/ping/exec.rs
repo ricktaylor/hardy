@@ -72,7 +72,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
 
     let peer_addr = if let Some(peer) = &args.peer {
         peer.parse()
-            .map_err(|e| anyhow::anyhow!("Failed to parse peer address: {e}"))?
+            .map_err(|e| anyhow::anyhow!("Failed to parse peer address '{}': {e}", peer))?
     } else {
         // TODO: DNS resolution for EIDs
         // https://datatracker.ietf.org/doc/draft-ek-dtn-ipn-arpa/
@@ -87,7 +87,11 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to connect to {peer_addr}: {e}"))?;
     drop(cla);
 
-    let peer: NodeId = args.destination.clone().try_into().map_err(|_| {
+    // Wait for session registration to complete (async task spawned by connect)
+    // TODO: This should be a proper wait/notification mechanism
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let peer: NodeId = args.destination.clone().try_to_node_id().map_err(|_| {
         anyhow::anyhow!(
             "Invalid destination EID {} for ping service",
             args.destination
