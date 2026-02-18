@@ -112,7 +112,7 @@ impl core::fmt::Display for NodeId {
             NodeId::LocalNode => f.write_str("ipn:!.0"),
             NodeId::Ipn(ipn) => {
                 if ipn.allocator_id == 0 {
-                    write!(f, "ipn:0.{}.0", ipn.node_number)
+                    write!(f, "ipn:{}.0", ipn.node_number)
                 } else {
                     write!(f, "ipn:{}.{}.0", ipn.allocator_id, ipn.node_number)
                 }
