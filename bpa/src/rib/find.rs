@@ -142,7 +142,7 @@ fn find_recurse<'a>(
         return result;
     }
 
-    for entries in table.values() {
+    'priority: for entries in table.values() {
         for (pattern, actions) in entries {
             if pattern.matches(to) {
                 for entry in actions {
@@ -193,7 +193,7 @@ fn find_recurse<'a>(
                         }
                     }
                 }
-                break; // No need to check lower priority entries
+                break 'priority; // Exit both loops - no need to check lower priority entries
             }
         }
     }
