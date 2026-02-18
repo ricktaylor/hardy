@@ -106,19 +106,26 @@ pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level
     //
     // Note: This filtering will also drop logs from these components even when
     // they are used outside of the OTLP Exporter.
-    let filter_otel = make_filter()
-        .add_directive("reqwest=off".parse().unwrap())
-        .add_directive("tonic=off".parse().unwrap())
-        .add_directive("tower=off".parse().unwrap())
-        .add_directive("h2=off".parse().unwrap());
+    const SUPPRESSED_CRATES: &[&str] = &[
+        "reqwest",
+        "tonic",
+        "tower",
+        "h2",
+        "hyper_util",
+        "opentelemetry_sdk",
+    ];
+
+    let add_common_filters = |filter: EnvFilter| -> EnvFilter {
+        SUPPRESSED_CRATES.iter().fold(filter, |f, crate_name| {
+            f.add_directive(format!("{crate_name}=off").parse().unwrap())
+        })
+    };
+
+    let filter_otel = add_common_filters(make_filter());
     let otel_layer = otel_layer.with_filter(filter_otel);
 
-    let filter_fmt = make_filter()
-        .add_directive("opentelemetry=off".parse().unwrap())
-        .add_directive("reqwest=off".parse().unwrap())
-        .add_directive("tonic=off".parse().unwrap())
-        .add_directive("tower=off".parse().unwrap())
-        .add_directive("h2=off".parse().unwrap());
+    let filter_fmt =
+        add_common_filters(make_filter()).add_directive("opentelemetry=off".parse().unwrap());
     let fmt_layer = tracing_subscriber::fmt::layer().with_filter(filter_fmt);
 
     let tracer = tracer_provider.tracer("tracing-otel-subscriber");
