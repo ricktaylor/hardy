@@ -47,7 +47,12 @@ impl Dispatcher {
                 .into());
             }
             Some(0x80..=0x9F) => {}
-            _ => {
+            Some(b) => {
+                debug!(
+                    "Invalid CBOR: first byte 0x{b:02X}, expected 0x80-0x9F. Data ({} bytes): {:02X?}",
+                    data.len(),
+                    &data[..data.len().min(32)]
+                );
                 return Err(hardy_bpv7::Error::InvalidCBOR(
                     hardy_cbor::decode::Error::IncorrectType(
                         "BPv7 bundle".to_string(),
