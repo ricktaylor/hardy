@@ -1,6 +1,9 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::{bpsec, bundle::ParsedBundle, eid::Eid};
+use hardy_bpv7::{
+    bpsec, bundle::ParsedBundle, creation_timestamp::CreationTimestamp, eid::Eid,
+    status_report::AdministrativeRecord,
+};
 use hardy_cbor::decode::FromCbor;
 use std::{
     collections::{HashMap, HashSet},
@@ -71,6 +74,20 @@ struct PathHop {
     node: Eid,
     elapsed: std::time::Duration,
     kind: hardy_bpa::services::StatusNotify,
+    /// Whether this hop is from the return-trip (pong) path vs outbound (ping) path.
+    is_return_trip: bool,
+}
+
+/// Shared mutable state protected by a single mutex.
+struct SharedState {
+    sent_bundles: HashMap<hardy_bpv7::bundle::Id, SentBundle>,
+    expected_responses: HashMap<u32, time::OffsetDateTime>,
+    stats: Statistics,
+    /// Path hops discovered via status reports, keyed by sequence number.
+    path_hops: HashMap<u32, Vec<PathHop>>,
+    /// Reverse lookup: creation timestamp -> (seqno, send_time).
+    /// Used to match return-trip status reports where bundle_id.source is the echo service.
+    creation_to_seqno: HashMap<CreationTimestamp, (u32, time::OffsetDateTime)>,
 }
 
 pub struct Service {
@@ -83,11 +100,7 @@ pub struct Service {
     signing_key: Option<bpsec::key::Key>,
     semaphore: Option<Arc<tokio::sync::Semaphore>>,
     count: Option<u32>,
-    sent_bundles: std::sync::Mutex<HashMap<hardy_bpv7::bundle::Id, SentBundle>>,
-    expected_responses: std::sync::Mutex<HashMap<u32, time::OffsetDateTime>>,
-    stats: std::sync::Mutex<Statistics>,
-    /// Path hops discovered via status reports, keyed by sequence number.
-    path_hops: std::sync::Mutex<HashMap<u32, Vec<PathHop>>>,
+    state: std::sync::Mutex<SharedState>,
 }
 
 impl Service {
@@ -121,34 +134,39 @@ impl Service {
             signing_key,
             count: args.count,
             semaphore: args.count.map(|_| Arc::new(tokio::sync::Semaphore::new(0))),
-            sent_bundles: std::sync::Mutex::new(HashMap::new()),
-            expected_responses: std::sync::Mutex::new(HashMap::new()),
-            stats: std::sync::Mutex::new(Statistics::default()),
-            path_hops: std::sync::Mutex::new(HashMap::new()),
+            state: std::sync::Mutex::new(SharedState {
+                sent_bundles: HashMap::new(),
+                expected_responses: HashMap::new(),
+                stats: Statistics::default(),
+                path_hops: HashMap::new(),
+                creation_to_seqno: HashMap::new(),
+            }),
         }
     }
 
     /// Remove entries older than bundle lifetime to prevent unbounded memory growth.
     fn cleanup_expired(&self, now: time::OffsetDateTime) {
         let cutoff = now - self.lifetime;
-
-        self.sent_bundles
-            .lock()
-            .trace_expect("Failed to lock sent_bundles mutex")
+        let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+        state
+            .sent_bundles
             .retain(|_, entry| entry.send_time > cutoff);
-
-        self.expected_responses
-            .lock()
-            .trace_expect("Failed to lock expected_responses mutex")
+        state
+            .expected_responses
             .retain(|_, send_time| *send_time > cutoff);
+        state
+            .creation_to_seqno
+            .retain(|_, (_, send_time)| *send_time > cutoff);
     }
 
     /// Print and clear the discovered path for a sequence number.
+    /// Shows outbound (ping) and return (pong) paths as a hairpin visualization.
     fn print_path(&self, seqno: u32) {
         let hops = self
-            .path_hops
+            .state
             .lock()
-            .trace_expect("Failed to lock path_hops mutex")
+            .trace_expect("Failed to lock state mutex")
+            .path_hops
             .remove(&seqno)
             .unwrap_or_default();
 
@@ -156,41 +174,70 @@ impl Service {
             return;
         }
 
-        // Group hops by node, preserving all status types
-        let mut nodes: Vec<(&Eid, Vec<&PathHop>)> = Vec::new();
-        for hop in &hops {
-            if let Some((_, node_hops)) = nodes.iter_mut().find(|(n, _)| *n == &hop.node) {
-                node_hops.push(hop);
-            } else {
-                nodes.push((&hop.node, vec![hop]));
+        // Separate hops by direction
+        let (outbound, return_trip): (Vec<_>, Vec<_>) =
+            hops.iter().partition(|h| !h.is_return_trip);
+
+        // Helper to format a path segment
+        let format_segment = |hops: &[&PathHop]| -> Vec<String> {
+            // Group hops by node
+            let mut nodes: Vec<(&Eid, Vec<&PathHop>)> = Vec::new();
+            for hop in hops {
+                if let Some((_, node_hops)) = nodes.iter_mut().find(|(n, _)| *n == &hop.node) {
+                    node_hops.push(hop);
+                } else {
+                    nodes.push((&hop.node, vec![*hop]));
+                }
             }
+
+            // Sort nodes by their earliest status time
+            nodes.sort_by_key(|(_, node_hops)| node_hops.iter().map(|h| h.elapsed).min());
+
+            // Format each node's status times
+            nodes
+                .iter()
+                .map(|(node, node_hops)| {
+                    let mut statuses: Vec<String> = node_hops
+                        .iter()
+                        .map(|h| {
+                            let abbrev = match h.kind {
+                                hardy_bpa::services::StatusNotify::Received => "rcv",
+                                hardy_bpa::services::StatusNotify::Forwarded => "fwd",
+                                hardy_bpa::services::StatusNotify::Delivered => "dlv",
+                                hardy_bpa::services::StatusNotify::Deleted => "del",
+                            };
+                            format!("{} {}", abbrev, humantime::format_duration(h.elapsed))
+                        })
+                        .collect();
+                    statuses.sort();
+                    format!("{} ({})", node, statuses.join(", "))
+                })
+                .collect()
+        };
+
+        // Format outbound path (ping)
+        let outbound_refs: Vec<&PathHop> = outbound.into_iter().collect();
+        let outbound_nodes = format_segment(&outbound_refs);
+
+        // Format return path (pong), reversed for right-to-left display
+        let return_refs: Vec<&PathHop> = return_trip.into_iter().collect();
+        let mut return_nodes = format_segment(&return_refs);
+        return_nodes.reverse();
+
+        // Print hairpin visualization
+        if !outbound_nodes.is_empty() && !return_nodes.is_empty() {
+            // Both paths - show hairpin
+            let outbound_str = outbound_nodes.join(" -> ");
+            let return_str = return_nodes.join(" <- ");
+            println!("  path: {} \u{2500}\u{2510}", outbound_str); // ─┐
+            println!("        {} <\u{2518}", return_str); // <┘
+        } else if !outbound_nodes.is_empty() {
+            // Only outbound
+            println!("  path: {}", outbound_nodes.join(" -> "));
+        } else if !return_nodes.is_empty() {
+            // Only return
+            println!("  path: {}", return_nodes.join(" <- "));
         }
-
-        // Sort nodes by their earliest status time
-        nodes.sort_by_key(|(_, node_hops)| node_hops.iter().map(|h| h.elapsed).min());
-
-        // Format each node's status times
-        let path_str: Vec<String> = nodes
-            .iter()
-            .map(|(node, node_hops)| {
-                let mut statuses: Vec<String> = node_hops
-                    .iter()
-                    .map(|h| {
-                        let abbrev = match h.kind {
-                            hardy_bpa::services::StatusNotify::Received => "rcv",
-                            hardy_bpa::services::StatusNotify::Forwarded => "fwd",
-                            hardy_bpa::services::StatusNotify::Delivered => "dlv",
-                            hardy_bpa::services::StatusNotify::Deleted => "del",
-                        };
-                        format!("{} {}", abbrev, humantime::format_duration(h.elapsed))
-                    })
-                    .collect();
-                statuses.sort(); // Alphabetical: dlv, fwd, rcv
-                format!("{} ({})", node, statuses.join(", "))
-            })
-            .collect();
-
-        println!("  path: {}", path_str.join(" -> "));
     }
 
     /// Sign the payload block with BIB-HMAC-SHA2.
@@ -231,30 +278,34 @@ impl Service {
 
     /// Print summary statistics in IP ping format.
     pub fn print_summary(&self) {
-        let stats = self.stats.lock().trace_expect("Failed to lock stats mutex");
+        let state = self.state.lock().trace_expect("Failed to lock state mutex");
 
         println!();
         println!("--- {} ping statistics ---", self.destination);
 
-        if stats.corrupted > 0 {
+        if state.stats.corrupted > 0 {
             println!(
                 "{} bundles transmitted, {} received, {} corrupted, {:.0}% loss",
-                stats.sent,
-                stats.received,
-                stats.corrupted,
-                stats.loss_percent()
+                state.stats.sent,
+                state.stats.received,
+                state.stats.corrupted,
+                state.stats.loss_percent()
             );
         } else {
             println!(
                 "{} bundles transmitted, {} received, {:.0}% loss",
-                stats.sent,
-                stats.received,
-                stats.loss_percent()
+                state.stats.sent,
+                state.stats.received,
+                state.stats.loss_percent()
             );
         }
 
-        if let (Some(min), Some(avg), Some(max)) = (stats.min_rtt, stats.avg_rtt(), stats.max_rtt) {
-            let stddev = stats.stddev_rtt().unwrap_or_default();
+        if let (Some(min), Some(avg), Some(max)) = (
+            state.stats.min_rtt,
+            state.stats.avg_rtt(),
+            state.stats.max_rtt,
+        ) {
+            let stddev = state.stats.stddev_rtt().unwrap_or_default();
             println!(
                 "rtt min/avg/max/stddev = {}/{}/{}/{}",
                 humantime::format_duration(min),
@@ -265,10 +316,7 @@ impl Service {
         }
 
         // Show last-seen info for lost bundles (remaining entries in path_hops)
-        let remaining_hops = self
-            .path_hops
-            .lock()
-            .trace_expect("Failed to lock path_hops mutex");
+        let remaining_hops = &state.path_hops;
 
         if !remaining_hops.is_empty() {
             println!();
@@ -301,8 +349,8 @@ impl Service {
     }
 
     pub async fn send(&self, args: &Command, seq_no: u32) -> anyhow::Result<()> {
-        // build_payload returns raw bundle bytes ready to send
-        let (bundle_bytes, _creation) = ping::payload::build_payload(args, seq_no)?;
+        // build_payload returns raw bundle bytes and creation timestamp
+        let (bundle_bytes, creation_timestamp) = ping::payload::build_payload(args, seq_no)?;
 
         // Sign the bundle if signing is enabled
         let bundle_bytes = if let Some(ref key) = self.signing_key {
@@ -326,26 +374,22 @@ impl Service {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send bundle: {e}"))?;
 
-        self.sent_bundles
-            .lock()
-            .trace_expect("Failed to lock sent_bundles mutex")
-            .insert(
+        {
+            let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+            state.sent_bundles.insert(
                 id,
                 SentBundle {
                     seqno: seq_no,
                     send_time,
                 },
             );
-
-        self.expected_responses
-            .lock()
-            .trace_expect("Failed to lock expected_responses mutex")
-            .insert(seq_no, send_time);
-
-        self.stats
-            .lock()
-            .trace_expect("Failed to lock stats mutex")
-            .sent += 1;
+            // Store reverse lookup for matching return-trip status reports
+            state
+                .creation_to_seqno
+                .insert(creation_timestamp, (seq_no, send_time));
+            state.expected_responses.insert(seq_no, send_time);
+            state.stats.sent += 1;
+        }
 
         // Periodically clean up expired entries to bound memory usage
         self.cleanup_expired(send_time);
@@ -420,15 +464,6 @@ impl hardy_bpa::services::Service for Service {
             }
         };
 
-        if bundle.id.source != self.destination {
-            // Ignore spurious responses
-            eprintln!(
-                "Ignoring bundle from unexpected source EID '{}'",
-                bundle.id.source
-            );
-            return;
-        }
-
         // Extract payload from payload block (block number 1)
         let payload_block = match bundle.blocks.get(&1) {
             Some(b) => b,
@@ -445,6 +480,22 @@ impl hardy_bpa::services::Service for Service {
             }
         };
 
+        // Check if this is an admin record (status report)
+        // Must check BEFORE source validation - status reports come from intermediate nodes
+        if bundle.flags.is_admin_record {
+            self.handle_status_report(payload_data, &bundle.id.source);
+            return;
+        }
+
+        // For ping responses (not admin records), verify source is the echo destination
+        if bundle.id.source != self.destination {
+            eprintln!(
+                "Ignoring bundle from unexpected source EID '{}'",
+                bundle.id.source
+            );
+            return;
+        }
+
         // Parse CBOR payload
         let payload = match payload::Payload::from_cbor(payload_data) {
             Ok((p, _, _)) => p,
@@ -460,16 +511,12 @@ impl hardy_bpa::services::Service for Service {
                 "WARNING: Ping {} integrity check FAILED - payload corrupted!",
                 payload.seqno
             );
-            self.stats
-                .lock()
-                .trace_expect("Failed to lock stats mutex")
-                .corrupted += 1;
-
-            // Remove from expected responses but don't count in RTT stats
-            self.expected_responses
-                .lock()
-                .trace_expect("Failed to lock expected_responses mutex")
-                .remove(&payload.seqno);
+            {
+                let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+                state.stats.corrupted += 1;
+                // Remove from expected responses but don't count in RTT stats
+                state.expected_responses.remove(&payload.seqno);
+            }
 
             // Still signal response received for count-based termination
             if let Some(semaphore) = &self.semaphore {
@@ -479,9 +526,10 @@ impl hardy_bpa::services::Service for Service {
         }
 
         let sent_time = self
-            .expected_responses
+            .state
             .lock()
-            .trace_expect("Failed to lock expected_responses mutex")
+            .trace_expect("Failed to lock state mutex")
+            .expected_responses
             .remove(&payload.seqno);
         let Some(sent_time) = sent_time else {
             eprintln!(
@@ -495,9 +543,10 @@ impl hardy_bpa::services::Service for Service {
         // This avoids clock synchronization issues between nodes
         if let Ok(rtt) = (receive_time - sent_time).try_into() {
             // Record statistics
-            self.stats
+            self.state
                 .lock()
-                .trace_expect("Failed to lock stats mutex")
+                .trace_expect("Failed to lock state mutex")
+                .stats
                 .record_rtt(rtt);
 
             if !self.quiet {
@@ -525,88 +574,107 @@ impl hardy_bpa::services::Service for Service {
 
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        from: &hardy_bpv7::eid::Eid,
-        kind: hardy_bpa::services::StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &hardy_bpv7::eid::Eid,
+        _kind: hardy_bpa::services::StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Get entry while holding lock briefly
-        let entry_data = self
-            .sent_bundles
-            .lock()
-            .trace_expect("Failed to lock sent_bundles mutex")
-            .get(bundle_id)
-            .map(|e| (e.seqno, e.send_time));
+        // Status reports arrive via on_receive when report_to = service EID
+    }
+}
 
-        let Some((seqno, send_time)) = entry_data else {
-            if !self.quiet {
-                eprintln!("Spurious status report received!");
-            }
-            return;
+impl Service {
+    /// Handle incoming status reports (admin records).
+    fn handle_status_report(&self, payload_data: &[u8], from: &Eid) {
+        use hardy_bpv7::status_report::ReasonCode;
+
+        // Parse as status report
+        let report = match hardy_cbor::decode::parse::<AdministrativeRecord>(payload_data) {
+            Ok(AdministrativeRecord::BundleStatusReport(r)) => r,
+            _ => return,
         };
 
-        let mut output = format!("Ping {seqno}");
+        // Lookup seqno/send_time - try bundle_id first (outbound), then creation_timestamp (return-trip)
+        let (seqno, send_time, is_return_trip) = {
+            let state = self.state.lock().trace_expect("Failed to lock state mutex");
+            if let Some(e) = state.sent_bundles.get(&report.bundle_id) {
+                (e.seqno, e.send_time, false)
+            } else if let Some(&(seq, time)) =
+                state.creation_to_seqno.get(&report.bundle_id.timestamp)
+            {
+                (seq, time, true)
+            } else {
+                if !self.quiet {
+                    eprintln!("Spurious status report received!");
+                }
+                return;
+            }
+        };
 
-        match kind {
-            hardy_bpa::services::StatusNotify::Received => {
-                output.push_str(" received");
-            }
-            hardy_bpa::services::StatusNotify::Forwarded => {
-                output.push_str(" forwarded");
-            }
-            hardy_bpa::services::StatusNotify::Delivered => {
-                output.push_str(" delivered");
-            }
-            hardy_bpa::services::StatusNotify::Deleted => {
-                output.push_str(" deleted");
-                // We're never going to receive a response now
-                if let Some(semaphore) = &self.semaphore {
-                    semaphore.add_permits(1);
+        // Process each assertion with same output format as before
+        for (kind, assertion) in [
+            (
+                hardy_bpa::services::StatusNotify::Received,
+                &report.received,
+            ),
+            (
+                hardy_bpa::services::StatusNotify::Forwarded,
+                &report.forwarded,
+            ),
+            (
+                hardy_bpa::services::StatusNotify::Delivered,
+                &report.delivered,
+            ),
+            (hardy_bpa::services::StatusNotify::Deleted, &report.deleted),
+        ] {
+            let Some(assertion) = assertion else { continue };
+
+            let direction = if is_return_trip { "Pong" } else { "Ping" };
+            let mut output = format!("{direction} {seqno}");
+
+            match kind {
+                hardy_bpa::services::StatusNotify::Received => output.push_str(" received"),
+                hardy_bpa::services::StatusNotify::Forwarded => output.push_str(" forwarded"),
+                hardy_bpa::services::StatusNotify::Delivered => output.push_str(" delivered"),
+                hardy_bpa::services::StatusNotify::Deleted => {
+                    output.push_str(" deleted");
+                    if let Some(semaphore) = &self.semaphore {
+                        semaphore.add_permits(1);
+                    }
                 }
             }
-        }
 
-        if from.to_string() != self.node_id {
-            output = format!("{output} by {from}");
-        } else {
-            output.push_str(" locally");
-        }
-
-        if !matches!(
-            reason,
-            hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation
-        ) {
-            output = format!("{output}, {reason:?},");
-        }
-
-        // Show elapsed time from send to status report
-        let report_time = timestamp.unwrap_or_else(time::OffsetDateTime::now_utc);
-        if let Ok(elapsed) = (report_time - send_time).try_into() {
-            let elapsed: std::time::Duration = elapsed;
-            output = format!("{output} after {}", humantime::format_duration(elapsed));
-
-            // Track hops for path display (exclude local node)
             if from.to_string() != self.node_id {
-                let mut path_hops = self
-                    .path_hops
-                    .lock()
-                    .trace_expect("Failed to lock path_hops mutex");
-                let hops = path_hops.entry(seqno).or_default();
+                output = format!("{output} by {from}");
+            } else {
+                output.push_str(" locally");
+            }
 
-                // Avoid duplicates of same node+kind (e.g., retransmissions)
-                if !hops.iter().any(|h| h.node == *from && h.kind == kind) {
-                    hops.push(PathHop {
+            if !matches!(report.reason, ReasonCode::NoAdditionalInformation) {
+                output = format!("{output}, {:?},", report.reason);
+            }
+
+            let report_time = assertion.0.unwrap_or_else(time::OffsetDateTime::now_utc);
+            if let Ok(elapsed) = (report_time - send_time).try_into() {
+                let elapsed: std::time::Duration = elapsed;
+                output = format!("{output} after {}", humantime::format_duration(elapsed));
+
+                // Track hops for path display (exclude local node)
+                if from.to_string() != self.node_id {
+                    let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+                    state.path_hops.entry(seqno).or_default().push(PathHop {
                         node: from.clone(),
                         elapsed,
                         kind,
+                        is_return_trip,
                     });
                 }
             }
-        }
 
-        if !self.quiet {
-            println!("{output}");
+            if !self.quiet {
+                println!("{output}");
+            }
         }
     }
 }

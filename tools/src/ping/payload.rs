@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::{builder::Builder, hop_info::HopInfo};
+use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, hop_info::HopInfo};
 use hardy_cbor::{decode, encode};
 
 /// CBOR payload format per PING_SPEC.md Appendix C.
@@ -154,8 +154,11 @@ fn build_bundle_with_padding(
 pub fn build_payload(
     args: &Command,
     seq_no: u32,
-) -> anyhow::Result<(Box<[u8]>, time::OffsetDateTime)> {
+) -> anyhow::Result<(Box<[u8]>, CreationTimestamp)> {
     let creation = time::OffsetDateTime::now_utc();
+    let creation_timestamp: CreationTimestamp = creation
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Failed to convert creation time"))?;
 
     (args.lifetime().as_millis() <= u64::MAX as u128)
         .then_some(())
@@ -215,5 +218,5 @@ pub fn build_payload(
         build_bundle_with_padding(args, seq_no, 0, creation)?
     };
 
-    Ok((bundle, creation))
+    Ok((bundle, creation_timestamp))
 }
