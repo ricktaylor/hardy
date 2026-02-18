@@ -7,6 +7,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq}
 /// Initialize and register echo services based on configuration
 pub async fn init(config: EchoConfig, bpa: &hardy_bpa::bpa::Bpa) {
     if let EchoConfig::Enabled(services) = config {
+        info!(
+            "Registering {} echo service(s): {:?}",
+            services.len(),
+            services
+        );
         let echo = Arc::new(hardy_echo_service::EchoService::new());
         for service in services {
             match bpa
@@ -66,14 +71,27 @@ impl Serialize for EchoConfig {
     }
 }
 
-/// Parse a single service from a string or number
-fn parse_service<E: serde::de::Error>(s: &str) -> Result<Service, E> {
-    // Try to parse as number first
-    if let Ok(n) = s.parse::<u32>() {
-        Ok(Service::Ipn(n))
-    } else {
-        Ok(Service::Dtn(s.into()))
-    }
+/// Intermediate representation for TOML-friendly deserialization.
+/// TOML doesn't handle `deserialize_any` well, so we use an untagged enum.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EchoConfigRaw {
+    /// Disabled via false
+    Disabled(bool),
+    /// Single IPN service number
+    SingleNumber(i64),
+    /// Single DTN service name (or "off" to disable)
+    SingleString(String),
+    /// Array of services
+    Array(Vec<ServiceElementRaw>),
+}
+
+/// Helper for array elements
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ServiceElementRaw {
+    Number(i64),
+    String(String),
 }
 
 impl<'de> Deserialize<'de> for EchoConfig {
@@ -81,139 +99,60 @@ impl<'de> Deserialize<'de> for EchoConfig {
     where
         D: Deserializer<'de>,
     {
-        use serde::de::{self, SeqAccess, Visitor};
+        use serde::de::Error;
 
-        struct EchoConfigVisitor;
+        let raw = EchoConfigRaw::deserialize(deserializer)?;
 
-        impl<'de> Visitor<'de> for EchoConfigVisitor {
-            type Value = EchoConfig;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter
-                    .write_str("a service number, service name, array of services, false, or null")
-            }
-
-            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
+        match raw {
+            EchoConfigRaw::Disabled(v) => {
                 if v {
                     Ok(EchoConfig::default())
                 } else {
                     Ok(EchoConfig::Disabled)
                 }
             }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(EchoConfig::Disabled)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(EchoConfig::Disabled)
-            }
-
-            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v < 0 {
-                    Err(de::Error::custom("service number must be non-negative"))
+            EchoConfigRaw::SingleNumber(n) => {
+                if n < 0 {
+                    Err(D::Error::custom("service number must be non-negative"))
                 } else {
-                    Ok(EchoConfig::Enabled(vec![Service::Ipn(v as u32)]))
+                    Ok(EchoConfig::Enabled(vec![Service::Ipn(n as u32)]))
                 }
             }
-
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(EchoConfig::Enabled(vec![Service::Ipn(v as u32)]))
+            EchoConfigRaw::SingleString(s) => {
+                if s.eq_ignore_ascii_case("off") {
+                    Ok(EchoConfig::Disabled)
+                } else if let Ok(n) = s.parse::<u32>() {
+                    Ok(EchoConfig::Enabled(vec![Service::Ipn(n)]))
+                } else {
+                    Ok(EchoConfig::Enabled(vec![Service::Dtn(s.into())]))
+                }
             }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                // "off" is reserved as disable keyword
-                if v.eq_ignore_ascii_case("off") {
+            EchoConfigRaw::Array(arr) => {
+                if arr.is_empty() {
                     return Ok(EchoConfig::Disabled);
                 }
-                Ok(EchoConfig::Enabled(vec![parse_service(v)?]))
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                let mut services = Vec::new();
-
-                while let Some(elem) = seq.next_element::<ServiceElement>()? {
-                    services.push(elem.0);
+                let mut services = Vec::with_capacity(arr.len());
+                for elem in arr {
+                    match elem {
+                        ServiceElementRaw::Number(n) => {
+                            if n < 0 {
+                                return Err(D::Error::custom(
+                                    "service number must be non-negative",
+                                ));
+                            }
+                            services.push(Service::Ipn(n as u32));
+                        }
+                        ServiceElementRaw::String(s) => {
+                            if let Ok(n) = s.parse::<u32>() {
+                                services.push(Service::Ipn(n));
+                            } else {
+                                services.push(Service::Dtn(s.into()));
+                            }
+                        }
+                    }
                 }
-
-                if services.is_empty() {
-                    Ok(EchoConfig::Disabled)
-                } else {
-                    Ok(EchoConfig::Enabled(services))
-                }
+                Ok(EchoConfig::Enabled(services))
             }
         }
-
-        deserializer.deserialize_any(EchoConfigVisitor)
-    }
-}
-
-/// Helper for deserializing individual array elements
-struct ServiceElement(Service);
-
-impl<'de> Deserialize<'de> for ServiceElement {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use serde::de::{self, Visitor};
-
-        struct ServiceElementVisitor;
-
-        impl<'de> Visitor<'de> for ServiceElementVisitor {
-            type Value = ServiceElement;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter.write_str("a service number or service name")
-            }
-
-            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if v < 0 {
-                    Err(de::Error::custom("service number must be non-negative"))
-                } else {
-                    Ok(ServiceElement(Service::Ipn(v as u32)))
-                }
-            }
-
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(ServiceElement(Service::Ipn(v as u32)))
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(ServiceElement(parse_service(v)?))
-            }
-        }
-
-        deserializer.deserialize_any(ServiceElementVisitor)
     }
 }
