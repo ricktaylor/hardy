@@ -657,11 +657,13 @@ impl TransferSegmentMessage {
             // Not enough data to read data
             return Ok(None);
         }
+        // Skip the header bytes (flags, transfer_id, extensions, data_length)
+        let _ = src.split_to(consumed + 8);
         Ok(Some(Message::TransferSegment(TransferSegmentMessage {
             message_flags,
             transfer_id,
             transfer_extensions,
-            data: src.split_to(consumed + 8 + data_length as usize).into(),
+            data: src.split_to(data_length as usize).into(),
         })))
     }
 }
