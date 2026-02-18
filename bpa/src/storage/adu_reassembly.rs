@@ -211,13 +211,11 @@ impl Store {
         for (bundle_id, storage_name, payload) in results.adus.values() {
             let fi = bundle_id.fragment_info.as_ref().unwrap();
             if fi.total_adu_length != total_adu_length {
-                info!(
-                    "Total ADU length mismatch during fragment reassembly detected: {bundle_id:?}"
-                );
+                info!("Total ADU length mismatch during fragment reassembly detected: {bundle_id}");
                 return None;
             }
             if fi.offset != next_offset {
-                info!("Misalignment in offsets during fragment reassembly detected: {bundle_id:?}");
+                info!("Misalignment in offsets during fragment reassembly detected: {bundle_id}");
                 return None;
             }
 

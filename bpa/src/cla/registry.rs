@@ -49,7 +49,7 @@ impl core::fmt::Debug for Cla {
             .field("name", &self.name)
             .field("address_type", &self.address_type)
             .field("peers", &self.peers)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

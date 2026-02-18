@@ -41,6 +41,6 @@ impl core::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("status_reports", &self.status_reports)
             .field("node_ids", &self.node_ids)
-            .finish()
+            .finish_non_exhaustive()
     }
 }

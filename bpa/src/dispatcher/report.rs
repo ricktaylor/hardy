@@ -10,7 +10,7 @@ impl Dispatcher {
         bundle: &bundle::Bundle,
         reason: ReasonCode,
     ) {
-        debug!("Bundle {:?} received", &bundle.bundle.id);
+        debug!("Bundle {} received", bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.receipt_report_requested {
@@ -40,7 +40,7 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_forwarded(&self, bundle: &bundle::Bundle) {
-        debug!("Bundle {:?} forwarded", &bundle.bundle.id);
+        debug!("Bundle {} forwarded", bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.forward_report_requested {
@@ -72,7 +72,7 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_delivery(&self, bundle: &bundle::Bundle) {
-        debug!("Bundle {:?} delivered", &bundle.bundle.id);
+        debug!("Bundle {} delivered", bundle.bundle.id);
 
         // Check if a report is requested
         if bundle.bundle.flags.delivery_report_requested {

@@ -76,7 +76,7 @@ impl core::fmt::Debug for Service {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Service")
             .field("eid", &self.service_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

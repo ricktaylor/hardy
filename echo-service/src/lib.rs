@@ -1,6 +1,6 @@
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub struct EchoService {
     sink: Once<Box<dyn hardy_bpa::services::ServiceSink>>,
@@ -24,6 +24,12 @@ impl EchoService {
                 .inspect_err(|e| warn!("Failed to parse incoming bundle: {e:?}"))?
                 .bundle;
 
+            debug!(
+                source = %bundle.id.source,
+                destination = %bundle.destination,
+                "Received bundle, reflecting back to source"
+            );
+
             // Swap source and destination
             let data = hardy_bpv7::editor::Editor::new(&bundle, &data)
                 .with_source(bundle.destination.clone())
@@ -38,6 +44,12 @@ impl EchoService {
                 })?
                 .rebuild()
                 .inspect_err(|e| warn!("Failed to update bundle: {e:?}"))?;
+
+            debug!(
+                source = %bundle.destination,
+                destination = %bundle.id.source,
+                "Sending echo reply"
+            );
 
             sink.send(data.into()).await.inspect_err(|e| {
                 warn!("Failed to send reply: {e:?}");

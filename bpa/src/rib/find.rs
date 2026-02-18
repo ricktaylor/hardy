@@ -108,7 +108,11 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
                 return Some(InternalFindResult::AdminEndpoint);
             }
             local::Action::Local(service) => {
-                debug!("Deliver to Service {service:?}");
+                if let Some(svc) = service {
+                    debug!("Deliver to Service {}", svc.service_id);
+                } else {
+                    debug!("Deliver to unregistered local service");
+                }
                 return Some(InternalFindResult::Deliver(service.clone()));
             }
             local::Action::Forward(peer) => {
@@ -122,7 +126,20 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
         }
     }
 
-    debug!("Forward to CLA peers {peer_map:?}");
+    if let Some(ref map) = peer_map {
+        debug!(
+            "Forward to CLA peers: {}",
+            map.values().fold(String::new(), |acc, v| {
+                if acc.is_empty() {
+                    v.to_string()
+                } else {
+                    format!("{acc}, {v}")
+                }
+            })
+        );
+    } else {
+        debug!("No CLA peers found");
+    }
     peer_map.map(InternalFindResult::Forward)
 }
 
