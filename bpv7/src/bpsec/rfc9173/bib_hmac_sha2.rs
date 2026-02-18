@@ -325,6 +325,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
+                    // lgtm[rust/hard-coded-cryptographic-value] - buffer is immediately filled with random bytes
                     Some(rand_key(Box::from([0u8; 32]))?)
                 }
                 KeyWrap::Aes192 => {
@@ -333,6 +334,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
+                    // lgtm[rust/hard-coded-cryptographic-value] - buffer is immediately filled with random bytes
                     Some(rand_key(Box::from([0u8; 48]))?)
                 }
                 KeyWrap::Aes256 => {
@@ -341,6 +343,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
+                    // lgtm[rust/hard-coded-cryptographic-value] - buffer is immediately filled with random bytes
                     Some(rand_key(Box::from([0u8; 64]))?)
                 }
             }
