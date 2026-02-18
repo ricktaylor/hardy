@@ -1,0 +1,23 @@
+#!/bin/sh
+
+BCAST_PARAM=""
+# get broadcast addresses for all eth interfaces (strict match to avoid veth, etc.)
+for iface in $(ls /sys/class/net/ | grep -E '^eth[0-9]+$'); do
+  BCAST=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP '(?<=brd\s)\d+(\.\d+){3}')
+  if [ -n "$BCAST" ]; then
+    echo "Found broadcast address $BCAST for $iface"
+    BCAST_PARAM="$BCAST_PARAM -E $BCAST"
+  fi
+done
+
+# check if NODE_ID is set
+if [ -z "$NODE_ID" ]; then
+  echo "NODE_ID is not set, using hostname with dtn naming scheme"
+  NODE=$(hostname -s)
+else
+  echo "NODE_ID is set to $NODE_ID, using ipn naming scheme"
+  NODE=$NODE_ID
+fi
+
+echo "Starting DTN daemon with node name $NODE and broadcast parameters $BCAST_PARAM"
+dtnd -n $NODE $BCAST_PARAM $@

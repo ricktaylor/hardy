@@ -1,0 +1,45 @@
+FROM docker.io/rust:1.85 as builder
+
+# Optional: specify a git ref (tag, branch, or commit hash)
+# Build with: docker build --build-arg DTN7_REF=v0.21.0 ...
+ARG DTN7_REF=master
+ARG DTN7_PLUS_REF=010202e56
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /root/
+
+# Install git and clone dtn7-rs
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/dtn7/dtn7-rs.git dtn7 && \
+    cd dtn7 && \
+    git checkout ${DTN7_REF}
+
+RUN cd dtn7 && \
+    cargo install --locked --bins --examples --root /usr/local --path examples && \
+    cargo install --locked --bins --examples --root /usr/local --path core/dtn7
+
+RUN cargo install --locked --bins --examples --root /usr/local dtn7-plus \
+    --git https://github.com/dtn7/dtn7-plus-rs --rev ${DTN7_PLUS_REF}
+
+FROM docker.io/debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt install net-tools iproute2 iputils-ping tcpdump wget curl -y && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /
+
+COPY --from=builder /usr/local/bin/* /usr/local/bin/
+
+# Copy start_dtnd wrapper script
+COPY start_dtnd /usr/local/bin/start_dtnd
+RUN chmod +x /usr/local/bin/start_dtnd
+
+ENV PATH="${PATH}:/usr/local/bin:/usr/local/sbin"
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=15s --retries=3 \
+  CMD curl --fail http://localhost:3000 || exit 1
+
+ENTRYPOINT [ "start_dtnd" ]
