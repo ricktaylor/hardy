@@ -18,10 +18,6 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
     }
 }
 
-pub use application::new_application_service;
-pub use cla::new_cla_service;
-pub use service::new_endpoint_service;
-
 /// Configuration for the gRPC server.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -51,13 +47,11 @@ impl Default for Config {
 ///
 /// * `config` - Server configuration
 /// * `bpa` - BPA registration interface (can be local Bpa or remote)
-/// * `cancel_token` - Token to signal server shutdown
-/// * `task_tracker` - Task tracker for the server task
+/// * `tasks` - Task pool for spawning server task and cancellation
 pub fn init(
     config: &Config,
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    cancel_token: &tokio_util::sync::CancellationToken,
-    task_tracker: &tokio_util::task::TaskTracker,
+    tasks: &hardy_async::TaskPool,
 ) {
     if config.services.is_empty() {
         return;
@@ -84,8 +78,8 @@ pub fn init(
 
     // Start serving
     let addr = config.address;
-    let cancel_token = cancel_token.clone();
-    task_tracker.spawn(async move {
+    let cancel_token = tasks.cancel_token().clone();
+    hardy_async::spawn!(tasks, "grpc_server", async move {
         tonic::transport::Server::builder()
             .add_routes(routes.routes())
             .serve_with_shutdown(addr, cancel_token.cancelled())

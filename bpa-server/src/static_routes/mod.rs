@@ -48,11 +48,7 @@ pub struct StaticRoutes {
 }
 
 impl StaticRoutes {
-    async fn init(
-        mut self,
-        cancel_token: &tokio_util::sync::CancellationToken,
-        task_tracker: &tokio_util::task::TaskTracker,
-    ) -> anyhow::Result<()> {
+    async fn init(mut self, tasks: &hardy_async::TaskPool) -> anyhow::Result<()> {
         info!(
             "Loading static routes from '{}'",
             self.config.routes_file.display()
@@ -64,7 +60,7 @@ impl StaticRoutes {
             info!("Monitoring static routes file for changes");
 
             // Set up file watcher
-            self.watch(cancel_token, task_tracker);
+            self.watch(tasks);
         }
 
         Ok(())
@@ -108,11 +104,7 @@ impl StaticRoutes {
         Ok(())
     }
 
-    fn watch(
-        &self,
-        cancel_token: &tokio_util::sync::CancellationToken,
-        task_tracker: &tokio_util::task::TaskTracker,
-    ) {
+    fn watch(&self, tasks: &hardy_async::TaskPool) {
         let routes_dir = self
             .config
             .routes_file
@@ -122,29 +114,28 @@ impl StaticRoutes {
         let routes_file = self.config.routes_file.clone();
 
         let mut self_cloned = self.clone();
-        let cancel_token = cancel_token.clone();
-        task_tracker.spawn(async move {
+        let cancel_token = tasks.cancel_token().clone();
+        hardy_async::spawn!(tasks, "static_routes_watcher", async move {
             let (tx, rx) = flume::unbounded();
-            let mut debouncer =
-                new_debouncer(
-                    std::time::Duration::from_secs(1),
-                    None,
-                    move |res| match res {
-                        Ok(events) => {
-                            for e in events {
-                                if tx.send(e).is_err() {
-                                    break;
-                                }
+            let mut debouncer = new_debouncer(
+                std::time::Duration::from_secs(1),
+                None,
+                move |res| match res {
+                    Ok(events) => {
+                        for e in events {
+                            if tx.send(e).is_err() {
+                                break;
                             }
                         }
-                        Err(e) => {
-                            for e in e {
-                                error!("Watch error: {e}")
-                            }
+                    }
+                    Err(e) => {
+                        for e in e {
+                            error!("Watch error: {e}")
                         }
-                    },
-                )
-                .trace_expect("Failed to create directory watcher");
+                    }
+                },
+            )
+            .trace_expect("Failed to create directory watcher");
 
             debouncer
                 .watch(&routes_dir, RecursiveMode::NonRecursive)
@@ -180,8 +171,7 @@ impl StaticRoutes {
 pub async fn init(
     mut config: Config,
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
-    cancel_token: &tokio_util::sync::CancellationToken,
-    task_tracker: &tokio_util::task::TaskTracker,
+    tasks: &hardy_async::TaskPool,
 ) -> anyhow::Result<()> {
     // Ensure it's absolute
     config.routes_file = std::env::current_dir()
@@ -207,6 +197,6 @@ pub async fn init(
         bpa: bpa.clone(),
         routes: Vec::new(),
     }
-    .init(cancel_token, task_tracker)
+    .init(tasks)
     .await
 }

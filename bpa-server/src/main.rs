@@ -7,6 +7,7 @@ mod static_routes;
 #[cfg(feature = "grpc")]
 mod grpc;
 
+use hardy_async::TaskPool;
 use std::sync::Arc;
 use trace_err::*;
 use tracing::{debug, error, info, warn};
@@ -14,10 +15,7 @@ use tracing::{debug, error, info, warn};
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn listen_for_cancel(
-    cancel_token: &tokio_util::sync::CancellationToken,
-    task_tracker: &tokio_util::task::TaskTracker,
-) {
+fn listen_for_cancel(tasks: &TaskPool) {
     #[cfg(unix)]
     let mut term_handler =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -25,9 +23,8 @@ fn listen_for_cancel(
     #[cfg(not(unix))]
     let mut term_handler = std::future::pending();
 
-    let cancel_token = cancel_token.clone();
-    let task_tracker_cloned = task_tracker.clone();
-    task_tracker.spawn(async move {
+    let cancel_token = tasks.cancel_token().clone();
+    hardy_async::spawn!(tasks, "signal_handler", async move {
         tokio::select! {
             _ = term_handler.recv() => {
                 // Signal stop
@@ -41,7 +38,6 @@ fn listen_for_cancel(
 
         // Cancel everything
         cancel_token.cancel();
-        task_tracker_cloned.close();
     });
 }
 
@@ -128,12 +124,11 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(&config.bpa));
 
     // Prepare for graceful shutdown
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    let task_tracker = tokio_util::task::TaskTracker::new();
+    let tasks = TaskPool::new();
 
     // Load static routes
     if let Some(config) = config.static_routes {
-        static_routes::init(config, &bpa, &cancel_token, &task_tracker).await?;
+        static_routes::init(config, &bpa, &tasks).await?;
     }
 
     // Load ip-legacy-filter
@@ -160,19 +155,16 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     // Start gRPC server
     #[cfg(feature = "grpc")]
     if let Some(config) = &config.grpc {
-        grpc::init(config, &bpa, &cancel_token, &task_tracker);
+        grpc::init(config, &bpa, &tasks);
     }
 
     // And wait for shutdown signal
-    listen_for_cancel(&cancel_token, &task_tracker);
+    listen_for_cancel(&tasks);
 
     info!("Started successfully");
 
-    // And wait for cancel token
-    cancel_token.cancelled().await;
-
-    // Wait for all tasks to finish
-    task_tracker.wait().await;
+    // Wait for shutdown
+    tasks.shutdown().await;
 
     // Shut down bpa
     bpa.shutdown().await;

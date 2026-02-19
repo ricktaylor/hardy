@@ -20,12 +20,7 @@ impl Default for Config {
     }
 }
 
-pub fn init(
-    config: &Config,
-    bpa: &Arc<hardy_bpa::bpa::Bpa>,
-    cancel_token: &tokio_util::sync::CancellationToken,
-    task_tracker: &tokio_util::task::TaskTracker,
-) {
+pub fn init(config: &Config, bpa: &Arc<hardy_bpa::bpa::Bpa>, tasks: &hardy_async::TaskPool) {
     // Convert to proto server config
     let proto_config = hardy_proto::server::Config {
         address: config.address,
@@ -35,5 +30,5 @@ pub fn init(
     // Bpa implements BpaRegistration, so we can pass it as dyn BpaRegistration
     let bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration> = bpa.clone();
 
-    hardy_proto::server::init(&proto_config, &bpa, cancel_token, task_tracker);
+    hardy_proto::server::init(&proto_config, &bpa, tasks);
 }

@@ -21,8 +21,10 @@ tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
 echo = ["dep:hardy-echo-service"]
+tracing = ["hardy-async/tracing"]
 
 [dependencies]
+hardy-async = { path = "../async" }
 hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
 hardy-bpa = { path = "../bpa", features = ["serde"] }
 hardy-eid-patterns = { path = "../eid-patterns", features = ["serde"] }
@@ -35,7 +37,6 @@ hardy-otel = { path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { path = "../echo-service", optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
-tokio-util = "0.7.18"
 config = { version = "0.15.19", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"

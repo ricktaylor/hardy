@@ -21,7 +21,7 @@ std = [
     "base64?/std",
     "foldhash/std",
 ]
-tracing = []
+tracing = ["hardy-async/tracing"]
 
 [lib]
 path = "src/lib.rs"
