@@ -128,12 +128,13 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
 
     if let Some(ref map) = peer_map {
         debug!(
-            "Forward to CLA peers: {}",
-            map.values().fold(String::new(), |acc, v| {
+            "Forward to CLA peer{} {}",
+            if map.len() == 1 { "" } else { "s:" },
+            map.iter().fold(String::new(), |acc, (k, v)| {
                 if acc.is_empty() {
-                    v.to_string()
+                    format!("{k} ({v})")
                 } else {
-                    format!("{acc}, {v}")
+                    format!("{acc}, {k} ({v})")
                 }
             })
         );

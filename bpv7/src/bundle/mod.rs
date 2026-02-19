@@ -144,11 +144,11 @@ impl core::fmt::Display for Id {
         if let Some(fi) = &self.fragment_info {
             write!(
                 f,
-                "{}/{} fragment {}/{}",
+                "[{} @ {} fragment {}/{}]",
                 self.source, self.timestamp, fi.offset, fi.total_adu_length
             )
         } else {
-            write!(f, "{}/{}", self.source, self.timestamp)
+            write!(f, "[{} @ {}]", self.source, self.timestamp)
         }
     }
 }
