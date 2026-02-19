@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 default = []
 mmap = ["dep:memmap2"]
 serde = ["dep:serde","hardy-bpa/serde"]
-tracing = ["hardy-bpa/tracing"]
+tracing = []
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }

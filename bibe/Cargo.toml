@@ -12,7 +12,6 @@ crate-type = ["rlib"]
 default = []
 std = ["hardy-bpa/std", "hardy-bpv7/std"]
 serde = ["dep:serde", "hardy-bpa/serde", "hardy-bpv7/serde"]
-tracing = ["hardy-bpa/tracing"]  # Enables #[instrument] macros only
 
 [dependencies]
 time = { version = "0.3.47", default-features = false }
@@ -21,5 +20,5 @@ hardy-bpa = { path = "../bpa", default-features = false }
 hardy-bpv7 = { path = "../bpv7", default-features = false }
 hardy-cbor = { path = "../cbor" }
 thiserror = "2.0.18"
-tracing = "0.1"  # Always needed for warn!, error!, etc.
+tracing = "0.1.44"
 serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }

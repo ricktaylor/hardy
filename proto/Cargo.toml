@@ -16,7 +16,6 @@ tracing = []
 hardy-async = { path = "../async" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-bpa = { path = "../bpa" }
-spin = "0.10.0"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1.18"
 tokio-util = "0.7.15"

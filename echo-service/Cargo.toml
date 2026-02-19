@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 [features]
 default = ["std"]
 std = ["hardy-async/std", "hardy-bpa/std", "hardy-bpv7/std"]
-tracing = ["hardy-bpa/tracing", "hardy-async/tracing"]
+tracing = []
 
 [dependencies]
 hardy-async = { path = "../async", default-features = false }

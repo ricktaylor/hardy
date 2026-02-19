@@ -16,7 +16,7 @@ postgres-storage = []
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = []
 packaged-installation = []
-grpc = ["dep:hardy-proto", "dep:tokio-stream", "dep:tonic", "dep:prost-types"]
+grpc = ["dep:hardy-proto"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
@@ -36,24 +36,18 @@ hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"],
 hardy-echo-service = { path = "../echo-service", optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
 tokio-util = "0.7.18"
-tokio-stream = { version = "0.1.18", optional = true }
-tonic = { version = "0.14.4", optional = true }
-prost-types = { version = "0.14.3", optional = true }
 config = { version = "0.15.19", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
-thiserror = "2.0.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 notify-debouncer-full = "0.7.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 trace-err = "1.0.0"
-spin = "0.10.0"
 winnow = "0.7.14"
 anyhow = "1.0.101"
 flume = "0.12.0"
-time = "0.3.47"
 
 [dev-dependencies]
 serde_json = "1.0.149"

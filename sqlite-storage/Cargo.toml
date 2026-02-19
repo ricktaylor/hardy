@@ -9,7 +9,7 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-tracing = ["hardy-bpa/tracing"]
+tracing = []
 
 [dependencies]
 hardy-bpa = { path = "../bpa", features = ["serde"] }
