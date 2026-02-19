@@ -1,11 +1,12 @@
 #![cfg(feature = "echo")]
 
 use super::*;
+use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
 /// Initialize and register echo services based on configuration
-pub async fn init(config: &EchoConfig, bpa: &hardy_bpa::bpa::Bpa) {
+pub async fn init(config: &EchoConfig, bpa: &dyn BpaRegistration) {
     if let EchoConfig::Enabled(services) = config {
         info!(
             "Registering {} echo service(s): {:?}",

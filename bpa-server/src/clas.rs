@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpa::bpa::BpaRegistration;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,7 +29,7 @@ pub enum ClaConfig {
     Unknown,
 }
 
-pub async fn init(config: &[Cla], bpa: &Arc<hardy_bpa::bpa::Bpa>) -> anyhow::Result<()> {
+pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<()> {
     for cla_config in config {
         let policy = if let Some(p) = &cla_config.policy {
             policy::init(&cla_config.name, p).await?

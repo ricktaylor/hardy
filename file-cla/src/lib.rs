@@ -1,4 +1,5 @@
 use hardy_async::sync::spin::Once;
+use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
@@ -123,7 +124,7 @@ impl Cla {
     /// * `name` - The name to register this CLA under.
     pub async fn register(
         self: &Arc<Self>,
-        bpa: &hardy_bpa::bpa::Bpa,
+        bpa: &dyn BpaRegistration,
         name: String,
     ) -> Result<(), Error> {
         bpa.register_cla(name, None, self.clone(), None).await?;

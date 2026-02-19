@@ -129,12 +129,12 @@ impl Cla {
     ///
     /// # Arguments
     ///
-    /// * `bpa` - The BPA instance to register with.
+    /// * `bpa` - The BPA registration interface (local Bpa or remote via gRPC).
     /// * `name` - The name to register this CLA under.
     /// * `policy` - Optional egress policy for this CLA.
     pub async fn register(
         self: &Arc<Self>,
-        bpa: &hardy_bpa::bpa::Bpa,
+        bpa: &dyn hardy_bpa::bpa::BpaRegistration,
         name: String,
         policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> Result<(), Error> {

@@ -149,13 +149,13 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Register echo service
     #[cfg(feature = "echo")]
-    echo_config::init(&config.echo, &bpa).await;
+    echo_config::init(&config.echo, bpa.as_ref()).await;
 
     // Start the BPA
     bpa.start(config.recover_storage);
 
     // Start CLAs
-    clas::init(&config.clas, &bpa).await?;
+    clas::init(&config.clas, bpa.as_ref()).await?;
 
     // Start gRPC server
     #[cfg(feature = "grpc")]

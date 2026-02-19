@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpa::bpa::BpaRegistration;
 
 /// Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,7 +147,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
 async fn exec_inner(
     args: &Command,
-    bpa: &hardy_bpa::bpa::Bpa,
+    bpa: &dyn BpaRegistration,
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<service::Statistics> {
     let service = std::sync::Arc::new(service::Service::new(args));

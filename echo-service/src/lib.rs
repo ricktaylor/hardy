@@ -1,5 +1,6 @@
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
+use hardy_bpa::bpa::BpaRegistration;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -25,7 +26,7 @@ impl EchoService {
     /// share the same underlying service).
     pub async fn register(
         self: &Arc<Self>,
-        bpa: &hardy_bpa::bpa::Bpa,
+        bpa: &dyn BpaRegistration,
         services: &[hardy_bpv7::eid::Service],
     ) -> Result<Vec<hardy_bpv7::eid::Eid>, hardy_bpa::services::Error> {
         let mut eids = Vec::with_capacity(services.len());

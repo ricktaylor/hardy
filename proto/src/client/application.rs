@@ -1,6 +1,5 @@
 use super::*;
-use crate::service::*;
-use hardy_bpv7::eid;
+use proto::service::*;
 
 async fn receive(
     service: &dyn hardy_bpa::services::Application,

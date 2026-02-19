@@ -10,6 +10,7 @@ pub use config::{Config, Tunnel};
 // Common imports for submodules (accessed via `use super::*;`)
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
 use hardy_async::sync::spin::Once;
+use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::{Bytes, async_trait};
 use hardy_bpv7::{
     bpsec,
@@ -67,7 +68,7 @@ impl Bibe {
     /// let bibe = Arc::new(bibe::Bibe::new(&config));
     /// bibe.register(&bpa).await?;
     /// ```
-    pub async fn register(self: &Arc<Self>, bpa: &hardy_bpa::bpa::Bpa) -> Result<(), Error> {
+    pub async fn register(self: &Arc<Self>, bpa: &dyn BpaRegistration) -> Result<(), Error> {
         // Register CLA (uses Private address type)
         bpa.register_cla("bibe".into(), None, self.cla.clone(), None)
             .await?;

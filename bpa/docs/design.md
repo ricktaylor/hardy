@@ -163,7 +163,7 @@ impl MyComponent {
 
     /// Registers this component with the BPA.
     /// Handles all registration details internally.
-    pub async fn register(self: &Arc<Self>, bpa: &Bpa) -> Result<(), Error> { ... }
+    pub async fn register(self: &Arc<Self>, bpa: &BpaRegistration) -> Result<(), Error> { ... }
 
     /// Unregisters this component from the BPA.
     pub async fn unregister(&self) { ... }
@@ -174,7 +174,7 @@ impl MyComponent {
 
 - **`new(&Config) -> Result`**: Validates configuration and creates directories/resources eagerly. Errors surface at construction time rather than during registration, making failures easier to diagnose.
 
-- **`register(&Arc<Self>, &Bpa)`**: Components manage their own registration, encapsulating the details (CLA name, address type, policy). The `Arc<Self>` receiver makes ownership requirements explicit. Returns after the Sink is stored and any background tasks are started.
+- **`register(&Arc<Self>, &BpaRegistration)`**: Components manage their own registration, encapsulating the details (CLA name, address type, policy). The `Arc<Self>` receiver makes ownership requirements explicit. Returns after the Sink is stored and any background tasks are started.
 
 - **`unregister(&self)`**: Provides explicit unregistration. Internally calls `sink.unregister()`. Dropping the Sink has the same effect, but explicit unregistration is clearer in application code.
 
@@ -197,7 +197,7 @@ impl MyComponent {
         })
     }
 
-    pub async fn register(self: &Arc<Self>, bpa: &Bpa) -> Result<(), Error> {
+    pub async fn register(self: &Arc<Self>, bpa: &BpaRegistration) -> Result<(), Error> {
         bpa.register_xxx(..., self.clone(), ...).await?;
         Ok(())
     }

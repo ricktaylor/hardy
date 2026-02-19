@@ -6,6 +6,7 @@ mod service;
 mod test;
 
 use arbitrary::Arbitrary;
+use hardy_bpa::bpa::BpaRegistration;
 use std::sync::Arc;
 
 #[derive(Arbitrary)]

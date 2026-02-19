@@ -1,5 +1,86 @@
 use super::*;
 
+/// Trait for registering CLAs, services, and routes with a BPA.
+///
+/// This trait abstracts the registration interface, allowing components
+/// like CLAs and services to work with either a local [`Bpa`] instance
+/// or a remote BPA via gRPC.
+///
+/// # For CLA Implementors
+///
+/// CLAs receive callbacks via the [`cla::Sink`] trait, which is provided
+/// in [`cla::Cla::on_register`]. The Sink implementation differs based on
+/// whether the BPA is local or remote, but the CLA code remains the same.
+///
+/// # For Service Implementors
+///
+/// Services receive callbacks via [`services::ServiceSink`] or
+/// [`services::ApplicationSink`], provided in the respective `on_register`
+/// methods.
+#[async_trait]
+pub trait BpaRegistration: Send + Sync {
+    /// Register a Convergence Layer Adapter with the BPA.
+    ///
+    /// The CLA will receive a [`cla::Sink`] via [`cla::Cla::on_register`]
+    /// for communicating back to the BPA.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Unique name for this CLA instance
+    /// * `address_type` - The address type this CLA handles (e.g., TCP)
+    /// * `cla` - The CLA implementation
+    /// * `policy` - Optional egress policy for traffic shaping
+    ///
+    /// # Returns
+    ///
+    /// The BPA's node IDs on success
+    async fn register_cla(
+        &self,
+        name: String,
+        address_type: Option<cla::ClaAddressType>,
+        cla: Arc<dyn cla::Cla>,
+        policy: Option<Arc<dyn policy::EgressPolicy>>,
+    ) -> cla::Result<alloc::vec::Vec<hardy_bpv7::eid::NodeId>>;
+
+    /// Register a low-level Service with full bundle access.
+    ///
+    /// The service will receive a [`services::ServiceSink`] via
+    /// [`services::Service::on_register`] for sending bundles.
+    ///
+    /// # Arguments
+    ///
+    /// * `service_id` - Optional service identifier. If None, one is assigned.
+    /// * `service` - The service implementation
+    ///
+    /// # Returns
+    ///
+    /// The endpoint ID assigned to this service
+    async fn register_service(
+        &self,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid>;
+
+    /// Register a high-level Application with payload-only access.
+    ///
+    /// The application will receive an [`services::ApplicationSink`] via
+    /// [`services::Application::on_register`] for sending payloads.
+    ///
+    /// # Arguments
+    ///
+    /// * `service_id` - Optional service identifier. If None, one is assigned.
+    /// * `application` - The application implementation
+    ///
+    /// # Returns
+    ///
+    /// The endpoint ID assigned to this application
+    async fn register_application(
+        &self,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<hardy_bpv7::eid::Eid>;
+}
+
 pub struct Bpa {
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
@@ -84,43 +165,6 @@ impl Bpa {
         self.filter_registry.clear();
     }
 
-    /// Register an Application (high-level, payload-only access)
-    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
-    pub async fn register_application(
-        &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Application>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.service_registry
-            .register_application(service_id, service, &self.dispatcher)
-            .await
-    }
-
-    /// Register a low-level Service (full bundle access)
-    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
-    pub async fn register_service(
-        &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Service>,
-    ) -> services::Result<hardy_bpv7::eid::Eid> {
-        self.service_registry
-            .register_service(service_id, service, &self.dispatcher)
-            .await
-    }
-
-    #[cfg_attr(feature = "tracing", instrument(skip(self, cla, policy)))]
-    pub async fn register_cla(
-        &self,
-        name: String,
-        address_type: Option<cla::ClaAddressType>,
-        cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        self.cla_registry
-            .register(name, address_type, cla, &self.dispatcher, policy)
-            .await
-    }
-
     #[cfg_attr(
         feature = "tracing",
         instrument(skip(self, pattern, action), fields(pattern = %pattern, action = %action))
@@ -169,5 +213,45 @@ impl Bpa {
         name: &str,
     ) -> Result<Option<filters::Filter>, filters::Error> {
         self.filter_registry.unregister(hook, name)
+    }
+}
+
+#[async_trait]
+impl BpaRegistration for Bpa {
+    /// Register an Application (high-level, payload-only access)
+    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
+    async fn register_application(
+        &self,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        service: Arc<dyn services::Application>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.service_registry
+            .register_application(service_id, service, &self.dispatcher)
+            .await
+    }
+
+    /// Register a low-level Service (full bundle access)
+    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
+    async fn register_service(
+        &self,
+        service_id: Option<hardy_bpv7::eid::Service>,
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.service_registry
+            .register_service(service_id, service, &self.dispatcher)
+            .await
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self, cla, policy)))]
+    async fn register_cla(
+        &self,
+        name: String,
+        address_type: Option<cla::ClaAddressType>,
+        cla: Arc<dyn cla::Cla>,
+        policy: Option<Arc<dyn policy::EgressPolicy>>,
+    ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
+        self.cla_registry
+            .register(name, address_type, cla, &self.dispatcher, policy)
+            .await
     }
 }

@@ -1,7 +1,5 @@
 use super::*;
-use hardy_bpa::async_trait;
-use hardy_proto::{cla::*, proxy::*};
-use spin::once::Once;
+use proto::cla::*;
 
 struct ClaInner {
     sink: Box<dyn hardy_bpa::cla::Sink>,
@@ -206,7 +204,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<hardy_bpa::bpa::Bpa>,
+    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     channel_size: usize,
 }
 
@@ -274,7 +272,10 @@ impl cla_server::Cla for Service {
     }
 }
 
-pub fn new_service(bpa: &Arc<hardy_bpa::bpa::Bpa>) -> cla_server::ClaServer<Service> {
+/// Create a new CLA gRPC service.
+pub fn new_cla_service(
+    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
         bpa: bpa.clone(),
         channel_size: 16,

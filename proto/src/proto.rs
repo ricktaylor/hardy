@@ -1,22 +1,8 @@
-// Because Prost is too lose with Rustdoc comments
-#![allow(clippy::doc_lazy_continuation)]
-
-pub mod proxy;
-
-pub fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
-    prost_types::Timestamp {
-        seconds: (t.unix_timestamp_nanos() / 1_000_000_000) as i64,
-        nanos: (t.unix_timestamp_nanos() % 1_000_000_000) as i32,
-    }
-}
-
-pub fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, tonic::Status> {
-    Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)
-        .map_err(|e| tonic::Status::from_error(e.into()))?
-        + time::Duration::nanoseconds(t.nanos.into()))
-}
+use super::*;
 
 pub mod cla {
+    use super::*;
+
     tonic::include_proto!("cla");
 
     impl TryFrom<ClaAddress> for hardy_bpa::cla::ClaAddress {
@@ -55,7 +41,7 @@ pub mod cla {
         }
     }
 
-    impl crate::proxy::RecvMsg for BpaToCla {
+    impl proxy::RecvMsg for BpaToCla {
         type Msg = bpa_to_cla::Msg;
 
         fn msg_id(&self) -> u32 {
@@ -71,7 +57,7 @@ pub mod cla {
         }
     }
 
-    impl crate::proxy::RecvMsg for ClaToBpa {
+    impl proxy::RecvMsg for ClaToBpa {
         type Msg = cla_to_bpa::Msg;
 
         fn msg_id(&self) -> u32 {
@@ -87,7 +73,7 @@ pub mod cla {
         }
     }
 
-    impl crate::proxy::SendMsg for ClaToBpa {
+    impl proxy::SendMsg for ClaToBpa {
         type Msg = cla_to_bpa::Msg;
 
         fn compose(msg_id: u32, msg: Self::Msg) -> Self {
@@ -98,7 +84,7 @@ pub mod cla {
         }
     }
 
-    impl crate::proxy::SendMsg for BpaToCla {
+    impl proxy::SendMsg for BpaToCla {
         type Msg = bpa_to_cla::Msg;
 
         fn compose(msg_id: u32, msg: Self::Msg) -> Self {
@@ -111,9 +97,11 @@ pub mod cla {
 }
 
 pub mod service {
+    use super::*;
+
     tonic::include_proto!("service");
 
-    impl crate::proxy::RecvMsg for BpaToApp {
+    impl proxy::RecvMsg for BpaToApp {
         type Msg = bpa_to_app::Msg;
 
         fn msg_id(&self) -> u32 {
@@ -129,7 +117,7 @@ pub mod service {
         }
     }
 
-    impl crate::proxy::RecvMsg for AppToBpa {
+    impl proxy::RecvMsg for AppToBpa {
         type Msg = app_to_bpa::Msg;
 
         fn msg_id(&self) -> u32 {
@@ -145,7 +133,7 @@ pub mod service {
         }
     }
 
-    impl crate::proxy::SendMsg for AppToBpa {
+    impl proxy::SendMsg for AppToBpa {
         type Msg = app_to_bpa::Msg;
 
         fn compose(msg_id: u32, msg: Self::Msg) -> Self {
@@ -156,7 +144,7 @@ pub mod service {
         }
     }
 
-    impl crate::proxy::SendMsg for BpaToApp {
+    impl proxy::SendMsg for BpaToApp {
         type Msg = bpa_to_app::Msg;
 
         fn compose(msg_id: u32, msg: Self::Msg) -> Self {
@@ -168,7 +156,7 @@ pub mod service {
     }
 
     // Low-level Service message impls
-    impl crate::proxy::RecvMsg for BpaToService {
+    impl proxy::RecvMsg for BpaToService {
         type Msg = bpa_to_service::Msg;
 
         fn msg_id(&self) -> u32 {
@@ -184,7 +172,7 @@ pub mod service {
         }
     }
 
-    impl crate::proxy::RecvMsg for ServiceToBpa {
+    impl proxy::RecvMsg for ServiceToBpa {
         type Msg = service_to_bpa::Msg;
 
         fn msg_id(&self) -> u32 {
@@ -200,7 +188,7 @@ pub mod service {
         }
     }
 
-    impl crate::proxy::SendMsg for ServiceToBpa {
+    impl proxy::SendMsg for ServiceToBpa {
         type Msg = service_to_bpa::Msg;
 
         fn compose(msg_id: u32, msg: Self::Msg) -> Self {
@@ -211,7 +199,7 @@ pub mod service {
         }
     }
 
-    impl crate::proxy::SendMsg for BpaToService {
+    impl proxy::SendMsg for BpaToService {
         type Msg = bpa_to_service::Msg;
 
         fn compose(msg_id: u32, msg: Self::Msg) -> Self {

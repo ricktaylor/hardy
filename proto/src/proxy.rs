@@ -1,21 +1,17 @@
 use super::*;
-use hardy_bpa::async_trait;
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
-use tracing::{debug, error, info, warn};
-
-mod application;
-mod cla;
-mod service;
-
-pub use application::register_application_service;
-pub use cla::register_cla;
-pub use service::register_endpoint_service;
 
 pub trait SendMsg {
     type Msg;
 
     fn compose(msg_id: u32, msg: Self::Msg) -> Self;
+}
+
+pub trait RecvMsg {
+    type Msg;
+
+    fn msg_id(&self) -> u32;
+    fn msg(self) -> Result<Self::Msg, tonic::Status>;
 }
 
 impl<T> SendMsg for Result<T, tonic::Status>
@@ -27,13 +23,6 @@ where
     fn compose(msg_id: u32, msg: Self::Msg) -> Self {
         Ok(T::compose(msg_id, msg))
     }
-}
-
-pub trait RecvMsg {
-    type Msg;
-
-    fn msg_id(&self) -> u32;
-    fn msg(self) -> Result<Self::Msg, tonic::Status>;
 }
 
 #[async_trait]

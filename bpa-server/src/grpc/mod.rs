@@ -1,10 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-mod application;
-mod cla;
-mod service;
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -30,42 +26,14 @@ pub fn init(
     cancel_token: &tokio_util::sync::CancellationToken,
     task_tracker: &tokio_util::task::TaskTracker,
 ) {
-    if config.services.is_empty() {
-        return;
-    }
+    // Convert to proto server config
+    let proto_config = hardy_proto::server::Config {
+        address: config.address,
+        services: config.services.clone(),
+    };
 
-    // Add gRPC services to HTTP router
-    let mut routes = tonic::service::Routes::builder();
-    for service in &config.services {
-        match service.as_str() {
-            "application" => {
-                routes.add_service(application::new_service(bpa));
-            }
-            "cla" => {
-                routes.add_service(cla::new_service(bpa));
-            }
-            "service" => {
-                routes.add_service(service::new_service(bpa));
-            }
-            s => {
-                warn!("Ignoring unknown gRPC service {s}");
-            }
-        }
-    }
+    // Bpa implements BpaRegistration, so we can pass it as dyn BpaRegistration
+    let bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration> = bpa.clone();
 
-    // Start serving
-    let addr = config.address;
-    let cancel_token = cancel_token.clone();
-    task_tracker.spawn(async move {
-        tonic::transport::Server::builder()
-            .add_routes(routes.routes())
-            .serve_with_shutdown(addr, cancel_token.cancelled())
-            .await
-            .trace_expect("Failed to start gRPC server")
-    });
-
-    info!(
-        "gRPC server hosting {:?}, listening on {}",
-        config.services, config.address
-    )
+    hardy_proto::server::init(&proto_config, &bpa, cancel_token, task_tracker);
 }

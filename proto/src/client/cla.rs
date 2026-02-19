@@ -1,5 +1,5 @@
 use super::*;
-use crate::cla::*;
+use proto::cla::*;
 
 async fn forward(
     cla: &dyn hardy_bpa::cla::Cla,
