@@ -14,33 +14,39 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct Config(
     /// EID patterns for next-hops requiring legacy IPN encoding
-    Vec<hardy_eid_patterns::EidPattern>,
+    pub Vec<hardy_eid_patterns::EidPattern>,
 );
 
-pub fn init(
-    bpa: &Arc<hardy_bpa::bpa::Bpa>,
-    config: Config,
-) -> Result<(), hardy_bpa::filters::Error> {
-    if config.0.is_empty() {
-        // Ignore empty vec
-        return Ok(());
-    }
-
-    let filter = Arc::new(IpnLegacyFilter {
-        peer_patterns: config.0,
-    });
-
-    bpa.register_filter(
-        hardy_bpa::filters::Hook::Egress,
-        "ipn-legacy",
-        &[],
-        hardy_bpa::filters::Filter::Write(filter),
-    )
+/// Egress WriteFilter that rewrites IPN 3-element EIDs to legacy 2-element format.
+///
+/// # Example
+///
+/// ```ignore
+/// let filter = IpnLegacyFilter::new(&config);
+/// bpa.register_filter(
+///     hardy_bpa::filters::Hook::Egress,
+///     "ipn-legacy",
+///     &[],
+///     hardy_bpa::filters::Filter::Write(filter),
+/// )?;
+/// ```
+pub struct IpnLegacyFilter {
+    peer_patterns: Vec<hardy_eid_patterns::EidPattern>,
 }
 
-/// Egress WriteFilter that rewrites IPN 3-element EIDs to legacy 2-element format
-struct IpnLegacyFilter {
-    peer_patterns: Vec<hardy_eid_patterns::EidPattern>,
+impl IpnLegacyFilter {
+    /// Create a new IPN legacy encoding filter.
+    ///
+    /// Returns `None` if the config has no peer patterns (filter not needed).
+    pub fn new(config: &Config) -> Option<Arc<Self>> {
+        if config.0.is_empty() {
+            None
+        } else {
+            Some(Arc::new(Self {
+                peer_patterns: config.0.clone(),
+            }))
+        }
+    }
 }
 
 #[async_trait]

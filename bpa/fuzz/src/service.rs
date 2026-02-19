@@ -1,4 +1,5 @@
 use super::*;
+use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::Eid;
 
@@ -35,12 +36,15 @@ pub struct Msg {
     pub payload: Vec<u8>,
 }
 
-#[derive(Default)]
 pub struct PipeService {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::ApplicationSink>>,
+    sink: Once<Box<dyn hardy_bpa::services::ApplicationSink>>,
 }
 
 impl PipeService {
+    pub fn new() -> Self {
+        Self { sink: Once::new() }
+    }
+
     pub async fn send(
         &self,
         destination: Eid,
@@ -50,7 +54,7 @@ impl PipeService {
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         self.sink
             .get()
-            .unwrap()
+            .expect("send called before registration")
             .send(destination, data, lifetime, options)
             .await
     }
@@ -63,9 +67,7 @@ impl hardy_bpa::services::Application for PipeService {
         _source: &Eid,
         sink: Box<dyn hardy_bpa::services::ApplicationSink>,
     ) {
-        if self.sink.set(sink).is_err() {
-            panic!("Double connect()");
-        }
+        self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {

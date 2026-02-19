@@ -1116,6 +1116,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "flume",
+ "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-file-cla",

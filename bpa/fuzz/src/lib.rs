@@ -126,7 +126,7 @@ impl Msg {
             get_runtime().spawn(async move {
                 let bpa = new_bpa("fuzz").await;
 
-                let cla = std::sync::Arc::new(cla::NullCla::default());
+                let cla = std::sync::Arc::new(cla::NullCla::new());
                 bpa.register_cla("fuzz".to_string(), None, cla.clone(), None)
                     .await
                     .expect("Failed to register CLA");
@@ -166,7 +166,7 @@ impl Msg {
                 )
                 .await;
 
-                let service = Arc::new(service::PipeService::default());
+                let service = Arc::new(service::PipeService::new());
                 bpa.register_application(None, service.clone())
                     .await
                     .expect("Failed to register service");

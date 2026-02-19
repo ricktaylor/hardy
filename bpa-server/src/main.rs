@@ -138,7 +138,14 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Load ip-legacy-filter
     #[cfg(feature = "ipn-legacy-filter")]
-    hardy_ipn_legacy_filter::init(&bpa, config.ipn_legacy_nodes)?;
+    if let Some(filter) = hardy_ipn_legacy_filter::IpnLegacyFilter::new(&config.ipn_legacy_nodes) {
+        bpa.register_filter(
+            hardy_bpa::filters::Hook::Egress,
+            "ipn-legacy".into(),
+            &[],
+            hardy_bpa::filters::Filter::Write(filter),
+        )?;
+    }
 
     // Register echo service
     #[cfg(feature = "echo")]

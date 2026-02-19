@@ -1,4 +1,5 @@
 use super::*;
+use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_bpv7::eid::{IpnNodeId, NodeId};
 
@@ -48,14 +49,20 @@ impl RandomBundle {
     }
 }
 
-#[derive(Default)]
 pub struct NullCla {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::cla::Sink>>,
+    sink: Once<Box<dyn hardy_bpa::cla::Sink>>,
 }
 
 impl NullCla {
+    pub fn new() -> Self {
+        Self { sink: Once::new() }
+    }
     pub async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
-        self.sink.get().unwrap().dispatch(bundle, None, None).await
+        self.sink
+            .get()
+            .expect("dispatch called before registration")
+            .dispatch(bundle, None, None)
+            .await
     }
 }
 
@@ -72,9 +79,7 @@ impl hardy_bpa::cla::Cla for NullCla {
         .await
         .expect("add_peer failed");
 
-        if self.sink.set(sink).is_err() {
-            panic!("Double connect()");
-        }
+        self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {
