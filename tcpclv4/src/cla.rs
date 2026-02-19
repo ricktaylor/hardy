@@ -32,15 +32,10 @@ impl hardy_bpa::cla::Cla for Cla {
     #[cfg_attr(feature = "tracing", instrument(skip(self, sink)))]
     async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, node_ids: &[NodeId]) {
         // Store sink and node_ids in single atomic operation
-        let inner = Inner {
+        self.inner.call_once(|| Inner {
             sink: sink.into(),
             node_ids: node_ids.into(),
-        };
-
-        if self.inner.set(inner).is_err() {
-            error!("CLA on_register called twice!");
-            return;
-        }
+        });
 
         // Start listeners now that we have a sink
         self.start_listeners();

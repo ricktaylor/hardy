@@ -10,6 +10,7 @@ mod transport;
 
 pub mod config;
 
+use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -51,7 +52,7 @@ pub struct Cla {
     session_cancel_token: tokio_util::sync::CancellationToken,
 
     // Late-init from registration (single atomic)
-    inner: std::sync::OnceLock<Inner>,
+    inner: Once<Inner>,
 
     // Task management
     tasks: Arc<hardy_async::TaskPool>,
@@ -117,7 +118,7 @@ impl Cla {
             session_cancel_token: tokio_util::sync::CancellationToken::new(),
 
             // Late-init
-            inner: std::sync::OnceLock::new(),
+            inner: Once::new(),
 
             // Tasks
             tasks: Arc::new(hardy_async::TaskPool::new()),

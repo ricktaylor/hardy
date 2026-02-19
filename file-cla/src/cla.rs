@@ -21,14 +21,11 @@ impl hardy_bpa::cla::Cla for Cla {
         }
 
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-        if self.sink.set(sink.clone()).is_err() {
-            error!("CLA on_register called twice!");
-            return;
-        }
+        let sink = self.sink.call_once(|| sink);
 
         // Start the file watcher if outbox is configured
         if let Some(outbox) = &self.outbox {
-            self.start_watcher(sink, outbox.clone()).await;
+            self.start_watcher(sink.clone(), outbox.clone()).await;
         }
     }
 

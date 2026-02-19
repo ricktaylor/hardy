@@ -1,3 +1,4 @@
+use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
@@ -75,7 +76,7 @@ fn canonicalize_path(cwd: &Path, path: &PathBuf) -> Result<String, Error> {
 pub struct Cla {
     inboxes: HashMap<NodeId, String>,
     outbox: Option<String>,
-    sink: std::sync::OnceLock<Arc<dyn hardy_bpa::cla::Sink>>,
+    sink: Once<Arc<dyn hardy_bpa::cla::Sink>>,
     tasks: hardy_async::TaskPool,
 }
 
@@ -109,7 +110,7 @@ impl Cla {
         Ok(Self {
             inboxes,
             outbox,
-            sink: std::sync::OnceLock::new(),
+            sink: Once::new(),
             tasks: hardy_async::TaskPool::new(),
         })
     }
