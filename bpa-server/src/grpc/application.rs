@@ -1,7 +1,7 @@
 use super::*;
-use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_proto::{proxy::*, service::*, to_timestamp};
+use spin::once::Once;
 
 struct ApplicationInner {
     sink: Box<dyn hardy_bpa::services::ApplicationSink>,

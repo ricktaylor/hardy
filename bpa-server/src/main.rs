@@ -141,7 +141,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     if let Some(filter) = hardy_ipn_legacy_filter::IpnLegacyFilter::new(&config.ipn_legacy_nodes) {
         bpa.register_filter(
             hardy_bpa::filters::Hook::Egress,
-            "ipn-legacy".into(),
+            "ipn-legacy",
             &[],
             hardy_bpa::filters::Filter::Write(filter),
         )?;

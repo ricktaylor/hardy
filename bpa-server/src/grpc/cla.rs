@@ -1,7 +1,7 @@
 use super::*;
-use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_proto::{cla::*, proxy::*};
+use spin::once::Once;
 
 struct ClaInner {
     sink: Box<dyn hardy_bpa::cla::Sink>,
