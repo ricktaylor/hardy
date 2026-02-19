@@ -11,7 +11,7 @@ use std::{
 };
 
 /// Statistics for ping session, following IP ping conventions.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Statistics {
     pub sent: u32,
     pub received: u32,
@@ -274,6 +274,15 @@ impl Service {
             .map_err(|e| anyhow::anyhow!("Failed to rebuild signed bundle: {e}"))?;
 
         Ok(signed_bytes)
+    }
+
+    /// Get a copy of the current statistics.
+    pub fn statistics(&self) -> Statistics {
+        self.state
+            .lock()
+            .trace_expect("Failed to lock state mutex")
+            .stats
+            .clone()
     }
 
     /// Print summary statistics in IP ping format.

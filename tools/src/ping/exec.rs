@@ -1,6 +1,17 @@
 use super::*;
 
-async fn exec_async(args: &Command) -> anyhow::Result<()> {
+/// Exit codes matching Linux/BSD ping conventions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitCode {
+    /// At least one response was received
+    Success = 0,
+    /// No responses received (100% packet loss)
+    NoResponse = 1,
+    /// Other error (connection failure, invalid arguments, etc.)
+    Error = 2,
+}
+
+async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     if !args.quiet {
         eprintln!(
             "Pinging {} from {}",
@@ -118,21 +129,26 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     cancel::listen_for_cancel(&cancel_token);
 
-    let r = exec_inner(args, &bpa, &cancel_token).await;
+    let stats = exec_inner(args, &bpa, &cancel_token).await?;
 
     // Stop waiting for cancel
     cancel_token.cancel();
 
     bpa.shutdown().await;
 
-    r
+    // Determine exit code based on statistics (matching Linux ping)
+    if stats.received > 0 {
+        Ok(ExitCode::Success)
+    } else {
+        Ok(ExitCode::NoResponse)
+    }
 }
 
 async fn exec_inner(
     args: &Command,
     bpa: &hardy_bpa::bpa::Bpa,
     cancel_token: &tokio_util::sync::CancellationToken,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<service::Statistics> {
     let service = std::sync::Arc::new(service::Service::new(args));
     bpa.register_service(
         args.source.as_ref().and_then(|eid| eid.service()),
@@ -176,13 +192,26 @@ async fn exec_inner(
     // Print summary statistics
     service.print_summary();
 
-    Ok(())
+    Ok(service.statistics())
 }
 
-pub fn exec(args: Command) -> anyhow::Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
+pub fn exec(args: Command) -> ! {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build tokio runtime: {e}"))?
-        .block_on(exec_async(&args))
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Failed to build tokio runtime: {e}");
+            std::process::exit(ExitCode::Error as i32);
+        }
+    };
+
+    match runtime.block_on(exec_async(&args)) {
+        Ok(exit_code) => std::process::exit(exit_code as i32),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(ExitCode::Error as i32);
+        }
+    }
 }

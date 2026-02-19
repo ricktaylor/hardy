@@ -143,14 +143,16 @@ impl Command {
         })
     }
 
-    pub fn exec(mut self) -> anyhow::Result<()> {
+    pub fn exec(mut self) -> ! {
         if let Some(level) = self.verbose.map(tracing::Level::from) {
             let subscriber = tracing_subscriber::fmt()
                 .with_max_level(level)
                 .with_target(level > tracing::Level::INFO)
                 .finish();
-            tracing::subscriber::set_global_default(subscriber)
-                .map_err(|e| anyhow::anyhow!("Failed to set global default subscriber: {e}"))?;
+            if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+                eprintln!("Failed to set global default subscriber: {e}");
+                std::process::exit(exec::ExitCode::Error as i32);
+            }
         }
 
         if self.source.is_none() {

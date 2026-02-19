@@ -16,7 +16,7 @@ enum Commands {
     Ping(ping::Command),
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     // Match on the parsed subcommand and call the appropriate handler function.
     // This is the core of the dispatch logic.
     match Cli::parse().command {
