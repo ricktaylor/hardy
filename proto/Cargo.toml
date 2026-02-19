@@ -18,8 +18,8 @@ hardy-bpv7 = { path = "../bpv7" }
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1.18"
-tonic = "0.14.4"
-tonic-prost = "0.14.4"
+tonic = "0.14.5"
+tonic-prost = "0.14.5"
 prost = "0.14.3"
 prost-types = "0.14.3"
 serde = { version = "1.0.228", optional = true }
@@ -27,4 +27,4 @@ time = "0.3.47"
 tracing = "0.1.44"
 
 [build-dependencies]
-tonic-prost-build = "0.14.4"
+tonic-prost-build = "0.14.5"
