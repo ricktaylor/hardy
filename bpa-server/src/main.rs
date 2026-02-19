@@ -148,7 +148,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     bpa.start(config.recover_storage);
 
     // Start CLAs
-    clas::init(config.clas, &bpa).await?;
+    clas::init(&config.clas, &bpa).await?;
 
     // Start gRPC server
     #[cfg(feature = "grpc")]

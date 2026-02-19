@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the CLA instance
     // This will validate the TCPCL configuration and prepare the internal state
-    let _cla = hardy_tcpclv4::Cla::new(config.cla_name.clone(), config.tcpcl);
+    let _cla = hardy_tcpclv4::Cla::new(&config.tcpcl)?;
 
     // TODO: Connect to BPA via gRPC and register the CLA
     // let mut client = hardy_proto::cla::cla_client::ClaClient::connect(config.bpa_address).await?;

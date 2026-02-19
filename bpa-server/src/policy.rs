@@ -18,7 +18,7 @@ pub enum EgressPolicyConfig {
 
 pub async fn init(
     cla_name: &str,
-    config: EgressPolicyConfig,
+    config: &EgressPolicyConfig,
 ) -> anyhow::Result<Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>> {
     match config {
         // #[cfg(feature = "htb_policy")]

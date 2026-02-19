@@ -49,6 +49,7 @@ where
     transfer_id: u64,
     acks: VecDeque<XferAck>,
     ingress_bundle: Option<BytesMut>,
+    cancel_token: tokio_util::sync::CancellationToken,
 }
 
 impl<T> Session<T>
@@ -71,6 +72,7 @@ where
             hardy_bpa::Bytes,
             tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
         )>,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         Self {
             transport,
@@ -85,6 +87,7 @@ where
             transfer_id: 0,
             acks: VecDeque::new(),
             ingress_bundle: None,
+            cancel_token,
         }
     }
 
@@ -376,10 +379,14 @@ where
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn shutdown(mut self, reason_code: codec::SessionTermReasonCode) {
-        // We must shut down our end of the session
-
         // Stop allowing more transfers
         self.from_sink.close();
+
+        // If already cancelled, skip the graceful SESS_TERM exchange
+        if self.cancel_token.is_cancelled() {
+            _ = self.transport.close().await;
+            return;
+        }
 
         // Send a SESS_TERM message
         let msg = codec::SessionTermMessage {
@@ -392,23 +399,31 @@ where
             .await
             .is_ok()
         {
-            // Process any remaining messages
+            // Process any remaining messages, with cancellation support
+            let cancel_token = self.cancel_token.clone();
             loop {
-                if match self.recv_from_peer().await {
-                    Ok(codec::Message::SessionTerm(msg)) => {
-                        if !msg.message_flags.reply {
-                            // Terminations pass in the night...
-                            return self.on_terminate(msg).await;
-                        }
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
                         break;
                     }
-                    Ok(codec::Message::TransferSegment(msg)) => self.on_transfer(msg).await,
-                    Ok(msg) => self.unexpected_msg(msg.message_type()).await,
-                    Err(e) => Err(e),
-                }
-                .is_err()
-                {
-                    break;
+                    result = self.recv_from_peer() => {
+                        if match result {
+                            Ok(codec::Message::SessionTerm(msg)) => {
+                                if !msg.message_flags.reply {
+                                    // Terminations pass in the night...
+                                    return self.on_terminate(msg).await;
+                                }
+                                break;
+                            }
+                            Ok(codec::Message::TransferSegment(msg)) => self.on_transfer(msg).await,
+                            Ok(msg) => self.unexpected_msg(msg.message_type()).await,
+                            Err(e) => Err(e),
+                        }
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -529,10 +544,14 @@ where
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn run(mut self) {
+        let cancel_token = self.cancel_token.clone();
         let e = loop {
             // Because we can't double &mut self
             let msg = if let Some(keepalive_interval) = self.keepalive_interval {
                 tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
+                    }
                     r = tokio::time::timeout(
                         keepalive_interval.saturating_sub(self.last_sent.elapsed()),
                         self.from_sink.recv(),
@@ -564,6 +583,9 @@ where
                 }
             } else {
                 tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
+                    }
                     r = self.from_sink.recv() => match r {
                         Some((bundle,result)) => {
                             let Err(e) = self.forward_to_peer(bundle, result).await else {

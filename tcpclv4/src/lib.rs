@@ -2,6 +2,7 @@ mod cla;
 mod codec;
 mod connect;
 mod connection;
+mod context;
 mod listen;
 mod session;
 mod tls;
@@ -10,6 +11,7 @@ mod transport;
 pub mod config;
 
 use hardy_bpv7::eid::NodeId;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use trace_err::*;
 use tracing::{debug, error, info, warn};
@@ -17,85 +19,173 @@ use tracing::{debug, error, info, warn};
 #[cfg(feature = "tracing")]
 use tracing::instrument;
 
-struct ClaInner {
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("TLS is required but no TLS configuration has been provided")]
+    TlsRequired,
+
+    #[error("TLS configuration error: {0}")]
+    Tls(#[from] tls::TlsError),
+
+    #[error("Registration failed: {0}")]
+    Registration(#[from] hardy_bpa::cla::Error),
+}
+
+/// Registration-time state from BPA.
+struct Inner {
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     node_ids: Arc<[NodeId]>,
-    registry: Arc<connection::ConnectionRegistry>,
-    tls_config: Option<Arc<tls::TlsConfig>>,
 }
 
 pub struct Cla {
-    _name: String,
-    config: config::Config,
-    inner: spin::once::Once<ClaInner>,
+    // Config values
+    session_config: config::SessionConfig,
+    address: Option<SocketAddr>,
+    connection_rate_limit: u32,
+    segment_mru: u64,
+    transfer_mru: u64,
+
+    // Computed at construction
+    tls_config: Option<Arc<tls::TlsConfig>>,
+    registry: Arc<connection::ConnectionRegistry>,
+    session_cancel_token: tokio_util::sync::CancellationToken,
+
+    // Late-init from registration (single atomic)
+    inner: std::sync::OnceLock<Inner>,
+
+    // Task management
     tasks: Arc<hardy_async::TaskPool>,
 }
 
 impl Cla {
-    pub fn new(name: String, config: config::Config) -> Self {
+    /// Creates a new TCPCLv4 CLA instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The configuration for this CLA.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TLS is required but not configured, or if TLS
+    /// configuration files cannot be loaded.
+    pub fn new(config: &config::Config) -> Result<Self, Error> {
+        // Validate TLS requirement
         if config.session_defaults.must_use_tls && config.tls.is_none() {
-            error!("{name}: TLS is required, but no TLS configuration has been provided");
+            return Err(Error::TlsRequired);
         }
 
+        // Warn about RFC compliance
         if config.session_defaults.contact_timeout > 60 {
-            warn!("{name}: RFC9174 specifies contact timeout SHOULD be a maximum of 60 seconds");
+            warn!("RFC9174 specifies contact timeout SHOULD be a maximum of 60 seconds");
         }
 
         match config.session_defaults.keepalive_interval {
-            None | Some(0) => info!("{name}: Session keepalive disabled"),
+            None | Some(0) => info!("Session keepalive disabled"),
             Some(x) if x < 30 => {
                 warn!(
-                    "{name}: RFC9174 Section 5.1.1 specifies keepalive SHOULD be a minimum of 30 seconds for shared networks"
+                    "RFC9174 Section 5.1.1 specifies keepalive SHOULD be a minimum of 30 seconds for shared networks"
                 )
             }
             Some(x) if x > 600 => {
-                warn!("{name}: RFC9174 specifies keepalive SHOULD be a maximum of 600 seconds")
+                warn!("RFC9174 specifies keepalive SHOULD be a maximum of 600 seconds")
             }
             _ => {}
         }
 
-        Self {
-            config,
-            _name: name,
-            inner: spin::once::Once::new(),
+        // Load TLS configuration eagerly
+        let tls_config = if let Some(tls_cfg) = &config.tls {
+            let cfg = tls::TlsConfig::new(tls_cfg)?;
+            info!("TLS configuration loaded successfully");
+            Some(Arc::new(cfg))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            // Config values
+            session_config: config.session_defaults.clone(),
+            address: config.address,
+            connection_rate_limit: config.connection_rate_limit,
+            segment_mru: config.segment_mru,
+            transfer_mru: config.transfer_mru,
+
+            // Computed state
+            tls_config,
+            registry: Arc::new(connection::ConnectionRegistry::new(
+                config.max_idle_connections,
+            )),
+            session_cancel_token: tokio_util::sync::CancellationToken::new(),
+
+            // Late-init
+            inner: std::sync::OnceLock::new(),
+
+            // Tasks
             tasks: Arc::new(hardy_async::TaskPool::new()),
+        })
+    }
+
+    /// Registers this CLA with the BPA.
+    ///
+    /// # Arguments
+    ///
+    /// * `bpa` - The BPA instance to register with.
+    /// * `name` - The name to register this CLA under.
+    /// * `policy` - Optional egress policy for this CLA.
+    pub async fn register(
+        self: &Arc<Self>,
+        bpa: &hardy_bpa::bpa::Bpa,
+        name: String,
+        policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
+    ) -> Result<(), Error> {
+        bpa.register_cla(
+            name,
+            Some(hardy_bpa::cla::ClaAddressType::Tcp),
+            self.clone(),
+            policy,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Unregisters this CLA from the BPA.
+    pub async fn unregister(&self) {
+        if let Some(inner) = self.inner.get() {
+            inner.sink.unregister().await;
         }
     }
 
-    // Unregisters the CLA instance from the BPA.
-    pub async fn unregister(&self) -> bool {
-        let Some(inner) = self.inner.get() else {
-            return false;
-        };
-        inner.sink.unregister().await;
-        true
+    /// Creates a ConnectionContext for use in connect/forward operations.
+    fn connection_context(&self) -> Option<context::ConnectionContext> {
+        let inner = self.inner.get()?;
+
+        Some(context::ConnectionContext {
+            session: self.session_config.clone(),
+            segment_mru: self.segment_mru,
+            transfer_mru: self.transfer_mru,
+            node_ids: inner.node_ids.clone(),
+            sink: inner.sink.clone(),
+            registry: self.registry.clone(),
+            tls_config: self.tls_config.clone(),
+            session_cancel_token: self.session_cancel_token.clone(),
+            task_cancel_token: self.tasks.cancel_token().clone(),
+        })
     }
 
-    pub async fn connect(&self, remote_addr: &std::net::SocketAddr) -> hardy_bpa::cla::Result<()> {
-        let Some(inner) = self.inner.get() else {
+    pub async fn connect(&self, remote_addr: &SocketAddr) -> hardy_bpa::cla::Result<()> {
+        let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");
-            return Err(hardy_bpa::cla::Error::Disconnected);
-        };
+            hardy_bpa::cla::Error::Disconnected
+        })?;
 
         for _ in 0..5 {
-            // Do a new active connect
             let conn = connect::Connector {
                 tasks: self.tasks.clone(),
-                contact_timeout: self.config.session_defaults.contact_timeout,
-                must_use_tls: self.config.session_defaults.must_use_tls,
-                keepalive_interval: self.config.session_defaults.keepalive_interval,
-                segment_mru: self.config.segment_mru,
-                transfer_mru: self.config.transfer_mru,
-                node_ids: inner.node_ids.clone(),
-                sink: inner.sink.clone(),
-                registry: inner.registry.clone(),
-                tls_config: inner.tls_config.clone(),
+                ctx: ctx.clone(),
             };
             match conn.connect(remote_addr).await {
                 Ok(()) => return Ok(()),
                 Err(transport::Error::Timeout) => {}
                 Err(e) => {
-                    // No point retrying
                     return Err(hardy_bpa::cla::Error::Internal(e.into()));
                 }
             }

@@ -9,32 +9,14 @@ use tokio_rustls::TlsConnector;
 
 pub struct Connector {
     pub tasks: Arc<hardy_async::TaskPool>,
-    pub contact_timeout: u16,
-    pub must_use_tls: bool,
-    pub keepalive_interval: Option<u16>,
-    pub segment_mru: u64,
-    pub transfer_mru: u64,
-    pub node_ids: Arc<[NodeId]>,
-    pub sink: Arc<dyn hardy_bpa::cla::Sink>,
-    pub registry: Arc<connection::ConnectionRegistry>,
-    pub tls_config: Option<Arc<tls::TlsConfig>>,
+    pub ctx: context::ConnectionContext,
 }
 
 impl std::fmt::Debug for Connector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Connector")
-            //.field("cancel_token", &self.cancel_token)
-            //.field("task_tracker", &self.task_tracker)
-            .field("contact_timeout", &self.contact_timeout)
-            .field("must_use_tls", &self.must_use_tls)
-            .field("keepalive_interval", &self.keepalive_interval)
-            .field("segment_mru", &self.segment_mru)
-            .field("transfer_mru", &self.transfer_mru)
-            .field("node_ids", &self.node_ids)
-            //.field("sink", &self.sink)
-            //.field("registry", &self.registry)
-            .field("tls_config", &self.tls_config)
-            .finish()
+            .field("ctx", &self.ctx)
+            .finish_non_exhaustive()
     }
 }
 
@@ -47,21 +29,14 @@ impl Connector {
 
         // Send contact header
         stream
-            .write_all(&[
-                b'd',
-                b't',
-                b'n',
-                b'!',
-                4,
-                if self.tls_config.is_some() { 1 } else { 0 },
-            ])
+            .write_all(&[b'd', b't', b'n', b'!', 4, self.ctx.tls_contact_flag()])
             .await
             .inspect_err(|e| debug!("Failed to send contact header: {e}"))?;
 
         // Receive contact header
         let mut buffer = [0u8; 6];
         tokio::time::timeout(
-            tokio::time::Duration::from_secs(self.contact_timeout as u64),
+            self.ctx.contact_timeout_duration(),
             stream.read_exact(&mut buffer),
         )
         .await
@@ -94,8 +69,8 @@ impl Connector {
                 transport::terminate(
                     codec::MessageCodec::new_framed(stream),
                     codec::SessionTermReasonCode::VersionMismatch,
-                    self.contact_timeout,
-                    self.tasks.cancel_token(),
+                    self.ctx.session.contact_timeout,
+                    &self.ctx.task_cancel_token,
                 )
                 .await;
             }
@@ -114,7 +89,7 @@ impl Connector {
             .trace_expect("Failed to get socket local address");
 
         if buffer[5] & 1 != 0 {
-            if let Some(tls_config) = self.tls_config.clone() {
+            if let Some(tls_config) = self.ctx.tls_config.clone() {
                 info!("Initiating TLS handshake with {remote_addr}");
                 return self
                     .tls_handshake(stream, remote_addr, local_addr, tls_config)
@@ -124,13 +99,13 @@ impl Connector {
                     });
             }
             info!("TLS requested by peer but no TLS configuration provided");
-        } else if self.must_use_tls {
+        } else if self.ctx.session.must_use_tls {
             warn!("Peer does not support TLS, but TLS is required by configuration");
             transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
-                self.contact_timeout,
-                self.tasks.cancel_token(),
+                self.ctx.session.contact_timeout,
+                &self.ctx.task_cancel_token,
             )
             .await;
 
@@ -214,10 +189,10 @@ impl Connector {
         // Send our SESS_INIT message
         transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
-                keepalive_interval: self.keepalive_interval.unwrap_or(0),
-                segment_mru: self.segment_mru,
-                transfer_mru: self.transfer_mru,
-                node_id: self.node_ids.first().cloned(),
+                keepalive_interval: self.ctx.keepalive_interval_secs(),
+                segment_mru: self.ctx.segment_mru,
+                transfer_mru: self.ctx.transfer_mru,
+                node_id: self.ctx.first_node_id(),
                 ..Default::default()
             }))
             .await
@@ -230,8 +205,8 @@ impl Connector {
         let peer_init = loop {
             match transport::next_with_timeout(
                 &mut transport,
-                self.contact_timeout,
-                self.tasks.cancel_token(),
+                self.ctx.session.contact_timeout,
+                &self.ctx.task_cancel_token,
             )
             .await
             .inspect_err(|e| info!("Failed to receive SESS_INIT message: {e:?}"))?
@@ -256,10 +231,7 @@ impl Connector {
         debug!("Received SESS_INIT {peer_init:?} from {remote_addr}");
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
-        let keepalive_interval = self
-            .keepalive_interval
-            .map(|keepalive_interval| peer_init.keepalive_interval.min(keepalive_interval))
-            .unwrap_or(0);
+        let keepalive_interval = self.ctx.negotiate_keepalive(peer_init.keepalive_interval);
 
         // Check peer init
         for i in &peer_init.session_extensions {
@@ -269,7 +241,7 @@ impl Connector {
                     transport,
                     codec::SessionTermReasonCode::ContactFailure,
                     keepalive_interval * 2,
-                    self.tasks.cancel_token(),
+                    &self.ctx.task_cancel_token,
                 )
                 .await;
                 return Err(transport::Error::InvalidProtocol);
@@ -279,31 +251,31 @@ impl Connector {
         let (tx, rx) = channel(1);
         let peer_node = peer_init.node_id.clone();
         let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(*remote_addr));
+        let cancel_token = self.ctx.session_cancel_token.clone();
         let session = session::Session::new(
             transport,
-            self.sink.clone(),
+            self.ctx.sink.clone(),
             peer_node,
             peer_addr,
-            if keepalive_interval != 0 {
-                Some(tokio::time::Duration::from_secs(keepalive_interval as u64))
-            } else {
-                None
-            },
+            context::ConnectionContext::keepalive_as_duration(keepalive_interval),
             segment_mtu
                 .map(|mtu| mtu.min(peer_init.segment_mru as usize))
                 .unwrap_or(peer_init.segment_mru as usize),
-            self.transfer_mru as usize,
+            self.ctx.transfer_mru as usize,
             rx,
+            cancel_token,
         );
 
         // Kick off the run() as a background task
-        let registry = self.registry.clone();
+        // Extract what we need to avoid capturing `self` (which has Arc<TaskPool>)
+        let registry = self.ctx.registry.clone();
+        let sink = self.ctx.sink.clone();
         let remote_addr = *remote_addr;
 
         hardy_async::spawn!(self.tasks, "active_session_task", async move {
             registry
                 .register_session(
-                    self.sink.clone(),
+                    sink,
                     connection::Connection { tx, local_addr },
                     remote_addr,
                     peer_init.node_id,

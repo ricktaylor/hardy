@@ -64,9 +64,12 @@ async fn exec_async(args: &Command) -> anyhow::Result<()> {
         tcpclv4_config.session_defaults.must_use_tls = true;
     }
 
-    let cla = std::sync::Arc::new(hardy_tcpclv4::Cla::new(cla_name.clone(), tcpclv4_config));
+    let cla = std::sync::Arc::new(
+        hardy_tcpclv4::Cla::new(&tcpclv4_config)
+            .map_err(|e| anyhow::anyhow!("Failed to create CLA '{cla_name}': {e}"))?,
+    );
 
-    bpa.register_cla(cla_name.clone(), None, cla.clone(), None)
+    cla.register(&bpa, cla_name.clone(), None)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{cla_name}': {e}"))?;
 

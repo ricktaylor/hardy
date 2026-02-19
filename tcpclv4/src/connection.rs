@@ -194,7 +194,7 @@ impl ConnectionRegistry {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn shutdown(&self) {
-        // This will close the tx end of the channels, which should cause the session::run tasks to exit
+        // Closing tx channels causes session::run tasks to exit
         self.pools
             .lock()
             .trace_expect("Failed to lock mutex")
