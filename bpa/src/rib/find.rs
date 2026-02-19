@@ -101,26 +101,32 @@ fn map_result(
 #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
 fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
     let mut peer_map: Option<HashMap<u32, &'a Eid>> = None;
-    for action in inner.locals.actions.get(to).into_iter().flatten() {
-        match &action {
-            local::Action::AdminEndpoint => {
-                debug!("Deliver to Admin Endpoint");
-                return Some(InternalFindResult::AdminEndpoint);
-            }
-            local::Action::Local(service) => {
-                if let Some(svc) = service {
-                    debug!("Deliver to Service {}", svc.service_id);
-                } else {
-                    debug!("Deliver to unregistered local service");
-                }
-                return Some(InternalFindResult::Deliver(service.clone()));
-            }
-            local::Action::Forward(peer) => {
-                // The 'to' Eid is the next-hop for all peers found here
-                if let Some(peer_map) = &mut peer_map {
-                    peer_map.insert(*peer, to);
-                } else {
-                    peer_map = Some([(*peer, to)].into());
+
+    // Iterate through all local patterns and find matches
+    for (pattern, actions) in &inner.locals.actions {
+        if pattern.matches(to) {
+            for action in actions {
+                match &action {
+                    local::Action::AdminEndpoint => {
+                        debug!("Deliver to Admin Endpoint");
+                        return Some(InternalFindResult::AdminEndpoint);
+                    }
+                    local::Action::Local(service) => {
+                        if let Some(svc) = service {
+                            debug!("Deliver to Service {}", svc.service_id);
+                        } else {
+                            debug!("Deliver to unregistered local service");
+                        }
+                        return Some(InternalFindResult::Deliver(service.clone()));
+                    }
+                    local::Action::Forward(peer) => {
+                        // The 'to' Eid is the next-hop for all peers found here
+                        if let Some(peer_map) = &mut peer_map {
+                            peer_map.insert(*peer, to);
+                        } else {
+                            peer_map = Some([(*peer, to)].into());
+                        }
+                    }
                 }
             }
         }

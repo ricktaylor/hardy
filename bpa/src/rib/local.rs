@@ -42,14 +42,14 @@ impl core::fmt::Display for Action {
 }
 
 pub struct LocalInner {
-    pub actions: HashMap<Eid, BTreeSet<local::Action>>,
-    pub finals: HashSet<EidPattern>,
+    pub actions: BTreeMap<EidPattern, BTreeSet<local::Action>>,
+    pub finals: BTreeSet<EidPattern>,
 }
 
 impl LocalInner {
     pub fn new(config: &config::Config) -> Self {
-        let mut actions = HashMap::new();
-        let mut finals = HashSet::new();
+        let mut actions = BTreeMap::new();
+        let mut finals = BTreeSet::new();
 
         // Add localnode admin endpoint
         actions.insert(
@@ -64,30 +64,29 @@ impl LocalInner {
         finals.insert(NodeId::LocalNode.into());
 
         if let Some(node_id) = &config.node_ids.ipn {
-            // Add the Admin Endpoint EID itself
-            actions.insert(
-                node_id.clone().into(),
-                [local::Action::AdminEndpoint].into(),
-            );
+            // Add the Admin Endpoint EID itself (exact match, not wildcard)
+            // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
+            let admin_eid: Eid = node_id.clone().into();
+            actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
 
             // Wait for well-known services
             // TODO: Drive this from a services file...
 
-            // Drop ephemeral services
+            // Drop ephemeral services (wildcard pattern for all services on this node)
+            // IpnNodeId -> EidPattern creates wildcard ipn:N.*
             finals.insert(node_id.clone().into());
         }
 
         if let Some(node_name) = &config.node_ids.dtn {
-            // Add the Admin Endpoint EID itself
-            actions.insert(
-                node_name.clone().into(),
-                [local::Action::AdminEndpoint].into(),
-            );
+            // Add the Admin Endpoint EID itself (exact match, not wildcard)
+            let admin_eid: Eid = node_name.clone().into();
+            actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
 
             // Wait for well-known services
             // TODO: Drive this from a services file...
 
-            // Drop ephemeral services
+            // Drop ephemeral services (wildcard pattern for all services on this node)
+            // DtnNodeId -> EidPattern creates wildcard dtn://node/**
             finals.insert(node_name.clone().into());
         }
 
@@ -96,14 +95,14 @@ impl LocalInner {
 }
 
 impl Rib {
-    async fn add_local(&self, eid: Eid, action: Action) -> bool {
-        info!("Adding local route {eid} => {action}");
+    async fn add_local(&self, pattern: EidPattern, action: Action) -> bool {
+        info!("Adding local route {pattern} => {action}");
 
-        if !match self.inner.write().locals.actions.entry(eid.clone()) {
-            hash_map::Entry::Occupied(mut occupied_entry) => {
+        if !match self.inner.write().locals.actions.entry(pattern.clone()) {
+            btree_map::Entry::Occupied(mut occupied_entry) => {
                 occupied_entry.get_mut().insert(action)
             }
-            hash_map::Entry::Vacant(vacant_entry) => {
+            btree_map::Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert([action].into());
                 true
             }
@@ -115,25 +114,31 @@ impl Rib {
         true
     }
 
+    /// Add a forward route for a CLA peer.
+    /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
     pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
-        self.add_local(node_id.into(), Action::Forward(peer)).await
+        let pattern: EidPattern = node_id.into();
+        self.add_local(pattern, Action::Forward(peer)).await
     }
 
+    /// Add a service route for a local service.
+    /// The Eid is converted to an exact pattern.
     pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
-        self.add_local(eid, Action::Local(Some(service))).await
+        let pattern: EidPattern = eid.into();
+        self.add_local(pattern, Action::Local(Some(service))).await
     }
 
-    fn remove_local(&self, eid: &Eid, mut f: impl FnMut(&Action) -> bool) -> bool {
+    fn remove_local(&self, pattern: &EidPattern, mut f: impl FnMut(&Action) -> bool) -> bool {
         self.inner
             .write()
             .locals
             .actions
-            .get_mut(eid)
+            .get_mut(pattern)
             .map(|h| {
                 let mut removed = false;
                 h.retain(|a| {
                     if f(a) {
-                        info!("Removed route {eid} => {a}");
+                        info!("Removed route {pattern} => {a}");
                         removed = true;
                         false
                     } else {
@@ -145,9 +150,11 @@ impl Rib {
             .unwrap_or(false)
     }
 
+    /// Remove a forward route for a CLA peer.
     pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
+        let pattern: EidPattern = node_id.into();
         if !self.remove_local(
-            &node_id.into(),
+            &pattern,
             |action| matches!(action, Action::Forward(p) if &peer == p),
         ) {
             return false;
@@ -159,9 +166,11 @@ impl Rib {
         true
     }
 
+    /// Remove a service route for a local service.
     pub fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
+        let pattern: EidPattern = eid.clone().into();
         self.remove_local(
-            eid,
+            &pattern,
             |action| matches!(action, Action::Local(Some(svc)) if svc.as_ref() == service),
         )
     }

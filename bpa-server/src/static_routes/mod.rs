@@ -90,8 +90,8 @@ impl StaticRoutes {
                 .await;
         }
 
-        // Calculate routes to add (present in new but missing or changed in current)
-        new_routes.retain(|r| self.routes.iter().any(|r2| r != r2));
+        // Calculate routes to add (present in new but missing in current)
+        new_routes.retain(|r| !self.routes.iter().any(|r2| r == r2));
 
         // Add routes
         for r in new_routes {
