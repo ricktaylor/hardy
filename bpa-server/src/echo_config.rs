@@ -5,7 +5,7 @@ use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
 /// Initialize and register echo services based on configuration
-pub async fn init(config: EchoConfig, bpa: &hardy_bpa::bpa::Bpa) {
+pub async fn init(config: &EchoConfig, bpa: &hardy_bpa::bpa::Bpa) {
     if let EchoConfig::Enabled(services) = config {
         info!(
             "Registering {} echo service(s): {:?}",
@@ -13,14 +13,13 @@ pub async fn init(config: EchoConfig, bpa: &hardy_bpa::bpa::Bpa) {
             services
         );
         let echo = Arc::new(hardy_echo_service::EchoService::new());
-        for service in services {
-            match bpa
-                .register_service(Some(service.clone()), echo.clone())
-                .await
-            {
-                Ok(eid) => info!("Echo service registered at {eid}"),
-                Err(e) => error!("Failed to register echo service on {service}: {e}"),
+        match echo.register(bpa, services).await {
+            Ok(eids) => {
+                for eid in eids {
+                    info!("Echo service registered at {eid}");
+                }
             }
+            Err(e) => error!("Failed to register echo service: {e}"),
         }
     }
 }

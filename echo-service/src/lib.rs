@@ -1,5 +1,6 @@
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 pub struct EchoService {
@@ -15,6 +16,33 @@ impl Default for EchoService {
 impl EchoService {
     pub fn new() -> Self {
         EchoService { sink: Once::new() }
+    }
+
+    /// Registers this service on the specified service IDs.
+    ///
+    /// The same EchoService instance can be registered on multiple service IDs.
+    /// Only the first registration's sink is stored (subsequent registrations
+    /// share the same underlying service).
+    pub async fn register(
+        self: &Arc<Self>,
+        bpa: &hardy_bpa::bpa::Bpa,
+        services: &[hardy_bpv7::eid::Service],
+    ) -> Result<Vec<hardy_bpv7::eid::Eid>, hardy_bpa::services::Error> {
+        let mut eids = Vec::with_capacity(services.len());
+        for service in services {
+            let eid = bpa
+                .register_service(Some(service.clone()), self.clone())
+                .await?;
+            eids.push(eid);
+        }
+        Ok(eids)
+    }
+
+    /// Unregisters this service from the BPA.
+    pub async fn unregister(&self) {
+        if let Some(sink) = self.sink.get() {
+            sink.unregister().await;
+        }
     }
 
     async fn echo(&self, data: hardy_bpa::Bytes) -> Result<(), hardy_bpa::Error> {
@@ -66,12 +94,12 @@ impl hardy_bpa::services::Service for EchoService {
         _source: &hardy_bpv7::eid::Eid,
         sink: Box<dyn hardy_bpa::services::ServiceSink>,
     ) {
-        // Ensure single initialization
+        // Store sink (only first registration succeeds, others are ignored)
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {
-        // Do nothing
+        // Nothing to clean up
     }
 
     async fn on_status_notify(
@@ -86,8 +114,6 @@ impl hardy_bpa::services::Service for EchoService {
     }
 
     /// Called when a bundle arrives
-    /// - `data`: raw bundle bytes (service can parse if needed)
-    /// - `expiry`: calculated from bundle metadata by dispatcher
     async fn on_receive(&self, data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
         _ = self.echo(data).await;
     }

@@ -142,7 +142,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Register echo service
     #[cfg(feature = "echo")]
-    echo_config::init(config.echo, &bpa).await;
+    echo_config::init(&config.echo, &bpa).await;
 
     // Start the BPA
     bpa.start(config.recover_storage);
