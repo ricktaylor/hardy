@@ -1,4 +1,5 @@
 use super::*;
+use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_proto::{cla::*, proxy::*};
 
@@ -7,8 +8,8 @@ struct ClaInner {
 }
 
 struct Cla {
-    inner: spin::once::Once<ClaInner>,
-    proxy: spin::once::Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
+    inner: Once<ClaInner>,
+    proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
 }
 
 impl Cla {
@@ -221,8 +222,8 @@ impl cla_server::Cla for Service {
         let mut channel_receiver = request.into_inner();
 
         let cla = Arc::new(Cla {
-            inner: spin::once::Once::new(),
-            proxy: spin::once::Once::new(),
+            inner: Once::new(),
+            proxy: Once::new(),
         });
 
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {

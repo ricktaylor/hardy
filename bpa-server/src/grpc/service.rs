@@ -1,4 +1,5 @@
 use super::*;
+use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_proto::{proxy::*, service::*, to_timestamp};
 
@@ -7,8 +8,8 @@ struct LowLevelServiceInner {
 }
 
 struct LowLevelService {
-    inner: spin::once::Once<LowLevelServiceInner>,
-    proxy: spin::once::Once<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
+    inner: Once<LowLevelServiceInner>,
+    proxy: Once<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
 }
 
 impl LowLevelService {
@@ -210,8 +211,8 @@ impl service_server::Service for GrpcService {
         let mut channel_receiver = request.into_inner();
 
         let svc = Arc::new(LowLevelService {
-            inner: spin::once::Once::new(),
-            proxy: spin::once::Once::new(),
+            inner: Once::new(),
+            proxy: Once::new(),
         });
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
             match msg {

@@ -1,4 +1,5 @@
 use super::*;
+use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
 use hardy_proto::{proxy::*, service::*, to_timestamp};
 
@@ -7,8 +8,8 @@ struct ApplicationInner {
 }
 
 struct Application {
-    inner: spin::once::Once<ApplicationInner>,
-    proxy: spin::once::Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
+    inner: Once<ApplicationInner>,
+    proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
@@ -242,8 +243,8 @@ impl application_server::Application for Service {
         let mut channel_receiver = request.into_inner();
 
         let app = Arc::new(Application {
-            inner: spin::once::Once::new(),
-            proxy: spin::once::Once::new(),
+            inner: Once::new(),
+            proxy: Once::new(),
         });
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
             match msg {
