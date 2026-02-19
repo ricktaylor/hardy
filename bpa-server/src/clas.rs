@@ -57,9 +57,11 @@ pub async fn init(config: Vec<Cla>, bpa: &Arc<hardy_bpa::bpa::Bpa>) -> anyhow::R
             }
             #[cfg(feature = "file-cla")]
             ClaConfig::File(config) => {
-                let cla = Arc::new(hardy_file_cla::Cla::new(cla_config.name.clone(), config));
+                let cla = Arc::new(hardy_file_cla::Cla::new(&config).map_err(|e| {
+                    anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
+                })?);
 
-                bpa.register_cla(cla_config.name.clone(), None, cla, policy)
+                cla.register(bpa, cla_config.name.clone())
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_config.name)

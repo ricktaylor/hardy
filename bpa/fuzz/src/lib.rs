@@ -101,20 +101,18 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     );
 
     #[cfg(feature = "file-cla")]
-    bpa.register_cla(
-        "file-cla".to_string(),
-        None,
-        std::sync::Arc::new(hardy_file_cla::Cla::new(
-            "file-cla".to_string(),
-            hardy_file_cla::Config {
+    {
+        let cla = std::sync::Arc::new(
+            hardy_file_cla::Cla::new(&hardy_file_cla::Config {
                 outbox: None,
                 peers: [("ipn:0.3.0".parse().unwrap(), path.join("inbox"))].into(),
-            },
-        )),
-        None,
-    )
-    .await
-    .expect("Failed to register CLA");
+            })
+            .expect("Failed to create file CLA"),
+        );
+        cla.register(&bpa, "file-cla".to_string())
+            .await
+            .expect("Failed to register CLA");
+    }
 
     bpa
 }

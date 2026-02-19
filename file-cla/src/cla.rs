@@ -1,55 +1,11 @@
 use super::*;
 use hardy_bpa::async_trait;
 
-#[derive(thiserror::Error, Debug)]
-enum Error {
-    #[error("Invalid path '{0}'")]
-    BadPath(String),
-}
-
-fn check_path(cwd: &Path, path: &PathBuf) -> hardy_bpa::cla::Result<String> {
-    let path = cwd.join(path);
-
-    // Check everything is UTF-8
-    if path.to_str().is_none() {
-        error!("Ignoring invalid path '{}'", path.display());
-        return Err(hardy_bpa::cla::Error::Internal(
-            Error::BadPath(format!("{}", path.display())).into(),
-        ));
-    }
-
-    // Ensure we have created the path
-    std::fs::create_dir_all(&path).map_err(|e| {
-        error!("Failed to create directory 'path': {e}");
-        hardy_bpa::cla::Error::Internal(e.into())
-    })?;
-
-    let path = path.canonicalize().map_err(|e| {
-        error!("Failed to canonicalise path '{}': {e}'", path.display());
-        hardy_bpa::cla::Error::Internal(e.into())
-    })?;
-
-    Ok(path.to_string_lossy().into_owned())
-}
-
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
-        let cwd = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(e) => {
-                error!("Failed to get current working directory: {e}");
-                return;
-            }
-        };
-
-        let mut inboxes = HashSet::new();
-        for (eid, path) in &self.config.peers {
-            let Ok(path) = check_path(&cwd, path) else {
-                return;
-            };
-
-            // Register the peer with the BPA
+        // Register all peers with the BPA
+        for (eid, path) in &self.inboxes {
             if let Err(e) = sink
                 .add_peer(
                     eid.clone(),
@@ -62,28 +18,17 @@ impl hardy_bpa::cla::Cla for Cla {
                 error!("add_peer() failed: {e}");
                 return;
             }
-
-            inboxes.insert(path);
         }
 
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-        if self
-            .inner
-            .set(ClaInner {
-                sink: sink.clone(),
-                inboxes,
-            })
-            .is_err()
-        {
+        if self.sink.set(sink.clone()).is_err() {
             error!("CLA on_register called twice!");
             return;
         }
 
-        if let Some(outbox) = &self.config.outbox {
-            let Ok(outbox) = check_path(&cwd, outbox) else {
-                return;
-            };
-            self.start_watcher(sink, outbox).await;
+        // Start the file watcher if outbox is configured
+        if let Some(outbox) = &self.outbox {
+            self.start_watcher(sink, outbox.clone()).await;
         }
     }
 
@@ -97,14 +42,14 @@ impl hardy_bpa::cla::Cla for Cla {
         cla_addr: &hardy_bpa::cla::ClaAddress,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        let inner = self.inner.get().ok_or_else(|| {
+        let _sink = self.sink.get().ok_or_else(|| {
             error!("forward called before on_register!");
             hardy_bpa::cla::Error::Disconnected
         })?;
 
         if let hardy_bpa::cla::ClaAddress::Private(remote_addr) = cla_addr
-            && let Ok(path) = str::from_utf8(remote_addr.as_ref())
-            && inner.inboxes.contains(path)
+            && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
+            && self.inboxes.values().any(|p| p == addr_str)
         {
             // Write bundle to peer's inbox directory
             let path = match hardy_bpv7::bundle::Id::parse(&bundle) {
@@ -114,7 +59,7 @@ impl hardy_bpa::cla::Cla for Cla {
                     if let Some(fragment_info) = id.fragment_info {
                         filename.push_str(format!("_fragment_{}", fragment_info.offset).as_str());
                     }
-                    PathBuf::from(path).join(filename)
+                    PathBuf::from(addr_str).join(filename)
                 }
                 Err(e) => {
                     warn!("Ignoring invalid bundle: {e}");

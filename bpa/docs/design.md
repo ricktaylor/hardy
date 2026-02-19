@@ -139,10 +139,10 @@ The Sink provides methods for the component to interact with the BPA (dispatch b
 
 #### Lifecycle and Disconnection
 
-The Sink uses weak references internally, creating a bidirectional disconnection model:
+The Registry holds a strong reference to registered components, ensuring they remain alive for as long as they are registered. Disconnection is bidirectional:
 
 **Path 1: Component-initiated disconnection**
-When a component drops its Sink (explicitly or by calling `sink.unregister()`), the BPA detects this and calls `on_unregister()` on the component, allowing cleanup.
+When a component calls `sink.unregister()` or drops its Sink, the BPA removes the component from the registry and calls `on_unregister()` on the component, allowing cleanup. Dropping the Sink is equivalent to calling `unregister()` explicitly.
 
 **Path 2: BPA-initiated disconnection**
 When the BPA shuts down or unregisters a component, it calls `on_unregister()` on the component. The Sink becomes non-functional (operations return `Disconnected` error), and the component should release its Sink reference.
@@ -151,16 +151,61 @@ When the BPA shuts down or unregisters a component, it calls `on_unregister()` o
 
 **Simplification**: Because the Sink returns `Disconnected` errors after unregistration, implementations don't need defensive patterns like `Option<Sink>` with `take()` in `on_unregister()`. The Sink can remain stored; post-disconnection calls simply fail gracefully. This means `on_unregister()` only handles component-specific cleanup (stopping tasks, closing connections), not Sink lifecycle.
 
-Example:
+#### Recommended Component Implementation Pattern
+
+Components (CLAs, Services, Applications) should follow a consistent API pattern:
 
 ```rust
-struct MyComponent {
-    sink: Once<Arc<dyn Sink>>,  // Stored for component lifetime
+impl MyComponent {
+    /// Creates a new component instance.
+    /// Validates configuration eagerly; returns error if invalid.
+    pub fn new(config: &Config) -> Result<Self, Error> { ... }
+
+    /// Registers this component with the BPA.
+    /// Handles all registration details internally.
+    pub async fn register(self: &Arc<Self>, bpa: &Bpa) -> Result<(), Error> { ... }
+
+    /// Unregisters this component from the BPA.
+    pub async fn unregister(&self) { ... }
+}
+```
+
+**Rationale:**
+
+- **`new(&Config) -> Result`**: Validates configuration and creates directories/resources eagerly. Errors surface at construction time rather than during registration, making failures easier to diagnose.
+
+- **`register(&Arc<Self>, &Bpa)`**: Components manage their own registration, encapsulating the details (CLA name, address type, policy). The `Arc<Self>` receiver makes ownership requirements explicit. Returns after the Sink is stored and any background tasks are started.
+
+- **`unregister(&self)`**: Provides explicit unregistration. Internally calls `sink.unregister()`. Dropping the Sink has the same effect, but explicit unregistration is clearer in application code.
+
+This pattern keeps registration logic with the component rather than scattered across application code, while the BPA's trait-based registry handles the underlying mechanics.
+
+Example implementation:
+
+```rust
+pub struct MyComponent {
+    sink: OnceLock<Arc<dyn Sink>>,
+    // ... other fields initialized in new()
 }
 
-impl ComponentTrait for MyComponent {
-    async fn on_register(&self, sink: Box<dyn Sink>, ...) {
-        self.sink.call_once(|| sink.into());  // Store it
+impl MyComponent {
+    pub fn new(config: &Config) -> Result<Self, Error> {
+        // Validate and prepare resources eagerly
+        Ok(Self {
+            sink: OnceLock::new(),
+            // ...
+        })
+    }
+
+    pub async fn register(self: &Arc<Self>, bpa: &Bpa) -> Result<(), Error> {
+        bpa.register_xxx(..., self.clone(), ...).await?;
+        Ok(())
+    }
+
+    pub async fn unregister(&self) {
+        if let Some(sink) = self.sink.get() {
+            sink.unregister().await;
+        }
     }
 }
 ```
