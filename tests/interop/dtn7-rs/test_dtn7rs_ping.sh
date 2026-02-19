@@ -284,7 +284,7 @@ echo "============================================================"
 
 # Create Hardy config for server mode
 cat > "$TEST_DIR/hardy_config.toml" << EOF
-log_level = "info"
+log_level = "debug"
 status_reports = true
 node_ids = "ipn:$HARDY_NODE_NUM.0"
 
