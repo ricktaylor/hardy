@@ -456,17 +456,19 @@ Bundle arrives from source S, no return route exists
 
 ## 8. Integration & Testing
 
-- [ ] **8.1 Update ping tool for new echo service**
-  - Verify `tools/src/ping/` works with new Service-based echo
-  - Define ping request/response payload format (sequence number, timestamp for RTT)
-  - Payload format is ping tool's concern - echo service is payload-agnostic
+- [x] **8.1 Update ping tool for new echo service**
+  - Reworked `tools/src/ping/` with proper status report handling
+  - New payload format with sequence number, timestamps, padding for RTT measurement
+  - Man page at `tools/docs/bp-ping.1.md`
+  - BIB-HMAC-SHA256 signing with session key for payload integrity
 
 - [ ] **8.2 Add integration tests**
-  - Single-hop ping/echo
-  - Neighbour resolution (BP-ARP: CL address → EID → 1-hop route)
-  - SAND topology discovery and reachability states
-  - Multi-hop routing with static routes
-  - Dynamic peer changes (CLA add/remove neighbour)
+  - [x] dtn7-rs interop tests (`tests/interop/dtn7-rs/`) - ping/echo between hardy and dtn7-rs
+  - [x] Single-hop ping/echo (`tests/interop/hardy/`) - hardy-to-hardy ping
+  - [ ] Neighbour resolution (BP-ARP: CL address → EID → 1-hop route)
+  - [ ] SAND topology discovery and reachability states
+  - [ ] Multi-hop routing with static routes
+  - [ ] Dynamic peer changes (CLA add/remove neighbour)
 
 ---
 
@@ -1170,7 +1172,7 @@ Access control for remote gRPC clients. In-process components (CLAs, services, r
 │  └───────────────────────────────────────────────────────┘  │
 │                          ▲                                   │
 │  ┌───────────────────────┼───────────────────────────────┐  │
-│  │  bpa-server/src/grpc/ │ ◄── TRUST BOUNDARY           │  │
+│  │  proto/src/server/    │ ◄── TRUST BOUNDARY           │  │
 │  │  All security enforcement happens here                │  │
 │  └───────────────────────┼───────────────────────────────┘  │
 └──────────────────────────┼──────────────────────────────────┘
@@ -1180,7 +1182,7 @@ Access control for remote gRPC clients. In-process components (CLAs, services, r
 
 **Implications:**
 - `bpa/` crate remains security-agnostic, trusts all callers
-- All validation code goes in `bpa-server/src/grpc/`
+- All validation code goes in `proto/src/server/` (after Section 13 refactoring)
 - In-process components bypass security checks (same process = trusted)
 
 ### Threat Summary (Remote gRPC Only)
@@ -1191,14 +1193,14 @@ Access control for remote gRPC clients. In-process components (CLAs, services, r
 
 ### Tasks
 
-All implementation in `bpa-server/src/grpc/`:
+All implementation in `proto/src/server/` (after Section 13 refactoring):
 
 - [ ] **12.1 mTLS authentication**
   - Enable mTLS on gRPC server (require client certificates)
   - Extract certificate CN/SAN as client identity
   - Reject connections without valid certificate
   - Same mechanism for local (`localhost`) and remote connections
-  - Location: `bpa-server/src/grpc/mod.rs`
+  - Location: `proto/src/server/mod.rs`
 
 - [ ] **12.2 Policy file infrastructure**
   - Define policy file format (TOML) in `bpa-server`
@@ -1211,17 +1213,17 @@ All implementation in `bpa-server/src/grpc/`:
   - Validate EID namespace on registration
   - Validate destination namespace on send
   - Validate bundle ownership on cancel
-  - Location: `bpa-server/src/grpc/service.rs`
+  - Location: `proto/src/server/service.rs`
 
 - [ ] **12.4 CLA authorization**
   - Validate peer EID namespace on `add_peer`
   - Validate source EID namespace on `dispatch`
-  - Location: `bpa-server/src/grpc/cla.rs`
+  - Location: `proto/src/server/cla.rs`
 
 - [ ] **12.5 Routing agent authorization** (future)
   - Validate pattern namespace on route add
   - Validate priority bounds
-  - Location: `bpa-server/src/grpc/routing.rs` (when created)
+  - Location: `proto/src/server/routing.rs` (when created)
 
 - [ ] **12.6 Rate limiting**
   - Per-connection rate limiting in gRPC layer
@@ -1247,6 +1249,11 @@ For reference when closing external issues:
 
 | Date | Tasks | Summary |
 |------|-------|---------|
+| 2026-02-19 | 8.2 | Hardy-to-hardy interop test, `BpaRegistration` trait with `RemoteBpa` client, gRPC restructure to `proto/src/server/`, `hardy_async::TaskPool`, component refactoring, dependency cleanup |
+| 2026-02-18 | 8.2 | dtn7-rs interop tests (`tests/interop/dtn7-rs/`), centralized logging filters |
+| 2026-02-17 | 8.1 | Reworked `bp ping` tool with proper status report handling, new payload format, man page |
+| 2026-02-17 | - | Fix clean shutdown (storage channel, dispatcher), RIB route priority fix (Drop vs Via) |
+| 2026-02-17 | - | TCPCLv4 codec fix (data extraction skipping header bytes) |
 | 2026-02-10 | 3.2, 3.3 | Echo service (`echo-service/`), hardy-async `Once<T>`, OnceLock migrations |
 | 2026-02-09 | 2.1, 7.0 | Ingress metadata in `ReadOnlyMetadata`, available to filters |
 | 2026-02-06 | - | IPN Legacy Filter, config/serde improvements |
@@ -1257,7 +1264,7 @@ For reference when closing external issues:
 
 ## Appendix: Scattered Code TODOs
 
-This section captures TODO comments found throughout the codebase that aren't yet tracked in the main sections above. Last updated: 2026-02-11.
+This section captures TODO comments found throughout the codebase that aren't yet tracked in the main sections above. Last updated: 2026-02-19.
 
 ### Functional TODOs (Production Code)
 

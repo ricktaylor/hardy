@@ -1,22 +1,102 @@
 use super::*;
 
-/// Trait for registering CLAs, services, and routes with a BPA.
+/// Trait for registering CLAs, services, and applications with a BPA.
 ///
 /// This trait abstracts the registration interface, allowing components
-/// like CLAs and services to work with either a local [`Bpa`] instance
-/// or a remote BPA via gRPC.
+/// to work with either a local [`Bpa`] instance or a remote BPA via gRPC.
+///
+/// # Component Lifecycle
+///
+/// Components follow a consistent lifecycle pattern:
+///
+/// 1. **Construction**: `new(&Config) -> Result<Self, Error>` validates configuration
+///    eagerly. Errors surface at construction time rather than during registration.
+///
+/// 2. **Registration**: `register(&Arc<Self>, &dyn BpaRegistration)` calls the
+///    appropriate `register_*` method. The BPA calls `on_register()` on the component,
+///    providing a Sink for communication back to the BPA.
+///
+/// 3. **Active**: Component uses Sink methods to interact with the BPA. The Sink
+///    remains valid until unregistration.
+///
+/// 4. **Unregistration**: Either the component calls `sink.unregister()`, or the BPA
+///    initiates shutdown and calls `on_unregister()`.
+///
+/// # Sink Storage Requirement
+///
+/// **Components MUST store the Sink for their entire active lifetime.**
+///
+/// The Sink is provided in `on_register()` and must be retained (typically in
+/// a `spin::Once<T>` or `OnceLock<T>`) until unregistration. If `on_register()`
+/// returns without storing the Sink, the Sink is dropped and the component is
+/// automatically unregistered.
+///
+/// ```ignore
+/// pub struct MyComponent {
+///     sink: spin::Once<Arc<dyn Sink>>,
+///     // ... other fields
+/// }
+///
+/// impl MyTrait for MyComponent {
+///     fn on_register(&self, sink: Arc<dyn Sink>) {
+///         // MUST store the sink - dropping it triggers unregistration
+///         self.sink.set(sink);
+///     }
+/// }
+/// ```
+///
+/// # Post-Disconnection Behaviour
+///
+/// After unregistration, the Sink remains stored but becomes non-functional:
+/// all operations return `Error::Disconnected`. Components don't need defensive
+/// patterns like `Option<Sink>` with `take()` in `on_unregister()` - the Sink
+/// can remain stored and post-disconnection calls simply fail gracefully.
+///
+/// This means `on_unregister()` only handles component-specific cleanup (stopping
+/// tasks, closing connections), not Sink lifecycle management.
+///
+/// # Recommended Implementation Pattern
+///
+/// ```ignore
+/// impl MyComponent {
+///     /// Creates a new component. Validates configuration eagerly.
+///     pub fn new(config: &Config) -> Result<Self, Error> {
+///         // Validate and prepare resources
+///         Ok(Self { sink: spin::Once::new(), /* ... */ })
+///     }
+///
+///     /// Registers with the BPA. Returns after Sink is stored.
+///     pub async fn register(
+///         self: &Arc<Self>,
+///         bpa: &dyn BpaRegistration,
+///     ) -> Result<(), Error> {
+///         bpa.register_xxx(/* ... */, self.clone(), /* ... */).await?;
+///         Ok(())
+///     }
+///
+///     /// Explicit unregistration.
+///     pub async fn unregister(&self) {
+///         if let Some(sink) = self.sink.get() {
+///             sink.unregister().await;
+///         }
+///     }
+/// }
+/// ```
 ///
 /// # For CLA Implementors
 ///
 /// CLAs receive callbacks via the [`cla::Sink`] trait, which is provided
-/// in [`cla::Cla::on_register`]. The Sink implementation differs based on
-/// whether the BPA is local or remote, but the CLA code remains the same.
+/// in [`cla::Cla::on_register`]. Key Sink methods:
+///
+/// - `dispatch()` - Submit received bundles to the BPA
+/// - `add_peer()` / `remove_peer()` - Manage peer connections
+/// - `unregister()` - Disconnect from the BPA
 ///
 /// # For Service Implementors
 ///
-/// Services receive callbacks via [`services::ServiceSink`] or
-/// [`services::ApplicationSink`], provided in the respective `on_register`
-/// methods.
+/// Services receive [`services::ServiceSink`] (low-level, full bundle access) or
+/// [`services::ApplicationSink`] (high-level, payload-only), provided in their
+/// respective `on_register` methods.
 #[async_trait]
 pub trait BpaRegistration: Send + Sync {
     /// Register a Convergence Layer Adapter with the BPA.

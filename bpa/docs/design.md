@@ -115,12 +115,7 @@ External components (CLAs, services, future routing agents) are managed through 
 
 #### Registry Pattern
 
-Each component type has a dedicated Registry that manages:
-
-- Component registration and lookup
-- Lifecycle coordination (startup, shutdown)
-- Sink creation with weak back-references
-- Component-specific state (peers for CLAs, endpoints for services)
+Each component type has a dedicated Registry that manages registration, lifecycle coordination, and component-specific state. Registries create Sinks with weak back-references to avoid reference cycles.
 
 | Registry | Component Trait | Sink Trait | Purpose |
 |----------|-----------------|------------|---------|
@@ -133,82 +128,15 @@ Each component type has a dedicated Registry that manages:
 
 #### Bidirectional Sink Pattern
 
-Components with Sinks communicate with the BPA through paired traits: a primary trait implemented by the component, and a corresponding Sink trait provided by the BPA.
+Components communicate with the BPA through paired traits: a primary trait implemented by the component, and a corresponding Sink trait provided by the BPA. The Sink provides methods to interact with the BPA (dispatch bundles, send data, manage state) without holding direct references to BPA internals. This indirection creates a stable interface that enables independent evolution, isolated testing, and transparent local/remote operation via the [`BpaRegistration`] trait.
 
-The Sink provides methods for the component to interact with the BPA (dispatch bundles, send data, manage state) without holding direct references to BPA internals. This indirection creates a stable interface that enables independent evolution and isolated testing.
+#### Lifecycle
 
-#### Lifecycle and Disconnection
+The Registry holds a strong reference to registered components. Disconnection is bidirectional: components can call `sink.unregister()` or drop their Sink, and the BPA can initiate shutdown calling `on_unregister()`. After disconnection, the Sink returns `Disconnected` errors for all operations.
 
-The Registry holds a strong reference to registered components, ensuring they remain alive for as long as they are registered. Disconnection is bidirectional:
+See the [`BpaRegistration`] trait documentation for implementation requirements and recommended patterns.
 
-**Path 1: Component-initiated disconnection**
-When a component calls `sink.unregister()` or drops its Sink, the BPA removes the component from the registry and calls `on_unregister()` on the component, allowing cleanup. Dropping the Sink is equivalent to calling `unregister()` explicitly.
-
-**Path 2: BPA-initiated disconnection**
-When the BPA shuts down or unregisters a component, it calls `on_unregister()` on the component. The Sink becomes non-functional (operations return `Disconnected` error), and the component should release its Sink reference.
-
-**Critical implementation requirement**: Components MUST store the Sink for their entire active lifetime. If `on_register()` returns without storing the Sink, it is immediately dropped, triggering automatic unregistration.
-
-**Simplification**: Because the Sink returns `Disconnected` errors after unregistration, implementations don't need defensive patterns like `Option<Sink>` with `take()` in `on_unregister()`. The Sink can remain stored; post-disconnection calls simply fail gracefully. This means `on_unregister()` only handles component-specific cleanup (stopping tasks, closing connections), not Sink lifecycle.
-
-#### Recommended Component Implementation Pattern
-
-Components (CLAs, Services, Applications) should follow a consistent API pattern:
-
-```rust
-impl MyComponent {
-    /// Creates a new component instance.
-    /// Validates configuration eagerly; returns error if invalid.
-    pub fn new(config: &Config) -> Result<Self, Error> { ... }
-
-    /// Registers this component with the BPA.
-    /// Handles all registration details internally.
-    pub async fn register(self: &Arc<Self>, bpa: &BpaRegistration) -> Result<(), Error> { ... }
-
-    /// Unregisters this component from the BPA.
-    pub async fn unregister(&self) { ... }
-}
-```
-
-**Rationale:**
-
-- **`new(&Config) -> Result`**: Validates configuration and creates directories/resources eagerly. Errors surface at construction time rather than during registration, making failures easier to diagnose.
-
-- **`register(&Arc<Self>, &BpaRegistration)`**: Components manage their own registration, encapsulating the details (CLA name, address type, policy). The `Arc<Self>` receiver makes ownership requirements explicit. Returns after the Sink is stored and any background tasks are started.
-
-- **`unregister(&self)`**: Provides explicit unregistration. Internally calls `sink.unregister()`. Dropping the Sink has the same effect, but explicit unregistration is clearer in application code.
-
-This pattern keeps registration logic with the component rather than scattered across application code, while the BPA's trait-based registry handles the underlying mechanics.
-
-Example implementation:
-
-```rust
-pub struct MyComponent {
-    sink: OnceLock<Arc<dyn Sink>>,
-    // ... other fields initialized in new()
-}
-
-impl MyComponent {
-    pub fn new(config: &Config) -> Result<Self, Error> {
-        // Validate and prepare resources eagerly
-        Ok(Self {
-            sink: OnceLock::new(),
-            // ...
-        })
-    }
-
-    pub async fn register(self: &Arc<Self>, bpa: &BpaRegistration) -> Result<(), Error> {
-        bpa.register_xxx(..., self.clone(), ...).await?;
-        Ok(())
-    }
-
-    pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
-    }
-}
-```
+[`BpaRegistration`]: ../src/bpa.rs
 
 #### Authorization and Ownership
 
