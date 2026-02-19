@@ -19,6 +19,13 @@ impl DecapService {
         }
     }
 
+    /// Unregister this service from the BPA.
+    pub async fn unregister(&self) {
+        if let Some(sink) = self.sink.get() {
+            sink.unregister().await;
+        }
+    }
+
     /// Extract inner bundle from outer bundle payload.
     fn decapsulate(&self, outer_bytes: Bytes) -> Result<Bytes, Error> {
         // Parse the outer bundle

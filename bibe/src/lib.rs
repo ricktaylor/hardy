@@ -26,33 +26,72 @@ use tracing::{debug, error, warn};
 /// - CLA for encapsulation (via `forward()`)
 /// - Service for decapsulation (via `on_receive()`)
 pub struct Bibe {
+    // Config values needed for registration
+    decap_service_id: Option<Service>,
+    tunnels: Vec<Tunnel>,
+
+    // Internal components
     cla: Arc<cla::BibeCla>,
     decap_service: Arc<service::DecapService>,
 }
 
 impl Bibe {
-    /// Create a new BIBE instance with the given tunnel source EID.
+    /// Create a new BIBE instance from configuration.
     ///
-    /// For full initialization including BPA registration, use [`init()`] instead.
-    pub fn new(tunnel_source: Eid) -> Self {
-        let cla = Arc::new(cla::BibeCla::new(tunnel_source));
+    /// # Arguments
+    ///
+    /// * `config` - The configuration for this BIBE instance.
+    pub fn new(config: &Config) -> Self {
+        let cla = Arc::new(cla::BibeCla::new(config.tunnel_source.clone()));
         let decap_service = Arc::new(service::DecapService::new(cla.clone()));
 
-        Self { cla, decap_service }
+        Self {
+            decap_service_id: config.decap_service_id.clone(),
+            tunnels: config.tunnels.clone(),
+            cla,
+            decap_service,
+        }
     }
 
-    /// Get the CLA for registration with BPA.
+    /// Register this BIBE instance with the BPA.
     ///
-    /// Register with: `bpa.register_cla("bibe", bibe.cla()).await?;`
-    pub fn cla(&self) -> Arc<dyn hardy_bpa::cla::Cla> {
-        self.cla.clone()
+    /// This registers the CLA and decapsulation service with the BPA,
+    /// and adds all configured tunnel destinations.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = bibe::Config::new(Eid::new("ipn:1.0"))
+    ///     .with_decap_service_id(Service::Ipn(12))
+    ///     .with_tunnel(NodeId::new("dtn://tunnel1"), Eid::new("ipn:100.12"));
+    ///
+    /// let bibe = Arc::new(bibe::Bibe::new(&config));
+    /// bibe.register(&bpa).await?;
+    /// ```
+    pub async fn register(self: &Arc<Self>, bpa: &hardy_bpa::bpa::Bpa) -> Result<(), Error> {
+        // Register CLA (uses Private address type)
+        bpa.register_cla("bibe".into(), None, self.cla.clone(), None)
+            .await?;
+
+        // Register decapsulation service
+        bpa.register_service(self.decap_service_id.clone(), self.decap_service.clone())
+            .await?;
+
+        // Register configured tunnel destinations
+        let tunnel_count = self.tunnels.len();
+        for tunnel in &self.tunnels {
+            self.cla
+                .add_tunnel(tunnel.tunnel.clone(), tunnel.decap_endpoint.clone())
+                .await?;
+        }
+
+        debug!("BIBE initialized with {tunnel_count} tunnels");
+        Ok(())
     }
 
-    /// Get the decap service for registration with BPA.
-    ///
-    /// Register with: `bpa.register_service(Some(service_id), bibe.decap_service()).await?;`
-    pub fn decap_service(&self) -> Arc<dyn hardy_bpa::services::Service> {
-        self.decap_service.clone()
+    /// Unregister this BIBE instance from the BPA.
+    pub async fn unregister(&self) {
+        self.cla.unregister().await;
+        self.decap_service.unregister().await;
     }
 
     /// Register a tunnel destination (creates virtual peer).
@@ -76,41 +115,6 @@ impl Bibe {
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
         self.cla.add_tunnel(tunnel_id, decap_endpoint).await
     }
-}
-
-/// Initialize BIBE and register with the BPA.
-///
-/// This creates a BIBE instance, registers the CLA and decapsulation service
-/// with the BPA, and adds all configured tunnel destinations.
-///
-/// # Example
-/// ```ignore
-/// let config = bibe::Config::new(Eid::new("ipn:1.0"))
-///     .with_decap_service_id(Service::Ipn(12))
-///     .with_tunnel(NodeId::new("dtn://tunnel1"), Eid::new("ipn:100.12"));
-///
-/// let bibe = bibe::init(config, &bpa).await?;
-/// ```
-pub async fn init(config: Config, bpa: &hardy_bpa::bpa::Bpa) -> Result<Arc<Bibe>, Error> {
-    let bibe = Arc::new(Bibe::new(config.tunnel_source.clone()));
-
-    // Register CLA (uses Private address type)
-    bpa.register_cla("bibe".into(), None, bibe.cla(), None)
-        .await?;
-
-    // Register decapsulation service
-    bpa.register_service(config.decap_service_id, bibe.decap_service())
-        .await?;
-
-    // Register configured tunnel destinations
-    let tunnel_count = config.tunnels.len();
-    for tunnel in config.tunnels {
-        bibe.add_tunnel(tunnel.tunnel, tunnel.decap_endpoint)
-            .await?;
-    }
-
-    debug!("BIBE initialized with {tunnel_count} tunnels");
-    Ok(bibe)
 }
 
 /// Errors from BIBE operations.

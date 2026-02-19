@@ -20,6 +20,13 @@ impl BibeCla {
         }
     }
 
+    /// Unregister this CLA from the BPA.
+    pub async fn unregister(&self) {
+        if let Some(sink) = self.sink.get() {
+            sink.unregister().await;
+        }
+    }
+
     /// Register a tunnel destination as a virtual peer.
     ///
     /// The `tunnel_id` NodeId becomes routable, and bundles forwarded to it
