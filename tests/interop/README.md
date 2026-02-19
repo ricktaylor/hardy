@@ -8,6 +8,8 @@ See also: [Interoperability Test Plan](../../docs/interop_test_plan.md)
 
 ```
 tests/interop/
+├── hardy/                     # Hardy-to-Hardy interoperability tests
+│   └── test_hardy_ping.sh     # Two-node ping/echo test
 ├── dtn7-rs/                   # dtn7-rs interoperability tests
 │   ├── docker/                # Docker configuration
 │   │   ├── Dockerfile.dtn7-rs # dtn7-rs build
@@ -30,6 +32,84 @@ bp ping ipn:23.7 127.0.0.1:4556 --no-sign
 ```
 
 ## Tests
+
+### Hardy-to-Hardy Ping/Echo (`test_hardy_ping.sh`)
+
+Tests bidirectional ping/echo between two Hardy BPA servers. This is the simplest interop test since both nodes are Hardy.
+
+#### Prerequisites
+
+- Rust toolchain (for building Hardy)
+
+#### What It Tests
+
+| Test | Description | Node 1 | Node 2 |
+|------|-------------|--------|--------|
+| **TEST 1** | Node 1 pings Node 2 | Client (`bp ping`) | Server (echo on ipn:2.7) |
+| **TEST 2** | Node 2 pings Node 1 | Server (echo on ipn:1.7) | Client (`bp ping`) |
+
+Both tests use TCPCLv4 as the convergence layer.
+
+#### Usage
+
+```bash
+# Run full test (builds Hardy first)
+./tests/interop/hardy/test_hardy_ping.sh
+
+# Skip cargo build (use existing binaries)
+./tests/interop/hardy/test_hardy_ping.sh --skip-build
+```
+
+#### Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Node 1 | ipn:1.0 | First Hardy BPA server |
+| Node 2 | ipn:2.0 | Second Hardy BPA server |
+| Node 1 TCPCLv4 Port | 4560 | Port Node 1 listens on |
+| Node 2 TCPCLv4 Port | 4561 | Port Node 2 listens on |
+| Echo Service | ipn:X.7 | Standard echo service number |
+| Ping Source | ipn:X.128 | Fixed source EID for routing |
+
+#### How It Works
+
+The test relies on automatic wildcard route registration:
+
+1. When the `bp ping` tool connects to a BPA server via TCPCLv4, it registers with a node ID (e.g., `ipn:1.0`)
+
+2. The BPA automatically adds a wildcard route for that peer's entire EID space (e.g., `ipn:1.*`)
+
+3. The `bp ping` tool uses a fixed source EID (`--source ipn:X.128`) for consistent routing
+
+4. When the echo service reflects a bundle back to `ipn:1.128`, the wildcard route
+   matches and forwards via the CLA peer (the ping tool's connection)
+
+#### Expected Output
+
+```
+[INFO] TEST 1: Node 1 pings Node 2's echo service
+[STEP] Pinging Node 2's echo service at ipn:2.7 (source: ipn:1.128)...
+
+Pinging ipn:2.7 from ipn:1.128
+Sending ping 0...
+Response 0 received after 5.2ms
+...
+
+[INFO] TEST 1 PASSED: Successfully pinged Node 2 with echo responses
+
+[INFO] TEST 2: Node 2 pings Node 1's echo service
+[STEP] Pinging Node 1's echo service at ipn:1.7 (source: ipn:2.128)...
+
+Pinging ipn:1.7 from ipn:2.128
+Sending ping 0...
+Response 0 received after 4.8ms
+...
+
+[INFO] TEST 2 PASSED: Successfully pinged Node 1 with echo responses
+[INFO] Hardy-to-Hardy interoperability test completed successfully
+```
+
+---
 
 ### dtn7-rs Ping/Echo (`test_dtn7rs_ping.sh`)
 

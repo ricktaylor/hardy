@@ -240,13 +240,20 @@ fi
 log_step "Hardy pinging dtn7-rs echo service at ipn:$DTN7_NODE_NUM.7..."
 echo ""
 
-if "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
+# Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
+# Use && true || true pattern to prevent set -e from exiting on non-zero
+"$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
     --count 5 \
-    --no-sign; then
+    --no-sign \
+    && EXIT_CODE=0 || EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
     log_info "TEST 1 PASSED: Hardy successfully pinged dtn7-rs"
     TEST1_RESULT="PASS"
+elif [ $EXIT_CODE -eq 1 ]; then
+    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    TEST1_RESULT="FAIL"
 else
-    log_error "TEST 1 FAILED: Hardy could not ping dtn7-rs"
+    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     TEST1_RESULT="FAIL"
 fi
 
@@ -277,7 +284,7 @@ echo "============================================================"
 
 # Create Hardy config for server mode
 cat > "$TEST_DIR/hardy_config.toml" << EOF
-log_level = "debug"
+log_level = "info"
 status_reports = true
 node_ids = "ipn:$HARDY_NODE_NUM.0"
 
