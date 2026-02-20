@@ -34,7 +34,6 @@
 #[cfg(feature = "std")]
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 
-#[cfg(feature = "std")]
 use trace_err::*;
 
 pub mod spin;
