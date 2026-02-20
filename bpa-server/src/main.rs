@@ -153,9 +153,12 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     clas::init(&config.clas, bpa.as_ref()).await?;
 
     // Start gRPC server
-    #[cfg(feature = "grpc")]
     if let Some(config) = &config.grpc {
+        #[cfg(feature = "grpc")]
         grpc::init(config, &bpa, &tasks);
+
+        #[cfg(not(feature = "grpc"))]
+        warn!("Ignoring gRPC configuration as it is disabled at compile time");
     }
 
     // And wait for shutdown signal
