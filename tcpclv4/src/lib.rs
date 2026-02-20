@@ -81,7 +81,7 @@ impl Cla {
         }
 
         match config.session_defaults.keepalive_interval {
-            None | Some(0) => info!("Session keepalive disabled"),
+            None | Some(0) => debug!("Session keepalive disabled"),
             Some(x) if x < 30 => {
                 warn!(
                     "RFC9174 Section 5.1.1 specifies keepalive SHOULD be a minimum of 30 seconds for shared networks"
@@ -99,6 +99,9 @@ impl Cla {
             info!("TLS configuration loaded successfully");
             Some(Arc::new(cfg))
         } else {
+            warn!(
+                "No TLS configuration provided - connections will be unencrypted and TLS-requiring peers will refuse connection"
+            );
             None
         };
 

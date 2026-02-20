@@ -103,6 +103,10 @@ impl storage::BundleStorage for Storage {
 }
 
 pub fn new(config: &Config) -> Arc<dyn storage::BundleStorage> {
+    info!(
+        "Using in-memory bundle storage (capacity {} bytes, non-persistent)",
+        config.capacity
+    );
     Arc::new(Storage {
         inner: Mutex::new(Inner {
             cache: lru::LruCache::unbounded(),

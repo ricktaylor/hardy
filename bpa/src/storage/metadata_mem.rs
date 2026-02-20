@@ -183,6 +183,10 @@ impl storage::MetadataStorage for Storage {
 }
 
 pub fn new(config: &Config) -> Arc<dyn storage::MetadataStorage> {
+    info!(
+        "Using in-memory metadata storage (max {} bundles, non-persistent)",
+        config.max_bundles
+    );
     Arc::new(Storage {
         entries: Mutex::new(lru::LruCache::new(config.max_bundles)),
     })

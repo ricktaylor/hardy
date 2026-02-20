@@ -111,7 +111,7 @@ impl hardy_bpa::services::Application for Application {
                 warn!("Unexpected response: {msg:?}");
             }
             Err(e) => {
-                error!("Failed to notify service of unregistration: {e}");
+                warn!("Failed to notify service of unregistration: {e}");
             }
         }
 
@@ -271,7 +271,7 @@ impl application_server::Application for Service {
                     Ok(bpa_to_app::Msg::Register(RegisterResponse { endpoint_id }))
                 }
                 _ => {
-                    info!("Application sent incorrect message: {msg:?}");
+                    warn!("Application sent incorrect message: {msg:?}");
                     Err(tonic::Status::internal(format!(
                         "Unexpected response: {msg:?}"
                     )))

@@ -96,7 +96,7 @@ impl LocalInner {
 
 impl Rib {
     async fn add_local(&self, pattern: EidPattern, action: Action) -> bool {
-        info!("Adding local route {pattern} => {action}");
+        debug!("Adding local route {pattern} => {action}");
 
         if !match self.inner.write().locals.actions.entry(pattern.clone()) {
             btree_map::Entry::Occupied(mut occupied_entry) => {
@@ -138,7 +138,7 @@ impl Rib {
                 let mut removed = false;
                 h.retain(|a| {
                     if f(a) {
-                        info!("Removed route {pattern} => {a}");
+                        debug!("Removed route {pattern} => {a}");
                         removed = true;
                         false
                     } else {

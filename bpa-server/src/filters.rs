@@ -11,6 +11,11 @@ pub fn register(config: &config::Config, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::R
             hardy_bpa::filters::rfc9171::Rfc9171ValidityFilter::new(&config.rfc9171_validity),
         )),
     )?;
+    info!(
+        "Registered RFC9171 validity filter (primary-block-integrity={}, bundle-age-required={})",
+        config.rfc9171_validity.primary_block_integrity,
+        config.rfc9171_validity.bundle_age_required
+    );
 
     // IPN legacy filter for handling legacy IPN EID formats
     #[cfg(feature = "ipn-legacy-filter")]
@@ -21,11 +26,15 @@ pub fn register(config: &config::Config, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::R
             &[],
             hardy_bpa::filters::Filter::Write(filter),
         )?;
+        info!(
+            "Registered IPN legacy filter for {} pattern(s)",
+            config.ipn_legacy_nodes.0.len()
+        );
     }
 
     #[cfg(not(feature = "ipn-legacy-filter"))]
     if !config.ipn_legacy_nodes.0.is_empty() {
-        warn!("Ignoring ipn-legacy-nodes configuration option as it is disbaled at compile time");
+        warn!("Ignoring ipn-legacy-nodes configuration option as it is disabled at compile time");
     }
 
     Ok(())

@@ -20,7 +20,7 @@ impl Dispatcher {
         // We ignore the fact that a new bundle has been created, as it makes no difference below
         let data = match self.update_extension_blocks(&bundle, &data) {
             Err(e) => {
-                error!("Failed to update extension blocks: {e}");
+                warn!("Failed to update extension blocks: {e}");
                 return;
             }
             Ok(data) => data,
@@ -64,8 +64,7 @@ impl Dispatcher {
                 );
             }
             Err(e) => {
-                info!("Failed to forward bundle: {e}");
-                debug!("Clearing queue assignment for peer {peer}");
+                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
             }
         }
 

@@ -50,7 +50,7 @@ impl EchoService {
         if let Some(sink) = self.sink.get() {
             // Parse the bundle
             let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
-                .inspect_err(|e| warn!("Failed to parse incoming bundle: {e:?}"))?
+                .inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))?
                 .bundle;
 
             debug!(
@@ -63,16 +63,16 @@ impl EchoService {
             let data = hardy_bpv7::editor::Editor::new(&bundle, &data)
                 .with_source(bundle.destination.clone())
                 .map_err(|(_, e)| {
-                    warn!("Failed to set source Eid: {e:?}");
+                    debug!("Failed to set source Eid: {e:?}");
                     e
                 })?
                 .with_destination(bundle.id.source.clone())
                 .map_err(|(_, e)| {
-                    warn!("Failed to set destination Eid: {e:?}");
+                    debug!("Failed to set destination Eid: {e:?}");
                     e
                 })?
                 .rebuild()
-                .inspect_err(|e| warn!("Failed to update bundle: {e:?}"))?;
+                .inspect_err(|e| debug!("Failed to update bundle: {e:?}"))?;
 
             debug!(
                 source = %bundle.destination,

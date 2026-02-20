@@ -52,6 +52,10 @@ impl Store {
             if !store.tasks.is_cancelled() {
                 store.metadata_storage_recovery(dispatcher).await;
             }
+
+            if !store.tasks.is_cancelled() {
+                info!("Store consistency check completed");
+            }
         });
     }
 

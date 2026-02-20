@@ -267,7 +267,7 @@ impl Registry {
             return false;
         }
 
-        info!(
+        debug!(
             "Added new peer {peer_id}: {node_id} at {cla_addr} via CLA {}",
             cla.name
         );
@@ -303,14 +303,14 @@ impl Registry {
         self.peers.remove(peer_id).await;
         self.rib.remove_forward(node_id, peer_id).await;
 
-        info!("Removed peer {peer_id}");
+        debug!("Removed peer {peer_id}");
 
         true
     }
 
     pub async fn forward(&self, peer_id: u32, bundle: bundle::Bundle) {
         if let Err(bundle) = self.peers.forward(peer_id, bundle).await {
-            info!("CLA Failed to forward bundle");
+            debug!("CLA forward failed, returning bundle to watch queue");
             self.store.watch_bundle(bundle).await;
         }
     }

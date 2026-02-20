@@ -123,7 +123,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 warn!("Unexpected response: {msg:?}");
             }
             Err(e) => {
-                error!("Failed to notify CLA of unregistration: {e}");
+                warn!("Failed to notify CLA of unregistration: {e}");
             }
         }
 
@@ -252,7 +252,7 @@ impl cla_server::Cla for Service {
                     Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
                 }
                 _ => {
-                    info!("CLA sent incorrect message: {msg:?}");
+                    warn!("CLA sent incorrect message: {msg:?}");
                     Err(tonic::Status::internal(format!(
                         "Unexpected response: {msg:?}"
                     )))

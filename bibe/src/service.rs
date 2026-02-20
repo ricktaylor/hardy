@@ -85,11 +85,11 @@ impl Service for DecapService {
             Ok(inner) => {
                 debug!("BIBE decapsulated bundle, dispatching");
                 if let Err(e) = self.cla.dispatch(inner).await {
-                    error!("Failed to dispatch decapsulated bundle: {e}");
+                    warn!("Failed to dispatch decapsulated bundle: {e}");
                 }
             }
             Err(e) => {
-                error!("BIBE decapsulation failed: {e}");
+                warn!("BIBE decapsulation failed: {e}");
             }
         }
     }

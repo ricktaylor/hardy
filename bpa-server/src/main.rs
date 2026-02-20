@@ -123,6 +123,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Start the BPA
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(&config.bpa));
+    info!("Configured node IDs: {}", config.bpa.node_ids);
 
     // Prepare for graceful shutdown
     let tasks = TaskPool::new();

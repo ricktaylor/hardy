@@ -62,7 +62,7 @@ impl Rib {
                 },
             }
 
-            info!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
+            debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
 
             // Start walking through the route table starting at this priority to find impacted routes
             let mut vias = HashSet::new();
@@ -123,7 +123,7 @@ impl Rib {
             }
         }
 
-        info!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
+        debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
 
         // See if we are removing a Via
         if let routes::Action::Via(to) = action

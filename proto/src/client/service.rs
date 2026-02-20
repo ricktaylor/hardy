@@ -129,7 +129,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
                 warn!("Unexpected response: {msg:?}");
             }
             Err(e) => {
-                error!("Failed to request unregistration: {e}");
+                warn!("Failed to request unregistration: {e}");
             }
         }
 

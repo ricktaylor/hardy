@@ -108,7 +108,7 @@ impl Cla for BibeCla {
         let outer_dest: Eid = match hardy_cbor::decode::parse(dest_bytes) {
             Ok(eid) => eid,
             Err(e) => {
-                error!("Failed to decode destination EID from ClaAddress: {e}");
+                warn!("Failed to decode destination EID from ClaAddress: {e}");
                 return Ok(ForwardBundleResult::NoNeighbour);
             }
         };
@@ -119,7 +119,7 @@ impl Cla for BibeCla {
         let outer = match self.encapsulate(bundle, outer_dest) {
             Ok(outer) => outer,
             Err(e) => {
-                error!("BIBE encapsulation failed: {e}");
+                warn!("BIBE encapsulation failed: {e}");
                 return Ok(ForwardBundleResult::NoNeighbour);
             }
         };
@@ -128,7 +128,7 @@ impl Cla for BibeCla {
         match self.dispatch(outer).await {
             Ok(()) => Ok(ForwardBundleResult::Sent),
             Err(e) => {
-                error!("BIBE dispatch failed: {e}");
+                warn!("BIBE dispatch failed: {e}");
                 Ok(ForwardBundleResult::NoNeighbour)
             }
         }

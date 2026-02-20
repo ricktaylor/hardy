@@ -69,7 +69,7 @@ impl ConnectionPool {
                 .add_peer(node_id.clone(), self.remote_addr.clone())
                 .await
                 .unwrap_or_else(|e| {
-                    error!("add_peer failed: {e:?}");
+                    warn!("add_peer failed: {e:?}");
                     false
                 })
         {

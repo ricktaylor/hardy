@@ -15,7 +15,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 )
                 .await
             {
-                error!("add_peer() failed: {e}");
+                warn!("add_peer() failed: {e}");
                 return;
             }
         }

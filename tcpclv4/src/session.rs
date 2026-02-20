@@ -96,7 +96,7 @@ where
         self.transport
             .send(msg)
             .await
-            .inspect_err(|e| info!("Failed to send {msg_type:?} to peer: {e:?}"))
+            .inspect_err(|e| debug!("Failed to send {msg_type:?} to peer: {e:?}"))
             .map_err(Into::into)
             .map(|_| self.last_sent = tokio::time::Instant::now())
     }
@@ -106,7 +106,7 @@ where
         self.transport
             .feed(msg)
             .await
-            .inspect_err(|e| info!("Failed to feed {msg_type:?} to peer: {e:?}"))
+            .inspect_err(|e| debug!("Failed to feed {msg_type:?} to peer: {e:?}"))
             .map_err(Into::into)
             .map(|_| self.last_sent = tokio::time::Instant::now())
     }
@@ -136,14 +136,14 @@ where
         if msg.message_flags.start {
             if self.ingress_bundle.is_some() {
                 // Out of order bundle!
-                info!("Out of order segment received");
+                debug!("Out of order segment received");
                 return self.unexpected_msg(codec::MessageType::XFER_SEGMENT).await;
             }
             self.ingress_bundle = Some(BytesMut::with_capacity(msg.data.len()));
         }
 
         let Some(bundle) = &mut self.ingress_bundle else {
-            info!("Unexpected segment received");
+            debug!("Unexpected segment received");
             return self.unexpected_msg(codec::MessageType::XFER_SEGMENT).await;
         };
 
@@ -151,7 +151,7 @@ where
             // Bundle beyond negotiated MRU
             self.ingress_bundle = None;
 
-            info!("Segment received beyond the negotiated MRU");
+            debug!("Segment received beyond the negotiated MRU");
             return self
                 .reject_msg(
                     codec::MessageRejectionReasonCode::Unsupported,
@@ -176,7 +176,7 @@ where
                 )
                 .await
                 .map_err(|e| {
-                    warn!("CLA dispatch failed: {e:?}");
+                    debug!("CLA dispatch failed: {e:?}");
                     Error::Shutdown(codec::SessionTermReasonCode::Unknown)
                 })?;
         }
@@ -239,17 +239,17 @@ where
                     codec::Message::TransferAck(msg) => {
                         let ack = self.acks.pop_front().trace_expect("Transfer acks are all out of sync");
                         if ack.transfer_id != msg.transfer_id {
-                            info!(
+                            debug!(
                                 "Mismatched transfer id in TransferAck message: expected {:?} got {:?}",
                                 ack.transfer_id,msg.transfer_id
                             );
                         } else if ack.flags != msg.message_flags {
-                            info!(
+                            debug!(
                                 "Mismatched flags in TransferAck message: expected {:?} got {:?}",
                                 ack.flags,msg.message_flags
                             );
                         } else if ack.acknowledged_length as u64 != msg.acknowledged_length {
-                            info!(
+                            debug!(
                                 "Mismatched acknowledged_length in TransferAck message: expected {} got {}",
                                 ack.acknowledged_length, msg.acknowledged_length
                             );
@@ -268,7 +268,7 @@ where
                     codec::Message::TransferRefuse(msg) => {
                         let ack = self.acks.pop_front().trace_expect("Transfer acks are all out of sync");
                         if ack.transfer_id != msg.transfer_id {
-                            info!(
+                            debug!(
                                 "Mismatched transfer id in TransferRefuse message: expected {:?} got {:?}",
                                 ack.transfer_id,msg.transfer_id
                             );
@@ -313,7 +313,7 @@ where
                 )
                 .await?
             {
-                info!("Peer refused the transfer: {refused:?}");
+                debug!("Peer refused the transfer: {refused:?}");
                 return Ok(Some(refused));
             }
 
@@ -332,7 +332,7 @@ where
         .await
         .inspect(|r| {
             r.as_ref().inspect(|r| {
-                info!("Peer refused the transfer: {r:?}");
+                debug!("Peer refused the transfer: {r:?}");
             });
         })
     }
@@ -349,7 +349,7 @@ where
             .saturating_add((bundle.len() / self.segment_mtu) as u64)
             == u64::MAX
         {
-            info!("Out of Transfer Ids, closing session");
+            debug!("Out of Transfer Ids, closing session");
             return Err(Error::Shutdown(
                 codec::SessionTermReasonCode::ResourceExhaustion,
             ));
@@ -630,15 +630,15 @@ where
                     return;
                 }
                 // The other end is sending us garbage
-                info!("Peer sent invalid data: {e:?}, shutting down session");
+                debug!("Peer sent invalid data: {e:?}, shutting down session");
                 self.shutdown(codec::SessionTermReasonCode::Unknown).await;
             }
             Error::Hangup => {
-                info!("Peer hung up, ending session");
+                debug!("Peer hung up, ending session");
                 self.close().await;
             }
             Error::Io(e) => {
-                info!("Session I/O failure: {e:?}, ending session");
+                debug!("Session I/O failure: {e:?}, ending session");
                 self.close().await;
             }
         }

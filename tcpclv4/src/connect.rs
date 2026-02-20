@@ -27,11 +27,17 @@ impl Connector {
             .await
             .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
+        let local_addr = stream
+            .local_addr()
+            .trace_expect("Failed to get socket local address");
+
         // Send contact header
         stream
             .write_all(&[b'd', b't', b'n', b'!', 4, self.ctx.tls_contact_flag()])
             .await
-            .inspect_err(|e| debug!("Failed to send contact header: {e}"))?;
+            .inspect_err(
+                |e| debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}"),
+            )?;
 
         // Receive contact header
         let mut buffer = [0u8; 6];
@@ -41,28 +47,27 @@ impl Connector {
         )
         .await
         .map_err(|_| transport::Error::Timeout)
-        .inspect_err(|_| debug!("Connection timed out"))?
-        .inspect_err(|e| debug!("Read failed: {e}"))?;
+        .inspect_err(|_| debug!(%local_addr, %remote_addr, "Connection timed out"))?
+        .inspect_err(|e| debug!(%local_addr, %remote_addr, "Read failed: {e}"))?;
 
         // Parse contact header
         if buffer[0..4] != *b"dtn!" {
-            debug!("Contact header isn't: 'dtn!'");
+            debug!(%local_addr, %remote_addr, "Contact header isn't: 'dtn!'");
             return Err(transport::Error::InvalidProtocol);
         }
 
-        debug!("Contact header received from {remote_addr}");
+        debug!(%local_addr, %remote_addr, "Contact header received");
 
         if buffer[4] != 4 {
-            warn!("Unsupported protocol version {}", buffer[4]);
+            debug!(%local_addr, %remote_addr, "Unsupported protocol version {}", buffer[4]);
 
             if buffer[4] == 3 {
-                debug!("Sending TCPCLv3 SHUTDOWN message to {remote_addr}");
+                debug!(%local_addr, %remote_addr, "Sending TCPCLv3 SHUTDOWN message");
 
                 // Send a TCPCLv3 SHUTDOWN message
-                stream
-                    .write_all(&[0x45, 0x01])
-                    .await
-                    .inspect_err(|e| debug!("Failed to send TCPv3 SHUTDOWN message: {e}"))?;
+                stream.write_all(&[0x45, 0x01]).await.inspect_err(
+                    |e| debug!(%local_addr, %remote_addr, "Failed to send TCPv3 SHUTDOWN message: {e}"),
+                )?;
                 stream.shutdown().await?;
             } else {
                 // Terminate session
@@ -78,29 +83,22 @@ impl Connector {
         }
 
         if buffer[5] & 0xFE != 0 {
-            info!(
-                "Reserved flags {:#x} set in contact header from {remote_addr}",
-                buffer[5]
-            );
+            debug!(%local_addr, %remote_addr, "Reserved flags {:#x} set in contact header", buffer[5]);
         }
-
-        let local_addr = stream
-            .local_addr()
-            .trace_expect("Failed to get socket local address");
 
         if buffer[5] & 1 != 0 {
             if let Some(tls_config) = self.ctx.tls_config.clone() {
-                info!("Initiating TLS handshake with {remote_addr}");
+                debug!(%local_addr, %remote_addr, "Initiating TLS handshake");
                 return self
                     .tls_handshake(stream, remote_addr, local_addr, tls_config)
                     .await
                     .inspect_err(|e| {
-                        error!("TLS session negotiation failed to {remote_addr}: {e}")
+                        debug!(%local_addr, %remote_addr, "TLS session negotiation failed: {e}")
                     });
             }
-            info!("TLS requested by peer but no TLS configuration provided");
+            debug!(%local_addr, %remote_addr, "TLS requested by peer but no TLS configuration provided");
         } else if self.ctx.session.must_use_tls {
-            warn!("Peer does not support TLS, but TLS is required by configuration");
+            debug!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
@@ -112,7 +110,7 @@ impl Connector {
             return Err(transport::Error::InvalidProtocol);
         }
 
-        info!("New TCP (NO-TLS) connection connected to {remote_addr}");
+        debug!(%local_addr, %remote_addr, "New TCP (NO-TLS) connection connected");
         self.new_active(
             local_addr,
             remote_addr,
@@ -151,12 +149,12 @@ impl Connector {
         // Use tokio-rustls::TlsConnector - simple wrapper around rustls for async I/O
         let connector = TlsConnector::from(tls_config.client_config.clone());
         let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
-            error!("TLS session key negotiation failed to {remote_addr}: {e}");
+            debug!(%local_addr, %remote_addr, "TLS session key negotiation failed: {e}");
             transport::Error::InvalidProtocol
         })?;
 
         // TODO(mTLS): Verify that server accepted our client certificate if mTLS is enabled
-        info!("TLS session key negotiation completed to {remote_addr}");
+        debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
 
         self.new_active(
             local_addr,
@@ -184,7 +182,7 @@ impl Connector {
         session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
         <T as futures::Sink<codec::Message>>::Error: Into<transport::Error> + std::fmt::Debug,
     {
-        debug!("Sending SESS_INIT to {remote_addr}");
+        debug!(%local_addr, %remote_addr, "Sending SESS_INIT");
 
         // Send our SESS_INIT message
         transport
@@ -196,10 +194,12 @@ impl Connector {
                 ..Default::default()
             }))
             .await
-            .inspect_err(|e| info!("Failed to send SESS_INIT message: {e:?}"))
+            .inspect_err(
+                |e| debug!(%local_addr, %remote_addr, "Failed to send SESS_INIT message: {e:?}"),
+            )
             .map_err(Into::into)?;
 
-        debug!("Reading SESS_INIT from {remote_addr}");
+        debug!(%local_addr, %remote_addr, "Reading SESS_INIT");
 
         // Read the SESS_INIT message with timeout
         let peer_init = loop {
@@ -209,11 +209,12 @@ impl Connector {
                 &self.ctx.task_cancel_token,
             )
             .await
-            .inspect_err(|e| info!("Failed to receive SESS_INIT message: {e:?}"))?
-            {
+            .inspect_err(
+                |e| debug!(%local_addr, %remote_addr, "Failed to receive SESS_INIT message: {e:?}"),
+            )? {
                 codec::Message::SessionInit(init) => break init,
                 msg => {
-                    info!("Unexpected message while waiting for SESS_INIT: {msg:?}");
+                    debug!(%local_addr, %remote_addr, "Unexpected message while waiting for SESS_INIT: {msg:?}");
 
                     // Send a MSG_REJECT/Unexpected message
                     transport
@@ -222,13 +223,15 @@ impl Connector {
                             rejected_message: msg.message_type() as u8,
                         }))
                         .await
-                        .inspect_err(|e| info!("Failed to send message: {e:?}"))
+                        .inspect_err(
+                            |e| debug!(%local_addr, %remote_addr, "Failed to send message: {e:?}"),
+                        )
                         .map_err(Into::into)?;
                 }
             };
         };
 
-        debug!("Received SESS_INIT {peer_init:?} from {remote_addr}");
+        debug!(%local_addr, %remote_addr, "Received SESS_INIT {peer_init:?}");
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
         let keepalive_interval = self.ctx.negotiate_keepalive(peer_init.keepalive_interval);
@@ -284,7 +287,7 @@ impl Connector {
 
             session.run().await;
 
-            debug!("Session from {local_addr} to {remote_addr} closed");
+            debug!(%local_addr, %remote_addr, "Session closed");
 
             // Unregister the session for addr, whatever happens
             registry.unregister_session(&local_addr, &remote_addr).await

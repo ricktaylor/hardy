@@ -80,6 +80,10 @@ impl ConnectionContext {
     /// Handle a new incoming contact (passive/server side).
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn new_contact(self, mut stream: TcpStream, remote_addr: SocketAddr) {
+        let local_addr = stream
+            .local_addr()
+            .trace_expect("Failed to get socket local address");
+
         // Receive contact header
         let mut buffer = [0u8; 6];
         match tokio::time::timeout(
@@ -90,34 +94,34 @@ impl ConnectionContext {
         {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
-                debug!("Read failed: {e}");
+                debug!(%local_addr, %remote_addr, "Read failed: {e}");
                 return;
             }
             Err(_) => {
-                debug!("Connection timed out");
+                debug!(%local_addr, %remote_addr, "Connection timed out");
                 return;
             }
         }
 
         // Parse contact header
         if buffer[0..4] != *b"dtn!" {
-            debug!("Contact header isn't: 'dtn!'");
+            debug!(%local_addr, %remote_addr, "Contact header isn't: 'dtn!'");
             return;
         }
 
-        debug!("Contact header received from {remote_addr}");
+        debug!(%local_addr, %remote_addr, "Contact header received");
 
         // Always send our contact header in reply!
         if let Err(e) = stream
             .write_all(&[b'd', b't', b'n', b'!', 4, self.tls_contact_flag()])
             .await
         {
-            debug!("Failed to send contact header: {e}");
+            debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}");
             return;
         }
 
         if buffer[4] != 4 {
-            warn!("Unsupported protocol version {}", buffer[4]);
+            debug!(%local_addr, %remote_addr, "Unsupported protocol version {}", buffer[4]);
 
             // Terminate session
             return transport::terminate(
@@ -130,27 +134,19 @@ impl ConnectionContext {
         }
 
         if buffer[5] & 0xFE != 0 {
-            info!(
-                "Reserved flags {:#x} set in contact header from {remote_addr}",
-                buffer[5]
-            );
+            debug!(%local_addr, %remote_addr, "Reserved flags {:#x} set in contact header", buffer[5]);
         }
-
-        let local_addr = stream
-            .local_addr()
-            .trace_expect("Failed to get socket local address");
 
         if buffer[5] & 1 != 0 {
             if let Some(tls_config) = self.tls_config.clone() {
-                info!("TLS connection received from {remote_addr}");
-
+                debug!(%local_addr, %remote_addr, "TLS connection received");
                 return self
                     .tls_accept(stream, remote_addr, local_addr, tls_config)
                     .await;
             }
-            error!("TLS requested but no TLS configuration provided");
+            debug!(%local_addr, %remote_addr, "TLS requested but no TLS configuration provided");
         } else if self.session.must_use_tls {
-            warn!("Peer does not support TLS, but TLS is required by configuration");
+            warn!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             return transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
@@ -160,7 +156,7 @@ impl ConnectionContext {
             .await;
         }
 
-        info!("New TCP (NO-TLS) connection accepted from {remote_addr}");
+        debug!(%local_addr, %remote_addr, "New TCP (NO-TLS) connection accepted");
         self.new_passive(
             local_addr,
             remote_addr,
@@ -195,12 +191,12 @@ impl ConnectionContext {
             .await
             {
                 Err(e) => {
-                    info!("Failed to receive SESS_INIT message: {e:?}");
+                    debug!(%local_addr, %remote_addr, "Failed to receive SESS_INIT message: {e:?}");
                     return;
                 }
                 Ok(codec::Message::SessionInit(init)) => break init,
                 Ok(msg) => {
-                    info!("Unexpected message while waiting for SESS_INIT: {msg:?}");
+                    debug!(%local_addr, %remote_addr, "Unexpected message while waiting for SESS_INIT: {msg:?}");
 
                     // Send a MSG_REJECT/Unexpected message
                     if let Err(e) = transport
@@ -211,7 +207,7 @@ impl ConnectionContext {
                         .await
                     {
                         // Its all gone wrong
-                        info!("Failed to send message: {e:?}");
+                        debug!(%local_addr, %remote_addr, "Failed to send message: {e:?}");
                         return;
                     }
                 }
@@ -243,7 +239,7 @@ impl ConnectionContext {
             }))
             .await
         {
-            info!("Failed to send SESS_INIT message: {e:?}");
+            debug!(%local_addr, %remote_addr, "Failed to send SESS_INIT message: {e:?}");
             return;
         }
 
@@ -294,7 +290,7 @@ impl ConnectionContext {
 
         session.run().await;
 
-        debug!("Session from {local_addr} to {remote_addr} closed");
+        debug!(%local_addr, %remote_addr, "Session closed");
 
         // Unregister the session for addr, whatever happens
         self.registry
@@ -322,7 +318,7 @@ impl ConnectionContext {
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
                 // TODO(mTLS): Verify client certificate if mTLS is enabled
-                info!("TLS session key negotiation completed with {remote_addr}");
+                debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
                 self.new_passive(
                     local_addr,
                     remote_addr,
@@ -332,7 +328,7 @@ impl ConnectionContext {
                 .await;
             }
             Err(e) => {
-                error!("TLS session key negotiation failed with {remote_addr}: {e}");
+                debug!(%local_addr, %remote_addr, "TLS session key negotiation failed: {e}");
             }
         }
     }

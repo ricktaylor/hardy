@@ -86,7 +86,7 @@ impl hardy_bpa::services::Service for LowLevelService {
                 warn!("Unexpected response: {msg:?}");
             }
             Err(e) => {
-                error!("Failed to notify service of unregistration: {e}");
+                warn!("Failed to notify service of unregistration: {e}");
             }
         }
 
@@ -241,7 +241,7 @@ impl service_server::Service for GrpcService {
                     }))
                 }
                 _ => {
-                    info!("Service sent incorrect message: {msg:?}");
+                    warn!("Service sent incorrect message: {msg:?}");
                     Err(tonic::Status::internal(format!(
                         "Unexpected response: {msg:?}"
                     )))

@@ -176,7 +176,7 @@ impl Store {
 
     async fn reassemble(&self, results: &ReassemblyResult) -> Option<(Arc<str>, Bytes)> {
         let first = results.adus.get(&0).or_else(|| {
-            info!(
+            debug!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
                 &results.adus.values().next().unwrap().0
             );
@@ -211,11 +211,13 @@ impl Store {
         for (bundle_id, storage_name, payload) in results.adus.values() {
             let fi = bundle_id.fragment_info.as_ref().unwrap();
             if fi.total_adu_length != total_adu_length {
-                info!("Total ADU length mismatch during fragment reassembly detected: {bundle_id}");
+                debug!(
+                    "Total ADU length mismatch during fragment reassembly detected: {bundle_id}"
+                );
                 return None;
             }
             if fi.offset != next_offset {
-                info!("Misalignment in offsets during fragment reassembly detected: {bundle_id}");
+                debug!("Misalignment in offsets during fragment reassembly detected: {bundle_id}");
                 return None;
             }
 
@@ -234,7 +236,7 @@ impl Store {
                 .unwrap()
                 .total_adu_length
         {
-            info!(
+            debug!(
                 "Total reassembled ADU does not match fragment info: {:?}",
                 first.0
             );
@@ -246,7 +248,7 @@ impl Store {
         editor = match editor.with_fragment_info(None) {
             Ok(e) => e,
             Err((_, e)) => {
-                info!("Failed to clear fragment info: {e}");
+                debug!("Failed to clear fragment info: {e}");
                 return None;
             }
         };
@@ -254,12 +256,12 @@ impl Store {
         // Now rebuild
         let new_data = match editor.update_block(1) {
             Err((_, e)) => {
-                info!("Missing payload block?: {e}");
+                debug!("Missing payload block?: {e}");
                 return None;
             }
             Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
                 Err(e) => {
-                    info!("Failed to rebuild bundle: {e}");
+                    debug!("Failed to rebuild bundle: {e}");
                     return None;
                 }
                 Ok(new_data) => new_data,

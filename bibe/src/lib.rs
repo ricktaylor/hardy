@@ -18,7 +18,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     eid::{Eid, NodeId, Service},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 /// BIBE tunnel endpoint manager.
 ///

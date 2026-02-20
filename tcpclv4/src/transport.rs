@@ -46,7 +46,7 @@ pub async fn terminate<T>(
         .send(codec::Message::SessionTerm(msg))
         .await
         .inspect_err(|e| {
-            info!("Failed to send session terminate message: {e:?}");
+            debug!("Failed to send session terminate message: {e:?}");
         })
         .is_ok()
     {
@@ -54,7 +54,7 @@ pub async fn terminate<T>(
         loop {
             match next_with_timeout(&mut transport, timeout, cancel_token).await {
                 Err(e) => {
-                    info!("Failed to read next message: {e:?}");
+                    debug!("Failed to read next message: {e:?}");
                     break;
                 }
                 Ok(codec::Message::SessionTerm(mut msg)) => {
@@ -65,15 +65,17 @@ pub async fn terminate<T>(
                             .send(codec::Message::SessionTerm(msg))
                             .await
                             .unwrap_or_else(|e| {
-                                info!("Failed to send termination message to peer: {e:?}");
+                                debug!("Failed to send termination message to peer: {e:?}");
                             });
                     } else if msg != expected_reply {
-                        info!("Mismatched SESS_TERM message: {msg:?}, expected {expected_reply:?}",);
+                        debug!(
+                            "Mismatched SESS_TERM message: {msg:?}, expected {expected_reply:?}",
+                        );
                     }
                     break;
                 }
                 Ok(msg) => {
-                    info!("Unexpected message while waiting for SESS_TERM reply: {msg:?}");
+                    debug!("Unexpected message while waiting for SESS_TERM reply: {msg:?}");
 
                     // Send a MSG_REJECT/Unexpected message
                     if let Err(e) = transport
@@ -83,7 +85,7 @@ pub async fn terminate<T>(
                         }))
                         .await
                     {
-                        info!("Failed to send rejection message to peer: {e:?}");
+                        debug!("Failed to send rejection message to peer: {e:?}");
                         break;
                     }
                 }
@@ -92,7 +94,7 @@ pub async fn terminate<T>(
     }
 
     transport.close().await.unwrap_or_else(|e| {
-        info!("Failed to cleanly close transport: {e:?}");
+        debug!("Failed to cleanly close transport: {e:?}");
     })
 }
 

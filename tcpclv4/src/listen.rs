@@ -80,7 +80,7 @@ impl Listener {
                         // Accept a new connection
                         match svc.call(()).await {
                             Ok((stream,remote_addr)) => {
-                                info!("New TCP connection from {remote_addr}");
+                                debug!(%remote_addr, "New TCP connection");
                                 // Spawn immediately to prevent head-of-line blocking
                                 let ctx = self.ctx.clone();
                                 hardy_async::spawn!(tasks, "passive_session_task", async move {
