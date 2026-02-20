@@ -66,13 +66,14 @@ impl hardy_bpa::cla::Cla for Cla {
         })?;
 
         if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
-            info!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
+            debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
+
             // We try this 5 times, because peers can close at random times
             for _ in 0..5 {
                 // See if we have an active connection already
                 bundle = match self.registry.forward(remote_addr, bundle).await {
                     Ok(r) => {
-                        info!("Bundle forwarded successfully using existing connection");
+                        debug!("Bundle forwarded successfully using existing connection");
                         return Ok(r);
                     }
                     Err(bundle) => {
