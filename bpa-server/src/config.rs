@@ -70,7 +70,6 @@ pub struct Config {
     pub bpa: hardy_bpa::config::Config,
 
     // gRPC options
-    #[cfg(feature = "grpc")]
     #[serde(default)]
     pub grpc: Option<grpc::Config>,
 
@@ -97,7 +96,6 @@ pub struct Config {
     pub rfc9171_validity: hardy_bpa::filters::rfc9171::Config,
 
     // Echo service
-    #[cfg(feature = "echo")]
     #[serde(default)]
     pub echo: echo_config::EchoConfig,
 

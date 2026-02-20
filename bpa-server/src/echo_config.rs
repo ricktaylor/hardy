@@ -1,29 +1,6 @@
-#![cfg(feature = "echo")]
-
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
-
-/// Initialize and register echo services based on configuration
-pub async fn init(config: &EchoConfig, bpa: &dyn BpaRegistration) {
-    if let EchoConfig::Enabled(services) = config {
-        info!(
-            "Registering {} echo service(s): {:?}",
-            services.len(),
-            services
-        );
-        let echo = Arc::new(hardy_echo_service::EchoService::new());
-        match echo.register(bpa, services).await {
-            Ok(eids) => {
-                for eid in eids {
-                    info!("Echo service registered at {eid}");
-                }
-            }
-            Err(e) => error!("Failed to register echo service: {e}"),
-        }
-    }
-}
 
 /// Echo service configuration
 ///
@@ -154,5 +131,33 @@ impl<'de> Deserialize<'de> for EchoConfig {
                 Ok(EchoConfig::Enabled(services))
             }
         }
+    }
+}
+
+/// Initialize and register echo services based on configuration
+#[cfg(feature = "echo")]
+pub async fn init(config: &EchoConfig, bpa: &dyn hardy_bpa::bpa::BpaRegistration) {
+    if let EchoConfig::Enabled(services) = config {
+        info!(
+            "Registering {} echo service(s): {:?}",
+            services.len(),
+            services
+        );
+        let echo = Arc::new(hardy_echo_service::EchoService::new());
+        match echo.register(bpa, services).await {
+            Ok(eids) => {
+                for eid in eids {
+                    info!("Echo service registered at {eid}");
+                }
+            }
+            Err(e) => error!("Failed to register echo service: {e}"),
+        }
+    }
+}
+
+#[cfg(not(feature = "echo"))]
+pub async fn init(config: &EchoConfig, _bpa: &dyn hardy_bpa::bpa::BpaRegistration) {
+    if let EchoConfig::Enabled(_) = config {
+        warn!("Ignoring echo service configuration as it is disabled at compile time");
     }
 }

@@ -2,11 +2,9 @@ mod clas;
 mod config;
 mod echo_config;
 mod filters;
+mod grpc;
 mod policy;
 mod static_routes;
-
-#[cfg(feature = "grpc")]
-mod grpc;
 
 use hardy_async::TaskPool;
 use std::sync::Arc;
@@ -137,7 +135,6 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     filters::register(&config, &bpa)?;
 
     // Register echo service
-    #[cfg(feature = "echo")]
     echo_config::init(&config.echo, bpa.as_ref()).await;
 
     // Start the BPA
@@ -148,11 +145,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
 
     // Start gRPC server
     if let Some(config) = &config.grpc {
-        #[cfg(feature = "grpc")]
         grpc::init(config, &bpa, &tasks);
-
-        #[cfg(not(feature = "grpc"))]
-        warn!("Ignoring gRPC configuration as it is disabled at compile time");
     }
 
     // And wait for shutdown signal
