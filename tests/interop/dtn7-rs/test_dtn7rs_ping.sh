@@ -297,6 +297,9 @@ type = "memory"
 [bundle_storage]
 type = "memory"
 
+[rfc9171-validity]
+primary-block-integrity = false
+
 [[clas]]
 name = "cl0"
 type = "tcpclv4"

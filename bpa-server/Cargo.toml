@@ -26,7 +26,7 @@ tracing = ["hardy-async/tracing"]
 [dependencies]
 hardy-async = { path = "../async" }
 hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
-hardy-bpa = { path = "../bpa", features = ["serde"] }
+hardy-bpa = { path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
 hardy-eid-patterns = { path = "../eid-patterns", features = ["serde"] }
 hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }

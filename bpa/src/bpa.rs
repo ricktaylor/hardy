@@ -193,6 +193,21 @@ impl Bpa {
         // New filter registry
         let filter_registry = Arc::new(filters::registry::Registry::new(config));
 
+        // Auto-register RFC9171 validity filter unless disabled
+        #[cfg(not(feature = "no-rfc9171-autoregister"))]
+        {
+            filter_registry
+                .register(
+                    filters::Hook::Ingress,
+                    "rfc9171-validity",
+                    &[],
+                    filters::Filter::Read(Arc::new(
+                        filters::rfc9171::Rfc9171ValidityFilter::default(),
+                    )),
+                )
+                .expect("Failed to register RFC9171 validity filter");
+        }
+
         // New dispatcher (returns Arc, starts immediately)
         let dispatcher = dispatcher::Dispatcher::new(
             config,

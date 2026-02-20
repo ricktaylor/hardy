@@ -5,6 +5,10 @@ pub(crate) mod registry;
 
 mod filter;
 
+/// RFC9171 validity filter - always available, auto-registered by default.
+/// Disable auto-registration with `no-rfc9171-autoregister` feature.
+pub mod rfc9171;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Filter with name '{0}' already exists")]

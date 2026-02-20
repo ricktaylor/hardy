@@ -16,9 +16,10 @@ fn count_blocks_of_type(bundle: &bundle::Bundle, block_type: crate::block::Type)
 
 #[test]
 fn rfc9173_appendix_a_1() {
-    // Note: I've tweaked the creation timestamp to be valid, and added a CRC
+    // Original RFC9173 Appendix A.1.4 test vector
+    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
     let data = hex_literal::hex!(
-        "9f89070001820282010282028202018202820201820118281a000f424042e4fe850b0200
+        "9f88070000820282010282028202018202820201820018281a000f4240850b0200
                 005856810101018202820201828201078203008181820158403bdc69b3a34a2b5d3a
                 8554368bd1e808f606219d2a10a846eae3886ae4ecc83c4ee550fdfb1cc636b904e2
                 f1a73e303dcd4b6ccece003e95e8164dcc89a156e185010100005823526561647920
@@ -44,9 +45,10 @@ fn rfc9173_appendix_a_1() {
 
 #[test]
 fn rfc9173_appendix_a_2() {
-    // Note: I've tweaked the creation timestamp to be valid, and added a CRC
+    // Original RFC9173 Appendix A.2.4 test vector
+    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
     let data = hex_literal::hex!(
-        "9f89070001820282010282028202018202820201820118281a000f424042e4fe850c0201
+        "9f88070000820282010282028202018202820201820018281a000f4240850c0201
                 0058508101020182028202018482014c5477656c7665313231323132820201820358
                 1869c411276fecddc4780df42c8a2af89296fabf34d7fae7008204008181820150ef
                 a4b5ac0108e3816c5606479801bc04850101000058233a09c1e63fe23a7f66a59c73
@@ -118,21 +120,18 @@ fn rfc9173_appendix_a_3() {
         .expect("Failed to decrypt");
 }
 
-/*
-
-The example bundle is invalid as it lacks a CRC on the Primary Block
-
 #[test]
 fn rfc9173_appendix_a_4() {
+    // Original RFC9173 Appendix A.4.5 test vector
+    // Note: No CRC on primary block, no Bundle Age - these checks are now in BPA filter
     let data = hex_literal::hex!(
-        // I have added a bundle age block
         "9f88070000820282010282028202018202820201820018281a000f4240850b0300
                 005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
                 420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
                 9b88029191850c0201005849820301020182028202018382014c5477656c76653132
                 313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
-                50d2c51cb2481792dae8b21d848cede99b850704000041018501010000582390eab6
-                457593379298a8724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+                50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
+                724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
     );
     let keys: key::KeySet = serde_json::from_value(serde_json::json!({
         "keys": [
@@ -154,14 +153,16 @@ fn rfc9173_appendix_a_4() {
     }))
     .unwrap();
 
-    let bundle = bundle::ParsedBundle::parse_with_keys(&data, &keys).unwrap().bundle;
+    let bundle = bundle::ParsedBundle::parse_with_keys(&data, &keys)
+        .unwrap()
+        .bundle;
     bundle
         .decrypt_block_data(1, &data, &keys)
         .expect("Failed to decrypt");
     bundle
         .verify_block(1, &data, &keys)
         .expect("Failed to verify");
-}*/
+}
 
 // TODO: Implement test for Wrapped Key Unwrap (LLR 2.2.4, 2.2.7).
 // Scenario: Verify unwrapping of a session key using a KEK.

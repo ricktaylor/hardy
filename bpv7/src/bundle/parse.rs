@@ -786,23 +786,14 @@ fn parse_blocks(
         report_unsupported = true;
     }
 
-    // Check bundle age exists if needed
-    if bundle.age.is_none() && !bundle.id.timestamp.is_clocked() {
-        return Err(Error::MissingBundleAge);
-    }
-
     // We are done with all decrypted content
     parser.decrypted_data.clear();
 
-    // Check we have at least some primary block protection
-    if let crc::CrcType::None = bundle.crc_type
-        && matches!(
-            parser.blocks.get(&0).expect("Missing primary block!").bib,
-            block::BibCoverage::None
-        )
-    {
-        return Err(Error::MissingIntegrityCheck);
-    }
+    // NOTE: Bundle Age and primary block integrity checks have been moved to
+    // the BPA ingress filter (rfc9171-filter feature) to allow:
+    // 1. Configurable policy per deployment
+    // 2. Compatibility with RFC9173 test vectors (no clock, no bundle age)
+    // 3. Interoperability with implementations that don't add CRC
 
     if matches!(parser.mode, ParseMode::Full) {
         // Reduce BCB targets scheduled for removal
@@ -1193,8 +1184,9 @@ mod test {
         ));
     }
 
-    // TODO: Implement test for LLR 1.1.33: Processing must use Bundle Age block for expiry if Creation Time is zero.
-    // Scenario: Parse a bundle with creation_timestamp = 0 and no Bundle Age block. Expect Error::MissingBundleAge.
+    // NOTE: LLR 1.1.33 (Bundle Age required when Creation Time is zero) is now enforced
+    // by the BPA rfc9171-filter, not the parser. Parser accepts such bundles to allow
+    // compatibility with RFC9173 test vectors.
 
     // TODO: Implement test for LLR 1.1.34: Processing must process and act on Hop Count extension block.
     // Scenario: Parse a bundle with a Hop Count block. Verify it is extracted into bundle.hop_count.

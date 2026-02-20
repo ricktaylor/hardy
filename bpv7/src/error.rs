@@ -23,10 +23,6 @@ pub enum Error {
     #[error("Bundle has no payload block")]
     MissingPayload,
 
-    /// Indicates that the primary block is not protected by a BPSec BIB or a CRC.
-    #[error("Primary block is not protected by a BPSec BIB or a CRC")]
-    MissingIntegrityCheck,
-
     /// Indicates that the bundle payload block has an invalid block number (must be 1).
     #[error("Bundle payload block must be block number 1")]
     InvalidPayloadBlockNumber,
@@ -50,10 +46,6 @@ pub enum Error {
     /// Indicates that a bundle has multiple blocks of a type that should be unique.
     #[error("Bundle has multiple {0:?} blocks")]
     DuplicateBlocks(block::Type),
-
-    /// Indicates that the bundle source has no clock and there is no Bundle Age extension block.
-    #[error("Bundle source has no clock, and there is no Bundle Age extension block")]
-    MissingBundleAge,
 
     /// Indicates that a block has an unsupported block type or block content sub-type.
     #[error("Block {0} has an unsupported block type or block content sub-type")]

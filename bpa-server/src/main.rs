@@ -1,6 +1,7 @@
 mod clas;
 mod config;
 mod echo_config;
+mod filters;
 mod policy;
 mod static_routes;
 
@@ -131,16 +132,8 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
         static_routes::init(config, &bpa, &tasks).await?;
     }
 
-    // Load ip-legacy-filter
-    #[cfg(feature = "ipn-legacy-filter")]
-    if let Some(filter) = hardy_ipn_legacy_filter::IpnLegacyFilter::new(&config.ipn_legacy_nodes) {
-        bpa.register_filter(
-            hardy_bpa::filters::Hook::Egress,
-            "ipn-legacy",
-            &[],
-            hardy_bpa::filters::Filter::Write(filter),
-        )?;
-    }
+    // Register filters
+    filters::register(&config, &bpa)?;
 
     // Register echo service
     #[cfg(feature = "echo")]

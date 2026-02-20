@@ -82,9 +82,19 @@ pub struct Config {
     #[serde(default)]
     pub bundle_storage: Option<BundleStorage>,
 
-    #[cfg(feature = "ipn-legacy-filter")]
     #[serde(default, rename = "ipn-legacy-nodes")]
     pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
+
+    /// RFC9171 validity filter configuration.
+    ///
+    /// Controls the RFC9171 bundle validity checks that are auto-registered
+    /// when the `rfc9171-filter` feature is enabled on the BPA.
+    ///
+    /// Set individual fields to `false` to disable specific checks:
+    /// - `primary_block_integrity`: Require CRC or BIB on primary block
+    /// - `bundle_age_required`: Require Bundle Age when creation time has no clock
+    #[serde(default, rename = "rfc9171-validity")]
+    pub rfc9171_validity: hardy_bpa::filters::rfc9171::Config,
 
     // Echo service
     #[cfg(feature = "echo")]
