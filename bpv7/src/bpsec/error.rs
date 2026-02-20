@@ -107,15 +107,11 @@ pub enum Error {
     Algorithm(String),
 }
 
-pub trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
-}
-
-impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T> for Result<T, E> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
-        self.map_err(|e| Error::InvalidField {
-            field,
-            source: e.into(),
-        })
+impl crate::error::HasInvalidField for Error {
+    fn invalid_field(
+        field: &'static str,
+        source: Box<dyn core::error::Error + Send + Sync>,
+    ) -> Self {
+        Error::InvalidField { field, source }
     }
 }

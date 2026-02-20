@@ -28,10 +28,10 @@ fn parse_ranges<const D: usize>(
                         *shortest = *shortest && s;
                         v
                     })
-                    .map_field_err("id")?;
+                    .map_field_err::<Error>("id")?;
 
                 let data_start = offset + outer_offset + a.offset();
-                a.skip_value(16).map_field_err("value")?;
+                a.skip_value(16).map_field_err::<Error>("value")?;
                 Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
             })?;
             map.insert(id, r);
@@ -142,7 +142,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     }
                     Ok::<_, Error>(targets)
                 })
-                .map_field_err("security targets")?;
+                .map_field_err::<Error>("security targets")?;
             if targets.is_empty() {
                 return Err(Error::NoTargets);
             }
@@ -154,7 +154,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("security context id")?;
+                .map_field_err::<Error>("security context id")?;
 
             // Flags
             let flags: u64 = seq
@@ -163,7 +163,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("security context flags")?;
+                .map_field_err::<Error>("security context flags")?;
 
             // Source
             let source = seq
@@ -172,7 +172,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("security source")?;
+                .map_field_err::<Error>("security source")?;
             if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);
             }
@@ -182,7 +182,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                 HashMap::new()
             } else {
                 parse_ranges(seq, &mut shortest, 0)
-                    .map_field_err("security context parameters")?
+                    .map_field_err::<Error>("security context parameters")?
                     .unwrap_or_default()
             };
 
@@ -193,8 +193,8 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
 
                 let mut results = HashMap::with_capacity(targets.len());
                 let mut idx = 0;
-                while let Some(target_results) =
-                    parse_ranges(a, &mut shortest, offset).map_field_err("security results")?
+                while let Some(target_results) = parse_ranges(a, &mut shortest, offset)
+                    .map_field_err::<Error>("security results")?
                 {
                     results.insert(
                         *targets.get(idx).ok_or(Error::MismatchedTargetResult)?,

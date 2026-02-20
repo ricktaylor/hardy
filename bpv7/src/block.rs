@@ -357,12 +357,15 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("block type code")?;
+                .map_field_err::<Error>("block type code")?;
 
-            let block_number = arr.parse().map_field_err("block number").map(|(v, s)| {
-                shortest = shortest && s;
-                v
-            })?;
+            let block_number =
+                arr.parse()
+                    .map_field_err::<Error>("block number")
+                    .map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?;
             match (block_number, block_type) {
                 (1, Type::Payload) => {}
                 (0, _) | (1, _) | (_, Type::Primary) | (_, Type::Payload) => {
@@ -377,7 +380,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("block processing control flags")?;
+                .map_field_err::<Error>("block processing control flags")?;
 
             let crc_type = arr
                 .parse()
@@ -385,7 +388,7 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("CRC type")?;
+                .map_field_err::<Error>("CRC type")?;
 
             // Stash start of data
             let payload_start = arr.offset();

@@ -49,7 +49,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("version")?;
+                .map_field_err::<Error>("version")?;
             if version != 7 {
                 return Err(Error::InvalidVersion(version));
             }
@@ -61,7 +61,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("bundle processing control flags")?;
+                .map_field_err::<Error>("bundle processing control flags")?;
 
             // Parse CRC Type
             let crc_type = block
@@ -96,7 +96,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("report-to EID")?;
+                .map_field_err::<Error>("report-to EID")?;
 
             // Parse timestamp
             let timestamp = block.parse().map(|(v, s)| {

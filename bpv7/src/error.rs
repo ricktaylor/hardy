@@ -98,18 +98,42 @@ pub enum Error {
     },
 }
 
-/// A trait for mapping errors to a `Error::InvalidField`.
-/// This is useful for providing more context when a parsing error occurs.
-pub trait CaptureFieldErr<T> {
-    /// Maps the error to a `Error::InvalidField` with the given field name.
-    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
+/// Trait for error types that can represent an invalid field error.
+///
+/// Implement this trait for error types that have an `InvalidField` variant
+/// to enable use of the [`CaptureFieldErr`] extension trait.
+pub trait HasInvalidField: Sized {
+    /// Creates an invalid field error with the given field name and source error.
+    fn invalid_field(
+        field: &'static str,
+        source: Box<dyn core::error::Error + Send + Sync>,
+    ) -> Self;
 }
 
-impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T> for Result<T, E> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
-        self.map_err(|e| Error::InvalidField {
-            field,
-            source: e.into(),
-        })
+impl HasInvalidField for Error {
+    fn invalid_field(
+        field: &'static str,
+        source: Box<dyn core::error::Error + Send + Sync>,
+    ) -> Self {
+        Error::InvalidField { field, source }
+    }
+}
+
+/// Extension trait for `Result` that maps errors to an `InvalidField` variant.
+///
+/// This is useful for providing more context when a parsing error occurs.
+/// The error type `E` is specified on the method, allowing turbofish syntax
+/// (`.map_field_err::<Error>("field")`) when type inference is insufficient.
+pub trait CaptureFieldErr<T> {
+    /// Maps the error to an `InvalidField` error with the given field name.
+    fn map_field_err<E: HasInvalidField>(self, field: &'static str) -> Result<T, E>;
+}
+
+impl<T, Err> CaptureFieldErr<T> for Result<T, Err>
+where
+    Err: Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    fn map_field_err<E: HasInvalidField>(self, field: &'static str) -> Result<T, E> {
+        self.map_err(|e| E::invalid_field(field, e.into()))
     }
 }

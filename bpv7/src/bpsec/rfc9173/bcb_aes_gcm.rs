@@ -501,7 +501,7 @@ pub fn parse(
                 shortest = s;
                 p
             })
-            .map_field_err("RFC9173 AES-GCM parameters")?,
+            .map_field_err::<Error>("RFC9173 AES-GCM parameters")?,
     );
 
     // Unpack results
@@ -516,7 +516,7 @@ pub fn parse(
                         shortest = shortest && s;
                         v
                     })
-                    .map_field_err("RFC9173 AES-GCM results")?,
+                    .map_field_err::<Error>("RFC9173 AES-GCM results")?,
             }),
         );
     }

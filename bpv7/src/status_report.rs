@@ -6,6 +6,7 @@ on the status of a bundle. This can include events like bundle reception, forwar
 */
 
 use super::*;
+use crate::error::CaptureFieldErr;
 use thiserror::Error;
 
 /// Errors that can occur when working with status reports.
@@ -31,16 +32,12 @@ pub enum Error {
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }
 
-trait CaptureFieldErr<T> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error>;
-}
-
-impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldErr<T> for Result<T, E> {
-    fn map_field_err(self, field: &'static str) -> Result<T, Error> {
-        self.map_err(|e| Error::InvalidField {
-            field,
-            source: e.into(),
-        })
+impl crate::error::HasInvalidField for Error {
+    fn invalid_field(
+        field: &'static str,
+        source: Box<dyn core::error::Error + Send + Sync>,
+    ) -> Self {
+        Error::InvalidField { field, source }
     }
 }
 
@@ -189,7 +186,7 @@ fn parse_status_assertion(
                 *shortest = *shortest && s;
                 v
             })
-            .map_field_err("status")?;
+            .map_field_err::<Error>("status")?;
 
         if status {
             if let Some(timestamp) = a
@@ -200,7 +197,7 @@ fn parse_status_assertion(
                         v
                     })
                 })
-                .map_field_err("timestamp")?
+                .map_field_err::<Error>("timestamp")?
             {
                 if timestamp.millisecs() == 0 {
                     Ok::<_, Error>(Some(StatusAssertion(None)))
@@ -283,18 +280,18 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
             a.parse_array(|a, s, tags| {
                 shortest = shortest && s && tags.is_empty() && a.is_definite();
 
-                report.received =
-                    parse_status_assertion(a, &mut shortest).map_field_err("received status")?;
-                report.forwarded =
-                    parse_status_assertion(a, &mut shortest).map_field_err("forwarded status")?;
-                report.delivered =
-                    parse_status_assertion(a, &mut shortest).map_field_err("delivered status")?;
-                report.deleted =
-                    parse_status_assertion(a, &mut shortest).map_field_err("deleted status")?;
+                report.received = parse_status_assertion(a, &mut shortest)
+                    .map_field_err::<Error>("received status")?;
+                report.forwarded = parse_status_assertion(a, &mut shortest)
+                    .map_field_err::<Error>("forwarded status")?;
+                report.delivered = parse_status_assertion(a, &mut shortest)
+                    .map_field_err::<Error>("delivered status")?;
+                report.deleted = parse_status_assertion(a, &mut shortest)
+                    .map_field_err::<Error>("deleted status")?;
 
                 Ok::<_, Self::Error>(())
             })
-            .map_field_err("bundle status information")?;
+            .map_field_err::<Error>("bundle status information")?;
 
             report.reason = a
                 .parse()
@@ -302,7 +299,7 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("reason")?;
+                .map_field_err::<Error>("reason")?;
 
             let source = a
                 .parse()
@@ -310,7 +307,7 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("source")?;
+                .map_field_err::<Error>("source")?;
 
             let timestamp = a
                 .parse()
@@ -318,7 +315,7 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("timestamp")?;
+                .map_field_err::<Error>("timestamp")?;
 
             report.bundle_id = bundle::Id {
                 source,
@@ -326,10 +323,12 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
                 fragment_info: None,
             };
 
-            if let Some(offset) = a.try_parse().map_field_err("fragment offset")? {
+            if let Some(offset) = a.try_parse().map_field_err::<Error>("fragment offset")? {
                 report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
                     offset,
-                    total_adu_length: a.parse().map_field_err("fragment total ADU length")?,
+                    total_adu_length: a
+                        .parse()
+                        .map_field_err::<Error>("fragment total ADU length")?,
                 });
             }
             Ok((report, shortest))
@@ -371,10 +370,10 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("record type code")?
+                .map_field_err::<Error>("record type code")?
             {
                 1u64 => {
-                    let (r, s) = a.parse().map_field_err("bundle status report")?;
+                    let (r, s) = a.parse().map_field_err::<Error>("bundle status report")?;
                     Ok((Self::BundleStatusReport(r), shortest && s))
                 }
                 v => Err(Error::UnknownAdminRecordType(v)),

@@ -175,7 +175,7 @@ impl<'a> BlockParse<'a> {
                             block_data,
                         )
                         .map(|(v, s, len)| (v, s && len == block_data.len()))
-                        .map_field_err("BPSec confidentiality extension block")?;
+                        .map_field_err::<Error>("BPSec confidentiality extension block")?;
 
                     if bcb.is_unsupported() {
                         if block.block.flags.delete_bundle_on_failure {
@@ -434,7 +434,7 @@ impl<'a> BlockParse<'a> {
             block::Type::PreviousNode => {
                 let (v, s) = self
                     .parse_payload(block_number)
-                    .map_field_err("Previous Node Block")?;
+                    .map_field_err::<Error>("Previous Node Block")?;
                 if !s {
                     self.noncanonical_blocks
                         .insert(block_number, Some(hardy_cbor::encode::emit(&v).0.into()));
@@ -445,7 +445,7 @@ impl<'a> BlockParse<'a> {
             block::Type::BundleAge => {
                 let (v, s) = self
                     .parse_payload(block_number)
-                    .map_field_err("Bundle Age Block")?;
+                    .map_field_err::<Error>("Bundle Age Block")?;
                 if !s {
                     self.noncanonical_blocks
                         .insert(block_number, Some(hardy_cbor::encode::emit(&v).0.into()));
@@ -456,7 +456,7 @@ impl<'a> BlockParse<'a> {
             block::Type::HopCount => {
                 let (v, s) = self
                     .parse_payload(block_number)
-                    .map_field_err("Hop Count Block")?;
+                    .map_field_err::<Error>("Hop Count Block")?;
                 if !s {
                     self.noncanonical_blocks
                         .insert(block_number, Some(hardy_cbor::encode::emit(&v).0.into()));
@@ -483,7 +483,7 @@ impl<'a> BlockParse<'a> {
 
         let (mut bib, mut canonical) = self
             .parse_payload::<bpsec::bib::OperationSet>(bib_block_number)
-            .map_field_err("BPSec integrity extension block")?;
+            .map_field_err::<Error>("BPSec integrity extension block")?;
 
         let mut report_unsupported = false;
 
@@ -833,7 +833,7 @@ fn parse_primary_block(
             canonical = canonical && s;
             v
         })
-        .map_field_err("Primary Block")
+        .map_field_err::<Error>("Primary Block")
         .map_err(|e| (None, e))?;
 
     let (bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
@@ -1155,7 +1155,7 @@ impl Id {
                 canonical = canonical && s;
                 v
             })
-            .map_field_err("Primary Block")?;
+            .map_field_err::<Error>("Primary Block")?;
 
         let (bundle, e) = primary_block.into_bundle(block_start..block_array.offset());
         if let Some(e) = e {

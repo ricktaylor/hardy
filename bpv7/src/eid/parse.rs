@@ -1,5 +1,5 @@
 use super::*;
-use error::CaptureFieldErr;
+use crate::error::CaptureFieldErr;
 use percent_encoding::percent_decode_str;
 use winnow::{
     ModalResult, Parser,
@@ -238,7 +238,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                     shortest = shortest && s;
                     v
                 })
-                .map_field_err("EID scheme")?
+                .map_field_err::<Error>("EID scheme")?
             {
                 0 => Err(Error::UnsupportedScheme(0)),
                 1 => a
@@ -268,7 +268,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                             .into()),
                         }
                     })
-                    .map_field_err("'dtn' scheme-specific part"),
+                    .map_field_err::<Error>("'dtn' scheme-specific part"),
                 2 => match a.parse_value(|value, s, tags| match value {
                     hardy_cbor::decode::Value::Array(a) => {
                         ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
@@ -280,7 +280,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                     .into()),
                 }) {
                     Err(Error::InvalidCBOR(e)) => {
-                        Err(e).map_field_err("'ipn' scheme-specific part")
+                        Err(e).map_field_err::<Error>("'ipn' scheme-specific part")
                     }
                     r => r,
                 },

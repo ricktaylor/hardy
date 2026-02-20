@@ -509,7 +509,7 @@ pub fn parse(
                 shortest = s;
                 p
             })
-            .map_field_err("RFC9173 HMAC-SHA2 parameters")?,
+            .map_field_err::<Error>("RFC9173 HMAC-SHA2 parameters")?,
     );
 
     // Unpack results
@@ -524,7 +524,7 @@ pub fn parse(
                         shortest = shortest && s;
                         v
                     })
-                    .map_field_err("RFC9173 HMAC-SHA2 results")?,
+                    .map_field_err::<Error>("RFC9173 HMAC-SHA2 results")?,
             }),
         );
     }

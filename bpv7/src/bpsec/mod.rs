@@ -18,7 +18,7 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
-use error::CaptureFieldErr;
+use crate::error::CaptureFieldErr;
 
 pub use error::Error;
 

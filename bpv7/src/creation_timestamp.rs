@@ -138,8 +138,8 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
-            let (timestamp, s1) = a.parse().map_field_err("bundle creation time")?;
-            let (sequence_number, s2) = a.parse().map_field_err("sequence number")?;
+            let (timestamp, s1) = a.parse().map_field_err::<Error>("bundle creation time")?;
+            let (sequence_number, s2) = a.parse().map_field_err::<Error>("sequence number")?;
             Ok((
                 CreationTimestamp {
                     creation_time: if timestamp == 0 {

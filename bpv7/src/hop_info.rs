@@ -34,8 +34,8 @@ impl hardy_cbor::decode::FromCbor for HopInfo {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
-            let (limit, s1) = a.parse().map_field_err("hop limit")?;
-            let (count, s2) = a.parse().map_field_err("hop count")?;
+            let (limit, s1) = a.parse().map_field_err::<Error>("hop limit")?;
+            let (count, s2) = a.parse().map_field_err::<Error>("hop count")?;
 
             Ok::<_, Error>((
                 HopInfo { limit, count },
