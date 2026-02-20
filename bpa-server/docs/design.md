@@ -102,6 +102,34 @@ Remote CLAs and services connect to these endpoints. The gRPC module translates 
 
 File-based static routing with hot-reload support. See [Static Routes Design](static_routes_design.md) for details.
 
+## Filter Configuration
+
+The server registers filters with the BPA based on configuration. Filters provide hook points for validation, policy enforcement, and bundle modification.
+
+### RFC 9171 Validity Filter
+
+The server registers the RFC 9171 validity filter at the Ingress hook with configurable checks:
+
+```yaml
+rfc9171-validity:
+  primary-block-integrity: true  # Require CRC or BIB on primary block
+  bundle-age-required: true      # Require Bundle Age when timestamp is zero
+```
+
+Both options default to `true`, enforcing RFC 9171 recommendations. Disable `primary-block-integrity` for interoperability with implementations that omit primary block CRCs (e.g., dtn7-rs).
+
+### IPN Legacy Filter
+
+When the `ipn-legacy-filter` feature is enabled and `ipn-legacy-nodes` is configured, the IPN legacy filter rewrites bundle EIDs at the Egress hook to use legacy two-element IPN encoding for specified nodes:
+
+```yaml
+ipn-legacy-nodes:
+  - "ipn:100.*"  # All services on node 100
+  - "ipn:200.1"  # Specific endpoint
+```
+
+This enables interoperability with older BPv6-era implementations that expect the legacy IPN format.
+
 ## Command Line Options
 
 - `-h, --help` - Display help

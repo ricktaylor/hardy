@@ -63,6 +63,18 @@
 # The root directory where bundle files will be stored.
 #store_dir = "/var/spool/hardy-bpa-server/bundles" # Default varies by OS
 
+# RFC 9171 Validity Filter
+# Configures policy checks from RFC 9171. These are SHOULD requirements,
+# not structural validity, so they can be relaxed for interoperability.
+[rfc9171-validity]
+# Require the primary block to be protected by CRC or BIB.
+# Disable for interoperability with implementations that omit CRCs (e.g., dtn7-rs).
+#primary-block-integrity = true
+
+# Require a Bundle Age block when creation timestamp is zero (no clock).
+# Ensures bundles can be properly aged and expired.
+#bundle-age-required = true
+
 # IPN Legacy Filter (requires `ipn-legacy-filter` feature)
 # This filter rewrites IPN 3-element EIDs to legacy 2-element format
 # for peers that require the older encoding.

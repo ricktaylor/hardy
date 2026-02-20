@@ -303,7 +303,16 @@ Egress path:
 | **Originate** | Source policy enforcement | Flow label, add BIB |
 | **Egress** | Final validation | Add BIB, BCB |
 
-### Well-Known Filter Names
+### Built-in Filters
+
+| Name | Trait | Purpose |
+|------|-------|---------|
+| `rfc9171-validity` | Read | RFC 9171 validity checks (see below) |
+| `ipn-legacy` | Write | Rewrite IPN EIDs to legacy encoding |
+
+### Example Filter Ideas
+
+The following are examples of filters that could be implemented:
 
 | Name | Trait | Purpose |
 |------|-------|---------|
@@ -311,9 +320,27 @@ Egress path:
 | `source_validator` | Read | Validate bundle source against policy |
 | `destination_acl` | Read | Enforce destination access control |
 | `flow_classifier` | Write | Set flow label for queue classification (see [Policy Subsystem Design](policy_subsystem_design.md)) |
-| `ipn-legacy` | Write | Rewrite IPN EIDs to legacy encoding |
 | `add_bib` | Write | Add Bundle Integrity Block |
 | `add_bcb` | Write | Add Bundle Confidentiality Block |
+
+### RFC 9171 Validity Filter
+
+The `rfc9171-validity` filter enforces policy requirements from RFC 9171 at the Ingress hook. These checks are configurable because they represent policy decisions rather than structural validity (which is enforced during parsing in hardy-bpv7).
+
+**Configurable checks:**
+
+- **Primary block integrity** (`primary-block-integrity`, default: `true`): Requires that the primary block is protected by either a CRC or a Bundle Integrity Block (BIB). RFC 9171 §4.3.1 recommends this protection but does not mandate it. Disable for interoperability with implementations that omit primary block CRCs.
+
+- **Bundle Age required** (`bundle-age-required`, default: `true`): Requires a Bundle Age block when the creation timestamp is zero (indicating no clock). RFC 9171 §4.2.7 makes this a SHOULD requirement. The check ensures bundles can be aged and expired correctly.
+
+**Auto-registration:**
+
+The filter is auto-registered by default with default configuration (both checks enabled). Applications that need custom configuration should:
+
+1. Enable the `no-rfc9171-autoregister` feature flag
+2. Register the filter manually with the desired configuration
+
+This pattern allows the library to provide sensible defaults while giving applications full control when needed.
 
 ---
 
