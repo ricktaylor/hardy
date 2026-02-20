@@ -42,7 +42,10 @@ struct StaticRoute {
 
 #[derive(Clone)]
 pub struct StaticRoutes {
-    config: Config,
+    routes_file: PathBuf,
+    priority: u32,
+    watch: bool,
+    protocol_id: String,
     bpa: Arc<hardy_bpa::bpa::Bpa>,
     routes: Vec<StaticRoute>,
 }
@@ -51,12 +54,12 @@ impl StaticRoutes {
     async fn init(mut self, tasks: &hardy_async::TaskPool) -> anyhow::Result<()> {
         info!(
             "Loading static routes from '{}'",
-            self.config.routes_file.display()
+            self.routes_file.display()
         );
 
         self.refresh_routes(false).await?;
 
-        if self.config.watch {
+        if self.watch {
             info!("Monitoring static routes file for changes");
 
             // Set up file watcher
@@ -69,7 +72,7 @@ impl StaticRoutes {
     async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
         // Reload the routes
         let mut new_routes =
-            parse::load_routes(&self.config.routes_file, ignore_errors, self.config.watch).await?;
+            parse::load_routes(&self.routes_file, ignore_errors, self.watch).await?;
 
         // Calculate routes to drop (present in current but missing or changed in new) and drop routes
         for r in self
@@ -78,10 +81,10 @@ impl StaticRoutes {
         {
             self.bpa
                 .remove_route(
-                    &self.config.protocol_id,
+                    &self.protocol_id,
                     &r.pattern,
                     &r.action,
-                    r.priority.unwrap_or(self.config.priority),
+                    r.priority.unwrap_or(self.priority),
                 )
                 .await;
         }
@@ -93,10 +96,10 @@ impl StaticRoutes {
         for r in new_routes {
             self.bpa
                 .add_route(
-                    self.config.protocol_id.clone(),
+                    self.protocol_id.clone(),
                     r.pattern.clone(),
                     r.action.clone(),
-                    r.priority.unwrap_or(self.config.priority),
+                    r.priority.unwrap_or(self.priority),
                 )
                 .await;
             self.routes.push(r);
@@ -106,12 +109,11 @@ impl StaticRoutes {
 
     fn watch(&self, tasks: &hardy_async::TaskPool) {
         let routes_dir = self
-            .config
             .routes_file
             .parent()
             .trace_expect("Failed to get 'routes_file' parent directory!")
             .to_path_buf();
-        let routes_file = self.config.routes_file.clone();
+        let routes_file = self.routes_file.clone();
 
         let mut self_cloned = self.clone();
         let cancel_token = tasks.cancel_token().clone();
@@ -169,31 +171,34 @@ impl StaticRoutes {
 }
 
 pub async fn init(
-    mut config: Config,
+    config: &Config,
     bpa: &Arc<hardy_bpa::bpa::Bpa>,
     tasks: &hardy_async::TaskPool,
 ) -> anyhow::Result<()> {
     // Ensure it's absolute
-    config.routes_file = std::env::current_dir()
+    let routes_file = std::env::current_dir()
         .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?
         .join(&config.routes_file);
 
     // Try to create canonical file path
-    config.routes_file = match config.routes_file.canonicalize() {
+    let routes_file = match routes_file.canonicalize() {
         Ok(path) => path,
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {
                 return Err(anyhow::anyhow!(
                     "Failed to canonicalise routes_file '{}': {e}'",
-                    config.routes_file.display()
+                    routes_file.display()
                 ));
             }
-            config.routes_file
+            routes_file
         }
     };
 
     StaticRoutes {
-        config,
+        priority: config.priority,
+        protocol_id: config.protocol_id.clone(),
+        routes_file,
+        watch: config.watch,
         bpa: bpa.clone(),
         routes: Vec::new(),
     }

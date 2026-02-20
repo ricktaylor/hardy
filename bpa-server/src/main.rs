@@ -127,7 +127,7 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     let tasks = TaskPool::new();
 
     // Load static routes
-    if let Some(config) = config.static_routes {
+    if let Some(config) = &config.static_routes {
         static_routes::init(config, &bpa, &tasks).await?;
     }
 
