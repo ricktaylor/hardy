@@ -284,7 +284,7 @@ echo "============================================================"
 
 # Create Hardy config for server mode
 cat > "$TEST_DIR/hardy_config.toml" << EOF
-log_level = "debug"
+log_level = "info"
 status_reports = true
 node_ids = "ipn:$HARDY_NODE_NUM.0"
 
@@ -359,18 +359,47 @@ if [ "$USE_DOCKER" = true ]; then
 
     sleep 1
 
-    # Send bundle - payload via stdin, -r for receiver endpoint
-    # Note: dtnsend -p is --port (websocket port), not payload. Payload comes from stdin.
-    echo "ping from dtn7-rs" | docker exec -i "$DTN7_CONTAINER" \
-        dtnsend -r "ipn:$HARDY_NODE_NUM.7" 2>&1 || true
+    # Register endpoint to receive echo responses
+    log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
+    docker exec "$DTN7_CONTAINER" dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
 
-    # Give time for round trip
+    # Send 5 pings to Hardy's echo service
+    PING_COUNT=5
+    log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
+    for i in $(seq 1 $PING_COUNT); do
+        echo "ping $i from dtn7-rs" | docker exec -i "$DTN7_CONTAINER" \
+            dtnsend -r "ipn:$HARDY_NODE_NUM.7" >/dev/null 2>&1 || true
+        sleep 0.5
+    done
+
+    # Wait for round-trips
     sleep 3
 
-    # Check if Hardy received and echoed the bundle
-    # This is harder to verify programmatically - check logs
-    log_warn "TEST 2: Check Hardy logs for received bundle (manual verification needed)"
-    TEST2_RESULT="MANUAL"
+    # Fetch all received bundles
+    RECV_COUNT=0
+    for i in $(seq 1 $PING_COUNT); do
+        RECV_OUTPUT="$TEST_DIR/dtnrecv_$i.txt"
+        docker exec "$DTN7_CONTAINER" dtnrecv -e "ipn:$DTN7_NODE_NUM.0" > "$RECV_OUTPUT" 2>&1 || true
+        if [ -s "$RECV_OUTPUT" ] && ! grep -q "Nothing to fetch" "$RECV_OUTPUT" 2>/dev/null; then
+            RECV_COUNT=$((RECV_COUNT + 1))
+        fi
+    done
+
+    # Report results
+    echo ""
+    echo "--- ipn:$HARDY_NODE_NUM.7 ping statistics ---"
+    echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
+
+    if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
+        log_info "TEST 2 PASSED: All $PING_COUNT echo responses received"
+        TEST2_RESULT="PASS"
+    elif [ "$RECV_COUNT" -gt 0 ]; then
+        log_warn "TEST 2 PASSED: $RECV_COUNT/$PING_COUNT echo responses received"
+        TEST2_RESULT="PASS"
+    else
+        log_error "TEST 2 FAILED: No echo responses received"
+        TEST2_RESULT="FAIL"
+    fi
 else
     # Native mode
     dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$DTN7_PORT" &
@@ -378,20 +407,52 @@ else
     sleep 3
 
     # Add Hardy as peer via REST API
-    # PEER_URL format for IPN: tcp://host:port/<node_number>
     log_info "Adding Hardy as peer at 127.0.0.1:$HARDY_PORT..."
     curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$HARDY_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
-        2>&1 || log_warn "Could not add peer"
+        >/dev/null 2>&1 || log_warn "Could not add peer"
 
     sleep 1
 
-    log_step "dtn7-rs sending bundle to Hardy echo service..."
-    # Payload via stdin, -r for receiver endpoint
-    echo "ping from dtn7-rs" | dtnsend -r "ipn:$HARDY_NODE_NUM.7" 2>&1 || true
+    # Register endpoint to receive echo responses
+    log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
+    dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
 
+    # Send 5 pings to Hardy's echo service
+    PING_COUNT=5
+    log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
+    for i in $(seq 1 $PING_COUNT); do
+        echo "ping $i from dtn7-rs" | dtnsend -r "ipn:$HARDY_NODE_NUM.7" >/dev/null 2>&1 || true
+        sleep 0.5
+    done
+
+    # Wait for round-trips
     sleep 3
-    log_warn "TEST 2: Check Hardy logs for received bundle (manual verification needed)"
-    TEST2_RESULT="MANUAL"
+
+    # Fetch all received bundles
+    RECV_COUNT=0
+    for i in $(seq 1 $PING_COUNT); do
+        RECV_OUTPUT="$TEST_DIR/dtnrecv_$i.txt"
+        dtnrecv -e "ipn:$DTN7_NODE_NUM.0" > "$RECV_OUTPUT" 2>&1 || true
+        if [ -s "$RECV_OUTPUT" ] && ! grep -q "Nothing to fetch" "$RECV_OUTPUT" 2>/dev/null; then
+            RECV_COUNT=$((RECV_COUNT + 1))
+        fi
+    done
+
+    # Report results
+    echo ""
+    echo "--- ipn:$HARDY_NODE_NUM.7 ping statistics ---"
+    echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
+
+    if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
+        log_info "TEST 2 PASSED: All $PING_COUNT echo responses received"
+        TEST2_RESULT="PASS"
+    elif [ "$RECV_COUNT" -gt 0 ]; then
+        log_warn "TEST 2 PASSED: $RECV_COUNT/$PING_COUNT echo responses received"
+        TEST2_RESULT="PASS"
+    else
+        log_error "TEST 2 FAILED: No echo responses received"
+        TEST2_RESULT="FAIL"
+    fi
 fi
 
 # =============================================================================
@@ -406,8 +467,8 @@ echo "  TEST 1 (Hardy pings dtn7-rs): $TEST1_RESULT"
 echo "  TEST 2 (dtn7-rs pings Hardy): $TEST2_RESULT"
 echo ""
 
-if [ "$TEST1_RESULT" = "PASS" ]; then
-    log_info "Interoperability test completed successfully"
+if [ "$TEST1_RESULT" = "PASS" ] && [ "$TEST2_RESULT" = "PASS" ]; then
+    log_info "All interoperability tests passed"
     exit 0
 else
     log_error "Some tests failed"
