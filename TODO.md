@@ -132,7 +132,8 @@ Filters are core infrastructure enabling security filters, policy enforcement, f
 - **Implemented**: `FilterNode` with `prepare()/exec()` pattern for lock-free async execution
 - **Implemented**: `Bpa::register_filter()` and `Bpa::unregister_filter()` public API
 - **Implemented**: Filter invocation at all hook points (Ingress, Deliver, Originate, Egress)
-- **Implemented**: First production filter - IPN Legacy (`bpa/src/filters/ipn_legacy.rs`)
+- **Implemented**: IPN Legacy filter (`ipn-legacy-filter/`) - Egress filter for 2-element IPN format compatibility
+- **Implemented**: RFC9171 validity filter (`bpa/src/filters/rfc9171.rs`) - Configurable RFC9171 compliance checks (CRC, BundleAge)
 - **Implemented**: Ingress metadata tracking (CLA/peer info on bundles) in `ReadOnlyMetadata`
 
 See `bpa/docs/filter_subsystem_design.md` for design details.
@@ -1249,6 +1250,8 @@ For reference when closing external issues:
 
 | Date | Tasks | Summary |
 |------|-------|---------|
+| 2026-02-20 | 2.x | RFC9171 validity filter - configurable CRC and BundleAge checks moved from parser to ingress filter for interop flexibility |
+| 2026-02-20 | - | TCPCLv4 logging improvements - structured debug! syntax with address context, reduced noise (warn→debug for version mismatch, etc.) |
 | 2026-02-19 | 8.2 | Hardy-to-hardy interop test, `BpaRegistration` trait with `RemoteBpa` client, gRPC restructure to `proto/src/server/`, `hardy_async::TaskPool`, component refactoring, dependency cleanup |
 | 2026-02-18 | 8.2 | dtn7-rs interop tests (`tests/interop/dtn7-rs/`), centralized logging filters |
 | 2026-02-17 | 8.1 | Reworked `bp ping` tool with proper status report handling, new payload format, man page |
