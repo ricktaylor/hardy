@@ -33,7 +33,7 @@ trap cleanup INT TERM
 if ! docker image inspect "$DTN7_IMAGE" &>/dev/null; then
     echo "Building dtn7-interop image..."
     # Use docker directory as context - Dockerfile clones from GitHub, doesn't need workspace files
-    docker build -f "$SCRIPT_DIR/docker/Dockerfile.dtn7-rs" -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
+    docker build -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
 fi
 
 # Stop any existing container

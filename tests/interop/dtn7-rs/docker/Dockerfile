@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /root/
 
 # Install git and clone dtn7-rs
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends apt-utils git && rm -rf /var/lib/apt/lists/*
 
 RUN git clone https://github.com/dtn7/dtn7-rs.git dtn7 && \
     cd dtn7 && \
@@ -27,7 +27,7 @@ FROM docker.io/debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt install net-tools iproute2 iputils-ping tcpdump wget curl -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends apt-utils net-tools iproute2 iputils-ping tcpdump wget curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
 

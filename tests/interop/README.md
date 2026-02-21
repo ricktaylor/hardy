@@ -12,7 +12,7 @@ tests/interop/
 │   └── test_hardy_ping.sh     # Two-node ping/echo test
 ├── dtn7-rs/                   # dtn7-rs interoperability tests
 │   ├── docker/                # Docker configuration
-│   │   ├── Dockerfile.dtn7-rs # dtn7-rs build
+│   │   ├── Dockerfile         # dtn7-rs build
 │   │   └── start_dtnd         # Wrapper script for dtnd
 │   ├── start_dtn7rs.sh        # Start dtn7-rs for interactive testing
 │   └── test_dtn7rs_ping.sh    # dtn7-rs ping/echo test
