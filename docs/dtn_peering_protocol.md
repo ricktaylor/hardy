@@ -304,7 +304,7 @@ _dtn.dsn.example.org.  IN  SVCB  1 . dtn-alg=ed25519 dtn-pubkey=MCowBQYDK2VwAyEA
 An SVCB record with target "." indicates the service is available at the AD domain itself. Alternatively, the target MAY specify a different hostname:
 
 ```
-_dtn.dsn.example.org.  IN  SVCB  1 gateway.dsn.example.org. dtn-alg=ed25519 dtn-pubkey=MCowBQYDK2VwAyEAGb9... port=4557
+_dtn.dsn.example.org.  IN  SVCB  1 gateway.dsn.example.org. dtn-alg=ed25519 dtn-pubkey=MCowBQYDK2VwAyEAGb9... port=4556
 ```
 
 Implementations MUST support the `ed25519` algorithm. Implementations MAY support additional algorithms.
