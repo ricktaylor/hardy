@@ -106,19 +106,21 @@ impl SessionInitMessage {
     }
 
     fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
-        if src.len() < 20 {
-            // Not enough data to read session init message
+        // Need at least header (1) + keepalive (2) + segment_mru (8) + transfer_mru (8) + node_id_len (2) = 21
+        if src.len() < 21 {
             return Ok(None);
         }
 
+        // Skip header byte for parsing, but include it in consumed count
         let mut src_cloned = src.clone();
+        src_cloned.advance(1); // Skip message type byte
+
         let keepalive_interval = src_cloned.get_u16();
         let segment_mru = src_cloned.get_u64();
         let transfer_mru = src_cloned.get_u64();
         let node_id_length = src_cloned.get_u16();
         let node_id = if node_id_length > 0 {
             if src_cloned.len() < node_id_length as usize {
-                // Not enough data to read node id
                 return Ok(None);
             }
             Some(String::from_utf8(src_cloned.split_to(node_id_length as usize).into())?.parse()?)
@@ -127,22 +129,20 @@ impl SessionInitMessage {
         };
 
         if src_cloned.len() < 4 {
-            // Not enough data to read session extensions length
             return Ok(None);
         }
         let session_extensions_length = src_cloned.get_u32() as usize;
-        let mut consumed = 24 + node_id_length as usize;
+        // consumed = header (1) + fixed fields (24) + node_id
+        let mut consumed = 1 + 24 + node_id_length as usize;
         let mut session_extensions = Vec::with_capacity(session_extensions_length);
         for _ in 0..session_extensions_length {
             if src_cloned.len() < 7 {
-                // Not enough data to read session extension
                 return Ok(None);
             }
             let flags = src_cloned.get_u8().into();
             let item_type = src_cloned.get_u16();
             let item_length = src_cloned.get_u32();
             if src_cloned.len() < item_length as usize {
-                // Not enough data to read item value
                 return Ok(None);
             }
             session_extensions.push(SessionInitExtension {
@@ -239,10 +239,11 @@ impl SessionTermMessage {
     }
 
     fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
-        if src.len() < 2 {
-            // Not enough data to read session term message
+        // header (1) + flags (1) + reason (1) = 3
+        if src.len() < 3 {
             Ok(None)
         } else {
+            src.advance(1); // Skip message type
             Ok(Some(Message::SessionTerm(SessionTermMessage {
                 message_flags: src.get_u8().into(),
                 reason_code: src.get_u8().into(),
@@ -357,10 +358,11 @@ impl MessageRejectMessage {
     }
 
     fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
-        if src.len() < 2 {
-            // Not enough data to read message reject message
+        // header (1) + reason (1) + rejected_message (1) = 3
+        if src.len() < 3 {
             Ok(None)
         } else {
+            src.advance(1); // Skip message type
             Ok(Some(Message::Reject(MessageRejectMessage {
                 reason_code: src.get_u8().into(),
                 // Ensure we convert the rejected message type to something we could have sent!
@@ -432,10 +434,11 @@ impl TransferRefuseMessage {
     }
 
     fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
-        if src.len() < 9 {
-            // Not enough data to read transfer refuse message
+        // header (1) + reason (1) + transfer_id (8) = 10
+        if src.len() < 10 {
             Ok(None)
         } else {
+            src.advance(1); // Skip message type
             Ok(Some(Message::TransferRefuse(TransferRefuseMessage {
                 reason_code: src.get_u8().into(),
                 transfer_id: src.get_u64(),
@@ -522,10 +525,11 @@ impl TransferAckMessage {
     }
 
     fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
-        if src.len() < 17 {
-            // Not enough data to read transfer ack message
+        // header (1) + flags (1) + transfer_id (8) + acknowledged_length (8) = 18
+        if src.len() < 18 {
             Ok(None)
         } else {
+            src.advance(1); // Skip message type
             Ok(Some(Message::TransferAck(TransferAckMessage {
                 message_flags: src.get_u8().into(),
                 transfer_id: src.get_u64(),
@@ -609,19 +613,20 @@ impl TransferSegmentMessage {
     }
 
     fn decode(src: &mut BytesMut) -> Result<Option<Message>, Error> {
-        if src.len() < 9 {
-            // Not enough data to read transfer segment message
+        // header (1) + flags (1) + transfer_id (8) = 10 minimum
+        if src.len() < 10 {
             return Ok(None);
         }
         let mut src_cloned = src.clone();
+        src_cloned.advance(1); // Skip message type byte
         let message_flags: TransferSegmentMessageFlags = src_cloned.get_u8().into();
         let transfer_id = src_cloned.get_u64();
 
-        let mut consumed = 9;
+        // consumed includes header byte
+        let mut consumed = 10;
         let mut transfer_extensions = Vec::new();
         if message_flags.start {
             if src_cloned.len() < 4 {
-                // Not enough data to read transfer extensions length
                 return Ok(None);
             }
             let transfer_extensions_length = src_cloned.get_u32() as usize;
@@ -629,14 +634,12 @@ impl TransferSegmentMessage {
             consumed += 4;
             for _ in 0..transfer_extensions_length {
                 if src_cloned.len() < 7 {
-                    // Not enough data to read transfer extension
                     return Ok(None);
                 }
                 let flags = src_cloned.get_u8().into();
                 let item_type = src_cloned.get_u16();
                 let item_length = src_cloned.get_u32();
                 if src_cloned.len() < item_length as usize {
-                    // Not enough data to read item value
                     return Ok(None);
                 }
                 transfer_extensions.push(TransferSegmentExtension {
@@ -649,15 +652,13 @@ impl TransferSegmentMessage {
             }
         }
         if src_cloned.len() < 8 {
-            // Not enough data to read data length
             return Ok(None);
         }
         let data_length = src_cloned.get_u64();
         if src_cloned.len() < data_length as usize {
-            // Not enough data to read data
             return Ok(None);
         }
-        // Skip the header bytes (flags, transfer_id, extensions, data_length)
+        // Skip the header bytes (message type, flags, transfer_id, extensions, data_length)
         let _ = src.split_to(consumed + 8);
         Ok(Some(Message::TransferSegment(TransferSegmentMessage {
             message_flags,
@@ -780,11 +781,17 @@ impl tokio_util::codec::Decoder for MessageCodec {
             return Ok(None);
         }
 
-        match src.get_u8().try_into()? {
+        // Peek at message type without consuming it - sub-decoders will handle
+        // consuming the header byte only when the full message is available
+        match src[0].try_into()? {
             MessageType::XFER_SEGMENT => TransferSegmentMessage::decode(src),
             MessageType::XFER_ACK => TransferAckMessage::decode(src),
             MessageType::XFER_REFUSE => TransferRefuseMessage::decode(src),
-            MessageType::KEEPALIVE => Ok(Some(Message::Keepalive)),
+            MessageType::KEEPALIVE => {
+                // KEEPALIVE is just the message type byte, consume it
+                src.advance(1);
+                Ok(Some(Message::Keepalive))
+            }
             MessageType::SESS_TERM => SessionTermMessage::decode(src),
             MessageType::MSG_REJECT => MessageRejectMessage::decode(src),
             MessageType::SESS_INIT => SessionInitMessage::decode(src),
