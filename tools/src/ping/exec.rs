@@ -171,17 +171,20 @@ async fn exec_inner(
     }
 
     // Wait for responses after sending all pings
-    if !cancel_token.is_cancelled()
-        && args.count.is_some()
-        && let Some(wait) = &args.wait
-    {
+    // Default wait time is one interval if not explicitly specified
+    if !cancel_token.is_cancelled() && args.count.is_some() {
+        let wait_time = args
+            .wait
+            .map(|w| *w)
+            .unwrap_or_else(|| (*args.interval).into());
+
         if !args.quiet {
             eprintln!(
                 "Waiting up to {} for responses...",
-                humantime::format_duration(**wait)
+                humantime::format_duration(wait_time)
             );
         }
-        if tokio::time::timeout(**wait, service.wait_for_responses(cancel_token))
+        if tokio::time::timeout(wait_time, service.wait_for_responses(cancel_token))
             .await
             .is_err()
             && !args.quiet
