@@ -16,6 +16,12 @@ tests/interop/
 │   │   └── start_dtnd         # Wrapper script for dtnd
 │   ├── start_dtn7rs.sh        # Start dtn7-rs for interactive testing
 │   └── test_dtn7rs_ping.sh    # dtn7-rs ping/echo test
+├── HDTN/                      # NASA HDTN interoperability tests
+│   ├── docker/                # Docker configuration
+│   │   ├── Dockerfile         # HDTN build
+│   │   └── start_hdtn         # Wrapper script for hdtn-one-process
+│   ├── start_hdtn.sh          # Start HDTN for interactive testing
+│   └── test_hdtn_ping.sh      # HDTN ping/echo test
 ├── DTNME/                     # NASA DTNME interoperability tests
 │   ├── docker/                # Docker configuration
 │   │   ├── Dockerfile         # DTNME build
@@ -37,6 +43,15 @@ For interactive debugging, use the start scripts for each implementation:
 
 # Terminal 2: Ping it
 bp ping ipn:23.7 127.0.0.1:4556 --no-sign
+```
+
+### HDTN
+```bash
+# Terminal 1: Start HDTN (auto-builds Docker image if needed)
+./tests/interop/HDTN/start_hdtn.sh
+
+# Terminal 2: Ping it (HDTN uses service 2047 for echo)
+bp ping ipn:10.2047 127.0.0.1:4556 --no-sign
 ```
 
 ### DTNME
@@ -254,6 +269,62 @@ docker images | grep dtn7-interop
 
 ---
 
+### HDTN Ping/Echo (`test_hdtn_ping.sh`)
+
+Tests bidirectional ping/echo between Hardy and [NASA HDTN](https://github.com/nasa/HDTN).
+
+#### Prerequisites
+
+- Docker (image is auto-built from GitHub if needed)
+- Rust toolchain (for building Hardy)
+
+#### What It Tests
+
+| Test | Description | Hardy Role | HDTN Role |
+|------|-------------|------------|-----------|
+| **TEST 1** | Hardy pings HDTN | Client (`bp ping`) | Server (hdtn-one-process with echo service 2047) |
+| **TEST 2** | HDTN pings Hardy | Server (bpa-server + echo) | Client (bping) |
+
+Both tests use TCPCLv4 as the convergence layer.
+
+#### Usage
+
+```bash
+# Run full test (builds Hardy)
+./tests/interop/HDTN/test_hdtn_ping.sh
+
+# Skip cargo build (use existing binaries)
+./tests/interop/HDTN/test_hdtn_ping.sh --skip-build
+```
+
+#### Building the HDTN Docker Image
+
+The HDTN Docker image is built directly from GitHub:
+
+```bash
+# Build from the docker directory (clones HDTN from GitHub)
+docker build -t hdtn-interop tests/interop/HDTN/docker
+
+# Build with specific version/tag
+docker build -t hdtn-interop --build-arg HDTN_REF=v1.0.0 tests/interop/HDTN/docker
+
+# Build with more cores for faster compilation
+docker build -t hdtn-interop --build-arg CORES=8 tests/interop/HDTN/docker
+```
+
+#### Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Hardy Node | ipn:1.0 | Hardy's administrative endpoint |
+| HDTN Node | ipn:10.0 | HDTN administrative endpoint |
+| Hardy TCPCLv4 Port | 4557 | Port Hardy listens on (TEST 2) |
+| HDTN TCPCLv4 Port | 4556 | Port HDTN listens on (TEST 1) |
+| HDTN Echo Service | ipn:10.2047 | HDTN uses service 2047 for echo |
+| Hardy Echo Service | ipn:1.7 | Hardy uses standard service 7 for echo |
+
+---
+
 ### DTNME Ping/Echo (`test_dtnme_ping.sh`)
 
 Tests bidirectional ping/echo between Hardy and [NASA DTNME](https://github.com/nasa/DTNME).
@@ -301,7 +372,7 @@ docker build -t dtnme-interop --build-arg DTNME_REF=v1.0.0 tests/interop/DTNME/d
 |-----------|-------|-------------|
 | Hardy Node | ipn:1.0 | Hardy's administrative endpoint |
 | DTNME Node | ipn:2.0 | DTNME administrative endpoint |
-| Hardy TCPCLv4 Port | 4556 | Port Hardy listens on (TEST 2) |
+| Hardy TCPCLv4 Port | 4557 | Port Hardy listens on (TEST 2) |
 | DTNME TCP Port | 4556 | Port DTNME listens on (TEST 1) |
 | Echo Service | ipn:X.7 | Standard echo service number |
 
