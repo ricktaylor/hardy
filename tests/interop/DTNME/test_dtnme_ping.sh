@@ -227,13 +227,11 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Use --source to specify an EID that matches DTNME's route (ipn:$HARDY_NODE_NUM.*)
-# Use --listen so Hardy can receive responses from DTNME on port $HARDY_PORT
 # Note: --no-sign disables BIB signing (DTNME echo doesn't sign responses)
 # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
 #       payload block CRC but rejects bundles when CRC validation fails.
 "$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$DTNME_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
-    --listen "[::]:$HARDY_PORT" \
     --count 5 \
     --no-sign \
     --no-payload-crc \
