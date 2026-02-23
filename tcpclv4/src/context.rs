@@ -176,10 +176,10 @@ impl ConnectionContext {
         mut transport: T,
     ) where
         T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
-            + futures::SinkExt<codec::Message>
-            + std::marker::Unpin,
-        session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
-        <T as futures::Sink<codec::Message>>::Error: std::fmt::Debug,
+            + futures::SinkExt<codec::Message, Error = codec::Error>
+            + std::marker::Unpin
+            + Send
+            + 'static,
     {
         // Read the SESS_INIT message with timeout
         let peer_init = loop {
@@ -264,12 +264,29 @@ impl ConnectionContext {
         let peer_node = peer_init.node_id.clone();
         let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(remote_addr));
         let cancel_token = self.session_cancel_token.clone();
+        let keepalive_duration = Self::keepalive_as_duration(keepalive_interval);
+
+        // Split the transport into reader and writer halves
+        // This allows the writer task to send keepalives independently of the
+        // session loop, preventing session timeout when dispatch() blocks.
+        let (transport_writer, transport_reader) = transport.split();
+
+        // Create the writer task (handles keepalives independently)
+        let (writer_handle, writer_task) =
+            writer::create_writer(transport_writer, keepalive_duration, cancel_token.clone());
+
+        // Spawn the writer task
+        tokio::spawn(async move {
+            writer_task.run().await;
+        });
+
         let session = session::Session::new(
-            transport,
+            transport_reader,
+            writer_handle,
             self.sink.clone(),
             peer_node,
             peer_addr,
-            Self::keepalive_as_duration(keepalive_interval),
+            keepalive_duration,
             segment_mtu
                 .map(|mtu| mtu.min(peer_init.segment_mru as usize))
                 .unwrap_or(peer_init.segment_mru as usize),

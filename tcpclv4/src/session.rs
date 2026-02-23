@@ -1,4 +1,5 @@
 use super::*;
+use futures::StreamExt;
 use std::collections::VecDeque;
 use thiserror::Error;
 use tokio_util::bytes::{Bytes, BytesMut};
@@ -27,19 +28,21 @@ struct XferAck {
     acknowledged_length: usize,
 }
 
-pub struct Session<T>
+/// Session that handles the reader side, with writes delegated to a WriterHandle.
+///
+/// This architecture allows keepalives to be sent by the writer task even when
+/// the session is blocked waiting for bundle dispatch (which can block on
+/// BoundedTaskPool backpressure).
+pub struct Session<R>
 where
-    T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
-        + futures::SinkExt<codec::Message>
-        + std::marker::Unpin,
-    <T as futures::Sink<codec::Message>>::Error: Into<session::Error> + std::fmt::Debug,
+    R: StreamExt<Item = Result<codec::Message, codec::Error>> + std::marker::Unpin,
 {
-    transport: T,
+    reader: R,
+    writer: writer::WriterHandle<codec::Error>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
     peer_addr: Option<hardy_bpa::cla::ClaAddress>,
     keepalive_interval: Option<tokio::time::Duration>,
-    last_sent: tokio::time::Instant,
     segment_mtu: usize,
     transfer_mru: usize,
     from_sink: tokio::sync::mpsc::Receiver<(
@@ -52,16 +55,14 @@ where
     cancel_token: tokio_util::sync::CancellationToken,
 }
 
-impl<T> Session<T>
+impl<R> Session<R>
 where
-    T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
-        + futures::SinkExt<codec::Message>
-        + std::marker::Unpin,
-    <T as futures::Sink<codec::Message>>::Error: Into<session::Error> + std::fmt::Debug,
+    R: StreamExt<Item = Result<codec::Message, codec::Error>> + std::marker::Unpin,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        transport: T,
+        reader: R,
+        writer: writer::WriterHandle<codec::Error>,
         sink: Arc<dyn hardy_bpa::cla::Sink>,
         peer_node: Option<hardy_bpv7::eid::NodeId>,
         peer_addr: Option<hardy_bpa::cla::ClaAddress>,
@@ -75,12 +76,12 @@ where
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         Self {
-            transport,
+            reader,
+            writer,
             sink,
             peer_node,
             peer_addr,
             keepalive_interval,
-            last_sent: tokio::time::Instant::now(),
             segment_mtu,
             transfer_mru,
             from_sink,
@@ -91,39 +92,21 @@ where
         }
     }
 
-    async fn transport_send(&mut self, msg: codec::Message) -> Result<(), Error> {
-        let msg_type = msg.message_type();
-        self.transport
-            .send(msg)
-            .await
-            .inspect_err(|e| debug!("Failed to send {msg_type:?} to peer: {e:?}"))
-            .map_err(Into::into)
-            .map(|_| self.last_sent = tokio::time::Instant::now())
-    }
-
-    async fn transport_feed(&mut self, msg: codec::Message) -> Result<(), Error> {
-        let msg_type = msg.message_type();
-        self.transport
-            .feed(msg)
-            .await
-            .inspect_err(|e| debug!("Failed to feed {msg_type:?} to peer: {e:?}"))
-            .map_err(Into::into)
-            .map(|_| self.last_sent = tokio::time::Instant::now())
-    }
-
     async fn reject_msg(
-        &mut self,
+        &self,
         reason_code: codec::MessageRejectionReasonCode,
         rejected_message: u8,
     ) -> Result<(), Error> {
-        self.transport_send(codec::Message::Reject(codec::MessageRejectMessage {
-            reason_code,
-            rejected_message,
-        }))
-        .await
+        self.writer
+            .send(codec::Message::Reject(codec::MessageRejectMessage {
+                reason_code,
+                rejected_message,
+            }))
+            .await?;
+        Ok(())
     }
 
-    async fn unexpected_msg(&mut self, rejected_message: codec::MessageType) -> Result<(), Error> {
+    async fn unexpected_msg(&self, rejected_message: codec::MessageType) -> Result<(), Error> {
         self.reject_msg(
             codec::MessageRejectionReasonCode::Unexpected,
             rejected_message as u8,
@@ -168,6 +151,8 @@ where
             let bundle = self.ingress_bundle.take().unwrap();
 
             // Send the bundle to the BPA
+            // NOTE: This may block if BoundedTaskPool is full, but keepalives
+            // are handled by the separate writer task so the session stays alive.
             self.sink
                 .dispatch(
                     bundle.freeze(),
@@ -181,13 +166,17 @@ where
                 })?;
         }
 
-        // Acknowledge the transfer
-        self.transport_send(codec::Message::TransferAck(codec::TransferAckMessage {
-            transfer_id: msg.transfer_id,
-            message_flags: msg.message_flags,
-            acknowledged_length,
-        }))
-        .await
+        // Per RFC9174 Section 5.2.3: "A receiving TCPCL entity SHALL send a
+        // XFER_ACK message in response to each received XFER_SEGMENT message
+        // after the segment has been fully processed."
+        self.writer
+            .send(codec::Message::TransferAck(codec::TransferAckMessage {
+                transfer_id: msg.transfer_id,
+                message_flags: msg.message_flags,
+                acknowledged_length,
+            }))
+            .await?;
+        Ok(())
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
@@ -209,19 +198,20 @@ where
 
         let last = flags.end;
 
-        self.transport_feed(codec::Message::TransferSegment(
-            codec::TransferSegmentMessage {
-                message_flags: flags,
-                transfer_id,
-                data,
-                ..Default::default()
-            },
-        ))
-        .await?;
+        self.writer
+            .feed(codec::Message::TransferSegment(
+                codec::TransferSegmentMessage {
+                    message_flags: flags,
+                    transfer_id,
+                    data,
+                    ..Default::default()
+                },
+            ))
+            .await?;
 
         if last {
-            // Make sure we flush the transport
-            self.transport.flush().await.map_err(Into::into)?;
+            // Make sure we flush
+            self.writer.flush().await?;
         }
 
         // Use a biased select! to check for incoming messages before the next segment is sent
@@ -384,7 +374,7 @@ where
 
         // If already cancelled, skip the graceful SESS_TERM exchange
         if self.cancel_token.is_cancelled() {
-            _ = self.transport.close().await;
+            self.writer.close().await;
             return;
         }
 
@@ -395,9 +385,10 @@ where
         };
 
         if self
-            .transport_send(codec::Message::SessionTerm(msg))
+            .writer
+            .send(codec::Message::SessionTerm(msg))
             .await
-            .is_ok()
+            .unwrap_or(false)
         {
             // Process any remaining messages, with cancellation support
             let cancel_token = self.cancel_token.clone();
@@ -428,8 +419,8 @@ where
             }
         }
 
-        // Close the connection
-        _ = self.transport.close().await;
+        // Close the writer
+        self.writer.close().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
@@ -445,8 +436,8 @@ where
                 if let Error::Shutdown(_) = e {
                     break;
                 } else {
-                    // Close the connection
-                    _ = self.transport.close().await;
+                    // Close the writer
+                    self.writer.close().await;
                     return;
                 }
             }
@@ -455,9 +446,10 @@ where
         // Send our SESSION_TERM reply
         msg.message_flags.reply = true;
         if self
-            .transport_send(codec::Message::SessionTerm(msg))
+            .writer
+            .send(codec::Message::SessionTerm(msg))
             .await
-            .is_ok()
+            .unwrap_or(false)
         {
             // Wait for transfers to complete
             while !self.acks.is_empty() {
@@ -466,7 +458,8 @@ where
                         if msg.message_flags.start {
                             // Peer has started a new transfer in the 'Ending' state
                             if self
-                                .transport_send(codec::Message::TransferRefuse(
+                                .writer
+                                .send(codec::Message::TransferRefuse(
                                     codec::TransferRefuseMessage {
                                         transfer_id: msg.transfer_id,
                                         reason_code:
@@ -474,7 +467,7 @@ where
                                     },
                                 ))
                                 .await
-                                .is_ok()
+                                .unwrap_or(false)
                             {
                                 continue;
                             } else {
@@ -493,30 +486,25 @@ where
             }
         }
 
-        // Close the connection
-        _ = self.transport.close().await;
+        // Close the writer
+        self.writer.close().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
-    async fn close(mut self) {
+    async fn close(self) {
         // The remote end has died completely
-
-        // Stop allowing more transfers
-        self.from_sink.close();
-
-        // Close the connection
-        _ = self.transport.close().await;
+        // Close the writer
+        self.writer.close().await;
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn recv_from_peer(&mut self) -> Result<codec::Message, Error> {
         loop {
             match if let Some(keepalive_interval) = self.keepalive_interval {
-                match tokio::time::timeout(
-                    keepalive_interval.saturating_mul(2),
-                    self.transport.next(),
-                )
-                .await
+                // Timeout for receiving from peer: 2x keepalive interval
+                // If we don't receive anything in this time, peer is probably dead
+                match tokio::time::timeout(keepalive_interval.saturating_mul(2), self.reader.next())
+                    .await
                 {
                     Err(_) => {
                         return Err(Error::Shutdown(codec::SessionTermReasonCode::IdleTimeout));
@@ -525,7 +513,7 @@ where
                     Ok(msg) => msg,
                 }
             } else {
-                self.transport.next().await
+                self.reader.next().await
             } {
                 None => return Err(Error::Hangup),
                 Some(Err(codec::Error::InvalidMessageType(rejected_message))) => {
@@ -542,43 +530,39 @@ where
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn run(mut self) {
         let cancel_token = self.cancel_token.clone();
         let e = loop {
-            // Because we can't double &mut self
+            // The main loop now only handles:
+            // 1. Cancellation
+            // 2. Outbound bundles from sink
+            // 3. Inbound messages from peer
+            //
+            // Keepalive SENDING is handled by the separate writer task.
+            // This allows keepalives to be sent even when dispatch() blocks.
             let msg = if let Some(keepalive_interval) = self.keepalive_interval {
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
                         Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
                     }
-                    r = tokio::time::timeout(
-                        keepalive_interval.saturating_sub(self.last_sent.elapsed()),
-                        self.from_sink.recv(),
-                    ) => match r {
-                        Ok(Some((bundle,result))) => {
+                    r = self.from_sink.recv() => match r {
+                        Some((bundle, result)) => {
                             let Err(e) = self.forward_to_peer(bundle, result).await else {
                                 continue
                             };
                             Err(e)
                         }
-                        Ok(None) => Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown)),
-                        Err(_) => {
-                            // Send a KEEP_ALIVE
-                            let Err(e) = self.transport_send(codec::Message::Keepalive).await else {
-                                continue
-                            };
-                            Err(e)
-                        }
+                        None => Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown)),
                     },
                     r = tokio::time::timeout(
                         keepalive_interval.saturating_mul(2),
-                        self.transport.next(),
+                        self.reader.next(),
                     ) => match r {
                         Ok(Some(Ok(codec::Message::Keepalive))) => continue,
                         Ok(Some(msg)) => msg.map_err(Into::into),
                         Ok(None) => Err(Error::Hangup),
-                        Err(_)=> Err(Error::Shutdown(codec::SessionTermReasonCode::IdleTimeout)),
+                        Err(_) => Err(Error::Shutdown(codec::SessionTermReasonCode::IdleTimeout)),
                     }
                 }
             } else {
@@ -587,7 +571,7 @@ where
                         Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
                     }
                     r = self.from_sink.recv() => match r {
-                        Some((bundle,result)) => {
+                        Some((bundle, result)) => {
                             let Err(e) = self.forward_to_peer(bundle, result).await else {
                                 continue
                             };
@@ -595,7 +579,7 @@ where
                         }
                         None => Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown)),
                     },
-                    msg = self.transport.next() => match msg {
+                    msg = self.reader.next() => match msg {
                         Some(msg) => msg.map_err(Into::into),
                         None => Err(Error::Hangup),
                     }

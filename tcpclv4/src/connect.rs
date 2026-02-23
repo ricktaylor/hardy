@@ -175,12 +175,10 @@ impl Connector {
     ) -> Result<(), transport::Error>
     where
         T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
-            + futures::SinkExt<codec::Message>
+            + futures::SinkExt<codec::Message, Error = codec::Error>
             + std::marker::Unpin
             + Send
             + 'static,
-        session::Error: From<<T as futures::Sink<codec::Message>>::Error>,
-        <T as futures::Sink<codec::Message>>::Error: Into<transport::Error> + std::fmt::Debug,
     {
         debug!(%local_addr, %remote_addr, "Sending SESS_INIT");
 
@@ -196,8 +194,7 @@ impl Connector {
             .await
             .inspect_err(
                 |e| debug!(%local_addr, %remote_addr, "Failed to send SESS_INIT message: {e:?}"),
-            )
-            .map_err(Into::into)?;
+            )?;
 
         debug!(%local_addr, %remote_addr, "Reading SESS_INIT");
 
@@ -225,8 +222,7 @@ impl Connector {
                         .await
                         .inspect_err(
                             |e| debug!(%local_addr, %remote_addr, "Failed to send message: {e:?}"),
-                        )
-                        .map_err(Into::into)?;
+                        )?;
                 }
             };
         };
@@ -255,12 +251,25 @@ impl Connector {
         let peer_node = peer_init.node_id.clone();
         let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(*remote_addr));
         let cancel_token = self.ctx.session_cancel_token.clone();
+        let keepalive_duration =
+            context::ConnectionContext::keepalive_as_duration(keepalive_interval);
+
+        // Split the transport into reader and writer halves
+        // This allows the writer task to send keepalives independently of the
+        // session loop, preventing session timeout when dispatch() blocks.
+        let (transport_writer, transport_reader) = transport.split();
+
+        // Create the writer task (handles keepalives independently)
+        let (writer_handle, writer_task) =
+            writer::create_writer(transport_writer, keepalive_duration, cancel_token.clone());
+
         let session = session::Session::new(
-            transport,
+            transport_reader,
+            writer_handle,
             self.ctx.sink.clone(),
             peer_node,
             peer_addr,
-            context::ConnectionContext::keepalive_as_duration(keepalive_interval),
+            keepalive_duration,
             segment_mtu
                 .map(|mtu| mtu.min(peer_init.segment_mru as usize))
                 .unwrap_or(peer_init.segment_mru as usize),
@@ -274,6 +283,11 @@ impl Connector {
         let registry = self.ctx.registry.clone();
         let sink = self.ctx.sink.clone();
         let remote_addr = *remote_addr;
+
+        // Spawn the writer task first
+        hardy_async::spawn!(self.tasks, "active_session_writer", async move {
+            writer_task.run().await;
+        });
 
         hardy_async::spawn!(self.tasks, "active_session_task", async move {
             registry
