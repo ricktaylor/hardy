@@ -1,0 +1,118 @@
+#!/bin/bash
+# DTNME interop test wrapper script
+#
+# This script starts the DTNME daemon with configuration suitable for
+# interoperability testing with other DTN implementations.
+#
+# Environment variables:
+#   NODE_ID       - Node number for IPN EID (default: 1)
+#   TCPCL_PORT    - TCPCLv4 listening port (default: 4556)
+#   REMOTE_HOST   - Hostname/IP of remote DTN node (optional)
+#   REMOTE_NODE   - Remote node number (default: 2)
+#
+# Additional arguments are passed to dtnme.
+
+set -e
+
+NODE_ID=${NODE_ID:-1}
+TCPCL_PORT=${TCPCL_PORT:-4556}
+REMOTE_HOST=${REMOTE_HOST:-}
+REMOTE_NODE=${REMOTE_NODE:-2}
+REMOTE_PORT=${REMOTE_PORT:-$TCPCL_PORT}
+ROUTING_TYPE=${ROUTING_TYPE:-static}
+
+echo "DTNME Interop Testing"
+echo "  Node ID:     $NODE_ID (ipn:$NODE_ID.0)"
+echo "  Echo:        ipn:$NODE_ID.7"
+echo "  TCP CL:      port $TCPCL_PORT"
+echo "  Routing:     $ROUTING_TYPE"
+if [ -n "$REMOTE_HOST" ]; then
+    echo "  Remote:      $REMOTE_HOST:$REMOTE_PORT (ipn:$REMOTE_NODE.0)"
+fi
+echo ""
+
+# Create directories
+mkdir -p /dtn/data/db /dtn/data/bundles
+
+# Generate runtime configuration
+cat > /dtn/conf/dtnme_runtime.cfg << EOF
+#
+# DTNME Configuration for Interop Testing
+#
+set local_node_number      $NODE_ID
+set local_node_name        node_${NODE_ID}
+set local_dtn_eid          dtn://\${local_node_name}.dtn
+set local_ipn_eid          ipn:${NODE_ID}.0
+
+# Network ports
+set local_console_addr     0.0.0.0
+set local_console_port     5050
+set local_api_port         5010
+set local_tcp_port         $TCPCL_PORT
+
+# Storage directories
+set local_log_dir          /dtn/data
+set local_db_dir           /dtn/data
+file mkdir \$local_log_dir
+file mkdir \$local_db_dir
+file mkdir \${local_db_dir}/db
+file mkdir \${local_db_dir}/bundles
+
+log /dtnme info "DTNME Interop Testing - configuring \${local_dtn_eid} / \${local_ipn_eid}"
+
+# Console configuration - disable stdio since we run in Docker without a tty
+console set stdio false
+console set addr \$local_console_addr
+console set port \$local_console_port
+console set prompt "\$local_node_name dtn% "
+
+# API configuration
+api set local_port \$local_api_port
+
+# Storage configuration
+storage set type berkeleydb
+storage set payloaddir \${local_db_dir}/bundles
+storage set dbname DTN
+storage set dbdir \${local_db_dir}/db
+storage set db_log_auto_removal true
+storage set payload_quota 10000000000
+
+# Routing configuration
+# Use static routing - responses are routed via configured links
+route set type $ROUTING_TYPE
+route local_eid \${local_dtn_eid}
+route local_eid_ipn \${local_ipn_eid}
+param set announce_ipn true
+param set early_deletion true
+
+# Enable BPv7 by default for interop with Hardy (which only supports BPv7)
+param set api_send_bp7 true
+
+# Convergence layer interfaces - only TCPCLv4 needed for Hardy interop
+interface add tcp0 tcp local_port=\$local_tcp_port
+
+EOF
+
+# Add remote link if REMOTE_HOST is specified
+if [ -n "$REMOTE_HOST" ]; then
+    cat >> /dtn/conf/dtnme_runtime.cfg << EOF
+# Remote node configuration
+log /dtnme info "Adding remote link to ${REMOTE_HOST}:${REMOTE_PORT}"
+link add remote_link ${REMOTE_HOST}:${REMOTE_PORT} ALWAYSON tcp min_retry_interval=1 max_retry_interval=2
+route add ipn:${REMOTE_NODE}.* remote_link
+route add dtn://node_${REMOTE_NODE}.dtn/* remote_link
+EOF
+fi
+
+cat >> /dtn/conf/dtnme_runtime.cfg << EOF
+
+# Link retry parameters - short intervals for interop testing
+param set link_min_retry_interval 1
+param set link_max_retry_interval 2
+param set persistent_links true
+
+log /dtnme info "DTNME configuration complete"
+EOF
+
+echo "Starting DTNME daemon..."
+exec /dtn/bin/dtnme -c /dtn/conf/dtnme_runtime.cfg -l debug -o /dtn/data/dtn.log -t "$@"

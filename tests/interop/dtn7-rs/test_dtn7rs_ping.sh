@@ -241,7 +241,6 @@ log_step "Hardy pinging dtn7-rs echo service at ipn:$DTN7_NODE_NUM.7..."
 echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-# Use && true || true pattern to prevent set -e from exiting on non-zero
 "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
     --count 5 \
     --no-sign \

@@ -16,19 +16,36 @@ tests/interop/
 │   │   └── start_dtnd         # Wrapper script for dtnd
 │   ├── start_dtn7rs.sh        # Start dtn7-rs for interactive testing
 │   └── test_dtn7rs_ping.sh    # dtn7-rs ping/echo test
+├── DTNME/                     # NASA DTNME interoperability tests
+│   ├── docker/                # Docker configuration
+│   │   ├── Dockerfile         # DTNME build
+│   │   ├── dtnme.cfg.template # Configuration template
+│   │   └── start_dtnme        # Wrapper script for dtnme
+│   ├── start_dtnme.sh         # Start DTNME for interactive testing
+│   └── test_dtnme_ping.sh     # DTNME ping/echo test
 └── README.md
 ```
 
 ## Quick Start
 
-For interactive debugging, use `start_dtn7rs.sh`:
+For interactive debugging, use the start scripts for each implementation:
 
+### dtn7-rs
 ```bash
 # Terminal 1: Start dtn7-rs
 ./tests/interop/dtn7-rs/start_dtn7rs.sh
 
 # Terminal 2: Ping it
 bp ping ipn:23.7 127.0.0.1:4556 --no-sign
+```
+
+### DTNME
+```bash
+# Terminal 1: Start DTNME (auto-builds Docker image if needed)
+./tests/interop/DTNME/start_dtnme.sh
+
+# Terminal 2: Ping it
+bp ping ipn:1.7 127.0.0.1:4556 --no-sign
 ```
 
 ## Tests
@@ -182,7 +199,7 @@ dtn7-rs uses a modular architecture where services connect to the daemon via Web
 
 #### Docker Image
 
-The `Dockerfile.dtn7-rs` builds:
+The `Dockerfile` builds:
 - `dtnd` - The dtn7-rs daemon
 - `dtnecho2` - Echo service example
 - `dtnsend` - Bundle sending utility
@@ -190,7 +207,7 @@ The `Dockerfile.dtn7-rs` builds:
 
 Build manually:
 ```bash
-docker build -f tests/interop/dtn7-rs/docker/Dockerfile.dtn7-rs -t dtn7-interop tests/interop/dtn7-rs/docker
+docker build -t dtn7-interop tests/interop/dtn7-rs/docker
 ```
 
 The image uses a `start_dtnd` wrapper that:
@@ -234,3 +251,86 @@ docker images | grep dtn7-interop
 **Echo service not responding:**
 - Ensure dtnecho2 had time to connect (script waits 2s)
 - Check dtnd WebSocket is accessible on port 3000
+
+---
+
+### DTNME Ping/Echo (`test_dtnme_ping.sh`)
+
+Tests bidirectional ping/echo between Hardy and [NASA DTNME](https://github.com/nasa/DTNME).
+
+#### Prerequisites
+
+- Docker (image is auto-built from GitHub if needed)
+- Rust toolchain (for building Hardy)
+
+#### What It Tests
+
+| Test | Description | Hardy Role | DTNME Role |
+|------|-------------|------------|------------|
+| **TEST 1** | Hardy pings DTNME | Client (`bp ping`) | Server (dtnme + echo_me on service 7) |
+| **TEST 2** | DTNME pings Hardy | Server (bpa-server + echo) | Client (ping_me) |
+
+Both tests use TCPCLv4 as the convergence layer.
+
+#### Usage
+
+```bash
+# Run full test (builds Hardy)
+./tests/interop/DTNME/test_dtnme_ping.sh
+
+# Skip cargo build (use existing binaries)
+./tests/interop/DTNME/test_dtnme_ping.sh --skip-build
+```
+
+#### Building the DTNME Docker Image
+
+The DTNME Docker image is built directly from GitHub using Debian buster (Boost 1.67).
+DTNME requires Boost 1.66-1.69 due to Beast/Asio API compatibility.
+
+```bash
+# Build from the docker directory (clones DTNME from GitHub)
+docker build -t dtnme-interop tests/interop/DTNME/docker
+
+# Build with specific version/tag
+docker build -t dtnme-interop --build-arg DTNME_REF=v1.0.0 tests/interop/DTNME/docker
+```
+
+#### Configuration
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Hardy Node | ipn:1.0 | Hardy's administrative endpoint |
+| DTNME Node | ipn:2.0 | DTNME administrative endpoint |
+| Hardy TCPCLv4 Port | 4556 | Port Hardy listens on (TEST 2) |
+| DTNME TCP Port | 4556 | Port DTNME listens on (TEST 1) |
+| Echo Service | ipn:X.7 | Standard echo service number |
+
+#### DTNME Architecture
+
+DTNME uses a daemon plus separate application binaries:
+
+```
+┌─────────────────────────────────────────┐
+│            DTNME Container              │
+│                                         │
+│  ┌─────────┐         ┌──────────┐       │
+│  │  dtnme  │◄───────►│ echo_me  │       │
+│  │         │   API   │          │       │
+│  │  TCP CL │  :5010  │ ipn:X.7  │       │
+│  │  :4556  │         └──────────┘       │
+│  └────┬────┘                            │
+└───────┼─────────────────────────────────┘
+        │ TCPCLv4
+        ▼
+┌───────────────┐
+│    Hardy      │
+│  bp ping      │
+│  ipn:1.0      │
+└───────────────┘
+```
+
+**Key binaries:**
+- `dtnme` - Main DTN daemon
+- `echo_me` - Echo service
+- `ping_me` - Ping utility
+- `send_me` / `recv_me` - Bundle send/receive

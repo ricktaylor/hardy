@@ -1,0 +1,78 @@
+#
+# DTNME Configuration for Interop Testing
+#
+# Node configuration - substituted at runtime
+set local_node_number      ${NODE_NUM}
+set local_node_name        node_${NODE_NUM}
+set local_dtn_eid          dtn://${local_node_name}.dtn
+set local_ipn_eid          ipn:${NODE_NUM}.0
+
+# Network ports - using standard DTN ports
+set local_console_addr     0.0.0.0
+set local_console_port     5050
+set local_api_port         5010
+set local_tcp_port         4556
+set local_stcp_port        4556
+set local_udp_port         4556
+set local_ltp_port         1113
+
+# Storage directories
+set local_log_dir          /dtn/data
+set local_db_dir           /dtn/data
+file mkdir $local_log_dir
+file mkdir $local_db_dir
+file mkdir ${local_db_dir}/db
+file mkdir ${local_db_dir}/bundles
+
+log /dtnme info "DTNME Interop Testing - configuring ${local_dtn_eid} / ${local_ipn_eid}"
+
+# Console configuration
+console set addr $local_console_addr
+console set port $local_console_port
+console set prompt "$local_node_name dtn% "
+
+# API configuration
+api set local_port $local_api_port
+
+# Storage configuration - BerkeleyDB for testing
+storage set type berkeleydb
+storage set payloaddir ${local_db_dir}/bundles
+storage set dbname DTN
+storage set dbdir ${local_db_dir}/db
+storage set db_log_auto_removal true
+storage set payload_quota 10000000000
+
+# Routing configuration
+route set type static
+route local_eid ${local_dtn_eid}
+route local_eid_ipn ${local_ipn_eid}
+param set announce_ipn true
+param set early_deletion true
+
+# Convergence layer interfaces - listen on all interfaces
+interface add tcp0 tcp local_port=$local_tcp_port
+interface add stcp0 stcp local_port=$local_stcp_port
+interface add udp0 udp local_addr=0.0.0.0 local_port=$local_udp_port
+
+# Remote node configuration (optional - set via environment)
+# REMOTE_HOST, REMOTE_NODE_NUM, REMOTE_TCP_PORT can be set
+if {[info exists ::env(REMOTE_HOST)] && $::env(REMOTE_HOST) ne ""} {
+    set remote_host $::env(REMOTE_HOST)
+    set remote_node_num [expr {[info exists ::env(REMOTE_NODE_NUM)] ? $::env(REMOTE_NODE_NUM) : 2}]
+    set remote_tcp_port [expr {[info exists ::env(REMOTE_TCP_PORT)] ? $::env(REMOTE_TCP_PORT) : 4556}]
+    set remote_dtn_eid "dtn://node_${remote_node_num}.dtn"
+    set remote_ipn_eid "ipn:${remote_node_num}.0"
+
+    log /dtnme info "Adding remote link to ${remote_host}:${remote_tcp_port}"
+
+    link add remote_link ${remote_host}:${remote_tcp_port} ALWAYSON tcp
+    route add ipn:${remote_node_num}.* remote_link
+    route add ${remote_dtn_eid}/* remote_link
+}
+
+# Link retry parameters
+param set link_min_retry_interval 5
+param set link_max_retry_interval 30
+param set persistent_links true
+
+log /dtnme info "DTNME configuration complete"
