@@ -28,6 +28,7 @@ DTNME_NODE_NUM=2
 DTNME_PORT=4556
 HARDY_PORT=4557
 DTNME_IMAGE="dtnme-interop"
+PING_COUNT=5
 
 # Colors for output
 RED='\033[0;31m'
@@ -53,6 +54,10 @@ while [[ $# -gt 0 ]]; do
         --no-docker)
             USE_DOCKER=false
             shift
+            ;;
+        --count|-c)
+            PING_COUNT="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -232,7 +237,7 @@ echo ""
 #       payload block CRC but rejects bundles when CRC validation fails.
 "$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$DTNME_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
-    --count 5 \
+    --count "$PING_COUNT" \
     --no-sign \
     --no-payload-crc \
     && EXIT_CODE=0 || EXIT_CODE=$?
@@ -343,13 +348,13 @@ if [ "$USE_DOCKER" = true ]; then
         # Run ping from DTNME container
         log_step "DTNME ping_me to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
         # -e 2: 2 second expiration (loopback is fast, connection already established)
-        # -c 5: send 5 pings
+        # -c N: send N pings (configurable via --count)
         # timeout 20s: safety net in case ping_me hangs
         PING_OUTPUT=$(timeout 20s docker exec "$DTNME_CONTAINER" /dtn/bin/ping_me \
             -B 5010 \
             -s "ipn:$DTNME_NODE_NUM.1" \
             -e 2 \
-            -c 5 \
+            -c "$PING_COUNT" \
             "ipn:$HARDY_NODE_NUM.7" \
             2>&1) || true
 
@@ -359,13 +364,17 @@ if [ "$USE_DOCKER" = true ]; then
         # Count responses - look for "time=" which indicates a successful reply
         RESPONSE_COUNT=$(echo "$PING_OUTPUT" | grep -c "time=" || echo "0")
 
-        if [ "$RESPONSE_COUNT" -ge 3 ]; then
-            # At least 3 out of 5 responses (first 1-2 may be lost during connection setup)
-            log_info "TEST 2 PASSED: DTNME received $RESPONSE_COUNT/5 responses from Hardy"
+        # Calculate minimum acceptable responses (60% of total, at least 1)
+        MIN_RESPONSES=$(( (PING_COUNT * 60 + 99) / 100 ))
+        [ "$MIN_RESPONSES" -lt 1 ] && MIN_RESPONSES=1
+
+        if [ "$RESPONSE_COUNT" -ge "$MIN_RESPONSES" ]; then
+            # At least 60% responses (first 1-2 may be lost during connection setup)
+            log_info "TEST 2 PASSED: DTNME received $RESPONSE_COUNT/$PING_COUNT responses from Hardy"
             TEST2_RESULT="PASS"
         elif [ "$RESPONSE_COUNT" -ge 1 ]; then
             # Some responses but not enough
-            log_warn "TEST 2 PARTIAL: DTNME received only $RESPONSE_COUNT/5 responses"
+            log_warn "TEST 2 PARTIAL: DTNME received only $RESPONSE_COUNT/$PING_COUNT responses"
             TEST2_RESULT="PARTIAL"
         else
             log_error "TEST 2 FAILED: No echo responses received"

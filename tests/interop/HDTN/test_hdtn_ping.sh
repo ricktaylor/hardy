@@ -28,6 +28,7 @@ HDTN_NODE_NUM=10
 HDTN_PORT=4556
 HARDY_PORT=4557
 HDTN_IMAGE="hdtn-interop"
+PING_COUNT=5
 
 # Colors for output
 RED='\033[0;31m'
@@ -53,6 +54,10 @@ while [[ $# -gt 0 ]]; do
         --no-docker)
             USE_DOCKER=false
             shift
+            ;;
+        --count|-c)
+            PING_COUNT="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -236,7 +241,7 @@ echo ""
 # Use a known source EID so HDTN can route responses back
 "$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$HDTN_PORT" \
     --source "ipn:$HARDY_NODE_NUM.1" \
-    --count 5 \
+    --count "$PING_COUNT" \
     --no-sign \
     --verbose \
     && EXIT_CODE=0 || EXIT_CODE=$?

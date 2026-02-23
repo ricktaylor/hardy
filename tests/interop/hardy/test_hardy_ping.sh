@@ -9,10 +9,11 @@
 #   - Hardy tools and bpa-server built
 #
 # Usage:
-#   ./tests/interop/hardy/test_hardy_ping.sh [--skip-build]
+#   ./tests/interop/hardy/test_hardy_ping.sh [--skip-build] [--count N]
 #
 # Options:
 #   --skip-build   Skip building Hardy binaries
+#   --count N      Number of pings to send (default: 5)
 
 set -e
 
@@ -47,6 +48,10 @@ while [[ $# -gt 0 ]]; do
         --skip-build)
             SKIP_BUILD=true
             shift
+            ;;
+        --count|-c)
+            PING_COUNT="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"

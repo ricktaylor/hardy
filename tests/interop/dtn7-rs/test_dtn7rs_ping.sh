@@ -28,6 +28,7 @@ DTN7_PORT=4556
 HARDY_PORT=4557
 DTN7_WS_PORT=3000
 DTN7_IMAGE="dtn7-interop"
+PING_COUNT=5
 
 # Colors for output
 RED='\033[0;31m'
@@ -53,6 +54,10 @@ while [[ $# -gt 0 ]]; do
         --no-docker)
             USE_DOCKER=false
             shift
+            ;;
+        --count|-c)
+            PING_COUNT="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -242,7 +247,7 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
-    --count 5 \
+    --count "$PING_COUNT" \
     --no-sign \
     && EXIT_CODE=0 || EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
@@ -362,8 +367,7 @@ if [ "$USE_DOCKER" = true ]; then
     log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
     docker exec "$DTN7_CONTAINER" dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
 
-    # Send 5 pings to Hardy's echo service
-    PING_COUNT=5
+    # Send pings to Hardy's echo service
     log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
     for i in $(seq 1 $PING_COUNT); do
         echo "ping $i from dtn7-rs" | docker exec -i "$DTN7_CONTAINER" \
@@ -416,8 +420,7 @@ else
     log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
     dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
 
-    # Send 5 pings to Hardy's echo service
-    PING_COUNT=5
+    # Send pings to Hardy's echo service
     log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
     for i in $(seq 1 $PING_COUNT); do
         echo "ping $i from dtn7-rs" | dtnsend -r "ipn:$HARDY_NODE_NUM.7" >/dev/null 2>&1 || true
