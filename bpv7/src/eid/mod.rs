@@ -47,7 +47,11 @@ impl From<NodeId> for String {
 
 impl core::fmt::Display for IpnNodeId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ipn:{}.{}.0", self.allocator_id, self.node_number)
+        if self.allocator_id == 0 {
+            write!(f, "ipn:{}.0", self.node_number)
+        } else {
+            write!(f, "ipn:{}.{}.0", self.allocator_id, self.node_number)
+        }
     }
 }
 
@@ -111,13 +115,9 @@ impl core::fmt::Display for NodeId {
         match self {
             NodeId::LocalNode => f.write_str("ipn:!.0"),
             NodeId::Ipn(ipn) => {
-                if ipn.allocator_id == 0 {
-                    write!(f, "ipn:{}.0", ipn.node_number)
-                } else {
-                    write!(f, "ipn:{}.{}.0", ipn.allocator_id, ipn.node_number)
-                }
+                write!(f, "{ipn}")
             }
-            NodeId::Dtn(dtn) => write!(f, "dtn://{}/", dtn.node_name),
+            NodeId::Dtn(dtn) => write!(f, "{dtn}"),
         }
     }
 }
