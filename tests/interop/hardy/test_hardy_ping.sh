@@ -222,15 +222,29 @@ log_step "Pinging Node 2's echo service at ipn:$NODE2_NUM.7 (source: ipn:$NODE1_
 echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-# Use && true || true pattern to prevent set -e from exiting on non-zero
-"$BP_BIN" ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_PORT" \
+# Capture output to check actual received count
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_PORT" \
     --source "ipn:$NODE1_NUM.$PING_SERVICE" \
     --count "$PING_COUNT" \
     --no-sign \
-    && EXIT_CODE=0 || EXIT_CODE=$?
+    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+
+echo "$PING_OUTPUT"
+echo ""
+
+# Extract received count from "N bundles transmitted, M received" line
+STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*,\s*([0-9]+)\s+received.*/\1/')
+
 if [ $EXIT_CODE -eq 0 ]; then
-    log_info "TEST 1 PASSED: Successfully pinged Node 2 with echo responses"
-    TEST1_RESULT="PASS"
+    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+        log_info "TEST 1 PASSED: Successfully pinged Node 2 ($RECEIVED/$TRANSMITTED)"
+        TEST1_RESULT="PASS"
+    else
+        log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
+        TEST1_RESULT="FAIL"
+    fi
 elif [ $EXIT_CODE -eq 1 ]; then
     log_error "TEST 1 FAILED: No echo responses received (100% loss)"
     TEST1_RESULT="FAIL"
@@ -251,15 +265,29 @@ log_step "Pinging Node 1's echo service at ipn:$NODE1_NUM.7 (source: ipn:$NODE2_
 echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-# Use && true || true pattern to prevent set -e from exiting on non-zero
-"$BP_BIN" ping "ipn:$NODE1_NUM.7" "127.0.0.1:$NODE1_PORT" \
+# Capture output to check actual received count
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$NODE1_NUM.7" "127.0.0.1:$NODE1_PORT" \
     --source "ipn:$NODE2_NUM.$PING_SERVICE" \
     --count "$PING_COUNT" \
     --no-sign \
-    && EXIT_CODE=0 || EXIT_CODE=$?
+    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+
+echo "$PING_OUTPUT"
+echo ""
+
+# Extract received count from "N bundles transmitted, M received" line
+STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*,\s*([0-9]+)\s+received.*/\1/')
+
 if [ $EXIT_CODE -eq 0 ]; then
-    log_info "TEST 2 PASSED: Successfully pinged Node 1 with echo responses"
-    TEST2_RESULT="PASS"
+    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+        log_info "TEST 2 PASSED: Successfully pinged Node 1 ($RECEIVED/$TRANSMITTED)"
+        TEST2_RESULT="PASS"
+    else
+        log_error "TEST 2 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
+        TEST2_RESULT="FAIL"
+    fi
 elif [ $EXIT_CODE -eq 1 ]; then
     log_error "TEST 2 FAILED: No echo responses received (100% loss)"
     TEST2_RESULT="FAIL"

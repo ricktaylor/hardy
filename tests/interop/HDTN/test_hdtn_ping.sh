@@ -239,15 +239,29 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Use a known source EID so HDTN can route responses back
-"$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$HDTN_PORT" \
+# Capture output to check actual received count
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$HDTN_PORT" \
     --source "ipn:$HARDY_NODE_NUM.1" \
     --count "$PING_COUNT" \
     --no-sign \
-    --verbose \
-    && EXIT_CODE=0 || EXIT_CODE=$?
+    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+
+echo "$PING_OUTPUT"
+echo ""
+
+# Extract received count from "N bundles transmitted, M received" line
+STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*,\s*([0-9]+)\s+received.*/\1/')
+
 if [ $EXIT_CODE -eq 0 ]; then
-    log_info "TEST 1 PASSED: Hardy successfully pinged HDTN"
-    TEST1_RESULT="PASS"
+    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+        log_info "TEST 1 PASSED: Hardy successfully pinged HDTN ($RECEIVED/$TRANSMITTED)"
+        TEST1_RESULT="PASS"
+    else
+        log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
+        TEST1_RESULT="FAIL"
+    fi
 elif [ $EXIT_CODE -eq 1 ]; then
     log_error "TEST 1 FAILED: No echo responses received (100% loss)"
     TEST1_RESULT="FAIL"
@@ -382,13 +396,13 @@ EOF
             --dest-uri-eid="ipn:$HARDY_NODE_NUM.7" \
             --outducts-config-file=/tmp/bping_outduct.json \
             --bundle-send-timeout-seconds=10 \
-            --duration=5 \
+            --duration="$PING_COUNT" \
             2>&1) || true
 
         echo "$PING_OUTPUT"
         echo ""
 
-        # Check for success: look for non-zero bundle receive count
+        # Check for success: compare sent vs received bundle counts
         # bping outputs "totalBundlesReceived N" and "totalNonAdminRecordBpv7BundlesRx: N"
         # and "Ping received: sequence=N" for each successful ping response
         BUNDLES_RECEIVED=$(echo "$PING_OUTPUT" | grep -oP 'totalBundlesReceived \K[0-9]+' || echo "0")
@@ -398,16 +412,18 @@ EOF
         # For sent bundles, look for "totalBundlesSent N" in the output
         BUNDLES_SENT=$(echo "$PING_OUTPUT" | grep -oP 'totalBundlesSent \K[0-9]+' | head -1 || echo "0")
 
-        if [ "$BUNDLES_RECEIVED" -gt 0 ] 2>/dev/null; then
-            log_info "TEST 2 PASSED: HDTN pinged Hardy - sent $BUNDLES_SENT, received $BUNDLES_RECEIVED"
+        if [ "$BUNDLES_SENT" -gt 0 ] && [ "$BUNDLES_RECEIVED" = "$BUNDLES_SENT" ] 2>/dev/null; then
+            log_info "TEST 2 PASSED: HDTN pinged Hardy ($BUNDLES_RECEIVED/$BUNDLES_SENT)"
             TEST2_RESULT="PASS"
+        elif [ "$BUNDLES_RECEIVED" -gt 0 ] 2>/dev/null; then
+            log_error "TEST 2 FAILED: Partial loss - only $BUNDLES_RECEIVED/$BUNDLES_SENT responses received"
+            TEST2_RESULT="FAIL"
         elif [ "$BUNDLES_SENT" -gt 0 ] 2>/dev/null; then
             log_error "TEST 2 FAILED: HDTN sent $BUNDLES_SENT bundles but received 0 responses"
             TEST2_RESULT="FAIL"
         else
-            log_warn "TEST 2 INCONCLUSIVE: Unable to determine ping result"
-            log_warn "HDTN bping output above - check for success/failure indicators"
-            TEST2_RESULT="INCONCLUSIVE"
+            log_error "TEST 2 FAILED: Unable to determine ping result"
+            TEST2_RESULT="FAIL"
         fi
     fi
 fi
@@ -427,10 +443,7 @@ echo ""
 if [ "$TEST1_RESULT" = "PASS" ] && [ "$TEST2_RESULT" = "PASS" ]; then
     log_info "All interoperability tests passed"
     exit 0
-elif [ "$TEST1_RESULT" = "PASS" ] || [ "$TEST2_RESULT" = "PASS" ]; then
-    log_warn "Some tests passed, some inconclusive or failed"
-    exit 0
 else
-    log_error "Tests failed"
+    log_error "Some tests failed"
     exit 1
 fi

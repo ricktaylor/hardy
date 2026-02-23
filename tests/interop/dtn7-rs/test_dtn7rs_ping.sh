@@ -246,13 +246,29 @@ log_step "Hardy pinging dtn7-rs echo service at ipn:$DTN7_NODE_NUM.7..."
 echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-"$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
+# Capture output to check actual received count
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
+    --verbose=debug \
     --count "$PING_COUNT" \
     --no-sign \
-    && EXIT_CODE=0 || EXIT_CODE=$?
+    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+
+echo "$PING_OUTPUT"
+echo ""
+
+# Extract received count from "N bundles transmitted, M received" line
+STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*,\s*([0-9]+)\s+received.*/\1/')
+
 if [ $EXIT_CODE -eq 0 ]; then
-    log_info "TEST 1 PASSED: Hardy successfully pinged dtn7-rs"
-    TEST1_RESULT="PASS"
+    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+        log_info "TEST 1 PASSED: Hardy successfully pinged dtn7-rs ($RECEIVED/$TRANSMITTED)"
+        TEST1_RESULT="PASS"
+    else
+        log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
+        TEST1_RESULT="FAIL"
+    fi
 elif [ $EXIT_CODE -eq 1 ]; then
     log_error "TEST 1 FAILED: No echo responses received (100% loss)"
     TEST1_RESULT="FAIL"
@@ -394,11 +410,11 @@ if [ "$USE_DOCKER" = true ]; then
     echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
 
     if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
-        log_info "TEST 2 PASSED: All $PING_COUNT echo responses received"
+        log_info "TEST 2 PASSED: dtn7-rs received $RECV_COUNT/$PING_COUNT responses from Hardy"
         TEST2_RESULT="PASS"
     elif [ "$RECV_COUNT" -gt 0 ]; then
-        log_warn "TEST 2 PASSED: $RECV_COUNT/$PING_COUNT echo responses received"
-        TEST2_RESULT="PASS"
+        log_error "TEST 2 FAILED: Partial loss - only $RECV_COUNT/$PING_COUNT responses received"
+        TEST2_RESULT="FAIL"
     else
         log_error "TEST 2 FAILED: No echo responses received"
         TEST2_RESULT="FAIL"
@@ -446,11 +462,11 @@ else
     echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
 
     if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
-        log_info "TEST 2 PASSED: All $PING_COUNT echo responses received"
+        log_info "TEST 2 PASSED: dtn7-rs received $RECV_COUNT/$PING_COUNT responses from Hardy"
         TEST2_RESULT="PASS"
     elif [ "$RECV_COUNT" -gt 0 ]; then
-        log_warn "TEST 2 PASSED: $RECV_COUNT/$PING_COUNT echo responses received"
-        TEST2_RESULT="PASS"
+        log_error "TEST 2 FAILED: Partial loss - only $RECV_COUNT/$PING_COUNT responses received"
+        TEST2_RESULT="FAIL"
     else
         log_error "TEST 2 FAILED: No echo responses received"
         TEST2_RESULT="FAIL"

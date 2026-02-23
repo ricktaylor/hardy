@@ -235,16 +235,30 @@ echo ""
 # Note: --no-sign disables BIB signing (DTNME echo doesn't sign responses)
 # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
 #       payload block CRC but rejects bundles when CRC validation fails.
-"$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$DTNME_PORT" \
+# Capture output to check actual received count
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$DTNME_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
     --no-sign \
     --no-payload-crc \
-    && EXIT_CODE=0 || EXIT_CODE=$?
+    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+
+echo "$PING_OUTPUT"
+echo ""
+
+# Extract received count from "N bundles transmitted, M received" line
+STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*,\s*([0-9]+)\s+received.*/\1/')
 
 if [ $EXIT_CODE -eq 0 ]; then
-    log_info "TEST 1 PASSED: Hardy successfully pinged DTNME"
-    TEST1_RESULT="PASS"
+    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+        log_info "TEST 1 PASSED: Hardy successfully pinged DTNME ($RECEIVED/$TRANSMITTED)"
+        TEST1_RESULT="PASS"
+    else
+        log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
+        TEST1_RESULT="FAIL"
+    fi
 elif [ $EXIT_CODE -eq 1 ]; then
     log_error "TEST 1 FAILED: No echo responses received (100% loss)"
     TEST1_RESULT="FAIL"
@@ -364,18 +378,12 @@ if [ "$USE_DOCKER" = true ]; then
         # Count responses - look for "time=" which indicates a successful reply
         RESPONSE_COUNT=$(echo "$PING_OUTPUT" | grep -c "time=" || echo "0")
 
-        # Calculate minimum acceptable responses (60% of total, at least 1)
-        MIN_RESPONSES=$(( (PING_COUNT * 60 + 99) / 100 ))
-        [ "$MIN_RESPONSES" -lt 1 ] && MIN_RESPONSES=1
-
-        if [ "$RESPONSE_COUNT" -ge "$MIN_RESPONSES" ]; then
-            # At least 60% responses (first 1-2 may be lost during connection setup)
+        if [ "$RESPONSE_COUNT" = "$PING_COUNT" ]; then
             log_info "TEST 2 PASSED: DTNME received $RESPONSE_COUNT/$PING_COUNT responses from Hardy"
             TEST2_RESULT="PASS"
         elif [ "$RESPONSE_COUNT" -ge 1 ]; then
-            # Some responses but not enough
-            log_warn "TEST 2 PARTIAL: DTNME received only $RESPONSE_COUNT/$PING_COUNT responses"
-            TEST2_RESULT="PARTIAL"
+            log_error "TEST 2 FAILED: Partial loss - only $RESPONSE_COUNT/$PING_COUNT responses received"
+            TEST2_RESULT="FAIL"
         else
             log_error "TEST 2 FAILED: No echo responses received"
             TEST2_RESULT="FAIL"
@@ -398,10 +406,7 @@ echo ""
 if [ "$TEST1_RESULT" = "PASS" ] && [ "$TEST2_RESULT" = "PASS" ]; then
     log_info "All interoperability tests passed"
     exit 0
-elif [ "$TEST1_RESULT" = "PASS" ] || [ "$TEST2_RESULT" = "PASS" ]; then
-    log_warn "Some tests passed, some inconclusive or failed"
-    exit 0
 else
-    log_error "Tests failed"
+    log_error "Some tests failed"
     exit 1
 fi
