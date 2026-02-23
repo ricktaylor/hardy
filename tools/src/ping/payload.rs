@@ -1,5 +1,7 @@
 use super::*;
-use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, hop_info::HopInfo};
+use hardy_bpv7::{
+    block, builder::Builder, crc::CrcType, creation_timestamp::CreationTimestamp, hop_info::HopInfo,
+};
 use hardy_cbor::{decode, encode};
 
 /// CBOR payload format per PING_SPEC.md Appendix C.
@@ -141,8 +143,26 @@ fn build_bundle_with_padding(
         });
     }
 
+    // Add payload - with optional CRC control for DTNME compatibility
+    if args.no_payload_crc {
+        // DTNME compatibility mode: Keep CRC on primary block, but no CRC on payload
+        // DTNME has a bug where it doesn't validate payload block CRC but rejects
+        // bundles when CRC validation fails.
+        builder = builder
+            .add_extension_block(block::Type::Payload)
+            .expect("Failed to add payload block")
+            .with_flags(block::Flags {
+                delete_bundle_on_failure: true,
+                ..Default::default()
+            })
+            .with_crc_type(CrcType::None)
+            .build(payload_bytes.into());
+    } else {
+        // Normal mode: CRC on all blocks (default CRC32-C)
+        builder = builder.with_payload(payload_bytes.into());
+    }
+
     Ok(builder
-        .with_payload(payload_bytes.into())
         .build(
             creation
                 .try_into()

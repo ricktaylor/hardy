@@ -90,6 +90,14 @@ pub struct Command {
     #[arg(long)]
     no_sign: bool,
 
+    /// Disable CRC on payload block only (for DTNME compatibility)
+    ///
+    /// DTNME has a bug where it doesn't validate payload block CRC but
+    /// rejects bundles when CRC validation fails. This flag keeps CRC
+    /// on the primary block for integrity while skipping payload CRC.
+    #[arg(long)]
+    no_payload_crc: bool,
+
     /// Source EID
     #[arg(short = 'S', long)]
     source: Option<Eid>,
