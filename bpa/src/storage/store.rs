@@ -12,12 +12,12 @@ impl Store {
                 .metadata_storage
                 .as_ref()
                 .cloned()
-                .unwrap_or(metadata_mem::new(&metadata_mem::Config::default())),
+                .unwrap_or_else(|| metadata_mem::new(&metadata_mem::Config::default())),
             bundle_storage: config
                 .bundle_storage
                 .as_ref()
                 .cloned()
-                .unwrap_or(bundle_mem::new(&bundle_mem::Config::default())),
+                .unwrap_or_else(|| bundle_mem::new(&bundle_mem::Config::default())),
             bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(
                 config.storage_config.lru_capacity,
             )),
