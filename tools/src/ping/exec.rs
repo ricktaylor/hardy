@@ -173,10 +173,7 @@ async fn exec_inner(
     // Wait for responses after sending all pings
     // Default wait time is one interval if not explicitly specified
     if !cancel_token.is_cancelled() && args.count.is_some() {
-        let wait_time = args
-            .wait
-            .map(|w| *w)
-            .unwrap_or_else(|| (*args.interval).into());
+        let wait_time = args.wait.map(|w| *w).unwrap_or_else(|| *args.interval );
 
         if !args.quiet {
             eprintln!(
