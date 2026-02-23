@@ -67,14 +67,14 @@ The following suites define the *behavior* to be tested, independent of the spec
 
 This matrix defines which implementations are tested and which suites are applicable based on their capabilities.
 
-| Implementation | Version | Repository | Transport | Suites Covered | Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **NASA ION** | 4.1.2+ | `github.com/nasa-jpl/ION-DTN` | File (Shared Vol) | B, C, D, E | ION lacks TCPCLv4. Use `file-cla` bridge via Docker volumes. |
-| **DTNME** | 1.3.2 | `github.com/nasa/DTNME` | TCPCLv4 | A, B, C, E | Full TCPCLv4 support. BPSec not explicitly listed. |
-| **HDTN** | 2.0.0 | `github.com/nasa/HDTN` | TCPCLv4 | A, B, D | High-rate C++ impl. No BPv7 Status Reports or Fragmentation. |
-| **µD3TN** | 0.14.5 | `gitlab.com/d3tn/ud3tn` | File (Shared Vol) | B, C | No BPSec. Supports TCPCLv3 (not v4). Use AAP bridge. |
-| **dtn7-rs** | 0.21.0 | `github.com/dtn7/dtn7-rs` | TCPCLv4 | A, B, C, E | Rust DTN daemon. BPSec not explicitly listed. |
-| **ESA BP** | TBD | ESA Internal | File (Shared Vol) | B, C, D | ESA reference implementation (CCSDS 734.20-O-1 Annex 14). Contact ESA for access and version details. |
+| Implementation | Version | Repository | Transport | Suites Covered | Status | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **dtn7-rs** | 0.21.0 | `github.com/dtn7/dtn7-rs` | TCPCLv4 | A, B, C, E | ✅ A, B | Ping/echo tests implemented. See `tests/interop/dtn7-rs/`. |
+| **HDTN** | 2.0.0 | `github.com/nasa/HDTN` | TCPCLv4 | A, B, D | ✅ A, B | Ping/echo tests implemented. See `tests/interop/HDTN/`. |
+| **DTNME** | 1.3.2 | `github.com/nasa/DTNME` | TCPCLv4 | A, B, C, E | ✅ A, B | Ping/echo tests implemented. See `tests/interop/DTNME/`. |
+| **NASA ION** | 4.1.2+ | `github.com/nasa-jpl/ION-DTN` | File (Shared Vol) | B, C, D, E | ⏳ Planned | ION lacks TCPCLv4. Use `file-cla` bridge via Docker volumes. |
+| **µD3TN** | 0.14.5 | `gitlab.com/d3tn/ud3tn` | File (Shared Vol) | B, C | ⏳ Planned | No BPSec. Supports TCPCLv3 (not v4). Use AAP bridge. |
+| **ESA BP** | TBD | ESA Internal | File (Shared Vol) | B, C, D | ⏳ Planned | ESA reference implementation (CCSDS 734.20-O-1 Annex 14). |
 
 ## 4. Test Topologies
 
@@ -96,16 +96,38 @@ Used for implementations that do not support TCPCLv4 (e.g., ION).
 
 ## 5. Execution Strategy
 
-The test harness is external (Python/Bash) wrapping Docker commands.
+### Implemented Tests
+
+Ping/echo tests are implemented for TCPCLv4-capable implementations:
+
+```bash
+# Run all implemented tests with benchmark comparison
+./tests/interop/benchmark.sh [--skip-build] [--count N]
+
+# Run individual implementation tests
+./tests/interop/hardy/test_hardy_ping.sh      # Hardy-to-Hardy baseline
+./tests/interop/dtn7-rs/test_dtn7rs_ping.sh   # Hardy <-> dtn7-rs
+./tests/interop/HDTN/test_hdtn_ping.sh        # Hardy <-> HDTN
+./tests/interop/DTNME/test_dtnme_ping.sh      # Hardy <-> DTNME
+```
 
 **Prerequisites:**
 
-1. Build `hardy-bpa-server` Docker image.
-2. Pull or Build Peer Docker images (e.g., `amsat/ion-dtn`, `hdtn_ubuntu`).
-3. Create `docker-compose.yml` defining the network and shared volumes.
+1. Docker installed and running.
+2. Hardy tools and bpa-server built (scripts build automatically, or use `--skip-build`).
 
-**Command:**
+Docker images for peer implementations are built automatically on first run from Dockerfiles in each test directory.
+
+### Planned: Full Suite Runner
+
+For complete test coverage (Suites C, D, E) and File CLA implementations (ION, µD3TN):
 
 ```bash
 ./tests/interop/run_suite.sh --impl <ion|dtnme|hdtn|dtn7rs> --topology <tcp|file>
 ```
+
+This will require:
+
+1. Docker Compose configuration for multi-node topologies.
+2. File CLA bridge support for non-TCPCLv4 implementations.
+3. Extended test scripts for Status Reports, BPSec, and Fragmentation.
