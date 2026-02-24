@@ -95,11 +95,18 @@ impl SessionInitMessage {
         } else {
             dst.put_u16(0);
         }
-        dst.put_u32(self.session_extensions.len() as u32);
+        // RFC 9174 Section 4.6: Session Extension Items Length is the total
+        // number of octets used to encode the Session Extension Items list
+        let ext_byte_length: u32 = self
+            .session_extensions
+            .iter()
+            .map(|e| 1 + 2 + 2 + e.item_value.len() as u32) // flags(1) + type(2) + length(2) + value
+            .sum();
+        dst.put_u32(ext_byte_length);
         for extension in self.session_extensions {
             dst.put_u8(extension.flags.into());
             dst.put_u16(extension.item_type);
-            dst.put_u32(extension.item_length);
+            dst.put_u16(extension.item_length); // RFC 9174 Section 4.8: U16
             dst.put(extension.item_value);
         }
         Ok(())
@@ -131,17 +138,21 @@ impl SessionInitMessage {
         if src_cloned.len() < 4 {
             return Ok(None);
         }
-        let session_extensions_length = src_cloned.get_u32() as usize;
-        // consumed = header (1) + fixed fields (24) + node_id
-        let mut consumed = 1 + 24 + node_id_length as usize;
-        let mut session_extensions = Vec::with_capacity(session_extensions_length);
-        for _ in 0..session_extensions_length {
-            if src_cloned.len() < 7 {
+        let session_extensions_byte_length = src_cloned.get_u32() as usize;
+        // consumed = header (1) + keepalive (2) + segment_mru (8) + transfer_mru (8) +
+        //            node_id_length (2) + node_id + ext_items_length (4)
+        let mut consumed = 1 + 2 + 8 + 8 + 2 + node_id_length as usize + 4;
+        let mut session_extensions = Vec::new();
+        // RFC 9174 Section 4.6: parse by remaining byte length, not by count
+        let mut ext_remaining = session_extensions_byte_length;
+        while ext_remaining >= 5 {
+            // Minimum extension item: flags(1) + type(2) + length(2) = 5
+            if src_cloned.len() < 5 {
                 return Ok(None);
             }
             let flags = src_cloned.get_u8().into();
             let item_type = src_cloned.get_u16();
-            let item_length = src_cloned.get_u32();
+            let item_length = src_cloned.get_u16(); // RFC 9174 Section 4.8: U16
             if src_cloned.len() < item_length as usize {
                 return Ok(None);
             }
@@ -151,7 +162,8 @@ impl SessionInitMessage {
                 item_length,
                 item_value: src_cloned.split_to(item_length as usize).into(),
             });
-            consumed += 7 + item_length as usize;
+            consumed += 5 + item_length as usize;
+            ext_remaining -= 5 + item_length as usize;
         }
         src.advance(consumed);
         Ok(Some(Message::SessionInit(SessionInitMessage {
@@ -177,7 +189,7 @@ impl SessionInitMessage {
 pub struct SessionInitExtension {
     pub flags: SessionInitExtensionFlags,
     pub item_type: u16,
-    pub item_length: u32,
+    pub item_length: u16,
     pub item_value: Bytes,
 }
 
@@ -599,11 +611,18 @@ impl TransferSegmentMessage {
         dst.put_u8(self.message_flags.clone().into());
         dst.put_u64(self.transfer_id);
         if self.message_flags.start {
-            dst.put_u32(self.transfer_extensions.len() as u32);
+            // RFC 9174 Section 5.2.2: Transfer Extension Items Length is the total
+            // number of octets used to encode the Transfer Extension Items list
+            let ext_byte_length: u32 = self
+                .transfer_extensions
+                .iter()
+                .map(|e| 1 + 2 + 2 + e.item_value.len() as u32) // flags(1) + type(2) + length(2) + value
+                .sum();
+            dst.put_u32(ext_byte_length);
             for extension in self.transfer_extensions {
                 dst.put_u8(extension.flags.into());
                 dst.put_u16(extension.item_type);
-                dst.put_u32(extension.item_length);
+                dst.put_u16(extension.item_length); // RFC 9174 Section 5.2.5: U16
                 dst.put(extension.item_value);
             }
         }
@@ -629,16 +648,18 @@ impl TransferSegmentMessage {
             if src_cloned.len() < 4 {
                 return Ok(None);
             }
-            let transfer_extensions_length = src_cloned.get_u32() as usize;
-            transfer_extensions.reserve(transfer_extensions_length);
+            let transfer_extensions_byte_length = src_cloned.get_u32() as usize;
             consumed += 4;
-            for _ in 0..transfer_extensions_length {
-                if src_cloned.len() < 7 {
+            // RFC 9174 Section 5.2.2: parse by remaining byte length, not by count
+            let mut ext_remaining = transfer_extensions_byte_length;
+            while ext_remaining >= 5 {
+                // Minimum extension item: flags(1) + type(2) + length(2) = 5
+                if src_cloned.len() < 5 {
                     return Ok(None);
                 }
                 let flags = src_cloned.get_u8().into();
                 let item_type = src_cloned.get_u16();
-                let item_length = src_cloned.get_u32();
+                let item_length = src_cloned.get_u16(); // RFC 9174 Section 5.2.5: U16
                 if src_cloned.len() < item_length as usize {
                     return Ok(None);
                 }
@@ -648,7 +669,8 @@ impl TransferSegmentMessage {
                     item_length,
                     item_value: src_cloned.split_to(item_length as usize).into(),
                 });
-                consumed += 7 + item_length as usize;
+                consumed += 5 + item_length as usize;
+                ext_remaining -= 5 + item_length as usize;
             }
         }
         if src_cloned.len() < 8 {
@@ -723,7 +745,7 @@ impl From<TransferSegmentMessageFlags> for u8 {
 pub struct TransferSegmentExtension {
     pub flags: TransferSegmentExtensionFlags,
     pub item_type: u16,
-    pub item_length: u32,
+    pub item_length: u16,
     pub item_value: Bytes,
 }
 
