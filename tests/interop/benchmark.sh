@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Configuration
-PING_COUNT=30
+PING_COUNT=20
 
 # Parse options
 SKIP_BUILD_FLAG=""
