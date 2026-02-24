@@ -182,18 +182,16 @@ where
     #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
     async fn send_segment(
         &mut self,
+        transfer_id: u64,
+        cumulative_acknowledged_length: usize,
         flags: codec::TransferSegmentMessageFlags,
         data: Bytes,
     ) -> Result<Option<codec::TransferRefuseReasonCode>, Error> {
-        // Inc transfer id
-        let transfer_id = self.transfer_id;
-        self.transfer_id += 1;
-
         // Add new Xfer to queue of Acks
         self.acks.push_back(XferAck {
             flags: flags.clone(),
             transfer_id,
-            acknowledged_length: data.len(),
+            acknowledged_length: cumulative_acknowledged_length,
         });
 
         let last = flags.end;
@@ -288,18 +286,28 @@ where
         &mut self,
         mut bundle: Bytes,
     ) -> Result<Option<codec::TransferRefuseReasonCode>, Error> {
+        // Allocate a Transfer ID for this transfer (RFC 9174 Section 5.2.1:
+        // all segments within a transfer share the same Transfer ID)
+        let transfer_id = self.transfer_id;
+        self.transfer_id += 1;
+
         let mut start = true;
+        let mut cumulative_acknowledged_length = 0usize;
 
         // Segment if needed
         while bundle.len() > self.segment_mtu {
+            let segment = bundle.split_to(self.segment_mtu);
+            cumulative_acknowledged_length += segment.len();
             if let Some(refused) = self
                 .send_segment(
+                    transfer_id,
+                    cumulative_acknowledged_length,
                     codec::TransferSegmentMessageFlags {
                         start,
                         end: false,
                         ..Default::default()
                     },
-                    bundle.split_to(self.segment_mtu),
+                    segment,
                 )
                 .await?
             {
@@ -311,7 +319,10 @@ where
         }
 
         // Send the last segment
+        cumulative_acknowledged_length += bundle.len();
         self.send_segment(
+            transfer_id,
+            cumulative_acknowledged_length,
             codec::TransferSegmentMessageFlags {
                 start,
                 end: true,
@@ -333,12 +344,8 @@ where
         bundle: Bytes,
         result: tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
     ) -> Result<(), Error> {
-        // Check we can send the segments without rolling over the transfer id
-        if self
-            .transfer_id
-            .saturating_add((bundle.len() / self.segment_mtu) as u64)
-            == u64::MAX
-        {
+        // Check we can allocate a transfer id without rollover (RFC 9174 Section 5.2.1)
+        if self.transfer_id == u64::MAX {
             debug!("Out of Transfer Ids, closing session");
             return Err(Error::Shutdown(
                 codec::SessionTermReasonCode::ResourceExhaustion,
@@ -588,6 +595,10 @@ where
 
             if let Err(e) = match msg {
                 Ok(codec::Message::TransferSegment(msg)) => self.on_transfer(msg).await,
+                Ok(codec::Message::SessionTerm(msg)) => {
+                    debug!("Peer has started to end the session: {msg:?}");
+                    Err(Error::Terminate(msg))
+                }
                 Ok(msg) => self.unexpected_msg(msg.message_type()).await,
                 Err(e) => Err(e),
             } {
