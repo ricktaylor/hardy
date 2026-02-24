@@ -27,6 +27,13 @@ impl Connector {
             .await
             .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
+        // Disable Nagle's algorithm to ensure timely delivery of small messages
+        // like XFER_ACK, KEEPALIVE, and SESS_TERM
+        stream
+            .set_nodelay(true)
+            .inspect_err(|e| debug!("Failed to set TCP_NODELAY: {e}"))
+            .ok();
+
         let local_addr = stream
             .local_addr()
             .trace_expect("Failed to get socket local address");

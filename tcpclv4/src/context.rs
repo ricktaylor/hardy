@@ -80,6 +80,13 @@ impl ConnectionContext {
     /// Handle a new incoming contact (passive/server side).
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn new_contact(self, mut stream: TcpStream, remote_addr: SocketAddr) {
+        // Disable Nagle's algorithm to ensure timely delivery of small messages
+        // like XFER_ACK, KEEPALIVE, and SESS_TERM
+        stream
+            .set_nodelay(true)
+            .inspect_err(|e| debug!("Failed to set TCP_NODELAY: {e}"))
+            .ok();
+
         let local_addr = stream
             .local_addr()
             .trace_expect("Failed to get socket local address");
