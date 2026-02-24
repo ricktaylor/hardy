@@ -363,8 +363,9 @@ if [ "$USE_DOCKER" = true ]; then
         log_step "DTNME ping_me to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
         # -e 2: 2 second expiration (loopback is fast, connection already established)
         # -c N: send N pings (configurable via --count)
-        # timeout 20s: safety net in case ping_me hangs
-        PING_OUTPUT=$(timeout 20s docker exec "$DTNME_CONTAINER" /dtn/bin/ping_me \
+        # timeout: allow ~2s per ping plus 10s margin, safety net in case ping_me hangs
+        PING_TIMEOUT=$((PING_COUNT * 2 + 10))
+        PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$DTNME_CONTAINER" /dtn/bin/ping_me \
             -B 5010 \
             -s "ipn:$DTNME_NODE_NUM.1" \
             -e 2 \
