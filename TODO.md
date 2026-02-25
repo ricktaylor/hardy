@@ -68,7 +68,7 @@ Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not 
   - Service-specific messages for raw bundle bytes (ServiceSendRequest, ServiceReceiveRequest)
   - Full proxy and gRPC server implementations in `proto/proxy/service.rs` and `bpa-server/src/grpc/service.rs`
 
-- [ ] **1.7 Status Report Delivery for Disconnected Applications**
+- [x] **1.7 Status Report Delivery for Disconnected Applications**
 
   **Problem:** When a status report arrives at the BPA admin endpoint, the BPA looks up the originating service by `bundle_id.source`. For Applications (vs low-level Services), the Report-To is the BPA admin endpoint, not the application itself. If the application isn't currently registered, the status report is silently dropped.
 

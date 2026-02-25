@@ -1,5 +1,6 @@
 use super::*;
 use hardy_bpa::{async_trait, storage};
+use hardy_bpv7::eid::Eid;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -161,6 +162,14 @@ impl Storage {
     }
 }
 
+// status_code layout:
+//
+// 0 = New
+// 1 = Waiting
+// 2 = ForwardPending(peer, queue)
+// 3 = AduFragment(timestamp, seq, source)
+// 4 = Dispatching
+// 5 = WaitingForService(source)
 fn from_status(
     status: &hardy_bpa::metadata::BundleStatus,
 ) -> (i64, Option<i64>, Option<i64>, Option<String>) {
@@ -181,6 +190,9 @@ fn from_status(
             Some(source.to_string()),
         ),
         hardy_bpa::metadata::BundleStatus::Dispatching => (4, None, None, None),
+        hardy_bpa::metadata::BundleStatus::WaitingForService { source } => {
+            (5, None, None, Some(source.to_string()))
+        }
     }
 }
 
@@ -532,6 +544,15 @@ impl storage::MetadataStorage for Storage {
                 }
             }
         }
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    async fn poll_service_waiting(
+        &self,
+        _source: Eid,
+        _tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+    ) -> storage::Result<()> {
+        !todo!()
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]

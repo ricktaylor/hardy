@@ -1,5 +1,6 @@
 use super::*;
 use hardy_async::sync::Mutex;
+use hardy_bpv7::eid::Eid;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -127,6 +128,10 @@ impl storage::MetadataStorage for Storage {
             }
         }
         Ok(())
+    }
+
+    async fn poll_service_waiting(&self, _source: Eid, _tx: Sender<bundle::Bundle>) -> Result<()> {
+        todo!()
     }
 
     async fn poll_adu_fragments(

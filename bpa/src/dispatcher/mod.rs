@@ -1,4 +1,5 @@
 use super::{metadata::*, *};
+use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
 mod admin;
@@ -142,6 +143,24 @@ impl Dispatcher {
             self.store.delete_data(storage_name).await;
         }
         self.store.tombstone_metadata(&bundle.bundle.id).await
+    }
+
+    pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
+        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
+
+        let dispatcher = self.clone();
+
+        join!(self.store.poll_service_waiting(source.clone(), tx), async {
+            while let Ok(bundle) = rx.recv_async().await {
+                let dispatcher = dispatcher.clone();
+
+                if let Some(data) = dispatcher.load_data(&bundle).await {
+                    dispatcher.ingest_bundle(bundle, data).await;
+                } else {
+                    dispatcher.drop_bundle(bundle, None).await;
+                }
+            }
+        });
     }
 
     fn key_provider(

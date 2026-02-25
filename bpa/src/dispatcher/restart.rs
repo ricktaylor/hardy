@@ -49,6 +49,11 @@ impl Dispatcher {
                                 self.dispatch_bundle(bundle).await;
                                 RestartResult::Valid
                             }
+                            BundleStatus::WaitingForService { source: _ } => {
+                                let bundle = bundle::Bundle { metadata, bundle };
+                                self.ingest_bundle(bundle, data).await;
+                                RestartResult::Valid
+                            }
                             // Other statuses are handled by their respective recovery mechanisms:
                             // - ForwardPending: CLA peer queue recovery
                             // - Waiting: poll_waiting recovery

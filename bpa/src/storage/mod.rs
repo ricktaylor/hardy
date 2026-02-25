@@ -1,5 +1,6 @@
 use super::*;
 use hardy_async::sync::Mutex;
+use hardy_bpv7::eid::Eid;
 use lru::LruCache;
 
 // For bundle_cache we use hardy_async::sync::spin::Mutex because:
@@ -149,6 +150,19 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// A `Result` indicating whether the operation was successful.
     async fn poll_waiting(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
+
+    /// Returns bundles currently in `BundleStatus::WaitingForService` for the specified service source,
+    /// ordered by received time. The receiver will hang up when it has enough bundles.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The service endpoint for which waiting bundles should be retrieved.
+    /// * `tx` - The sender to which the bundles will be sent.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating whether the operation was successful.
+    async fn poll_service_waiting(&self, source: Eid, tx: Sender<bundle::Bundle>) -> Result<()>;
 
     /// Returns all bundles matching the `BundleStatus::AduFragment` status, preferably ordered by fragment offset.
     /// The receiver will hang up when it has enough bundles.

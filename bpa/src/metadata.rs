@@ -16,6 +16,9 @@ pub enum BundleStatus {
         timestamp: CreationTimestamp,
     },
     Waiting,
+    WaitingForService {
+        source: Eid,
+    },
 }
 
 /// The read-only metadata
