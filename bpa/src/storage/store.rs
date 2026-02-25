@@ -195,6 +195,14 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    pub async fn poll_service_waiting(&self, source: Eid, tx: storage::Sender<bundle::Bundle>) {
+        self.metadata_storage
+            .poll_service_waiting(source, tx)
+            .await
+            .trace_expect("Failed to poll for waiting bundles")
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn reset_peer_queue(&self, peer: u32) -> bool {
         self.metadata_storage
             .reset_peer_queue(peer)

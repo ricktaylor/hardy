@@ -437,6 +437,7 @@ impl Registry {
                 app.on_register(&service_id, Box::new(sink)).await;
             }
         }
+        dispatcher.poll_service_waiting(&service_id).await;
 
         Ok(service_id)
     }
