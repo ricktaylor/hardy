@@ -549,10 +549,35 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
     async fn poll_service_waiting(
         &self,
-        _source: Eid,
-        _tx: storage::Sender<hardy_bpa::bundle::Bundle>,
+        source: Eid,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
-        !todo!()
+        let source_str = source.to_string();
+        let bundles = self
+            .read(move |conn| {
+                conn.prepare_cached(
+                    "SELECT bundle FROM bundles
+                        WHERE bundle IS NOT NULL AND status_code = 5 AND status_param3 = ?1
+                        ORDER BY received_at ASC",
+                )?
+                .query_map((source_str,), |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<Result<Vec<Vec<u8>>, _>>()
+                .map_err(Into::into)
+            })
+            .await?;
+
+        for bundle in bundles {
+            match serde_json::from_slice(&bundle) {
+                Ok(bundle) => {
+                    if tx.send_async(bundle).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+            }
+        }
+
+        Ok(())
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
