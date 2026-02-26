@@ -1,3 +1,8 @@
 target/
 /.vscode
 /test_data
+
+# Developement TLS certificates
+
+bpa-server/ca/
+bpa-server/certs/
