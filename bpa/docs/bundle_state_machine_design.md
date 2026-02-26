@@ -24,6 +24,7 @@ The `BundleStatus` enum (defined in `bpa/src/metadata.rs`) defines all possible 
 | `ForwardPending { peer, queue }` | Bundle waiting to be forwarded via a specific CLA peer |
 | `AduFragment { source, timestamp }` | Fragment awaiting reassembly with other fragments |
 | `Waiting` | Bundle awaiting routing opportunity (no current route available) |
+| `WaitingForService { source }` | Status report (or similar) awaiting registration of the originating service |
 
 ## State Transition Diagram
 
@@ -138,7 +139,7 @@ The routing lookup determines the next state. See [Routing Design](routing_subsy
 | Route Result | Action | State Transition |
 |--------------|--------|------------------|
 | Drop | Bundle invalid/rejected | `Dispatching` → Tombstone |
-| Admin Endpoint | Administrative handling | `Dispatching` → Tombstone |
+| Admin Endpoint | Administrative handling (or `WaitingForService` if target service not registered) | `Dispatching` → Tombstone or `WaitingForService` |
 | Local Delivery (no fragments) | Deliver to service | `Dispatching` → Tombstone |
 | Local Delivery (fragments) | Fragment reassembly | `Dispatching` → `AduFragment` |
 | Forward to CLA Peer | Queue for forwarding | `Dispatching` → `ForwardPending` |
@@ -194,6 +195,17 @@ See [Routing Design](routing_subsystem_design.md) for details on peer table stru
 - When route becomes available: `Waiting` → `Dispatching`
 - If lifetime expires: `Waiting` → Tombstone
 
+### Phase 6: WaitingForService State
+
+**Entry:** `administrative_bundle()` (`admin.rs`) — when a status report (or other admin bundle) targets a service that is not yet registered, the bundle is set to `WaitingForService { source: report.bundle_id.source }`, persisted, and watched.
+
+**Wait Monitoring:** `poll_service_waiting()` (`dispatcher/mod.rs`) — when a service registers, the service registry calls `poll_service_waiting(&service_id)`; matching bundles are loaded and re-ingested via `ingest_bundle()`, so the status report is delivered or re-queued.
+
+| Condition | Action | State Transition |
+|-----------|--------|------------------|
+| Service registers | Re-ingest bundle | `WaitingForService` → deliver or re-queue |
+| Lifetime expires | Reaper drops bundle | `WaitingForService` → Tombstone |
+
 ## Persistence Points
 
 Bundle state is persisted at these critical moments:
@@ -203,6 +215,7 @@ Bundle state is persisted at these critical moments:
 | Initial storage | `New` | `receive_bundle()` |
 | After Ingress filter | `Dispatching` | `ingest_bundle_inner()` |
 | Waiting state | `Waiting` | `process_bundle()` |
+| Status report, service not registered | `WaitingForService` | `administrative_bundle()` |
 | CLA queue entry | `ForwardPending` | `Sender::send()` |
 | Fragment accumulation | `AduFragment` | `adu_reassemble()` |
 | Filter mutations | Various | `ingest_bundle_inner()` |
@@ -439,6 +452,7 @@ On restart, `restart_bundle()` examines the bundle status to determine where to 
 | `Dispatching` | Skip filters, run `process_bundle()` directly |
 | `ForwardPending` | Re-queue for CLA transmission |
 | `Waiting` | Re-add to waiting pool for route polling |
+| `WaitingForService` | Re-ingest so status report is re-evaluated (deliver or re-queue) |
 | `AduFragment` | Re-add to fragment reassembly |
 
 ### Why No Originate Checkpoint?
