@@ -130,11 +130,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_service_waiting(
-        &self,
-        source: Eid,
-        tx: Sender<bundle::Bundle>,
-    ) -> Result<()> {
+    async fn poll_service_waiting(&self, source: Eid, tx: Sender<bundle::Bundle>) -> Result<()> {
         let mut entries = BTreeMap::new();
         for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
