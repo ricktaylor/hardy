@@ -130,8 +130,27 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_service_waiting(&self, _source: Eid, _tx: Sender<bundle::Bundle>) -> Result<()> {
-        todo!()
+    async fn poll_service_waiting(
+        &self,
+        source: Eid,
+        tx: Sender<bundle::Bundle>,
+    ) -> Result<()> {
+        let mut entries = BTreeMap::new();
+        for (_, v) in self.entries.lock().iter() {
+            if let Some(v) = v
+                && let metadata::BundleStatus::WaitingForService { source: s } = &v.metadata.status
+                && *s == source
+            {
+                entries.insert(v.metadata.read_only.received_at, v.clone());
+            }
+        }
+
+        for (_, e) in entries {
+            if tx.send_async(e).await.is_err() {
+                break;
+            }
+        }
+        Ok(())
     }
 
     async fn poll_adu_fragments(
