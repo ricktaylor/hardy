@@ -331,7 +331,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
-        match self.rib.find(&bundle.bundle, &mut bundle.metadata) {
+        match self.rib.find(&mut bundle) {
             Some(rib::FindResult::Drop(reason)) => {
                 debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
                 self.drop_bundle(bundle, reason).await

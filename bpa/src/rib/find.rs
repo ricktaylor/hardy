@@ -11,12 +11,8 @@ enum InternalFindResult<'a> {
 }
 
 impl Rib {
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.id)))]
-    pub fn find(
-        &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
-        metadata: &mut metadata::BundleMetadata,
-    ) -> Option<FindResult> {
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
         let inner = self.inner.read();
 
         // TODO: this is where route table switching can occur
@@ -25,24 +21,27 @@ impl Rib {
         let result = find_recurse(
             &inner,
             table,
-            &bundle.destination,
+            &bundle.bundle.destination,
             true,
             &mut HashSet::new(),
         )?;
         if !matches!(result, InternalFindResult::Reflect) {
             // Drop the mutex before the mapping
-            return map_result(result, bundle, metadata);
+            return map_result(result, &bundle.bundle, &mut bundle.metadata);
         };
 
-        // Return the bundle to the source via the 'previous_node' or 'bundle.source'
-        let previous = bundle.previous_node.as_ref().unwrap_or(&bundle.id.source);
+        // Reflect: return the bundle via the previous forwarding node,
+        // falling back to the bundle source as last resort.
+        let previous = bundle
+            .previous_node()
+            .unwrap_or_else(|| bundle.bundle.id.source.clone());
 
-        let result = find_recurse(&inner, table, previous, false, &mut HashSet::new())?;
+        let result = find_recurse(&inner, table, &previous, false, &mut HashSet::new())?;
         if matches!(result, InternalFindResult::Reflect) {
             // Ignore double reflection
             None
         } else {
-            map_result(result, bundle, metadata)
+            map_result(result, &bundle.bundle, &mut bundle.metadata)
         }
     }
 
