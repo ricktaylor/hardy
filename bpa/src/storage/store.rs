@@ -73,12 +73,13 @@ impl Store {
             Err(e) => {
                 error!("Failed to insert metadata: {e}");
 
-                // This is just bad, we can't really claim to have stored the bundle,
-                // so just cleanup and get out
+                // Storage backend failure - clean up the bundle data and
+                // return false so the caller abandons this bundle.
+                // The storage engine itself should decide if this is fatal.
                 if let Some(storage_name) = &bundle.metadata.storage_name {
                     self.delete_data(storage_name).await;
                 }
-                panic!("Failed to insert metadata: {e}");
+                false
             }
         }
     }

@@ -57,7 +57,7 @@ impl ChannelState {
             1 => Self::Draining,
             2 => Self::Congested,
             3 => Self::Closing,
-            _ => panic!("invalid ChannelState value"),
+            _ => unreachable!(),
         }
     }
 

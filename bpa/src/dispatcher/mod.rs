@@ -103,10 +103,11 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn load_data(&self, bundle: &bundle::Bundle) -> Option<Bytes> {
-        let Some(storage_name) = bundle.metadata.storage_name.as_ref() else {
-            error!("Bad bundle has made it deep into the pipeline");
-            panic!("Bad bundle has made it deep into the pipeline");
-        };
+        let storage_name = bundle
+            .metadata
+            .storage_name
+            .as_ref()
+            .trace_expect("Bundle without storage_name reached load_data");
 
         if let Some(data) = self.store.load_data(storage_name).await {
             Some(data)
