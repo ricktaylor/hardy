@@ -282,10 +282,18 @@ impl ConnectionContext {
         let (writer_handle, writer_task) =
             writer::create_writer(transport_writer, keepalive_duration, cancel_token.clone());
 
-        // Spawn the writer task
-        tokio::spawn(async move {
+        // Spawn the writer task (not in a TaskPool - the session owns
+        // the writer's lifecycle via WriteCommand::Close and cancel_token)
+        let task = async move {
             writer_task.run().await;
-        });
+        };
+        #[cfg(feature = "tracing")]
+        let task = {
+            let span = tracing::trace_span!(parent: None, "passive_session_writer");
+            span.follows_from(tracing::Span::current());
+            tracing::Instrument::instrument(task, span)
+        };
+        tokio::spawn(task);
 
         let session = session::Session::new(
             transport_reader,
