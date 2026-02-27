@@ -225,27 +225,30 @@ where
                         self.on_transfer(msg).await?;
                     },
                     codec::Message::TransferAck(msg) => {
-                        let ack = self.acks.pop_front().trace_expect("Transfer acks are all out of sync");
-                        if ack.transfer_id != msg.transfer_id {
-                            debug!(
-                                "Mismatched transfer id in TransferAck message: expected {:?} got {:?}",
-                                ack.transfer_id,msg.transfer_id
-                            );
-                        } else if ack.flags != msg.message_flags {
-                            debug!(
-                                "Mismatched flags in TransferAck message: expected {:?} got {:?}",
-                                ack.flags,msg.message_flags
-                            );
-                        } else if ack.acknowledged_length as u64 != msg.acknowledged_length {
-                            debug!(
-                                "Mismatched acknowledged_length in TransferAck message: expected {} got {}",
-                                ack.acknowledged_length, msg.acknowledged_length
-                            );
-                        } else {
-                            if self.acks.is_empty() {
-                                return Ok(None);
+                        if let Some(ack) = self.acks.pop_front() {
+                            if ack.transfer_id != msg.transfer_id {
+                                debug!(
+                                    "Mismatched transfer id in TransferAck message: expected {:?} got {:?}",
+                                    ack.transfer_id,msg.transfer_id
+                                );
+                            } else if ack.flags != msg.message_flags {
+                                debug!(
+                                    "Mismatched flags in TransferAck message: expected {:?} got {:?}",
+                                    ack.flags,msg.message_flags
+                                );
+                            } else if ack.acknowledged_length as u64 != msg.acknowledged_length {
+                                debug!(
+                                    "Mismatched acknowledged_length in TransferAck message: expected {} got {}",
+                                    ack.acknowledged_length, msg.acknowledged_length
+                                );
+                            } else {
+                                if self.acks.is_empty() {
+                                    return Ok(None);
+                                }
+                                continue;
                             }
-                            continue;
+                        } else {
+                            debug!("Received TransferAck with no outstanding transfers");
                         }
 
                         self.reject_msg(codec::MessageRejectionReasonCode::Unsupported,codec::MessageType::XFER_ACK as u8).await?;
@@ -254,14 +257,17 @@ where
                         return Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown));
                     },
                     codec::Message::TransferRefuse(msg) => {
-                        let ack = self.acks.pop_front().trace_expect("Transfer acks are all out of sync");
-                        if ack.transfer_id != msg.transfer_id {
-                            debug!(
-                                "Mismatched transfer id in TransferRefuse message: expected {:?} got {:?}",
-                                ack.transfer_id,msg.transfer_id
-                            );
+                        if let Some(ack) = self.acks.pop_front() {
+                            if ack.transfer_id != msg.transfer_id {
+                                debug!(
+                                    "Mismatched transfer id in TransferRefuse message: expected {:?} got {:?}",
+                                    ack.transfer_id,msg.transfer_id
+                                );
+                            } else {
+                                return Ok(Some(msg.reason_code));
+                            }
                         } else {
-                            return Ok(Some(msg.reason_code));
+                            debug!("Received TransferRefuse with no outstanding transfers");
                         }
 
                         self.reject_msg(codec::MessageRejectionReasonCode::Unsupported,codec::MessageType::XFER_REFUSE as u8).await?;
