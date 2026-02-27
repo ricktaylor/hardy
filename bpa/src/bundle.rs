@@ -31,6 +31,21 @@ impl Bundle {
     pub fn has_expired(&self) -> bool {
         self.expiry() <= time::OffsetDateTime::now_utc()
     }
+
+    /// Returns the EID of the node that forwarded this bundle.
+    ///
+    /// Prefers the Previous Node extension block (in-band), falling back to
+    /// the CLA peer node ID (out-of-band). Per RFC 9171 Section 4.4.1, both
+    /// identify the immediate 1-hop forwarding node when present.
+    pub fn previous_node(&self) -> Option<hardy_bpv7::eid::Eid> {
+        self.bundle.previous_node.clone().or_else(|| {
+            self.metadata
+                .read_only
+                .ingress_peer_node
+                .clone()
+                .map(Into::into)
+        })
+    }
 }
 
 #[cfg(test)]
