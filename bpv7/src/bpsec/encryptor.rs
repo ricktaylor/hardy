@@ -309,5 +309,5 @@ fn build_bcb_data(
         return Ok((bcb::Operation::AES_GCM(op), data));
     }
 
-    panic!("Unsupported BCB context!");
+    unreachable!("Unsupported BCB context");
 }

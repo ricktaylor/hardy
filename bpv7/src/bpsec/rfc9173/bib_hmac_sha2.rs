@@ -117,7 +117,7 @@ impl hardy_cbor::encode::ToCbor for Parameters {
                         1 => a.emit(&(b, &self.variant)),
                         2 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.key.as_ref().unwrap()))),
                         3 => a.emit(&(b, &self.flags)),
-                        _ => unreachable!(),
+                        _ => unreachable!("loop range is 1..=3"),
                     }
                 }
             }
@@ -371,7 +371,9 @@ impl Operation {
             ShaVariant::HMAC_512_512 => {
                 Box::from(calculate_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?.as_ref())
             }
-            ShaVariant::Unrecognised(_) => unreachable!(),
+            ShaVariant::Unrecognised(_) => {
+                unreachable!("Unrecognised variants filtered before signing")
+            }
         });
 
         let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {

@@ -153,8 +153,8 @@ impl metrics::CounterFn for InnerCounter {
     }
 
     fn absolute(&self, _value: u64) {
-        panic!(
-            "absolute() is not supported; OpenTelemetry counters are monotonic and can only be incremented."
+        unimplemented!(
+            "absolute() is not supported; OpenTelemetry counters are monotonic and can only be incremented"
         )
     }
 }
@@ -167,11 +167,11 @@ struct InnerGauge {
 
 impl metrics::GaugeFn for InnerGauge {
     fn increment(&self, _value: f64) {
-        panic!("Incrementing a gauge is not supported by this OpenTelemetry recorder.");
+        unimplemented!("Incrementing a gauge is not supported by this OpenTelemetry recorder")
     }
 
     fn decrement(&self, _value: f64) {
-        panic!("Decrementing a gauge is not supported by this OpenTelemetry recorder.");
+        unimplemented!("Decrementing a gauge is not supported by this OpenTelemetry recorder")
     }
 
     fn set(&self, value: f64) {

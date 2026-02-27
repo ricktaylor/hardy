@@ -225,7 +225,7 @@ fn dump_block(
 ) -> anyhow::Result<()> {
     output.append_str(format!("## Block {block_number}: "))?;
     match &block.block_type {
-        block::Type::Primary => unreachable!(),
+        block::Type::Primary => unreachable!("Primary block handled separately"),
         block::Type::Payload => output.append_str("Payload\n\n"),
         block::Type::PreviousNode => output.append_str("Previous Node\n\n"),
         block::Type::BundleAge => output.append_str("Bundle Age\n\n"),
@@ -299,7 +299,7 @@ fn dump_block(
 
     if let Some(payload) = payload {
         match block.block_type {
-            block::Type::Primary => unreachable!(),
+            block::Type::Primary => unreachable!("Primary block handled separately"),
             block::Type::PreviousNode => output.append_str(format!(
                 "Previous Node: {}\n\n",
                 bundle.previous_node.as_ref().unwrap()

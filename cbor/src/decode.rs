@@ -449,7 +449,7 @@ where
             let r = f(Value::Map(&mut m), shortest && s, &tags)?;
             m.complete(r).map_err(Into::into)
         }
-        (6, _) => unreachable!(),
+        (6, _) => unreachable!("CBOR major type 6 (tags) consumed before dispatch"),
         (7, 20) => {
             /* False */
             f(Value::False, shortest, &tags)
@@ -541,7 +541,7 @@ where
         (7, minor) => {
             return Err(Error::InvalidSimpleType(minor).into());
         }
-        _ => unreachable!(),
+        _ => unreachable!("CBOR major type is 3 bits, all values 0-7 handled above"),
     }
     .map(|r| (r, offset))
 }

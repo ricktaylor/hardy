@@ -94,7 +94,9 @@ fn map_result(
 
             Some(FindResult::Forward(peer))
         }
-        InternalFindResult::Reflect => unreachable!(),
+        InternalFindResult::Reflect => {
+            unreachable!("Reflect filtered by find() before calling map_result")
+        }
     }
 }
 

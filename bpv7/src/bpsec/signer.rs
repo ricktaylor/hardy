@@ -211,5 +211,5 @@ fn build_bib_data(
         ));
     }
 
-    panic!("Unsupported BIB context!");
+    unreachable!("Unsupported BIB context");
 }

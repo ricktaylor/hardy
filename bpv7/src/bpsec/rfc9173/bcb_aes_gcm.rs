@@ -124,7 +124,7 @@ impl hardy_cbor::encode::ToCbor for Parameters {
                         2 => a.emit(&(b, &self.variant)),
                         3 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.key.as_ref().unwrap()))),
                         4 => a.emit(&(b, &self.flags)),
-                        _ => unreachable!(),
+                        _ => unreachable!("loop range is 1..=4"),
                     }
                 }
             }
@@ -324,7 +324,9 @@ impl Operation {
                         payload.as_ref(),
                     )
                 }),
-            AesVariant::Unrecognised(_) => unreachable!(),
+            AesVariant::Unrecognised(_) => {
+                unreachable!("Unrecognised variants filtered before encryption")
+            }
         }?;
 
         let key = if let Some(cek) = cek {
@@ -339,7 +341,7 @@ impl Operation {
                     Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
                         .and_then(|kek| kek.wrap_vec(&cek))
                         .map_err(|e| Error::Algorithm(e.to_string())),
-                    _ => unreachable!(),
+                    _ => unreachable!("Key algorithm validated during key lookup"),
                 }?
                 .into(),
             )

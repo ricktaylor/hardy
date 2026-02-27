@@ -40,7 +40,7 @@ impl NodeIds {
                 node_id.clone().into()
             }
             (_, Some(node_id), _) => node_id.clone().into(),
-            (_, None, None) => unreachable!(),
+            (_, None, None) => unreachable!("NodeIds requires at least one scheme at construction"),
         }
     }
 
@@ -137,7 +137,7 @@ impl serde::Serialize for NodeIds {
         S: serde::Serializer,
     {
         match (&self.ipn, &self.dtn) {
-            (None, None) => unreachable!(),
+            (None, None) => unreachable!("NodeIds requires at least one scheme at construction"),
             (None, Some(node_id)) => serializer.serialize_str(node_id.to_string().as_str()),
             (Some(node_id), None) => serializer.serialize_str(node_id.to_string().as_str()),
             (Some(ipn_node_id), Some(dtn_node_id)) => {

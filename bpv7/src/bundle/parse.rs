@@ -139,7 +139,9 @@ impl<'a> BlockParse<'a> {
 
             let mut unknown_block = false;
             match block.block.block_type {
-                block::Type::Primary => unreachable!(),
+                block::Type::Primary => {
+                    unreachable!("Primary block parsed before extension block loop")
+                }
                 block::Type::Payload => {
                     // Confirm no duplicates
                     if !self.unique_blocks.insert(block.block.block_type) {

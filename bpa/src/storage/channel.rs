@@ -57,6 +57,7 @@ impl ChannelState {
             1 => Self::Draining,
             2 => Self::Congested,
             3 => Self::Closing,
+            // ChannelState atomic only written with valid enum values 0-3
             _ => unreachable!(),
         }
     }
