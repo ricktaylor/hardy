@@ -21,6 +21,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
   - [Services & Filters](#services--filters)
   - [Servers & Tools](#servers--tools)
 - [Getting Started](#getting-started)
+  - [Running with Docker](#running-with-docker)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
@@ -113,6 +114,27 @@ cargo test --workspace
 ```
 
 See the [bpa-server README](./bpa-server/README.md) for detailed configuration options and example configurations.
+
+### Running with Docker
+
+The BPA server can run as a container using the provided [Dockerfile](./Dockerfile) and [Compose file](./compose.yaml).
+
+**Prerequisites:** Docker and Docker Compose (v2.23+ for inline config support).
+
+Build and start:
+
+```bash
+docker compose up --build -d
+```
+
+The server listens on **gRPC** (50051) and **TCPCLv4** (4556). Configuration is embedded in `compose.yaml` via the `hardy-config` config; edit the `configs.hardy-config.content` block to change node settings.
+
+To send a test bundle to the echo service (from the host, using the `bp` tool):
+
+```bash
+cargo build --release -p hardy-tools
+./target/release/bp ping ipn:1.7 --peer 127.0.0.1:4556
+```
 
 ### Bundle Tools
 
