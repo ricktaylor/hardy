@@ -20,41 +20,42 @@ volumes:
 configs:
   hardy-config:
     content: |
-      log_level = "debug"
-      node_ids = ["ipn:1.0", "dtn://my-node/"]
-      ipn-legacy-nodes = []
-      echo = [7, "echo"]
-      status_reports = true
-      poll_channel_depth = 16
-      processing_pool_size = 16
+      log-level = "debug"
+      node-ids = ["ipn:1.0", "dtn://my-node/"]
+      status-reports = true
+      poll-channel-depth = 16
+      processing-pool-size = 16
 
       [grpc]
       address = "[::]:50051"
       services = ["application", "cla", "service"]
 
       [storage]
-      lru_capacity = 1024
-      max_cached_bundle_size = 16384
+      lru-capacity = 1024
+      max-cached-bundle-size = 16384
 
-      [metadata_storage]
+      [storage.metadata]
       type = "memory"
-      
-      [bundle_storage]
+
+      [storage.bundle]
       type = "localdisk"
-      store_dir = "/var/lib/hardy/bundles"
+      store-dir = "/var/lib/hardy/bundles"
       fsync = true
 
       [rfc9171-validity]
       primary-block-integrity = true
       bundle-age-required = true
 
+      [built-in-services]
+      echo = [7, "echo"]
+
       [[clas]]
       name = "tcp-cla-1"
       type = "tcpclv4"
       address = "[::]:4556"
-      segment_mru = 16384
-      transfer_mru = 562949953421312
-      max_idle_connections = 6
-      contact_timeout = 15
-      keepalive_interval = 60
-      must_use_tls = false
+      segment-mru = 16384
+      transfer-mru = 562949953421312
+      max-idle-connections = 6
+      contact-timeout = 15
+      keepalive-interval = 60
+      require-tls = false

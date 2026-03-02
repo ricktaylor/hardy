@@ -11,9 +11,8 @@ impl Store {
         Self {
             tasks: hardy_async::TaskPool::new(),
             metadata_storage: metadata_storage
-                .unwrap_or_else(|| metadata_mem::new(&metadata_mem::Config::default())),
-            bundle_storage: bundle_storage
-                .unwrap_or_else(|| bundle_mem::new(&bundle_mem::Config::default())),
+                .unwrap_or_else(|| metadata_mem::new(&Default::default())),
+            bundle_storage: bundle_storage.unwrap_or_else(|| bundle_mem::new(&Default::default())),
             bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(
                 config.storage.lru_capacity,
             )),
