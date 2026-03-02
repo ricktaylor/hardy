@@ -171,9 +171,13 @@ pub struct Bpa {
 }
 
 impl Bpa {
-    pub fn new(config: &config::Config) -> Self {
+    pub fn new(
+        config: &config::Config,
+        metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
+        bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
+    ) -> Self {
         // New store
-        let store = Arc::new(storage::Store::new(config));
+        let store = Arc::new(storage::Store::new(config, metadata_storage, bundle_storage));
 
         // New RIB
         let rib = Arc::new(rib::Rib::new(config, store.clone()));

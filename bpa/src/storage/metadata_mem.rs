@@ -3,9 +3,8 @@ use hardy_async::sync::Mutex;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
-    #[cfg_attr(feature = "serde", serde(rename = "max-bundles"))]
     pub max_bundles: core::num::NonZeroUsize,
 }
 

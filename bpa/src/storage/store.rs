@@ -2,28 +2,24 @@ use super::*;
 
 impl Store {
     /// Create a new Store with the configured storage backends.
-    ///
-    /// Uses in-memory storage if no backends are specified in config.
-    pub fn new(config: &config::Config) -> Self {
-        // Init pluggable storage engines
+    /// Uses in-memory storage if no backends are provided.
+    pub fn new(
+        config: &config::Config,
+        metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
+        bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
+    ) -> Self {
         Self {
             tasks: hardy_async::TaskPool::new(),
-            metadata_storage: config
-                .metadata_storage
-                .as_ref()
-                .cloned()
+            metadata_storage: metadata_storage
                 .unwrap_or_else(|| metadata_mem::new(&metadata_mem::Config::default())),
-            bundle_storage: config
-                .bundle_storage
-                .as_ref()
-                .cloned()
+            bundle_storage: bundle_storage
                 .unwrap_or_else(|| bundle_mem::new(&bundle_mem::Config::default())),
             bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(
-                config.storage_config.lru_capacity,
+                config.storage.lru_capacity,
             )),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),
-            max_cached_bundle_size: config.storage_config.max_cached_bundle_size.into(),
+            max_cached_bundle_size: config.storage.max_cached_bundle_size.into(),
             reaper_cache_size: config.poll_channel_depth.into(),
         }
     }

@@ -4,11 +4,9 @@ use rand::distr::{Alphanumeric, SampleString};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
     pub capacity: core::num::NonZeroUsize,
-
-    #[cfg_attr(feature = "serde", serde(rename = "min-bundles"))]
     pub min_bundles: usize,
 }
 
