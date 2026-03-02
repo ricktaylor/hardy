@@ -72,7 +72,7 @@ impl Cla {
     /// configuration files cannot be loaded.
     pub fn new(config: &config::Config) -> Result<Self, Error> {
         // Validate TLS requirement
-        if config.session_defaults.must_use_tls && config.tls.is_none() {
+        if config.session_defaults.require_tls && config.tls.is_none() {
             return Err(Error::TlsRequired);
         }
 

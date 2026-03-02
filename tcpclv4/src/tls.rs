@@ -47,7 +47,7 @@ impl TlsConfig {
     fn build_server_config(
         config: &super::config::TlsConfig,
     ) -> Result<Option<Arc<ServerConfig>>, TlsError> {
-        match (&config.server_cert, &config.server_key) {
+        match (&config.cert_file, &config.private_key_file) {
             (Some(cert_path), Some(key_path)) => {
                 let certs = load_certs(cert_path)?;
                 let key = load_private_key(key_path)?;
@@ -65,7 +65,7 @@ impl TlsConfig {
                 Ok(Some(Arc::new(server_config)))
             }
             (Some(_), None) | (None, Some(_)) => Err(TlsError::CertificateLoad(
-                "Both server_cert and server_key must be provided together".to_string(),
+                "Both cert and key must be provided together".to_string(),
             )),
             (None, None) => Ok(None),
         }
@@ -75,8 +75,8 @@ impl TlsConfig {
         let mut root_store = RootCertStore::empty();
 
         // Load CA certificates from bundle directory if provided
-        if let Some(ca_bundle) = &config.ca_bundle {
-            load_ca_certs(&mut root_store, ca_bundle)?;
+        if let Some(ca_certs) = &config.ca_certs {
+            load_ca_certs(&mut root_store, ca_certs)?;
             info!(
                 "Successfully loaded CA certificate(s) from bundle (total in store: {})",
                 root_store.len()
