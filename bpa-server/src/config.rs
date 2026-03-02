@@ -2,6 +2,7 @@ use super::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::str::FromStr;
 use tracing::Level;
+use validator::Validate;
 
 mod log_level_serde {
     use super::*;
@@ -54,7 +55,7 @@ pub enum BundleStorage {
     // S3(S3Config),
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Validate)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct StorageConfig {
     /// BPA bundle cache settings (LRU capacity, max cached bundle size).
@@ -68,14 +69,7 @@ pub struct StorageConfig {
     pub bundle: Option<BundleStorage>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct BuiltInServicesConfig {
-    /// Echo service: list of service identifiers (int = IPN, string = DTN).
-    pub echo: Option<Vec<hardy_bpv7::eid::Service>>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Validate)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
     /// Logging level
@@ -96,6 +90,7 @@ pub struct Config {
 
     /// Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
+    #[validate(nested)]
     pub storage: StorageConfig,
 
     #[serde(default)]
@@ -117,7 +112,8 @@ pub struct Config {
     /// Integers are IPN service numbers, strings are DTN service names.
     /// Absent key = service disabled.
     #[serde(default)]
-    pub built_in_services: BuiltInServicesConfig,
+    #[validate(nested)]
+    pub built_in_services: built_in_services::BuiltInServicesConfig,
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]
@@ -172,8 +168,13 @@ pub fn load(cli: &cli::Args) -> Config {
 
     b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
 
-    b.build()
+    let config: Config = b
+        .build()
         .expect("Failed to read configuration")
         .try_deserialize()
-        .expect("Failed to parse configuration")
+        .expect("Failed to parse configuration");
+
+    config.validate().expect("Invalid configuration");
+
+    config
 }
