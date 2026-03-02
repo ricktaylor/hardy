@@ -1,6 +1,7 @@
 mod clas;
+mod cli;
 mod config;
-mod echo_config;
+mod echo;
 mod filters;
 mod grpc;
 mod policy;
@@ -26,73 +27,62 @@ fn listen_for_cancel(tasks: &TaskPool) {
     hardy_async::spawn!(tasks, "signal_handler", async move {
         tokio::select! {
             _ = term_handler.recv() => {
-                // Signal stop
                 info!("Received terminate signal, stopping...");
             }
             _ = tokio::signal::ctrl_c() => {
-                // Signal stop
                 info!("Received CTRL+C, stopping...");
             }
         }
-
-        // Cancel everything
         cancel_token.cancel();
     });
 }
 
-fn start_storage(config: &mut config::Config) {
-    if let Some(metadata_storage) = &config.metadata_storage {
-        config.bpa.metadata_storage = match metadata_storage {
-            config::MetadataStorage::Memory(metadata_storage) => metadata_storage
-                .as_ref()
-                .map(|metadata_storage| hardy_bpa::storage::metadata_mem::new(metadata_storage)),
+fn start_storage(
+    storage: &config::StorageConfig,
+    cli: &cli::Args,
+) -> (
+    Option<Arc<dyn hardy_bpa::storage::MetadataStorage>>,
+    Option<Arc<dyn hardy_bpa::storage::BundleStorage>>,
+) {
+    let metadata_storage = storage.metadata.as_ref().map(|cfg| match cfg {
+        config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
 
-            #[cfg(feature = "sqlite-storage")]
-            config::MetadataStorage::Sqlite(metadata_storage) => Some(hardy_sqlite_storage::new(
-                metadata_storage
-                    .as_ref()
-                    .unwrap_or(&hardy_sqlite_storage::Config::default()),
-                config.upgrade_storage,
-            )),
-            // #[cfg(feature = "postgres-storage")]
-            // config::MetadataStorage::Postgres(config) => todo!(),
-        };
-    }
+        #[cfg(feature = "sqlite-storage")]
+        config::MetadataStorage::Sqlite(cfg) => {
+            hardy_sqlite_storage::new(cfg, cli.upgrade_storage)
+        }
+        // #[cfg(feature = "postgres-storage")]
+        // config::MetadataStorage::Postgres(cfg) => todo!(),
+    });
 
-    if let Some(bundle_storage) = &config.bundle_storage {
-        config.bpa.bundle_storage = match bundle_storage {
-            config::BundleStorage::Memory(bundle_storage) => bundle_storage
-                .as_ref()
-                .map(|bundle_storage| hardy_bpa::storage::bundle_mem::new(bundle_storage)),
+    let bundle_storage = storage.bundle.as_ref().map(|cfg| match cfg {
+        config::BundleStorage::Memory(cfg) => hardy_bpa::storage::bundle_mem::new(cfg),
 
-            #[cfg(feature = "localdisk-storage")]
-            config::BundleStorage::LocalDisk(bundle_storage) => Some(hardy_localdisk_storage::new(
-                bundle_storage
-                    .as_ref()
-                    .unwrap_or(&hardy_localdisk_storage::Config::default()),
-                config.upgrade_storage,
-            )),
-            // #[cfg(feature = "s3-storage")]
-            // config::BundleStorage::S3(config) => todo!(),
-        };
-    }
+        #[cfg(feature = "localdisk-storage")]
+        config::BundleStorage::LocalDisk(cfg) => {
+            hardy_localdisk_storage::new(cfg, cli.upgrade_storage)
+        }
+        // #[cfg(feature = "s3-storage")]
+        // config::BundleStorage::S3(cfg) => todo!(),
+    });
+
+    (metadata_storage, bundle_storage)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Parse command line
-    let Some((config, config_source)) = config::init() else {
+    let Some(cli) = cli::parse() else {
         return Ok(());
     };
 
-    // Resolve log level: env var overrides config, default to ERROR
+    let config = config::load(&cli);
+
     let log_level = std::env::var("HARDY_BPA_SERVER_LOG_LEVEL")
         .ok()
         .and_then(|s| s.parse::<tracing::Level>().ok())
         .or(config.log_level)
         .unwrap_or(tracing::Level::ERROR);
 
-    // Start logging - guard must be kept alive for the duration of the program
     #[cfg(feature = "otel")]
     let _guard = hardy_otel::init(PKG_NAME, PKG_VERSION, log_level);
 
@@ -110,18 +100,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
-    info!("{config_source}");
 
-    inner_main(config).await.inspect_err(|e| error!("{e}"))
+    inner_main(config, cli).await.inspect_err(|e| error!("{e}"))
 }
 
-async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
-    // Start storage backends
-    start_storage(&mut config);
+async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()> {
+    let (metadata_storage, bundle_storage) = start_storage(&config.storage, &cli);
 
-    // Start the BPA
-    let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(&config.bpa));
-    info!("Configured node IDs: {}", config.bpa.node_ids);
+    // Propagate cache config to BPA
+    let mut bpa_config = config.bpa;
+    bpa_config.storage = config.storage.cache;
+
+    let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(
+        &bpa_config,
+        metadata_storage,
+        bundle_storage,
+    ));
+    info!("Configured node IDs: {}", bpa_config.node_ids);
 
     // Prepare for graceful shutdown
     let tasks = TaskPool::new();
@@ -132,31 +127,23 @@ async fn inner_main(mut config: config::Config) -> anyhow::Result<()> {
     }
 
     // Register filters
-    filters::register(&config, &bpa)?;
+    filters::register(&config.rfc9171_validity, &config.ipn_legacy_nodes, &bpa)?;
+    
+    echo::init(config.built_in_services.echo.as_deref(), bpa.as_ref()).await;
 
-    // Register echo service
-    echo_config::init(&config.echo, bpa.as_ref()).await;
+    bpa.start(cli.recover_storage);
 
-    // Start the BPA
-    bpa.start(config.recover_storage);
-
-    // Start CLAs
     clas::init(&config.clas, bpa.as_ref()).await?;
 
-    // Start gRPC server
     if let Some(config) = &config.grpc {
         grpc::init(config, &bpa, &tasks);
     }
 
-    // And wait for shutdown signal
     listen_for_cancel(&tasks);
 
     info!("Started successfully");
 
-    // Wait for shutdown
     tasks.shutdown().await;
-
-    // Shut down bpa
     bpa.shutdown().await;
 
     info!("Stopped");
