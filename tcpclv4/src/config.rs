@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct SessionConfig {
     // Seconds to wait for the initial contact header
     pub contact_timeout: u16, // default 15
@@ -11,7 +11,7 @@ pub struct SessionConfig {
     pub keepalive_interval: Option<u16>, // default 60
 
     // Whether to enforce TLS for encrypting the connection
-    pub must_use_tls: bool,
+    pub require_tls: bool,
 }
 
 impl Default for SessionConfig {
@@ -19,41 +19,40 @@ impl Default for SessionConfig {
         Self {
             contact_timeout: 15,
             keepalive_interval: Some(60),
-            must_use_tls: true,
+            require_tls: false,
         }
     }
 }
 
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct TlsConfig {
-    // Required only if acting as a TLS server (listening for incoming connections)
-    pub server_cert: Option<PathBuf>,
+    // Path to the local certificate file (PEM). Required when acting as a TLS server.
+    pub cert_file: Option<PathBuf>,
 
-    // Path to server private key file (PEM format)
-    pub server_key: Option<PathBuf>,
+    // Path to the local private key file (PEM). Required when acting as a TLS server.
+    pub private_key_file: Option<PathBuf>,
 
-    // Required only if acting as a TLS client (connecting to remote servers)
-    // Path to directory containing CA certificate files (all .crt/.pem files in the directory will be loaded)
-    pub ca_bundle: Option<PathBuf>,
+    // Path to directory containing CA certificate files (all .crt/.pem files loaded).
+    // Required only if acting as a TLS client (connecting to remote servers).
+    pub ca_certs: Option<PathBuf>,
 
-    // Optional server name to use for TLS connections (overrides IP-based logic)
-    // Use this when connecting via IP but the certificate is issued for a domain name
+    // Optional server name for TLS SNI (overrides IP-based logic).
+    // Use this when connecting via IP but the certificate is issued for a domain name.
     pub server_name: Option<String>,
 
     // TODO(mTLS): Client certificate and key for mutual TLS authentication
-    // pub client_cert: Option<PathBuf>,
-    // pub client_key: Option<PathBuf>,
+    // pub client_cert_file: Option<PathBuf>,
+    // pub client_key_file: Option<PathBuf>,
 
     // Debug options (development only)
-    #[cfg_attr(feature = "serde", serde(default))]
     pub debug: TlsDebugConfig,
 }
 
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct TlsDebugConfig {
     // Accept self-signed certificates when no CA is configured (for testing)
     pub accept_self_signed: bool,
@@ -61,7 +60,7 @@ pub struct TlsDebugConfig {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
     // The TCP address:port to listen for TCP connections
     pub address: Option<std::net::SocketAddr>, // default = [::]:4556

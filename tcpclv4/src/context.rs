@@ -152,7 +152,7 @@ impl ConnectionContext {
                     .await;
             }
             debug!(%local_addr, %remote_addr, "TLS requested but no TLS configuration provided");
-        } else if self.session.must_use_tls {
+        } else if self.session.require_tls {
             warn!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             return transport::terminate(
                 codec::MessageCodec::new_framed(stream),

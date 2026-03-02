@@ -104,7 +104,7 @@ impl Connector {
                     });
             }
             debug!(%local_addr, %remote_addr, "TLS requested by peer but no TLS configuration provided");
-        } else if self.ctx.session.must_use_tls {
+        } else if self.ctx.session.require_tls {
             debug!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             transport::terminate(
                 codec::MessageCodec::new_framed(stream),

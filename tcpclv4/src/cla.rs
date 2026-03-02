@@ -5,7 +5,7 @@ impl Cla {
     fn start_listeners(&self) {
         if let Some(address) = self.address {
             // Only start listener if TLS is not required, or we have server TLS config
-            if !self.session_config.must_use_tls
+            if !self.session_config.require_tls
                 || self
                     .tls_config
                     .as_ref()
