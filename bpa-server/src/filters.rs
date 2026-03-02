@@ -16,8 +16,7 @@ pub fn register(
     )?;
     info!(
         "Registered RFC9171 validity filter (primary-block-integrity={}, bundle-age-required={})",
-        rfc9171_validity.primary_block_integrity,
-        rfc9171_validity.bundle_age_required
+        rfc9171_validity.primary_block_integrity, rfc9171_validity.bundle_age_required
     );
 
     #[cfg(feature = "ipn-legacy-filter")]

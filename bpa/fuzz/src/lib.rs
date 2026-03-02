@@ -46,7 +46,6 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             .join("store")
             .join(testname);
 
-    // Metadata storage configuration
     #[cfg(feature = "sqlite-storage")]
     let metadata_storage = Some(hardy_sqlite_storage::new(
         &hardy_sqlite_storage::Config {
@@ -56,13 +55,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         true,
     ));
     #[cfg(not(feature = "sqlite-storage"))]
-    let metadata_storage = Some(hardy_bpa::storage::metadata_mem::new(
-        &hardy_bpa::storage::metadata_mem::Config {
-            max_bundles: std::num::NonZero::new(1024).unwrap(),
-        },
-    ));
+    let metadata_storage = None;
 
-    // Bundle storage configuration
     #[cfg(feature = "localdisk-storage")]
     let bundle_storage = Some(hardy_localdisk_storage::new(
         &hardy_localdisk_storage::Config {
@@ -72,27 +66,23 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         true,
     ));
     #[cfg(not(feature = "localdisk-storage"))]
-    let bundle_storage = Some(hardy_bpa::storage::bundle_mem::new(
-        &hardy_bpa::storage::bundle_mem::Config {
-            capacity: std::num::NonZero::new(524_288).unwrap(),
+    let bundle_storage = None;
+
+    let bpa = hardy_bpa::bpa::Bpa::new(
+        &hardy_bpa::config::Config {
+            status_reports: true,
+            node_ids: [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            })]
+            .as_slice()
+            .try_into()
+            .unwrap(),
             ..Default::default()
         },
-    ));
-
-    // New BPA
-    let bpa = hardy_bpa::bpa::Bpa::new(&hardy_bpa::config::Config {
-        status_reports: true,
-        node_ids: [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })]
-        .as_slice()
-        .try_into()
-        .unwrap(),
         metadata_storage,
         bundle_storage,
-        ..Default::default()
-    });
+    );
 
     bpa.start(
         #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]

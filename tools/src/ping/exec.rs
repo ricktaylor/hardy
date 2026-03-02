@@ -21,11 +21,15 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         );
     }
 
-    let bpa = hardy_bpa::bpa::Bpa::new(&hardy_bpa::config::Config {
-        status_reports: true,
-        node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
-        ..Default::default()
-    });
+    let bpa = hardy_bpa::bpa::Bpa::new(
+        &hardy_bpa::config::Config {
+            status_reports: true,
+            node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
+            ..Default::default()
+        },
+        None,
+        None,
+    );
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.add_route(
@@ -45,7 +49,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     let mut tcpclv4_config = hardy_tcpclv4::config::Config {
         address: None,
         session_defaults: hardy_tcpclv4::config::SessionConfig {
-            must_use_tls: false,
+            require_tls: false,
             ..Default::default()
         },
         ..Default::default()
@@ -70,10 +74,10 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
                     ca_dir.display()
                 ));
             }
-            tls_config.ca_bundle = Some(ca_dir.clone());
+            tls_config.ca_certs = Some(ca_dir.clone());
         }
         tcpclv4_config.tls = Some(tls_config);
-        tcpclv4_config.session_defaults.must_use_tls = true;
+        tcpclv4_config.session_defaults.require_tls = true;
     }
 
     let cla = std::sync::Arc::new(

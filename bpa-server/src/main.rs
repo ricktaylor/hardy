@@ -1,7 +1,7 @@
+mod built_in_services;
 mod clas;
 mod cli;
 mod config;
-mod echo;
 mod filters;
 mod grpc;
 mod policy;
@@ -37,20 +37,17 @@ fn listen_for_cancel(tasks: &TaskPool) {
     });
 }
 
-fn start_storage(
-    storage: &config::StorageConfig,
-    cli: &cli::Args,
-) -> (
+type StorageBackends = (
     Option<Arc<dyn hardy_bpa::storage::MetadataStorage>>,
     Option<Arc<dyn hardy_bpa::storage::BundleStorage>>,
-) {
+);
+
+fn init_storage(storage: &config::StorageConfig, upgrade_storage: bool) -> StorageBackends {
     let metadata_storage = storage.metadata.as_ref().map(|cfg| match cfg {
         config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
 
         #[cfg(feature = "sqlite-storage")]
-        config::MetadataStorage::Sqlite(cfg) => {
-            hardy_sqlite_storage::new(cfg, cli.upgrade_storage)
-        }
+        config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
         // #[cfg(feature = "postgres-storage")]
         // config::MetadataStorage::Postgres(cfg) => todo!(),
     });
@@ -59,11 +56,8 @@ fn start_storage(
         config::BundleStorage::Memory(cfg) => hardy_bpa::storage::bundle_mem::new(cfg),
 
         #[cfg(feature = "localdisk-storage")]
-        config::BundleStorage::LocalDisk(cfg) => {
-            hardy_localdisk_storage::new(cfg, cli.upgrade_storage)
-        }
-        // #[cfg(feature = "s3-storage")]
-        // config::BundleStorage::S3(cfg) => todo!(),
+        config::BundleStorage::LocalDisk(cfg) => hardy_localdisk_storage::new(cfg, upgrade_storage), // #[cfg(feature = "s3-storage")]
+                                                                                                     // config::BundleStorage::S3(cfg) => todo!(),
     });
 
     (metadata_storage, bundle_storage)
@@ -105,12 +99,12 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()> {
-    let (metadata_storage, bundle_storage) = start_storage(&config.storage, &cli);
+    let (metadata_storage, bundle_storage) = init_storage(&config.storage, cli.upgrade_storage);
 
-    // Propagate cache config to BPA
-    let mut bpa_config = config.bpa;
-    bpa_config.storage = config.storage.cache;
-
+    let bpa_config = hardy_bpa::config::Config {
+        storage: config.storage.cache,
+        ..config.bpa
+    };
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(
         &bpa_config,
         metadata_storage,
@@ -128,8 +122,8 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
 
     // Register filters
     filters::register(&config.rfc9171_validity, &config.ipn_legacy_nodes, &bpa)?;
-    
-    echo::init(config.built_in_services.echo.as_deref(), bpa.as_ref()).await;
+
+    built_in_services::init(&config.built_in_services, bpa.as_ref()).await;
 
     bpa.start(cli.recover_storage);
 
