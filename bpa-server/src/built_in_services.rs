@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use validator::Validate;
 
 #[derive(Serialize, Deserialize, Debug, Default, Validate)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct BuiltInServicesConfig {
     /// Echo service: list of service identifiers (int = IPN, string = DTN).
     #[validate(length(min = 1))]

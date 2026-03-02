@@ -161,9 +161,9 @@ pub fn load(cli: &cli::Args) -> Config {
         );
         b = b.add_source(::config::File::with_name(&source))
     } else {
-        let path = config_dir().join(format!("{}.yaml", env!("CARGO_PKG_NAME")));
+        let path = config_dir().join(env!("CARGO_PKG_NAME"));
         eprintln!("Using configuration file '{}'", path.display());
-        b = b.add_source(::config::File::from(path).required(false))
+        b = b.add_source(::config::File::with_name(&path.to_string_lossy()).required(false))
     }
 
     b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
