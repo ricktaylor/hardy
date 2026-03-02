@@ -19,7 +19,7 @@ use super::*;
 /// By default, all checks are enabled for strict RFC9171 compliance.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
     /// Check that the primary block has integrity protection (CRC or BIB coverage).
     ///
@@ -28,7 +28,6 @@ pub struct Config {
     /// primary block"
     ///
     /// Disable this for interoperability with implementations that don't add CRC.
-    #[cfg_attr(feature = "serde", serde(rename = "primary-block-integrity"))]
     pub primary_block_integrity: bool,
 
     /// Check that bundles without a clock have a Bundle Age block.
@@ -37,7 +36,6 @@ pub struct Config {
     /// MUST contain exactly one (1) occurrence of this type of block [Bundle Age]"
     ///
     /// Disable this for compatibility with RFC9173 Appendix A test vectors.
-    #[cfg_attr(feature = "serde", serde(rename = "bundle-age-required"))]
     pub bundle_age_required: bool,
 }
 

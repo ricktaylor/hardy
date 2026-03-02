@@ -1,20 +1,14 @@
 use super::*;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
     pub status_reports: bool,
     pub poll_channel_depth: core::num::NonZeroUsize,
     pub processing_pool_size: core::num::NonZeroUsize,
 
-    #[cfg_attr(feature = "serde", serde(rename = "storage"))]
-    pub storage_config: storage::Config,
-
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
-
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
+    pub storage: storage::Config,
 
     pub node_ids: node_ids::NodeIds,
 }
@@ -28,9 +22,7 @@ impl Default for Config {
                 hardy_async::available_parallelism().get() * 4,
             )
             .unwrap(),
-            storage_config: storage::Config::default(),
-            metadata_storage: None,
-            bundle_storage: None,
+            storage: storage::Config::default(),
             node_ids: node_ids::NodeIds::default(),
         }
     }
