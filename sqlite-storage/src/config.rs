@@ -1,5 +1,5 @@
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct Config {
     pub db_dir: std::path::PathBuf,
     pub db_name: String,
