@@ -124,14 +124,19 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub fn new(config: &config::Config, rib: Arc<rib::Rib>, store: Arc<storage::Store>) -> Self {
+    pub fn new(
+        node_ids: Vec<NodeId>,
+        poll_channel_depth: usize,
+        rib: Arc<rib::Rib>,
+        store: Arc<storage::Store>,
+    ) -> Self {
         Self {
-            node_ids: (&config.node_ids).into(),
+            node_ids,
             clas: Default::default(),
             rib,
             store,
             peers: peers::PeerTable::new(),
-            poll_channel_depth: config.poll_channel_depth.into(),
+            poll_channel_depth,
             tasks: hardy_async::TaskPool::new(),
         }
     }

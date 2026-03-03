@@ -6,10 +6,8 @@ pub struct Config {
     pub status_reports: bool,
     pub poll_channel_depth: core::num::NonZeroUsize,
     pub processing_pool_size: core::num::NonZeroUsize,
-
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub storage: storage::Config,
-
+    pub lru_capacity: core::num::NonZeroUsize,
+    pub max_cached_bundle_size: core::num::NonZeroUsize,
     pub node_ids: node_ids::NodeIds,
 }
 
@@ -22,7 +20,8 @@ impl Default for Config {
                 hardy_async::available_parallelism().get() * 4,
             )
             .unwrap(),
-            storage: storage::Config::default(),
+            lru_capacity: core::num::NonZeroUsize::new(1024).unwrap(),
+            max_cached_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
             node_ids: node_ids::NodeIds::default(),
         }
     }

@@ -4,7 +4,9 @@ impl Store {
     /// Create a new Store with the configured storage backends.
     /// Uses in-memory storage if no backends are provided.
     pub fn new(
-        config: &config::Config,
+        lru_capacity: core::num::NonZeroUsize,
+        max_cached_bundle_size: core::num::NonZeroUsize,
+        reaper_cache_size: core::num::NonZeroUsize,
         metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
         bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
     ) -> Self {
@@ -13,13 +15,11 @@ impl Store {
             metadata_storage: metadata_storage
                 .unwrap_or_else(|| metadata_mem::new(&Default::default())),
             bundle_storage: bundle_storage.unwrap_or_else(|| bundle_mem::new(&Default::default())),
-            bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(
-                config.storage.lru_capacity,
-            )),
+            bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(lru_capacity)),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),
-            max_cached_bundle_size: config.storage.max_cached_bundle_size.into(),
-            reaper_cache_size: config.poll_channel_depth.into(),
+            max_cached_bundle_size: max_cached_bundle_size.into(),
+            reaper_cache_size: reaper_cache_size.into(),
         }
     }
 

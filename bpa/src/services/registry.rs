@@ -185,9 +185,9 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub fn new(config: &config::Config, rib: Arc<rib::Rib>) -> Self {
+    pub fn new(node_ids: node_ids::NodeIds, rib: Arc<rib::Rib>) -> Self {
         Self {
-            node_ids: config.node_ids.clone(),
+            node_ids,
             rib,
             services: Default::default(),
             tasks: hardy_async::TaskPool::new(),

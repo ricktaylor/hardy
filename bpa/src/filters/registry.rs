@@ -32,7 +32,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(_config: &config::Config) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: RwLock::new(RegistryInner::default()),
         }

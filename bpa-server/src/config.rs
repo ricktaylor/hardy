@@ -54,18 +54,28 @@ pub enum BundleStorage {
     // S3(S3Config),
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct StorageConfig {
-    /// BPA bundle cache settings (LRU capacity, max cached bundle size).
-    #[serde(flatten)]
-    pub cache: hardy_bpa::storage::Config,
-
+    /// LRU capacity for the bundle cache.
+    pub lru_capacity: core::num::NonZeroUsize,
+    /// Max size of a single bundle to keep in the LRU cache (bytes).
+    pub max_cached_bundle_size: core::num::NonZeroUsize,
     /// Metadata storage backend. Uses in-memory if not set.
     pub metadata: Option<MetadataStorage>,
-
     /// Bundle data storage backend. Uses in-memory if not set.
     pub bundle: Option<BundleStorage>,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            lru_capacity: core::num::NonZeroUsize::new(1024).unwrap(),
+            max_cached_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
+            metadata: None,
+            bundle: None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
