@@ -142,46 +142,44 @@ log_step "Starting Hardy BPA servers..."
 # Note: No static routes needed - CLA peer registration automatically adds
 # wildcard patterns (e.g., ipn:1.* when peer ipn:1.0 connects)
 cat > "$TEST_DIR/node1_config.toml" << EOF
-log_level = "info"
-status_reports = true
-node_ids = "ipn:$NODE1_NUM.0"
+log-level = "info"
+status-reports = true
+node-ids = "ipn:$NODE1_NUM.0"
 
-# Echo service on IPN service 7
-echo = 7
+[built-in-services]
+echo = [7]
 
-[metadata_storage]
+[storage.metadata]
 type = "memory"
 
-[bundle_storage]
+[storage.bundle]
 type = "memory"
 
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
 address = "[::]:$NODE1_PORT"
-must_use_tls = false
 EOF
 
 # Create Node 2 config
 cat > "$TEST_DIR/node2_config.toml" << EOF
-log_level = "info"
-status_reports = true
-node_ids = "ipn:$NODE2_NUM.0"
+log-level = "info"
+status-reports = true
+node-ids = "ipn:$NODE2_NUM.0"
 
-# Echo service on IPN service 7
-echo = 7
+[built-in-services]
+echo = [7]
 
-[metadata_storage]
+[storage.metadata]
 type = "memory"
 
-[bundle_storage]
+[storage.bundle]
 type = "memory"
 
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
 address = "[::]:$NODE2_PORT"
-must_use_tls = false
 EOF
 
 # Start Node 1
