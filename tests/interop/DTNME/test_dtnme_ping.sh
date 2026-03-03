@@ -287,17 +287,18 @@ echo "============================================================"
 
 # Create Hardy config for server mode
 cat > "$TEST_DIR/hardy_config.toml" << EOF
-log_level = "info"
-status_reports = true
-node_ids = "ipn:$HARDY_NODE_NUM.0"
+log-level = "info"
+status-reports = true
+node-ids = "ipn:$HARDY_NODE_NUM.0"
 
+[built-in-services]
 # Echo service on IPN service 7
-echo = 7
+echo = [7]
 
-[metadata_storage]
+[storage.metadata]
 type = "memory"
 
-[bundle_storage]
+[storage.bundle]
 type = "memory"
 
 [rfc9171-validity]
@@ -307,8 +308,6 @@ primary-block-integrity = false
 name = "cl0"
 type = "tcpclv4"
 address = "[::]:$HARDY_PORT"
-# Disable TLS requirement for interop testing with DTNME (plain TCP)
-must_use_tls = false
 EOF
 
 log_step "Starting Hardy BPA server..."
