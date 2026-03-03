@@ -37,8 +37,9 @@ hardy-otel = { path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { path = "../echo-service", optional = true }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "signal"] }
-config = { version = "0.15.19", features = ["toml"] }
+config = { version = "0.15.19", features = ["toml", "yaml"] }
 serde = { version = "1.0.228", features = ["derive"] }
+validator = { version = "0.20.0", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
 tracing = "0.1.44"

@@ -2,7 +2,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub address: std::net::SocketAddr,
     pub services: Vec<String>,

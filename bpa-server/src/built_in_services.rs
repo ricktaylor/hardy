@@ -1,9 +1,16 @@
 use super::*;
+use serde::{Deserialize, Serialize};
+use validator::Validate;
 
-pub async fn init(
-    config: &config::BuiltInServicesConfig,
-    bpa: &dyn hardy_bpa::bpa::BpaRegistration,
-) {
+#[derive(Serialize, Deserialize, Debug, Default, Validate)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct BuiltInServicesConfig {
+    /// Echo service: list of service identifiers (int = IPN, string = DTN).
+    #[validate(length(min = 1))]
+    pub echo: Option<Vec<hardy_bpv7::eid::Service>>,
+}
+
+pub async fn init(config: &BuiltInServicesConfig, bpa: &dyn hardy_bpa::bpa::BpaRegistration) {
     #[cfg(feature = "echo")]
     if let Some(services) = &config.echo {
         if services.is_empty() {

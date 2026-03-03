@@ -14,7 +14,7 @@ use std::path::PathBuf;
 mod parse;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     pub routes_file: PathBuf,
     pub priority: u32,
