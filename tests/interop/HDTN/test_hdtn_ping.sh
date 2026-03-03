@@ -252,7 +252,7 @@ echo ""
 # Extract received count from "N bundles transmitted, M received" line
 STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
 TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*,\s*([0-9]+)\s+received.*/\1/')
+RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
 if [ $EXIT_CODE -eq 0 ]; then
     if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
