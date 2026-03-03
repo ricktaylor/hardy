@@ -34,10 +34,10 @@ pub struct Rib {
 }
 
 impl Rib {
-    pub fn new(config: &config::Config, store: Arc<storage::Store>) -> Self {
+    pub fn new(node_ids: node_ids::NodeIds, store: Arc<storage::Store>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
-                locals: local::LocalInner::new(config),
+                locals: local::LocalInner::new(&node_ids),
                 routes: BTreeMap::new(),
                 address_types: HashMap::new(),
             }),

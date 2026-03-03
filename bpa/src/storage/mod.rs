@@ -25,23 +25,6 @@ pub(crate) mod store;
 
 mod reaper;
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
-pub struct Config {
-    pub lru_capacity: core::num::NonZeroUsize,
-    pub max_cached_bundle_size: core::num::NonZeroUsize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            lru_capacity: core::num::NonZeroUsize::new(1024).unwrap(),
-            max_cached_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
-        }
-    }
-}
-
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
 ///
 /// This trait provides a set of asynchronous methods for interacting with the metadata storage,

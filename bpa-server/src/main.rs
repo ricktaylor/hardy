@@ -102,15 +102,16 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
     let (metadata_storage, bundle_storage) = init_storage(&config.storage, cli.upgrade_storage);
 
     let bpa_config = hardy_bpa::config::Config {
-        storage: config.storage.cache,
+        lru_capacity: config.storage.lru_capacity,
+        max_cached_bundle_size: config.storage.max_cached_bundle_size,
         ..config.bpa
     };
+    info!("Configured node IDs: {}", bpa_config.node_ids);
     let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(
-        &bpa_config,
+        bpa_config,
         metadata_storage,
         bundle_storage,
     ));
-    info!("Configured node IDs: {}", bpa_config.node_ids);
 
     // Prepare for graceful shutdown
     let tasks = TaskPool::new();

@@ -172,23 +172,31 @@ pub struct Bpa {
 
 impl Bpa {
     pub fn new(
-        config: &config::Config,
+        config: config::Config,
         metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
         bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
     ) -> Self {
+        let status_reports = config.status_reports;
+        let poll_channel_depth = config.poll_channel_depth;
+        let processing_pool_size = config.processing_pool_size;
+        let node_ids = config.node_ids;
+
         // New store
         let store = Arc::new(storage::Store::new(
-            config,
+            config.lru_capacity,
+            config.max_cached_bundle_size,
+            poll_channel_depth,
             metadata_storage,
             bundle_storage,
         ));
 
         // New RIB
-        let rib = Arc::new(rib::Rib::new(config, store.clone()));
+        let rib = Arc::new(rib::Rib::new(node_ids.clone(), store.clone()));
 
         // New registries
         let cla_registry = Arc::new(cla::registry::Registry::new(
-            config,
+            (&node_ids).into(),
+            poll_channel_depth.into(),
             rib.clone(),
             store.clone(),
         ));
@@ -196,10 +204,13 @@ impl Bpa {
         // New Keys Registry (TODO: Make this load keys from the Config!)
         let keys_registry = Arc::new(keys::registry::Registry::new());
 
-        let service_registry = Arc::new(services::registry::Registry::new(config, rib.clone()));
+        let service_registry = Arc::new(services::registry::Registry::new(
+            node_ids.clone(),
+            rib.clone(),
+        ));
 
         // New filter registry
-        let filter_registry = Arc::new(filters::registry::Registry::new(config));
+        let filter_registry = Arc::new(filters::registry::Registry::new());
 
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
@@ -218,7 +229,10 @@ impl Bpa {
 
         // New dispatcher (returns Arc, starts immediately)
         let dispatcher = dispatcher::Dispatcher::new(
-            config,
+            status_reports,
+            poll_channel_depth,
+            processing_pool_size,
+            node_ids,
             store.clone(),
             cla_registry.clone(),
             service_registry.clone(),

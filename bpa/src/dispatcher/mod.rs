@@ -31,7 +31,10 @@ pub(crate) struct Dispatcher {
 impl Dispatcher {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        config: &config::Config,
+        status_reports: bool,
+        poll_channel_depth: core::num::NonZeroUsize,
+        processing_pool_size: core::num::NonZeroUsize,
+        node_ids: node_ids::NodeIds,
         store: Arc<storage::Store>,
         cla_registry: Arc<cla::registry::Registry>,
         service_registry: Arc<services::registry::Registry>,
@@ -40,7 +43,10 @@ impl Dispatcher {
         filter_registry: Arc<filters::registry::Registry>,
     ) -> Arc<Self> {
         let (dispatcher, start) = Self::new_inner(
-            config,
+            status_reports,
+            poll_channel_depth,
+            processing_pool_size,
+            node_ids,
             store,
             cla_registry,
             service_registry,
@@ -54,7 +60,10 @@ impl Dispatcher {
 
     #[allow(clippy::too_many_arguments)]
     fn new_inner(
-        config: &config::Config,
+        status_reports: bool,
+        poll_channel_depth: core::num::NonZeroUsize,
+        processing_pool_size: core::num::NonZeroUsize,
+        node_ids: node_ids::NodeIds,
         store: Arc<storage::Store>,
         cla_registry: Arc<cla::registry::Registry>,
         service_registry: Arc<services::registry::Registry>,
@@ -62,19 +71,19 @@ impl Dispatcher {
         keys_registry: Arc<keys::registry::Registry>,
         filter_registry: Arc<filters::registry::Registry>,
     ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
-        if config.status_reports {
+        if status_reports {
             warn!("Bundle status reports are enabled");
         }
 
-        let poll_channel_depth: usize = config.poll_channel_depth.into();
+        let poll_channel_depth_usize: usize = poll_channel_depth.into();
 
         // Create the dispatch queue channel
         let (dispatch_tx, dispatch_rx) =
-            store.channel(BundleStatus::Dispatching, poll_channel_depth);
+            store.channel(BundleStatus::Dispatching, poll_channel_depth_usize);
 
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),
-            processing_pool: hardy_async::BoundedTaskPool::new(config.processing_pool_size),
+            processing_pool: hardy_async::BoundedTaskPool::new(processing_pool_size),
             store,
             service_registry,
             cla_registry,
@@ -82,9 +91,9 @@ impl Dispatcher {
             keys_registry,
             filter_registry,
             dispatch_tx,
-            status_reports: config.status_reports,
-            node_ids: config.node_ids.clone(),
-            poll_channel_depth,
+            status_reports,
+            node_ids,
+            poll_channel_depth: poll_channel_depth_usize,
         });
 
         (dispatcher, |d| {

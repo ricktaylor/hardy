@@ -47,7 +47,7 @@ pub struct LocalInner {
 }
 
 impl LocalInner {
-    pub fn new(config: &config::Config) -> Self {
+    pub fn new(node_ids: &node_ids::NodeIds) -> Self {
         let mut actions = BTreeMap::new();
         let mut finals = BTreeSet::new();
 
@@ -63,7 +63,7 @@ impl LocalInner {
         // Drop LocalNode services
         finals.insert(NodeId::LocalNode.into());
 
-        if let Some(node_id) = &config.node_ids.ipn {
+        if let Some(node_id) = &node_ids.ipn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
             let admin_eid: Eid = node_id.clone().into();
@@ -77,7 +77,7 @@ impl LocalInner {
             finals.insert(node_id.clone().into());
         }
 
-        if let Some(node_name) = &config.node_ids.dtn {
+        if let Some(node_name) = &node_ids.dtn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             let admin_eid: Eid = node_name.clone().into();
             actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
