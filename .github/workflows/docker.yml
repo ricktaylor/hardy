@@ -2,7 +2,7 @@ name: Build and publish image
 
 on:
   workflow_run:
-    workflows: ["Build and test"]
+    workflows: ["Build, test and E2E"]
     branches: ["main"]
     types: [completed]
 

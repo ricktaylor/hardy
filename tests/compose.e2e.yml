@@ -2,6 +2,7 @@ services:
   hardy:
     environment:
       HARDY_BPA_SERVER_LOG_LEVEL: warn
+      
   e2e-tests:
     build:
       context: .
