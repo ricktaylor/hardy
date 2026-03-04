@@ -1,0 +1,14 @@
+services:
+  hardy:
+    environment:
+      HARDY_BPA_SERVER_LOG_LEVEL: warn
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile.tools
+    depends_on:
+      - hardy
+    entrypoint: ["/bin/bash", "/usr/local/bin/run_hardy_ping_test.sh"]
+    command: ["--peer", "hardy:4556", "--count", "3"]
+    volumes:
+      - ./tests/interop/hardy/run_hardy_ping_test.sh:/usr/local/bin/run_hardy_ping_test.sh
