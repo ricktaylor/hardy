@@ -9,6 +9,6 @@ services:
     depends_on:
       - hardy
     entrypoint: ["/bin/bash", "/usr/local/bin/run_hardy_ping_test.sh"]
-    command: ["--peer", "hardy:4556", "--count", "3"]
+    command: ["--peer", "hardy:4556", "--count", "5"]
     volumes:
       - ./tests/interop/hardy/run_hardy_ping_test.sh:/usr/local/bin/run_hardy_ping_test.sh

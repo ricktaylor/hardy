@@ -41,6 +41,12 @@ jobs:
       - name: Test
         run: cargo test --locked --release --all-features --verbose
 
+  e2e-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Run E2E tests
         run: docker compose -f compose.yaml -f tests/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-tests
 
