@@ -40,3 +40,10 @@ jobs:
 
       - name: Test
         run: cargo test --locked --release --all-features --verbose
+
+      - name: Run E2E tests
+        run: docker compose -f compose.yaml -f tests/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-tests
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml -f tests/compose.e2e.yml down -v
