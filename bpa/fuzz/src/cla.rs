@@ -24,7 +24,9 @@ impl RandomBundle {
         }
 
         if let Some(flags) = self.flags {
-            builder = builder.with_flags((flags as u64).into());
+            let mut flags = hardy_bpv7::bundle::Flags::from(flags as u64);
+            flags.is_fragment = false;
+            builder = builder.with_flags(flags);
         }
 
         if let Some(crc_type) = self.crc_type {
