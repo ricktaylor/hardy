@@ -484,10 +484,7 @@ mod tests {
     #[test]
     fn test_format_cbor_sequence() {
         // Byte string containing CBOR sequence: 1, 2, 3
-        let mut cbor_seq = Vec::new();
-        cbor_seq.push(0x01); // 1
-        cbor_seq.push(0x02); // 2
-        cbor_seq.push(0x03); // 3
+        let cbor_seq = vec![0x01_u8, 0x02, 0x03]; // 1, 2, 3
 
         let mut cbor = vec![0x43]; // byte string of length 3
         cbor.extend_from_slice(&cbor_seq);
@@ -514,9 +511,7 @@ mod tests {
     #[test]
     fn test_format_tag24_with_sequence() {
         // Tag 24 containing CBOR sequence
-        let mut cbor_seq = Vec::new();
-        cbor_seq.push(0x01); // 1
-        cbor_seq.push(0x02); // 2
+        let cbor_seq = vec![0x01_u8, 0x02]; // 1, 2
 
         let mut cbor = vec![0xd8, 0x18]; // tag(24)
         cbor.push(0x42); // byte string of length 2
@@ -529,10 +524,7 @@ mod tests {
     #[test]
     fn test_format_array_with_sequence() {
         // Array containing a byte string with CBOR sequence
-        let mut cbor_seq = Vec::new();
-        cbor_seq.push(0x01); // 1
-        cbor_seq.push(0x02); // 2
-        cbor_seq.push(0x03); // 3
+        let cbor_seq = vec![0x01_u8, 0x02, 0x03]; // 1, 2, 3
 
         let mut cbor = vec![0x81]; // array of length 1
         cbor.push(0x43); // byte string of length 3

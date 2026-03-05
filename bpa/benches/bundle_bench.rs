@@ -24,7 +24,7 @@ fn bench(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(get_bundle().len() as u64));
     group.bench_function("bundle", |b| {
-        b.iter(|| hardy_bpa_fuzz::send_bundle(&*get_bundle()))
+        b.iter(|| hardy_bpa_fuzz::send_bundle(&get_bundle()))
     });
     group.finish();
 }
