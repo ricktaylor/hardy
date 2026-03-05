@@ -71,8 +71,8 @@ jobs:
           load: true
 
       - name: Run E2E tests
-        run: docker compose -f compose.yaml -f tests/compose.e2e.yml up --no-build --abort-on-container-exit --exit-code-from e2e-tests
+        run: docker compose -f compose.yml -f tests/compose.e2e.yml up --no-build --abort-on-container-exit --exit-code-from e2e-tests
 
       - name: Cleanup
         if: always()
-        run: docker compose -f compose.yaml -f tests/compose.e2e.yml down -v
+        run: docker compose -f compose.yml -f tests/compose.e2e.yml down -v
