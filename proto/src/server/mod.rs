@@ -76,12 +76,17 @@ pub fn init(
         }
     }
 
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
     // Start serving
     let addr = config.address;
     let cancel_token = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "grpc_server", async move {
+        health_reporter
+            .set_service_status("", tonic_health::ServingStatus::Serving)
+            .await;
         tonic::transport::Server::builder()
             .add_routes(routes.routes())
+            .add_service(health_service)
             .serve_with_shutdown(addr, cancel_token.cancelled())
             .await
             .expect("Failed to start gRPC server")

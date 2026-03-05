@@ -1,14 +1,17 @@
 services:
   hardy:
+    image: hardy-bpa-server:latest
     environment:
       HARDY_BPA_SERVER_LOG_LEVEL: warn
-      
+
   e2e-tests:
     build:
       context: .
       dockerfile: tests/Dockerfile.tools
+    image: hardy-e2e-tests:latest
     depends_on:
-      - hardy
+      hardy:
+        condition: service_healthy
     entrypoint: ["/bin/bash", "/usr/local/bin/run_hardy_ping_test.sh"]
     command: ["--peer", "hardy:4556", "--count", "5"]
     volumes:
