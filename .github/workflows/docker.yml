@@ -34,7 +34,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
-          tags: type=sha
+          tags: |
+            type=sha
+            type=raw,value=latest
         
       - name: Build and push with cache
         uses: docker/build-push-action@v6
