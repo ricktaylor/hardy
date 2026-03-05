@@ -1,7 +1,7 @@
 services:
   hardy:
     build: .
-    image: hardy:latest
+    image: hardy-bpa-server:latest
     restart: unless-stopped
     environment:
       HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.toml
@@ -13,6 +13,12 @@ services:
     configs:
       - source: hardy-config
         target: /etc/hardy/config.toml
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=127.0.0.1:50051"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
 volumes:
   bundles:

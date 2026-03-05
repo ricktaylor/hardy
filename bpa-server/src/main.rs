@@ -137,6 +137,11 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
 
     info!("Started successfully");
 
+    // Block until the cancel token is fired (by the signal handler on SIGTERM/CTRL+C).
+    // Only then proceed to graceful shutdown; calling tasks.shutdown() directly would
+    // cancel the token immediately, causing all services to stop right after startup.
+    tasks.cancel_token().cancelled().await;
+
     tasks.shutdown().await;
     bpa.shutdown().await;
 

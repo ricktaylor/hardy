@@ -1,7 +1,5 @@
-name: Build, test and E2E
+name: Rust
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
 
@@ -9,14 +7,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-and-test-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-and-unit-test:
+  rust-fmt-lint-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -36,18 +34,15 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Build
-        run: cargo build --locked --release --all-features --verbose
-
       - name: Check linting
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --locked --release --all-features --verbose
+        run: cargo test --locked --all-features --verbose
 
   e2e-tests:
     runs-on: ubuntu-latest
-    needs: build-and-unit-test
+    needs: rust-fmt-lint-test
     steps:
       - uses: actions/checkout@v6
 
@@ -60,7 +55,7 @@ jobs:
           context: .
           file: ./Dockerfile
           target: runtime
-          tags: hardy:latest
+          tags: hardy-bpa-server:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           load: true
@@ -70,7 +65,7 @@ jobs:
         with:
           context: .
           file: ./tests/Dockerfile.tools
-          tags: hardy_e2e-tests
+          tags: hardy-e2e-tests:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           load: true
