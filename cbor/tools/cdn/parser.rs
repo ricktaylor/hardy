@@ -371,7 +371,7 @@ mod tests {
     fn test_parse_float() {
         let value = parse("3.14159").unwrap();
         match value {
-            CdnValue::Float(f) => assert!((f - 3.14159).abs() < 0.00001),
+            CdnValue::Float(f) => assert!((f - std::f64::consts::PI).abs() < 0.00001),
             _ => panic!("Expected float"),
         }
     }

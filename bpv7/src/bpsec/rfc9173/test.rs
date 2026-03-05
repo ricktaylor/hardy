@@ -482,8 +482,8 @@ fn test_bib_removal_and_readd() {
         .bundle
         .verify_block(1, &unsigned_bytes, &keys)
         .expect("verify_block should not error");
-    assert_eq!(
-        verify_result, false,
+    assert!(
+        !verify_result,
         "Signature verification should return false when BIB is removed"
     );
 
