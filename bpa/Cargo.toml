@@ -32,7 +32,7 @@ crate-type = ["rlib"]
 hardy-async = { path = "../async", default-features = false }
 hardy-bpv7 = { path = "../bpv7", default-features = false }
 hardy-cbor = { path = "../cbor" }
-hardy-eid-patterns = { path = "../eid-patterns", default-features = false }
+hardy-eid-patterns = { path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
 time = { version = "0.3.45", default-features = false, features = ["serde-human-readable"] }
 bytes = "1.11.1"
 tracing = { version = "0.1.44", default-features = false }
@@ -44,7 +44,7 @@ foldhash = { version = "0.2.0", default-features = false }
 lru = { version = "0.16.3", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 flume = "0.12.0"
-futures = { version = "0.3", default-features = false, features = ["alloc"] }
+futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive","rc","alloc"], optional = true }
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"], optional = true }
 
