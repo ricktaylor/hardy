@@ -46,6 +46,8 @@ impl ConnectionPool {
         )
         .trace_expect("Failed to optimize");
 
+        rusqlite::vtab::array::load_module(&conn).trace_expect("Failed to load array module");
+
         drop(guard);
         conn
     }
@@ -126,6 +128,8 @@ impl Storage {
                 PRAGMA optimize = 0x10002;",
             )
             .trace_expect("Failed to prepare metadata store database");
+
+        rusqlite::vtab::array::load_module(&connection).trace_expect("Failed to load array module");
 
         // Migrate the database to the latest schema
         migrate::migrate(&mut connection, upgrade)
@@ -346,48 +350,35 @@ impl storage::MetadataStorage for Storage {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id = serde_json::to_vec(bundle_id)?;
-        let Some((bundle, id, status_code, p1, p2, p3)) = self
-            .read(move |conn| {
+        let Some((bundle, status_code, p1, p2, p3))  = self
+            .write(move |conn| {
                 conn.prepare_cached(
-                    "SELECT bundle, unconfirmed_bundles.id, status_code, status_param1, status_param2, status_param3 FROM bundles
-                    LEFT OUTER JOIN unconfirmed_bundles ON bundles.id = unconfirmed_bundles.id
-                    WHERE bundle_id = ?1 LIMIT 1",
+                    "DELETE FROM unconfirmed_bundles WHERE id = (SELECT id FROM bundles WHERE bundle_id = ?1)",
+                )?
+                .execute((&id,))?;
+
+                conn.prepare_cached(
+                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 LIMIT 1",
                 )?
                 .query_row((id,), |row| {
-                    Ok((
-                        row.get::<_, Option<Vec<u8>>>(0)?,
-                        row.get::<_, Option<i64>>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                    ))
+                     Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<i64>>(2)?,
+                            row.get::<_, Option<i64>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
                 })
                 .optional()
                 .map_err(Into::into)
             })
-            .await?
-        else {
-            return Ok(None);
-        };
-
-        if let Some(id) = id {
-            // Delete from unconfirmed_bundles
-            self.write(move |conn| {
-                conn.prepare_cached("DELETE FROM unconfirmed_bundles WHERE id = ?1")?
-                    .execute((id,))
-                    .map_err(Into::into)
-            })
-            .await?;
-        }
-
-        let Some(bundle) = bundle else {
+            .await? else {
             return Ok(None);
         };
 
         match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
             Ok(mut bundle) => {
-                if let Some(status) = status_code.and_then(|sc| to_status(sc, p1, p2, p3)) {
+                if let Some(status) = to_status(status_code, p1, p2, p3) {
                     bundle.metadata.status = status;
                 }
                 Ok(Some(bundle.metadata))
@@ -423,20 +414,18 @@ impl storage::MetadataStorage for Storage {
                         return Ok(Vec::new());
                     }
 
-                    let sql = (1..=ids.len())
-                        .map(|i| format!("?{i}"))
-                        .collect::<Vec<String>>()
-                        .join(",");                                     
+                    let id_values = std::rc::Rc::new(
+                        ids.into_iter()
+                            .map(rusqlite::types::Value::from)
+                            .collect::<Vec<_>>(),
+                    );
 
                     let bundles = trans
-                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL"))?
-                        .query_map(rusqlite::params_from_iter(&ids), |row| row.get(0))?
+                        .prepare_cached(
+                            "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE id IN rarray(?1) AND bundle IS NOT NULL RETURNING bundle",
+                        )?
+                        .query_map([id_values], |row| row.get(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
-
-                    trans.execute(
-                        &format!("UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE id IN ({sql})"),
-                        rusqlite::params_from_iter(&ids),
-                    )?;
 
                     trans.commit()?;
 
@@ -576,14 +565,15 @@ impl storage::MetadataStorage for Storage {
                         return Ok(Vec::new()); // No bundles to process
                     }
 
-                    let sql = (1..=ids.len())
-                        .map(|i| format!("?{i}"))
-                        .collect::<Vec<String>>()
-                        .join(",");
+                    let id_values = std::rc::Rc::new(
+                        ids.into_iter()
+                            .map(rusqlite::types::Value::from)
+                            .collect::<Vec<_>>(),
+                    );
 
                     let bundles = trans
-                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL ORDER BY received_at ASC"))?
-                        .query_map(rusqlite::params_from_iter(&ids), |row| row.get::<_, Vec<u8>>(0))?
+                        .prepare_cached("SELECT bundle FROM bundles WHERE id IN rarray(?1) AND bundle IS NOT NULL ORDER BY received_at ASC")?
+                        .query_map([id_values], |row| row.get::<_, Vec<u8>>(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
 
                     trans.commit()?;
