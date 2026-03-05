@@ -107,7 +107,7 @@ impl Dispatcher {
                 .with_data(
                     hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
                         limit: hop_count.limit,
-                        count: hop_count.count + 1,
+                        count: hop_count.count.saturating_add(1),
                     })
                     .0
                     .into(),
