@@ -1,10 +1,10 @@
-mod built_in_services;
 mod clas;
 mod cli;
 mod config;
 mod filters;
 mod grpc;
 mod policy;
+mod services;
 mod static_routes;
 
 use hardy_async::TaskPool;
@@ -124,7 +124,7 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
     // Register filters
     filters::register(&config.rfc9171_validity, &config.ipn_legacy_nodes, &bpa)?;
 
-    built_in_services::init(&config.built_in_services, bpa.as_ref()).await;
+    services::register(&config.built_in_services, bpa.as_ref()).await;
 
     bpa.start(cli.recover_storage);
 

@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn init(
+pub async fn register(
     config: &config::BuiltInServicesConfig,
     bpa: &dyn hardy_bpa::bpa::BpaRegistration,
 ) {
