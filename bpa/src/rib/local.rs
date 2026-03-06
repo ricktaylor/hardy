@@ -2,9 +2,9 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    AdminEndpoint,                                   // Deliver to the admin endpoint
-    Local(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(u32),                                    // Forward to a cla peer
+    AdminEndpoint,                           // Deliver to the admin endpoint
+    Local(Arc<services::registry::Service>), // Deliver to local service
+    Forward(u32),                            // Forward to a cla peer
 }
 
 impl PartialOrd for Action {
@@ -32,8 +32,7 @@ impl core::fmt::Display for Action {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Action::AdminEndpoint => write!(f, "administrative endpoint"),
-            Action::Local(Some(service)) => write!(f, "local service {}", &service.service_id),
-            Action::Local(None) => write!(f, "well-known service"),
+            Action::Local(service) => write!(f, "local service {}", &service.service_id),
             Action::Forward(peer) => {
                 write!(f, "CLA peer {peer}")
             }
@@ -108,7 +107,7 @@ impl Rib {
     /// The Eid is converted to an exact pattern.
     pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
         let pattern: EidPattern = eid.into();
-        self.add_local(pattern, Action::Local(Some(service))).await
+        self.add_local(pattern, Action::Local(service)).await
     }
 
     fn remove_local(&self, pattern: &EidPattern, mut f: impl FnMut(&Action) -> bool) -> bool {
@@ -154,7 +153,7 @@ impl Rib {
         let pattern: EidPattern = eid.clone().into();
         self.remove_local(
             &pattern,
-            |action| matches!(action, Action::Local(Some(svc)) if svc.as_ref() == service),
+            |action| matches!(action, Action::Local(svc) if svc.as_ref() == service),
         )
     }
 }

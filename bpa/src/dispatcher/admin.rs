@@ -43,8 +43,8 @@ impl Dispatcher {
                 debug!("Received administrative record: {report:?}");
 
                 // Find a live service to notify
-                match self.service_registry.find(&report.bundle_id.source).await {
-                    Some(service) => {
+                match self.rib.find_local(&report.bundle_id.source) {
+                    Some(rib::FindResult::Deliver(Some(service))) => {
                         if let Some(assertion) = report.received {
                             service
                                 .on_status_notify(
@@ -89,6 +89,9 @@ impl Dispatcher {
                                 )
                                 .await;
                         }
+                        self.drop_bundle(bundle, None).await;
+                    }
+                    Some(_) => {
                         self.drop_bundle(bundle, None).await;
                     }
                     None => {

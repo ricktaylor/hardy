@@ -45,6 +45,25 @@ impl Rib {
         }
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
+    pub fn find_local(&self, to: &Eid) -> Option<FindResult> {
+        let inner = self.inner.read();
+
+        let result = find_local_inner(&inner, to)?;
+        match result {
+            InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
+            InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
+            InternalFindResult::Forward(peer_map) => {
+                let peers: Vec<_> = peer_map.iter().collect();
+                Some(FindResult::Forward(*peers.first().unwrap().0))
+            }
+            InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
+            InternalFindResult::Reflect => {
+                unreachable!("Reflect filtered by find_local before calling map_result")
+            }
+        }
+    }
+
     /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
     pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
@@ -100,7 +119,7 @@ fn map_result(
 }
 
 #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
-fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
+fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
     let mut peer_map: Option<HashMap<u32, &'a Eid>> = None;
 
     // Iterate through all local patterns and find matches
@@ -113,12 +132,8 @@ fn find_local<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult
                         return Some(InternalFindResult::AdminEndpoint);
                     }
                     local::Action::Local(service) => {
-                        if let Some(svc) = service {
-                            debug!("Deliver to Service {}", svc.service_id);
-                        } else {
-                            debug!("Deliver to unregistered local service");
-                        }
-                        return Some(InternalFindResult::Deliver(service.clone()));
+                        debug!("Deliver to Service {}", service.service_id);
+                        return Some(InternalFindResult::Deliver(Some(service.clone())));
                     }
                     local::Action::Forward(peer) => {
                         // The 'to' Eid is the next-hop for all peers found here
@@ -162,7 +177,7 @@ fn find_recurse<'a>(
     debug!("Looking for route for {to}");
 
     // Always check locals first
-    let mut result = find_local(inner, to);
+    let mut result = find_local_inner(inner, to);
     if result.is_some() {
         return result;
     }

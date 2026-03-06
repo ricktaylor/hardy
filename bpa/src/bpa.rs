@@ -235,7 +235,6 @@ impl Bpa {
             node_ids,
             store.clone(),
             cla_registry.clone(),
-            service_registry.clone(),
             rib.clone(),
             keys_registry,
             filter_registry.clone(),
