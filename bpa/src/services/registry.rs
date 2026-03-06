@@ -462,11 +462,6 @@ impl Registry {
 
         info!("Unregistered service: {}", service.service_id);
     }
-
-    pub async fn find(&self, service_id: &Eid) -> Option<Arc<Service>> {
-        // sync::spin::Mutex::lock() returns guard directly (no Result)
-        self.services.lock().get(service_id).cloned()
-    }
 }
 
 #[cfg(test)]
