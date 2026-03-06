@@ -17,7 +17,7 @@ pub enum BundleStatus {
     },
     Waiting,
     WaitingForService {
-        source: Eid,
+        service: Eid,
     },
 }
 

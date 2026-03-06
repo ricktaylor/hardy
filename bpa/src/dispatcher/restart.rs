@@ -49,7 +49,7 @@ impl Dispatcher {
                                 self.dispatch_bundle(bundle).await;
                                 RestartResult::Valid
                             }
-                            BundleStatus::WaitingForService { source: _ } => {
+                            BundleStatus::WaitingForService { service: _ } => {
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
                                 RestartResult::Valid

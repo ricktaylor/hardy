@@ -114,35 +114,33 @@ impl storage::MetadataStorage for Storage {
 
     async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for (_, v) in self.entries.lock().iter() {
-            if let Some(v) = v
-                && v.metadata.status == metadata::BundleStatus::Waiting
-            {
-                entries.insert(v.metadata.read_only.received_at, v.clone());
+        for bundle in self.entries.lock().iter().filter_map(|(_, bundle)| bundle.as_ref()) {
+            if bundle.metadata.status == metadata::BundleStatus::Waiting {
+                entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
             }
         }
 
-        for (_, e) in entries {
-            if tx.send_async(e).await.is_err() {
+        for bundle in entries.into_values() {
+            if tx.send_async(bundle).await.is_err() {
                 break;
             }
         }
         Ok(())
     }
 
-    async fn poll_service_waiting(&self, source: Eid, tx: Sender<bundle::Bundle>) -> Result<()> {
+    async fn poll_service_waiting(&self, source: Eid, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for (_, v) in self.entries.lock().iter() {
-            if let Some(v) = v
-                && let metadata::BundleStatus::WaitingForService { source: s } = &v.metadata.status
-                && *s == source
+        for bundle in self.entries.lock().iter().filter_map(|(_, v)| v.as_ref()) {
+            if let metadata::BundleStatus::WaitingForService { service: s } =
+                &bundle.metadata.status
+                && s == &source
             {
-                entries.insert(v.metadata.read_only.received_at, v.clone());
+                entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
             }
         }
 
-        for (_, e) in entries {
-            if tx.send_async(e).await.is_err() {
+        for bundle in entries.into_values() {
+            if tx.send_async(bundle).await.is_err() {
                 break;
             }
         }

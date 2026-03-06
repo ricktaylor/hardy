@@ -96,7 +96,7 @@ impl Dispatcher {
                     }
                     None => {
                         let desired = BundleStatus::WaitingForService {
-                            source: report.bundle_id.source.clone(),
+                            service: report.bundle_id.source.clone(),
                         };
 
                         if bundle.metadata.status != desired {
