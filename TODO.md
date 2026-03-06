@@ -161,7 +161,7 @@ Implement echo as a `Service` (low-level) that reflects bundles back to sender.
 
 **Note:** Unlike IP where echo is ICMP (control-plane), BP echo is a **non-administrative service**. This aligns with BP's data-plane service model and will require an IETF RFC to standardize behavior.
 
-- [ ] **3.1 Draft/track IETF RFC for BP Echo Service**
+- [x] **3.1 Draft/track IETF RFC for BP Echo Service**
   - Define well-known service endpoint (e.g., `dtn://node/echo` or service demux)
   - Payload is opaque - echo service reflects bundles without interpreting content
   - Coordinate with DTN working group
@@ -1182,6 +1182,7 @@ Access control for remote gRPC clients. In-process components (CLAs, services, r
 ```
 
 **Implications:**
+
 - `bpa/` crate remains security-agnostic, trusts all callers
 - All validation code goes in `proto/src/server/` (after Section 13 refactoring)
 - In-process components bypass security checks (same process = trusted)
@@ -1349,30 +1350,37 @@ Note: These are distinct from Functional TODOs above - no production code change
 #### bpa
 
 **Bundle Processing (REQ-1: 1.1.33):**
+
 - `bundle.rs:40` - Age Fallback: Verify creation time derived from Age
 - `bundle.rs:46` - Expiry Calculation: Verify expiry time summation
 
 **RIB/Routing (REQ-6: 6.1.7-6.1.10):**
+
 - `rib/find.rs:216-246` - Exact Match, Longest Prefix, Default Route, ECMP Hashing, Recursion Loop, Reflection
 - `rib/route.rs:153,159` - Action Precedence, Route Entry Sort
 - `rib/mod.rs:94` - Impacted Subsets: Verify `Rib::add` detects affected sub-routes
 - `rib/local.rs:174-186` - Local Ephemeral, Local Action Sort, Implicit Routes
 
 **CLA/Peers:**
+
 - `cla/peers.rs:194,200` - Queue Selection, Queue Fallback
 - `cla/mod.rs:227` - Address Parsing: Verify ClaAddress conversion
 - `cla/registry.rs:323-335` - Duplicate Registration, Peer Lifecycle, Cascading Cleanup
 
 **Policy (REQ-4: QoS):**
+
 - `policy/mod.rs:55,61` - Flow Classification, Queue Bounds
 
 **Services:**
+
 - `services/registry.rs:475,481` - Duplicate Reg, Cleanup
 
 **Node IDs (REQ-1: 1.1.23):**
+
 - `node_ids.rs:223-241` - Single Scheme Enforce, Invalid Types, Admin Resolution (IPN/DTN)
 
 **Storage (REQ-7, REQ-14):**
+
 - `storage/reaper.rs:194-212` - Cache Ordering, Cache Saturation, Cache Rejection, Wakeup Trigger
 - `storage/channel.rs:426-480` - Fast Path Saturation, Congestion Signal, Hysteresis Recovery, Lazy Expiry, Close Safety, Drop-to-Storage Integrity, Hybrid Duplication, Ordering Preservation, Status Consistency, Zombie Task Leak
 - `storage/bundle_mem.rs:120-132` - Eviction Policy (FIFO/Priority), Min Bundles Protection
@@ -1385,11 +1393,13 @@ Note: These are distinct from Functional TODOs above - no production code change
 #### bpv7
 
 **BPSec (REQ-2: 2.2.4, 2.2.7):**
+
 - `bpsec/rfc9173/test.rs:166,169` - Wrapped Key Unwrap, Wrapped Key Fail
   - Key wrapping **is implemented** in `bib_hmac_sha2.rs` and `bcb_aes_gcm.rs`
   - Tests needed: (1) successful unwrap with valid KEK, (2) failure on corrupted wrapped key
 
 **Bundle Parsing (REQ-1: 1.1.x):**
+
 - `bundle/parse.rs:1196-1217` - LLR 1.1.33 (Age block), LLR 1.1.34 (Hop Count), LLR 1.1.14 (bundle rewriting), LLR 1.1.19 (extension blocks), LLR 1.1.1 (CCSDS compliance), LLR 1.1.30 (rewriting rules), LLR 1.1.12 (incomplete CBOR), Trailing Data
 - `bundle/primary_block.rs:304-310` - LLR 1.1.21 (CRC values), LLR 1.1.22 (CRC types), LLR 1.1.15 (Primary Block valid)
 
