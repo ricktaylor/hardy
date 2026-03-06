@@ -190,8 +190,8 @@ fn from_status(
             Some(source.to_string()),
         ),
         hardy_bpa::metadata::BundleStatus::Dispatching => (4, None, None, None),
-        hardy_bpa::metadata::BundleStatus::WaitingForService { source } => {
-            (5, None, None, Some(source.to_string()))
+        hardy_bpa::metadata::BundleStatus::WaitingForService { service } => {
+            (5, None, None, Some(service.to_string()))
         }
     }
 }
