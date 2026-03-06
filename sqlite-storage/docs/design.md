@@ -56,6 +56,18 @@ The alternative would be to deserialise every row when querying by status or exp
 
 The status is encoded as a numeric code with parameters rather than as a string or JSON. Numeric comparisons are faster and indexes on integers are more compact.
 
+### Status Columns as Source of Truth
+
+Because the status is stored in both the indexed columns and the serialised bundle blob, the two can diverge if an operation updates one without the other. Rather than requiring every status mutation to deserialise, modify, and re-serialise the blob, the indexed status columns are treated as authoritative.
+
+This matters most for `reset_peer_queue`, which moves all bundles for a given peer from `ForwardPending` back to `Waiting`. This operation can touch many rows and may be called frequently (whenever a peer connection drops). Making it a single `UPDATE … SET status_code = 1` is substantially cheaper than deserialising and re-serialising every matching bundle.
+
+The read paths (`get`, `confirm_exists`, `poll_expiry`, `poll_waiting`) reconstruct the `BundleStatus` from the indexed columns via `to_status()` and override the value deserialised from the blob. For polling methods that filter by exact status (`poll_pending`, `poll_adu_fragments`), no override is needed. Currently `reset_peer_queue` is the only operation that updates status columns without rewriting the blob, and it only moves bundles *away from* `ForwardPending` (to `Waiting`), never *toward* it. So rows matched by `poll_pending` (which filters on `ForwardPending`) or `poll_adu_fragments` (which filters on `AduFragment`) were never subject to a column-only update, and their blob and columns still agree.
+
+If a new column-only status mutation is added in the future, this invariant must be re-verified: either the new operation's target status is not queried by any unoverridden read path, or those read paths must be updated to override as well.
+
+The trade-off is a small amount of extra work on every read (extracting and mapping the status columns), but this cost is negligible compared to the I/O already involved in reading the row. The benefit is that bulk status transitions remain simple SQL updates with no serialisation overhead.
+
 ### Write Serialisation
 
 SQLite in WAL mode allows concurrent reads but requires serialised writes to avoid SQLITE_BUSY errors. Rather than relying on SQLite's busy timeout and retry logic, the pool uses an explicit Tokio mutex to queue write operations.

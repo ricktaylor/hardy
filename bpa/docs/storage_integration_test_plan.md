@@ -40,7 +40,6 @@ The tests defined here are intended to be run against **all** implementations of
 | **META-02** | **Duplicate Insert** | 1. Insert a bundle.<br>2. Insert the same bundle again. | 1. First `insert` returns `true`.<br>2. Second `insert` returns `false`. |
 | **META-03** | **Update (Replace)** | 1. Insert a bundle (Status=`Waiting`).<br>2. Modify status to `Dispatching`.<br>3. Call `replace()`.<br>4. Call `get()`. | 1. `replace` returns `Ok`.<br>2. `get` returns bundle with `Dispatching` status. |
 | **META-04** | **Tombstone** | 1. Insert a bundle.<br>2. Call `tombstone()`.<br>3. Call `get()`.<br>4. Call `insert()` again. | 1. `tombstone` returns `Ok`.<br>2. `get` returns `None`.<br>3. `insert` returns `false` (prevents resurrection). |
-| **META-05** | **Confirm Exists** | 1. Insert bundle A.<br>2. Call `confirm_exists(A)`.<br>3. Call `confirm_exists(B)` (non-existent). | 1. Returns `Some(metadata)`.<br>2. Returns `None`. |
 
 ### Suite B: Polling & Ordering
 
@@ -60,6 +59,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
+| **META-05** | **Confirm Exists (Recovery)** | _Persistent backends only._<br>1. Insert bundle A.<br>2. Call `start_recovery()` (marks A unconfirmed).<br>3. Call `confirm_exists(A)`.<br>4. Call `confirm_exists(B)` (never inserted).<br>5. Call `remove_unconfirmed(tx)`. | 1. Step 3 returns `Some(metadata)`.<br>2. Step 4 returns `None`.<br>3. Step 5 removes nothing (A was confirmed).<br>4. `get(A)` still returns `Some`. |
 | **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=`ForwardPending { peer: 100, queue: Some(0) }`).<br>2. Insert Bundle B (Status=`ForwardPending { peer: 200, queue: Some(0) }`).<br>3. Call `reset_peer_queue(100)`. | 1. `reset_peer_queue` returns `true`.<br>2. Bundle A status becomes `Waiting`.<br>3. Bundle B status remains `ForwardPending`. |
 | **META-12** | **Recovery** | 1. Call `start_recovery()`. | 1. Returns `()` (No panic/error). |
 | **META-13** | **Remove Unconfirmed** | 1. Insert Bundle A.<br>2. Call `remove_unconfirmed(tx)`. | 1. Returns `Ok`.<br>2. `tx` receives bundles (if implementation supports unconfirmed state). |

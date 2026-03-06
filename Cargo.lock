@@ -3084,6 +3084,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "storage-tests"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "flume",
+ "hardy-bpa",
+ "hardy-bpv7",
+ "hardy-localdisk-storage",
+ "hardy-sqlite-storage",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
