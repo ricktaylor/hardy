@@ -57,9 +57,6 @@ impl LocalInner {
             [local::Action::AdminEndpoint].into(),
         );
 
-        // Wait for well-known services
-        // TODO: Drive this from a services file...
-
         // Drop LocalNode services
         finals.insert(NodeId::LocalNode.into());
 
@@ -68,26 +65,12 @@ impl LocalInner {
             // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
             let admin_eid: Eid = node_id.clone().into();
             actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
-
-            // Wait for well-known services
-            // TODO: Drive this from a services file...
-
-            // Drop ephemeral services (wildcard pattern for all services on this node)
-            // IpnNodeId -> EidPattern creates wildcard ipn:N.*
-            finals.insert(node_id.clone().into());
         }
 
         if let Some(node_name) = &node_ids.dtn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             let admin_eid: Eid = node_name.clone().into();
             actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
-
-            // Wait for well-known services
-            // TODO: Drive this from a services file...
-
-            // Drop ephemeral services (wildcard pattern for all services on this node)
-            // DtnNodeId -> EidPattern creates wildcard dtn://node/**
-            finals.insert(node_name.clone().into());
         }
 
         Self { actions, finals }
