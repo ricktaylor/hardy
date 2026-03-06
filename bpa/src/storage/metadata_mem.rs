@@ -114,7 +114,12 @@ impl storage::MetadataStorage for Storage {
 
     async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
-        for bundle in self.entries.lock().iter().filter_map(|(_, bundle)| bundle.as_ref()) {
+        for bundle in self
+            .entries
+            .lock()
+            .iter()
+            .filter_map(|(_, bundle)| bundle.as_ref())
+        {
             if bundle.metadata.status == metadata::BundleStatus::Waiting {
                 entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
             }
@@ -128,7 +133,11 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_service_waiting(&self, source: Eid, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
+    async fn poll_service_waiting(
+        &self,
+        source: Eid,
+        tx: storage::Sender<bundle::Bundle>,
+    ) -> storage::Result<()> {
         let mut entries = BTreeMap::new();
         for bundle in self.entries.lock().iter().filter_map(|(_, v)| v.as_ref()) {
             if let metadata::BundleStatus::WaitingForService { service: s } =
