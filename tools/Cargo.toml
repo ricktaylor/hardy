@@ -15,14 +15,14 @@ path = "src/bp.rs"
 tracing = ["hardy-bpa/tracing","hardy-tcpclv4/tracing"]
 
 [dependencies]
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
 hardy-tcpclv4 = { path = "../tcpclv4" }
 clap = { version = "4.5.60", features = ["derive"] }
 humantime = "2.3.0"
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "time", "signal"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "time", "signal"] }
 tokio-util = "0.7.18"
 time = { version = "0.3.47", features = ["parsing"] }
 rand = "0.10.0"

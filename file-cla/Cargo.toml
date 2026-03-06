@@ -18,7 +18,7 @@ hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 tracing = "0.1.44"
-tokio = { version = "1.49.0", features = ["macros", "fs"] }
+tokio = { version = "1.50.0", features = ["macros", "fs"] }
 tokio-util = "0.7.18"
 trace-err = "1.0.0"
 thiserror = "2.0.18"

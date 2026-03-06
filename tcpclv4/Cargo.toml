@@ -18,7 +18,7 @@ hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 tracing = "0.1.44"
-tokio = { version = "1.49.0", features = ["macros", "time", "net", "io-util"] }
+tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 tower = { version = "0.5.3", features = ["util", "limit"] }
 trace-err = "1.0.0"
@@ -26,6 +26,6 @@ thiserror = "2.0.18"
 futures = "0.3"
 rand = "0.10.0"
 serde = { version = "1.0.228", features = ["derive"], optional = true }
-rustls = "0.23.36"
+rustls = "0.23.37"
 tokio-rustls = "0.26.4"
 rustls-pemfile = "2.2.0"
