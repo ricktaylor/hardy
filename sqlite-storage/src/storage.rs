@@ -1,6 +1,5 @@
 use super::*;
-use hardy_bpa::{async_trait, storage};
-use hardy_bpv7::eid::Eid;
+use hardy_bpa::{async_trait, metadata::BundleStatus, storage};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -174,12 +173,12 @@ fn from_status(
     status: &hardy_bpa::metadata::BundleStatus,
 ) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
-        hardy_bpa::metadata::BundleStatus::New => (0, None, None, None),
-        hardy_bpa::metadata::BundleStatus::Waiting => (1, None, None, None),
-        hardy_bpa::metadata::BundleStatus::ForwardPending { peer, queue } => {
+        BundleStatus::New => (0, None, None, None),
+        BundleStatus::Waiting => (1, None, None, None),
+        BundleStatus::ForwardPending { peer, queue } => {
             (2, Some(*peer as i64), queue.map(|q| q as i64), None)
         }
-        hardy_bpa::metadata::BundleStatus::AduFragment { source, timestamp } => (
+        BundleStatus::AduFragment { source, timestamp } => (
             3,
             Some(
                 timestamp
@@ -189,10 +188,41 @@ fn from_status(
             Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
         ),
-        hardy_bpa::metadata::BundleStatus::Dispatching => (4, None, None, None),
-        hardy_bpa::metadata::BundleStatus::WaitingForService { service } => {
+        BundleStatus::Dispatching => (4, None, None, None),
+        BundleStatus::WaitingForService { service } => {
             (5, None, None, Some(service.to_string()))
         }
+    }
+}
+
+fn to_status(
+    code: i64,
+    param1: Option<i64>,
+    param2: Option<i64>,
+    param3: Option<String>,
+) -> Option<BundleStatus> {
+    match code {
+        0 => Some(BundleStatus::New),
+        1 => Some(BundleStatus::Waiting),
+        2 => Some(BundleStatus::ForwardPending {
+            peer: param1? as u32,
+            queue: param2.map(|q| q as u32),
+        }),
+        3 => {
+            let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
+            let creation_time = param1
+                .filter(|&ms| ms != 0)
+                .map(|ms| hardy_bpv7::dtn_time::DtnTime::new(ms as u64));
+            let sequence_number = param2? as u64;
+            let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
+                creation_time,
+                sequence_number,
+            );
+            Some(BundleStatus::AduFragment { source, timestamp })
+        }
+        4 => Some(BundleStatus::Dispatching),
+        5=> Some(BundleStatus::WaitingForService { service: param3.parse().ok()? })
+        _ => None,
     }
 }
 
@@ -204,13 +234,21 @@ impl storage::MetadataStorage for Storage {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
-        let Some(bundle) = self
+        let Some((bundle, status_code, p1, p2, p3)) = self
             .read(move |conn| {
                 conn
                     .prepare_cached(
-                        "SELECT bundle FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
+                        "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                     )?
-                    .query_row((&id,), |row| row.get::<_, Vec<u8>>(0))
+                    .query_row((&id,), |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<i64>>(2)?,
+                            row.get::<_, Option<i64>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    })
                     .optional().map_err(Into::into)
             })
             .await?
@@ -218,9 +256,11 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        serde_json::from_slice(&bundle)
-            .map(Some)
-            .map_err(Into::into)
+        let mut bundle: hardy_bpa::bundle::Bundle = serde_json::from_slice(&bundle)?;
+        if let Some(status) = to_status(status_code, p1, p2, p3) {
+            bundle.metadata.status = status;
+        }
+        Ok(Some(bundle))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
@@ -306,17 +346,21 @@ impl storage::MetadataStorage for Storage {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id = serde_json::to_vec(bundle_id)?;
-        let Some((bundle, id)) = self
+        let Some((bundle, id, status_code, p1, p2, p3)) = self
             .read(move |conn| {
                 conn.prepare_cached(
-                    "SELECT bundle,unconfirmed_bundles.id FROM bundles 
-                    LEFT OUTER JOIN unconfirmed_bundles ON bundles.id = unconfirmed_bundles.id 
+                    "SELECT bundle, unconfirmed_bundles.id, status_code, status_param1, status_param2, status_param3 FROM bundles
+                    LEFT OUTER JOIN unconfirmed_bundles ON bundles.id = unconfirmed_bundles.id
                     WHERE bundle_id = ?1 LIMIT 1",
                 )?
                 .query_row((id,), |row| {
                     Ok((
                         row.get::<_, Option<Vec<u8>>>(0)?,
                         row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 })
                 .optional()
@@ -342,7 +386,12 @@ impl storage::MetadataStorage for Storage {
         };
 
         match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
-            Ok(bundle) => Ok(Some(bundle.metadata)),
+            Ok(mut bundle) => {
+                if let Some(status) = status_code.and_then(|sc| to_status(sc, p1, p2, p3)) {
+                    bundle.metadata.status = status;
+                }
+                Ok(Some(bundle.metadata))
+            }
             Err(e) => {
                 warn!("Garbage bundle found in metadata: {e}");
                 self.tombstone(bundle_id).await.map(|_| None)
@@ -395,12 +444,16 @@ impl storage::MetadataStorage for Storage {
                 })
                 .await?;
 
+            if bundles.is_empty() {
+                return Ok(());
+            }
+
             for bundle in bundles {
                 match serde_json::from_slice(&bundle) {
                     Ok(bundle) => {
                         if tx.send_async(bundle).await.is_err() {
                             // The other end is shutting down - get out
-                            break;
+                            return Ok(());
                         }
                     }
                     Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
@@ -426,10 +479,10 @@ impl storage::MetadataStorage for Storage {
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = 1 WHERE status_code = 2 AND status_param1 = ?1",
+                "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
             )?
             .execute((Some(peer),))
-            .map(|c| c == 1)
+            .map(|c| c > 0)
             .map_err(Into::into)
         })
         .await
@@ -449,20 +502,31 @@ impl storage::MetadataStorage for Storage {
         let bundles = self
             .read(move |conn| {
                 conn.prepare_cached(
-                    "SELECT bundle FROM bundles 
+                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
                         WHERE bundle IS NOT NULL AND status_code != 0
                         ORDER BY expiry ASC
                         LIMIT ?1",
                 )?
-                .query_map((limit as isize,), |row| row.get::<_, Vec<u8>>(0))?
-                .collect::<Result<Vec<Vec<u8>>, _>>()
+                .query_map((limit as isize,), |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(Into::into)
             })
             .await?;
 
-        for bundle in bundles {
-            match serde_json::from_slice(&bundle) {
-                Ok(bundle) => {
+        for (bundle, status_code, p1, p2, p3) in bundles {
+            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+                Ok(mut bundle) => {
+                    if let Some(status) = to_status(status_code, p1, p2, p3) {
+                        bundle.metadata.status = status;
+                    }
                     if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
@@ -518,7 +582,7 @@ impl storage::MetadataStorage for Storage {
                         .join(",");
 
                     let bundles = trans
-                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL"))?
+                        .prepare(&format!("SELECT bundle FROM bundles WHERE id IN ({sql}) AND bundle IS NOT NULL ORDER BY received_at ASC"))?
                         .query_map(rusqlite::params_from_iter(&ids), |row| row.get::<_, Vec<u8>>(0))?
                         .collect::<Result<Vec<Vec<u8>>, _>>()?;
 
@@ -533,8 +597,9 @@ impl storage::MetadataStorage for Storage {
             }
 
             for bundle in bundles {
-                match serde_json::from_slice(&bundle) {
-                    Ok(bundle) => {
+                match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+                    Ok(mut bundle) => {
+                        bundle.metadata.status = BundleStatus::Waiting;
                         if tx.send_async(bundle).await.is_err() {
                             // The other end is shutting down - get out
                             return Ok(());
@@ -584,7 +649,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_adu_fragments(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
-        status: &hardy_bpa::metadata::BundleStatus,
+        status: &BundleStatus,
     ) -> storage::Result<()> {
         let (status, status_param1, status_param2, status_param3) = from_status(status);
 
@@ -622,7 +687,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_pending(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
-        status: &hardy_bpa::metadata::BundleStatus,
+        status: &BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
         let (status, status_param1, status_param2, status_param3) = from_status(status);
