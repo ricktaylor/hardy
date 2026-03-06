@@ -189,9 +189,7 @@ fn from_status(
             Some(source.to_string()),
         ),
         BundleStatus::Dispatching => (4, None, None, None),
-        BundleStatus::WaitingForService { service } => {
-            (5, None, None, Some(service.to_string()))
-        }
+        BundleStatus::WaitingForService { service } => (5, None, None, Some(service.to_string())),
     }
 }
 
@@ -221,7 +219,9 @@ fn to_status(
             Some(BundleStatus::AduFragment { source, timestamp })
         }
         4 => Some(BundleStatus::Dispatching),
-        5=> Some(BundleStatus::WaitingForService { service: param3.parse().ok()? })
+        5 => Some(BundleStatus::WaitingForService {
+            service: param3?.parse().ok()?,
+        }),
         _ => None,
     }
 }
@@ -614,7 +614,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
     async fn poll_service_waiting(
         &self,
-        source: Eid,
+        source: hardy_bpv7::eid::Eid,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         let source_str = source.to_string();

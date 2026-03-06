@@ -300,6 +300,63 @@ pub async fn meta_10_poll_adu_fragments(store: Arc<dyn MetadataStorage>) {
     );
 }
 
+/// META-14: Poll Service Waiting (FIFO & filtering by service)
+pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
+    let now = time::OffsetDateTime::now_utc();
+    let earlier = now - time::Duration::seconds(100);
+    let later = now + time::Duration::seconds(100);
+
+    let service_a: hardy_bpv7::eid::Eid = "ipn:50.1".parse().unwrap();
+    let service_b: hardy_bpv7::eid::Eid = "ipn:50.2".parse().unwrap();
+
+    let status_a = BundleStatus::WaitingForService {
+        service: service_a.clone(),
+    };
+    let status_b = BundleStatus::WaitingForService {
+        service: service_b.clone(),
+    };
+
+    // Two bundles for service_a at different times, one for service_b
+    let bundle_a1 = fixtures::bundle_with_status(status_a.clone(), later);
+    let bundle_a2 = fixtures::bundle_with_status(status_a.clone(), earlier);
+    let bundle_b1 = fixtures::bundle_with_status(status_b, now);
+
+    // Insert in non-FIFO order
+    assert!(store.insert(&bundle_a1).await.unwrap());
+    assert!(store.insert(&bundle_b1).await.unwrap());
+    assert!(store.insert(&bundle_a2).await.unwrap());
+
+    // Poll for service_a — should return both in FIFO order (earlier first)
+    let (tx, rx) = flume::unbounded();
+    store
+        .poll_service_waiting(service_a.clone(), tx)
+        .await
+        .unwrap();
+    let results: Vec<_> = rx.try_iter().collect();
+
+    assert_eq!(results.len(), 2, "should return both bundles for service_a");
+    assert_eq!(
+        results[0].bundle.id, bundle_a2.bundle.id,
+        "first should be earlier bundle"
+    );
+    assert_eq!(
+        results[0].metadata.status, status_a,
+        "returned bundle should have correct WaitingForService status"
+    );
+    assert_eq!(
+        results[1].bundle.id, bundle_a1.bundle.id,
+        "second should be later bundle"
+    );
+
+    // Poll for service_b — should return only the one matching bundle
+    let (tx, rx) = flume::unbounded();
+    store.poll_service_waiting(service_b, tx).await.unwrap();
+    let results: Vec<_> = rx.try_iter().collect();
+
+    assert_eq!(results.len(), 1, "should return only bundle for service_b");
+    assert_eq!(results[0].bundle.id, bundle_b1.bundle.id);
+}
+
 // ---------------------------------------------------------------------------
 // Suite C: State Transitions & Bulk Ops
 // ---------------------------------------------------------------------------
