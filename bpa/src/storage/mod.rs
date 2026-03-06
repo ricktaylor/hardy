@@ -84,7 +84,26 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<()>;
 
-    /// Confirms that a bundle exists in the storage and returns its metadata.
+    /// Begins the startup recovery protocol by marking all existing metadata
+    /// entries as unconfirmed. The BPA then calls `confirm_exists()` for each
+    /// bundle it finds in the bundle store, and finally calls
+    /// `remove_unconfirmed()` to clean up any orphaned metadata.
+    ///
+    /// Non-persistent backends should treat this as a no-op.
+    async fn start_recovery(&self);
+
+    /// Part of the startup recovery protocol. Called once per bundle after
+    /// `start_recovery()` as the BPA walks the bundle store and finds data on
+    /// disk. Confirms that the metadata entry for this bundle is still wanted,
+    /// and returns its metadata so the BPA can resume processing.
+    ///
+    /// For persistent backends (e.g. SQLite), this removes the bundle from the
+    /// "unconfirmed" set populated by `start_recovery()`. Any entries still in
+    /// that set when `remove_unconfirmed()` is called are metadata records
+    /// whose corresponding bundle data was lost.
+    ///
+    /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
+    /// this should return `Ok(None)`.
     ///
     /// # Arguments
     ///
@@ -99,11 +118,12 @@ pub trait MetadataStorage: Send + Sync {
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> Result<Option<metadata::BundleMetadata>>;
 
-    /// Initiates the recovery process for the metadata storage.
-    /// This method is responsible for restoring the storage to a consistent state.
-    async fn start_recovery(&self);
-
-    /// Removes all unconfirmed bundles from the storage and sends them to the provided sender.
+    /// Final step of the startup recovery protocol. Removes all metadata
+    /// entries that were not confirmed via `confirm_exists()` since the last
+    /// `start_recovery()` call, and sends the removed bundles to `tx` so the
+    /// BPA can perform any necessary cleanup (e.g. deleting bundle data).
+    ///
+    /// Non-persistent backends should treat this as a no-op.
     ///
     /// # Arguments
     ///
