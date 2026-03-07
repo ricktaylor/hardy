@@ -262,21 +262,25 @@ pub trait Sink: Send + Sync {
         peer_addr: Option<&ClaAddress>,
     ) -> Result<()>;
 
-    /// Notifies the BPA that a new peer has been discovered at a given `ClaAddress`.
+    /// Notifies the BPA that a new peer (or neighbour) has been discovered at a given `ClaAddress`.
+    ///
+    /// The `node_ids` slice provides the BPA-layer identifiers for the peer:
+    /// - An **empty slice** means the CLA has discovered a link-layer adjacency but does not yet
+    ///   know the remote node's EID (a "Neighbour"). The BPA will record the address but will not
+    ///   install a routing entry until the EID is resolved (e.g., via BP-ARP).
+    /// - A **non-empty slice** means the CLA knows one or more EIDs for the peer (a "Peer").
+    ///   Multi-homed nodes may have multiple EIDs at the same CL address.
+    ///
     /// The BPA will update its routing information accordingly.
     async fn add_peer(
         &self,
-        node_id: hardy_bpv7::eid::NodeId,
         cla_addr: ClaAddress,
+        node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> Result<bool>;
 
     /// Notifies the BPA that a peer is no longer reachable at a given `ClaAddress`.
-    /// The BPA will update its routing information to remove the path.
-    async fn remove_peer(
-        &self,
-        node_id: hardy_bpv7::eid::NodeId,
-        cla_addr: &ClaAddress,
-    ) -> Result<bool>;
+    /// The BPA will update its routing information to remove all paths through this address.
+    async fn remove_peer(&self, cla_addr: &ClaAddress) -> Result<bool>;
 }
 
 #[cfg(test)]

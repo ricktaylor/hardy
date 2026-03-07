@@ -51,10 +51,14 @@ impl Cla {
     }
 
     async fn add_peer(&self, request: AddPeerRequest) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let node_id = request
-            .node_id
-            .parse()
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
+        let node_ids = request
+            .node_ids
+            .into_iter()
+            .map(|s| {
+                s.parse()
+                    .map_err(|e| tonic::Status::invalid_argument(format!("Invalid node id: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let cla_addr = request
             .address
@@ -65,7 +69,7 @@ impl Cla {
             .get()
             .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
-            .add_peer(node_id, cla_addr)
+            .add_peer(cla_addr, &node_ids)
             .await
             .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
             .map_err(|e| tonic::Status::from_error(e.into()))
@@ -75,11 +79,6 @@ impl Cla {
         &self,
         request: RemovePeerRequest,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let node_id = request
-            .node_id
-            .parse()
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid endpoint id: {e}")))?;
-
         let cla_addr = request
             .address
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
@@ -89,7 +88,7 @@ impl Cla {
             .get()
             .ok_or(tonic::Status::internal("on_register not called"))?
             .sink
-            .remove_peer(node_id, &cla_addr)
+            .remove_peer(&cla_addr)
             .await
             .map(|removed| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse { removed }))
             .map_err(|e| tonic::Status::from_error(e.into()))

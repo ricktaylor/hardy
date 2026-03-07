@@ -1,3 +1,5 @@
+use std::slice;
+
 use super::*;
 use hardy_bpa::async_trait;
 
@@ -8,10 +10,10 @@ impl hardy_bpa::cla::Cla for Cla {
         for (eid, path) in &self.inboxes {
             if let Err(e) = sink
                 .add_peer(
-                    eid.clone(),
                     hardy_bpa::cla::ClaAddress::Private(hardy_bpa::Bytes::copy_from_slice(
                         path.as_bytes(),
                     )),
+                    slice::from_ref(eid),
                 )
                 .await
             {

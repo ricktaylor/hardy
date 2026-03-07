@@ -281,7 +281,7 @@ CLA discovers link-layer adjacency (Neighbour)
         → SAND can now exchange bundles with known Peer
 ```
 
-- [ ] **5.1 Extend CLA `add_peer` API to support Neighbours**
+- [x] **5.1 Extend CLA `add_peer` API to support Neighbours**
   - Change signature: `add_peer(cl_address, eids: &[Eid])` where slice can be empty
   - Empty slice = Neighbour (CLA doesn't know EID)
   - Non-empty slice = CLA-reported EIDs (may be partial due to CL limitations)

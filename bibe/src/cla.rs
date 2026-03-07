@@ -40,7 +40,7 @@ impl BibeCla {
         self.sink
             .get()
             .ok_or(Error::NotRegistered)?
-            .add_peer(tunnel_id, cla_addr)
+            .add_peer(cla_addr, &[tunnel_id])
             .await?;
 
         Ok(())
