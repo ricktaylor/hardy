@@ -3,6 +3,7 @@ use rand::seq::IteratorRandom;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    slice,
     sync::{Arc, Mutex},
 };
 
@@ -66,7 +67,7 @@ impl ConnectionPool {
             .insert(node_id.clone())
             && !self
                 .sink
-                .add_peer(node_id.clone(), self.remote_addr.clone())
+                .add_peer(self.remote_addr.clone(), slice::from_ref(&node_id))
                 .await
                 .unwrap_or_else(|e| {
                     warn!("add_peer failed: {e:?}");
@@ -82,22 +83,16 @@ impl ConnectionPool {
     }
 
     async fn remove(&self, local_addr: &SocketAddr) -> bool {
-        let peers = {
+        let remove_addr = {
             let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
             inner.active.remove(local_addr);
             inner.idle.retain(|c| &c.local_addr != local_addr);
 
-            if inner.active.is_empty() && inner.idle.is_empty() {
-                Some(std::mem::take(&mut inner.peers))
-            } else {
-                None
-            }
+            inner.active.is_empty() && inner.idle.is_empty()
         };
 
-        if let Some(peers) = peers {
-            for p in peers {
-                _ = self.sink.remove_peer(p, &self.remote_addr).await;
-            }
+        if remove_addr {
+            _ = self.sink.remove_peer(&self.remote_addr).await;
             true
         } else {
             false

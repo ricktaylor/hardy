@@ -89,7 +89,7 @@ use super::*;
 /// in [`cla::Cla::on_register`]. Key Sink methods:
 ///
 /// - `dispatch()` - Submit received bundles to the BPA
-/// - `add_peer()` / `remove_peer()` - Manage peer connections
+/// - `add_peer()` / `remove_peer()` - Manage peer connections (keyed by CL address)
 /// - `unregister()` - Disconnect from the BPA
 ///
 /// # For Service Implementors

@@ -126,10 +126,12 @@ message DispatchBundleResponse {}
 
 // A request to add a peer to the CLA.
 message AddPeerRequest {
-  // The NodeId of the peer.
-  string     node_id = 1;
+  // The NodeIds of the peer. May be empty if the EID is not yet known
+  // (i.e. the CLA has discovered a link-layer neighbour but not its BPA identity).
+  // A non-empty list supports multi-homed peers that have more than one EID.
+  repeated string node_ids = 1;
   // The address of the peer.
-  ClaAddress address = 2;
+  ClaAddress      address  = 2;
 }
 
 // A response to an add peer request.
@@ -140,10 +142,8 @@ message AddPeerResponse {
 
 // A request to remove a peer from the CLA.
 message RemovePeerRequest {
-  // The NodeId of the peer.
-  string     node_id = 1;
-  // The address of the peer.
-  ClaAddress address = 2;
+  // The convergence-layer address that identifies the peer to remove.
+  ClaAddress address = 1;
 }
 
 // A response to a remove peer request.

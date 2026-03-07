@@ -68,12 +68,12 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn add_peer(
         &self,
-        node_id: hardy_bpv7::eid::NodeId,
         cla_addr: hardy_bpa::cla::ClaAddress,
+        node_ids: &[hardy_bpv7::eid::NodeId],
     ) -> hardy_bpa::cla::Result<bool> {
         match self
             .call(cla_to_bpa::Msg::AddPeer(AddPeerRequest {
-                node_id: node_id.into(),
+                node_ids: node_ids.iter().map(|n| n.to_string()).collect(),
                 address: Some(cla_addr.into()),
             }))
             .await?
@@ -87,12 +87,10 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn remove_peer(
         &self,
-        node_id: hardy_bpv7::eid::NodeId,
         cla_addr: &hardy_bpa::cla::ClaAddress,
     ) -> hardy_bpa::cla::Result<bool> {
         match self
             .call(cla_to_bpa::Msg::RemovePeer(RemovePeerRequest {
-                node_id: node_id.into(),
                 address: Some(cla_addr.clone().into()),
             }))
             .await?

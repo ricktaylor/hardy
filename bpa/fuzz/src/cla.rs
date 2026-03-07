@@ -72,11 +72,11 @@ impl NullCla {
 impl hardy_bpa::cla::Cla for NullCla {
     async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
         sink.add_peer(
-            NodeId::Ipn(IpnNodeId {
+            hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
-            }),
-            hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
+            })],
         )
         .await
         .expect("add_peer failed");
@@ -89,13 +89,9 @@ impl hardy_bpa::cla::Cla for NullCla {
             panic!("Extra unregister!");
         };
 
-        sink.remove_peer(
-            NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 2,
-            }),
-            &hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
-        )
+        sink.remove_peer(&hardy_bpa::cla::ClaAddress::Private(
+            "fuzz".as_bytes().into(),
+        ))
         .await
         .expect("remove_peer failed");
     }

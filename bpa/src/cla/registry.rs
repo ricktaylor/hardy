@@ -13,7 +13,10 @@ pub struct Cla {
 
     name: String,
     // sync::spin::Mutex for O(1) peer HashMap operations
-    peers: hardy_async::sync::spin::Mutex<HashMap<NodeId, HashMap<ClaAddress, u32>>>,
+    // Key: ClaAddress (primary key for a link-layer adjacency)
+    // Value: (known EIDs for the peer, peer_id in PeerTable)
+    // An empty EID vec means a Neighbour (EID not yet known; no RIB entry installed)
+    peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
     address_type: Option<ClaAddressType>,
 }
 
@@ -79,20 +82,19 @@ impl cla::Sink for Sink {
             .await
     }
 
-    async fn add_peer(&self, node_id: NodeId, cla_addr: ClaAddress) -> cla::Result<bool> {
+    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
         Ok(self
             .registry
-            .add_peer(cla, self.dispatcher.clone(), node_id, cla_addr)
+            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
             .await)
     }
 
-    async fn remove_peer(&self, node_id: NodeId, cla_addr: &ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
         Ok(self
             .registry
             .remove_peer(
                 self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                node_id,
                 cla_addr,
             )
             .await)
@@ -217,12 +219,13 @@ impl Registry {
 
         let peers = core::mem::take(&mut *cla.peers.lock());
 
-        for (node_id, peers) in peers {
-            for (_, peer_id) in peers {
-                // Remove from RIB first (stops new routing), then close channel (signals drain)
-                self.rib.remove_forward(node_id.clone(), peer_id).await;
-                self.peers.remove(peer_id).await;
+        for (_, (node_ids, peer_id)) in peers {
+            // Remove RIB entries for all EIDs associated with this address
+            for node_id in node_ids {
+                self.rib.remove_forward(node_id, peer_id).await;
             }
+            // Remove from peer table (stops forwarding, signals drain)
+            self.peers.remove(peer_id).await;
         }
 
         // Queue pollers will exit naturally when channels are closed.
@@ -235,11 +238,9 @@ impl Registry {
         &self,
         cla: Arc<Cla>,
         dispatcher: Arc<dispatcher::Dispatcher>,
-        node_id: NodeId,
         cla_addr: ClaAddress,
+        node_ids: &[NodeId],
     ) -> bool {
-        // TODO: This should ideally do a replace and return the previous
-
         let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
 
         // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
@@ -249,20 +250,12 @@ impl Registry {
         // Now try to insert into cla.peers (separate lock acquisition, no nesting)
         let inserted = {
             let mut peers = cla.peers.lock();
-            match peers.entry(node_id.clone()) {
-                hash_map::Entry::Occupied(mut e) => {
-                    match e.get_mut().entry(cla_addr.clone()) {
-                        hash_map::Entry::Vacant(inner_e) => {
-                            inner_e.insert(peer_id);
-                            true
-                        }
-                        hash_map::Entry::Occupied(_) => false, // Already exists
-                    }
-                }
+            match peers.entry(cla_addr.clone()) {
                 hash_map::Entry::Vacant(e) => {
-                    e.insert([(cla_addr.clone(), peer_id)].into());
+                    e.insert((node_ids.to_vec(), peer_id));
                     true
                 }
+                hash_map::Entry::Occupied(_) => false, // Already exists
             }
         };
 
@@ -273,7 +266,7 @@ impl Registry {
         }
 
         debug!(
-            "Added new peer {peer_id}: {node_id} at {cla_addr} via CLA {}",
+            "Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {}",
             cla.name
         );
 
@@ -289,24 +282,24 @@ impl Registry {
         )
         .await;
 
-        // Add to the RIB
-        self.rib.add_forward(node_id, peer_id).await;
+        // Add RIB entry for each known EID.
+        // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
+        for node_id in node_ids {
+            self.rib.add_forward(node_id.clone(), peer_id).await;
+        }
 
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Cla>, node_id: NodeId, cla_addr: &ClaAddress) -> bool {
-        let Some(peer_id) = cla
-            .peers
-            .lock()
-            .get_mut(&node_id)
-            .and_then(|m| m.remove(cla_addr))
-        else {
+    async fn remove_peer(&self, cla: Arc<Cla>, cla_addr: &ClaAddress) -> bool {
+        let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
 
         self.peers.remove(peer_id).await;
-        self.rib.remove_forward(node_id, peer_id).await;
+        for node_id in node_ids {
+            self.rib.remove_forward(node_id, peer_id).await;
+        }
 
         debug!("Removed peer {peer_id}");
 
