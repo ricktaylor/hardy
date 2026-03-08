@@ -3,6 +3,7 @@ use thiserror::Error;
 
 pub(crate) mod registry;
 
+pub mod arp;
 mod egress_queue;
 mod peers;
 

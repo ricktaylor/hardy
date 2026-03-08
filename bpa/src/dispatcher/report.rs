@@ -133,38 +133,47 @@ impl Dispatcher {
     async fn dispatch_status_report(&self, payload: Vec<u8>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {
-            // Build the bundle
-            let (bundle, data) = hardy_bpv7::builder::Builder::new(
-                self.node_ids.get_admin_endpoint(report_to),
-                report_to.clone(),
-            )
-            .with_flags(hardy_bpv7::bundle::Flags {
-                is_admin_record: true,
-                ..Default::default()
-            })
-            .with_payload(payload.into())
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-            .trace_expect("Failed to create new bundle");
-
-            // Wrap in bundle::Bundle with initial metadata (not stored yet)
-            let mut bundle = bundle::Bundle {
-                metadata: metadata::BundleMetadata {
-                    status: metadata::BundleStatus::New,
-                    ..Default::default()
-                },
-                bundle,
-            };
-
-            // Store (no Originate filter - not user-originated)
-            let data = Bytes::from(data);
-            if !self.store.store(&mut bundle, &data).await {
-                // Duplicate status report - shouldn't happen but handle gracefully
-                debug!("Duplicate status report bundle");
-                return;
-            }
-
-            // Just fire the report off now - it ensures sequential reporting (ish)
-            Box::pin(self.ingest_bundle_inner(bundle, data)).await
+            self.dispatch_admin_bundle(payload, report_to).await;
         }
+    }
+
+    /// Build and dispatch an administrative record bundle to `destination`.
+    ///
+    /// The bundle is stored and then ingested into the normal dispatch pipeline
+    /// so it is routed to the destination via the RIB. Use this for bundles whose
+    /// destination route is already known (e.g. BP-ARP acks sent after promotion).
+    pub(super) async fn dispatch_admin_bundle(&self, payload: Vec<u8>, destination: &Eid) {
+        // Build the bundle
+        let (bundle, data) = hardy_bpv7::builder::Builder::new(
+            self.node_ids.get_admin_endpoint(destination),
+            destination.clone(),
+        )
+        .with_flags(hardy_bpv7::bundle::Flags {
+            is_admin_record: true,
+            ..Default::default()
+        })
+        .with_payload(payload.into())
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .trace_expect("Failed to create new bundle");
+
+        // Wrap in bundle::Bundle with initial metadata (not stored yet)
+        let mut bundle = bundle::Bundle {
+            metadata: metadata::BundleMetadata {
+                status: metadata::BundleStatus::New,
+                ..Default::default()
+            },
+            bundle,
+        };
+
+        // Store (no Originate filter - not user-originated)
+        let data = Bytes::from(data);
+        if !self.store.store(&mut bundle, &data).await {
+            // Duplicate bundle - shouldn't happen but handle gracefully
+            debug!("Duplicate admin bundle");
+            return;
+        }
+
+        // Just fire the bundle off now
+        Box::pin(self.ingest_bundle_inner(bundle, data)).await
     }
 }
