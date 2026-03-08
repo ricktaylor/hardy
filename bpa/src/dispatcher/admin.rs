@@ -108,6 +108,51 @@ impl Dispatcher {
                     }
                 }
             }
+            Ok(AdministrativeRecord::BpArpProbe) => {
+                // A remote BPA is probing us to learn our EID.
+                // Learn the sender's EID from the bundle source and respond with a BpArpAck.
+                debug!("Received BP-ARP probe from {}", bundle.bundle.id.source);
+                let source = bundle.bundle.id.source.clone();
+
+                // If we know the ingress peer address, promote the Neighbour → Peer using the
+                // probe source EID (the only EID available in a probe, per §4.2).
+                if let Some(peer_addr) = bundle.metadata.read_only.ingress_peer_addr.clone() {
+                    self.cla_registry
+                        .promote_neighbour(&peer_addr, vec![source.clone()])
+                        .await;
+                }
+
+                // Send a BpArpAck back so the probing BPA learns all of our EIDs (§4.3).
+                let ack_payload = hardy_cbor::encode::emit(&AdministrativeRecord::BpArpAck(
+                    self.cla_registry.all_admin_endpoints(),
+                ))
+                .0;
+                self.dispatch_admin_bundle(ack_payload, &source).await;
+
+                self.drop_bundle(bundle, None).await;
+            }
+            Ok(AdministrativeRecord::BpArpAck(eids)) => {
+                // The remote BPA responded to our probe, revealing all of its EIDs.
+                debug!("Received BP-ARP ack from {}", bundle.bundle.id.source);
+
+                // Combine the bundle source EID with the payload EID list so we learn every
+                // EID the remote node advertises, even if the payload is unexpectedly empty.
+                let mut all_eids = eids;
+                let source = bundle.bundle.id.source.clone();
+                if !all_eids.contains(&source) {
+                    all_eids.push(source);
+                }
+
+                if let Some(peer_addr) = bundle.metadata.read_only.ingress_peer_addr.clone() {
+                    self.cla_registry
+                        .promote_neighbour(&peer_addr, all_eids)
+                        .await;
+                } else {
+                    debug!("BP-ARP ack received without ingress peer address, cannot promote");
+                }
+
+                self.drop_bundle(bundle, None).await;
+            }
         }
     }
 }

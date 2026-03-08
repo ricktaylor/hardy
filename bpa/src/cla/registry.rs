@@ -20,6 +20,19 @@ pub struct Cla {
     address_type: Option<ClaAddressType>,
 }
 
+impl Cla {
+    /// Forward `data` bytes directly to a specific CLA address without going through the
+    /// egress queue or the RIB. Used by the BP-ARP subsystem to send probes to Neighbours
+    /// that have no route installed yet.
+    pub(crate) async fn forward_raw(
+        &self,
+        cla_addr: &ClaAddress,
+        data: Bytes,
+    ) -> cla::Result<cla::ForwardBundleResult> {
+        self.cla.forward(None, cla_addr, data).await
+    }
+}
+
 impl PartialEq for Cla {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
@@ -115,7 +128,7 @@ impl Drop for Sink {
 }
 
 pub(crate) struct Registry {
-    node_ids: Vec<NodeId>,
+    node_ids: Arc<node_ids::NodeIds>,
     // sync::spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
     clas: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
@@ -123,14 +136,16 @@ pub(crate) struct Registry {
     peers: peers::PeerTable,
     poll_channel_depth: usize,
     tasks: hardy_async::TaskPool,
+    arp: Option<Arc<arp::ArpSubsystem>>,
 }
 
 impl Registry {
     pub fn new(
-        node_ids: Vec<NodeId>,
+        node_ids: Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
         rib: Arc<rib::Rib>,
         store: Arc<storage::Store>,
+        arp: Option<Arc<arp::ArpSubsystem>>,
     ) -> Self {
         Self {
             node_ids,
@@ -140,7 +155,13 @@ impl Registry {
             peers: peers::PeerTable::new(),
             poll_channel_depth,
             tasks: hardy_async::TaskPool::new(),
+            arp,
         }
+    }
+
+    /// Returns all admin endpoint EIDs for this node, used to populate BP-ARP ack payloads.
+    pub fn all_admin_endpoints(&self) -> Vec<hardy_bpv7::eid::Eid> {
+        self.node_ids.get_all_admin_endpoints()
     }
 
     pub async fn shutdown(&self) {
@@ -195,11 +216,11 @@ impl Registry {
                     registry: self.clone(),
                     dispatcher: dispatcher.clone(),
                 }),
-                &self.node_ids,
+                &Vec::<NodeId>::from(&*self.node_ids),
             )
             .await;
 
-        Ok(self.node_ids.clone())
+        Ok(Vec::<NodeId>::from(&*self.node_ids))
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {
@@ -223,6 +244,10 @@ impl Registry {
             // Remove RIB entries for all EIDs associated with this address
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
+            }
+            // Notify ARP subsystem so it can cancel any outstanding probe task
+            if let Some(arp) = &self.arp {
+                arp.on_neighbour_removed(peer_id).await;
             }
             // Remove from peer table (stops forwarding, signals drain)
             self.peers.remove(peer_id).await;
@@ -273,9 +298,9 @@ impl Registry {
         // Start the peer polling the queue
         peer.start(
             self.poll_channel_depth,
-            cla,
+            cla.clone(),
             peer_id,
-            cla_addr,
+            cla_addr.clone(),
             self.store.clone(),
             dispatcher,
             &self.tasks,
@@ -288,6 +313,14 @@ impl Registry {
             self.rib.add_forward(node_id.clone(), peer_id).await;
         }
 
+        // Notify BP-ARP subsystem about new Neighbour (no EID known yet)
+        if node_ids.is_empty() {
+            if let Some(arp) = &self.arp {
+                arp.on_neighbour_added(peer_id, cla, cla_addr, &self.tasks)
+                    .await;
+            }
+        }
+
         true
     }
 
@@ -295,6 +328,13 @@ impl Registry {
         let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
+
+        // Notify ARP if this was a Neighbour (no EIDs known)
+        if node_ids.is_empty() {
+            if let Some(arp) = &self.arp {
+                arp.on_neighbour_removed(peer_id).await;
+            }
+        }
 
         self.peers.remove(peer_id).await;
         for node_id in node_ids {
@@ -304,6 +344,67 @@ impl Registry {
         debug!("Removed peer {peer_id}");
 
         true
+    }
+
+    /// Promotes a Neighbour (peer with unknown EID) to a named Peer by learning its EID
+    /// from an incoming BP-ARP message. Installs a RIB route and cancels the probe task.
+    ///
+    /// This is idempotent: if the Neighbour is already a Peer (EID already known),
+    /// or if the address is not found, this is a no-op.
+    pub async fn promote_neighbour(&self, cla_addr: &ClaAddress, eids: Vec<hardy_bpv7::eid::Eid>) {
+        // Filter to valid node admin endpoint IDs only.
+        let node_ids: Vec<NodeId> = eids
+            .into_iter()
+            .filter_map(|eid| NodeId::try_from(eid).ok())
+            .collect();
+
+        if node_ids.is_empty() {
+            debug!("BP-ARP: cannot promote Neighbour — no valid node admin endpoints in EID list");
+            return;
+        }
+
+        // Find the CLA owning this address and update the peer entry.
+        let clas: Vec<Arc<Cla>> = self.clas.lock().values().cloned().collect();
+        for cla in clas {
+            let maybe_promote = {
+                let mut peers = cla.peers.lock();
+                if let Some(entry) = peers.get_mut(cla_addr) {
+                    let was_neighbour = entry.0.is_empty();
+                    // Collect EIDs that are new for this peer.
+                    let new_ids: Vec<NodeId> = node_ids
+                        .iter()
+                        .filter(|id| !entry.0.contains(id))
+                        .cloned()
+                        .collect();
+                    for id in &new_ids {
+                        entry.0.push(id.clone());
+                    }
+                    if !new_ids.is_empty() {
+                        Some((entry.1, new_ids, was_neighbour))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some((peer_id, new_ids, was_neighbour)) = maybe_promote {
+                for node_id in &new_ids {
+                    self.rib.add_forward(node_id.clone(), peer_id).await;
+                    info!("BP-ARP: promoted peer {peer_id} at {cla_addr} to {node_id}");
+                }
+                if was_neighbour {
+                    // Cancel any outstanding ARP probe now that we have at least one EID.
+                    if let Some(arp) = &self.arp {
+                        arp.on_ack_received(peer_id).await;
+                    }
+                }
+                return;
+            }
+        }
+
+        debug!("BP-ARP: promote_neighbour called for unknown address {cla_addr}");
     }
 
     pub async fn forward(&self, peer_id: u32, bundle: bundle::Bundle) {
