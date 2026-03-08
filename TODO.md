@@ -288,7 +288,7 @@ CLA discovers link-layer adjacency (Neighbour)
   - Multi-homing supported: some nodes have multiple EIDs
   - Update `cla.proto` to use repeated EID field
 
-- [ ] **5.2 Implement BP-ARP subsystem (part of CLA subsystem)**
+- [x] **5.2 Implement BP-ARP subsystem (part of CLA subsystem)**
   - Subscribes to Neighbour notifications from CLAs
   - For each Neighbour without EID:
     - Send BP-ARP probe to discover EID
@@ -303,27 +303,27 @@ CLA discovers link-layer adjacency (Neighbour)
     - Other agents see new reachability
   - Configurable: probe_interval, retry_count
 
-- [ ] **5.2.1 Add ARP policy configuration**
+- [x] **5.2.1 Add ARP policy configuration**
   - `arp = "as-needed"` - Only probe if CLA provides no EIDs (default)
   - `arp = "always"` - Always probe, verify/augment CLA-provided EIDs
   - `arp = "never"` - Trust CLA, fail if no EIDs provided (closed networks)
   - Policy is administrator decision, not CLA implementor decision
 
-- [ ] **5.3 Define ARP probe format**
-  - Destination: `ipn:0.0` (LocalNode admin endpoint) - see Considerations below
+- [x] **5.3 Define ARP probe format**
+  - Destination: `ipn:!.0` (LocalNode admin endpoint) - see Considerations below
   - ARP request/response as administrative record type
   - Minimal payload: just enough to elicit EID response
   - Response EID learned from bundle source field (`ipn:<their-node>.0`)
   - Could align with SAND Credential Advertisement for compatibility
 
-- [ ] **5.4 Update CLA trait and registry**
+- [x] **5.4 Update CLA trait and registry**
   - `Cla` trait: `add_peer` now takes `&[Eid]` (possibly empty)
   - Registry tracks resolution state (unresolved Neighbours vs resolved Peers)
   - Callbacks for resolution completion (Neighbour → Peer promotion)
 
 ### Design Document
 
-**Design document**: `bpa/docs/bp_arp_design.md` (TBD) will cover the full BP-ARP protocol design, including:
+**Design document**: `docs/bp_arp_design.md` (TBD) will cover the full BP-ARP protocol design, including:
 
 - Normative specification
 - Security considerations
