@@ -39,7 +39,7 @@ jobs:
             type=raw,value=latest
         
       - name: Build and push with cache
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ env.DOCKERFILE_CONTEXT }}
           target: ${{ env.DOCKERFILE_TARGET }}
