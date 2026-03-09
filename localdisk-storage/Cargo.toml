@@ -25,7 +25,7 @@ memmap2 = { version = "0.9.10", optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.182"
+libc = "0.2.183"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "winbase"] }
