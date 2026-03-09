@@ -263,8 +263,11 @@ impl storage::MetadataStorage for Storage {
         let mut bundle: hardy_bpa::bundle::Bundle = serde_json::from_slice(&bundle)?;
         if let Some(status) = to_status(status_code, p1, p2, p3) {
             bundle.metadata.status = status;
+            Ok(Some(bundle))
+        } else {
+            warn!("Failed to unpack metadata status: code = {status_code}");
+            Ok(None)
         }
-        Ok(Some(bundle))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
@@ -380,8 +383,11 @@ impl storage::MetadataStorage for Storage {
             Ok(mut bundle) => {
                 if let Some(status) = to_status(status_code, p1, p2, p3) {
                     bundle.metadata.status = status;
+                    Ok(Some(bundle.metadata))
+                } else {
+                    error!("Failed to unpack metadata status: code = {status_code}");
+                    self.tombstone(bundle_id).await.map(|_| None)
                 }
-                Ok(Some(bundle.metadata))
             }
             Err(e) => {
                 warn!("Garbage bundle found in metadata: {e}");
@@ -515,10 +521,12 @@ impl storage::MetadataStorage for Storage {
                 Ok(mut bundle) => {
                     if let Some(status) = to_status(status_code, p1, p2, p3) {
                         bundle.metadata.status = status;
-                    }
-                    if tx.send_async(bundle).await.is_err() {
-                        // The other end is shutting down - get out
-                        break;
+                        if tx.send_async(bundle).await.is_err() {
+                            // The other end is shutting down - get out
+                            break;
+                        }
+                    } else {
+                        warn!("Failed to unpack metadata status: code = {status_code}");
                     }
                 }
                 Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
