@@ -11,7 +11,13 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub async fn new(config: &Config, upgrade: bool) -> Result<Self, sqlx::Error> {
+    pub async fn new(config: &Config, upgrade: bool) -> Result<Self, super::Error> {
+        if config.database_url.is_empty() {
+            return Err(super::Error::Config(
+                "database_url is required; set it in config or via DATABASE_URL env var".into(),
+            ));
+        }
+
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -41,14 +47,14 @@ impl Storage {
             for migration in migrator.migrations.iter() {
                 match applied.get(&migration.version) {
                     None => {
-                        return Err(sqlx::Error::Migrate(Box::new(
+                        return Err(super::Error::Migration(
                             sqlx::migrate::MigrateError::VersionMissing(migration.version),
-                        )));
+                        ));
                     }
                     Some(checksum) if checksum.as_ref() != migration.checksum.as_ref() => {
-                        return Err(sqlx::Error::Migrate(Box::new(
+                        return Err(super::Error::Migration(
                             sqlx::migrate::MigrateError::VersionMismatch(migration.version),
-                        )));
+                        ));
                     }
                     _ => {}
                 }
@@ -90,13 +96,14 @@ struct WaitingRow {
 }
 
 impl WaitingRow {
+    // Takes status by reference so callers can construct it once and reuse across a page.
     fn decode(
         self,
-        status: hardy_bpa::metadata::BundleStatus,
+        status: &hardy_bpa::metadata::BundleStatus,
     ) -> Option<hardy_bpa::bundle::Bundle> {
         match serde_json::from_value::<hardy_bpa::bundle::Bundle>(self.bundle) {
             Ok(mut bundle) => {
-                bundle.metadata.status = status;
+                bundle.metadata.status = status.clone();
                 Some(bundle)
             }
             Err(e) => {
@@ -464,7 +471,9 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    txn.rollback().await.ok();
+                    if let Err(e) = txn.rollback().await {
+                        warn!("failed to rollback transaction: {e}");
+                    }
                     return Ok(());
                 }
                 sent += 1;
@@ -516,11 +525,13 @@ impl storage::MetadataStorage for Storage {
                 last_id = r.id;
                 // Status is 'waiting' by the WHERE clause; override the blob's status
                 // field (which may lag by one write) to keep them consistent.
-                let Some(bundle) = r.decode(hardy_bpa::metadata::BundleStatus::Waiting) else {
+                let Some(bundle) = r.decode(&hardy_bpa::metadata::BundleStatus::Waiting) else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    txn.rollback().await.ok();
+                    if let Err(e) = txn.rollback().await {
+                        warn!("failed to rollback transaction: {e}");
+                    }
                     return Ok(());
                 }
             }
@@ -537,6 +548,9 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         let source_str = source.to_string();
+        // Construct once; all bundles on this poll share the same WaitingForService status.
+        let bundle_status =
+            hardy_bpa::metadata::BundleStatus::WaitingForService { service: source };
 
         let mut txn = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -570,13 +584,13 @@ impl storage::MetadataStorage for Storage {
             for r in rows {
                 last_received_at = r.received_at;
                 last_id = r.id;
-                let Some(bundle) = r.decode(hardy_bpa::metadata::BundleStatus::WaitingForService {
-                    service: source.clone(),
-                }) else {
+                let Some(bundle) = r.decode(&bundle_status) else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    txn.rollback().await.ok();
+                    if let Err(e) = txn.rollback().await {
+                        warn!("failed to rollback transaction: {e}");
+                    }
                     return Ok(());
                 }
             }
@@ -636,7 +650,9 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    txn.rollback().await.ok();
+                    if let Err(e) = txn.rollback().await {
+                        warn!("failed to rollback transaction: {e}");
+                    }
                     return Ok(());
                 }
             }
@@ -706,7 +722,9 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    txn.rollback().await.ok();
+                    if let Err(e) = txn.rollback().await {
+                        warn!("failed to rollback transaction: {e}");
+                    }
                     return Ok(());
                 }
                 sent += 1;

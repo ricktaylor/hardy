@@ -6,7 +6,15 @@ pub use config::Config;
 
 use std::sync::Arc;
 
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("invalid configuration: {0}")]
+    Config(String),
+    #[error(transparent)]
+    Migration(#[from] sqlx::migrate::MigrateError),
+    #[error(transparent)]
+    Sqlx(#[from] sqlx::Error),
+}
 
 pub async fn new(
     config: &Config,
