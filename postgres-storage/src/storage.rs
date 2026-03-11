@@ -65,9 +65,6 @@ impl Storage {
     }
 }
 
-// Row types for named-column decoding. Field names match SQL column names exactly so
-// that `#[derive(FromRow)]` maps correctly — eliminating fragile positional `.get(n)`.
-
 /// Projection of the `metadata` table (joined with `bundles` for point lookups).
 /// Used by: `get`, `remove_unconfirmed`.
 #[derive(FromRow)]
@@ -96,7 +93,6 @@ struct WaitingRow {
 }
 
 impl WaitingRow {
-    // Takes status by reference so callers can construct it once and reuse across a page.
     fn decode(
         self,
         status: &hardy_bpa::metadata::BundleStatus,
@@ -178,10 +174,10 @@ fn decode_bundle(
     bundle_json: serde_json::Value,
     status: Option<hardy_bpa::metadata::BundleStatus>,
 ) -> Option<hardy_bpa::bundle::Bundle> {
-    let status = status.or_else(|| {
+    let Some(status) = status else {
         warn!("Failed to decode metadata status");
-        None
-    })?;
+        return None;
+    };
     match serde_json::from_value::<hardy_bpa::bundle::Bundle>(bundle_json) {
         Ok(mut bundle) => {
             bundle.metadata.status = status;
@@ -318,13 +314,14 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     async fn start_recovery(&self) {
-        sqlx::query("INSERT INTO unconfirmed (id) SELECT id FROM metadata ON CONFLICT DO NOTHING")
-            .execute(&self.pool)
-            .await
-            .unwrap_or_else(|e| {
-                error!("Failed to mark unconfirmed bundles: {e}");
-                Default::default()
-            });
+        if let Err(e) = sqlx::query(
+            "INSERT INTO unconfirmed (id) SELECT id FROM metadata ON CONFLICT DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await
+        {
+            error!("Failed to mark unconfirmed bundles: {e}");
+        }
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle_id)))]
@@ -339,8 +336,7 @@ impl storage::MetadataStorage for Storage {
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
              JOIN bundles b ON m.id = b.id
-             WHERE b.bundle_id = $1
-             LIMIT 1",
+             WHERE b.bundle_id = $1",
         )
         .bind(id_bytes)
         .fetch_optional(&self.pool)

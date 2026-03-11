@@ -1,9 +1,9 @@
 CREATE TYPE bundle_status AS ENUM (
     'new',
     'waiting',
+    'dispatching',
     'forward_pending',
     'adu_fragment',
-    'dispatching',
     'waiting_for_service'
 );
 
@@ -39,8 +39,10 @@ CREATE TABLE metadata (
 );
 
 -- Partial indexes for polling queries — each targets exactly one query pattern.
+-- id is included in all keyset-paginated indexes so the (col, id) composite cursor
+-- can be satisfied entirely from the index without a sort step.
 CREATE INDEX idx_metadata_expiry
-    ON metadata (expiry ASC)
+    ON metadata (expiry ASC, id ASC)
     WHERE status != 'new';
 
 CREATE INDEX idx_metadata_waiting
@@ -48,15 +50,15 @@ CREATE INDEX idx_metadata_waiting
     WHERE status = 'waiting';
 
 CREATE INDEX idx_metadata_forward_pending
-    ON metadata (peer_id, received_at ASC)
+    ON metadata (peer_id, received_at ASC, id ASC)
     WHERE status = 'forward_pending';
 
 CREATE INDEX idx_metadata_adu_fragment
-    ON metadata (adu_source, adu_ts_ms, adu_ts_seq)
+    ON metadata (adu_source, adu_ts_ms, adu_ts_seq, received_at ASC, id ASC)
     WHERE status = 'adu_fragment';
 
 CREATE INDEX idx_metadata_service_waiting
-    ON metadata (service_eid, received_at ASC)
+    ON metadata (service_eid, received_at ASC, id ASC)
     WHERE status = 'waiting_for_service';
 
 -- Tracks metadata rows not yet confirmed during startup recovery.
