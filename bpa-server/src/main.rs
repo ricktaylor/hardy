@@ -42,6 +42,7 @@ type StorageBackends = (
     Option<Arc<dyn hardy_bpa::storage::BundleStorage>>,
 );
 
+#[allow(unused_variables)]
 fn init_storage(storage: &config::StorageConfig, upgrade_storage: bool) -> StorageBackends {
     let metadata_storage = storage.metadata.as_ref().map(|cfg| match cfg {
         config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),

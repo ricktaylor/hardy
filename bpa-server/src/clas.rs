@@ -29,6 +29,7 @@ pub enum ClaConfig {
     Unknown,
 }
 
+#[allow(unused_variables)]
 pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<()> {
     for cla_config in config {
         let policy = if let Some(p) = &cla_config.policy {

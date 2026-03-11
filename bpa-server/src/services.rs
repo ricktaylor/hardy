@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(unused_variables)]
 pub async fn register(
     config: &config::BuiltInServicesConfig,
     bpa: &dyn hardy_bpa::bpa::BpaRegistration,
