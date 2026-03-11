@@ -43,7 +43,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ env.DOCKERFILE_CONTEXT }}
-          dockerfile: ${{ env.DOCKERFILE_PATH }}
+          file: ${{ env.DOCKERFILE_PATH }}
           target: ${{ env.DOCKERFILE_TARGET }}
           build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
           push: true

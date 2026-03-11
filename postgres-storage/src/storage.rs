@@ -12,7 +12,12 @@ pub struct Storage {
 
 impl Storage {
     pub async fn new(config: &Config, upgrade: bool) -> Result<Self, super::Error> {
-        if config.database_url.is_empty() {
+        let database_url = if config.database_url.is_empty() {
+            std::env::var("DATABASE_URL").unwrap_or_default()
+        } else {
+            config.database_url.clone()
+        };
+        if database_url.is_empty() {
             return Err(super::Error::Config(
                 "database_url is required; set it in config or via DATABASE_URL env var".into(),
             ));
@@ -25,7 +30,7 @@ impl Storage {
             .idle_timeout(std::time::Duration::from_secs(
                 config.idle_timeout_mins * 60,
             ))
-            .connect(&config.database_url)
+            .connect(&database_url)
             .await?;
 
         if upgrade {
