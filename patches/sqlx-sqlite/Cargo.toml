@@ -1,0 +1,15 @@
+[package]
+name = "sqlx-sqlite"
+version = "0.8.6"
+edition = "2021"
+
+[features]
+json = []
+migrate = []
+time = []
+offline = []
+bigdecimal = []
+uuid = []
+regexp = []
+chrono = []
+
