@@ -43,17 +43,23 @@ type StorageBackends = (
 );
 
 async fn init_storage(storage: &config::StorageConfig, upgrade_storage: bool) -> StorageBackends {
-    let metadata_storage = storage.metadata.as_ref().map(|cfg| match cfg {
-        config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
+    #[allow(clippy::manual_map)]
+    let metadata_storage = match &storage.metadata {
+        None => None,
+        Some(cfg) => Some(match cfg {
+            config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
 
-        #[cfg(feature = "sqlite-storage")]
-        config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
+            #[cfg(feature = "sqlite-storage")]
+            config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
 
-        #[cfg(feature = "postgres-storage")]
-        config::MetadataStorage::Postgres(cfg) => hardy_postgres_storage::new(cfg, upgrade_storage)
-            .await
-            .trace_expect("Failed to connect to Postgres metadata store"),
-    });
+            #[cfg(feature = "postgres-storage")]
+            config::MetadataStorage::Postgres(cfg) => {
+                hardy_postgres_storage::new(cfg, upgrade_storage)
+                    .await
+                    .trace_expect("Failed to connect to Postgres metadata store")
+            }
+        }),
+    };
 
     let bundle_storage = storage.bundle.as_ref().map(|cfg| match cfg {
         config::BundleStorage::Memory(cfg) => hardy_bpa::storage::bundle_mem::new(cfg),

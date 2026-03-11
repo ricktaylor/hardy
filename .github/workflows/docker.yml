@@ -9,6 +9,7 @@ env:
   IMAGE_NAME: hardy-bpa-server
   DOCKERFILE_CONTEXT: "."
   DOCKERFILE_TARGET: "runtime"
+  DOCKERFILE_PATH: "./bpa-server/Dockerfile"
 
 jobs:
   build-and-push-image:
@@ -42,7 +43,9 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ${{ env.DOCKERFILE_CONTEXT }}
+          dockerfile: ${{ env.DOCKERFILE_PATH }}
           target: ${{ env.DOCKERFILE_TARGET }}
+          build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
