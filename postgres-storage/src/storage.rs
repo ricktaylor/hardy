@@ -37,9 +37,10 @@ impl Storage {
 // Row types for named-column decoding. Field names match SQL column names exactly so
 // that `#[derive(FromRow)]` maps correctly — eliminating fragile positional `.get(n)`.
 
-/// Returned by point-lookup queries: `get`, `remove_unconfirmed`.
+/// Projection of the `metadata` table (joined with `bundles` for point lookups).
+/// Used by: `get`, `remove_unconfirmed`.
 #[derive(FromRow)]
-struct BundleRow {
+struct MetadataRow {
     bundle: serde_json::Value,
     status: status::BundleStatusKind,
     peer_id: Option<i32>,
@@ -50,9 +51,9 @@ struct BundleRow {
     service_eid: Option<String>,
 }
 
-/// Like `BundleRow` but includes the internal `id`. Used by `confirm_exists`.
+/// Like `MetadataRow` but includes `id`. Used by: `confirm_exists`.
 #[derive(FromRow)]
-struct BundleRowWithId {
+struct MetadataRowWithId {
     id: i64,
     bundle: serde_json::Value,
     status: status::BundleStatusKind,
@@ -71,6 +72,24 @@ struct WaitingRow {
     id: i64,
     received_at: time::OffsetDateTime,
     bundle: serde_json::Value,
+}
+
+impl WaitingRow {
+    fn decode(
+        self,
+        status: hardy_bpa::metadata::BundleStatus,
+    ) -> Option<hardy_bpa::bundle::Bundle> {
+        match serde_json::from_value::<hardy_bpa::bundle::Bundle>(self.bundle) {
+            Ok(mut bundle) => {
+                bundle.metadata.status = status;
+                Some(bundle)
+            }
+            Err(e) => {
+                warn!("Garbage bundle in metadata store: {e}");
+                None
+            }
+        }
+    }
 }
 
 /// Keyset cursor on `expiry` with full status breakdown.
@@ -105,7 +124,7 @@ struct PendingRow {
     service_eid: Option<String>,
 }
 
-impl BundleRow {
+impl MetadataRow {
     fn decode(self) -> Option<hardy_bpa::bundle::Bundle> {
         decode_bundle(
             self.bundle,
@@ -122,7 +141,7 @@ impl BundleRow {
     }
 }
 
-impl BundleRowWithId {
+impl MetadataRowWithId {
     fn decode(self) -> (i64, Option<hardy_bpa::bundle::Bundle>) {
         let bundle = decode_bundle(
             self.bundle,
@@ -208,7 +227,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
         let id_bytes = serde_json::to_vec(bundle_id)?;
 
-        let row = sqlx::query_as::<_, BundleRow>(
+        let row = sqlx::query_as::<_, MetadataRow>(
             "SELECT m.bundle, m.status, m.peer_id, m.queue_id,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
@@ -219,7 +238,7 @@ impl storage::MetadataStorage for Storage {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.and_then(BundleRow::decode))
+        Ok(row.and_then(MetadataRow::decode))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
@@ -231,9 +250,9 @@ impl storage::MetadataStorage for Storage {
         let sp = status::from_status(&bundle.metadata.status);
 
         // Atomic CTE: insert identity anchor then metadata child.
-        // ON CONFLICT DO NOTHING on bundle_id means the outer INSERT sees an empty
-        // ins_bundle CTE and inserts 0 rows — clean false return for duplicates.
-        let rows_affected = sqlx::query(
+        // RETURNING id on the outer INSERT: Some = inserted, None = duplicate
+        // (ON CONFLICT DO NOTHING on bundle_id leaves ins_bundle empty).
+        let inserted = sqlx::query_scalar::<_, i64>(
             "WITH ins_bundle AS (
                  INSERT INTO bundles (bundle_id, received_at)
                  VALUES ($1, $2)
@@ -246,7 +265,8 @@ impl storage::MetadataStorage for Storage {
                   bundle)
              SELECT id, $3, $4, $5,
                     $6, $7, $8, $9, $10, $11, $12
-             FROM ins_bundle",
+             FROM ins_bundle
+             RETURNING id",
         )
         .bind(id_bytes)
         .bind(received_at)
@@ -260,11 +280,10 @@ impl storage::MetadataStorage for Storage {
         .bind(sp.adu_ts_seq)
         .bind(sp.service_eid)
         .bind(bundle_json)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        .fetch_optional(&self.pool)
+        .await?;
 
-        Ok(rows_affected == 1)
+        Ok(inserted.is_some())
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
@@ -274,7 +293,8 @@ impl storage::MetadataStorage for Storage {
         let expiry = bundle.expiry();
         let sp = status::from_status(&bundle.metadata.status);
 
-        let rows = sqlx::query(
+        // RETURNING id: fetch_one errors with RowNotFound if the bundle doesn't exist.
+        sqlx::query_scalar::<_, i64>(
             "UPDATE metadata
              SET status      = $2,
                  expiry      = $3,
@@ -285,7 +305,8 @@ impl storage::MetadataStorage for Storage {
                  adu_ts_seq  = $8,
                  service_eid = $9,
                  bundle      = $10
-             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
+             RETURNING id",
         )
         .bind(id_bytes)
         .bind(sp.status)
@@ -297,16 +318,9 @@ impl storage::MetadataStorage for Storage {
         .bind(sp.adu_ts_seq)
         .bind(sp.service_eid)
         .bind(bundle_json)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        .fetch_one(&self.pool)
+        .await?;
 
-        if rows != 1 {
-            error!(
-                bundle.id = %bundle.bundle.id,
-                "replace() updated {rows} rows (expected 1)"
-            );
-        }
         Ok(())
     }
 
@@ -344,7 +358,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id_bytes = serde_json::to_vec(bundle_id)?;
 
-        let row = sqlx::query_as::<_, BundleRowWithId>(
+        let row = sqlx::query_as::<_, MetadataRowWithId>(
             "SELECT m.id, m.bundle, m.status, m.peer_id, m.queue_id,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
@@ -379,7 +393,7 @@ impl storage::MetadataStorage for Storage {
             // One atomic CTE: delete a batch from unconfirmed, snapshot the bundle blobs,
             // then tombstone the metadata rows. PostgreSQL evaluates all CTEs against the
             // same pre-statement snapshot, so snapshot sees rows that del then removes.
-            let rows = sqlx::query_as::<_, BundleRow>(
+            let rows = sqlx::query_as::<_, MetadataRow>(
                 "WITH batch AS (
                      DELETE FROM unconfirmed
                      WHERE id IN (SELECT id FROM unconfirmed LIMIT 64)
@@ -418,13 +432,15 @@ impl storage::MetadataStorage for Storage {
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         let rows = sqlx::query(
             "UPDATE metadata
-             SET status   = 'waiting'::bundle_status,
+             SET status   = $2,
                  peer_id  = NULL,
                  queue_id = NULL
-             WHERE status = 'forward_pending'::bundle_status
+             WHERE status = $3
                AND peer_id = $1",
         )
-        .bind(peer as i32)
+        .bind(i32::try_from(peer)?)
+        .bind(status::BundleStatusKind::Waiting)
+        .bind(status::BundleStatusKind::ForwardPending)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -527,16 +543,11 @@ impl storage::MetadataStorage for Storage {
             for r in rows {
                 last_received_at = r.received_at;
                 last_id = r.id;
-                let mut bundle: hardy_bpa::bundle::Bundle = match serde_json::from_value(r.bundle) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("Garbage bundle in metadata store: {e}");
-                        continue;
-                    }
+                // Status is 'waiting' by the WHERE clause; override the blob's status
+                // field (which may lag by one write) to keep them consistent.
+                let Some(bundle) = r.decode(hardy_bpa::metadata::BundleStatus::Waiting) else {
+                    continue;
                 };
-                // Status is 'waiting' by the WHERE clause; set it explicitly so
-                // the blob's status field (which may lag by one write) is consistent.
-                bundle.metadata.status = hardy_bpa::metadata::BundleStatus::Waiting;
                 if tx.send_async(bundle).await.is_err() {
                     txn.rollback().await.ok();
                     return Ok(());
@@ -587,15 +598,10 @@ impl storage::MetadataStorage for Storage {
             for r in rows {
                 last_received_at = r.received_at;
                 last_id = r.id;
-                let mut bundle: hardy_bpa::bundle::Bundle = match serde_json::from_value(r.bundle) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("Garbage bundle in metadata store: {e}");
-                        continue;
-                    }
-                };
-                bundle.metadata.status = hardy_bpa::metadata::BundleStatus::WaitingForService {
+                let Some(bundle) = r.decode(hardy_bpa::metadata::BundleStatus::WaitingForService {
                     service: source.clone(),
+                }) else {
+                    continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
                     txn.rollback().await.ok();
