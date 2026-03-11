@@ -18,9 +18,13 @@ pub enum BundleStatusKind {
 #[derive(Debug, thiserror::Error)]
 pub enum StatusConversionError {
     #[error("peer ID {0} exceeds i32::MAX and cannot be stored")]
-    PeerIdOverflow(u32),
+    PeerId(u32),
     #[error("queue ID {0} exceeds i32::MAX and cannot be stored")]
-    QueueIdOverflow(u32),
+    QueueId(u32),
+    #[error("ADU timestamp {0}ms exceeds i64::MAX and cannot be stored")]
+    Timestamp(u64),
+    #[error("ADU sequence number {0} exceeds i64::MAX and cannot be stored")]
+    Sequence(u64),
 }
 
 /// Flat projection of the status-related columns, shared across all row types.
@@ -92,26 +96,27 @@ impl TryFrom<&BundleStatus> for StatusFields {
             BundleStatus::Dispatching => Self::with_kind(BundleStatusKind::Dispatching),
             BundleStatus::ForwardPending { peer, queue } => Self {
                 peer_id: Some(
-                    i32::try_from(*peer)
-                        .map_err(|_| StatusConversionError::PeerIdOverflow(*peer))?,
+                    i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
                 queue_id: queue
-                    .map(|q| {
-                        i32::try_from(q).map_err(|_| StatusConversionError::QueueIdOverflow(q))
-                    })
+                    .map(|q| i32::try_from(q).map_err(|_| StatusConversionError::QueueId(q)))
                     .transpose()?,
                 ..Self::with_kind(BundleStatusKind::ForwardPending)
             },
-            BundleStatus::AduFragment { source, timestamp } => Self {
-                adu_source: Some(source.to_string()),
-                adu_ts_ms: Some(
-                    timestamp
-                        .creation_time()
-                        .map_or(0, |t| t.millisecs() as i64),
-                ),
-                adu_ts_seq: Some(timestamp.sequence_number() as i64),
-                ..Self::with_kind(BundleStatusKind::AduFragment)
-            },
+            BundleStatus::AduFragment { source, timestamp } => {
+                let ms = timestamp.creation_time().map_or(0, |t| t.millisecs());
+                let seq = timestamp.sequence_number();
+                Self {
+                    adu_source: Some(source.to_string()),
+                    adu_ts_ms: Some(
+                        i64::try_from(ms).map_err(|_| StatusConversionError::Timestamp(ms))?,
+                    ),
+                    adu_ts_seq: Some(
+                        i64::try_from(seq).map_err(|_| StatusConversionError::Sequence(seq))?,
+                    ),
+                    ..Self::with_kind(BundleStatusKind::AduFragment)
+                }
+            }
             BundleStatus::WaitingForService { service } => Self {
                 service_eid: Some(service.to_string()),
                 ..Self::with_kind(BundleStatusKind::WaitingForService)

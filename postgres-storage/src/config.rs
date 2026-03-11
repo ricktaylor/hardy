@@ -16,7 +16,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            database_url: std::env::var("DATABASE_URL").unwrap_or_default(),
+            database_url: String::new(),
             max_connections: 10,
             min_connections: 1,
             connect_timeout_secs: 30,
