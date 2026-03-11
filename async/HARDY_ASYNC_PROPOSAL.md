@@ -1144,6 +1144,36 @@ Embassy channels require static allocation with compile-time capacity. This is f
 
 ---
 
+### Phase 2.7: RNG Abstraction
+
+**Status:** Not started
+
+**Problem:** The `bpa` crate uses `rand::rng()` (which requires the `thread_rng` feature) in several places: `node_ids.rs`, `services/registry.rs`, `storage/bundle_mem.rs`. This depends on thread-local storage and OS entropy, neither of which are available on bare-metal `no_std` targets.
+
+In rand 0.10, `SysRng` implements `TryRng` (fallible) rather than `Rng` (infallible), so it cannot be used as a drop-in replacement. The `thread_rng` feature provides a cached, infallible `ThreadRng` but requires `std`.
+
+**Current usage in bpa:**
+
+| File | Usage |
+|------|-------|
+| `node_ids.rs` | Random default node ID generation |
+| `services/registry.rs` | Auto-generated service IDs (IPN service numbers, DTN demux strings) |
+| `storage/bundle_mem.rs` | Random storage key generation |
+
+**Solution:** Abstract RNG through `hardy-async` with feature-gated implementations:
+
+- **`std`/`tokio`:** Use `rand::rng()` (`ThreadRng`) — infallible, cached, fast
+- **`embassy`/`no_std`:** Use a seeded CSPRNG (e.g., ChaCha8Rng) initialised from a platform-provided entropy source at startup, or accept a caller-provided RNG
+
+**Migration Path:**
+
+1. Create `hardy_async::rng` module exposing an infallible RNG wrapper
+2. For `std`: wrap `rand::rng()` (or seed `StdRng` from `SysRng`)
+3. For `no_std`: accept an externally-seeded RNG (e.g., from hardware RNG peripheral)
+4. Update `bpa` to use `hardy_async::rng` instead of `rand::rng()` directly
+
+---
+
 ### Phase 3: Embassy Support
 
 #### Cargo.toml Changes
