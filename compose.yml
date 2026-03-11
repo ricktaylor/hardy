@@ -1,6 +1,24 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hardy
+      POSTGRES_PASSWORD: hardy
+      POSTGRES_DB: hardy
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hardy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   hardy:
-    build: .
+    build:
+      context: .
+      args:
+        CARGO_ARGS: "--features hardy-bpa-server/postgres-storage"
     image: hardy-bpa-server:latest
     restart: unless-stopped
     environment:
@@ -19,9 +37,13 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   bundles:
+  postgres-data:
 
 configs:
   hardy-config:
@@ -41,7 +63,8 @@ configs:
       max-cached-bundle-size = 16384
 
       [storage.metadata]
-      type = "memory"
+      type = "postgres"
+      database-url = "postgresql://hardy:hardy@postgres/hardy"
 
       [storage.bundle]
       type = "localdisk"

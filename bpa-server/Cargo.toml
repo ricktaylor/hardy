@@ -9,10 +9,10 @@ name = "hardy-bpa-server"
 path = "src/main.rs"
 
 [features]
-default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
+default = ["localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
 otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
-postgres-storage = []
+postgres-storage = ["dep:hardy-postgres-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = []
 packaged-installation = []
@@ -30,6 +30,7 @@ hardy-bpa = { path = "../bpa", default-features = false, features = ["serde", "r
 hardy-eid-patterns = { path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
 hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
+hardy-postgres-storage = { path = "../postgres-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
