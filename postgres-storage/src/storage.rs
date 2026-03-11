@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpa::{async_trait, storage};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, migrate::Migrate};
 use tracing::{error, warn};
 
 #[cfg(feature = "tracing")]
@@ -22,14 +22,37 @@ impl Storage {
             .connect(&config.database_url)
             .await?;
 
-        // `run()` is idempotent: validates checksums of already-applied migrations and
-        // applies any pending ones. The `upgrade` flag is preserved for callers that
-        // want to gate this call (e.g. refuse to start if the schema is ahead of the binary).
-        // TODO: sqlx 0.8 has no public `validate`-only API; consider checking
-        //       `Migrator::migrations` against applied rows manually if strict
-        //       rolling-restart safety is required.
         if upgrade {
             sqlx::migrate!("./migrations").run(&pool).await?;
+        } else {
+            // Non-upgrade path (rolling restarts): validate that every expected migration
+            // is already applied with a matching checksum, and fail if any are pending.
+            // This catches both schema drift (checksum mismatch) and a binary that is
+            // ahead of the schema (missing applied row).
+            let migrator = sqlx::migrate!("./migrations");
+            let mut conn = pool.acquire().await?;
+            conn.ensure_migrations_table().await?;
+            let applied: std::collections::HashMap<i64, _> = conn
+                .list_applied_migrations()
+                .await?
+                .into_iter()
+                .map(|m| (m.version, m.checksum))
+                .collect();
+            for migration in migrator.migrations.iter() {
+                match applied.get(&migration.version) {
+                    None => {
+                        return Err(sqlx::Error::Migrate(Box::new(
+                            sqlx::migrate::MigrateError::VersionMissing(migration.version),
+                        )));
+                    }
+                    Some(checksum) if checksum.as_ref() != migration.checksum.as_ref() => {
+                        return Err(sqlx::Error::Migrate(Box::new(
+                            sqlx::migrate::MigrateError::VersionMismatch(migration.version),
+                        )));
+                    }
+                    _ => {}
+                }
+            }
         }
 
         Ok(Self { pool })
