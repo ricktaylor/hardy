@@ -25,6 +25,7 @@ members = [
     "tcpclv4-server",
     "tools",
     "tests/storage",
+    "postgres-storage",
 ]
 
 [profile.release]
