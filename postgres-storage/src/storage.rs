@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpa::{async_trait, storage};
-use sqlx::{PgPool, Row};
+use sqlx::{FromRow, PgPool};
 use tracing::{error, warn};
 
 #[cfg(feature = "tracing")]
@@ -34,6 +34,148 @@ impl Storage {
     }
 }
 
+// Row types for named-column decoding. Field names match SQL column names exactly so
+// that `#[derive(FromRow)]` maps correctly — eliminating fragile positional `.get(n)`.
+
+/// Returned by point-lookup queries: `get`, `remove_unconfirmed`.
+#[derive(FromRow)]
+struct BundleRow {
+    bundle: serde_json::Value,
+    status: status::BundleStatusKind,
+    peer_id: Option<i32>,
+    queue_id: Option<i32>,
+    adu_source: Option<String>,
+    adu_ts_ms: Option<i64>,
+    adu_ts_seq: Option<i64>,
+    service_eid: Option<String>,
+}
+
+/// Like `BundleRow` but includes the internal `id`. Used by `confirm_exists`.
+#[derive(FromRow)]
+struct BundleRowWithId {
+    id: i64,
+    bundle: serde_json::Value,
+    status: status::BundleStatusKind,
+    peer_id: Option<i32>,
+    queue_id: Option<i32>,
+    adu_source: Option<String>,
+    adu_ts_ms: Option<i64>,
+    adu_ts_seq: Option<i64>,
+    service_eid: Option<String>,
+}
+
+/// Keyset cursor on `received_at`; status is fixed by the WHERE clause.
+/// Used by `poll_waiting`, `poll_service_waiting`.
+#[derive(FromRow)]
+struct WaitingRow {
+    id: i64,
+    received_at: time::OffsetDateTime,
+    bundle: serde_json::Value,
+}
+
+/// Keyset cursor on `expiry` with full status breakdown.
+/// Used by `poll_expiry`.
+#[derive(FromRow)]
+struct ExpiryRow {
+    id: i64,
+    expiry: time::OffsetDateTime,
+    bundle: serde_json::Value,
+    status: status::BundleStatusKind,
+    peer_id: Option<i32>,
+    queue_id: Option<i32>,
+    adu_source: Option<String>,
+    adu_ts_ms: Option<i64>,
+    adu_ts_seq: Option<i64>,
+    service_eid: Option<String>,
+}
+
+/// Keyset cursor on `received_at` with full status breakdown.
+/// Used by `poll_adu_fragments`, `poll_pending`.
+#[derive(FromRow)]
+struct PendingRow {
+    id: i64,
+    received_at: time::OffsetDateTime,
+    bundle: serde_json::Value,
+    status: status::BundleStatusKind,
+    peer_id: Option<i32>,
+    queue_id: Option<i32>,
+    adu_source: Option<String>,
+    adu_ts_ms: Option<i64>,
+    adu_ts_seq: Option<i64>,
+    service_eid: Option<String>,
+}
+
+impl BundleRow {
+    fn decode(self) -> Option<hardy_bpa::bundle::Bundle> {
+        decode_bundle(
+            self.bundle,
+            status::to_status(
+                self.status,
+                self.peer_id,
+                self.queue_id,
+                self.adu_source,
+                self.adu_ts_ms,
+                self.adu_ts_seq,
+                self.service_eid,
+            ),
+        )
+    }
+}
+
+impl BundleRowWithId {
+    fn decode(self) -> (i64, Option<hardy_bpa::bundle::Bundle>) {
+        let bundle = decode_bundle(
+            self.bundle,
+            status::to_status(
+                self.status,
+                self.peer_id,
+                self.queue_id,
+                self.adu_source,
+                self.adu_ts_ms,
+                self.adu_ts_seq,
+                self.service_eid,
+            ),
+        );
+        (self.id, bundle)
+    }
+}
+
+impl ExpiryRow {
+    fn decode(self) -> (i64, time::OffsetDateTime, Option<hardy_bpa::bundle::Bundle>) {
+        let bundle = decode_bundle(
+            self.bundle,
+            status::to_status(
+                self.status,
+                self.peer_id,
+                self.queue_id,
+                self.adu_source,
+                self.adu_ts_ms,
+                self.adu_ts_seq,
+                self.service_eid,
+            ),
+        );
+        (self.id, self.expiry, bundle)
+    }
+}
+
+impl PendingRow {
+    fn decode(self) -> (i64, time::OffsetDateTime, Option<hardy_bpa::bundle::Bundle>) {
+        let bundle = decode_bundle(
+            self.bundle,
+            status::to_status(
+                self.status,
+                self.peer_id,
+                self.queue_id,
+                self.adu_source,
+                self.adu_ts_ms,
+                self.adu_ts_seq,
+                self.service_eid,
+            ),
+        );
+        (self.id, self.received_at, bundle)
+    }
+}
+
 // Deserialize a bundle from JSONB and override its status from the pre-decoded typed columns.
 // The JSONB blob is authoritative for all fields; typed columns are only for indexing.
 // We still override status from typed columns to guard against any blob/column skew.
@@ -50,7 +192,6 @@ fn decode_bundle(
             bundle.metadata.status = status;
             Some(bundle)
         }
-
         Err(e) => {
             warn!("Garbage bundle in metadata store: {e}");
             None
@@ -67,8 +208,8 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
         let id_bytes = serde_json::to_vec(bundle_id)?;
 
-        let row = sqlx::query(
-            "SELECT m.bundle, m.status::TEXT, m.peer_id, m.queue_id,
+        let row = sqlx::query_as::<_, BundleRow>(
+            "SELECT m.bundle, m.status, m.peer_id, m.queue_id,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
              JOIN bundles b ON m.id = b.id
@@ -78,20 +219,7 @@ impl storage::MetadataStorage for Storage {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.and_then(|r| {
-            decode_bundle(
-                r.get(0),
-                status::to_status(
-                    r.get(1),
-                    r.get(2),
-                    r.get(3),
-                    r.get(4),
-                    r.get(5),
-                    r.get(6),
-                    r.get(7),
-                ),
-            )
-        }))
+        Ok(row.and_then(BundleRow::decode))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
@@ -116,7 +244,7 @@ impl storage::MetadataStorage for Storage {
                  (id, expiry, received_at, status,
                   peer_id, queue_id, adu_source, adu_ts_ms, adu_ts_seq, service_eid,
                   bundle)
-             SELECT id, $3, $4, $5::bundle_status,
+             SELECT id, $3, $4, $5,
                     $6, $7, $8, $9, $10, $11, $12
              FROM ins_bundle",
         )
@@ -148,7 +276,7 @@ impl storage::MetadataStorage for Storage {
 
         let rows = sqlx::query(
             "UPDATE metadata
-             SET status      = $2::bundle_status,
+             SET status      = $2,
                  expiry      = $3,
                  peer_id     = $4,
                  queue_id    = $5,
@@ -216,8 +344,8 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let id_bytes = serde_json::to_vec(bundle_id)?;
 
-        let row = sqlx::query(
-            "SELECT m.id, m.bundle, m.status::TEXT, m.peer_id, m.queue_id,
+        let row = sqlx::query_as::<_, BundleRowWithId>(
+            "SELECT m.id, m.bundle, m.status, m.peer_id, m.queue_id,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
              JOIN bundles b ON m.id = b.id
@@ -232,27 +360,14 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        let id: i64 = r.get(0);
+        let (id, bundle) = r.decode();
 
-        // Remove the unconfirmed marker for this id.
         sqlx::query("DELETE FROM unconfirmed WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
 
-        Ok(decode_bundle(
-            r.get(1),
-            status::to_status(
-                r.get(2),
-                r.get(3),
-                r.get(4),
-                r.get(5),
-                r.get(6),
-                r.get(7),
-                r.get(8),
-            ),
-        )
-        .map(|b| b.metadata))
+        Ok(bundle.map(|b| b.metadata))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -264,14 +379,14 @@ impl storage::MetadataStorage for Storage {
             // One atomic CTE: delete a batch from unconfirmed, snapshot the bundle blobs,
             // then tombstone the metadata rows. PostgreSQL evaluates all CTEs against the
             // same pre-statement snapshot, so snapshot sees rows that del then removes.
-            let rows = sqlx::query(
+            let rows = sqlx::query_as::<_, BundleRow>(
                 "WITH batch AS (
                      DELETE FROM unconfirmed
                      WHERE id IN (SELECT id FROM unconfirmed LIMIT 64)
                      RETURNING id
                  ),
                  snapshot AS (
-                     SELECT m.bundle, m.status::TEXT, m.peer_id, m.queue_id,
+                     SELECT m.bundle, m.status, m.peer_id, m.queue_id,
                             m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
                      FROM metadata m
                      JOIN batch ON m.id = batch.id
@@ -289,18 +404,7 @@ impl storage::MetadataStorage for Storage {
             }
 
             for r in rows {
-                let Some(bundle) = decode_bundle(
-                    r.get(0),
-                    status::to_status(
-                        r.get(1),
-                        r.get(2),
-                        r.get(3),
-                        r.get(4),
-                        r.get(5),
-                        r.get(6),
-                        r.get(7),
-                    ),
-                ) else {
+                let Some(bundle) = r.decode() else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
@@ -347,8 +451,8 @@ impl storage::MetadataStorage for Storage {
 
         loop {
             let page_limit = (limit - sent).min(64) as i64;
-            let rows = sqlx::query(
-                "SELECT id, expiry, bundle, status::TEXT, peer_id, queue_id,
+            let rows = sqlx::query_as::<_, ExpiryRow>(
+                "SELECT id, expiry, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
                  WHERE status != 'new'
@@ -366,24 +470,11 @@ impl storage::MetadataStorage for Storage {
                 break;
             }
 
-            for r in &rows {
-                last_expiry = r.get(1);
-                last_id = r.get(0);
-            }
-
             for r in rows {
-                let Some(bundle) = decode_bundle(
-                    r.get(2),
-                    status::to_status(
-                        r.get(3),
-                        r.get(4),
-                        r.get(5),
-                        r.get(6),
-                        r.get(7),
-                        r.get(8),
-                        r.get(9),
-                    ),
-                ) else {
+                let (id, expiry, bundle) = r.decode();
+                last_expiry = expiry;
+                last_id = id;
+                let Some(bundle) = bundle else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
@@ -416,7 +507,7 @@ impl storage::MetadataStorage for Storage {
         let mut last_id: i64 = 0;
 
         loop {
-            let rows = sqlx::query(
+            let rows = sqlx::query_as::<_, WaitingRow>(
                 "SELECT id, received_at, bundle
                  FROM metadata
                  WHERE status = 'waiting'
@@ -433,13 +524,10 @@ impl storage::MetadataStorage for Storage {
                 break;
             }
 
-            for r in &rows {
-                last_received_at = r.get(1);
-                last_id = r.get(0);
-            }
-
             for r in rows {
-                let mut bundle: hardy_bpa::bundle::Bundle = match serde_json::from_value(r.get(2)) {
+                last_received_at = r.received_at;
+                last_id = r.id;
+                let mut bundle: hardy_bpa::bundle::Bundle = match serde_json::from_value(r.bundle) {
                     Ok(b) => b,
                     Err(e) => {
                         warn!("Garbage bundle in metadata store: {e}");
@@ -460,7 +548,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    #[cfg_attr(feature = "tracing", instrument(skip_all))]
     async fn poll_service_waiting(
         &self,
         source: hardy_bpv7::eid::Eid,
@@ -477,7 +565,7 @@ impl storage::MetadataStorage for Storage {
         let mut last_id: i64 = 0;
 
         loop {
-            let rows = sqlx::query(
+            let rows = sqlx::query_as::<_, WaitingRow>(
                 "SELECT id, received_at, bundle
                  FROM metadata
                  WHERE status = 'waiting_for_service'
@@ -496,13 +584,10 @@ impl storage::MetadataStorage for Storage {
                 break;
             }
 
-            for r in &rows {
-                last_received_at = r.get(1);
-                last_id = r.get(0);
-            }
-
             for r in rows {
-                let mut bundle: hardy_bpa::bundle::Bundle = match serde_json::from_value(r.get(2)) {
+                last_received_at = r.received_at;
+                last_id = r.id;
+                let mut bundle: hardy_bpa::bundle::Bundle = match serde_json::from_value(r.bundle) {
                     Ok(b) => b,
                     Err(e) => {
                         warn!("Garbage bundle in metadata store: {e}");
@@ -540,11 +625,11 @@ impl storage::MetadataStorage for Storage {
         let mut last_id: i64 = 0;
 
         loop {
-            let rows = sqlx::query(
-                "SELECT id, received_at, bundle, status::TEXT, peer_id, queue_id,
+            let rows = sqlx::query_as::<_, PendingRow>(
+                "SELECT id, received_at, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
-                 WHERE status = $1::bundle_status
+                 WHERE status = $1
                    AND adu_source IS NOT DISTINCT FROM $2
                    AND adu_ts_ms  IS NOT DISTINCT FROM $3
                    AND adu_ts_seq IS NOT DISTINCT FROM $4
@@ -565,24 +650,11 @@ impl storage::MetadataStorage for Storage {
                 break;
             }
 
-            for r in &rows {
-                last_received_at = r.get(1);
-                last_id = r.get(0);
-            }
-
             for r in rows {
-                let Some(bundle) = decode_bundle(
-                    r.get(2),
-                    status::to_status(
-                        r.get(3),
-                        r.get(4),
-                        r.get(5),
-                        r.get(6),
-                        r.get(7),
-                        r.get(8),
-                        r.get(9),
-                    ),
-                ) else {
+                let (id, received_at, bundle) = r.decode();
+                last_received_at = received_at;
+                last_id = id;
+                let Some(bundle) = bundle else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
@@ -616,11 +688,11 @@ impl storage::MetadataStorage for Storage {
 
         loop {
             let page_limit = (limit - sent).min(64) as i64;
-            let rows = sqlx::query(
-                "SELECT id, received_at, bundle, status::TEXT, peer_id, queue_id,
+            let rows = sqlx::query_as::<_, PendingRow>(
+                "SELECT id, received_at, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
-                 WHERE status    = $1::bundle_status
+                 WHERE status    = $1
                    AND peer_id     IS NOT DISTINCT FROM $2
                    AND queue_id    IS NOT DISTINCT FROM $3
                    AND adu_source  IS NOT DISTINCT FROM $4
@@ -648,24 +720,11 @@ impl storage::MetadataStorage for Storage {
                 break;
             }
 
-            for r in &rows {
-                last_received_at = r.get(1);
-                last_id = r.get(0);
-            }
-
             for r in rows {
-                let Some(bundle) = decode_bundle(
-                    r.get(2),
-                    status::to_status(
-                        r.get(3),
-                        r.get(4),
-                        r.get(5),
-                        r.get(6),
-                        r.get(7),
-                        r.get(8),
-                        r.get(9),
-                    ),
-                ) else {
+                let (id, received_at, bundle) = r.decode();
+                last_received_at = received_at;
+                last_id = id;
+                let Some(bundle) = bundle else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
