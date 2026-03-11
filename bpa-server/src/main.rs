@@ -122,7 +122,12 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
     }
 
     // Register filters
-    filters::register(&config.rfc9171_validity, &config.ipn_legacy_nodes, &bpa)?;
+    filters::register(
+        &config.rfc9171_validity,
+        #[cfg(feature = "ipn-legacy-filter")]
+        &config.ipn_legacy_nodes,
+        &bpa,
+    )?;
 
     services::register(&config.built_in_services, bpa.as_ref()).await;
 

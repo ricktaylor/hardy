@@ -3,7 +3,7 @@ use super::*;
 /// Register all filters with the BPA.
 pub fn register(
     rfc9171_validity: &hardy_bpa::filters::rfc9171::Config,
-    ipn_legacy_nodes: &hardy_ipn_legacy_filter::Config,
+    #[cfg(feature = "ipn-legacy-filter")] ipn_legacy_nodes: &hardy_ipn_legacy_filter::Config,
     bpa: &hardy_bpa::bpa::Bpa,
 ) -> anyhow::Result<()> {
     bpa.register_filter(
@@ -31,11 +31,6 @@ pub fn register(
             "Registered IPN legacy filter for {} pattern(s)",
             ipn_legacy_nodes.0.len()
         );
-    }
-
-    #[cfg(not(feature = "ipn-legacy-filter"))]
-    if !ipn_legacy_nodes.0.is_empty() {
-        warn!("Ignoring ipn-legacy-nodes configuration option as it is disabled at compile time");
     }
 
     Ok(())

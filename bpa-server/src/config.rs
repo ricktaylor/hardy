@@ -108,6 +108,7 @@ pub struct Config {
     #[serde(default)]
     pub storage: StorageConfig,
 
+    #[cfg(feature = "ipn-legacy-filter")]
     #[serde(default)]
     pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
 
