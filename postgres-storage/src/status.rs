@@ -1,8 +1,22 @@
 use hardy_bpa::metadata::BundleStatus;
 
+/// Mirrors the `bundle_status` postgres enum for type-safe binding and decoding.
+/// `#[derive(sqlx::Type)]` generates `Encode`/`Decode` so sqlx maps the postgres
+/// enum directly — no `::bundle_status` casts or `&'static str` conversions needed.
+#[derive(Debug, Clone, Copy, sqlx::Type)]
+#[sqlx(type_name = "bundle_status", rename_all = "snake_case")]
+pub enum BundleStatusKind {
+    New,
+    Waiting,
+    Dispatching,
+    ForwardPending,
+    AduFragment,
+    WaitingForService,
+}
+
 /// Flat representation of a BundleStatus for binding to SQL parameters.
 pub struct StatusParams {
-    pub status: &'static str,
+    pub status: BundleStatusKind,
     pub peer_id: Option<i32>,
     pub queue_id: Option<i32>,
     pub adu_source: Option<String>,
@@ -13,7 +27,7 @@ pub struct StatusParams {
 }
 
 impl StatusParams {
-    fn new(status: &'static str) -> Self {
+    fn new(status: BundleStatusKind) -> Self {
         Self {
             status,
             peer_id: None,
@@ -28,17 +42,17 @@ impl StatusParams {
 
 pub fn from_status(status: &BundleStatus) -> StatusParams {
     match status {
-        BundleStatus::New => StatusParams::new("new"),
-        BundleStatus::Waiting => StatusParams::new("waiting"),
-        BundleStatus::Dispatching => StatusParams::new("dispatching"),
+        BundleStatus::New => StatusParams::new(BundleStatusKind::New),
+        BundleStatus::Waiting => StatusParams::new(BundleStatusKind::Waiting),
+        BundleStatus::Dispatching => StatusParams::new(BundleStatusKind::Dispatching),
         BundleStatus::ForwardPending { peer, queue } => StatusParams {
-            status: "forward_pending",
+            status: BundleStatusKind::ForwardPending,
             peer_id: Some(*peer as i32),
             queue_id: queue.map(|q| q as i32),
-            ..StatusParams::new("forward_pending")
+            ..StatusParams::new(BundleStatusKind::ForwardPending)
         },
         BundleStatus::AduFragment { source, timestamp } => StatusParams {
-            status: "adu_fragment",
+            status: BundleStatusKind::AduFragment,
             adu_source: Some(source.to_string()),
             // 0 encodes "no DTN creation clock" (same convention as sqlite-storage)
             adu_ts_ms: Some(
@@ -47,18 +61,18 @@ pub fn from_status(status: &BundleStatus) -> StatusParams {
                     .map_or(0, |t| t.millisecs() as i64),
             ),
             adu_ts_seq: Some(timestamp.sequence_number() as i64),
-            ..StatusParams::new("adu_fragment")
+            ..StatusParams::new(BundleStatusKind::AduFragment)
         },
         BundleStatus::WaitingForService { service } => StatusParams {
-            status: "waiting_for_service",
+            status: BundleStatusKind::WaitingForService,
             service_eid: Some(service.to_string()),
-            ..StatusParams::new("waiting_for_service")
+            ..StatusParams::new(BundleStatusKind::WaitingForService)
         },
     }
 }
 
 pub fn to_status(
-    status: &str,
+    status: BundleStatusKind,
     peer_id: Option<i32>,
     queue_id: Option<i32>,
     adu_source: Option<String>,
@@ -67,14 +81,14 @@ pub fn to_status(
     service_eid: Option<String>,
 ) -> Option<BundleStatus> {
     match status {
-        "new" => Some(BundleStatus::New),
-        "waiting" => Some(BundleStatus::Waiting),
-        "dispatching" => Some(BundleStatus::Dispatching),
-        "forward_pending" => Some(BundleStatus::ForwardPending {
+        BundleStatusKind::New => Some(BundleStatus::New),
+        BundleStatusKind::Waiting => Some(BundleStatus::Waiting),
+        BundleStatusKind::Dispatching => Some(BundleStatus::Dispatching),
+        BundleStatusKind::ForwardPending => Some(BundleStatus::ForwardPending {
             peer: peer_id? as u32,
             queue: queue_id.map(|q| q as u32),
         }),
-        "adu_fragment" => {
+        BundleStatusKind::AduFragment => {
             let source: hardy_bpv7::eid::Eid = adu_source?.parse().ok()?;
             let creation_time = adu_ts_ms
                 .filter(|&ms| ms != 0)
@@ -86,9 +100,8 @@ pub fn to_status(
             );
             Some(BundleStatus::AduFragment { source, timestamp })
         }
-        "waiting_for_service" => Some(BundleStatus::WaitingForService {
+        BundleStatusKind::WaitingForService => Some(BundleStatus::WaitingForService {
             service: service_eid?.parse().ok()?,
         }),
-        _ => None,
     }
 }
