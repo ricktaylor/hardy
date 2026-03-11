@@ -14,6 +14,15 @@ pub enum BundleStatusKind {
     WaitingForService,
 }
 
+/// Error returned when a `BundleStatus` value cannot be represented in the postgres schema.
+#[derive(Debug, thiserror::Error)]
+pub enum StatusConversionError {
+    #[error("peer ID {0} exceeds i32::MAX and cannot be stored")]
+    PeerIdOverflow(u32),
+    #[error("queue ID {0} exceeds i32::MAX and cannot be stored")]
+    QueueIdOverflow(u32),
+}
+
 /// Flat projection of the status-related columns, shared across all row types.
 /// Derives `FromRow` so it can be embedded via `#[sqlx(flatten)]` in row structs,
 /// and `TryFrom<&BundleStatus>` so it doubles as the SQL bind source (write path).
@@ -30,7 +39,7 @@ pub struct StatusFields {
 }
 
 impl StatusFields {
-    fn for_kind(status: BundleStatusKind) -> Self {
+    fn with_kind(status: BundleStatusKind) -> Self {
         Self {
             status,
             peer_id: None,
@@ -71,19 +80,26 @@ impl StatusFields {
     }
 }
 
-/// Fallible because `ForwardPending.peer` (u32) must fit in a postgres `int4` (i32).
+/// Fallible because peer/queue IDs (u32) must fit in postgres `int4` (i32).
 impl TryFrom<&BundleStatus> for StatusFields {
-    type Error = std::num::TryFromIntError;
+    type Error = StatusConversionError;
 
     fn try_from(status: &BundleStatus) -> Result<Self, Self::Error> {
         Ok(match status {
-            BundleStatus::New => Self::for_kind(BundleStatusKind::New),
-            BundleStatus::Waiting => Self::for_kind(BundleStatusKind::Waiting),
-            BundleStatus::Dispatching => Self::for_kind(BundleStatusKind::Dispatching),
+            BundleStatus::New => Self::with_kind(BundleStatusKind::New),
+            BundleStatus::Waiting => Self::with_kind(BundleStatusKind::Waiting),
+            BundleStatus::Dispatching => Self::with_kind(BundleStatusKind::Dispatching),
             BundleStatus::ForwardPending { peer, queue } => Self {
-                peer_id: Some(i32::try_from(*peer)?),
-                queue_id: queue.map(i32::try_from).transpose()?,
-                ..Self::for_kind(BundleStatusKind::ForwardPending)
+                peer_id: Some(
+                    i32::try_from(*peer)
+                        .map_err(|_| StatusConversionError::PeerIdOverflow(*peer))?,
+                ),
+                queue_id: queue
+                    .map(|q| {
+                        i32::try_from(q).map_err(|_| StatusConversionError::QueueIdOverflow(q))
+                    })
+                    .transpose()?,
+                ..Self::with_kind(BundleStatusKind::ForwardPending)
             },
             BundleStatus::AduFragment { source, timestamp } => Self {
                 adu_source: Some(source.to_string()),
@@ -93,11 +109,11 @@ impl TryFrom<&BundleStatus> for StatusFields {
                         .map_or(0, |t| t.millisecs() as i64),
                 ),
                 adu_ts_seq: Some(timestamp.sequence_number() as i64),
-                ..Self::for_kind(BundleStatusKind::AduFragment)
+                ..Self::with_kind(BundleStatusKind::AduFragment)
             },
             BundleStatus::WaitingForService { service } => Self {
                 service_eid: Some(service.to_string()),
-                ..Self::for_kind(BundleStatusKind::WaitingForService)
+                ..Self::with_kind(BundleStatusKind::WaitingForService)
             },
         })
     }
