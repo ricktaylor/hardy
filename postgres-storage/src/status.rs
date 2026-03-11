@@ -57,16 +57,17 @@ impl StatusFields {
             BundleStatusKind::Waiting => Some(BundleStatus::Waiting),
             BundleStatusKind::Dispatching => Some(BundleStatus::Dispatching),
             BundleStatusKind::ForwardPending => Some(BundleStatus::ForwardPending {
-                peer: self.peer_id? as u32,
-                queue: self.queue_id.map(|q| q as u32),
+                peer: u32::try_from(self.peer_id?).ok()?,
+                queue: self.queue_id.and_then(|q| u32::try_from(q).ok()),
             }),
             BundleStatusKind::AduFragment => {
                 let source: hardy_bpv7::eid::Eid = self.adu_source?.parse().ok()?;
                 let creation_time = self
                     .adu_ts_ms
                     .filter(|&ms| ms != 0)
-                    .map(|ms| hardy_bpv7::dtn_time::DtnTime::new(ms as u64));
-                let sequence_number = self.adu_ts_seq? as u64;
+                    .and_then(|ms| u64::try_from(ms).ok())
+                    .map(hardy_bpv7::dtn_time::DtnTime::new);
+                let sequence_number = u64::try_from(self.adu_ts_seq?).ok()?;
                 let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
                     creation_time,
                     sequence_number,
