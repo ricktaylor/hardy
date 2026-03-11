@@ -16,6 +16,7 @@ std = [
     "hardy-eid-patterns/std",
     "tracing/std",
     "rand/std",
+    "rand/thread_rng",
     "thiserror/std",
     "futures/std",
     "serde?/std",

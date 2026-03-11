@@ -163,19 +163,20 @@ if [ -x "$BPA_BIN" ] && [ -x "$BP_BIN" ]; then
     # Create temp config
     HARDY_TEST_DIR=$(mktemp -d)
     cat > "$HARDY_TEST_DIR/config.toml" << EOF
-log_level = "warn"
-status_reports = false
-node_ids = "ipn:99.0"
-echo = 7
-[metadata_storage]
+log-level = "warn"
+status-reports = false
+node-ids = "ipn:99.0"
+[built-in-services]
+echo = [7]
+[storage.metadata]
 type = "memory"
-[bundle_storage]
+[storage.bundle]
 type = "memory"
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
 address = "[::]:4559"
-must_use_tls = false
+must-use-tls = false
 EOF
 
     # Start Hardy server

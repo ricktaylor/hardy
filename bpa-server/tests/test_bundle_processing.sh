@@ -83,18 +83,18 @@ EOF
 echo "BPA Node ID: $NODE_ID"
 
 cat > "$TEST_DIR/config.toml" << EOF
-log_level = "debug"
-status_reports = true
-node_ids = "$NODE_ID"
+log-level = "debug"
+status-reports = true
+node-ids = "$NODE_ID"
 
-[static_routes]
-routes_file = "$TEST_DIR/static_routes"
+[static-routes]
+routes-file = "$TEST_DIR/static_routes"
 watch = false
 
-[metadata_storage]
+[storage.metadata]
 type = "memory"
 
-[bundle_storage]
+[storage.bundle]
 type = "memory"
 
 [[clas]]
