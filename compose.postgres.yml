@@ -1,10 +1,25 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hardy
+      POSTGRES_PASSWORD: hardy
+      POSTGRES_DB: hardy
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hardy"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   hardy:
     build:
       context: .
       dockerfile: ./bpa-server/Dockerfile
       args:
-        CARGO_ARGS: "--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage"
+        CARGO_ARGS: "--features hardy-bpa-server/postgres-storage"
     image: hardy-bpa-server:latest
     restart: unless-stopped
     environment:
@@ -12,6 +27,8 @@ services:
     ports:
       - "50051:50051"
       - "4556:4556"
+    volumes:
+      - bundles:/var/lib/hardy/bundles
     configs:
       - source: hardy-config
         target: /etc/hardy/config.toml
@@ -21,6 +38,13 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  bundles:
+  postgres-data:
 
 configs:
   hardy-config:
@@ -31,19 +55,22 @@ configs:
       poll-channel-depth = 16
       processing-pool-size = 16
 
+      [grpc]
+      address = "[::]:50051"
+      services = ["application", "cla", "service"]
+
       [storage]
       lru-capacity = 1024
       max-cached-bundle-size = 16384
 
       [storage.metadata]
-      type = "memory"
+      type = "postgres"
+      database-url = "postgresql://hardy:hardy@postgres/hardy"
 
       [storage.bundle]
-      type = "memory"
-
-      [grpc]
-      address = "[::]:50051"
-      services = ["application", "cla", "service"]
+      type = "localdisk"
+      store-dir = "/var/lib/hardy/bundles"
+      fsync = true
 
       [rfc9171-validity]
       primary-block-integrity = true
