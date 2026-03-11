@@ -22,11 +22,13 @@ impl Storage {
             .connect(&config.database_url)
             .await?;
 
+        // `run()` is idempotent: validates checksums of already-applied migrations and
+        // applies any pending ones. The `upgrade` flag is preserved for callers that
+        // want to gate this call (e.g. refuse to start if the schema is ahead of the binary).
+        // TODO: sqlx 0.8 has no public `validate`-only API; consider checking
+        //       `Migrator::migrations` against applied rows manually if strict
+        //       rolling-restart safety is required.
         if upgrade {
-            sqlx::migrate!("./migrations").run(&pool).await?;
-        } else {
-            // Validate checksums of already-applied migrations; error if any are
-            // unapplied. Prevents accidental schema changes during rolling restarts.
             sqlx::migrate!("./migrations").run(&pool).await?;
         }
 
@@ -42,13 +44,8 @@ impl Storage {
 #[derive(FromRow)]
 struct MetadataRow {
     bundle: serde_json::Value,
-    status: status::BundleStatusKind,
-    peer_id: Option<i32>,
-    queue_id: Option<i32>,
-    adu_source: Option<String>,
-    adu_ts_ms: Option<i64>,
-    adu_ts_seq: Option<i64>,
-    service_eid: Option<String>,
+    #[sqlx(flatten)]
+    status_fields: status::StatusFields,
 }
 
 /// Like `MetadataRow` but includes `id`. Used by: `confirm_exists`.
@@ -56,13 +53,8 @@ struct MetadataRow {
 struct MetadataRowWithId {
     id: i64,
     bundle: serde_json::Value,
-    status: status::BundleStatusKind,
-    peer_id: Option<i32>,
-    queue_id: Option<i32>,
-    adu_source: Option<String>,
-    adu_ts_ms: Option<i64>,
-    adu_ts_seq: Option<i64>,
-    service_eid: Option<String>,
+    #[sqlx(flatten)]
+    status_fields: status::StatusFields,
 }
 
 /// Keyset cursor on `received_at`; status is fixed by the WHERE clause.
@@ -99,13 +91,8 @@ struct ExpiryRow {
     id: i64,
     expiry: time::OffsetDateTime,
     bundle: serde_json::Value,
-    status: status::BundleStatusKind,
-    peer_id: Option<i32>,
-    queue_id: Option<i32>,
-    adu_source: Option<String>,
-    adu_ts_ms: Option<i64>,
-    adu_ts_seq: Option<i64>,
-    service_eid: Option<String>,
+    #[sqlx(flatten)]
+    status_fields: status::StatusFields,
 }
 
 /// Keyset cursor on `received_at` with full status breakdown.
@@ -115,83 +102,42 @@ struct PendingRow {
     id: i64,
     received_at: time::OffsetDateTime,
     bundle: serde_json::Value,
-    status: status::BundleStatusKind,
-    peer_id: Option<i32>,
-    queue_id: Option<i32>,
-    adu_source: Option<String>,
-    adu_ts_ms: Option<i64>,
-    adu_ts_seq: Option<i64>,
-    service_eid: Option<String>,
+    #[sqlx(flatten)]
+    status_fields: status::StatusFields,
 }
 
 impl MetadataRow {
     fn decode(self) -> Option<hardy_bpa::bundle::Bundle> {
-        decode_bundle(
-            self.bundle,
-            status::to_status(
-                self.status,
-                self.peer_id,
-                self.queue_id,
-                self.adu_source,
-                self.adu_ts_ms,
-                self.adu_ts_seq,
-                self.service_eid,
-            ),
-        )
+        decode_bundle(self.bundle, self.status_fields.into_bundle_status())
     }
 }
 
 impl MetadataRowWithId {
     fn decode(self) -> (i64, Option<hardy_bpa::bundle::Bundle>) {
-        let bundle = decode_bundle(
-            self.bundle,
-            status::to_status(
-                self.status,
-                self.peer_id,
-                self.queue_id,
-                self.adu_source,
-                self.adu_ts_ms,
-                self.adu_ts_seq,
-                self.service_eid,
-            ),
-        );
-        (self.id, bundle)
+        (
+            self.id,
+            decode_bundle(self.bundle, self.status_fields.into_bundle_status()),
+        )
     }
 }
 
 impl ExpiryRow {
     fn decode(self) -> (i64, time::OffsetDateTime, Option<hardy_bpa::bundle::Bundle>) {
-        let bundle = decode_bundle(
-            self.bundle,
-            status::to_status(
-                self.status,
-                self.peer_id,
-                self.queue_id,
-                self.adu_source,
-                self.adu_ts_ms,
-                self.adu_ts_seq,
-                self.service_eid,
-            ),
-        );
-        (self.id, self.expiry, bundle)
+        (
+            self.id,
+            self.expiry,
+            decode_bundle(self.bundle, self.status_fields.into_bundle_status()),
+        )
     }
 }
 
 impl PendingRow {
     fn decode(self) -> (i64, time::OffsetDateTime, Option<hardy_bpa::bundle::Bundle>) {
-        let bundle = decode_bundle(
-            self.bundle,
-            status::to_status(
-                self.status,
-                self.peer_id,
-                self.queue_id,
-                self.adu_source,
-                self.adu_ts_ms,
-                self.adu_ts_seq,
-                self.service_eid,
-            ),
-        );
-        (self.id, self.received_at, bundle)
+        (
+            self.id,
+            self.received_at,
+            decode_bundle(self.bundle, self.status_fields.into_bundle_status()),
+        )
     }
 }
 
@@ -247,7 +193,7 @@ impl storage::MetadataStorage for Storage {
         let bundle_json = serde_json::to_value(bundle)?;
         let received_at = bundle.metadata.read_only.received_at;
         let expiry = bundle.expiry();
-        let sp = status::from_status(&bundle.metadata.status);
+        let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
         // Atomic CTE: insert identity anchor then metadata child.
         // RETURNING id on the outer INSERT: Some = inserted, None = duplicate
@@ -272,13 +218,13 @@ impl storage::MetadataStorage for Storage {
         .bind(received_at)
         .bind(expiry)
         .bind(received_at) // denormalized received_at in metadata
-        .bind(sp.status)
-        .bind(sp.peer_id)
-        .bind(sp.queue_id)
-        .bind(sp.adu_source)
-        .bind(sp.adu_ts_ms)
-        .bind(sp.adu_ts_seq)
-        .bind(sp.service_eid)
+        .bind(sf.status)
+        .bind(sf.peer_id)
+        .bind(sf.queue_id)
+        .bind(sf.adu_source)
+        .bind(sf.adu_ts_ms)
+        .bind(sf.adu_ts_seq)
+        .bind(sf.service_eid)
         .bind(bundle_json)
         .fetch_optional(&self.pool)
         .await?;
@@ -291,7 +237,7 @@ impl storage::MetadataStorage for Storage {
         let id_bytes = serde_json::to_vec(&bundle.bundle.id)?;
         let bundle_json = serde_json::to_value(bundle)?;
         let expiry = bundle.expiry();
-        let sp = status::from_status(&bundle.metadata.status);
+        let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
         // RETURNING id: fetch_one errors with RowNotFound if the bundle doesn't exist.
         sqlx::query_scalar::<_, i64>(
@@ -309,14 +255,14 @@ impl storage::MetadataStorage for Storage {
              RETURNING id",
         )
         .bind(id_bytes)
-        .bind(sp.status)
+        .bind(sf.status)
         .bind(expiry)
-        .bind(sp.peer_id)
-        .bind(sp.queue_id)
-        .bind(sp.adu_source)
-        .bind(sp.adu_ts_ms)
-        .bind(sp.adu_ts_seq)
-        .bind(sp.service_eid)
+        .bind(sf.peer_id)
+        .bind(sf.queue_id)
+        .bind(sf.adu_source)
+        .bind(sf.adu_ts_ms)
+        .bind(sf.adu_ts_seq)
+        .bind(sf.service_eid)
         .bind(bundle_json)
         .fetch_one(&self.pool)
         .await?;
@@ -466,16 +412,17 @@ impl storage::MetadataStorage for Storage {
         let mut sent: usize = 0;
 
         loop {
-            let page_limit = (limit - sent).min(64) as i64;
+            let page_limit = limit.saturating_sub(sent).min(64) as i64;
             let rows = sqlx::query_as::<_, ExpiryRow>(
                 "SELECT id, expiry, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
-                 WHERE status != 'new'
-                   AND (expiry, id) > ($1, $2)
+                 WHERE status != $1
+                   AND (expiry, id) > ($2, $3)
                  ORDER BY expiry ASC, id ASC
-                 LIMIT $3",
+                 LIMIT $4",
             )
+            .bind(status::BundleStatusKind::New)
             .bind(last_expiry)
             .bind(last_id)
             .bind(page_limit)
@@ -526,11 +473,12 @@ impl storage::MetadataStorage for Storage {
             let rows = sqlx::query_as::<_, WaitingRow>(
                 "SELECT id, received_at, bundle
                  FROM metadata
-                 WHERE status = 'waiting'
-                   AND (received_at, id) > ($1, $2)
+                 WHERE status = $1
+                   AND (received_at, id) > ($2, $3)
                  ORDER BY received_at ASC, id ASC
                  LIMIT 64",
             )
+            .bind(status::BundleStatusKind::Waiting)
             .bind(last_received_at)
             .bind(last_id)
             .fetch_all(&mut *txn)
@@ -579,12 +527,13 @@ impl storage::MetadataStorage for Storage {
             let rows = sqlx::query_as::<_, WaitingRow>(
                 "SELECT id, received_at, bundle
                  FROM metadata
-                 WHERE status = 'waiting_for_service'
-                   AND service_eid = $1
-                   AND (received_at, id) > ($2, $3)
+                 WHERE status = $1
+                   AND service_eid = $2
+                   AND (received_at, id) > ($3, $4)
                  ORDER BY received_at ASC, id ASC
                  LIMIT 64",
             )
+            .bind(status::BundleStatusKind::WaitingForService)
             .bind(&source_str)
             .bind(last_received_at)
             .bind(last_id)
@@ -620,7 +569,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         status: &hardy_bpa::metadata::BundleStatus,
     ) -> storage::Result<()> {
-        let sp = status::from_status(status);
+        let sf = status::StatusFields::try_from(status)?;
 
         let mut txn = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -643,10 +592,10 @@ impl storage::MetadataStorage for Storage {
                  ORDER BY received_at ASC, id ASC
                  LIMIT 64",
             )
-            .bind(sp.status)
-            .bind(&sp.adu_source)
-            .bind(sp.adu_ts_ms)
-            .bind(sp.adu_ts_seq)
+            .bind(sf.status)
+            .bind(&sf.adu_source)
+            .bind(sf.adu_ts_ms)
+            .bind(sf.adu_ts_seq)
             .bind(last_received_at)
             .bind(last_id)
             .fetch_all(&mut *txn)
@@ -681,7 +630,7 @@ impl storage::MetadataStorage for Storage {
         status: &hardy_bpa::metadata::BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
-        let sp = status::from_status(status);
+        let sf = status::StatusFields::try_from(status)?;
 
         let mut txn = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -693,7 +642,7 @@ impl storage::MetadataStorage for Storage {
         let mut sent: usize = 0;
 
         loop {
-            let page_limit = (limit - sent).min(64) as i64;
+            let page_limit = limit.saturating_sub(sent).min(64) as i64;
             let rows = sqlx::query_as::<_, PendingRow>(
                 "SELECT id, received_at, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
@@ -709,13 +658,13 @@ impl storage::MetadataStorage for Storage {
                  ORDER BY received_at ASC, id ASC
                  LIMIT $10",
             )
-            .bind(sp.status)
-            .bind(sp.peer_id)
-            .bind(sp.queue_id)
-            .bind(&sp.adu_source)
-            .bind(sp.adu_ts_ms)
-            .bind(sp.adu_ts_seq)
-            .bind(&sp.service_eid)
+            .bind(sf.status)
+            .bind(sf.peer_id)
+            .bind(sf.queue_id)
+            .bind(&sf.adu_source)
+            .bind(sf.adu_ts_ms)
+            .bind(sf.adu_ts_seq)
+            .bind(&sf.service_eid)
             .bind(last_received_at)
             .bind(last_id)
             .bind(page_limit)

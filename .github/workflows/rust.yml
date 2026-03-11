@@ -53,7 +53,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          dockerfile: ./bpa-server/Dockerfile
+          file: ./bpa-server/Dockerfile
           target: runtime
           tags: hardy-bpa-server:latest
           build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
