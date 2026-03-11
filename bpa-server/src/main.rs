@@ -49,14 +49,14 @@ async fn init_storage(storage: &config::StorageConfig, upgrade_storage: bool) ->
             config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
 
             #[cfg(feature = "sqlite-storage")]
-            config::MetadataStorage::Sqlite(cfg) => {
-                hardy_sqlite_storage::new(cfg, upgrade_storage)
-            }
+            config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
 
             #[cfg(feature = "postgres-storage")]
-            config::MetadataStorage::Postgres(cfg) => hardy_postgres_storage::new(cfg, upgrade_storage)
-                .await
-                .trace_expect("Failed to connect to Postgres metadata store"),
+            config::MetadataStorage::Postgres(cfg) => {
+                hardy_postgres_storage::new(cfg, upgrade_storage)
+                    .await
+                    .trace_expect("Failed to connect to Postgres metadata store")
+            }
         }),
     };
 
@@ -107,7 +107,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()> {
-    let (metadata_storage, bundle_storage) = init_storage(&config.storage, cli.upgrade_storage).await;
+    let (metadata_storage, bundle_storage) =
+        init_storage(&config.storage, cli.upgrade_storage).await;
 
     let bpa_config = hardy_bpa::config::Config {
         lru_capacity: config.storage.lru_capacity,

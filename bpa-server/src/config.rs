@@ -35,7 +35,7 @@ pub enum MetadataStorage {
     #[cfg(feature = "sqlite-storage")]
     #[serde(rename = "sqlite")]
     Sqlite(hardy_sqlite_storage::Config),
-    
+
     #[cfg(feature = "postgres-storage")]
     #[serde(rename = "postgres")]
     Postgres(hardy_postgres_storage::Config),
