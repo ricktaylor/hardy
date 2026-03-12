@@ -31,6 +31,9 @@ impl Storage {
             .idle_timeout(std::time::Duration::from_secs(
                 config.idle_timeout_mins * 60,
             ))
+            .max_lifetime(std::time::Duration::from_secs(
+                config.max_lifetime_mins * 60,
+            ))
             .connect(&database_url)
             .await?;
 
@@ -132,16 +135,7 @@ impl WaitingRow {
         self,
         status: &hardy_bpa::metadata::BundleStatus,
     ) -> Option<hardy_bpa::bundle::Bundle> {
-        match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&self.bundle) {
-            Ok(mut bundle) => {
-                bundle.metadata.status = status.clone();
-                Some(bundle)
-            }
-            Err(e) => {
-                warn!("Garbage bundle in metadata store: {e}");
-                None
-            }
-        }
+        decode_bundle(self.bundle, Some(status.clone()))
     }
 }
 
@@ -385,7 +379,7 @@ impl storage::MetadataStorage for Storage {
         .await?;
 
         let Some(r) = row else {
-            txn.commit().await?;
+            // Nothing modified; drop triggers implicit rollback, no COMMIT RTT needed.
             return Ok(None);
         };
 
@@ -412,7 +406,7 @@ impl storage::MetadataStorage for Storage {
             let rows = sqlx::query_as::<_, MetadataRow>(
                 "WITH batch AS (
                      DELETE FROM unconfirmed
-                     WHERE id IN (SELECT id FROM unconfirmed ORDER BY id LIMIT 64)
+                     WHERE id IN (SELECT id FROM unconfirmed ORDER BY id LIMIT $1)
                      RETURNING id
                  ),
                  snapshot AS (
@@ -426,6 +420,7 @@ impl storage::MetadataStorage for Storage {
                  )
                  SELECT * FROM snapshot",
             )
+            .bind(self.poll_page_size)
             .fetch_all(&self.pool)
             .await?;
 
