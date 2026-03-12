@@ -19,6 +19,8 @@ CREATE TABLE bundles (
 -- Owns all lifecycle state. Absent for tombstoned bundles.
 -- received_at is denormalized from bundles so poll queries with keyset pagination
 -- remain single-table without a join.
+-- FILLFACTOR 80: leaves 20% of each page free for HOT-update chains,
+-- avoiding index maintenance on the frequent status-column updates.
 CREATE TABLE metadata (
     id          BIGINT          PRIMARY KEY REFERENCES bundles (id),
     expiry      TIMESTAMPTZ     NOT NULL,
@@ -37,7 +39,7 @@ CREATE TABLE metadata (
     -- Typed columns above are projections for indexing; this is the authoritative source.
     -- BYTEA avoids PostgreSQL's JSON parser, which rejects \u0000 and lone surrogates.
     bundle      BYTEA           NOT NULL
-);
+) WITH (fillfactor = 80);
 
 -- Partial indexes for polling queries — each targets exactly one query pattern.
 -- id is included in all keyset-paginated indexes so the (col, id) composite cursor
