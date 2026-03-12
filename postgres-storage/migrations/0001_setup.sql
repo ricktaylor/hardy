@@ -33,9 +33,10 @@ CREATE TABLE metadata (
     adu_ts_seq  BIGINT,         -- AduFragment.sequence_number
     service_eid TEXT,           -- WaitingForService.service (EID string)
 
-    -- Full hardy_bpa::bundle::Bundle as JSONB.
+    -- Full hardy_bpa::bundle::Bundle as serde_json bytes stored in BYTEA.
     -- Typed columns above are projections for indexing; this is the authoritative source.
-    bundle      JSONB           NOT NULL
+    -- BYTEA avoids PostgreSQL's JSON parser, which rejects \u0000 and lone surrogates.
+    bundle      BYTEA           NOT NULL
 );
 
 -- Partial indexes for polling queries — each targets exactly one query pattern.
