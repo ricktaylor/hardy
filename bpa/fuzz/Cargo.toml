@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [features]
 default = []
+postgres-storage = ["dep:hardy-postgres-storage"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 file-cla = ["dep:hardy-file-cla"]
@@ -20,6 +21,7 @@ hardy-otel = { path = "../../otel" }
 hardy-async = { path = "../../async" }
 hardy-bpv7 = { path = "../../bpv7" }
 hardy-bpa = { path = ".." }
+hardy-postgres-storage = { path = "../../postgres-storage", optional = true }
 hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 hardy-file-cla = { path = "../../file-cla", optional = true }
