@@ -12,7 +12,7 @@ CREATE TYPE bundle_status AS ENUM (
 -- The UNIQUE constraint on bundle_id is the deduplication and resurrection-prevention mechanism.
 CREATE TABLE bundles (
     id          BIGSERIAL   PRIMARY KEY,
-    bundle_id   BYTEA       NOT NULL UNIQUE,  -- JSON-encoded BPv7 bundle::Id
+    bundle_id   TEXT        NOT NULL UNIQUE,  -- CBOR+base64url via bundle::Id::to_key()
     received_at TIMESTAMPTZ NOT NULL
 );
 
@@ -61,6 +61,10 @@ CREATE INDEX idx_metadata_adu_fragment
 CREATE INDEX idx_metadata_service_waiting
     ON metadata (service_eid, received_at ASC, id ASC)
     WHERE status = 'waiting_for_service';
+
+CREATE INDEX idx_metadata_dispatching
+    ON metadata (received_at ASC, id ASC)
+    WHERE status = 'dispatching';
 
 -- Tracks metadata rows not yet confirmed during startup recovery.
 -- ON DELETE CASCADE cleans up automatically when its metadata row is tombstoned.
