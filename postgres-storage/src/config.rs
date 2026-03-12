@@ -13,6 +13,9 @@ pub struct Config {
     pub connect_timeout_secs: u64,
     /// Minutes before an idle connection is closed.
     pub idle_timeout_mins: u64,
+    /// Maximum lifetime of a pooled connection in minutes.
+    /// Prevents stale connections after server-side TCP timeouts or firewall resets.
+    pub max_lifetime_mins: u64,
     /// Number of rows fetched per page in keyset-paginated poll queries.
     /// Larger values reduce round-trips; smaller values reduce per-query memory.
     pub poll_page_size: u32,
@@ -26,6 +29,7 @@ impl Default for Config {
             min_connections: 2,
             connect_timeout_secs: 30,
             idle_timeout_mins: 10,
+            max_lifetime_mins: 30,
             poll_page_size: 64,
         }
     }
