@@ -74,7 +74,7 @@ impl Storage {
 /// Used by: `get`, `remove_unconfirmed`.
 #[derive(FromRow)]
 struct MetadataRow {
-    bundle: serde_json::Value,
+    bundle: Vec<u8>,
     #[sqlx(flatten)]
     status_fields: status::StatusFields,
 }
@@ -83,7 +83,7 @@ struct MetadataRow {
 #[derive(FromRow)]
 struct MetadataRowWithId {
     id: i64,
-    bundle: serde_json::Value,
+    bundle: Vec<u8>,
     #[sqlx(flatten)]
     status_fields: status::StatusFields,
 }
@@ -94,7 +94,7 @@ struct MetadataRowWithId {
 struct WaitingRow {
     id: i64,
     received_at: time::OffsetDateTime,
-    bundle: serde_json::Value,
+    bundle: Vec<u8>,
 }
 
 impl WaitingRow {
@@ -102,7 +102,7 @@ impl WaitingRow {
         self,
         status: &hardy_bpa::metadata::BundleStatus,
     ) -> Option<hardy_bpa::bundle::Bundle> {
-        match serde_json::from_value::<hardy_bpa::bundle::Bundle>(self.bundle) {
+        match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&self.bundle) {
             Ok(mut bundle) => {
                 bundle.metadata.status = status.clone();
                 Some(bundle)
@@ -121,7 +121,7 @@ impl WaitingRow {
 struct ExpiryRow {
     id: i64,
     expiry: time::OffsetDateTime,
-    bundle: serde_json::Value,
+    bundle: Vec<u8>,
     #[sqlx(flatten)]
     status_fields: status::StatusFields,
 }
@@ -132,7 +132,7 @@ struct ExpiryRow {
 struct PendingRow {
     id: i64,
     received_at: time::OffsetDateTime,
-    bundle: serde_json::Value,
+    bundle: Vec<u8>,
     #[sqlx(flatten)]
     status_fields: status::StatusFields,
 }
@@ -172,18 +172,18 @@ impl PendingRow {
     }
 }
 
-// Deserialize a bundle from JSONB and override its status from the pre-decoded typed columns.
-// The JSONB blob is authoritative for all fields; typed columns are only for indexing.
+// Deserialize a bundle from BYTEA and override its status from the pre-decoded typed columns.
+// The BYTEA blob is authoritative for all fields; typed columns are only for indexing.
 // We still override status from typed columns to guard against any blob/column skew.
 fn decode_bundle(
-    bundle_json: serde_json::Value,
+    bundle_bytes: Vec<u8>,
     status: Option<hardy_bpa::metadata::BundleStatus>,
 ) -> Option<hardy_bpa::bundle::Bundle> {
     let Some(status) = status else {
         warn!("Failed to decode metadata status");
         return None;
     };
-    match serde_json::from_value::<hardy_bpa::bundle::Bundle>(bundle_json) {
+    match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle_bytes) {
         Ok(mut bundle) => {
             bundle.metadata.status = status;
             Some(bundle)
@@ -221,7 +221,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let id_bytes = serde_json::to_vec(&bundle.bundle.id)?;
-        let bundle_json = serde_json::to_value(bundle)?;
+        let bundle_bytes = serde_json::to_vec(bundle)?;
         let received_at = bundle.metadata.read_only.received_at;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
@@ -256,7 +256,7 @@ impl storage::MetadataStorage for Storage {
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
         .bind(sf.service_eid)
-        .bind(bundle_json)
+        .bind(bundle_bytes)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -266,7 +266,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let id_bytes = serde_json::to_vec(&bundle.bundle.id)?;
-        let bundle_json = serde_json::to_value(bundle)?;
+        let bundle_bytes = serde_json::to_vec(bundle)?;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
@@ -294,7 +294,7 @@ impl storage::MetadataStorage for Storage {
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
         .bind(sf.service_eid)
-        .bind(bundle_json)
+        .bind(bundle_bytes)
         .fetch_one(&self.pool)
         .await?;
 
