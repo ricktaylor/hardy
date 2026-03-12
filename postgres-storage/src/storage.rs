@@ -23,6 +23,9 @@ impl Storage {
                 "database_url is required; set it in config or via DATABASE_URL env var".into(),
             ));
         }
+        if config.poll_page_size == 0 {
+            return Err(super::Error::Config("poll_page_size must be >= 1".into()));
+        }
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(config.max_connections)
@@ -385,13 +388,19 @@ impl storage::MetadataStorage for Storage {
 
         let (id, bundle) = r.decode();
 
+        let Some(bundle) = bundle else {
+            // Corrupt blob: leave the unconfirmed entry so remove_unconfirmed
+            // tombstones the metadata row during recovery cleanup.
+            return Ok(None);
+        };
+
         sqlx::query("DELETE FROM unconfirmed WHERE id = $1")
             .bind(id)
             .execute(&mut *txn)
             .await?;
 
         txn.commit().await?;
-        Ok(bundle.map(|b| b.metadata))
+        Ok(Some(bundle.metadata))
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
