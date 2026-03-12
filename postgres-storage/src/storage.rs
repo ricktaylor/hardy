@@ -64,6 +64,16 @@ impl Storage {
                     _ => {}
                 }
             }
+
+            // Reject applied migrations not known to this binary: the DB schema is
+            // newer than the binary (downgrade scenario).
+            let known: std::collections::HashSet<i64> =
+                migrator.migrations.iter().map(|m| m.version).collect();
+            for version in applied.keys() {
+                if !known.contains(version) {
+                    return Err(super::Error::Downgrade(*version));
+                }
+            }
         }
 
         Ok(Self { pool })
@@ -336,6 +346,10 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
         let bundle_key = bundle_id.to_key();
 
+        // Atomic: SELECT + DELETE in one transaction so a concurrent
+        // remove_unconfirmed cannot race between the two operations.
+        let mut txn = self.pool.begin().await?;
+
         let row = sqlx::query_as::<_, MetadataRowWithId>(
             "SELECT m.id, m.bundle, m.status, m.peer_id, m.queue_id,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
@@ -344,10 +358,11 @@ impl storage::MetadataStorage for Storage {
              WHERE b.bundle_id = $1",
         )
         .bind(bundle_key)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *txn)
         .await?;
 
         let Some(r) = row else {
+            txn.commit().await?;
             return Ok(None);
         };
 
@@ -355,9 +370,10 @@ impl storage::MetadataStorage for Storage {
 
         sqlx::query("DELETE FROM unconfirmed WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *txn)
             .await?;
 
+        txn.commit().await?;
         Ok(bundle.map(|b| b.metadata))
     }
 
@@ -399,6 +415,12 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
+                    // Consumer closed before the batch was fully delivered.
+                    // The CTE already deleted these rows from the DB; log so
+                    // the operator knows deletion reports may be missing.
+                    warn!(
+                        "Recovery consumer closed mid-batch; remaining orphaned bundles will not receive deletion reports"
+                    );
                     return Ok(());
                 }
             }
@@ -432,7 +454,7 @@ impl storage::MetadataStorage for Storage {
         limit: usize,
     ) -> storage::Result<()> {
         let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *txn)
             .await?;
 
@@ -449,6 +471,7 @@ impl storage::MetadataStorage for Storage {
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
                  WHERE status != $1
+                   AND expiry <= NOW()
                    AND (expiry, id) > ($2, $3)
                  ORDER BY expiry ASC, id ASC
                  LIMIT $4",
@@ -495,7 +518,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *txn)
             .await?;
 
@@ -554,7 +577,7 @@ impl storage::MetadataStorage for Storage {
             hardy_bpa::metadata::BundleStatus::WaitingForService { service: source };
 
         let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *txn)
             .await?;
 
@@ -610,7 +633,7 @@ impl storage::MetadataStorage for Storage {
         let sf = status::StatusFields::try_from(status)?;
 
         let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *txn)
             .await?;
 
@@ -673,7 +696,7 @@ impl storage::MetadataStorage for Storage {
         let sf = status::StatusFields::try_from(status)?;
 
         let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *txn)
             .await?;
 
