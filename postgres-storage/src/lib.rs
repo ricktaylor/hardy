@@ -10,6 +10,8 @@ use std::sync::Arc;
 pub enum Error {
     #[error("invalid configuration: {0}")]
     Config(String),
+    #[error("database has migration version {0} not known to this binary; binary may be too old")]
+    Downgrade(i64),
     #[error(transparent)]
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error(transparent)]
