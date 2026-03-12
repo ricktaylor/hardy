@@ -1,0 +1,15 @@
+[package]
+name = "sqlx-mysql"
+version = "0.8.6"
+edition = "2021"
+
+[features]
+offline = []
+migrate = []
+any = []
+json = []
+bigdecimal = []
+chrono = []
+rust_decimal = []
+time = []
+uuid = []
