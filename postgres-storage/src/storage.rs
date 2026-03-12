@@ -8,6 +8,7 @@ use tracing::instrument;
 
 pub struct Storage {
     pool: PgPool,
+    poll_page_size: i64,
 }
 
 impl Storage {
@@ -76,8 +77,27 @@ impl Storage {
             }
         }
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            poll_page_size: config.poll_page_size as i64,
+        })
     }
+}
+
+/// Acquire a connection and open a REPEATABLE READ READ ONLY transaction in one round trip,
+/// saving the extra RTT that `pool.begin()` + `SET TRANSACTION` would require.
+///
+/// For read-only transactions an explicit ROLLBACK is unnecessary: returning the connection
+/// to the pool will trigger sqlx's implicit rollback if the transaction is still open.
+/// Callers must issue an explicit `COMMIT` on success.
+async fn begin_snapshot(
+    pool: &PgPool,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *conn)
+        .await?;
+    Ok(conn)
 }
 
 /// Projection of the `metadata` table (joined with `bundles` for point lookups).
@@ -280,8 +300,7 @@ impl storage::MetadataStorage for Storage {
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
-        // RETURNING id: fetch_one errors with RowNotFound if the bundle doesn't exist.
-        sqlx::query_scalar::<_, i64>(
+        let rows = sqlx::query(
             "UPDATE metadata
              SET status      = $2,
                  expiry      = $3,
@@ -292,8 +311,7 @@ impl storage::MetadataStorage for Storage {
                  adu_ts_seq  = $8,
                  service_eid = $9,
                  bundle      = $10
-             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
-             RETURNING id",
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
         )
         .bind(bundle_key)
         .bind(sf.status)
@@ -305,8 +323,13 @@ impl storage::MetadataStorage for Storage {
         .bind(sf.adu_ts_seq)
         .bind(sf.service_eid)
         .bind(bundle_bytes)
-        .fetch_one(&self.pool)
-        .await?;
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if rows == 0 {
+            return Err(sqlx::Error::RowNotFound.into());
+        }
 
         Ok(())
     }
@@ -453,10 +476,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
-        let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *txn)
-            .await?;
+        let mut conn = begin_snapshot(&self.pool).await?;
 
         // UNIX_EPOCH as the initial keyset cursor: all BIGSERIAL ids start at 1,
         // so (UNIX_EPOCH, 0) is strictly less than every real row.
@@ -465,7 +485,7 @@ impl storage::MetadataStorage for Storage {
         let mut sent: usize = 0;
 
         loop {
-            let page_limit = limit.saturating_sub(sent).min(64) as i64;
+            let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, ExpiryRow>(
                 "SELECT id, expiry, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
@@ -480,7 +500,7 @@ impl storage::MetadataStorage for Storage {
             .bind(last_expiry)
             .bind(last_id)
             .bind(page_limit)
-            .fetch_all(&mut *txn)
+            .fetch_all(&mut *conn)
             .await?;
 
             if rows.is_empty() {
@@ -495,9 +515,7 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    if let Err(e) = txn.rollback().await {
-                        warn!("failed to rollback transaction: {e}");
-                    }
+                    // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
                 sent += 1;
@@ -508,7 +526,7 @@ impl storage::MetadataStorage for Storage {
             }
         }
 
-        txn.commit().await?;
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -517,10 +535,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
-        let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *txn)
-            .await?;
+        let mut conn = begin_snapshot(&self.pool).await?;
 
         let mut last_received_at = time::OffsetDateTime::UNIX_EPOCH;
         let mut last_id: i64 = 0;
@@ -532,12 +547,13 @@ impl storage::MetadataStorage for Storage {
                  WHERE status = $1
                    AND (received_at, id) > ($2, $3)
                  ORDER BY received_at ASC, id ASC
-                 LIMIT 64",
+                 LIMIT $4",
             )
             .bind(status::BundleStatusKind::Waiting)
             .bind(last_received_at)
             .bind(last_id)
-            .fetch_all(&mut *txn)
+            .bind(self.poll_page_size)
+            .fetch_all(&mut *conn)
             .await?;
 
             if rows.is_empty() {
@@ -553,15 +569,13 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    if let Err(e) = txn.rollback().await {
-                        warn!("failed to rollback transaction: {e}");
-                    }
+                    // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
             }
         }
 
-        txn.commit().await?;
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -576,10 +590,7 @@ impl storage::MetadataStorage for Storage {
         let bundle_status =
             hardy_bpa::metadata::BundleStatus::WaitingForService { service: source };
 
-        let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *txn)
-            .await?;
+        let mut conn = begin_snapshot(&self.pool).await?;
 
         let mut last_received_at = time::OffsetDateTime::UNIX_EPOCH;
         let mut last_id: i64 = 0;
@@ -592,13 +603,14 @@ impl storage::MetadataStorage for Storage {
                    AND service_eid = $2
                    AND (received_at, id) > ($3, $4)
                  ORDER BY received_at ASC, id ASC
-                 LIMIT 64",
+                 LIMIT $5",
             )
             .bind(status::BundleStatusKind::WaitingForService)
             .bind(&source_str)
             .bind(last_received_at)
             .bind(last_id)
-            .fetch_all(&mut *txn)
+            .bind(self.poll_page_size)
+            .fetch_all(&mut *conn)
             .await?;
 
             if rows.is_empty() {
@@ -612,15 +624,13 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    if let Err(e) = txn.rollback().await {
-                        warn!("failed to rollback transaction: {e}");
-                    }
+                    // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
             }
         }
 
-        txn.commit().await?;
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -632,10 +642,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<()> {
         let sf = status::StatusFields::try_from(status)?;
 
-        let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *txn)
-            .await?;
+        let mut conn = begin_snapshot(&self.pool).await?;
 
         let mut last_received_at = time::OffsetDateTime::UNIX_EPOCH;
         let mut last_id: i64 = 0;
@@ -651,7 +658,7 @@ impl storage::MetadataStorage for Storage {
                    AND adu_ts_seq IS NOT DISTINCT FROM $4
                    AND (received_at, id) > ($5, $6)
                  ORDER BY received_at ASC, id ASC
-                 LIMIT 64",
+                 LIMIT $7",
             )
             .bind(sf.status)
             .bind(&sf.adu_source)
@@ -659,7 +666,8 @@ impl storage::MetadataStorage for Storage {
             .bind(sf.adu_ts_seq)
             .bind(last_received_at)
             .bind(last_id)
-            .fetch_all(&mut *txn)
+            .bind(self.poll_page_size)
+            .fetch_all(&mut *conn)
             .await?;
 
             if rows.is_empty() {
@@ -674,15 +682,13 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    if let Err(e) = txn.rollback().await {
-                        warn!("failed to rollback transaction: {e}");
-                    }
+                    // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
             }
         }
 
-        txn.commit().await?;
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
 
@@ -695,17 +701,14 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<()> {
         let sf = status::StatusFields::try_from(status)?;
 
-        let mut txn = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *txn)
-            .await?;
+        let mut conn = begin_snapshot(&self.pool).await?;
 
         let mut last_received_at = time::OffsetDateTime::UNIX_EPOCH;
         let mut last_id: i64 = 0;
         let mut sent: usize = 0;
 
         loop {
-            let page_limit = limit.saturating_sub(sent).min(64) as i64;
+            let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, PendingRow>(
                 "SELECT id, received_at, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
@@ -731,7 +734,7 @@ impl storage::MetadataStorage for Storage {
             .bind(last_received_at)
             .bind(last_id)
             .bind(page_limit)
-            .fetch_all(&mut *txn)
+            .fetch_all(&mut *conn)
             .await?;
 
             if rows.is_empty() {
@@ -746,9 +749,7 @@ impl storage::MetadataStorage for Storage {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
-                    if let Err(e) = txn.rollback().await {
-                        warn!("failed to rollback transaction: {e}");
-                    }
+                    // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
                 sent += 1;
@@ -759,7 +760,7 @@ impl storage::MetadataStorage for Storage {
             }
         }
 
-        txn.commit().await?;
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
 }
