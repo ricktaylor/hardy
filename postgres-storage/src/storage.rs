@@ -202,7 +202,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
-        let id_bytes = serde_json::to_vec(bundle_id)?;
+        let bundle_key = bundle_id.to_key();
 
         let row = sqlx::query_as::<_, MetadataRow>(
             "SELECT m.bundle, m.status, m.peer_id, m.queue_id,
@@ -211,7 +211,7 @@ impl storage::MetadataStorage for Storage {
              JOIN bundles b ON m.id = b.id
              WHERE b.bundle_id = $1",
         )
-        .bind(id_bytes)
+        .bind(bundle_key)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -220,7 +220,7 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
-        let id_bytes = serde_json::to_vec(&bundle.bundle.id)?;
+        let bundle_key = bundle.bundle.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let received_at = bundle.metadata.read_only.received_at;
         let expiry = bundle.expiry();
@@ -245,7 +245,7 @@ impl storage::MetadataStorage for Storage {
              FROM ins_bundle
              RETURNING id",
         )
-        .bind(id_bytes)
+        .bind(bundle_key)
         .bind(received_at)
         .bind(expiry)
         .bind(received_at) // denormalized received_at in metadata
@@ -265,7 +265,7 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
-        let id_bytes = serde_json::to_vec(&bundle.bundle.id)?;
+        let bundle_key = bundle.bundle.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
@@ -285,7 +285,7 @@ impl storage::MetadataStorage for Storage {
              WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
              RETURNING id",
         )
-        .bind(id_bytes)
+        .bind(bundle_key)
         .bind(sf.status)
         .bind(expiry)
         .bind(sf.peer_id)
@@ -303,14 +303,14 @@ impl storage::MetadataStorage for Storage {
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
-        let id_bytes = serde_json::to_vec(bundle_id)?;
+        let bundle_key = bundle_id.to_key();
 
         // Delete the metadata row; bundles row is kept permanently so its UNIQUE
         // constraint blocks any future insert for the same bundle_id (tombstone semantic).
         sqlx::query(
             "DELETE FROM metadata WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
         )
-        .bind(id_bytes)
+        .bind(bundle_key)
         .execute(&self.pool)
         .await?;
 
@@ -334,7 +334,7 @@ impl storage::MetadataStorage for Storage {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
     ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
-        let id_bytes = serde_json::to_vec(bundle_id)?;
+        let bundle_key = bundle_id.to_key();
 
         let row = sqlx::query_as::<_, MetadataRowWithId>(
             "SELECT m.id, m.bundle, m.status, m.peer_id, m.queue_id,
@@ -343,7 +343,7 @@ impl storage::MetadataStorage for Storage {
              JOIN bundles b ON m.id = b.id
              WHERE b.bundle_id = $1",
         )
-        .bind(id_bytes)
+        .bind(bundle_key)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -373,7 +373,7 @@ impl storage::MetadataStorage for Storage {
             let rows = sqlx::query_as::<_, MetadataRow>(
                 "WITH batch AS (
                      DELETE FROM unconfirmed
-                     WHERE id IN (SELECT id FROM unconfirmed LIMIT 64)
+                     WHERE id IN (SELECT id FROM unconfirmed ORDER BY id LIMIT 64)
                      RETURNING id
                  ),
                  snapshot AS (
