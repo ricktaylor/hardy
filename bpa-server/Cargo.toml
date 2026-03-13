@@ -14,7 +14,7 @@ otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = ["dep:hardy-postgres-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
-s3-storage = []
+s3-storage = ["dep:hardy-s3-storage"]
 packaged-installation = []
 grpc = ["dep:hardy-proto"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
@@ -32,6 +32,7 @@ hardy-proto = { path = "../proto", optional = true }
 hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
 hardy-postgres-storage = { path = "../postgres-storage", optional = true }
 hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
+hardy-s3-storage = { path = "../s3-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { path = "../otel", optional = true }
