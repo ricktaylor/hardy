@@ -67,6 +67,7 @@ pub struct BundleMetadata {
     /// Storage identifier for bundle data
     pub(crate) storage_name: Option<Arc<str>>,
     /// Current processing status
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub status: BundleStatus,
     /// Immutable ingress context
     #[cfg_attr(feature = "serde", serde(flatten))]
