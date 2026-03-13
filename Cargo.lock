@@ -1777,6 +1777,7 @@ dependencies = [
  "hardy-localdisk-storage",
  "hardy-otel",
  "hardy-proto",
+ "hardy-s3-storage",
  "hardy-sqlite-storage",
  "hardy-tcpclv4",
  "notify",
