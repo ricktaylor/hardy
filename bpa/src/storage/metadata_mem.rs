@@ -47,6 +47,11 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    async fn update_status(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
+        // In-memory: no separate blob cost, so delegate to replace.
+        self.replace(bundle).await
+    }
+
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         self.entries.lock().put(bundle_id.clone(), None);
         Ok(())

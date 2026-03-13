@@ -315,6 +315,27 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    async fn update_status(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+        let (status_code, status_param1, status_param2, status_param3) =
+            from_status(&bundle.metadata.status);
+        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        if self
+            .write(move |conn| {
+                conn.prepare_cached(
+                    "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 WHERE bundle_id = ?1",
+                )?
+                .execute((id, status_code, status_param1, status_param2, status_param3))
+                .map_err(Into::into)
+            })
+            .await?
+            != 1
+        {
+            error!("Failed to update bundle status!");
+        }
+        Ok(())
+    }
+
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_vec(bundle_id)?;
