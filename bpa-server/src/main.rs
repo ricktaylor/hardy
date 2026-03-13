@@ -42,34 +42,45 @@ type StorageBackends = (
     Option<Arc<dyn hardy_bpa::storage::BundleStorage>>,
 );
 
-async fn init_storage(storage: &config::StorageConfig, upgrade_storage: bool) -> StorageBackends {
-    #[allow(clippy::manual_map)]
-    let metadata_storage = match &storage.metadata {
+#[allow(unused_variables)]
+async fn init_storage(
+    storage: &config::StorageConfig,
+    upgrade_storage: bool,
+) -> anyhow::Result<StorageBackends> {
+    let metadata_storage = match storage.metadata.as_ref() {
         None => None,
         Some(cfg) => Some(match cfg {
             config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
 
-            #[cfg(feature = "sqlite-storage")]
-            config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
-
+                #[cfg(feature = "sqlite-storage")]
+                config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
+    
             #[cfg(feature = "postgres-storage")]
-            config::MetadataStorage::Postgres(cfg) => {
+                config::MetadataStorage::Postgres(cfg) => {
                 hardy_postgres_storage::new(cfg, upgrade_storage)
                     .await
                     .trace_expect("Failed to connect to Postgres metadata store")
             }
         }),
+        },
     };
 
-    let bundle_storage = storage.bundle.as_ref().map(|cfg| match cfg {
-        config::BundleStorage::Memory(cfg) => hardy_bpa::storage::bundle_mem::new(cfg),
+    let bundle_storage = match storage.bundle.as_ref() {
+        None => None,
+        Some(cfg) => Some(match cfg {
+            config::BundleStorage::Memory(cfg) => hardy_bpa::storage::bundle_mem::new(cfg),
 
-        #[cfg(feature = "localdisk-storage")]
-        config::BundleStorage::LocalDisk(cfg) => hardy_localdisk_storage::new(cfg, upgrade_storage), // #[cfg(feature = "s3-storage")]
-                                                                                                     // config::BundleStorage::S3(cfg) => todo!(),
-    });
+            #[cfg(feature = "localdisk-storage")]
+            config::BundleStorage::LocalDisk(cfg) => {
+                hardy_localdisk_storage::new(cfg, upgrade_storage)
+            }
 
-    (metadata_storage, bundle_storage)
+            #[cfg(feature = "s3-storage")]
+            config::BundleStorage::S3(cfg) => hardy_s3_storage::new(cfg).await?,
+        }),
+    };
+
+    Ok((metadata_storage, bundle_storage))
 }
 
 #[tokio::main]
@@ -109,7 +120,8 @@ async fn main() -> anyhow::Result<()> {
 
 async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()> {
     let (metadata_storage, bundle_storage) =
-        init_storage(&config.storage, cli.upgrade_storage).await;
+       
+        init_storage(&config.storage, cli.upgrade_storage).await?.await;
 
     let bpa_config = hardy_bpa::config::Config {
         lru_capacity: config.storage.lru_capacity,

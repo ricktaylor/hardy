@@ -1854,6 +1854,7 @@ dependencies = [
  "hardy-otel",
  "hardy-postgres-storage",
  "hardy-proto",
+ "hardy-s3-storage",
  "hardy-sqlite-storage",
  "hardy-tcpclv4",
  "notify",
