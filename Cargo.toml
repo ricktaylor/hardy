@@ -19,6 +19,7 @@ members = [
     "ipn-legacy-filter",
     "localdisk-storage",
     "otel",
+    "s3-storage",
     "proto",
     "sqlite-storage",
     "tcpclv4",

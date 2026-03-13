@@ -23,7 +23,10 @@ S3-compatible object storage backend implementing the `BundleStorage` trait.
 ```
 BPA
  |
- +- save(bundle_data)    -> PutObject  uuid-v4 key -> returns storage_name
+ +- save(bundle_data)    -> PutObject (small)           uuid-v4 key -> returns storage_name
+ |                       -> CreateMultipartUpload +
+ |                          UploadPart x N (sequential) +
+ |                          CompleteMultipartUpload (large, >= multipart_threshold)
  +- load(storage_name)   -> GetObject  -> returns bundle bytes (or None)
  +- delete(storage_name) -> DeleteObject (idempotent)
  +- recover()            -> ListObjectsV2 (paginated) -> emit (storage_name, last_modified)
@@ -71,6 +74,24 @@ failure mode at the object level. An object either exists or it does not. Any er
 `NoSuchKey` on load indicates that the S3 service or network is unavailable, which is an
 infrastructure failure. All such errors map to `storage::Error::Fatal`.
 
+### Multipart Upload for Large Bundles
+
+`PutObject` has a hard 5 GiB limit imposed by the S3 API. Above a configurable threshold
+(`multipart_threshold`, default 8 MiB), `save()` switches to the S3 multipart upload protocol:
+
+1. `CreateMultipartUpload` — opens the upload session and returns an `upload_id`.
+2. `UploadPart` — uploads the payload in sequential chunks of `multipart_part_size` (default
+   8 MiB, minimum 5 MiB per S3 constraints). `Bytes::slice` is used to reference each chunk
+   without copying.
+3. `CompleteMultipartUpload` — commits all parts as a single atomic object.
+
+If any step after `CreateMultipartUpload` fails, `AbortMultipartUpload` is called before
+propagating the error. This releases the incomplete parts immediately and avoids accruing
+storage charges for abandoned uploads. A bucket lifecycle rule aborting stale incomplete
+multipart uploads after N days is recommended as a belt-and-suspenders measure.
+
+Parts are uploaded sequentially. Parallel part upload is a future optimisation.
+
 ### Recovery via `ListObjectsV2`
 
 The `recover()` method pages through all objects under the configured prefix using
@@ -94,6 +115,8 @@ access and must be redesigned separately).
 | `region` | env var | AWS region; falls back to `AWS_DEFAULT_REGION` / `AWS_REGION` |
 | `endpoint_url` | none | Custom endpoint for S3-compatible stores (MinIO, LocalStack) |
 | `force_path_style` | `false` | Path-style addressing; required for MinIO and some compatibles |
+| `multipart_threshold` | 8 MiB | Bundle size above which multipart upload is used |
+| `multipart_part_size` | 8 MiB | Size of each part in a multipart upload (minimum 5 MiB) |
 
 AWS credentials are not stored in configuration. Use the standard credential chain:
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables, an IAM instance role, or
@@ -119,6 +142,31 @@ S3 bundle storage is designed to be paired with `hardy-postgres-storage` for the
 backend. Both are shared, durable, and accessible from multiple replicas simultaneously. This
 combination is the intended foundation for horizontal scaling once the coordination problems
 described in `issues/bpa-horizontal-scaling.md` are resolved.
+
+## Known Limitations
+
+### In-memory bundle constraint
+
+`BundleStorage::load` returns `Bytes` and `BundleStorage::save` takes `Bytes`. Both are owned,
+contiguous, in-memory buffers. This is a trait-level constraint that applies to all backends,
+not just S3.
+
+The consequence for large bundles:
+
+- **`load`** buffers the entire S3 object in RAM before returning. For a 1 GiB bundle, every
+  `load` call is a 1 GiB RAM spike. On memory-constrained nodes this is a hard ceiling on the
+  maximum processable bundle size.
+
+- **`save`** requires the full bundle in RAM at the call site. There is no path for a CLA
+  receiving a large bundle over a network connection to stream it directly into S3 without
+  buffering the whole payload first.
+
+- **No partial read** is possible. Accessing a specific fragment of a stored bundle still
+  requires loading the full object.
+
+These constraints cannot be removed at the S3 storage layer. Fixing them requires changing the
+`BundleStorage` trait to use a streaming API (`AsyncRead`/`AsyncWrite` or a `ByteStream` return
+type). See `issues/bundle-storage-in-memory-constraint.md`.
 
 ## Dependencies
 
