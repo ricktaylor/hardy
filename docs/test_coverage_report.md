@@ -51,7 +51,7 @@ This report summarizes the test planning status for the Hardy project. The testi
 
 ## 3. Implementation Gaps
 
-The following areas have defined requirements but lack implemented code or specific test plans (as noted in `missing_features.md`).
+The following areas have defined requirements but lack implemented code or specific test plans.
 
 | Feature | Requirement | Test Status |
 | :--- | :--- | :--- |
