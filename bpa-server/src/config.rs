@@ -49,9 +49,10 @@ pub enum BundleStorage {
     #[cfg(feature = "localdisk-storage")]
     #[serde(rename = "localdisk")]
     LocalDisk(hardy_localdisk_storage::Config),
-    // #[cfg(feature = "s3-storage")]
-    // #[serde(rename = "s3")]
-    // S3(S3Config),
+
+    #[cfg(feature = "s3-storage")]
+    #[serde(rename = "s3")]
+    S3(hardy_s3_storage::Config),
 }
 
 #[derive(Serialize, Deserialize, Debug)]

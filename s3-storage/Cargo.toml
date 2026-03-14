@@ -1,0 +1,19 @@
+[package]
+name = "hardy-s3-storage"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+tracing = []
+serde = ["dep:serde"]
+
+[dependencies]
+hardy-bpa = { path = "../bpa" }
+aws-config = "1"
+aws-sdk-s3 = "1"
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
+time = { version = "0.3", features = ["std"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
