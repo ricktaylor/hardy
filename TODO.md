@@ -23,10 +23,10 @@ Align the Rust traits with the gRPC proto definitions. Both Application and Serv
 
 **Code organization**: All service-related code should be moved into a `bpa/src/services/` directory for tidiness (currently scattered across `service.rs`, `service_registry.rs`, `dispatcher/local.rs`, etc.).
 
-| Trait       | Access Level   | Use Case                          | Proto Equivalent      |
-|-------------|----------------|-----------------------------------|-----------------------|
-| Application | Payload-only   | User applications (high-level)    | `service.proto` (Application RPC) |
-| Service     | Full bundle    | System services like echo         | `service.proto` (Service RPC)     |
+| Trait       | Access Level | Use Case                       | Proto Equivalent                  |
+| ----------- | ------------ | ------------------------------ | --------------------------------- |
+| Application | Payload-only | User applications (high-level) | `service.proto` (Application RPC) |
+| Service     | Full bundle  | System services like echo      | `service.proto` (Service RPC)     |
 
 Note: CLA (`cla.proto`) is orthogonal - it's the **network interface API**, not an endpoint API. CLAs handle bundle transmission/reception over network links, not bundle delivery to endpoints.
 
@@ -189,11 +189,11 @@ Source → [route exists] → Echo Service → PONG → [route back?] → Source
 
 **Route population by layer:**
 
-| Hops | Route Source |
-|------|--------------|
+| Hops  | Route Source                                                        |
+| ----- | ------------------------------------------------------------------- |
 | 1-hop | CLA (direct peer), ARP subsystem (if only Neighbour known), or SAND |
-| 2-hop | SAND (via 2-hop neighbor tracking §3.3) |
-| N-hop | Static routes, or future dynamic routing agents |
+| 2-hop | SAND (via 2-hop neighbor tracking §3.3)                             |
+| N-hop | Static routes, or future dynamic routing agents                     |
 
 **Key points:**
 
@@ -288,7 +288,7 @@ CLA discovers link-layer adjacency (Neighbour)
   - Multi-homing supported: some nodes have multiple EIDs
   - Update `cla.proto` to use repeated EID field
 
-- [ ] **5.2 Implement BP-ARP subsystem (part of CLA subsystem)**
+- [x] **5.2 Implement BP-ARP subsystem (part of CLA subsystem)**
   - Subscribes to Neighbour notifications from CLAs
   - For each Neighbour without EID:
     - Send BP-ARP probe to discover EID
@@ -301,29 +301,29 @@ CLA discovers link-layer adjacency (Neighbour)
   - **Route installation notifies RoutingAgents:**
     - SAND can bootstrap 2-hop discovery
     - Other agents see new reachability
-  - Configurable: probe_interval, retry_count
+  - Configurable: probe_interval_secs, retry_count
 
-- [ ] **5.2.1 Add ARP policy configuration**
+- [x] **5.2.1 Add ARP policy configuration**
   - `arp = "as-needed"` - Only probe if CLA provides no EIDs (default)
   - `arp = "always"` - Always probe, verify/augment CLA-provided EIDs
   - `arp = "never"` - Trust CLA, fail if no EIDs provided (closed networks)
   - Policy is administrator decision, not CLA implementor decision
 
-- [ ] **5.3 Define ARP probe format**
-  - Destination: `ipn:0.0` (LocalNode admin endpoint) - see Considerations below
-  - ARP request/response as administrative record type
-  - Minimal payload: just enough to elicit EID response
-  - Response EID learned from bundle source field (`ipn:<their-node>.0`)
-  - Could align with SAND Credential Advertisement for compatibility
+- [x] **5.3 Define ARP probe format**
+  - Destination: `ipn:!.0` (LocalNode admin endpoint)
+  - `BpArpProbe` (admin record type 2) and `BpArpAck` (admin record type 3)
+  - No payload: EID learned from bundle source field (`ipn:<their-node>.0`)
+  - Design document: `docs/bp_arp_design.md`
 
-- [ ] **5.4 Update CLA trait and registry**
-  - `Cla` trait: `add_peer` now takes `&[Eid]` (possibly empty)
+- [x] **5.4 Update CLA trait and registry**
+  - `Cla` trait: `add_peer` now takes `&[NodeId]` (possibly empty = Neighbour)
   - Registry tracks resolution state (unresolved Neighbours vs resolved Peers)
-  - Callbacks for resolution completion (Neighbour → Peer promotion)
+  - `Cla::forward_raw()` for direct probe injection bypassing RIB
+  - `Registry::promote_neighbour()` for Neighbour → Peer promotion + RIB update
 
 ### Design Document
 
-**Design document**: `bpa/docs/bp_arp_design.md` (TBD) will cover the full BP-ARP protocol design, including:
+**Design document**: `/docs/bp_arp_design.md` (TBD) will cover the full BP-ARP protocol design, including:
 
 - Normative specification
 - Security considerations
@@ -525,15 +525,15 @@ The shortest path to a working `bp ping` tool:
 
 ### Parallel Work Streams
 
-| Track | Focus | Can Start | Blocks |
-|-------|-------|-----------|--------|
-| A | Service + Filter infrastructure | Immediately | Echo (3.x), SAND (6.x) |
-| B | Routing agent API | Immediately | SAND (6.x), Bandwidth (9.x) |
-| C | BP-ARP neighbour resolution | Immediately | SAND (6.x) |
-| D | SAND implementation | After A + B + C | - |
-| E | Ad-hoc multi-hop (DEFERRED) | After D | - |
-| F | Bandwidth, QoS & Link Properties | After B + C | hardy-tvr, CGR, fragmentation |
-| G | Proactive Scheduling (DEFERRED) | After D + F + DPP | hardy-cgr |
+| Track | Focus                            | Can Start         | Blocks                        |
+| ----- | -------------------------------- | ----------------- | ----------------------------- |
+| A     | Service + Filter infrastructure  | Immediately       | Echo (3.x), SAND (6.x)        |
+| B     | Routing agent API                | Immediately       | SAND (6.x), Bandwidth (9.x)   |
+| C     | BP-ARP neighbour resolution      | Immediately       | SAND (6.x)                    |
+| D     | SAND implementation              | After A + B + C   | -                             |
+| E     | Ad-hoc multi-hop (DEFERRED)      | After D           | -                             |
+| F     | Bandwidth, QoS & Link Properties | After B + C       | hardy-tvr, CGR, fragmentation |
+| G     | Proactive Scheduling (DEFERRED)  | After D + F + DPP | hardy-cgr                     |
 
 **Notes:**
 
@@ -545,22 +545,22 @@ The shortest path to a working `bp ping` tool:
 
 ### External Dependencies
 
-| Item | External Dependency | Impact |
-|------|---------------------|--------|
-| 3.1 | IETF RFC process | Can prototype, but endpoint/format may change |
-| 5.3 | draft-ietf-dtn-bp-sand | Draft is published, can implement |
+| Item | External Dependency    | Impact                                        |
+| ---- | ---------------------- | --------------------------------------------- |
+| 3.1  | IETF RFC process       | Can prototype, but endpoint/format may change |
+| 5.3  | draft-ietf-dtn-bp-sand | Draft is published, can implement             |
 
 ### gRPC Proto Work Items
 
 All new/updated traits must be exposed via gRPC. Summary of proto work:
 
-| Item | Proto File | Action | Trait/Feature |
-|------|------------|--------|---------------|
-| 1.6 | `service.proto` | **Done** | Consolidated `Application` + `Service` endpoint APIs |
-| 4.4 | `routing.proto` | **Create** | `RoutingAgent` + `RoutingAgentSink` |
-| 5.1 | `cla.proto` | **Update** | Change `AddPeer` to use repeated EID field (empty = Neighbour) |
-| 5.4 | `cla.proto` | **Update** | Add resolution completion callbacks |
-| 9.7 | `cla.proto` | **Update** | Add link properties (bandwidth_bps, mtu, contact_end) to Peer |
+| Item | Proto File      | Action     | Trait/Feature                                                  |
+| ---- | --------------- | ---------- | -------------------------------------------------------------- |
+| 1.6  | `service.proto` | **Done**   | Consolidated `Application` + `Service` endpoint APIs           |
+| 4.4  | `routing.proto` | **Create** | `RoutingAgent` + `RoutingAgentSink`                            |
+| 5.1  | `cla.proto`     | **Update** | Change `AddPeer` to use repeated EID field (empty = Neighbour) |
+| 5.4  | `cla.proto`     | **Update** | Add resolution completion callbacks                            |
+| 9.7  | `cla.proto`     | **Update** | Add link properties (bandwidth_bps, mtu, contact_end) to Peer  |
 
 ---
 
@@ -629,19 +629,19 @@ All new/updated traits must be exposed via gRPC. Summary of proto work:
 
 This TODO addresses the following requirements from [requirements.md](docs/requirements.md):
 
-| Requirement | Description | How Satisfied |
-|-------------|-------------|---------------|
-| **[REQ-19](docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools)** | Management and monitoring tools | Echo service (Section 3), ping tool (8.1) |
-| **[REQ-6](docs/requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth)** | Time-variant Routing API | RoutingAgent trait (Section 4) + Bandwidth infrastructure (Section 9) |
-| **[6.1.4](docs/requirements.md#312-cla-apis-parent-req-6)** | EID resolution to CLA addresses | BP-ARP (Section 5) |
-| **[6.1.5](docs/requirements.md#312-cla-apis-parent-req-6)** | Routes via config file | Static routes (4.5) |
-| **[6.1.6](docs/requirements.md#312-cla-apis-parent-req-6)** | Add/remove routes at runtime | RoutingAgentSink (4.2) |
-| **[6.1.7](docs/requirements.md#312-cla-apis-parent-req-6)** | Discard bundles by destination | RIB Drop rules (existing) |
-| **[6.1.8](docs/requirements.md#312-cla-apis-parent-req-6)** | Reflect bundle to previous node | RIB Reflect rules (existing) |
-| **[6.1.9](docs/requirements.md#312-cla-apis-parent-req-6)** | Prioritise routing rules | RIB priority (existing, exposed via 4.x) |
-| **[6.1.10](docs/requirements.md#312-cla-apis-parent-req-6)** | ECMP | RIB (existing) |
-| **[REQ-4](docs/requirements.md#req-4-alignment-with-on-going-dtn-standardisation)** | Ongoing standardization | SAND (Section 6) |
-| **[REQ-14](docs/requirements.md#req-14-reliability)** | Reliability / Security | Filter infrastructure (Section 2) |
+| Requirement                                                                                                                 | Description                     | How Satisfied                                                         |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------- |
+| **[REQ-19](docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools)**                          | Management and monitoring tools | Echo service (Section 3), ping tool (8.1)                             |
+| **[REQ-6](docs/requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth)** | Time-variant Routing API        | RoutingAgent trait (Section 4) + Bandwidth infrastructure (Section 9) |
+| **[6.1.4](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                 | EID resolution to CLA addresses | BP-ARP (Section 5)                                                    |
+| **[6.1.5](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                 | Routes via config file          | Static routes (4.5)                                                   |
+| **[6.1.6](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                 | Add/remove routes at runtime    | RoutingAgentSink (4.2)                                                |
+| **[6.1.7](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                 | Discard bundles by destination  | RIB Drop rules (existing)                                             |
+| **[6.1.8](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                 | Reflect bundle to previous node | RIB Reflect rules (existing)                                          |
+| **[6.1.9](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                 | Prioritise routing rules        | RIB priority (existing, exposed via 4.x)                              |
+| **[6.1.10](docs/requirements.md#312-cla-apis-parent-req-6)**                                                                | ECMP                            | RIB (existing)                                                        |
+| **[REQ-4](docs/requirements.md#req-4-alignment-with-on-going-dtn-standardisation)**                                         | Ongoing standardization         | SAND (Section 6)                                                      |
+| **[REQ-14](docs/requirements.md#req-14-reliability)**                                                                       | Reliability / Security          | Filter infrastructure (Section 2)                                     |
 
 **Notes:**
 
@@ -699,13 +699,13 @@ The conservative estimate prevents over-queuing; it doesn't limit actual through
 
 ### Current State
 
-| Component | Status | Location |
-|-----------|--------|----------|
-| Flow labels | **Implemented** | `BundleMetadata.flow_label` |
-| TBF/HTB policy configs | Config structures exist, **not implemented** | `bpa/src/policy/` |
-| Per-peer queues | Queue exists, **no rate limiting** | `bpa/src/cla/` |
-| Peer link properties | **Missing** | Peers have no bandwidth/MTU/contact_end |
-| Fragmentation | **Not implemented** | PICS Item 40 is 'N' |
+| Component              | Status                                       | Location                                |
+| ---------------------- | -------------------------------------------- | --------------------------------------- |
+| Flow labels            | **Implemented**                              | `BundleMetadata.flow_label`             |
+| TBF/HTB policy configs | Config structures exist, **not implemented** | `bpa/src/policy/`                       |
+| Per-peer queues        | Queue exists, **no rate limiting**           | `bpa/src/cla/`                          |
+| Peer link properties   | **Missing**                                  | Peers have no bandwidth/MTU/contact_end |
+| Fragmentation          | **Not implemented**                          | PICS Item 40 is 'N'                     |
 
 ### Use Cases
 
@@ -838,13 +838,13 @@ For latency-sensitive data, reactive is correct. For bulk data with flexible dea
 
 ### Reactive vs Proactive
 
-| Aspect | Reactive (Section 9) | Proactive (Future) |
-|--------|---------------------|-------------------|
-| **Input** | Current active routes/peers | Future contact schedule |
-| **Decision** | Send on best available now | Wait for better opportunity? |
-| **Link info from** | CLA (transport layer) | DPP ContactAdvertisements |
-| **Optimizes for** | Latency | Throughput / deadline |
-| **Complexity** | Low | High (CGR algorithms) |
+| Aspect             | Reactive (Section 9)        | Proactive (Future)           |
+| ------------------ | --------------------------- | ---------------------------- |
+| **Input**          | Current active routes/peers | Future contact schedule      |
+| **Decision**       | Send on best available now  | Wait for better opportunity? |
+| **Link info from** | CLA (transport layer)       | DPP ContactAdvertisements    |
+| **Optimizes for**  | Latency                     | Throughput / deadline        |
+| **Complexity**     | Low                         | High (CGR algorithms)        |
 
 ### Two Information Stores
 
@@ -901,12 +901,12 @@ Bundle arrives
 
 ### Key Components
 
-| Component | Description | Status |
-|-----------|-------------|--------|
-| **Contact Plan Store** | Holds future contacts from DPP; queryable by destination, time range | Not designed |
-| **Bundle Classification** | Determines latency sensitivity; could use Class of Service, flow labels, or explicit flags | Not designed |
-| **Scheduling Algorithm** | CGR-style optimization; considers bundle size, deadline, contact capacity | Not designed |
-| **Deferred Egress** | EgressPolicy that defers bundles until better contact | **Sketched below** |
+| Component                 | Description                                                                                | Status             |
+| ------------------------- | ------------------------------------------------------------------------------------------ | ------------------ |
+| **Contact Plan Store**    | Holds future contacts from DPP; queryable by destination, time range                       | Not designed       |
+| **Bundle Classification** | Determines latency sensitivity; could use Class of Service, flow labels, or explicit flags | Not designed       |
+| **Scheduling Algorithm**  | CGR-style optimization; considers bundle size, deadline, contact capacity                  | Not designed       |
+| **Deferred Egress**       | EgressPolicy that defers bundles until better contact                                      | **Sketched below** |
 
 ### Deferred Egress Design (Sketch)
 
@@ -1029,18 +1029,18 @@ BPSec (Bundle Protocol Security, RFC 9172/9173) implementation for the BPA. The 
 
 ### Current State
 
-| Component | Status | Location |
-|-----------|--------|----------|
-| BPSec parsing/validation | **Implemented** | `bpv7/src/bpsec/` |
-| Key types (JWK) | **Implemented** | `bpv7/src/bpsec/key.rs` |
-| RFC 9173 contexts (AES-GCM, HMAC-SHA2) | **Implemented** | `bpv7/src/bpsec/rfc9173/` |
-| `KeySource` trait | **Implemented** | `bpv7/src/bpsec/key.rs` - core key lookup interface |
-| `KeyProvider` trait | **Implemented** | `bpa/src/keys/mod.rs` - bundle-context-aware provider |
-| `Registry` + `CompositeKeySource` | **Implemented (WIP)** | `bpa/src/keys/registry.rs` - aggregates multiple providers |
-| Dispatcher integration | **Wired** | `keys_registry` field, `key_source()` method used in `admin.rs`, `local.rs` |
-| Concrete KeyProvider impls | **Missing** | No config-based or file-based providers |
-| BPSec reason codes in status reports | **Missing** | Dispatcher doesn't generate them |
-| Decrypt failure handling | **Partial** | TODOs at `admin.rs:24`, `local.rs:202` |
+| Component                              | Status                | Location                                                                    |
+| -------------------------------------- | --------------------- | --------------------------------------------------------------------------- |
+| BPSec parsing/validation               | **Implemented**       | `bpv7/src/bpsec/`                                                           |
+| Key types (JWK)                        | **Implemented**       | `bpv7/src/bpsec/key.rs`                                                     |
+| RFC 9173 contexts (AES-GCM, HMAC-SHA2) | **Implemented**       | `bpv7/src/bpsec/rfc9173/`                                                   |
+| `KeySource` trait                      | **Implemented**       | `bpv7/src/bpsec/key.rs` - core key lookup interface                         |
+| `KeyProvider` trait                    | **Implemented**       | `bpa/src/keys/mod.rs` - bundle-context-aware provider                       |
+| `Registry` + `CompositeKeySource`      | **Implemented (WIP)** | `bpa/src/keys/registry.rs` - aggregates multiple providers                  |
+| Dispatcher integration                 | **Wired**             | `keys_registry` field, `key_source()` method used in `admin.rs`, `local.rs` |
+| Concrete KeyProvider impls             | **Missing**           | No config-based or file-based providers                                     |
+| BPSec reason codes in status reports   | **Missing**           | Dispatcher doesn't generate them                                            |
+| Decrypt failure handling               | **Partial**           | TODOs at `admin.rs:24`, `local.rs:202`                                      |
 
 ### Existing Infrastructure
 
@@ -1249,20 +1249,20 @@ All implementation in `proto/src/server/` (after Section 13 refactoring):
 
 For reference when closing external issues:
 
-| Date | Tasks | Summary |
-|------|-------|---------|
-| 2026-02-20 | 2.x | RFC9171 validity filter - configurable CRC and BundleAge checks moved from parser to ingress filter for interop flexibility |
-| 2026-02-20 | - | TCPCLv4 logging improvements - structured debug! syntax with address context, reduced noise (warn→debug for version mismatch, etc.) |
-| 2026-02-19 | 8.2 | Hardy-to-hardy interop test, `BpaRegistration` trait with `RemoteBpa` client, gRPC restructure to `proto/src/server/`, `hardy_async::TaskPool`, component refactoring, dependency cleanup |
-| 2026-02-18 | 8.2 | dtn7-rs interop tests (`tests/interop/dtn7-rs/`), centralized logging filters |
-| 2026-02-17 | 8.1 | Reworked `bp ping` tool with proper status report handling, new payload format, man page |
-| 2026-02-17 | - | Fix clean shutdown (storage channel, dispatcher), RIB route priority fix (Drop vs Via) |
-| 2026-02-17 | - | TCPCLv4 codec fix (data extraction skipping header bytes) |
-| 2026-02-10 | 3.2, 3.3 | Echo service (`echo-service/`), hardy-async `Once<T>`, OnceLock migrations |
-| 2026-02-09 | 2.1, 7.0 | Ingress metadata in `ReadOnlyMetadata`, available to filters |
-| 2026-02-06 | - | IPN Legacy Filter, config/serde improvements |
-| 2026-02-06 | 2.3 | Egress filter, crash safety model finalized |
-| 2026-02-05 | 2.3 | Filter integration, dispatcher refactoring, `processing_pool` |
+| Date       | Tasks    | Summary                                                                                                                                                                                   |
+| ---------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-02-20 | 2.x      | RFC9171 validity filter - configurable CRC and BundleAge checks moved from parser to ingress filter for interop flexibility                                                               |
+| 2026-02-20 | -        | TCPCLv4 logging improvements - structured debug! syntax with address context, reduced noise (warn→debug for version mismatch, etc.)                                                       |
+| 2026-02-19 | 8.2      | Hardy-to-hardy interop test, `BpaRegistration` trait with `RemoteBpa` client, gRPC restructure to `proto/src/server/`, `hardy_async::TaskPool`, component refactoring, dependency cleanup |
+| 2026-02-18 | 8.2      | dtn7-rs interop tests (`tests/interop/dtn7-rs/`), centralized logging filters                                                                                                             |
+| 2026-02-17 | 8.1      | Reworked `bp ping` tool with proper status report handling, new payload format, man page                                                                                                  |
+| 2026-02-17 | -        | Fix clean shutdown (storage channel, dispatcher), RIB route priority fix (Drop vs Via)                                                                                                    |
+| 2026-02-17 | -        | TCPCLv4 codec fix (data extraction skipping header bytes)                                                                                                                                 |
+| 2026-02-10 | 3.2, 3.3 | Echo service (`echo-service/`), hardy-async `Once<T>`, OnceLock migrations                                                                                                                |
+| 2026-02-09 | 2.1, 7.0 | Ingress metadata in `ReadOnlyMetadata`, available to filters                                                                                                                              |
+| 2026-02-06 | -        | IPN Legacy Filter, config/serde improvements                                                                                                                                              |
+| 2026-02-06 | 2.3      | Egress filter, crash safety model finalized                                                                                                                                               |
+| 2026-02-05 | 2.3      | Filter integration, dispatcher refactoring, `processing_pool`                                                                                                                             |
 
 ---
 
@@ -1276,62 +1276,62 @@ These are TODO comments in production code representing features or fixes that n
 
 #### Dispatcher & Bundle Processing
 
-| Topic | Locations | Description | Req |
-|-------|-----------|-------------|-----|
-| Ingest error handling | `dispatch.rs:14`, `reassemble.rs:29,31`, `local.rs:210`, `restart.rs:240` | **See Section 11.5** - junk bundles, parse failures, lost+found | REQ-2, REQ-14 |
-| Delivery decrypt failure | `admin.rs:24`, `local.rs:202` | **See Section 11.6** - NoKey at final delivery | REQ-2 |
-| Status report delivery | `admin.rs:43` | **See Section 1.7** - WaitingForService for disconnected apps | REQ-1 |
-| Custody transfer | `dispatch.rs:134` | Custody transfer signalling may need to happen here | REQ-4 |
-| Access control | `local.rs:155` | **See Section 12.3** - Service authorization (cancel validation in gRPC layer) | REQ-14 |
+| Topic                    | Locations                                                                 | Description                                                                    | Req           |
+| ------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------- |
+| Ingest error handling    | `dispatch.rs:14`, `reassemble.rs:29,31`, `local.rs:210`, `restart.rs:240` | **See Section 11.5** - junk bundles, parse failures, lost+found                | REQ-2, REQ-14 |
+| Delivery decrypt failure | `admin.rs:24`, `local.rs:202`                                             | **See Section 11.6** - NoKey at final delivery                                 | REQ-2         |
+| Status report delivery   | `admin.rs:43`                                                             | **See Section 1.7** - WaitingForService for disconnected apps                  | REQ-1         |
+| Custody transfer         | `dispatch.rs:134`                                                         | Custody transfer signalling may need to happen here                            | REQ-4         |
+| Access control           | `local.rs:155`                                                            | **See Section 12.3** - Service authorization (cancel validation in gRPC layer) | REQ-14        |
 
 #### RIB & Routing
 
-| Topic | Locations | Description | Req |
-|-------|-----------|-------------|-----|
-| Route table switching | `find.rs:22,54` | Support multiple route tables and switching between them | REQ-6 |
-| Resolver lookup | `find.rs:191`, `bpa-server/clas.rs:56` | EID→CLA address resolution for `via` routes | 6.1.4 |
-| Services file | `local.rs:61,74,88` | Drive local routes from a services config file | - |
+| Topic                 | Locations                              | Description                                              | Req   |
+| --------------------- | -------------------------------------- | -------------------------------------------------------- | ----- |
+| Route table switching | `find.rs:22,54`                        | Support multiple route tables and switching between them | REQ-6 |
+| Resolver lookup       | `find.rs:191`, `bpa-server/clas.rs:56` | EID→CLA address resolution for `via` routes              | 6.1.4 |
+| Services file         | `local.rs:61,74,88`                    | Drive local routes from a services config file           | -     |
 
 #### CLA & Peers
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `bpa/src/cla/registry.rs:236` | Should ideally do a replace and return the previous | - |
+| Location                      | Description                                         | Req |
+| ----------------------------- | --------------------------------------------------- | --- |
+| `bpa/src/cla/registry.rs:236` | Should ideally do a replace and return the previous | -   |
 
 #### Storage
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `bpa/src/metadata.rs:58` | Add 'trace' mark that will trigger local feedback | REQ-19 |
-| `bpa/src/storage/adu_reassembly.rs:71` | Capture aggregate received_at across fragments | REQ-1 |
-| `bpa/src/storage/adu_reassembly.rs:197` | Lots of memory copies happening here | REQ-13 |
+| Location                                | Description                                       | Req    |
+| --------------------------------------- | ------------------------------------------------- | ------ |
+| `bpa/src/metadata.rs:58`                | Add 'trace' mark that will trigger local feedback | REQ-19 |
+| `bpa/src/storage/adu_reassembly.rs:71`  | Capture aggregate received_at across fragments    | REQ-1  |
+| `bpa/src/storage/adu_reassembly.rs:197` | Lots of memory copies happening here              | REQ-13 |
 
 #### BPSec
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `bpv7/src/bpsec/encryptor.rs:190` | Update match when adding new contexts (**See Section 11**) | REQ-2 |
-| `bpv7/src/bundle/primary_block.rs:231` | Null Report-To EID handling | REQ-1 |
+| Location                               | Description                                                | Req   |
+| -------------------------------------- | ---------------------------------------------------------- | ----- |
+| `bpv7/src/bpsec/encryptor.rs:190`      | Update match when adding new contexts (**See Section 11**) | REQ-2 |
+| `bpv7/src/bundle/primary_block.rs:231` | Null Report-To EID handling                                | REQ-1 |
 
 #### TCPCLv4
 
-| Topic | Locations | Description | Req |
-|-------|-----------|-------------|-----|
-| mTLS support | `listen.rs:376`, `connect.rs:183`, `config.rs:45` | Client/server certificate verification and config | 3.1.7 |
-| gRPC registration | `tcpclv4-server/main.rs:30` | Connect to BPA via gRPC and register CLA | REQ-18 |
+| Topic             | Locations                                         | Description                                       | Req    |
+| ----------------- | ------------------------------------------------- | ------------------------------------------------- | ------ |
+| mTLS support      | `listen.rs:376`, `connect.rs:183`, `config.rs:45` | Client/server certificate verification and config | 3.1.7  |
+| gRPC registration | `tcpclv4-server/main.rs:30`                       | Connect to BPA via gRPC and register CLA          | REQ-18 |
 
 #### EID Patterns
 
-| Topic | Locations | Description | Req |
-|-------|-----------|-------------|-----|
+| Topic             | Locations              | Description                                            | Req          |
+| ----------------- | ---------------------- | ------------------------------------------------------ | ------------ |
 | DTN glob patterns | `dtn_pattern.rs:17,60` | Glob matching needs work - split node_name/demux globs | 6.1.1, 6.1.2 |
 
 #### Tools
 
-| Location | Description | Req |
-|----------|-------------|-----|
-| `tools/src/ping/exec.rs:76` | DNS resolution for EIDs | 19.2.3 |
-| `file-cla/src/watcher.rs:106` | Could implement "Sent Items" folder instead of deleting | - |
+| Location                      | Description                                             | Req    |
+| ----------------------------- | ------------------------------------------------------- | ------ |
+| `tools/src/ping/exec.rs:76`   | DNS resolution for EIDs                                 | 19.2.3 |
+| `file-cla/src/watcher.rs:106` | Could implement "Sent Items" folder instead of deleting | -      |
 
 ### Test Coverage Gaps (Functionality Exists, Tests Missing)
 
@@ -1344,7 +1344,7 @@ Note: These are distinct from Functional TODOs above - no production code change
 #### eid-patterns (REQ-6: 6.1.1, 6.1.2)
 
 - `str_tests.rs:15` - Legacy IPN format (2-element) parsing: "ipn:1.2"
-- `str_tests.rs:182` - Invalid syntax: "ipn:1-1", "ipn:[10-5]", "http://*"
+- `str_tests.rs:182` - Invalid syntax: "ipn:1-1", "ipn:[10-5]", "http://\*"
 - `str_tests.rs:221` - DTN matching logic: Exact, Prefix, Recursive
 
 #### bpa
@@ -1420,8 +1420,8 @@ Note: These are distinct from Functional TODOs above - no production code change
 
 These are higher-level design considerations captured in code.
 
-| Location | Description | Req |
-|----------|-------------|-----|
+| Location                        | Description                                                   | Req    |
+| ------------------------------- | ------------------------------------------------------------- | ------ |
 | `bpa/benches/bundle_bench.rs:3` | Entire benchmarking suite needs statistical significance work | REQ-13 |
 
 ---

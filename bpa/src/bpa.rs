@@ -194,11 +194,18 @@ impl Bpa {
         let rib = Arc::new(rib::Rib::new(node_ids.clone(), store.clone()));
 
         // New registries
+        let node_ids_arc = Arc::new(node_ids.clone());
+        let arp = if matches!(config.arp.policy, cla::arp::ArpPolicy::Never) {
+            None
+        } else {
+            Some(cla::arp::ArpSubsystem::new(config.arp, node_ids_arc.clone()))
+        };
         let cla_registry = Arc::new(cla::registry::Registry::new(
-            (&node_ids).into(),
+            node_ids_arc,
             poll_channel_depth.into(),
             rib.clone(),
             store.clone(),
+            arp,
         ));
 
         // New Keys Registry (TODO: Make this load keys from the Config!)
