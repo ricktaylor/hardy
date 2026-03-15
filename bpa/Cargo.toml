@@ -39,7 +39,7 @@ bytes = "1.11.1"
 tracing = { version = "0.1.44", default-features = false }
 metrics = "0.24.3"
 trace-err = "1.0.0"
-rand = { version = "0.10.0", default-features = false, features = ["alloc", "sys_rng"] }
+rand = { version = "0.10.0", default-features = false, features = ["alloc", "sys_rng", "thread_rng"] }
 hashbrown = "0.16.1"
 foldhash = { version = "0.2.0", default-features = false }
 lru = { version = "0.16.3", default-features = false }

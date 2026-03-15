@@ -25,7 +25,20 @@ members = [
     "tcpclv4-server",
     "tools",
     "tests/storage",
+    "postgres-storage",
 ]
+
+# Stub patches: Cargo resolves optional deps eagerly (to produce a lock file
+# valid for all feature combinations), so unactivated optional deps of sqlx
+# still appear in the lock file and are scanned by `cargo audit`.
+# Each stub replaces the real crate with a no-dep shell at the same version,
+# removing transitive vulnerabilities/conflicts that can never be compiled.
+# See patches/*/README.md for per-stub explanations.
+[patch.crates-io]
+# Removes `links = "sqlite3"` conflict with rusqlite 0.38 (libsqlite3-sys ^0.36).
+sqlx-sqlite = { path = "patches/sqlx-sqlite" }
+# Removes RUSTSEC-2023-0071 (rsa Marvin Attack) — mysql feature is never enabled.
+sqlx-mysql = { path = "patches/sqlx-mysql" }
 
 [profile.release]
 #lto = true

@@ -47,15 +47,16 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             .join(testname);
 
     #[cfg(feature = "sqlite-storage")]
-    let metadata_storage = Some(hardy_sqlite_storage::new(
-        &hardy_sqlite_storage::Config {
-            db_dir: path.clone(),
-            db_name: "sqlite-storage.db".to_string(),
-        },
-        true,
-    ));
+    let metadata_storage: Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> =
+        Some(hardy_sqlite_storage::new(
+            &hardy_sqlite_storage::Config {
+                db_dir: path.clone(),
+                db_name: "sqlite-storage.db".to_string(),
+            },
+            true,
+        ));
     #[cfg(not(feature = "sqlite-storage"))]
-    let metadata_storage = None;
+    let metadata_storage: Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> = None;
 
     #[cfg(feature = "localdisk-storage")]
     let bundle_storage = Some(hardy_localdisk_storage::new(
@@ -65,6 +66,20 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         },
         true,
     ));
+
+    #[cfg(feature = "postgres-storage")]
+    let metadata_storage: Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> = Some(
+        hardy_postgres_storage::new(
+            &hardy_postgres_storage::Config {
+                database_url: "postgres://hardy:hardy@192.168.2.3:5432/hardy".to_string(),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+        .expect("Failed to create postgres metadata storage"),
+    );
+
     #[cfg(not(feature = "localdisk-storage"))]
     let bundle_storage = None;
 
