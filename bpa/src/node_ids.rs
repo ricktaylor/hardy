@@ -44,15 +44,13 @@ impl NodeIds {
         }
     }
 
+    #[cfg(feature = "bp-arp")]
     /// Returns ALL admin endpoint EIDs for this node — one per configured scheme.
     /// Used to populate the BP-ARP response payload (§4.3).
     pub(crate) fn get_all_admin_endpoints(&self) -> Vec<Eid> {
         let mut eids = Vec::new();
         if let Some(node_id) = &self.ipn {
-            eids.push(Eid::Ipn {
-                fqnn: node_id.clone(),
-                service_number: 0,
-            });
+            eids.push(node_id.clone().into());
         }
         if let Some(node_id) = &self.dtn {
             eids.push(node_id.clone().into());

@@ -32,6 +32,8 @@ serde = ["dep:serde","hashbrown/serde"]
 # Internal feature: enables BPSec signing/encryption modules.
 # Automatically enabled by security context features (rfc9173, and future cose).
 bpsec = []
+# Internal feature: enables BP-Arp modules.
+bp-arp = []
 
 [dependencies]
 hardy-cbor = { path = "../cbor" }

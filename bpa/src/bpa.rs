@@ -195,14 +195,8 @@ impl Bpa {
 
         // New registries
         let node_ids_arc = Arc::new(node_ids.clone());
-        let arp = if matches!(config.arp.policy, cla::arp::ArpPolicy::Never) {
-            None
-        } else {
-            Some(cla::arp::ArpSubsystem::new(
-                config.arp,
-                node_ids_arc.clone(),
-            ))
-        };
+        let arp = cla::arp::ArpSubsystem::new(config.arp, node_ids_arc.clone());
+
         let cla_registry = Arc::new(cla::registry::Registry::new(
             node_ids_arc,
             poll_channel_depth.into(),

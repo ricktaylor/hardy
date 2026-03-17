@@ -6,6 +6,8 @@ on the status of a bundle. This can include events like bundle reception, forwar
 */
 
 use super::*;
+#[cfg(feature = "bp-arp")]
+use crate::eid::Eid;
 use crate::error::CaptureFieldErr;
 use thiserror::Error;
 
@@ -345,13 +347,11 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
 pub enum AdministrativeRecord {
     /// A bundle status report (RFC 9171 type 1).
     BundleStatusReport(BundleStatusReport),
-    /// A BP-ARP probe (type 2). Sent to `ipn:!.0` (LocalNode) to solicit an EID reply.
-    /// The sender's EID is carried in the bundle primary block source field; payload is empty.
-    BpArpProbe,
-    /// A BP-ARP acknowledgement (type 3). Sent in response to a `BpArpProbe`.
-    /// The sender's EID is carried in the bundle primary block source field.
-    /// The payload contains a CBOR array of ALL the responding node's EIDs.
-    BpArpAck(Vec<crate::eid::Eid>),
+    /// A BP-ARP record (type 2).
+    /// - If destination is `ipn:!.0`, it is a Request (Probe).
+    /// - If destination is a Node ID, it is a Response (Ack).
+    #[cfg(feature = "bp-arp")]
+    BpArp(Vec<Eid>),
 }
 
 impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
@@ -360,14 +360,9 @@ impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         match self {
             AdministrativeRecord::BundleStatusReport(report) => encoder.emit(&(1u64, report)),
-            // BpArpProbe carries no payload — the sender's EID is in the bundle source field.
-            AdministrativeRecord::BpArpProbe => encoder.emit_array(Some(2), |a| {
+            #[cfg(feature = "bp-arp")]
+            AdministrativeRecord::BpArp(eids) => encoder.emit_array(Some(2), |a| {
                 a.emit(&2u64);
-                a.emit_array(Some(0), |_| {});
-            }),
-            // BpArpAck payload is a CBOR array of all node EIDs the responder owns.
-            AdministrativeRecord::BpArpAck(eids) => encoder.emit_array(Some(2), |a| {
-                a.emit(&3u64);
                 a.emit(eids.as_slice());
             }),
         }
@@ -393,14 +388,13 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
                     let (r, s) = a.parse().map_field_err::<Error>("bundle status report")?;
                     Ok((Self::BundleStatusReport(r), shortest && s))
                 }
-                2u64 => Ok((Self::BpArpProbe, shortest)),
-                3u64 => {
-                    // Parse the payload array of EIDs.
+                #[cfg(feature = "bp-arp")]
+                2u64 => {
                     let (eids, s) = a
                         .parse_array(|a, s, _tags| {
                             let mut eids = Vec::new();
                             while let Some(eid) = a
-                                .try_parse::<crate::eid::Eid>()
+                                .try_parse::<Eid>()
                                 .map_field_err::<Error>("BpArpAck eid")?
                             {
                                 eids.push(eid);
@@ -408,7 +402,7 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
                             Ok::<_, Error>((eids, s))
                         })
                         .map_field_err::<Error>("BpArpAck payload")?;
-                    Ok((Self::BpArpAck(eids), shortest && s))
+                    Ok((Self::BpArp(eids), shortest && s))
                 }
                 v => Err(Error::UnknownAdminRecordType(v)),
             }

@@ -20,6 +20,7 @@ pub struct Cla {
     address_type: Option<ClaAddressType>,
 }
 
+#[cfg(feature = "bp-arp")]
 impl Cla {
     /// Forward `data` bytes directly to a specific CLA address without going through the
     /// egress queue or the RIB. Used by the BP-ARP subsystem to send probes to Neighbours
@@ -136,7 +137,7 @@ pub(crate) struct Registry {
     peers: peers::PeerTable,
     poll_channel_depth: usize,
     tasks: hardy_async::TaskPool,
-    arp: Option<Arc<arp::ArpSubsystem>>,
+    arp: Arc<arp::ArpSubsystem>,
 }
 
 impl Registry {
@@ -145,7 +146,7 @@ impl Registry {
         poll_channel_depth: usize,
         rib: Arc<rib::Rib>,
         store: Arc<storage::Store>,
-        arp: Option<Arc<arp::ArpSubsystem>>,
+        arp: Arc<arp::ArpSubsystem>,
     ) -> Self {
         Self {
             node_ids,
@@ -159,6 +160,7 @@ impl Registry {
         }
     }
 
+    #[cfg(feature = "bp-arp")]
     /// Returns all admin endpoint EIDs for this node, used to populate BP-ARP ack payloads.
     pub fn all_admin_endpoints(&self) -> Vec<hardy_bpv7::eid::Eid> {
         self.node_ids.get_all_admin_endpoints()
@@ -246,9 +248,7 @@ impl Registry {
                 self.rib.remove_forward(node_id, peer_id).await;
             }
             // Notify ARP subsystem so it can cancel any outstanding probe task
-            if let Some(arp) = &self.arp {
-                arp.on_neighbour_removed(peer_id).await;
-            }
+            self.arp.on_neighbour_removed(peer_id).await;
             // Remove from peer table (stops forwarding, signals drain)
             self.peers.remove(peer_id).await;
         }
@@ -314,12 +314,9 @@ impl Registry {
         }
 
         // Notify BP-ARP subsystem about new Neighbour (no EID known yet)
-        if node_ids.is_empty() {
-            if let Some(arp) = &self.arp {
-                arp.on_neighbour_added(peer_id, cla, cla_addr, &self.tasks)
-                    .await;
-            }
-        }
+        self.arp
+            .on_neighbour_added(peer_id, cla, cla_addr, &self.tasks)
+            .await;
 
         true
     }
@@ -330,11 +327,7 @@ impl Registry {
         };
 
         // Notify ARP if this was a Neighbour (no EIDs known)
-        if node_ids.is_empty() {
-            if let Some(arp) = &self.arp {
-                arp.on_neighbour_removed(peer_id).await;
-            }
-        }
+        self.arp.on_neighbour_removed(peer_id).await;
 
         self.peers.remove(peer_id).await;
         for node_id in node_ids {
@@ -346,6 +339,7 @@ impl Registry {
         true
     }
 
+    #[cfg(feature = "bp-arp")]
     /// Promotes a Neighbour (peer with unknown EID) to a named Peer by learning its EID
     /// from an incoming BP-ARP message. Installs a RIB route and cancels the probe task.
     ///
@@ -396,9 +390,7 @@ impl Registry {
                 }
                 if was_neighbour {
                     // Cancel any outstanding ARP probe now that we have at least one EID.
-                    if let Some(arp) = &self.arp {
-                        arp.on_ack_received(peer_id).await;
-                    }
+                    self.arp.on_ack_received(peer_id).await;
                 }
                 return;
             }
