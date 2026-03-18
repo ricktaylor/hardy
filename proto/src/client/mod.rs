@@ -43,7 +43,7 @@ impl RemoteBpa {
 }
 
 #[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
+impl hardy_bpa::BpaRegistration for RemoteBpa {
     async fn register_cla(
         &self,
         name: String,

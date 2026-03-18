@@ -5,7 +5,7 @@ use hardy_bpa::async_trait;
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::ClaSink>, _node_ids: &[NodeId]) {
         // Register all peers with the BPA
         for (eid, path) in &self.inboxes {
             if let Err(e) = sink
@@ -22,7 +22,7 @@ impl hardy_bpa::cla::Cla for Cla {
             }
         }
 
-        let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
+        let sink: Arc<dyn hardy_bpa::cla::ClaSink> = sink.into();
         let sink = self.sink.call_once(|| sink);
 
         // Start the file watcher if outbox is configured

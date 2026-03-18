@@ -2,7 +2,7 @@ use super::*;
 use proto::cla::*;
 
 struct ClaInner {
-    sink: Box<dyn hardy_bpa::cla::Sink>,
+    sink: Box<dyn hardy_bpa::cla::ClaSink>,
 }
 
 struct Cla {
@@ -105,7 +105,7 @@ impl Cla {
 impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(
         &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
+        sink: Box<dyn hardy_bpa::cla::ClaSink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
     ) {
         // Ensure single initialization
@@ -203,7 +203,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::BpaRegistration>,
     channel_size: usize,
 }
 
@@ -273,7 +273,7 @@ impl cla_server::Cla for Service {
 
 /// Create a new CLA gRPC service.
 pub fn new_cla_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn hardy_bpa::BpaRegistration>,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
         bpa: bpa.clone(),

@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::BpaRegistration;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]

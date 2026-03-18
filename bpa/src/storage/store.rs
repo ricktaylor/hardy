@@ -1,20 +1,30 @@
-use super::*;
+use bytes::Bytes;
+use hardy_async::sync::Mutex;
+use hardy_bpv7::eid::Eid;
+use lru::LruCache;
+use trace_err::TraceErrResult;
+use tracing::error;
+
+#[cfg(feature = "tracing")]
+use crate::instrument;
+
+use super::{BundleStorage, MetadataStorage, Sender, Store};
+use crate::bundle::{Bundle, BundleMetadata};
+use crate::dispatcher::Dispatcher;
+use crate::{Arc, BTreeSet};
 
 impl Store {
-    /// Create a new Store with the configured storage backends.
-    /// Uses in-memory storage if no backends are provided.
     pub fn new(
         lru_capacity: core::num::NonZeroUsize,
         max_cached_bundle_size: core::num::NonZeroUsize,
         reaper_cache_size: core::num::NonZeroUsize,
-        metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
-        bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
+        metadata_storage: Arc<dyn MetadataStorage>,
+        bundle_storage: Arc<dyn BundleStorage>,
     ) -> Self {
         Self {
             tasks: hardy_async::TaskPool::new(),
-            metadata_storage: metadata_storage
-                .unwrap_or_else(|| metadata_mem::new(&Default::default())),
-            bundle_storage: bundle_storage.unwrap_or_else(|| bundle_mem::new(&Default::default())),
+            metadata_storage,
+            bundle_storage,
             bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(lru_capacity)),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),
@@ -23,16 +33,11 @@ impl Store {
         }
     }
 
-    /// Start storage subsystem tasks.
-    ///
-    /// Optionally runs crash recovery, then starts the reaper background task
-    /// for bundle lifetime monitoring.
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>, recover_storage: bool) {
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>, recover_storage: bool) {
         if recover_storage {
             self.recover(&dispatcher);
         }
 
-        // Start the reaper
         let store = self.clone();
         hardy_async::spawn!(self.tasks, "reaper_task", async move {
             store.run_reaper(dispatcher).await
@@ -48,7 +53,7 @@ impl Store {
     /// Updates the storage_name field after saving data.
     /// Returns false if duplicate bundle already exists.
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn store(&self, bundle: &mut bundle::Bundle, data: &Bytes) -> bool {
+    pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
         let storage_name = self.save_data(data).await;
 
@@ -133,7 +138,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> bool {
+    pub async fn insert_metadata(&self, bundle: &Bundle) -> bool {
         self.metadata_storage
             .insert(bundle)
             .await
@@ -141,7 +146,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn get_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Option<bundle::Bundle> {
+    pub async fn get_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Option<Bundle> {
         let m = self
             .metadata_storage
             .get(bundle_id)
@@ -171,7 +176,7 @@ impl Store {
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Option<metadata::BundleMetadata> {
+    ) -> Option<BundleMetadata> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await
@@ -179,7 +184,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_metadata(&self, bundle: &bundle::Bundle) {
+    pub async fn update_metadata(&self, bundle: &Bundle) {
         self.metadata_storage
             .replace(bundle)
             .await
@@ -187,7 +192,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) {
+    pub async fn poll_waiting(&self, tx: Sender<Bundle>) {
         self.metadata_storage
             .poll_waiting(tx)
             .await
@@ -195,7 +200,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
-    pub async fn poll_service_waiting(&self, source: Eid, tx: storage::Sender<bundle::Bundle>) {
+    pub async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) {
         self.metadata_storage
             .poll_service_waiting(source, tx)
             .await

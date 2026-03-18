@@ -1,27 +1,11 @@
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
 use rand::RngExt;
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Node Ids must not be LocalNode")]
-    LocalNode,
+use serde::de::{Error as SerdeDeError, SeqAccess, Visitor};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    #[error("Node Ids must not be the Null Endpoint")]
-    NullEndpoint,
-
-    #[error("Administrative endpoints must not have a dtn demux part")]
-    DtnWithDemux,
-
-    #[error("Multiple ipn scheme Node Ids")]
-    MultipleIpnNodeIds,
-
-    #[error("Multiple dtn scheme Node Ids")]
-    MultipleDtnNodeIds,
-
-    #[error(transparent)]
-    InvalidEid(#[from] hardy_bpv7::eid::Error),
-}
+use crate::Error as BpaError;
 
 #[derive(Debug, Clone)]
 pub struct NodeIds {
@@ -98,7 +82,7 @@ impl From<&NodeIds> for Vec<NodeId> {
 }
 
 impl TryFrom<&[NodeId]> for NodeIds {
-    type Error = Error;
+    type Error = BpaError;
 
     fn try_from(node_ids: &[NodeId]) -> Result<Self, Self::Error> {
         let mut ipn = None;
@@ -109,7 +93,7 @@ impl TryFrom<&[NodeId]> for NodeIds {
                     if let Some(existing) = &ipn
                         && node_id != existing
                     {
-                        return Err(Error::MultipleIpnNodeIds);
+                        return Err(BpaError::MultipleIpnNodeIds);
                     }
                     ipn = Some(node_id.clone());
                 }
@@ -117,12 +101,12 @@ impl TryFrom<&[NodeId]> for NodeIds {
                     if let Some(existing) = &dtn
                         && existing != node_id
                     {
-                        return Err(Error::MultipleDtnNodeIds);
+                        return Err(BpaError::MultipleDtnNodeIds);
                     }
                     dtn = Some(node_id.clone());
                 }
                 NodeId::LocalNode => {
-                    return Err(Error::LocalNode);
+                    return Err(BpaError::LocalNode);
                 }
             }
         }
@@ -131,10 +115,10 @@ impl TryFrom<&[NodeId]> for NodeIds {
 }
 
 #[cfg(feature = "serde")]
-impl serde::Serialize for NodeIds {
+impl Serialize for NodeIds {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         match (&self.ipn, &self.dtn) {
             (None, None) => unreachable!("NodeIds requires at least one scheme at construction"),
@@ -148,14 +132,14 @@ impl serde::Serialize for NodeIds {
 }
 
 #[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for NodeIds {
+impl<'de> Deserialize<'de> for NodeIds {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         struct AdminEndpointsVisitor;
 
-        impl<'de> serde::de::Visitor<'de> for AdminEndpointsVisitor {
+        impl<'de> Visitor<'de> for AdminEndpointsVisitor {
             type Value = NodeIds;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -164,21 +148,21 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: SerdeDeError,
             {
                 [value.parse().map_err(E::custom)?]
                     .as_slice()
                     .try_into()
-                    .map_err(serde::de::Error::custom)
+                    .map_err(SerdeDeError::custom)
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
             where
-                A: serde::de::SeqAccess<'de>,
+                A: SeqAccess<'de>,
             {
                 let mut endpoints = Vec::new();
                 while let Some(eid) = seq.next_element::<String>()? {
-                    endpoints.push(eid.parse().map_err(serde::de::Error::custom)?);
+                    endpoints.push(eid.parse().map_err(SerdeDeError::custom)?);
                 }
                 endpoints
                     .as_slice()
@@ -188,14 +172,14 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
 
             fn visit_none<E>(self) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: SerdeDeError,
             {
                 Ok(NodeIds::default())
             }
 
             fn visit_unit<E>(self) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: SerdeDeError,
             {
                 Ok(NodeIds::default())
             }

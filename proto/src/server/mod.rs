@@ -50,7 +50,7 @@ impl Default for Config {
 /// * `tasks` - Task pool for spawning server task and cancellation
 pub fn init(
     config: &Config,
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn hardy_bpa::BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) {
     if config.services.is_empty() {

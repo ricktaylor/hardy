@@ -1,6 +1,23 @@
-use super::*;
+use bytes::Bytes;
 use futures::{FutureExt, join, select_biased};
+use hardy_bpv7::Error as Bpv7Error;
+use hardy_bpv7::bundle::RewrittenBundle;
+use hardy_bpv7::eid::NodeId;
 use hardy_bpv7::status_report::ReasonCode;
+use hardy_cbor::decode::Error as CborError;
+use time::OffsetDateTime;
+use trace_err::TraceErrResult;
+
+#[cfg(feature = "tracing")]
+use crate::instrument;
+
+use super::Dispatcher;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
+use crate::cla::{ClaAddress, Result as ClaResult};
+use crate::filters::{ExecResult, Hook};
+use crate::rib::FindResult;
+use crate::storage::channel::Receiver;
 
 impl Dispatcher {
     /// Entry point for bundles received from CLAs.
@@ -20,57 +37,50 @@ impl Dispatcher {
         self: &Arc<Self>,
         mut data: Bytes,
         ingress_cla: Option<Arc<str>>,
-        ingress_peer_node: Option<hardy_bpv7::eid::NodeId>,
-        ingress_peer_addr: Option<cla::ClaAddress>,
-    ) -> cla::Result<()> {
+        ingress_peer_node: Option<NodeId>,
+        ingress_peer_addr: Option<ClaAddress>,
+    ) -> ClaResult<()> {
         // TODO: Really should not return errors when the bundle content is garbage - it's not the CLAs responsibility to fix it!
 
         // Capture received_at as soon as possible
-        let received_at = time::OffsetDateTime::now_utc();
+        let received_at = OffsetDateTime::now_utc();
 
         // Do a fast pre-check
         match data.first() {
             None => {
-                return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::NeedMoreData(1),
-                )
-                .into());
+                return Err(Bpv7Error::InvalidCBOR(CborError::NeedMoreData(1)).into());
             }
             Some(0x06) => {
-                debug!("Data looks like a BPv6 bundle");
-                return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::IncorrectType(
-                        "BPv7 bundle".to_string(),
-                        "Possible BPv6 bundle".to_string(),
-                    ),
-                )
+                tracing::debug!("Data looks like a BPv6 bundle");
+                return Err(Bpv7Error::InvalidCBOR(CborError::IncorrectType(
+                    "BPv7 bundle".to_string(),
+                    "Possible BPv6 bundle".to_string(),
+                ))
                 .into());
             }
             Some(0x80..=0x9F) => {}
             Some(b) => {
-                debug!(
+                tracing::debug!(
                     "Invalid CBOR: first byte 0x{b:02X}, expected 0x80-0x9F. Data ({} bytes): {:02X?}",
                     data.len(),
                     &data[..data.len().min(32)]
                 );
-                return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::IncorrectType(
-                        "BPv7 bundle".to_string(),
-                        "Invalid CBOR".to_string(),
-                    ),
-                )
+                return Err(Bpv7Error::InvalidCBOR(CborError::IncorrectType(
+                    "BPv7 bundle".to_string(),
+                    "Invalid CBOR".to_string(),
+                ))
                 .into());
             }
         }
 
         // Parse the bundle
         let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider())? {
-                hardy_bpv7::bundle::RewrittenBundle::Valid {
+            match RewrittenBundle::parse(&data, self.key_provider())? {
+                RewrittenBundle::Valid {
                     bundle,
                     report_unsupported,
                 } => (
-                    bundle::Bundle {
+                    Bundle {
                         metadata: BundleMetadata {
                             storage_name: Some(self.store.save_data(&data).await),
                             read_only: ReadOnlyMetadata {
@@ -87,19 +97,19 @@ impl Dispatcher {
                     None,
                     report_unsupported,
                 ),
-                hardy_bpv7::bundle::RewrittenBundle::Rewritten {
+                RewrittenBundle::Rewritten {
                     bundle,
                     new_data,
                     report_unsupported,
                     non_canonical: _,
                 } => {
-                    debug!("Received bundle has been rewritten");
+                    tracing::debug!("Received bundle has been rewritten");
 
                     data = Bytes::from(new_data);
                     let storage_name = Some(self.store.save_data(&data).await);
 
                     (
-                        bundle::Bundle {
+                        Bundle {
                             metadata: BundleMetadata {
                                 storage_name,
                                 read_only: ReadOnlyMetadata {
@@ -117,16 +127,16 @@ impl Dispatcher {
                         report_unsupported,
                     )
                 }
-                hardy_bpv7::bundle::RewrittenBundle::Invalid {
+                RewrittenBundle::Invalid {
                     bundle,
                     reason,
                     error,
                 } => {
-                    debug!("Invalid bundle received: {error}");
+                    tracing::debug!("Invalid bundle received: {error}");
 
                     // Don't bother saving the bundle data, it's garbage
                     (
-                        bundle::Bundle {
+                        Bundle {
                             metadata: BundleMetadata {
                                 read_only: ReadOnlyMetadata {
                                     received_at,
@@ -188,7 +198,7 @@ impl Dispatcher {
     ///
     /// Because this returns before the Ingress filter completes, bundles remain
     /// in `New` status until `ingest_bundle_inner()` checkpoints to `Dispatching`.
-    pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
+    pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: Bundle, data: Bytes) {
         let dispatcher = self.clone();
         hardy_async::spawn!(self.processing_pool, "ingest_bundle", async move {
             dispatcher.ingest_bundle_inner(bundle, data).await
@@ -216,14 +226,14 @@ impl Dispatcher {
     /// See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
     /// filter execution details.
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn ingest_bundle_inner(&self, mut bundle: bundle::Bundle, mut data: Bytes) {
+    pub(super) async fn ingest_bundle_inner(&self, mut bundle: Bundle, mut data: Bytes) {
         if let Some(u) = bundle.bundle.flags.unrecognised {
-            debug!("Bundle primary block has unrecognised flag bits set: {u:#x}");
+            tracing::debug!("Bundle primary block has unrecognised flag bits set: {u:#x}");
         }
 
         // Check lifetime first
         if bundle.has_expired() {
-            debug!("Bundle lifetime has expired");
+            tracing::debug!("Bundle lifetime has expired");
             return self
                 .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
                 .await;
@@ -233,7 +243,7 @@ impl Dispatcher {
         if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
             && hop_info.count > hop_info.limit
         {
-            debug!("Bundle hop-limit {} exceeded", hop_info.limit);
+            tracing::debug!("Bundle hop-limit {} exceeded", hop_info.limit);
             return self
                 .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
                 .await;
@@ -243,7 +253,7 @@ impl Dispatcher {
         (bundle, data) = match self
             .filter_registry
             .exec(
-                filters::Hook::Ingress,
+                Hook::Ingress,
                 bundle,
                 data,
                 self.key_provider(),
@@ -252,7 +262,7 @@ impl Dispatcher {
             .await
             .trace_expect("Ingress filter execution failed")
         {
-            filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
+            ExecResult::Continue(mutation, mut bundle, data) => {
                 // Persist any bundle data mutations
                 if mutation.bundle {
                     let new_storage_name = self.store.save_data(&data).await;
@@ -266,7 +276,7 @@ impl Dispatcher {
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }
         };
@@ -275,25 +285,22 @@ impl Dispatcher {
     }
 
     /// Queue a bundle for dispatch processing
-    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
+    pub(super) async fn dispatch_bundle(&self, mut bundle: Bundle) {
         if bundle.metadata.status != BundleStatus::Dispatching {
             bundle.metadata.status = BundleStatus::Dispatching;
             self.store.update_metadata(&bundle).await;
         }
 
         if self.dispatch_tx.send(bundle).await.is_err() {
-            debug!("Dispatch queue closed, bundle dropped");
+            tracing::debug!("Dispatch queue closed, bundle dropped");
         }
     }
 
     /// Consumer task for the dispatch queue
-    pub(super) async fn run_dispatch_queue(
-        self: Arc<Self>,
-        dispatch_rx: storage::channel::Receiver,
-    ) {
+    pub(super) async fn run_dispatch_queue(self: Arc<Self>, dispatch_rx: Receiver) {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
-                debug!("Bundle lifetime has expired while queued");
+                tracing::debug!("Bundle lifetime has expired while queued");
                 self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
                     .await;
                 continue;
@@ -311,7 +318,7 @@ impl Dispatcher {
             .await;
         }
 
-        debug!("Dispatch queue consumer exiting");
+        tracing::debug!("Dispatch queue consumer exiting");
     }
 
     /// Routing decision hub: determines bundle disposition based on RIB lookup.
@@ -329,18 +336,18 @@ impl Dispatcher {
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
+    async fn process_bundle(&self, mut bundle: Bundle, data: Bytes) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
-            Some(rib::FindResult::Drop(reason)) => {
-                debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
+            Some(FindResult::Drop(reason)) => {
+                tracing::debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
                 self.drop_bundle(bundle, reason).await
             }
-            Some(rib::FindResult::AdminEndpoint) => {
+            Some(FindResult::AdminEndpoint) => {
                 // The bundle is for the Administrative Endpoint
                 self.administrative_bundle(bundle, data).await
             }
-            Some(rib::FindResult::Deliver(Some(service))) => {
+            Some(FindResult::Deliver(Some(service))) => {
                 // Check for reassembly
                 if bundle.bundle.id.fragment_info.is_some() {
                     // Reassemble the bundle before delivery
@@ -350,13 +357,13 @@ impl Dispatcher {
                     self.deliver_bundle(service, bundle, data).await
                 }
             }
-            Some(rib::FindResult::Forward(peer)) => {
-                debug!("Queuing bundle for forwarding to CLA peer {peer}");
+            Some(FindResult::Forward(peer)) => {
+                tracing::debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 self.cla_registry.forward(peer, bundle).await
             }
             _ => {
                 // No route available - wait for one
-                debug!("Storing bundle until a forwarding opportunity arises");
+                tracing::debug!("Storing bundle until a forwarding opportunity arises");
 
                 if bundle.metadata.status != BundleStatus::Waiting {
                     bundle.metadata.status = BundleStatus::Waiting;
@@ -368,7 +375,7 @@ impl Dispatcher {
     }
 
     pub async fn poll_waiting(self: &Arc<Self>, cancel_token: hardy_async::CancellationToken) {
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
+        let (tx, rx) = flume::bounded::<Bundle>(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 
@@ -386,7 +393,7 @@ impl Dispatcher {
                             };
 
                             if bundle.has_expired() {
-                                debug!("Bundle lifetime has expired");
+                                tracing::debug!("Bundle lifetime has expired");
                                 self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired)).await;
                                 continue;
                             }

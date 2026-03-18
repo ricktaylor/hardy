@@ -6,7 +6,7 @@ mod service;
 mod test;
 
 use arbitrary::Arbitrary;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::BpaRegistration;
 use std::sync::Arc;
 
 #[derive(Arbitrary)]
@@ -40,47 +40,45 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[allow(unused)]
-async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
+async fn new_bpa(testname: &str) -> hardy_bpa::Bpa {
     let path =
         std::path::Path::new(&std::env::var("CARGO_TARGET_DIR").unwrap_or("fuzz".to_string()))
             .join("store")
             .join(testname);
 
-    #[cfg(feature = "sqlite-storage")]
-    let metadata_storage = Some(hardy_sqlite_storage::new(
-        &hardy_sqlite_storage::Config {
-            db_dir: path.clone(),
-            db_name: "sqlite-storage.db".to_string(),
-        },
-        true,
-    ));
-    #[cfg(not(feature = "sqlite-storage"))]
-    let metadata_storage = None;
-
-    #[cfg(feature = "localdisk-storage")]
-    let bundle_storage = Some(hardy_localdisk_storage::new(
-        &hardy_localdisk_storage::Config {
-            store_dir: path.join("localdisk"),
-            fsync: false,
-        },
-        true,
-    ));
-    #[cfg(not(feature = "localdisk-storage"))]
-    let bundle_storage = None;
-
-    let bpa_config = hardy_bpa::config::Config {
-        status_reports: true,
-        node_ids: [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+    let mut builder = hardy_bpa::Bpa::builder().status_reports(true).node_ids(
+        [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
             allocator_id: 0,
             node_number: 1,
         })]
         .as_slice()
         .try_into()
         .unwrap(),
-        ..Default::default()
-    };
+    );
 
-    let bpa = hardy_bpa::bpa::Bpa::new(bpa_config, metadata_storage, bundle_storage);
+    #[cfg(feature = "sqlite-storage")]
+    {
+        builder = builder.metadata_storage(hardy_sqlite_storage::new(
+            &hardy_sqlite_storage::Config {
+                db_dir: path.clone(),
+                db_name: "sqlite-storage.db".to_string(),
+            },
+            true,
+        ));
+    }
+
+    #[cfg(feature = "localdisk-storage")]
+    {
+        builder = builder.bundle_storage(hardy_localdisk_storage::new(
+            &hardy_localdisk_storage::Config {
+                store_dir: path.join("localdisk"),
+                fsync: false,
+            },
+            true,
+        ));
+    }
+
+    let bpa = builder.build();
 
     bpa.start(
         #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]

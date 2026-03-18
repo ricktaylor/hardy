@@ -35,7 +35,7 @@ pub enum Error {
 
 /// Registration-time state from BPA.
 struct Inner {
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    sink: Arc<dyn hardy_bpa::cla::ClaSink>,
     node_ids: Arc<[NodeId]>,
 }
 
@@ -138,7 +138,7 @@ impl Cla {
     /// * `policy` - Optional egress policy for this CLA.
     pub async fn register(
         self: &Arc<Self>,
-        bpa: &dyn hardy_bpa::bpa::BpaRegistration,
+        bpa: &dyn hardy_bpa::BpaRegistration,
         name: String,
         policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> Result<(), Error> {

@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::cla::{Cla, ClaAddress, ForwardBundleResult, Sink};
+use hardy_bpa::cla::{Cla, ClaAddress, ClaSink, ForwardBundleResult};
 
 /// BIBE CLA for encapsulation.
 ///
@@ -8,7 +8,7 @@ use hardy_bpa::cla::{Cla, ClaAddress, ForwardBundleResult, Sink};
 /// the CBOR-encoded destination EID for the outer bundle.
 pub struct BibeCla {
     tunnel_source: Eid,
-    sink: Once<Box<dyn Sink>>,
+    sink: Once<Box<dyn ClaSink>>,
 }
 
 impl BibeCla {
@@ -84,7 +84,7 @@ impl BibeCla {
 
 #[async_trait]
 impl Cla for BibeCla {
-    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn ClaSink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
         debug!("BIBE CLA registered");
     }

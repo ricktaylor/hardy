@@ -1,38 +1,62 @@
-use super::*;
+use bytes::Bytes;
+use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
+use lru::LruCache;
 use rand::distr::{Alphanumeric, SampleString};
+use time::OffsetDateTime;
+use tracing::info;
+
+use super::{BundleStorage, RecoveryResponse, Result, Sender};
+use crate::{Arc, NonZero, NonZeroUsize};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
-pub struct Config {
-    pub capacity: core::num::NonZeroUsize,
+pub struct BundleMemConfig {
+    pub capacity: NonZeroUsize,
     pub min_bundles: usize,
 }
 
-impl Default for Config {
+impl Default for BundleMemConfig {
     fn default() -> Self {
         Self {
-            capacity: core::num::NonZero::new(256 * 1_048_576).unwrap(),
+            capacity: NonZero::new(256 * 1_048_576).unwrap(),
             min_bundles: 32,
         }
     }
 }
 
 struct Inner {
-    cache: lru::LruCache<String, (time::OffsetDateTime, Bytes)>,
+    cache: LruCache<String, (OffsetDateTime, Bytes)>,
     capacity: usize,
 }
 
-struct Storage {
+pub struct BundleMemStorage {
     inner: Mutex<Inner>,
     max_capacity: core::num::NonZeroUsize,
     min_bundles: usize,
 }
 
+impl BundleMemStorage {
+    pub fn new(config: &BundleMemConfig) -> Self {
+        info!(
+            "Using in-memory bundle storage (capacity {} bytes, non-persistent)",
+            config.capacity
+        );
+        Self {
+            inner: Mutex::new(Inner {
+                cache: lru::LruCache::unbounded(),
+                capacity: 0,
+            }),
+            max_capacity: config.capacity,
+            min_bundles: config.min_bundles,
+        }
+    }
+}
+
 #[async_trait]
-impl storage::BundleStorage for Storage {
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+impl BundleStorage for BundleMemStorage {
+    async fn recover(&self, tx: Sender<RecoveryResponse>) -> Result<()> {
         let snapshot = self
             .inner
             .lock()
@@ -47,7 +71,7 @@ impl storage::BundleStorage for Storage {
         Ok(())
     }
 
-    async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
+    async fn load(&self, storage_name: &str) -> Result<Option<Bytes>> {
         Ok(self
             .inner
             .lock()
@@ -56,7 +80,7 @@ impl storage::BundleStorage for Storage {
             .map(|(_, b)| b.clone()))
     }
 
-    async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
+    async fn save(&self, data: Bytes) -> Result<Arc<str>> {
         let mut rng = rand::rng();
         let mut inner = self.inner.lock();
         let storage_name = loop {
@@ -69,10 +93,7 @@ impl storage::BundleStorage for Storage {
         let new_len = data.len();
         let old_len = inner
             .cache
-            .put(
-                storage_name.clone(),
-                (time::OffsetDateTime::now_utc(), data),
-            )
+            .put(storage_name.clone(), (OffsetDateTime::now_utc(), data))
             .map(|(_, d)| d.len())
             .unwrap_or(0);
 
@@ -91,28 +112,13 @@ impl storage::BundleStorage for Storage {
         Ok(storage_name.into())
     }
 
-    async fn delete(&self, storage_name: &str) -> storage::Result<()> {
+    async fn delete(&self, storage_name: &str) -> Result<()> {
         let mut inner = self.inner.lock();
         if let Some((_, d)) = inner.cache.pop(storage_name) {
             inner.capacity = inner.capacity.saturating_sub(d.len());
         }
         Ok(())
     }
-}
-
-pub fn new(config: &Config) -> Arc<dyn storage::BundleStorage> {
-    info!(
-        "Using in-memory bundle storage (capacity {} bytes, non-persistent)",
-        config.capacity
-    );
-    Arc::new(Storage {
-        inner: Mutex::new(Inner {
-            cache: lru::LruCache::unbounded(),
-            capacity: 0,
-        }),
-        max_capacity: config.capacity,
-        min_bundles: config.min_bundles,
-    })
 }
 
 #[cfg(test)]

@@ -41,7 +41,7 @@ impl Sink {
 }
 
 #[async_trait]
-impl hardy_bpa::cla::Sink for Sink {
+impl hardy_bpa::cla::ClaSink for Sink {
     async fn dispatch(
         &self,
         bundle: hardy_bpa::Bytes,

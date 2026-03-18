@@ -18,7 +18,7 @@ pub struct ConnectionContext {
     pub segment_mru: u64,
     pub transfer_mru: u64,
     pub node_ids: Arc<[NodeId]>,
-    pub sink: Arc<dyn hardy_bpa::cla::Sink>,
+    pub sink: Arc<dyn hardy_bpa::cla::ClaSink>,
     pub registry: Arc<connection::ConnectionRegistry>,
     pub tls_config: Option<Arc<tls::TlsConfig>>,
     pub session_cancel_token: tokio_util::sync::CancellationToken,

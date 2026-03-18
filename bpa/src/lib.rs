@@ -36,43 +36,50 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
+mod bpa;
+mod builder;
 mod dispatcher;
+mod error;
+mod node_ids;
+mod registration;
 mod rib;
 
-pub mod bpa;
+// -- Flatten
+pub use bpa::Bpa;
+pub use builder::BpaBuilder;
+pub use error::{Error, Result};
+pub use node_ids::NodeIds;
+pub use registration::BpaRegistration;
+
+// -- Public Modules
 pub mod bundle;
 pub mod cla;
-pub mod config;
 pub mod filters;
 pub mod keys;
-pub mod metadata;
-pub mod node_ids;
 pub mod policy;
 pub mod routes;
 pub mod services;
 pub mod storage;
 
-// The generic error type
-pub type Error = Box<dyn core::error::Error + Send + Sync>;
-
-use alloc::sync::{Arc, Weak};
-use trace_err::*;
-use tracing::{debug, error, info, warn};
-
-#[cfg(feature = "tracing")]
-use tracing::instrument;
-
-// Centralized collections for future no_std compatibility
-// For no_std: HashMap/HashSet from hashbrown, BTreeMap/BTreeSet from alloc::collections
-#[cfg(feature = "std")]
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map, hash_map};
-
-#[cfg(not(feature = "std"))]
-use hashbrown::{HashMap, HashSet, hash_map};
-
-#[cfg(not(feature = "std"))]
-use alloc::collections::{BTreeMap, BTreeSet, btree_map};
-
-// Re-export for consistency
+// -- Consistency re-exports
 pub use bytes::Bytes;
 pub use hardy_async::async_trait;
+
+// -- Crate-internal prelude (used via `crate::...` inside this crate)
+pub(crate) use alloc::string::String;
+pub(crate) use alloc::sync::{Arc, Weak};
+pub(crate) use alloc::vec::Vec;
+pub(crate) use core::num::{NonZero, NonZeroUsize};
+
+#[cfg(feature = "tracing")]
+pub(crate) use tracing::instrument;
+
+// Centralized collections for future no_std compatibility
+#[cfg(feature = "std")]
+pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map, hash_map};
+
+#[cfg(not(feature = "std"))]
+pub(crate) use hashbrown::{HashMap, HashSet, hash_map};
+
+#[cfg(not(feature = "std"))]
+pub(crate) use alloc::collections::{BTreeMap, BTreeSet, btree_map};

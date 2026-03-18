@@ -1,5 +1,3 @@
-#![cfg(feature = "htb_policy")]
-
 use core::ops::RangeInclusive;
 
 #[cfg(feature = "serde")]
@@ -39,7 +37,7 @@ where
     let s: String = Deserialize::deserialize(deserializer)?;
 
     // Now, parse that string into the desired Vec<RangeInclusive<u32>>.
-    let mut ranges = Vec::new();
+    let mut ranges: Vec<RangeInclusive<u32>> = Vec::new();
 
     // Trim surrounding brackets `[` and `]` for convenience.
     let content = s
@@ -59,14 +57,14 @@ where
         match part.split_once("-") {
             // Case 1: Found a range like "1-5" or "5-1"
             Some((start_str, end_str)) => {
-                let a = start_str.trim().parse().map_err(de::Error::custom)?;
-                let b = end_str.trim().parse().map_err(de::Error::custom)?;
+                let a: u32 = start_str.trim().parse().map_err(de::Error::custom)?;
+                let b: u32 = end_str.trim().parse().map_err(de::Error::custom)?;
                 // Automatically handle inverted ranges, e.g., "10-5"
                 ranges.push(a.min(b)..=a.max(b));
             }
             // Case 2: It's a single number like "7"
             None => {
-                let num = part.parse().map_err(de::Error::custom)?;
+                let num: u32 = part.parse().map_err(de::Error::custom)?;
                 ranges.push(num..=num);
             }
         }

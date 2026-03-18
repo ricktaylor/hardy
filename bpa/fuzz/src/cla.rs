@@ -52,7 +52,7 @@ impl RandomBundle {
 }
 
 pub struct NullCla {
-    sink: Once<Box<dyn hardy_bpa::cla::Sink>>,
+    sink: Once<Box<dyn hardy_bpa::cla::ClaSink>>,
 }
 
 impl NullCla {
@@ -70,7 +70,7 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::ClaSink>, _node_ids: &[NodeId]) {
         sink.add_peer(
             hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {

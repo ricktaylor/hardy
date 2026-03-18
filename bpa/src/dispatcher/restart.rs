@@ -1,25 +1,34 @@
-use super::*;
-use storage::recover::RestartResult;
+use bytes::Bytes;
+use hardy_bpv7::bundle::RewrittenBundle;
+use hardy_bpv7::status_report::ReasonCode;
+use time::OffsetDateTime;
+use tracing::warn;
+
+#[cfg(feature = "tracing")]
+use crate::instrument;
+
+use super::Dispatcher;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
+use crate::storage::RestartResult;
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub(crate) async fn restart_bundle(
         self: &Arc<Self>,
         storage_name: Arc<str>,
-        file_time: time::OffsetDateTime,
+        file_time: OffsetDateTime,
     ) -> RestartResult {
         let Some(data) = self.store.load_data(&storage_name).await else {
             // Data has gone while we were restarting
             return RestartResult::Missing;
         };
 
-        // Parse the bundle (again, just in case we have changed policies etc)
-        match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
+        match RewrittenBundle::parse(&data, self.key_provider()) {
+            Ok(RewrittenBundle::Valid {
                 bundle,
                 report_unsupported,
             }) => {
-                // Check if the metadata_storage knows about this bundle
                 if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
                     if metadata.storage_name.as_ref() != Some(&storage_name) {
                         if metadata.storage_name.is_none() {
@@ -31,26 +40,22 @@ impl Dispatcher {
                             );
                         }
 
-                        // Remove spurious duplicate
                         self.store.delete_data(&storage_name).await;
                         RestartResult::Duplicate
                     } else {
-                        // Resume processing based on checkpoint status
                         match &metadata.status {
                             BundleStatus::New => {
-                                // Ingress filter not yet complete - run full ingestion
-                                let bundle = bundle::Bundle { metadata, bundle };
+                                let bundle = Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
                                 RestartResult::Valid
                             }
                             BundleStatus::Dispatching => {
-                                // Ingress filter done - enqueue for routing
-                                let bundle = bundle::Bundle { metadata, bundle };
+                                let bundle = Bundle { metadata, bundle };
                                 self.dispatch_bundle(bundle).await;
                                 RestartResult::Valid
                             }
                             BundleStatus::WaitingForService { service: _ } => {
-                                let bundle = bundle::Bundle { metadata, bundle };
+                                let bundle = Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
                                 RestartResult::Valid
                             }
@@ -62,8 +67,7 @@ impl Dispatcher {
                         }
                     }
                 } else {
-                    // Effectively a new bundle
-                    let bundle = bundle::Bundle {
+                    let bundle = Bundle {
                         metadata: BundleMetadata {
                             storage_name: Some(storage_name),
                             read_only: ReadOnlyMetadata {
@@ -75,28 +79,24 @@ impl Dispatcher {
                         bundle,
                     };
 
-                    // Save the metadata
                     self.store.insert_metadata(&bundle).await;
 
-                    // Report we have received the bundle
                     self.report_bundle_reception(
                         &bundle,
                         if report_unsupported {
-                            hardy_bpv7::status_report::ReasonCode::BlockUnsupported
+                            ReasonCode::BlockUnsupported
                         } else {
-                            hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation
+                            ReasonCode::NoAdditionalInformation
                         },
                     )
                     .await;
 
-                    // Dispatch the 'new' bundle via processing pool
                     self.ingest_bundle(bundle, data).await;
 
-                    // Report the bundle as an orphan
                     RestartResult::Orphan
                 }
             }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
+            Ok(RewrittenBundle::Rewritten {
                 bundle,
                 new_data,
                 report_unsupported,
@@ -104,7 +104,6 @@ impl Dispatcher {
             }) => {
                 warn!("Bundle in non-canonical format found: {storage_name}");
 
-                // Check if the metadata_storage knows about this bundle
                 let exists = if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
                     if metadata.storage_name.as_ref() != Some(&storage_name) {
                         if metadata.storage_name.is_none() {
@@ -118,7 +117,6 @@ impl Dispatcher {
                             );
                         }
 
-                        // Remove spurious duplicate
                         self.store.delete_data(&storage_name).await;
                         return RestartResult::Duplicate;
                     }
@@ -127,14 +125,12 @@ impl Dispatcher {
                     false
                 };
 
-                // Write the rewritten bundle now for safety
                 let data = Bytes::from(new_data);
                 let new_storage_name = self.store.save_data(&data).await;
 
-                // Remove the previous from bundle_storage
                 self.store.delete_data(&storage_name).await;
 
-                let bundle = bundle::Bundle {
+                let bundle = Bundle {
                     metadata: BundleMetadata {
                         storage_name: Some(new_storage_name),
                         read_only: ReadOnlyMetadata {
@@ -146,41 +142,32 @@ impl Dispatcher {
                     bundle,
                 };
 
-                // Whatever we have in the metadata store is non-canonical
-
                 if !exists {
-                    // Save the metadata
                     self.store.insert_metadata(&bundle).await;
 
-                    // Report we have received the bundle
                     self.report_bundle_reception(
                         &bundle,
                         if report_unsupported {
-                            hardy_bpv7::status_report::ReasonCode::BlockUnsupported
+                            ReasonCode::BlockUnsupported
                         } else {
-                            hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation
+                            ReasonCode::NoAdditionalInformation
                         },
                     )
                     .await;
                 } else {
-                    // Replace the metadata
                     self.store.update_metadata(&bundle).await;
                 }
 
-                // Dispatch the 'new' bundle via processing pool
                 self.ingest_bundle(bundle, data).await;
-
-                // Report the bundle as an orphan
                 RestartResult::Orphan
             }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
+            Ok(RewrittenBundle::Invalid {
                 bundle,
                 reason,
                 error,
             }) => {
                 warn!("Invalid bundle found: {storage_name}, {error}");
 
-                // Check if the metadata_storage knows about this bundle
                 let exists = if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
                     if metadata.storage_name.as_ref() != Some(&storage_name) {
                         if metadata.storage_name.is_none() {
@@ -192,7 +179,6 @@ impl Dispatcher {
                             );
                         }
 
-                        // Remove spurious duplicate
                         self.store.delete_data(&storage_name).await;
                         return RestartResult::Duplicate;
                     }
@@ -201,12 +187,9 @@ impl Dispatcher {
                     false
                 };
 
-                // Remove it from bundle_storage, it shouldn't be there
                 self.store.delete_data(&storage_name).await;
 
-                // Whatever we have in the store isn't correct
-
-                let bundle = bundle::Bundle {
+                let bundle = Bundle {
                     metadata: BundleMetadata {
                         read_only: ReadOnlyMetadata {
                             received_at: file_time,
@@ -218,33 +201,22 @@ impl Dispatcher {
                 };
 
                 if !exists {
-                    // Save the metadata
                     self.store.insert_metadata(&bundle).await;
 
-                    // Report we have received the bundle
-                    self.report_bundle_reception(
-                        &bundle,
-                        hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation,
-                    )
-                    .await;
+                    self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
+                        .await;
                 } else {
-                    // Replace the metadata
                     self.store.update_metadata(&bundle).await;
                 }
 
-                // Drop the 'new' bundle
                 self.drop_bundle(bundle, Some(reason)).await;
-
-                // Report the bundle as an orphan
                 RestartResult::Orphan
             }
             Err(e) => {
-                // Parse failed badly, no idea who to report to
                 warn!("Junk data found: {storage_name}, {e}");
 
                 // TODO:  This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
-                // Drop the bundle
                 self.store.delete_data(&storage_name).await;
                 RestartResult::Junk
             }

@@ -39,7 +39,7 @@ where
 {
     reader: R,
     writer: writer::WriterHandle<codec::Error>,
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    sink: Arc<dyn hardy_bpa::cla::ClaSink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
     peer_addr: Option<hardy_bpa::cla::ClaAddress>,
     keepalive_interval: Option<tokio::time::Duration>,
@@ -63,7 +63,7 @@ where
     pub fn new(
         reader: R,
         writer: writer::WriterHandle<codec::Error>,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        sink: Arc<dyn hardy_bpa::cla::ClaSink>,
         peer_node: Option<hardy_bpv7::eid::NodeId>,
         peer_addr: Option<hardy_bpa::cla::ClaAddress>,
         keepalive_interval: Option<tokio::time::Duration>,

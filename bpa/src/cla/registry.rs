@@ -1,5 +1,17 @@
-use super::*;
+use bytes::Bytes;
+use hardy_async::async_trait;
 use hardy_bpv7::eid::NodeId;
+use tracing::{debug, info};
+
+use super::peers::{Peer, PeerTable};
+use super::{Cla, ClaAddress, ClaAddressType, ClaSink, Error, Result};
+use crate::bundle::Bundle;
+use crate::dispatcher::Dispatcher;
+use crate::hash_map::Entry;
+use crate::policy::{EgressPolicy, NullEgressPolicy};
+use crate::rib::Rib;
+use crate::storage::Store;
+use crate::{Arc, HashMap, Weak};
 
 // CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -7,9 +19,9 @@ use hardy_bpv7::eid::NodeId;
 // 3. No blocking/RNG/iteration while holding lock
 // 4. Avoids OS mutex overhead on CLA lifecycle operations
 
-pub struct Cla {
-    pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::EgressPolicy>,
+pub struct ClaRecord {
+    pub(super) cla: Arc<dyn Cla>,
+    pub(super) policy: Arc<dyn EgressPolicy>,
 
     name: String,
     // sync::spin::Mutex for O(1) peer HashMap operations
@@ -20,33 +32,33 @@ pub struct Cla {
     address_type: Option<ClaAddressType>,
 }
 
-impl PartialEq for Cla {
+impl PartialEq for ClaRecord {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
 }
 
-impl Eq for Cla {}
+impl Eq for ClaRecord {}
 
-impl PartialOrd for Cla {
+impl PartialOrd for ClaRecord {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Cla {
+impl Ord for ClaRecord {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.name.cmp(&other.name)
     }
 }
 
-impl core::hash::Hash for Cla {
+impl core::hash::Hash for ClaRecord {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl core::fmt::Debug for Cla {
+impl core::fmt::Debug for ClaRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Cla")
             .field("name", &self.name)
@@ -57,13 +69,13 @@ impl core::fmt::Debug for Cla {
 }
 
 struct Sink {
-    cla: Weak<Cla>,
-    registry: Arc<Registry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    cla: Weak<ClaRecord>,
+    registry: Arc<ClaRegistry>,
+    dispatcher: Arc<Dispatcher>,
 }
 
 #[async_trait]
-impl cla::Sink for Sink {
+impl ClaSink for Sink {
     async fn unregister(&self) {
         if let Some(cla) = self.cla.upgrade() {
             self.registry.unregister(cla).await;
@@ -75,28 +87,25 @@ impl cla::Sink for Sink {
         bundle: Bytes,
         peer_node: Option<&NodeId>,
         peer_addr: Option<&ClaAddress>,
-    ) -> cla::Result<()> {
+    ) -> Result<()> {
         let cla_name = self.cla.upgrade().map(|c| c.name.clone().into());
         self.dispatcher
             .receive_bundle(bundle, cla_name, peer_node.cloned(), peer_addr.cloned())
             .await
     }
 
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
+    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> Result<bool> {
+        let cla = self.cla.upgrade().ok_or(Error::Disconnected)?;
         Ok(self
             .registry
             .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
             .await)
     }
 
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
+    async fn remove_peer(&self, cla_addr: &ClaAddress) -> Result<bool> {
         Ok(self
             .registry
-            .remove_peer(
-                self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                cla_addr,
-            )
+            .remove_peer(self.cla.upgrade().ok_or(Error::Disconnected)?, cla_addr)
             .await)
     }
 }
@@ -114,30 +123,30 @@ impl Drop for Sink {
     }
 }
 
-pub(crate) struct Registry {
+pub(crate) struct ClaRegistry {
     node_ids: Vec<NodeId>,
     // sync::spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
-    clas: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Cla>>>,
-    rib: Arc<rib::Rib>,
-    store: Arc<storage::Store>,
-    peers: peers::PeerTable,
+    records: hardy_async::sync::spin::Mutex<HashMap<String, Arc<ClaRecord>>>,
+    rib: Arc<Rib>,
+    store: Arc<Store>,
+    peers: PeerTable,
     poll_channel_depth: usize,
     tasks: hardy_async::TaskPool,
 }
 
-impl Registry {
+impl ClaRegistry {
     pub fn new(
         node_ids: Vec<NodeId>,
         poll_channel_depth: usize,
-        rib: Arc<rib::Rib>,
-        store: Arc<storage::Store>,
+        rib: Arc<Rib>,
+        store: Arc<Store>,
     ) -> Self {
         Self {
             node_ids,
-            clas: Default::default(),
+            records: Default::default(),
             rib,
             store,
-            peers: peers::PeerTable::new(),
+            peers: PeerTable::new(),
             poll_channel_depth,
             tasks: hardy_async::TaskPool::new(),
         }
@@ -145,7 +154,12 @@ impl Registry {
 
     pub async fn shutdown(&self) {
         // sync::spin::Mutex::lock() returns guard directly (no Result)
-        let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
+        let clas = self
+            .records
+            .lock()
+            .drain()
+            .map(|(_, v)| v)
+            .collect::<Vec<_>>();
 
         for cla in clas {
             self.unregister_cla(cla).await;
@@ -159,26 +173,25 @@ impl Registry {
         self: &Arc<Self>,
         name: String,
         address_type: Option<ClaAddressType>,
-        cla: Arc<dyn cla::Cla>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<Vec<NodeId>> {
+        cla: Arc<dyn Cla>,
+        dispatcher: &Arc<Dispatcher>,
+        policy: Option<Arc<dyn EgressPolicy>>,
+    ) -> Result<Vec<NodeId>> {
         // Scope lock
         let cla = {
-            let mut clas = self.clas.lock();
-            let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
-                return Err(cla::Error::AlreadyExists(name));
+            let mut clas = self.records.lock();
+            let Entry::Vacant(e) = clas.entry(name.clone()) else {
+                return Err(Error::AlreadyExists(name));
             };
 
             info!("Registered new CLA: {name}");
 
-            e.insert(Arc::new(Cla {
+            e.insert(Arc::new(ClaRecord {
                 cla,
                 peers: Default::default(),
                 name,
                 address_type,
-                policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+                policy: policy.unwrap_or_else(|| Arc::new(NullEgressPolicy::new())),
             }))
             .clone()
         };
@@ -202,15 +215,15 @@ impl Registry {
         Ok(self.node_ids.clone())
     }
 
-    async fn unregister(&self, cla: Arc<Cla>) {
-        let cla = self.clas.lock().remove(&cla.name);
+    async fn unregister(&self, cla: Arc<ClaRecord>) {
+        let cla = self.records.lock().remove(&cla.name);
 
         if let Some(cla) = cla {
             self.unregister_cla(cla).await;
         }
     }
 
-    async fn unregister_cla(&self, cla: Arc<Cla>) {
+    async fn unregister_cla(&self, cla: Arc<ClaRecord>) {
         cla.cla.on_unregister().await;
 
         if let Some(address_type) = &cla.address_type {
@@ -236,12 +249,12 @@ impl Registry {
 
     async fn add_peer(
         &self,
-        cla: Arc<Cla>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
+        cla: Arc<ClaRecord>,
+        dispatcher: Arc<Dispatcher>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
+        let peer = Arc::new(Peer::new(Arc::downgrade(&cla)));
 
         // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
         // If the cla.peers entry already exists, we clean up the orphaned peer_id.
@@ -251,15 +264,14 @@ impl Registry {
         let inserted = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
-                hash_map::Entry::Vacant(e) => {
+                Entry::Vacant(e) => {
                     e.insert((node_ids.to_vec(), peer_id));
                     true
                 }
-                hash_map::Entry::Occupied(_) => false, // Already exists
+                Entry::Occupied(_) => false,
             }
         };
 
-        // If entry already existed, clean up the orphaned peer_id
         if !inserted {
             self.peers.remove(peer_id).await;
             return false;
@@ -270,7 +282,6 @@ impl Registry {
             cla.name
         );
 
-        // Start the peer polling the queue
         peer.start(
             self.poll_channel_depth,
             cla,
@@ -291,7 +302,7 @@ impl Registry {
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Cla>, cla_addr: &ClaAddress) -> bool {
+    async fn remove_peer(&self, cla: Arc<ClaRecord>, cla_addr: &ClaAddress) -> bool {
         let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
@@ -306,7 +317,7 @@ impl Registry {
         true
     }
 
-    pub async fn forward(&self, peer_id: u32, bundle: bundle::Bundle) {
+    pub async fn forward(&self, peer_id: u32, bundle: Bundle) {
         if let Err(bundle) = self.peers.forward(peer_id, bundle).await {
             debug!("CLA forward failed, returning bundle to watch queue");
             self.store.watch_bundle(bundle).await;

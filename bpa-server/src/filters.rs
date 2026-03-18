@@ -4,7 +4,7 @@ use super::*;
 pub fn register(
     rfc9171_validity: &hardy_bpa::filters::rfc9171::Config,
     #[cfg(feature = "ipn-legacy-filter")] ipn_legacy_nodes: &hardy_ipn_legacy_filter::Config,
-    bpa: &hardy_bpa::bpa::Bpa,
+    bpa: &hardy_bpa::Bpa,
 ) -> anyhow::Result<()> {
     bpa.register_filter(
         hardy_bpa::filters::Hook::Ingress,

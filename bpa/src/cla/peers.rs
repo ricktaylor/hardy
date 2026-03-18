@@ -1,4 +1,14 @@
-use super::*;
+use trace_err::TraceErrOption;
+
+use super::{ClaAddress, ClaRecord};
+use crate::bundle::{Bundle, BundleStatus};
+use crate::dispatcher::Dispatcher;
+use crate::policy::EgressController;
+use crate::storage::{
+    Store,
+    channel::{SendError, Sender},
+};
+use crate::{Arc, HashMap, Weak};
 
 // PeerTable uses hardy_async::sync::spin::RwLock because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -7,36 +17,36 @@ use super::*;
 // 4. Avoids OS rwlock overhead on hot forwarding path
 
 struct PeerInner {
-    queues: HashMap<Option<u32>, storage::channel::Sender>,
+    queues: HashMap<Option<u32>, Sender>,
 }
 
 pub struct Peer {
-    cla: Weak<registry::Cla>,
-    inner: std::sync::OnceLock<PeerInner>,
+    cla: Weak<ClaRecord>,
+    inner: hardy_async::sync::spin::Once<PeerInner>,
 }
 
 impl Peer {
-    pub fn new(cla: Weak<registry::Cla>) -> Self {
+    pub fn new(cla: Weak<ClaRecord>) -> Self {
         Self {
             cla,
-            inner: std::sync::OnceLock::new(),
+            inner: hardy_async::sync::spin::Once::new(),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn start(
+    pub(crate) async fn start(
         &self,
         poll_channel_depth: usize,
-        cla: Arc<registry::Cla>,
+        cla: Arc<ClaRecord>,
         peer: u32,
         cla_addr: ClaAddress,
-        store: Arc<storage::Store>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
+        store: Arc<Store>,
+        dispatcher: Arc<Dispatcher>,
         tasks: &hardy_async::TaskPool,
     ) {
         let controller = cla
             .policy
-            .new_controller(egress_queue::new_queue_set(
+            .new_controller(super::new_queue_set(
                 cla.cla.clone(),
                 dispatcher,
                 peer,
@@ -73,19 +83,19 @@ impl Peer {
             );
         }
 
-        self.inner.get_or_init(|| PeerInner { queues });
+        self.inner.call_once(|| PeerInner { queues });
     }
 
     fn start_queue_poller(
         poll_channel_depth: usize,
-        controller: Arc<dyn policy::EgressController>,
-        store: Arc<storage::Store>,
+        controller: Arc<dyn EgressController>,
+        store: Arc<Store>,
         tasks: &hardy_async::TaskPool,
         peer: u32,
         queue: Option<u32>,
-    ) -> storage::channel::Sender {
+    ) -> Sender {
         let (tx, rx) = store.channel(
-            metadata::BundleStatus::ForwardPending { peer, queue },
+            BundleStatus::ForwardPending { peer, queue },
             poll_channel_depth,
         );
 
@@ -103,10 +113,7 @@ impl Peer {
         tx
     }
 
-    pub async fn forward(
-        &self,
-        bundle: bundle::Bundle,
-    ) -> core::result::Result<(), bundle::Bundle> {
+    pub async fn forward(&self, bundle: Bundle) -> core::result::Result<(), Bundle> {
         let queue = if let Some(flow_label) = bundle.metadata.writable.flow_label {
             let Some(cla) = self.cla.upgrade() else {
                 return Err(bundle);
@@ -116,20 +123,25 @@ impl Peer {
             None
         };
 
-        let queues = &self.inner.wait().queues;
+        let queues = match self.inner.get() {
+            Some(inner) => &inner.queues,
+            None => return Err(bundle),
+        };
         let queue = queues
             .get(&queue)
             .unwrap_or_else(|| queues.get(&None).trace_expect("No None queue?!?"));
 
         match queue.send(bundle).await {
             Ok(_) => Ok(()),
-            Err(storage::channel::SendError(b)) => Err(b),
+            Err(SendError(b)) => Err(b),
         }
     }
 
     async fn close(&self) {
-        for tx in self.inner.wait().queues.values() {
-            tx.close().await;
+        if let Some(inner) = self.inner.get() {
+            for tx in inner.queues.values() {
+                tx.close().await;
+            }
         }
     }
 }
@@ -142,6 +154,12 @@ struct PeerTableInner {
 
 pub struct PeerTable {
     inner: hardy_async::sync::spin::RwLock<PeerTableInner>,
+}
+
+impl Default for PeerTable {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PeerTable {
@@ -173,11 +191,7 @@ impl PeerTable {
         }
     }
 
-    pub async fn forward(
-        &self,
-        peer_id: u32,
-        bundle: bundle::Bundle,
-    ) -> core::result::Result<(), bundle::Bundle> {
+    pub async fn forward(&self, peer_id: u32, bundle: Bundle) -> core::result::Result<(), Bundle> {
         // sync::spin::RwLock::read() returns guard directly (no Result)
         let Some(peer) = self.inner.read().peers.get(&peer_id).cloned() else {
             return Err(bundle);

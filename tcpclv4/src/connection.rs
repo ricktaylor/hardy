@@ -25,7 +25,7 @@ struct ConnectionPoolInner {
 
 struct ConnectionPool {
     inner: Mutex<ConnectionPoolInner>,
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    sink: Arc<dyn hardy_bpa::cla::ClaSink>,
     max_idle: usize,
     remote_addr: hardy_bpa::cla::ClaAddress,
 }
@@ -33,7 +33,7 @@ struct ConnectionPool {
 impl ConnectionPool {
     fn new(
         conn: Connection,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        sink: Arc<dyn hardy_bpa::cla::ClaSink>,
         remote_addr: SocketAddr,
         max_idle: usize,
     ) -> Self {
@@ -199,7 +199,7 @@ impl ConnectionRegistry {
     #[cfg_attr(feature = "tracing", instrument(skip(self, sink, conn)))]
     pub async fn register_session(
         &self,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        sink: Arc<dyn hardy_bpa::cla::ClaSink>,
         conn: Connection,
         remote_addr: SocketAddr,
         node_id: Option<NodeId>,

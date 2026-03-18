@@ -17,7 +17,7 @@ impl Cla {
     ///
     /// * `sink` - The sink to dispatch bundles to the BPA.
     /// * `outbox` - The path to the directory to watch for outgoing bundles.
-    pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::Sink>, outbox: String) {
+    pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::ClaSink>, outbox: String) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
         let cancel_token = self.tasks.cancel_token().clone();
@@ -87,7 +87,7 @@ async fn watcher_task(
 }
 
 async fn forwarder_task(
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    sink: Arc<dyn hardy_bpa::cla::ClaSink>,
     rx: flume::Receiver<PathBuf>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {

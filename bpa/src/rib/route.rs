@@ -1,8 +1,12 @@
-use super::*;
+use hardy_eid_patterns::EidPattern;
+
+use super::Rib;
+use crate::routes::Action as RouteAction;
+use crate::{HashSet, btree_map};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
-    pub action: routes::Action,
+    pub action: RouteAction,
     pub source: String,
 }
 
@@ -16,15 +20,15 @@ impl Ord for Entry {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // The order is critical, hence done long-hand
         match (&self.action, &other.action) {
-            (routes::Action::Drop(lhs), routes::Action::Drop(rhs)) => lhs.cmp(rhs),
-            (routes::Action::Drop(_), routes::Action::Reflect)
-            | (routes::Action::Drop(_), routes::Action::Via(_)) => core::cmp::Ordering::Less,
-            (routes::Action::Reflect, routes::Action::Drop(_)) => core::cmp::Ordering::Greater,
-            (routes::Action::Reflect, routes::Action::Reflect) => core::cmp::Ordering::Equal,
-            (routes::Action::Reflect, routes::Action::Via(_)) => core::cmp::Ordering::Less,
-            (routes::Action::Via(_), routes::Action::Drop(_))
-            | (routes::Action::Via(_), routes::Action::Reflect) => core::cmp::Ordering::Greater,
-            (routes::Action::Via(lhs), routes::Action::Via(rhs)) => lhs.cmp(rhs),
+            (RouteAction::Drop(lhs), RouteAction::Drop(rhs)) => lhs.cmp(rhs),
+            (RouteAction::Drop(_), RouteAction::Reflect)
+            | (RouteAction::Drop(_), RouteAction::Via(_)) => core::cmp::Ordering::Less,
+            (RouteAction::Reflect, RouteAction::Drop(_)) => core::cmp::Ordering::Greater,
+            (RouteAction::Reflect, RouteAction::Reflect) => core::cmp::Ordering::Equal,
+            (RouteAction::Reflect, RouteAction::Via(_)) => core::cmp::Ordering::Less,
+            (RouteAction::Via(_), RouteAction::Drop(_))
+            | (RouteAction::Via(_), RouteAction::Reflect) => core::cmp::Ordering::Greater,
+            (RouteAction::Via(lhs), RouteAction::Via(rhs)) => lhs.cmp(rhs),
         }
         .then_with(|| self.source.cmp(&other.source))
     }
@@ -35,7 +39,7 @@ impl Rib {
         &self,
         pattern: EidPattern,
         source: String,
-        action: routes::Action,
+        action: RouteAction,
         priority: u32,
     ) -> bool {
         let vias = {
@@ -62,7 +66,9 @@ impl Rib {
                 },
             }
 
-            debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
+            tracing::debug!(
+                "Adding route {pattern} => {action}, priority {priority}, source '{source}'"
+            );
 
             // Start walking through the route table starting at this priority to find impacted routes
             let mut vias = HashSet::new();
@@ -71,7 +77,7 @@ impl Rib {
                     if p.is_subset(&pattern) {
                         // We have an impacted subset, so see if we need to refresh any queue assignments
                         for entry in actions {
-                            if let routes::Action::Via(to) = &entry.action {
+                            if let RouteAction::Via(to) = &entry.action {
                                 vias.insert(to.clone());
                             }
                         }
@@ -99,7 +105,7 @@ impl Rib {
         &self,
         pattern: &EidPattern,
         source: &str,
-        action: &routes::Action,
+        action: &RouteAction,
         priority: u32,
     ) -> bool {
         // Remove the entry
@@ -123,10 +129,12 @@ impl Rib {
             }
         }
 
-        debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
+        tracing::debug!(
+            "Removed route {pattern} => {action}, priority {priority}, source '{source}'"
+        );
 
         // See if we are removing a Via
-        if let routes::Action::Via(to) = action
+        if let RouteAction::Via(to) = action
             && let Some(peers) = self.find_peers(to)
             && self.reset_peer_queues(peers).await
         {

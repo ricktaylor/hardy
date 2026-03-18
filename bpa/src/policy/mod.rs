@@ -1,19 +1,24 @@
-use super::*;
+mod null_policy;
 
-pub mod null_policy;
+pub use null_policy::*;
 
-// #[cfg(feature = "htb_policy")]
-// pub mod htb_policy;
+#[cfg(feature = "htb_policy")]
+pub mod htb_policy;
 
-// #[cfg(feature = "tbf_policy")]
-// pub mod tbf_policy;
+#[cfg(feature = "tbf_policy")]
+pub mod tbf_policy;
+
+use hardy_async::async_trait;
+
+use crate::bundle::Bundle;
+use crate::{Arc, HashMap};
 
 /// A trait for controlling the egress of bundles through a CLA.
 /// This is often implemented by a CLA itself or by a policy manager.
 #[async_trait]
 pub trait EgressController: Send + Sync {
     /// Forwards a bundle to a specific queue in a Controller.
-    async fn forward(&self, queue: Option<u32>, bundle: bundle::Bundle);
+    async fn forward(&self, queue: Option<u32>, bundle: Bundle);
 }
 
 /// Defines an egress policy for a CLA, managing how outgoing bundles are prioritized and scheduled.
@@ -44,8 +49,7 @@ pub trait EgressPolicy: Send + Sync {
 
 #[async_trait]
 pub trait EgressQueue: Send + Sync {
-    /// Forwards a bundle.
-    async fn forward(&self, bundle: bundle::Bundle);
+    async fn forward(&self, bundle: Bundle);
 }
 
 #[cfg(test)]

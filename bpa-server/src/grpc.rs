@@ -21,7 +21,7 @@ impl Default for Config {
 }
 
 #[cfg(feature = "grpc")]
-pub fn init(config: &Config, bpa: &Arc<hardy_bpa::bpa::Bpa>, tasks: &hardy_async::TaskPool) {
+pub fn init(config: &Config, bpa: &Arc<hardy_bpa::Bpa>, tasks: &hardy_async::TaskPool) {
     // Convert to proto server config
     let proto_config = hardy_proto::server::Config {
         address: config.address,
@@ -29,7 +29,7 @@ pub fn init(config: &Config, bpa: &Arc<hardy_bpa::bpa::Bpa>, tasks: &hardy_async
     };
 
     // Bpa implements BpaRegistration, so we can pass it as dyn BpaRegistration
-    let bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration> = bpa.clone();
+    let bpa: Arc<dyn hardy_bpa::BpaRegistration> = bpa.clone();
 
     hardy_proto::server::init(&proto_config, &bpa, tasks);
 }
