@@ -61,15 +61,48 @@ The following scenarios are verified by the unit tests located in `cbor/src/`.
 | **Nested Indefinite Structures** | Parse nested indefinite structures. | `src/decode_tests.rs` | `0x9F9F01FF02FF` | `vec![vec![1], 2]` |
 | **Unterminated Stream Detection** | Input ends before `0xFF` break. | `src/decode_tests.rs` | `0x9F0102` | Error: `NeedMoreData` |
 
-### 3.3 Tagged Items and Opportunistic Parsing (LLR 1.1.2, 1.1.8, 1.1.11)
+### 3.3 Tagged Items (LLR 1.1.2, 1.1.8)
 
-*Objective: Verify handling of semantic tags and robust iterator-style parsing.*
+*Objective: Verify handling of semantic tags.*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
  | ----- | ----- | ----- | ----- | ----- |
 | **Tagged Value Encoding** | Encode a value with a semantic tag. | `src/encode_tests.rs` | `Tag(32, "http://a.com")` | `0xD82072687474703A2F2F612E636F6D` |
 | **Tagged Value Decoding** | Decode a tagged value and verify the tag is reported. | `src/decode_tests.rs` | `0xD820...` | Value is `"http://a.com"`, reported tags are `[32]`. |
-| **Opportunistic `try_parse`** | Use `try_parse` on a sequence to get `Some(item)` then `None`. | `src/decode_tests.rs` | `0x8101` (Array `[1]`) | First call returns `Some(1)`, second call returns `None`. |
+
+### 3.6 Incomplete Item Detection (LLR 1.1.12)
+
+*Objective: Verify the decoder returns `NeedMoreData` for truncated inputs.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+ | ----- | ----- | ----- | ----- | ----- |
+| **Truncated uint (1-byte)** | `additional info = 24` with no following byte. | `src/decode_tests.rs` | `0x18` | `NeedMoreData(1)` |
+| **Truncated uint (2-byte)** | `additional info = 25` with no following bytes. | `src/decode_tests.rs` | `0x19` | `NeedMoreData(2)` |
+| **Partial uint (2-byte)** | `additional info = 25` with only 1 of 2 bytes. | `src/decode_tests.rs` | `0x1900` | `NeedMoreData(1)` |
+| **Truncated uint (4-byte)** | `additional info = 26` with no following bytes. | `src/decode_tests.rs` | `0x1a` | `NeedMoreData(4)` |
+| **Partial uint (8-byte)** | `additional info = 27` with only 3 of 8 bytes. | `src/decode_tests.rs` | `0x1b000000` | `NeedMoreData(5)` |
+| **Truncated negative int** | Negative integer with missing payload byte. | `src/decode_tests.rs` | `0x38` | `NeedMoreData(1)` |
+| **Byte string, no payload** | Header says 4 bytes, none follow. | `src/decode_tests.rs` | `0x44` | `NeedMoreData(4)` |
+| **Byte string, partial** | Header says 4 bytes, only 2 follow. | `src/decode_tests.rs` | `0x440102` | `NeedMoreData(2)` |
+| **Text string, no payload** | Header says 4 bytes of UTF-8, none follow. | `src/decode_tests.rs` | `0x64` | `NeedMoreData(4)` |
+| **Truncated float16** | `additional info = 25` with no payload. | `src/decode_tests.rs` | `0xf9` | `NeedMoreData(2)` |
+| **Partial float32** | `additional info = 26` with only 1 of 4 bytes. | `src/decode_tests.rs` | `0xfa00` | `NeedMoreData(3)` |
+| **Empty input** | Zero bytes. | `src/decode_tests.rs` | `""` | `NeedMoreData(1)` |
+| **Truncated array body** | Array of 3 items with empty body. | `src/decode_tests.rs` | `0x83` | `NeedMoreData(1)` on first item read |
+
+### 3.7 Opportunistic Parsing (LLR 1.1.11)
+
+*Objective: Verify `try_parse` returns `Ok(None)` at sequence end, and `parse` returns `NoMoreItems`.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+ | ----- | ----- | ----- | ----- | ----- |
+| **Definite array exhaustion** | `try_parse` after consuming all items. | `src/decode_tests.rs` | `0x820102` (Array `[1, 2]`) | Two `Some(n)`, then `None` |
+| **Empty definite array** | `try_parse` on empty array. | `src/decode_tests.rs` | `0x80` | Immediate `None` |
+| **Indefinite array exhaustion** | `try_parse` after break code. | `src/decode_tests.rs` | `0x9f01ff` | `Some(1)`, then `None` |
+| **Empty indefinite array** | `try_parse` on `[_ ]`. | `src/decode_tests.rs` | `0x9fff` | Immediate `None` |
+| **`try_parse_value` variant** | Value-level try-parse returns `None` at end. | `src/decode_tests.rs` | `0x8101` | `Some(())`, then `None` |
+| **Bare sequence exhaustion** | `try_parse` on a raw sequence. | `src/decode_tests.rs` | `0x0102` | Two `Some(n)`, then `None` |
+| **`parse` at end returns error** | Contrast: `parse` (not `try_parse`) at end. | `src/decode_tests.rs` | `0x8101` | `Ok(1)`, then `Err(NoMoreItems)` |
 
 ### 3.4 RFC 8949 Appendix A Compliance (Standard Examples)
 

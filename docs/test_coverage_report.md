@@ -3,7 +3,7 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Project** | Hardy (Cloud-based DTN Router) |
-| **Date** | 2026-01-19 |
+| **Date** | 2026-03-19 |
 | **Status** | READY FOR REVIEW |
 
 ## 1. Executive Summary
@@ -12,10 +12,10 @@ This report summarizes the test planning status for the Hardy project. The testi
 
 **Overall Status:**
 
-* **Core Logic:** High coverage (Unit + Fuzzing).
-* **Storage:** High coverage (Generic Integration Suite).
+* **Core Logic:** High coverage (Unit + Fuzzing). CBOR crate fully covered (all LLRs verified).
+* **Storage:** High coverage (Generic Integration Suite in `tests/storage` covers trait-level CRUD, polling, and recovery for all backends). Backend-specific gaps: SQLite migration/concurrency/corruption; localdisk dirty-directory cleanup/filesystem structure.
 * **Transport:** High coverage (TCPCLv4 Component Tests).
-* **System:** Moderate coverage (Basic End-to-End & Interop defined).
+* **System:** Moderate coverage (Basic End-to-End & Interop defined). Interop tests for dtn7-rs and hardy-to-hardy implemented.
 
 ## 2. Test Plan Inventory
 
@@ -56,12 +56,12 @@ The following areas have defined requirements but lack implemented code or speci
 | Feature | Requirement | Test Status |
 | :--- | :--- | :--- |
 | **UDP Convergence Layer** | [REQ-4](requirements.md#req-4-alignment-with-on-going-dtn-standardisation) | **Missing** (Not Implemented) |
-| **Custody Transfer** | [REQ-4](requirements.md#req-4-alignment-with-on-going-dtn-standardisation) | **Missing** (Not Implemented) |
-| **PostgreSQL Storage** | [REQ-8](requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage) | **Planned** (Generic Suite Ready) |
-| **S3 Storage** | [REQ-9](requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) | **Planned** (Generic Suite Ready) |
+| **Guaranteed Delivery** | [REQ-4](requirements.md#req-4-alignment-with-on-going-dtn-standardisation) | **Missing** (Not implementing BPv6-style Custody Transfer; QoS + CBSR approach TBD) |
+| **PostgreSQL Storage** | [REQ-8](requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage) | **Implemented** (Generic Suite covers trait-level; backend-specific migration/concurrency tests pending) |
+| **S3 Storage** | [REQ-9](requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) | **Implemented** (Generic Suite covers trait-level) |
 | **Helm Charts** | [REQ-16](requirements.md#req-16-kubernetes-packaging) | **Planned** (Defined in [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md)) |
 | **OCI Packaging** | [REQ-15](requirements.md#req-15-independent-component-packaging) | **Complete** (Defined in [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md)) |
 
 ## 4. Conclusion
 
-The project has a comprehensive verification strategy for all implemented features. The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). The project is **Ready for Test Execution**.
+The project has a comprehensive verification strategy for all implemented features. The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). The CBOR crate has complete LLR coverage. Storage backends have trait-level coverage via a generic test harness (`tests/storage`), with backend-specific tests for SQLite and localdisk internals remaining. ~96 TODO test comments remain across the codebase, primarily in BPA subsystems (RIB, CLA, storage internals, policy). The project is **Ready for Test Execution**.
