@@ -1,19 +1,25 @@
-use super::*;
+use bytes::Bytes;
+use hardy_bpv7::bpsec::key::KeySource as Bpv7KeySource;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use trace_err::TraceErrResult;
+use tracing::debug;
 
-// A single node's worth of filters, ready for execution (just Arc clones)
+use super::{
+    Error, ExecResult, Filter, FilterResult, Mutation, ReadFilter, Result, RewriteResult,
+    WriteFilter,
+};
+use crate::bundle::{Bundle, BundleMetadata};
+use crate::{Arc, HashSet, String, Vec};
+
 struct PreparedNode {
     read_only: Vec<Arc<dyn ReadFilter>>,
     read_write: Vec<Arc<dyn WriteFilter>>,
 }
 
-// A prepared filter chain ready for execution.
-// Obtained by calling FilterNode::prepare() while holding a lock, then executed
-// after releasing the lock. Only contains Arc clones (cheap refcount bumps).
 pub struct PreparedFilters {
     nodes: Vec<PreparedNode>,
 }
 
-// A named filter with its dependency information.
 struct FilterItem<T> {
     name: String,
     filter: T,
@@ -40,7 +46,6 @@ impl Default for FilterNode {
 }
 
 impl FilterNode {
-    // Creates an empty filter node
     pub fn new() -> Self {
         Self {
             read_only: Vec::new(),
@@ -60,7 +65,7 @@ impl FilterNode {
     // Registers a filter with the given name and dependencies.
     // The filter is placed in the node chain based on its `after` dependencies.
     // Errors if a filter with this name already exists or any dependency is not found.
-    pub fn add_filter(&mut self, name: &str, filter: Filter, after: &[&str]) -> Result<(), Error> {
+    pub fn add_filter(&mut self, name: &str, filter: Filter, after: &[&str]) -> Result<()> {
         let mut tracking_after = after.iter().copied().collect::<HashSet<&str>>();
         self.add_filter_inner(
             name,
@@ -79,7 +84,7 @@ impl FilterNode {
         filter: Filter,
         tracking_after: &mut HashSet<&str>,
         after: HashSet<String>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         if self.find_dependencies(name, tracking_after)? {
             self.next
                 .get_or_insert_with(|| Box::new(FilterNode::new()))
@@ -110,7 +115,7 @@ impl FilterNode {
     // Scans this node for dependencies and duplicate names.
     // Returns Ok(true) if any dependency was found (must continue to next node),
     // Ok(false) if none found, or Err(AlreadyExists) if name is a duplicate.
-    fn find_dependencies(&self, name: &str, after: &mut HashSet<&str>) -> Result<bool, Error> {
+    fn find_dependencies(&self, name: &str, after: &mut HashSet<&str>) -> Result<bool> {
         let mut next = false;
         for n in self
             .read_only
@@ -129,7 +134,7 @@ impl FilterNode {
     }
 
     // Recursively checks that no filter with `name` exists in this node or beyond.
-    fn check_names(&self, name: &str) -> Result<(), Error> {
+    fn check_names(&self, name: &str) -> Result<()> {
         if self
             .read_only
             .iter()
@@ -148,7 +153,7 @@ impl FilterNode {
     // Remove a filter by name.
     // Returns Ok(Some(filter)) if removed, Ok(None) if not found,
     // or Err(HasDependants) if other filters depend on it.
-    pub fn remove_filter(&mut self, name: &str) -> Result<Option<Filter>, Error> {
+    pub fn remove_filter(&mut self, name: &str) -> Result<Option<Filter>> {
         // First, check for dependants across the entire chain
         let dependants = self.find_dependants(name);
         if !dependants.is_empty() {
@@ -159,14 +164,12 @@ impl FilterNode {
         Ok(self.remove_filter_inner(name))
     }
 
-    // Collect names of all filters that depend on the given name
     fn find_dependants(&self, name: &str) -> Vec<String> {
         let mut dependants = Vec::new();
         self.find_dependants_inner(name, &mut dependants);
         dependants
     }
 
-    // Recursive helper that accumulates dependant names into the provided Vec
     fn find_dependants_inner(&self, name: &str, dependants: &mut Vec<String>) {
         for (filter_name, after) in self
             .read_only
@@ -183,23 +186,18 @@ impl FilterNode {
         }
     }
 
-    // Remove filter by name, returning it if found. Also cleans up empty nodes.
     fn remove_filter_inner(&mut self, name: &str) -> Option<Filter> {
-        // Try read_only
         if let Some(idx) = self.read_only.iter().position(|f| f.name == name) {
             return Some(Filter::Read(self.read_only.remove(idx).filter));
         }
 
-        // Try read_write
         if let Some(idx) = self.read_write.iter().position(|f| f.name == name) {
             return Some(Filter::Write(self.read_write.remove(idx).filter));
         }
 
-        // Try next node
         if let Some(next) = &mut self.next {
             let result = next.remove_filter_inner(name);
 
-            // Clean up empty intermediate nodes
             if next.read_only.is_empty() && next.read_write.is_empty() {
                 self.next = next.next.take();
             }
@@ -210,8 +208,6 @@ impl FilterNode {
         None
     }
 
-    // Prepares the filter chain for execution by cloning all Arc references.
-    // Call this while holding a lock, then release the lock before calling exec().
     pub fn prepare(&self) -> PreparedFilters {
         let mut nodes = Vec::new();
         self.prepare_inner(&mut nodes);
@@ -238,23 +234,17 @@ impl FilterNode {
 }
 
 impl PreparedFilters {
-    // Execute the prepared filter chain on a bundle.
-    // Read-only filters run in parallel, then read-write filters run sequentially.
-    // Returns Drop on first filter rejection.
     pub async fn exec<F>(
         self,
         pool: &hardy_async::BoundedTaskPool,
-        mut bundle: bundle::Bundle,
+        mut bundle: Bundle,
         mut data: Bytes,
         key_provider: F,
-    ) -> Result<registry::ExecResult, crate::Error>
+    ) -> crate::Result<ExecResult>
     where
-        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
-            + Clone
-            + Send,
+        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn Bpv7KeySource> + Clone + Send,
     {
-        // Capture what has changed
-        let mut mutation = registry::Mutation::default();
+        let mut mutation = Mutation::default();
 
         for node in self.nodes {
             if !node.read_only.is_empty() {
@@ -274,7 +264,6 @@ impl PreparedFilters {
                     );
                 }
 
-                // Check results - this is a 'barrier'
                 for result in read_results {
                     if let FilterResult::Drop(reason) =
                         result.await.trace_expect("filter spawn failed!")?
@@ -282,27 +271,25 @@ impl PreparedFilters {
                         debug!("ReadFilter dropped bundle: {reason:?}");
 
                         // Create a drop_bundle with just enough of the Bundle that we can reply with something suitable for dispatcher::drop_bundle() if needed.  See report_bundle_deletion() for details.
-                        let drop_bundle = bundle::Bundle {
-                            bundle: hardy_bpv7::bundle::Bundle {
+                        let drop_bundle = Bundle {
+                            bundle: Bpv7Bundle {
                                 id: bd.0.bundle.id.clone(),
                                 flags: bd.0.bundle.flags.clone(),
                                 report_to: bd.0.bundle.report_to.clone(),
                                 ..Default::default()
                             },
-                            metadata: metadata::BundleMetadata {
+                            metadata: BundleMetadata {
                                 storage_name: bd.0.metadata.storage_name.clone(),
                                 ..Default::default()
                             },
                         };
-                        return Ok(registry::ExecResult::Drop(drop_bundle, reason));
+                        return Ok(ExecResult::Drop(drop_bundle, reason));
                     }
                 }
 
-                // All tasks completed, unwrap the Arc
                 (bundle, data) = Arc::try_unwrap(bd).trace_expect("Lingering filter tasks?!?");
             }
 
-            // Execute read-write filters sequentially
             for filter in node.read_write {
                 (bundle, data) = match filter.filter(&bundle, &data).await? {
                     RewriteResult::Continue(None, None) => (bundle, data),
@@ -312,9 +299,9 @@ impl PreparedFilters {
                         mutation.metadata = true;
 
                         (
-                            bundle::Bundle {
+                            Bundle {
                                 bundle: bundle.bundle,
-                                metadata: metadata::BundleMetadata {
+                                metadata: BundleMetadata {
                                     storage_name: bundle.metadata.storage_name,
                                     status: bundle.metadata.status,
                                     read_only: bundle.metadata.read_only,
@@ -328,7 +315,7 @@ impl PreparedFilters {
                         let metadata = if let Some(writable) = metadata {
                             debug!("WriteFilter rewrote bundle data and metadata");
                             mutation.metadata = true;
-                            metadata::BundleMetadata {
+                            BundleMetadata {
                                 storage_name: bundle.metadata.storage_name,
                                 status: bundle.metadata.status,
                                 read_only: bundle.metadata.read_only,
@@ -345,7 +332,7 @@ impl PreparedFilters {
                             hardy_bpv7::bundle::CheckedBundle::parse(&new_data, &key_provider)?;
                         let data = Bytes::from(parsed.new_data.unwrap_or(new_data));
                         (
-                            bundle::Bundle {
+                            Bundle {
                                 bundle: parsed.bundle,
                                 metadata,
                             },
@@ -354,12 +341,12 @@ impl PreparedFilters {
                     }
                     RewriteResult::Drop(reason) => {
                         debug!("WriteFilter dropped bundle: {reason:?}");
-                        return Ok(registry::ExecResult::Drop(bundle, reason));
+                        return Ok(ExecResult::Drop(bundle, reason));
                     }
                 };
             }
         }
 
-        Ok(registry::ExecResult::Continue(mutation, bundle, data))
+        Ok(ExecResult::Continue(mutation, bundle, data))
     }
 }

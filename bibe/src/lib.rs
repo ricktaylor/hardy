@@ -10,8 +10,7 @@ pub use config::{Config, Tunnel};
 // Common imports for submodules (accessed via `use super::*;`)
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
 use hardy_async::sync::spin::Once;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{Bytes, async_trait};
+use hardy_bpa::{BpaRegistration, Bytes, async_trait};
 use hardy_bpv7::{
     bpsec,
     bundle::ParsedBundle,

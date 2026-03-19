@@ -21,9 +21,16 @@
 //!
 //! Uses lock-free CAS operations for state transitions on the hot path.
 
-use super::*;
 use core::result::Result;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+use flume;
+use trace_err::TraceErrResult;
+use tracing::debug;
+
+use super::Store;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleStatus};
 
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
@@ -72,8 +79,8 @@ impl ChannelState {
 /// Shared state between Sender and the background poller task.
 struct Shared {
     state: AtomicUsize,
-    tx: flume::Sender<Option<bundle::Bundle>>,
-    status: metadata::BundleStatus,
+    tx: flume::Sender<Option<Bundle>>,
+    status: BundleStatus,
     notify: Arc<hardy_async::Notify>,
 }
 
@@ -123,11 +130,11 @@ pub struct Sender {
 }
 
 /// Error returned when a bundle cannot be sent.
-pub struct SendError(pub bundle::Bundle);
+pub struct SendError(pub Bundle);
 
 impl Sender {
     /// Send a bundle, updating its status to match the channel's target status.
-    pub async fn send(&self, mut bundle: bundle::Bundle) -> Result<(), SendError> {
+    pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
         if bundle.metadata.status != self.shared.status {
             bundle.metadata.status = self.shared.status.clone();
             self.store.update_metadata(&bundle).await;
@@ -194,16 +201,12 @@ impl Sender {
 }
 
 ///// Receiver handle. Receives `Some(bundle)` for data, `None` signals channel close.
-pub type Receiver = flume::Receiver<Option<bundle::Bundle>>;
+pub type Receiver = flume::Receiver<Option<Bundle>>;
 
 impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
-    pub fn channel(
-        self: &Arc<Self>,
-        status: metadata::BundleStatus,
-        cap: usize,
-    ) -> (Sender, Receiver) {
-        let (tx, rx) = flume::bounded::<Option<bundle::Bundle>>(cap);
+    pub fn channel(self: &Arc<Self>, status: BundleStatus, cap: usize) -> (Sender, Receiver) {
+        let (tx, rx) = flume::bounded::<Option<Bundle>>(cap);
 
         let shared = Arc::new(Shared {
             state: AtomicUsize::new(ChannelState::Open.as_usize()),
@@ -269,7 +272,7 @@ impl Store {
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
-        let (inner_tx, inner_rx) = flume::bounded::<bundle::Bundle>(cap);
+        let (inner_tx, inner_rx) = flume::bounded::<Bundle>(cap);
         let shared_cloned = shared.clone();
 
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {

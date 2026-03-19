@@ -1,5 +1,12 @@
-use super::*;
+use bytes::Bytes;
+use hardy_async::BoundedTaskPool;
 use hardy_async::sync::RwLock;
+use hardy_bpv7::bpsec::key::KeySource as Bpv7KeySource;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use hardy_bpv7::status_report::ReasonCode;
+
+use super::{Filter, FilterNode, Hook, Result};
+use crate::bundle::Bundle;
 
 #[derive(Default)]
 pub struct Mutation {
@@ -11,27 +18,30 @@ pub struct Mutation {
 #[allow(clippy::large_enum_variant)]
 pub enum ExecResult {
     /// Bundle passed all filters; continue processing with (possibly modified) bundle and data.
-    Continue(Mutation, bundle::Bundle, Bytes),
+    Continue(Mutation, Bundle, Bytes),
     /// Bundle was rejected by a filter; the bundle contains enough information for Dispatcher::drop_bundle to work.
-    Drop(
-        bundle::Bundle,
-        Option<hardy_bpv7::status_report::ReasonCode>,
-    ),
+    Drop(Bundle, Option<ReasonCode>),
 }
 
 #[derive(Default)]
 struct RegistryInner {
-    ingress: filter::FilterNode,
-    deliver: filter::FilterNode,
-    originate: filter::FilterNode,
-    egress: filter::FilterNode,
+    ingress: FilterNode,
+    deliver: FilterNode,
+    originate: FilterNode,
+    egress: FilterNode,
 }
 
-pub struct Registry {
+pub struct FilterRegistry {
     inner: RwLock<RegistryInner>,
 }
 
-impl Registry {
+impl Default for FilterRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FilterRegistry {
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(RegistryInner::default()),
@@ -46,13 +56,7 @@ impl Registry {
         inner.egress.clear();
     }
 
-    pub fn register(
-        &self,
-        hook: Hook,
-        name: &str,
-        after: &[&str],
-        filter: Filter,
-    ) -> Result<(), Error> {
+    pub fn register(&self, hook: Hook, name: &str, after: &[&str], filter: Filter) -> Result<()> {
         let mut inner = self.inner.write();
 
         match hook {
@@ -66,7 +70,7 @@ impl Registry {
     // Removes a filter by name from the specified hook.
     // Returns Ok(Some(filter)) if found and removed, Ok(None) if not found,
     // or Err(HasDependants) if other filters depend on it.
-    pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>, Error> {
+    pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>> {
         let mut inner = self.inner.write();
 
         match hook {
@@ -85,15 +89,13 @@ impl Registry {
     pub async fn exec<F>(
         &self,
         hook: Hook,
-        bundle: bundle::Bundle,
+        bundle: Bundle,
         data: Bytes,
         key_provider: F,
-        pool: &hardy_async::BoundedTaskPool,
-    ) -> Result<ExecResult, crate::Error>
+        pool: &BoundedTaskPool,
+    ) -> crate::Result<ExecResult>
     where
-        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
-            + Clone
-            + Send,
+        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn Bpv7KeySource> + Clone + Send,
     {
         let prepared = {
             let inner = self.inner.read();

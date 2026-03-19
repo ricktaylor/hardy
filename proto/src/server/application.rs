@@ -225,7 +225,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::BpaRegistration>,
     channel_size: usize,
 }
 
@@ -293,7 +293,7 @@ impl application_server::Application for Service {
 
 /// Create a new Application gRPC service.
 pub fn new_application_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn hardy_bpa::BpaRegistration>,
 ) -> application_server::ApplicationServer<Service> {
     application_server::ApplicationServer::new(Service {
         bpa: bpa.clone(),

@@ -1,36 +1,52 @@
-use super::*;
+use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
+use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
+use lru::LruCache;
+use tracing::info;
+
+use super::{MetadataStorage, Result, Sender};
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use crate::{BTreeMap, NonZero, NonZeroUsize};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
-pub struct Config {
-    pub max_bundles: core::num::NonZeroUsize,
+pub struct MetadataMemConfig {
+    pub max_bundles: NonZeroUsize,
 }
 
-impl Default for Config {
+impl Default for MetadataMemConfig {
     fn default() -> Self {
         Self {
-            max_bundles: core::num::NonZero::new(1_048_576).unwrap(),
+            max_bundles: NonZero::new(1_048_576).unwrap(),
         }
     }
 }
 
-struct Storage {
-    entries: Mutex<lru::LruCache<hardy_bpv7::bundle::Id, Option<bundle::Bundle>>>,
+pub struct MetadataMemStorage {
+    entries: Mutex<LruCache<Id, Option<Bundle>>>,
+}
+
+impl MetadataMemStorage {
+    pub fn new(config: &MetadataMemConfig) -> Self {
+        info!(
+            "Using in-memory metadata storage (max {} bundles, non-persistent)",
+            config.max_bundles
+        );
+        Self {
+            entries: Mutex::new(lru::LruCache::new(config.max_bundles)),
+        }
+    }
 }
 
 #[async_trait]
-impl storage::MetadataStorage for Storage {
-    async fn get(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<bundle::Bundle>> {
+impl MetadataStorage for MetadataMemStorage {
+    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>> {
         Ok(self.entries.lock().peek(bundle_id).cloned().flatten())
     }
 
-    async fn insert(&self, bundle: &bundle::Bundle) -> storage::Result<bool> {
+    async fn insert(&self, bundle: &Bundle) -> Result<bool> {
         let mut entries = self.entries.lock();
         if entries.get(&bundle.bundle.id).is_some() {
             Ok(false)
@@ -40,14 +56,14 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    async fn replace(&self, bundle: &bundle::Bundle) -> storage::Result<()> {
+    async fn replace(&self, bundle: &Bundle) -> Result<()> {
         self.entries
             .lock()
             .put(bundle.bundle.id.clone(), Some(bundle.clone()));
         Ok(())
     }
 
-    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
+    async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
         self.entries.lock().put(bundle_id.clone(), None);
         Ok(())
     }
@@ -59,41 +75,33 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<metadata::BundleMetadata>> {
+    ) -> Result<Option<BundleMetadata>> {
         Ok(None)
     }
 
-    async fn remove_unconfirmed(
-        &self,
-        _tx: storage::Sender<bundle::Bundle>,
-    ) -> storage::Result<()> {
+    async fn remove_unconfirmed(&self, _tx: Sender<Bundle>) -> Result<()> {
         Ok(())
     }
 
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
+    async fn reset_peer_queue(&self, peer: u32) -> Result<bool> {
         let mut updated = false;
         for (_, v) in self.entries.lock().iter_mut() {
             if let Some(v) = v
-                && let metadata::BundleStatus::ForwardPending { peer: p, queue: _ } =
-                    v.metadata.status
+                && let BundleStatus::ForwardPending { peer: p, queue: _ } = v.metadata.status
                 && p == peer
             {
-                v.metadata.status = metadata::BundleStatus::Waiting;
+                v.metadata.status = BundleStatus::Waiting;
                 updated = true;
             }
         }
         Ok(updated)
     }
 
-    async fn poll_expiry(
-        &self,
-        tx: storage::Sender<bundle::Bundle>,
-        mut limit: usize,
-    ) -> storage::Result<()> {
+    async fn poll_expiry(&self, tx: Sender<Bundle>, mut limit: usize) -> Result<()> {
         let mut entries = BTreeMap::new();
         for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
-                && v.metadata.status != metadata::BundleStatus::New
+                && v.metadata.status != BundleStatus::New
             {
                 entries.insert(v.expiry(), v.clone());
             }
@@ -112,7 +120,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) -> storage::Result<()> {
+    async fn poll_waiting(&self, tx: Sender<Bundle>) -> Result<()> {
         let mut entries = BTreeMap::new();
         for bundle in self
             .entries
@@ -120,7 +128,7 @@ impl storage::MetadataStorage for Storage {
             .iter()
             .filter_map(|(_, bundle)| bundle.as_ref())
         {
-            if bundle.metadata.status == metadata::BundleStatus::Waiting {
+            if bundle.metadata.status == BundleStatus::Waiting {
                 entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
             }
         }
@@ -133,15 +141,10 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_service_waiting(
-        &self,
-        source: Eid,
-        tx: storage::Sender<bundle::Bundle>,
-    ) -> storage::Result<()> {
+    async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) -> Result<()> {
         let mut entries = BTreeMap::new();
         for bundle in self.entries.lock().iter().filter_map(|(_, v)| v.as_ref()) {
-            if let metadata::BundleStatus::WaitingForService { service: s } =
-                &bundle.metadata.status
+            if let BundleStatus::WaitingForService { service: s } = &bundle.metadata.status
                 && s == &source
             {
                 entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
@@ -156,11 +159,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    async fn poll_adu_fragments(
-        &self,
-        tx: storage::Sender<bundle::Bundle>,
-        status: &metadata::BundleStatus,
-    ) -> storage::Result<()> {
+    async fn poll_adu_fragments(&self, tx: Sender<Bundle>, status: &BundleStatus) -> Result<()> {
         let mut entries = BTreeMap::new();
         for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
@@ -181,10 +180,10 @@ impl storage::MetadataStorage for Storage {
 
     async fn poll_pending(
         &self,
-        tx: storage::Sender<bundle::Bundle>,
-        state: &metadata::BundleStatus,
+        tx: Sender<Bundle>,
+        state: &BundleStatus,
         mut limit: usize,
-    ) -> storage::Result<()> {
+    ) -> Result<()> {
         let mut entries = BTreeMap::new();
         for (_, v) in self.entries.lock().iter() {
             if let Some(v) = v
@@ -206,14 +205,4 @@ impl storage::MetadataStorage for Storage {
         }
         Ok(())
     }
-}
-
-pub fn new(config: &Config) -> Arc<dyn storage::MetadataStorage> {
-    info!(
-        "Using in-memory metadata storage (max {} bundles, non-persistent)",
-        config.max_bundles
-    );
-    Arc::new(Storage {
-        entries: Mutex::new(lru::LruCache::new(config.max_bundles)),
-    })
 }

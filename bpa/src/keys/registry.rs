@@ -1,14 +1,21 @@
-// This is still work in progress
-#![allow(dead_code)]
-
-use super::*;
 use hardy_async::sync::RwLock;
+use hardy_bpv7::bpsec::key::{Key as Bpv7Key, KeySource as Bpv7KeySource, Operation};
+use hardy_bpv7::eid::Eid;
 
-pub struct Registry {
+use super::KeyProvider;
+use crate::{Arc, HashMap};
+
+pub struct KeyRegistry {
     providers: RwLock<HashMap<String, Arc<dyn KeyProvider>>>,
 }
 
-impl Registry {
+impl Default for KeyRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeyRegistry {
     pub fn new() -> Self {
         Self {
             providers: RwLock::new(HashMap::new()),
@@ -27,13 +34,11 @@ impl Registry {
         self.providers.write().remove(name)
     }
 
-    /// Returns a KeySource that aggregates keys from all registered providers.
     pub fn key_source(
         &self,
         bundle: &hardy_bpv7::bundle::Bundle,
         data: &[u8],
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
-        // Collect KeySources from all providers
         let sources: Vec<_> = self.providers.read().values().cloned().collect();
 
         Box::new(CompositeKeySource {
@@ -48,15 +53,11 @@ impl Registry {
 /// A composite KeySource that aggregates multiple KeySources.
 /// Returns the first key found from any of the sources.
 pub struct CompositeKeySource {
-    sources: Vec<Box<dyn hardy_bpv7::bpsec::key::KeySource>>,
+    sources: Vec<Box<dyn Bpv7KeySource>>,
 }
 
-impl hardy_bpv7::bpsec::key::KeySource for CompositeKeySource {
-    fn key<'a>(
-        &'a self,
-        source: &hardy_bpv7::eid::Eid,
-        operations: &[hardy_bpv7::bpsec::key::Operation],
-    ) -> Option<&'a hardy_bpv7::bpsec::key::Key> {
+impl Bpv7KeySource for CompositeKeySource {
+    fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Bpv7Key> {
         self.sources.iter().find_map(|s| s.key(source, operations))
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::BpaRegistration;
 
 /// Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,13 +21,10 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         );
     }
 
-    let bpa_config = hardy_bpa::config::Config {
-        status_reports: true,
-        node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
-        ..Default::default()
-    };
-
-    let bpa = hardy_bpa::bpa::Bpa::new(bpa_config, None, None);
+    let bpa = hardy_bpa::BpaBuilder::default()
+        .status_reports(true)
+        .node_ids([args.node_id()?].as_slice().try_into().unwrap())
+        .build();
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.add_route(

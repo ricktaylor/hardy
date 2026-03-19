@@ -1,5 +1,22 @@
-use super::*;
+use bytes::Bytes;
+use hardy_bpv7::Error as Bpv7Error;
+use hardy_bpv7::block::Payload;
+use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle, Flags, Id};
+use hardy_bpv7::eid::Eid;
 use hardy_bpv7::status_report::ReasonCode;
+use trace_err::TraceErrResult;
+use tracing::{debug, error};
+
+#[cfg(feature = "tracing")]
+use crate::instrument;
+
+use super::Dispatcher;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use crate::filters::{ExecResult, Hook};
+use crate::services::{
+    Error as ServiceError, Result as ServiceResult, SendOptions, ServiceImpl, ServiceRecord,
+};
 
 impl Dispatcher {
     /// Run Originate filter on an in-memory bundle (not yet stored).
@@ -10,13 +27,13 @@ impl Dispatcher {
     /// The caller is responsible for storing the bundle after filtering.
     async fn run_originate_filter(
         &self,
-        bundle: bundle::Bundle,
+        bundle: Bundle,
         data: Bytes,
-    ) -> Result<Option<(bundle::Bundle, Bytes)>, crate::Error> {
+    ) -> crate::Result<Option<(Bundle, Bytes)>> {
         match self
             .filter_registry
             .exec(
-                filters::Hook::Originate,
+                Hook::Originate,
                 bundle,
                 data,
                 self.key_provider(),
@@ -25,10 +42,8 @@ impl Dispatcher {
             .await
             .inspect_err(|_e| error!("Originate filter execution failed"))?
         {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => {
-                Ok(Some((bundle, data)))
-            }
-            filters::registry::ExecResult::Drop(_bundle, _reason) => Ok(None),
+            ExecResult::Continue(_mutation, bundle, data) => Ok(Some((bundle, data))),
+            ExecResult::Drop(_bundle, _reason) => Ok(None),
         }
     }
 
@@ -39,8 +54,8 @@ impl Dispatcher {
         destination: Eid,
         payload: Bytes,
         lifetime: core::time::Duration,
-        flags: Option<services::SendOptions>,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+        flags: Option<SendOptions>,
+    ) -> ServiceResult<Id> {
         // Build bundle and run Originate filter before storing
         loop {
             let mut builder =
@@ -49,7 +64,7 @@ impl Dispatcher {
 
             // Set flags
             if let Some(flags) = &flags {
-                builder = builder.with_flags(hardy_bpv7::bundle::Flags {
+                builder = builder.with_flags(Flags {
                     do_not_fragment: flags.do_not_fragment,
                     app_ack_requested: flags.request_ack,
                     report_status_time: flags.report_status_time,
@@ -73,10 +88,10 @@ impl Dispatcher {
             let (bundle, data) = builder
                 .with_payload(alloc::borrow::Cow::Borrowed(&payload))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-                .map_err(|e| services::Error::Internal(e.into()))?;
+                .map_err(|e| ServiceError::Internal(e.into()))?;
 
             let r = self.originate_bundle(bundle, Bytes::from(data)).await;
-            if !matches!(r, Err(services::Error::DuplicateBundle)) {
+            if !matches!(r, Err(ServiceError::DuplicateBundle)) {
                 break r;
             }
 
@@ -91,10 +106,10 @@ impl Dispatcher {
         self: &Arc<Self>,
         expected_source: &Eid,
         data: Bytes,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+    ) -> ServiceResult<Id> {
         // Parse the bundle (security boundary - can't trust service-provided bytes)
         // Use CheckedBundle to canonicalize but preserve all blocks (including unknown extensions)
-        let checked = hardy_bpv7::bundle::CheckedBundle::parse(&data, self.key_provider())?;
+        let checked = CheckedBundle::parse(&data, self.key_provider())?;
 
         // Use rewritten data if canonicalization was needed
         let (bundle, data) = if let Some(new_data) = checked.new_data {
@@ -106,9 +121,7 @@ impl Dispatcher {
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
         if &bundle.id.source != expected_source {
-            return Err(services::Error::InvalidDestination(
-                bundle.id.source.clone(),
-            ));
+            return Err(ServiceError::InvalidDestination(bundle.id.source.clone()));
         }
 
         self.originate_bundle(bundle, data).await
@@ -116,13 +129,13 @@ impl Dispatcher {
 
     async fn originate_bundle(
         self: &Arc<Self>,
-        bundle: hardy_bpv7::bundle::Bundle,
+        bundle: Bpv7Bundle,
         data: Bytes,
-    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+    ) -> ServiceResult<Id> {
         // Wrap in bundle::Bundle with initial metadata (not stored yet)
-        let bundle = bundle::Bundle {
-            metadata: metadata::BundleMetadata {
-                status: metadata::BundleStatus::New,
+        let bundle = Bundle {
+            metadata: BundleMetadata {
+                status: BundleStatus::New,
                 ..Default::default()
             },
             bundle,
@@ -132,14 +145,15 @@ impl Dispatcher {
         let Some((mut bundle, data)) = self
             .run_originate_filter(bundle, data)
             .await
-            .inspect_err(|e| error!("Originate filter error: {e}"))?
+            .inspect_err(|e| error!("Originate filter error: {e}"))
+            .map_err(|e| ServiceError::Internal(e.into()))?
         else {
-            return Err(services::Error::Dropped(None));
+            return Err(ServiceError::Dropped(None));
         };
 
         // Now store (single persist operation, preserves filter-modified metadata)
         if !self.store.store(&mut bundle, &data).await {
-            return Err(services::Error::DuplicateBundle);
+            return Err(ServiceError::DuplicateBundle);
         }
 
         let bundle_id = bundle.bundle.id.clone();
@@ -147,7 +161,7 @@ impl Dispatcher {
         Ok(bundle_id)
     }
 
-    pub async fn cancel_local_dispatch(&self, bundle_id: &hardy_bpv7::bundle::Id) -> bool {
+    pub async fn cancel_local_dispatch(&self, bundle_id: &Id) -> bool {
         let Some(bundle) = self.store.get_metadata(bundle_id).await else {
             return false;
         };
@@ -159,15 +173,15 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn deliver_bundle(
         &self,
-        service: Arc<services::registry::Service>,
-        bundle: bundle::Bundle,
+        service: Arc<ServiceRecord>,
+        bundle: Bundle,
         data: Bytes,
     ) {
         // Deliver filter hook
         let (bundle, data) = match self
             .filter_registry
             .exec(
-                filters::Hook::Deliver,
+                Hook::Deliver,
                 bundle,
                 data,
                 self.key_provider(),
@@ -176,18 +190,18 @@ impl Dispatcher {
             .await
             .trace_expect("Deliver filter execution failed")
         {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
+            ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }
         };
 
         match &service.service {
-            services::registry::ServiceImpl::LowLevel(svc) => {
+            ServiceImpl::LowLevel(svc) => {
                 // Pass raw bundle bytes to low-level services
                 svc.on_receive(data, bundle.expiry()).await;
             }
-            services::registry::ServiceImpl::Application(app) => {
+            ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application
                 let payload_result = {
                     let key_source = self.key_source(&bundle.bundle, &data);
@@ -196,7 +210,7 @@ impl Dispatcher {
 
                 let payload = {
                     match payload_result {
-                        Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
+                        Err(Bpv7Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                             // TODO: We are unable to decrypt the payload, what do we do?
                             debug!("Failed to decrypt payload: No valid keys");
                             return self.store.watch_bundle(bundle).await;
@@ -211,12 +225,10 @@ impl Dispatcher {
                                 .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                                 .await;
                         }
-                        Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
+                        Ok(Payload::Borrowed(_)) => {
                             data.slice(bundle.bundle.blocks.get(&1).unwrap().payload_range())
                         }
-                        Ok(hardy_bpv7::block::Payload::Decrypted(decrypted)) => {
-                            Bytes::from_owner(decrypted)
-                        }
+                        Ok(Payload::Decrypted(decrypted)) => Bytes::from_owner(decrypted),
                     }
                 };
 

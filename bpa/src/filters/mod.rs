@@ -1,33 +1,28 @@
-use super::*;
-use thiserror::Error;
-
-pub(crate) mod registry;
-
+mod error;
 mod filter;
+mod registry;
+
+pub use error::{Error, Result};
+pub use filter::*;
+pub use registry::*;
 
 /// RFC9171 validity filter - always available, auto-registered by default.
 /// Disable auto-registration with `no-rfc9171-autoregister` feature.
 pub mod rfc9171;
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Filter with name '{0}' already exists")]
-    AlreadyExists(String),
+use hardy_async::async_trait;
+use hardy_bpv7::status_report::ReasonCode;
+#[cfg(feature = "serde")]
+use serde::de::Error as SerdeDeError;
 
-    #[error("Filter dependency '{0}' not found")]
-    DependencyNotFound(String),
-
-    #[error("Filter '{0}' has dependants: {1:?}")]
-    HasDependants(String, Vec<String>),
-}
-
-// Result types
+use crate::Arc;
+use crate::bundle::{Bundle, WritableMetadata};
 
 #[derive(Debug, Default)]
 pub enum FilterResult {
     #[default]
     Continue,
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    Drop(Option<ReasonCode>),
 }
 
 #[derive(Debug)]
@@ -37,8 +32,8 @@ pub enum RewriteResult {
     /// - (Some(meta), None): metadata changed, bundle bytes unchanged
     /// - (None, Some(data)): bundle bytes changed (rare)
     /// - (Some(meta), Some(data)): both changed
-    Continue(Option<metadata::WritableMetadata>, Option<Box<[u8]>>),
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    Continue(Option<WritableMetadata>, Option<Box<[u8]>>),
+    Drop(Option<ReasonCode>),
 }
 
 // Filter traits
@@ -46,21 +41,13 @@ pub enum RewriteResult {
 /// Read-only filter: can run in parallel with other ReadFilters
 #[async_trait]
 pub trait ReadFilter: Send + Sync {
-    async fn filter(
-        &self,
-        bundle: &bundle::Bundle,
-        data: &[u8],
-    ) -> Result<FilterResult, crate::Error>;
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> crate::Result<FilterResult>;
 }
 
 /// Read-write filter: runs sequentially, may modify metadata or bundle data
 #[async_trait]
 pub trait WriteFilter: Send + Sync {
-    async fn filter(
-        &self,
-        bundle: &bundle::Bundle,
-        data: &[u8],
-    ) -> Result<RewriteResult, crate::Error>;
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> crate::Result<RewriteResult>;
 }
 
 // Registration types
@@ -84,7 +71,7 @@ pub enum Hook {
 
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Hook {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -94,7 +81,7 @@ impl<'de> serde::Deserialize<'de> for Hook {
             "deliver" => Ok(Hook::Deliver),
             "originate" => Ok(Hook::Originate),
             "egress" => Ok(Hook::Egress),
-            _ => Err(serde::de::Error::unknown_variant(
+            _ => Err(SerdeDeError::unknown_variant(
                 &s,
                 &["ingress", "deliver", "originate", "egress"],
             )),

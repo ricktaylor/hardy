@@ -1,6 +1,6 @@
 use hardy_async::sync::spin::Once;
+use hardy_bpa::BpaRegistration;
 use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
 use std::sync::Arc;
 use tracing::{debug, warn};
 

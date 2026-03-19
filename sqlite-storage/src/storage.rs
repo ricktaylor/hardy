@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::{async_trait, metadata::BundleStatus, storage};
+use hardy_bpa::{async_trait, bundle::BundleStatus, storage};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -174,7 +174,7 @@ impl Storage {
 // 4 = Dispatching
 // 5 = WaitingForService(source)
 fn from_status(
-    status: &hardy_bpa::metadata::BundleStatus,
+    status: &hardy_bpa::bundle::BundleStatus,
 ) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
         BundleStatus::New => (0, None, None, None),
@@ -351,7 +351,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
+    ) -> storage::Result<Option<hardy_bpa::bundle::BundleMetadata>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self
             .write(move |conn| {
@@ -461,11 +461,11 @@ impl storage::MetadataStorage for Storage {
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         // Ensure status codes match
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
+            from_status(&hardy_bpa::bundle::BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
         );
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending {
+            from_status(&hardy_bpa::bundle::BundleStatus::ForwardPending {
                 peer,
                 queue: Some(0)
             }) == (2, Some(peer as i64), Some(0), None),
@@ -490,7 +490,7 @@ impl storage::MetadataStorage for Storage {
         limit: usize,
     ) -> storage::Result<()> {
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::New).0 == 0,
+            from_status(&hardy_bpa::bundle::BundleStatus::New).0 == 0,
             "Status code mismatch"
         ); // Ensure status codes match
 
@@ -542,7 +542,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
+            from_status(&hardy_bpa::bundle::BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
         ); // Ensure status codes match
 

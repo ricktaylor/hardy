@@ -1,12 +1,16 @@
+use core::fmt::{Display, Formatter, Result};
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>), // Drop the bundle
-    Reflect,                                             // Return to last hop
-    Via(hardy_bpv7::eid::Eid),                           // Recursive lookup
+    Drop(Option<ReasonCode>), // Drop the bundle
+    Reflect,                  // Return to last hop
+    Via(Eid),                 // Recursive lookup
 }
 
-impl core::fmt::Display for Action {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for Action {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             Action::Drop(reason_code) => {
                 if let Some(reason) = reason_code {

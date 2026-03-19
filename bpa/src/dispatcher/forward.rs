@@ -1,14 +1,26 @@
-use super::*;
+use bytes::Bytes;
+use hardy_bpv7::block::{Flags as BlockFlags, Type as BlockType};
+use hardy_bpv7::editor::{Editor, Error as EditorError};
+use hardy_bpv7::hop_info::HopInfo;
+use trace_err::TraceErrResult;
+
+#[cfg(feature = "tracing")]
+use crate::instrument;
+
+use super::Dispatcher;
+use crate::bundle::Bundle;
+use crate::cla::{Cla, ClaAddress, ForwardBundleResult};
+use crate::filters::{ExecResult, Hook};
 
 impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn forward_bundle(
         &self,
-        cla: &dyn cla::Cla,
+        cla: &dyn Cla,
         peer: u32,
         queue: Option<u32>,
-        cla_addr: &cla::ClaAddress,
-        bundle: bundle::Bundle,
+        cla_addr: &ClaAddress,
+        bundle: Bundle,
     ) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
@@ -20,7 +32,7 @@ impl Dispatcher {
         // We ignore the fact that a new bundle has been created, as it makes no difference below
         let data = match self.update_extension_blocks(&bundle, &data) {
             Err(e) => {
-                warn!("Failed to update extension blocks: {e}");
+                tracing::warn!("Failed to update extension blocks: {e}");
                 return;
             }
             Ok(data) => data,
@@ -35,7 +47,7 @@ impl Dispatcher {
         let (bundle, data) = match self
             .filter_registry
             .exec(
-                filters::Hook::Egress,
+                Hook::Egress,
                 bundle,
                 Bytes::from(data),
                 self.key_provider(),
@@ -44,27 +56,29 @@ impl Dispatcher {
             .await
             .trace_expect("Egress filter execution failed")
         {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
+            ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }
         };
 
         // And pass to CLA
         match cla.forward(queue, cla_addr, data).await {
-            Ok(cla::ForwardBundleResult::Sent) => {
+            Ok(ForwardBundleResult::Sent) => {
                 self.report_bundle_forwarded(&bundle).await;
                 self.drop_bundle(bundle, None).await;
                 return;
             }
-            Ok(cla::ForwardBundleResult::NoNeighbour) => {
+            Ok(ForwardBundleResult::NoNeighbour) => {
                 // The neighbour has gone, kill the queue
-                debug!(
+                tracing::debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
             }
             Err(e) => {
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
+                tracing::debug!(
+                    "Failed to forward bundle to peer {peer}: {e}, clearing queue assignment"
+                );
             }
         }
 
@@ -74,14 +88,14 @@ impl Dispatcher {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     fn update_extension_blocks(
         &self,
-        bundle: &bundle::Bundle,
+        bundle: &Bundle,
         source_data: &[u8],
-    ) -> Result<Box<[u8]>, hardy_bpv7::editor::Error> {
+    ) -> core::result::Result<Box<[u8]>, EditorError> {
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data)
-            .insert_block(hardy_bpv7::block::Type::PreviousNode)
+        let mut editor = Editor::new(&bundle.bundle, source_data)
+            .insert_block(BlockType::PreviousNode)
             .map_err(|(_, e)| e)?
-            .with_flags(hardy_bpv7::block::Flags {
+            .with_flags(BlockFlags {
                 report_on_failure: true,
                 ..Default::default()
             })
@@ -97,15 +111,15 @@ impl Dispatcher {
         // Increment Hop Count
         if let Some(hop_count) = &bundle.bundle.hop_count {
             editor = editor
-                .insert_block(hardy_bpv7::block::Type::HopCount)
+                .insert_block(BlockType::HopCount)
                 .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
+                .with_flags(BlockFlags {
                     report_on_failure: true,
                     must_replicate: true,
                     ..Default::default()
                 })
                 .with_data(
-                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
+                    hardy_cbor::encode::emit(&HopInfo {
                         limit: hop_count.limit,
                         count: hop_count.count.saturating_add(1),
                     })
@@ -124,9 +138,9 @@ impl Dispatcher {
                 .clamp(0, u64::MAX as i128) as u64;
 
             editor = editor
-                .insert_block(hardy_bpv7::block::Type::BundleAge)
+                .insert_block(BlockType::BundleAge)
                 .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
+                .with_flags(BlockFlags {
                     report_on_failure: true,
                     must_replicate: true,
                     ..Default::default()

@@ -1,34 +1,39 @@
-use super::*;
+use hardy_async::async_trait;
+use trace_err::TraceErrOption;
 
-pub struct EgressController {
-    queue: Arc<dyn policy::EgressQueue>,
+use super::{EgressController, EgressPolicy, EgressQueue};
+use crate::bundle::Bundle;
+use crate::{Arc, HashMap};
+
+pub struct NullEgressController {
+    queue: Arc<dyn EgressQueue>,
 }
 
 #[async_trait]
-impl policy::EgressController for EgressController {
-    async fn forward(&self, _queue: Option<u32>, bundle: bundle::Bundle) {
+impl EgressController for NullEgressController {
+    async fn forward(&self, _queue: Option<u32>, bundle: Bundle) {
         self.queue.forward(bundle).await
     }
 }
 
 #[async_trait]
-impl policy::EgressQueue for EgressController {
-    async fn forward(&self, bundle: bundle::Bundle) {
+impl EgressQueue for NullEgressController {
+    async fn forward(&self, bundle: Bundle) {
         self.queue.forward(bundle).await
     }
 }
 
 #[derive(Default)]
-pub struct EgressPolicy {}
+pub struct NullEgressPolicy {}
 
-impl EgressPolicy {
+impl NullEgressPolicy {
     pub fn new() -> Self {
         Default::default()
     }
 }
 
 #[async_trait]
-impl policy::EgressPolicy for EgressPolicy {
+impl EgressPolicy for NullEgressPolicy {
     fn queue_count(&self) -> u32 {
         0
     }
@@ -39,10 +44,10 @@ impl policy::EgressPolicy for EgressPolicy {
 
     async fn new_controller(
         &self,
-        queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>>,
-    ) -> Arc<dyn policy::EgressController> {
+        queues: HashMap<Option<u32>, Arc<dyn EgressQueue>>,
+    ) -> Arc<dyn EgressController> {
         assert!(queues.len() == 1, "Too many queues!");
         let queue = queues.get(&None).trace_expect("No None queue?!?").clone();
-        Arc::new(EgressController { queue })
+        Arc::new(NullEgressController { queue })
     }
 }

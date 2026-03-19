@@ -1,46 +1,15 @@
-pub mod registry;
+mod error;
+mod registry;
 
-use super::*;
+pub use error::{Error, Result};
+pub use registry::*;
+
+use bytes::Bytes;
+use hardy_async::async_trait;
+use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
-use thiserror::Error;
-
-pub type Result<T> = core::result::Result<T, Error>;
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("There is already a service using ipn service number {0}")]
-    IpnServiceInUse(u32),
-
-    #[error("There is already a service using dtn service demux {0}")]
-    DtnServiceInUse(String),
-
-    #[error("Invalid dtn service name {0}")]
-    DtnInvalidServiceName(String),
-
-    #[error("There is no ipn node id configured")]
-    NoIpnNodeId,
-
-    #[error("There is no dtn node id configured")]
-    NoDtnNodeId,
-
-    #[error("The sink is disconnected")]
-    Disconnected,
-
-    #[error("Invalid bundle destination {0}")]
-    InvalidDestination(Eid),
-
-    #[error("Bundle dropped by filter: {0:?}")]
-    Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
-
-    #[error("Duplicate bundle already exists")]
-    DuplicateBundle,
-
-    #[error(transparent)]
-    InvalidBundle(#[from] hardy_bpv7::Error),
-
-    #[error(transparent)]
-    Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
-}
+use hardy_bpv7::status_report::ReasonCode;
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusNotify {
@@ -99,11 +68,11 @@ pub trait Application: Send + Sync {
 
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         from: &Eid,
         kind: StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        reason: ReasonCode,
+        timestamp: Option<OffsetDateTime>,
     );
 }
 
@@ -142,9 +111,9 @@ pub trait ApplicationSink: Send + Sync {
         data: Bytes,
         lifetime: core::time::Duration,
         options: Option<SendOptions>,
-    ) -> Result<hardy_bpv7::bundle::Id>;
+    ) -> Result<Id>;
 
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
+    async fn cancel(&self, bundle_id: &Id) -> Result<bool>;
 }
 
 /// Low-level service trait with raw bundle access.
@@ -204,16 +173,16 @@ pub trait Service: Send + Sync {
     /// Called when a bundle arrives
     /// - `data`: raw bundle bytes (service can parse if needed)
     /// - `expiry`: calculated from bundle metadata by dispatcher
-    async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime);
+    async fn on_receive(&self, data: Bytes, expiry: OffsetDateTime);
 
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         from: &Eid,
         kind: StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        reason: ReasonCode,
+        timestamp: Option<OffsetDateTime>,
     );
 }
 
@@ -242,8 +211,8 @@ pub trait ServiceSink: Send + Sync {
     ///
     /// The service constructs the bundle using `bpv7::Builder`. The BPA parses
     /// and validates the bundle (security boundary - services are not trusted).
-    async fn send(&self, data: Bytes) -> Result<hardy_bpv7::bundle::Id>;
+    async fn send(&self, data: Bytes) -> Result<Id>;
 
     /// Cancels a pending bundle that hasn't been forwarded yet.
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
+    async fn cancel(&self, bundle_id: &Id) -> Result<bool>;
 }

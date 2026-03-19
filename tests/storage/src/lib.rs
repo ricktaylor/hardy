@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use hardy_bpa::bundle;
-use hardy_bpa::metadata::{BundleMetadata, BundleStatus};
+use hardy_bpa::bundle::{BundleMetadata, BundleStatus};
 use hardy_bpa::storage::{BundleStorage, MetadataStorage};
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 
@@ -17,7 +17,9 @@ pub mod metadata_suite;
 pub fn memory_meta_setup() -> ((), Arc<dyn MetadataStorage>) {
     (
         (),
-        hardy_bpa::storage::metadata_mem::new(&Default::default()),
+        Arc::new(hardy_bpa::storage::MetadataMemStorage::new(
+            &Default::default(),
+        )),
     )
 }
 
@@ -32,7 +34,12 @@ pub fn sqlite_meta_setup() -> (tempfile::TempDir, Arc<dyn MetadataStorage>) {
 }
 
 pub fn memory_blob_setup() -> ((), Arc<dyn BundleStorage>) {
-    ((), hardy_bpa::storage::bundle_mem::new(&Default::default()))
+    (
+        (),
+        Arc::new(hardy_bpa::storage::BundleMemStorage::new(
+            &Default::default(),
+        )),
+    )
 }
 
 pub fn localdisk_blob_setup() -> (tempfile::TempDir, Arc<dyn BundleStorage>) {

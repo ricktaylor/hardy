@@ -46,7 +46,7 @@ pub struct StaticRoutes {
     priority: u32,
     watch: bool,
     protocol_id: String,
-    bpa: Arc<hardy_bpa::bpa::Bpa>,
+    bpa: Arc<hardy_bpa::Bpa>,
     routes: Vec<StaticRoute>,
 }
 
@@ -172,7 +172,7 @@ impl StaticRoutes {
 
 pub async fn init(
     config: &Config,
-    bpa: &Arc<hardy_bpa::bpa::Bpa>,
+    bpa: &Arc<hardy_bpa::Bpa>,
     tasks: &hardy_async::TaskPool,
 ) -> anyhow::Result<()> {
     // Ensure it's absolute

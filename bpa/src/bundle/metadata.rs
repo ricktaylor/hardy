@@ -1,36 +1,23 @@
-use super::*;
-use hardy_bpv7::{creation_timestamp::CreationTimestamp, eid::Eid, eid::NodeId};
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::NodeId;
+use time::OffsetDateTime;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum BundleStatus {
-    #[default]
-    New,
-    Dispatching,
-    ForwardPending {
-        peer: u32,
-        queue: Option<u32>,
-    },
-    AduFragment {
-        source: Eid,
-        timestamp: CreationTimestamp,
-    },
-    Waiting,
-    WaitingForService {
-        service: Eid,
-    },
-}
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
-/// The read-only metadata
+use super::BundleStatus;
+use crate::Arc;
+use crate::cla::ClaAddress;
+
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ReadOnlyMetadata {
     /// When the bundle was received
-    pub received_at: time::OffsetDateTime,
+    pub received_at: OffsetDateTime,
     /// The node that sent this bundle
     pub ingress_peer_node: Option<NodeId>,
     /// The CLA address of the peer
-    pub ingress_peer_addr: Option<cla::ClaAddress>,
+    pub ingress_peer_addr: Option<ClaAddress>,
     /// The CLA that received this bundle (transient)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ingress_cla: Option<Arc<str>>,
@@ -52,17 +39,15 @@ impl Default for ReadOnlyMetadata {
     }
 }
 
-/// The metadata that may be editted by WriteFilters
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct WritableMetadata {
-    /// Flow label for QoS
     pub flow_label: Option<u32>,
     // TODO: Add a 'trace' mark that will trigger local feedback
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BundleMetadata {
     /// Storage identifier for bundle data
     pub(crate) storage_name: Option<Arc<str>>,

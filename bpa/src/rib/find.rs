@@ -1,18 +1,31 @@
-use super::*;
 use core::hash::BuildHasher;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
+use trace_err::TraceErrOption;
+use tracing::{debug, warn};
+
+#[cfg(feature = "tracing")]
+use crate::instrument;
+
+use super::{FindResult, LocalAction, Rib, RibInner, RouteTable};
+use crate::bundle::{Bundle, BundleMetadata};
+use crate::routes::Action as RouteAction;
+use crate::services::ServiceRecord;
+use crate::{Arc, HashMap, HashSet};
 
 #[derive(Debug)]
 enum InternalFindResult<'a> {
     AdminEndpoint,
-    Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(HashMap<u32, &'a Eid>),                    // peer -> next_hop mapping
-    Drop(Option<ReasonCode>),                          // Drop with reason code
-    Reflect,                                           // Reflect
+    Deliver(Option<Arc<ServiceRecord>>), // Deliver to local service
+    Forward(HashMap<u32, &'a Eid>),      // peer -> next_hop mapping
+    Drop(Option<ReasonCode>),            // Drop with reason code
+    Reflect,                             // Reflect
 }
 
 impl Rib {
     #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
+    pub fn find(&self, bundle: &mut Bundle) -> Option<FindResult> {
         let inner = self.inner.read();
 
         // TODO: this is where route table switching can occur
@@ -84,8 +97,8 @@ impl Rib {
 
 fn map_result(
     result: InternalFindResult,
-    bundle: &hardy_bpv7::bundle::Bundle,
-    metadata: &mut metadata::BundleMetadata,
+    bundle: &Bpv7Bundle,
+    metadata: &mut BundleMetadata,
 ) -> Option<FindResult> {
     match result {
         InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
@@ -127,15 +140,15 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
         if pattern.matches(to) {
             for action in actions {
                 match &action {
-                    local::Action::AdminEndpoint => {
+                    LocalAction::AdminEndpoint => {
                         debug!("Deliver to Admin Endpoint");
                         return Some(InternalFindResult::AdminEndpoint);
                     }
-                    local::Action::Local(service) => {
+                    LocalAction::Local(service) => {
                         debug!("Deliver to Service {}", service.service_id);
                         return Some(InternalFindResult::Deliver(Some(service.clone())));
                     }
-                    local::Action::Forward(peer) => {
+                    LocalAction::Forward(peer) => {
                         // The 'to' Eid is the next-hop for all peers found here
                         if let Some(peer_map) = &mut peer_map {
                             peer_map.insert(*peer, to);
@@ -187,18 +200,18 @@ fn find_recurse<'a>(
             if pattern.matches(to) {
                 for entry in actions {
                     match &entry.action {
-                        routes::Action::Drop(reason) => {
+                        RouteAction::Drop(reason) => {
                             // Drop trumps everything else
                             debug!("Drop {reason:?}");
                             return Some(InternalFindResult::Drop(*reason));
                         }
-                        routes::Action::Reflect => {
+                        RouteAction::Reflect => {
                             if reflect {
                                 debug!("Reflect");
                                 return Some(InternalFindResult::Reflect);
                             }
                         }
-                        routes::Action::Via(via) => {
+                        RouteAction::Via(via) => {
                             // Recursive lookup
                             if !trail.insert(to) {
                                 warn!("Recursive route {to} found!");

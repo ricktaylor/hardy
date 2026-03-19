@@ -1,39 +1,44 @@
-use super::*;
+use hardy_bpv7::eid::{Eid, NodeId};
+use hardy_eid_patterns::EidPattern;
+
+use super::Rib;
+use crate::services::ServiceRecord;
+use crate::{Arc, BTreeMap, BTreeSet, NodeIds, btree_map};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Action {
-    AdminEndpoint,                           // Deliver to the admin endpoint
-    Local(Arc<services::registry::Service>), // Deliver to local service
-    Forward(u32),                            // Forward to a cla peer
+pub enum LocalAction {
+    AdminEndpoint,             // Deliver to the admin endpoint
+    Local(Arc<ServiceRecord>), // Deliver to local service
+    Forward(u32),              // Forward to a cla peer
 }
 
-impl PartialOrd for Action {
+impl PartialOrd for LocalAction {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Action {
+impl Ord for LocalAction {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // The order is critical, hence done long-hand
         match (self, other) {
-            (Action::AdminEndpoint, Action::AdminEndpoint) => core::cmp::Ordering::Equal,
-            (Action::AdminEndpoint, _) => core::cmp::Ordering::Less,
-            (Action::Local(_), Action::AdminEndpoint) => core::cmp::Ordering::Greater,
-            (Action::Local(lhs), Action::Local(rhs)) => lhs.cmp(rhs),
-            (Action::Local(_), Action::Forward(..)) => core::cmp::Ordering::Less,
-            (Action::Forward(lhs), Action::Forward(rhs)) => lhs.cmp(rhs),
-            (Action::Forward(_), _) => core::cmp::Ordering::Greater,
+            (LocalAction::AdminEndpoint, LocalAction::AdminEndpoint) => core::cmp::Ordering::Equal,
+            (LocalAction::AdminEndpoint, _) => core::cmp::Ordering::Less,
+            (LocalAction::Local(_), LocalAction::AdminEndpoint) => core::cmp::Ordering::Greater,
+            (LocalAction::Local(lhs), LocalAction::Local(rhs)) => lhs.cmp(rhs),
+            (LocalAction::Local(_), LocalAction::Forward(..)) => core::cmp::Ordering::Less,
+            (LocalAction::Forward(lhs), LocalAction::Forward(rhs)) => lhs.cmp(rhs),
+            (LocalAction::Forward(_), _) => core::cmp::Ordering::Greater,
         }
     }
 }
 
-impl core::fmt::Display for Action {
+impl core::fmt::Display for LocalAction {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Action::AdminEndpoint => write!(f, "administrative endpoint"),
-            Action::Local(service) => write!(f, "local service {}", &service.service_id),
-            Action::Forward(peer) => {
+            LocalAction::AdminEndpoint => write!(f, "administrative endpoint"),
+            LocalAction::Local(service) => write!(f, "local service {}", &service.service_id),
+            LocalAction::Forward(peer) => {
                 write!(f, "CLA peer {peer}")
             }
         }
@@ -41,19 +46,19 @@ impl core::fmt::Display for Action {
 }
 
 pub struct LocalInner {
-    pub actions: BTreeMap<EidPattern, BTreeSet<local::Action>>,
+    pub actions: BTreeMap<EidPattern, BTreeSet<LocalAction>>,
     pub finals: BTreeSet<EidPattern>,
 }
 
 impl LocalInner {
-    pub fn new(node_ids: &node_ids::NodeIds) -> Self {
+    pub fn new(node_ids: &NodeIds) -> Self {
         let mut actions = BTreeMap::new();
         let mut finals = BTreeSet::new();
 
         // Add localnode admin endpoint
         actions.insert(
             NodeId::LocalNode.into(),
-            [local::Action::AdminEndpoint].into(),
+            [LocalAction::AdminEndpoint].into(),
         );
 
         // Drop LocalNode services
@@ -63,13 +68,13 @@ impl LocalInner {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
             let admin_eid: Eid = node_id.clone().into();
-            actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
+            actions.insert(admin_eid.into(), [LocalAction::AdminEndpoint].into());
         }
 
         if let Some(node_name) = &node_ids.dtn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             let admin_eid: Eid = node_name.clone().into();
-            actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
+            actions.insert(admin_eid.into(), [LocalAction::AdminEndpoint].into());
         }
 
         Self { actions, finals }
@@ -77,8 +82,8 @@ impl LocalInner {
 }
 
 impl Rib {
-    async fn add_local(&self, pattern: EidPattern, action: Action) -> bool {
-        debug!("Adding local route {pattern} => {action}");
+    async fn add_local(&self, pattern: EidPattern, action: LocalAction) -> bool {
+        tracing::debug!("Adding local route {pattern} => {action}");
 
         if !match self.inner.write().locals.actions.entry(pattern.clone()) {
             btree_map::Entry::Occupied(mut occupied_entry) => {
@@ -100,17 +105,17 @@ impl Rib {
     /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
     pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
         let pattern: EidPattern = node_id.into();
-        self.add_local(pattern, Action::Forward(peer)).await
+        self.add_local(pattern, LocalAction::Forward(peer)).await
     }
 
     /// Add a service route for a local service.
     /// The Eid is converted to an exact pattern.
-    pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
+    pub async fn add_service(&self, eid: Eid, service: Arc<ServiceRecord>) -> bool {
         let pattern: EidPattern = eid.into();
-        self.add_local(pattern, Action::Local(service)).await
+        self.add_local(pattern, LocalAction::Local(service)).await
     }
 
-    fn remove_local(&self, pattern: &EidPattern, mut f: impl FnMut(&Action) -> bool) -> bool {
+    fn remove_local(&self, pattern: &EidPattern, mut f: impl FnMut(&LocalAction) -> bool) -> bool {
         self.inner
             .write()
             .locals
@@ -120,7 +125,7 @@ impl Rib {
                 let mut removed = false;
                 h.retain(|a| {
                     if f(a) {
-                        debug!("Removed route {pattern} => {a}");
+                        tracing::debug!("Removed route {pattern} => {a}");
                         removed = true;
                         false
                     } else {
@@ -137,7 +142,7 @@ impl Rib {
         let pattern: EidPattern = node_id.into();
         if !self.remove_local(
             &pattern,
-            |action| matches!(action, Action::Forward(p) if &peer == p),
+            |action| matches!(action, LocalAction::Forward(p) if &peer == p),
         ) {
             return false;
         }
@@ -149,11 +154,11 @@ impl Rib {
     }
 
     /// Remove a service route for a local service.
-    pub fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
+    pub fn remove_service(&self, eid: &Eid, service: &ServiceRecord) -> bool {
         let pattern: EidPattern = eid.clone().into();
         self.remove_local(
             &pattern,
-            |action| matches!(action, Action::Local(svc) if svc.as_ref() == service),
+            |action| matches!(action, LocalAction::Local(svc) if svc.as_ref() == service),
         )
     }
 }

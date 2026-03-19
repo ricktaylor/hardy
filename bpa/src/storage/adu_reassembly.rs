@@ -1,10 +1,19 @@
-use super::*;
+use bytes::Bytes;
 use core::ops::Range;
 use futures::{FutureExt, join, select_biased};
+use hardy_bpv7::bundle::Id;
+use hardy_bpv7::editor::Editor;
+use time::OffsetDateTime;
+use trace_err::TraceErrOption;
+use tracing::{debug, error};
+
+use super::Store;
+use crate::bundle::{Bundle, BundleStatus};
+use crate::{Arc, HashMap};
 
 struct ReassemblyResult {
-    received_at: time::OffsetDateTime,
-    adus: HashMap<u64, (hardy_bpv7::bundle::Id, Arc<str>, Range<usize>)>,
+    received_at: OffsetDateTime,
+    adus: HashMap<u64, (Id, Arc<str>, Range<usize>)>,
 }
 
 // struct Gather(VecDeque<Bytes>);
@@ -46,8 +55,8 @@ struct ReassemblyResult {
 // }
 
 impl Store {
-    pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
-        let status = metadata::BundleStatus::AduFragment {
+    pub async fn adu_reassemble(&self, bundle: &mut Bundle) -> Option<(Arc<str>, Bytes)> {
+        let status = BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
@@ -75,8 +84,8 @@ impl Store {
 
     async fn poll_fragments(
         &self,
-        bundle: &bundle::Bundle,
-        status: &metadata::BundleStatus,
+        bundle: &Bundle,
+        status: &BundleStatus,
     ) -> Option<ReassemblyResult> {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();
@@ -118,7 +127,7 @@ impl Store {
             .into(),
         };
 
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
+        let (tx, rx) = flume::bounded::<Bundle>(16);
 
         join!(
             // Producer: poll for fragment bundles
@@ -244,7 +253,7 @@ impl Store {
         }
 
         // Rewrite primary block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data);
+        let mut editor = Editor::new(&bundle.bundle, &old_data);
         editor = match editor.with_fragment_info(None) {
             Ok(e) => e,
             Err((_, e)) => {

@@ -192,7 +192,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct GrpcService {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn hardy_bpa::BpaRegistration>,
     channel_size: usize,
 }
 
@@ -263,7 +263,7 @@ impl service_server::Service for GrpcService {
 
 /// Create a new low-level Service gRPC service.
 pub fn new_endpoint_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn hardy_bpa::BpaRegistration>,
 ) -> service_server::ServiceServer<GrpcService> {
     service_server::ServiceServer::new(GrpcService {
         bpa: bpa.clone(),

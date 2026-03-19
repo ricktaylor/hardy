@@ -15,8 +15,13 @@
 //! See [Storage Subsystem Design](../../docs/storage_subsystem_design.md)
 //! for architectural context.
 
-use super::*;
 use futures::{FutureExt, join, select_biased};
+use tracing::{debug, error};
+
+use super::Store;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleStatus};
+use crate::dispatcher::Dispatcher;
 
 /// Cache entry for the reaper's expiry monitoring.
 ///
@@ -47,11 +52,11 @@ impl Ord for CacheEntry {
 impl Store {
     /// Adds a bundle to the Reaper's cache to be monitored.
     /// If a new bundle has the soonest expiry, the background task is notified.
-    pub async fn watch_bundle(&self, bundle: bundle::Bundle) {
+    pub async fn watch_bundle(&self, bundle: Bundle) {
         self.watch_bundle_inner(bundle, true).await;
     }
 
-    async fn watch_bundle_inner(&self, bundle: bundle::Bundle, cap: bool) {
+    async fn watch_bundle_inner(&self, bundle: Bundle, cap: bool) {
         let new_entry = CacheEntry {
             expiry: bundle.expiry(),
             id: bundle.bundle.id,
@@ -107,7 +112,7 @@ impl Store {
     /// 4. Spawn `refill_cache()` if cache is depleted
     ///
     /// Uses `select_biased!` to prioritize shutdown handling.
-    pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
 
         loop {
@@ -182,7 +187,7 @@ impl Store {
     async fn refill_cache(self: Arc<Self>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let reaper = self.clone();
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.reaper_cache_size);
+        let (tx, rx) = flume::bounded::<Bundle>(self.reaper_cache_size);
 
         join!(
             // Producer: poll for expiring bundles
@@ -202,7 +207,7 @@ impl Store {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-                            if bundle.metadata.status != metadata::BundleStatus::New {
+                            if bundle.metadata.status != BundleStatus::New {
                                 reaper.watch_bundle_inner(bundle, false).await;
                             }
                         },
