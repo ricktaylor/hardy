@@ -636,6 +636,14 @@ impl storage::MetadataStorage for Storage {
         source: hardy_bpv7::eid::Eid,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
+        debug_assert!(
+            from_status(&hardy_bpa::metadata::BundleStatus::WaitingForService {
+                service: source.clone()
+            })
+            .0 == 5,
+            "Status code mismatch"
+        ); // Ensure status codes match
+
         let source_str = source.to_string();
         let bundles = self
             .read(move |conn| {
@@ -651,8 +659,11 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice(&bundle) {
-                Ok(bundle) => {
+            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+                Ok(mut bundle) => {
+                    bundle.metadata.status = hardy_bpa::metadata::BundleStatus::WaitingForService {
+                        service: source.clone(),
+                    };
                     if tx.send_async(bundle).await.is_err() {
                         break;
                     }
@@ -670,7 +681,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         status: &BundleStatus,
     ) -> storage::Result<()> {
-        let (status, status_param1, status_param2, status_param3) = from_status(status);
+        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
 
         let bundles = self
             .read(move |conn| {
@@ -679,7 +690,7 @@ impl storage::MetadataStorage for Storage {
                         WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
                         ORDER BY received_at ASC",
                 )?
-                .query_map((status, status_param1, status_param2,status_param3), |row| {
+                .query_map((status_code, status_param1, status_param2,status_param3), |row| {
                     row.get::<_, Vec<u8>>(0)
                 })?
                 .collect::<Result<Vec<Vec<u8>>, _>>()
@@ -688,8 +699,9 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice(&bundle) {
-                Ok(bundle) => {
+            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+                Ok(mut bundle) => {
+                    bundle.metadata.status = status.clone();
                     if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
@@ -709,7 +721,7 @@ impl storage::MetadataStorage for Storage {
         status: &BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
-        let (status, status_param1, status_param2, status_param3) = from_status(status);
+        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
 
         let bundles = self
             .read(move |conn| {
@@ -719,7 +731,7 @@ impl storage::MetadataStorage for Storage {
                         ORDER BY received_at ASC
                         LIMIT ?5",
                 )?
-                .query_map((status, status_param1, status_param2,status_param3, limit as isize), |row| {
+                .query_map((status_code, status_param1, status_param2,status_param3, limit as isize), |row| {
                     row.get::<_, Vec<u8>>(0)
                 })?
                 .collect::<Result<Vec<Vec<u8>>, _>>()
@@ -728,8 +740,9 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice(&bundle) {
-                Ok(bundle) => {
+            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+                Ok(mut bundle) => {
+                    bundle.metadata.status = status.clone();
                     if tx.send_async(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
