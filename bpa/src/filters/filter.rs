@@ -289,7 +289,7 @@ impl PreparedFilters {
                                 report_to: bd.0.bundle.report_to.clone(),
                                 ..Default::default()
                             },
-                            metadata: metadata::BundleMetadata {
+                            metadata: bundle::BundleMetadata {
                                 storage_name: bd.0.metadata.storage_name.clone(),
                                 ..Default::default()
                             },
@@ -314,7 +314,7 @@ impl PreparedFilters {
                         (
                             bundle::Bundle {
                                 bundle: bundle.bundle,
-                                metadata: metadata::BundleMetadata {
+                                metadata: bundle::BundleMetadata {
                                     storage_name: bundle.metadata.storage_name,
                                     status: bundle.metadata.status,
                                     read_only: bundle.metadata.read_only,
@@ -328,7 +328,7 @@ impl PreparedFilters {
                         let metadata = if let Some(writable) = metadata {
                             debug!("WriteFilter rewrote bundle data and metadata");
                             mutation.metadata = true;
-                            metadata::BundleMetadata {
+                            bundle::BundleMetadata {
                                 storage_name: bundle.metadata.storage_name,
                                 status: bundle.metadata.status,
                                 read_only: bundle.metadata.read_only,

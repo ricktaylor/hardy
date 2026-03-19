@@ -1,4 +1,4 @@
-use super::{metadata::*, *};
+use super::*;
 use futures::join;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
@@ -76,7 +76,7 @@ impl Dispatcher {
 
         // Create the dispatch queue channel
         let (dispatch_tx, dispatch_rx) =
-            store.channel(BundleStatus::Dispatching, poll_channel_depth_usize);
+            store.channel(bundle::BundleStatus::Dispatching, poll_channel_depth_usize);
 
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),

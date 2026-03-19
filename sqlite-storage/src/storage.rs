@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpa::{async_trait, metadata::BundleStatus, storage};
+use hardy_bpa::{async_trait, bundle::BundleStatus, storage};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -173,9 +173,7 @@ impl Storage {
 // 3 = AduFragment(timestamp, seq, source)
 // 4 = Dispatching
 // 5 = WaitingForService(source)
-fn from_status(
-    status: &hardy_bpa::metadata::BundleStatus,
-) -> (i64, Option<i64>, Option<i64>, Option<String>) {
+fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
         BundleStatus::New => (0, None, None, None),
         BundleStatus::Waiting => (1, None, None, None),
@@ -187,7 +185,7 @@ fn from_status(
             Some(
                 timestamp
                     .creation_time()
-                    .map_or(0, |t| t.millisecs() as i64),
+                    .map_or(0i64, |t| t.millisecs() as i64),
             ),
             Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
@@ -372,7 +370,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
+    ) -> storage::Result<Option<hardy_bpa::bundle::BundleMetadata>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self
             .write(move |conn| {
@@ -482,11 +480,11 @@ impl storage::MetadataStorage for Storage {
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         // Ensure status codes match
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
+            from_status(&BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
         );
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::ForwardPending {
+            from_status(&BundleStatus::ForwardPending {
                 peer,
                 queue: Some(0)
             }) == (2, Some(peer as i64), Some(0), None),
@@ -511,7 +509,7 @@ impl storage::MetadataStorage for Storage {
         limit: usize,
     ) -> storage::Result<()> {
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::New).0 == 0,
+            from_status(&BundleStatus::New).0 == 0,
             "Status code mismatch"
         ); // Ensure status codes match
 
@@ -563,7 +561,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::Waiting).0 == 1,
+            from_status(&BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
         ); // Ensure status codes match
 
@@ -637,7 +635,7 @@ impl storage::MetadataStorage for Storage {
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         debug_assert!(
-            from_status(&hardy_bpa::metadata::BundleStatus::WaitingForService {
+            from_status(&BundleStatus::WaitingForService {
                 service: source.clone()
             })
             .0 == 5,
@@ -661,7 +659,7 @@ impl storage::MetadataStorage for Storage {
         for bundle in bundles {
             match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
                 Ok(mut bundle) => {
-                    bundle.metadata.status = hardy_bpa::metadata::BundleStatus::WaitingForService {
+                    bundle.metadata.status = BundleStatus::WaitingForService {
                         service: source.clone(),
                     };
                     if tx.send_async(bundle).await.is_err() {

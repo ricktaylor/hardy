@@ -122,7 +122,7 @@ pub trait MetadataStorage: Send + Sync {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Result<Option<metadata::BundleMetadata>>;
+    ) -> Result<Option<bundle::BundleMetadata>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last
@@ -204,7 +204,7 @@ pub trait MetadataStorage: Send + Sync {
     async fn poll_adu_fragments(
         &self,
         tx: Sender<bundle::Bundle>,
-        status: &metadata::BundleStatus,
+        status: &bundle::BundleStatus,
     ) -> Result<()>;
 
     /// Returns the next `limit` bundles waiting in a particular status, ordered by received time.
@@ -222,7 +222,7 @@ pub trait MetadataStorage: Send + Sync {
     async fn poll_pending(
         &self,
         tx: storage::Sender<bundle::Bundle>,
-        status: &metadata::BundleStatus,
+        status: &bundle::BundleStatus,
         limit: usize,
     ) -> storage::Result<()>;
 }

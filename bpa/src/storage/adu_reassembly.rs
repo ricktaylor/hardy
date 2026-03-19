@@ -47,7 +47,7 @@ struct ReassemblyResult {
 
 impl Store {
     pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
-        let status = metadata::BundleStatus::AduFragment {
+        let status = bundle::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
@@ -75,7 +75,7 @@ impl Store {
     async fn poll_fragments(
         &self,
         bundle: &bundle::Bundle,
-        status: &metadata::BundleStatus,
+        status: &bundle::BundleStatus,
     ) -> Option<ReassemblyResult> {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();

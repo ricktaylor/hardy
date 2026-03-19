@@ -71,9 +71,9 @@ impl Dispatcher {
                     report_unsupported,
                 } => (
                     bundle::Bundle {
-                        metadata: BundleMetadata {
+                        metadata: bundle::BundleMetadata {
                             storage_name: Some(self.store.save_data(&data).await),
-                            read_only: ReadOnlyMetadata {
+                            read_only: bundle::ReadOnlyMetadata {
                                 received_at,
                                 ingress_peer_node,
                                 ingress_peer_addr,
@@ -100,9 +100,9 @@ impl Dispatcher {
 
                     (
                         bundle::Bundle {
-                            metadata: BundleMetadata {
+                            metadata: bundle::BundleMetadata {
                                 storage_name,
-                                read_only: ReadOnlyMetadata {
+                                read_only: bundle::ReadOnlyMetadata {
                                     received_at,
                                     ingress_peer_node,
                                     ingress_peer_addr,
@@ -127,8 +127,8 @@ impl Dispatcher {
                     // Don't bother saving the bundle data, it's garbage
                     (
                         bundle::Bundle {
-                            metadata: BundleMetadata {
-                                read_only: ReadOnlyMetadata {
+                            metadata: bundle::BundleMetadata {
+                                read_only: bundle::ReadOnlyMetadata {
                                     received_at,
                                     ingress_peer_node,
                                     ingress_peer_addr,
@@ -262,7 +262,7 @@ impl Dispatcher {
                     bundle.metadata.storage_name = Some(new_storage_name);
                 }
                 // Always checkpoint to Dispatching (crash safety)
-                bundle.metadata.status = BundleStatus::Dispatching;
+                bundle.metadata.status = bundle::BundleStatus::Dispatching;
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }
@@ -277,7 +277,7 @@ impl Dispatcher {
     /// Queue a bundle for dispatch processing
     pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
         self.store
-            .update_status(&mut bundle, BundleStatus::Dispatching)
+            .update_status(&mut bundle, bundle::BundleStatus::Dispatching)
             .await;
 
         if self.dispatch_tx.send(bundle).await.is_err() {
@@ -358,7 +358,7 @@ impl Dispatcher {
                 debug!("Storing bundle until a forwarding opportunity arises");
 
                 self.store
-                    .update_status(&mut bundle, BundleStatus::Waiting)
+                    .update_status(&mut bundle, bundle::BundleStatus::Waiting)
                     .await;
                 self.store.watch_bundle(bundle).await
             }

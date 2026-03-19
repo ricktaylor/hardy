@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use hardy_bpa::bundle;
-use hardy_bpa::metadata::{BundleMetadata, BundleStatus};
+use hardy_bpa::bundle::{BundleMetadata, BundleStatus};
 use hardy_bpa::storage::{BundleStorage, MetadataStorage};
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 

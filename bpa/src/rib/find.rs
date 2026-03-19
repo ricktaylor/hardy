@@ -102,7 +102,7 @@ fn map_result(
     result: InternalFindResult,
     ecmp_hash_state: &foldhash::quality::RandomState,
     bundle: &hardy_bpv7::bundle::Bundle,
-    metadata: &mut metadata::BundleMetadata,
+    metadata: &mut bundle::BundleMetadata,
 ) -> Option<FindResult> {
     match result {
         InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),

@@ -5,8 +5,7 @@ use tracing::info;
 
 use super::{MetadataStorage, Result, Sender};
 use crate::BTreeMap;
-use crate::metadata::BundleStatus;
-use crate::{bundle::Bundle, metadata::BundleMetadata};
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

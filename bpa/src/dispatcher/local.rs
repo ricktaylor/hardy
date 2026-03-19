@@ -121,8 +121,8 @@ impl Dispatcher {
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Wrap in bundle::Bundle with initial metadata (not stored yet)
         let bundle = bundle::Bundle {
-            metadata: metadata::BundleMetadata {
-                status: metadata::BundleStatus::New,
+            metadata: bundle::BundleMetadata {
+                status: bundle::BundleStatus::New,
                 ..Default::default()
             },
             bundle,
