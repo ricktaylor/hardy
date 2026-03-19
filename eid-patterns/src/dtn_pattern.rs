@@ -156,28 +156,15 @@ fn parse_dtn_exact_ssp(input: &mut &str) -> ModalResult<DtnPatternItem> {
 }
 
 fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
-    take_while(
-        0..,
-        (
-            AsChar::is_alphanum,
-            '-',
-            '.',
-            '_',
-            '~',
-            '!',
-            '$',
-            '&',
-            '\'',
-            '(',
-            ')',
-            //'*', <-- Force a glob for node_names with *
-            '+',
-            ',',
-            ';',
-            '=',
-            ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
-        ),
-    )
+    take_while(0.., |c: char| {
+        c.is_alphanum()
+            || matches!(
+                c,
+                '-' | '.' | '_' | '~' | '!' | '$' | '&' | '\'' | '(' | ')' |
+                // '*' excluded: force a glob for node_names with *
+                '+' | ',' | ';' | '=' | '%'
+            )
+    })
     .try_map(|v| {
         percent_decode_str(v)
             .decode_utf8()
@@ -189,30 +176,29 @@ fn parse_regname(input: &mut &str) -> ModalResult<Box<str>> {
 fn parse_dtn_glob(input: &mut &str) -> ModalResult<DtnPatternItem> {
     (
         terminated(
-            take_while(
-                0..,
-                (
-                    AsChar::is_alphanum,
-                    '-',
-                    '.',
-                    '_',
-                    '~',
-                    '!',
-                    '$',
-                    '&',
-                    '\'',
-                    '(',
-                    ')',
-                    '*',
-                    '+',
-                    ',',
-                    ';',
-                    '=',
-                    '[',
-                    '?',
-                    ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
-                ),
-            ),
+            take_while(0.., |c: char| {
+                c.is_alphanum()
+                    || matches!(
+                        c,
+                        '-' | '.'
+                            | '_'
+                            | '~'
+                            | '!'
+                            | '$'
+                            | '&'
+                            | '\''
+                            | '('
+                            | ')'
+                            | '*'
+                            | '+'
+                            | ','
+                            | ';'
+                            | '='
+                            | '['
+                            | '?'
+                            | '%'
+                    )
+            }),
             "/",
         ),
         take_while(0.., ('\x21'..='\x7b', /* No '|' (0x7c) */ '\x7d', '\x7e')),

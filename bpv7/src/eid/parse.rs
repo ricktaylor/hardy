@@ -52,28 +52,27 @@ fn parse_ipn(input: &mut &str) -> ModalResult<Eid> {
 }
 
 fn parse_regname(input: &mut &str) -> ModalResult<DtnNodeId> {
-    take_while(
-        0..,
-        (
-            AsChar::is_alphanum,
-            '-',
-            '.',
-            '_',
-            '~',
-            '!',
-            '$',
-            '&',
-            '\'',
-            '(',
-            ')',
-            '*',
-            '+',
-            ',',
-            ';',
-            '=',
-            ('%', AsChar::is_hex_digit, AsChar::is_hex_digit),
-        ),
-    )
+    take_while(0.., |c: char| {
+        c.is_alphanum()
+            || matches!(
+                c,
+                '-' | '.'
+                    | '_'
+                    | '~'
+                    | '!'
+                    | '$'
+                    | '&'
+                    | '\''
+                    | '('
+                    | ')'
+                    | '*'
+                    | '+'
+                    | ','
+                    | ';'
+                    | '='
+                    | '%'
+            )
+    })
     .try_map(|v| {
         percent_decode_str(v).decode_utf8().map(|s| DtnNodeId {
             node_name: s.into_owned().into(),
