@@ -21,13 +21,11 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         );
     }
 
-    let bpa_config = hardy_bpa::config::Config {
-        status_reports: true,
-        node_ids: [args.node_id()?].as_slice().try_into().unwrap(),
-        ..Default::default()
-    };
-
-    let bpa = hardy_bpa::bpa::Bpa::new(bpa_config, None, None);
+    let node_ids = [args.node_id()?].as_slice().try_into().unwrap();
+    let bpa = hardy_bpa::bpa::Bpa::builder()
+        .status_reports(true)
+        .node_ids(node_ids)
+        .build();
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.add_route(

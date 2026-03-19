@@ -1,4 +1,19 @@
-use super::*;
+use hardy_async::async_trait;
+use hardy_bpv7::eid::NodeId;
+
+use crate::builder::BpaBuilder;
+use crate::cla::registry::Registry as ClaRegistry;
+use crate::cla::{self, Cla, ClaAddressType};
+use crate::dispatcher::Dispatcher;
+use crate::filters::registry::Registry as FilterRegistry;
+use crate::filters::{self, Filter, Hook};
+use crate::policy::EgressPolicy;
+use crate::rib::Rib;
+use crate::routes::Action;
+use crate::services::Service;
+use crate::services::registry::Registry as ServiceRegistry;
+use crate::storage::Store;
+use crate::{Arc, services};
 
 /// Trait for registering CLAs, services, and applications with a BPA.
 ///
@@ -117,9 +132,9 @@ pub trait BpaRegistration: Send + Sync {
     async fn register_cla(
         &self,
         name: String,
-        address_type: Option<cla::ClaAddressType>,
-        cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        address_type: Option<ClaAddressType>,
+        cla: Arc<dyn Cla>,
+        policy: Option<Arc<dyn EgressPolicy>>,
     ) -> cla::Result<alloc::vec::Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -138,7 +153,7 @@ pub trait BpaRegistration: Send + Sync {
     async fn register_service(
         &self,
         service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Service>,
+        service: Arc<dyn Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
     /// Register a high-level Application with payload-only access.
@@ -162,84 +177,23 @@ pub trait BpaRegistration: Send + Sync {
 }
 
 pub struct Bpa {
-    store: Arc<storage::Store>,
-    rib: Arc<rib::Rib>,
-    cla_registry: Arc<cla::registry::Registry>,
-    service_registry: Arc<services::registry::Registry>,
-    filter_registry: Arc<filters::registry::Registry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    store: Arc<Store>,
+    rib: Arc<Rib>,
+    cla_registry: Arc<ClaRegistry>,
+    service_registry: Arc<ServiceRegistry>,
+    filter_registry: Arc<FilterRegistry>,
+    dispatcher: Arc<Dispatcher>,
 }
 
 impl Bpa {
-    pub fn new(
-        config: config::Config,
-        metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
-        bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
+    pub(crate) fn from_parts(
+        store: Arc<Store>,
+        rib: Arc<Rib>,
+        cla_registry: Arc<ClaRegistry>,
+        service_registry: Arc<ServiceRegistry>,
+        filter_registry: Arc<FilterRegistry>,
+        dispatcher: Arc<Dispatcher>,
     ) -> Self {
-        let status_reports = config.status_reports;
-        let poll_channel_depth = config.poll_channel_depth;
-        let processing_pool_size = config.processing_pool_size;
-        let node_ids = config.node_ids;
-
-        // New store
-        let store = Arc::new(storage::Store::new(
-            config.lru_capacity,
-            config.max_cached_bundle_size,
-            poll_channel_depth,
-            metadata_storage,
-            bundle_storage,
-        ));
-
-        // New RIB
-        let rib = Arc::new(rib::Rib::new(node_ids.clone(), store.clone()));
-
-        // New registries
-        let cla_registry = Arc::new(cla::registry::Registry::new(
-            (&node_ids).into(),
-            poll_channel_depth.into(),
-            rib.clone(),
-            store.clone(),
-        ));
-
-        // New Keys Registry (TODO: Make this load keys from the Config!)
-        let keys_registry = Arc::new(keys::registry::Registry::new());
-
-        let service_registry = Arc::new(services::registry::Registry::new(
-            node_ids.clone(),
-            rib.clone(),
-        ));
-
-        // New filter registry
-        let filter_registry = Arc::new(filters::registry::Registry::new());
-
-        // Auto-register RFC9171 validity filter unless disabled
-        #[cfg(not(feature = "no-rfc9171-autoregister"))]
-        {
-            filter_registry
-                .register(
-                    filters::Hook::Ingress,
-                    "rfc9171-validity",
-                    &[],
-                    filters::Filter::Read(Arc::new(
-                        filters::rfc9171::Rfc9171ValidityFilter::default(),
-                    )),
-                )
-                .expect("Failed to register RFC9171 validity filter");
-        }
-
-        // New dispatcher (returns Arc, starts immediately)
-        let dispatcher = dispatcher::Dispatcher::new(
-            status_reports,
-            poll_channel_depth,
-            processing_pool_size,
-            node_ids,
-            store.clone(),
-            cla_registry.clone(),
-            rib.clone(),
-            keys_registry,
-            filter_registry.clone(),
-        );
-
         Self {
             store,
             rib,
@@ -248,6 +202,10 @@ impl Bpa {
             filter_registry,
             dispatcher,
         }
+    }
+
+    pub fn builder() -> BpaBuilder {
+        BpaBuilder::new()
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
@@ -289,7 +247,7 @@ impl Bpa {
         &self,
         source: String,
         pattern: hardy_eid_patterns::EidPattern,
-        action: routes::Action,
+        action: Action,
         priority: u32,
     ) -> bool {
         self.rib.add(pattern, source, action, priority).await
@@ -303,7 +261,7 @@ impl Bpa {
         &self,
         source: &str,
         pattern: &hardy_eid_patterns::EidPattern,
-        action: &routes::Action,
+        action: &Action,
         priority: u32,
     ) -> bool {
         self.rib.remove(pattern, source, action, priority).await
@@ -313,10 +271,10 @@ impl Bpa {
     #[cfg_attr(feature = "tracing", instrument(skip(self, filter)))]
     pub fn register_filter(
         &self,
-        hook: filters::Hook,
+        hook: Hook,
         name: &str,
         after: &[&str],
-        filter: filters::Filter,
+        filter: Filter,
     ) -> Result<(), filters::Error> {
         self.filter_registry.register(hook, name, after, filter)
     }
@@ -325,9 +283,9 @@ impl Bpa {
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub fn unregister_filter(
         &self,
-        hook: filters::Hook,
+        hook: Hook,
         name: &str,
-    ) -> Result<Option<filters::Filter>, filters::Error> {
+    ) -> Result<Option<Filter>, filters::Error> {
         self.filter_registry.unregister(hook, name)
     }
 }
@@ -362,10 +320,10 @@ impl BpaRegistration for Bpa {
     async fn register_cla(
         &self,
         name: String,
-        address_type: Option<cla::ClaAddressType>,
-        cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
+        address_type: Option<ClaAddressType>,
+        cla: Arc<dyn Cla>,
+        policy: Option<Arc<dyn EgressPolicy>>,
+    ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
             .register(name, address_type, cla, &self.dispatcher, policy)
             .await

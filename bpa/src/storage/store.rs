@@ -7,14 +7,13 @@ impl Store {
         lru_capacity: core::num::NonZeroUsize,
         max_cached_bundle_size: core::num::NonZeroUsize,
         reaper_cache_size: core::num::NonZeroUsize,
-        metadata_storage: Option<Arc<dyn storage::MetadataStorage>>,
-        bundle_storage: Option<Arc<dyn storage::BundleStorage>>,
+        metadata_storage: Arc<dyn storage::MetadataStorage>,
+        bundle_storage: Arc<dyn storage::BundleStorage>,
     ) -> Self {
         Self {
             tasks: hardy_async::TaskPool::new(),
-            metadata_storage: metadata_storage
-                .unwrap_or_else(|| metadata_mem::new(&Default::default())),
-            bundle_storage: bundle_storage.unwrap_or_else(|| bundle_mem::new(&Default::default())),
+            metadata_storage,
+            bundle_storage,
             bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(lru_capacity)),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),

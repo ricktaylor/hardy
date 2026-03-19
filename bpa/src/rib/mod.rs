@@ -34,7 +34,7 @@ pub struct Rib {
 }
 
 impl Rib {
-    pub fn new(node_ids: node_ids::NodeIds, store: Arc<storage::Store>) -> Self {
+    pub(crate) fn new(node_ids: node_ids::NodeIds, store: Arc<storage::Store>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(&node_ids),
@@ -47,7 +47,7 @@ impl Rib {
         }
     }
 
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
