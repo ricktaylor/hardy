@@ -446,12 +446,147 @@ fn rfc_tests() {
     });
 }
 
-// TODO: Add tests for missing requirements:
-//
-// - LLR 1.1.12 (Incomplete Item Detection):
-//   Verify that `Error::NeedMoreData` is returned for truncated inputs.
-//   For example, parsing `0x18` without a following byte.
-//
-// - LLR 1.1.11 (Opportunistic Parsing):
-//   Verify the specific contract of `try_parse`, ensuring it returns `Ok(None)`
-//   when a sequence is cleanly exhausted, rather than an error.
+// LLR 1.1.12: Incomplete Item Detection
+// Verify that `Error::NeedMoreData` is returned for truncated inputs.
+#[test]
+fn incomplete_item_detection() {
+    // Unsigned integer: major type 0, additional info 24 requires 1 following byte
+    assert!(matches!(
+        parse::<u64>(&hex!("18")),
+        Err(Error::NeedMoreData(1))
+    ));
+
+    // Unsigned integer: additional info 25 requires 2 following bytes
+    assert!(matches!(
+        parse::<u64>(&hex!("19")),
+        Err(Error::NeedMoreData(2))
+    ));
+
+    // Unsigned integer: additional info 25 with only 1 of 2 bytes
+    assert!(matches!(
+        parse::<u64>(&hex!("1900")),
+        Err(Error::NeedMoreData(1))
+    ));
+
+    // Unsigned integer: additional info 26 requires 4 following bytes
+    assert!(matches!(
+        parse::<u64>(&hex!("1a")),
+        Err(Error::NeedMoreData(4))
+    ));
+
+    // Unsigned integer: additional info 27 requires 8 following bytes, only 3 given
+    assert!(matches!(
+        parse::<u64>(&hex!("1b000000")),
+        Err(Error::NeedMoreData(5))
+    ));
+
+    // Negative integer: same encoding, major type 1
+    assert!(matches!(
+        parse::<i64>(&hex!("38")),
+        Err(Error::NeedMoreData(1))
+    ));
+
+    // Byte string: header says 4 bytes, but none follow
+    assert!(matches!(
+        parse_value(&hex!("44"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::NeedMoreData(4))
+    ));
+
+    // Byte string: header says 4 bytes, only 2 follow
+    assert!(matches!(
+        parse_value(&hex!("440102"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::NeedMoreData(2))
+    ));
+
+    // Text string: header says 4 bytes of UTF-8, but none follow
+    assert!(matches!(
+        parse_value(&hex!("64"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::NeedMoreData(4))
+    ));
+
+    // Float16: additional info 25 requires 2 bytes
+    assert!(matches!(
+        parse_value(&hex!("f9"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::NeedMoreData(2))
+    ));
+
+    // Float32: additional info 26 requires 4 bytes, only 1 given
+    assert!(matches!(
+        parse_value(&hex!("fa00"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::NeedMoreData(3))
+    ));
+
+    // Empty input
+    assert!(matches!(
+        parse_value(&hex!(""), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::NeedMoreData(1))
+    ));
+
+    // Definite-length array: header says 3 items, but body is truncated
+    // NeedMoreData is raised when trying to read the first item
+    assert!(matches!(
+        parse_array(&hex!("83"), |a, _, _| { a.parse::<u64>() }),
+        Err(Error::NeedMoreData(1))
+    ));
+}
+
+// LLR 1.1.11: Opportunistic Parsing
+// Verify `try_parse` returns `Ok(None)` when a sequence is cleanly exhausted.
+#[test]
+fn opportunistic_parsing() {
+    // Definite-length array with 2 items: try_parse returns values then None
+    parse_array(&hex!("820102"), |a, _, _| {
+        assert_eq!(a.try_parse::<u64>()?, Some(1));
+        assert_eq!(a.try_parse::<u64>()?, Some(2));
+        assert_eq!(a.try_parse::<u64>()?, None);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Empty definite-length array: try_parse returns None immediately
+    parse_array(&hex!("80"), |a, _, _| {
+        assert_eq!(a.try_parse::<u64>()?, None);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Indefinite-length array with 1 item: try_parse returns value then None
+    parse_array(&hex!("9f01ff"), |a, _, _| {
+        assert_eq!(a.try_parse::<u64>()?, Some(1));
+        assert_eq!(a.try_parse::<u64>()?, None);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Empty indefinite-length array: try_parse returns None immediately
+    parse_array(&hex!("9fff"), |a, _, _| {
+        assert_eq!(a.try_parse::<u64>()?, None);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // try_parse_value also returns None at end
+    parse_array(&hex!("8101"), |a, _, _| {
+        assert!(a.try_parse_value(|_, _, _| Ok::<_, Error>(()))?.is_some());
+        assert!(a.try_parse_value(|_, _, _| Ok::<_, Error>(()))?.is_none());
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Sequence (bare items, no container): try_parse returns values then None
+    parse_sequence(&hex!("0102"), |s| {
+        assert_eq!(s.try_parse::<u64>()?, Some(1));
+        assert_eq!(s.try_parse::<u64>()?, Some(2));
+        assert_eq!(s.try_parse::<u64>()?, None);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Contrast: parse (not try_parse) returns NoMoreItems at end
+    parse_array(&hex!("8101"), |a, _, _| {
+        assert!(a.parse::<u64>().is_ok());
+        assert!(matches!(a.parse::<u64>(), Err(Error::NoMoreItems)));
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
