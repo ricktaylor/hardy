@@ -7,7 +7,7 @@ impl Dispatcher {
             return self.store.watch_bundle(bundle).await;
         };
 
-        let metadata = metadata::BundleMetadata {
+        let metadata = bundle::BundleMetadata {
             storage_name: Some(storage_name),
             ..Default::default()
         };

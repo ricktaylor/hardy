@@ -202,7 +202,7 @@ impl Store {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-                            if bundle.metadata.status != metadata::BundleStatus::New {
+                            if bundle.metadata.status != bundle::BundleStatus::New {
                                 reaper.watch_bundle_inner(bundle, false).await;
                             }
                         },

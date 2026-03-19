@@ -73,7 +73,7 @@ impl ChannelState {
 struct Shared {
     state: AtomicUsize,
     tx: flume::Sender<Option<bundle::Bundle>>,
-    status: metadata::BundleStatus,
+    status: bundle::BundleStatus,
     notify: Arc<hardy_async::Notify>,
 }
 
@@ -199,7 +199,7 @@ impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
     pub fn channel(
         self: &Arc<Self>,
-        status: metadata::BundleStatus,
+        status: bundle::BundleStatus,
         cap: usize,
     ) -> (Sender, Receiver) {
         let (tx, rx) = flume::bounded::<Option<bundle::Bundle>>(cap);

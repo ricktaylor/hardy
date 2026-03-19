@@ -173,7 +173,7 @@ impl Store {
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Option<metadata::BundleMetadata> {
+    ) -> Option<bundle::BundleMetadata> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await
@@ -189,7 +189,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: metadata::BundleStatus) {
+    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: bundle::BundleStatus) {
         if bundle.metadata.status != status {
             bundle.metadata.status = status;
             self.metadata_storage

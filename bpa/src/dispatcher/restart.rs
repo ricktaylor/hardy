@@ -37,19 +37,19 @@ impl Dispatcher {
                     } else {
                         // Resume processing based on checkpoint status
                         match &metadata.status {
-                            BundleStatus::New => {
+                            bundle::BundleStatus::New => {
                                 // Ingress filter not yet complete - run full ingestion
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
                                 RestartResult::Valid
                             }
-                            BundleStatus::Dispatching => {
+                            bundle::BundleStatus::Dispatching => {
                                 // Ingress filter done - enqueue for routing
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.dispatch_bundle(bundle).await;
                                 RestartResult::Valid
                             }
-                            BundleStatus::WaitingForService { service: _ } => {
+                            bundle::BundleStatus::WaitingForService { service: _ } => {
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
                                 RestartResult::Valid
@@ -64,9 +64,9 @@ impl Dispatcher {
                 } else {
                     // Effectively a new bundle
                     let bundle = bundle::Bundle {
-                        metadata: BundleMetadata {
+                        metadata: bundle::BundleMetadata {
                             storage_name: Some(storage_name),
-                            read_only: ReadOnlyMetadata {
+                            read_only: bundle::ReadOnlyMetadata {
                                 received_at: file_time,
                                 ..Default::default()
                             },
@@ -135,9 +135,9 @@ impl Dispatcher {
                 self.store.delete_data(&storage_name).await;
 
                 let bundle = bundle::Bundle {
-                    metadata: BundleMetadata {
+                    metadata: bundle::BundleMetadata {
                         storage_name: Some(new_storage_name),
-                        read_only: ReadOnlyMetadata {
+                        read_only: bundle::ReadOnlyMetadata {
                             received_at: file_time,
                             ..Default::default()
                         },
@@ -207,8 +207,8 @@ impl Dispatcher {
                 // Whatever we have in the store isn't correct
 
                 let bundle = bundle::Bundle {
-                    metadata: BundleMetadata {
-                        read_only: ReadOnlyMetadata {
+                    metadata: bundle::BundleMetadata {
+                        read_only: bundle::ReadOnlyMetadata {
                             received_at: file_time,
                             ..Default::default()
                         },

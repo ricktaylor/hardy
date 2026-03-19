@@ -148,8 +148,8 @@ impl Dispatcher {
 
             // Wrap in bundle::Bundle with initial metadata (not stored yet)
             let mut bundle = bundle::Bundle {
-                metadata: metadata::BundleMetadata {
-                    status: metadata::BundleStatus::New,
+                metadata: bundle::BundleMetadata {
+                    status: bundle::BundleStatus::New,
                     ..Default::default()
                 },
                 bundle,

@@ -1,4 +1,4 @@
-use hardy_bpa::metadata::BundleStatus;
+use hardy_bpa::bundle::BundleStatus;
 
 /// Mirrors the `bundle_status` postgres enum for type-safe binding and decoding.
 /// `#[derive(sqlx::Type)]` generates `Encode`/`Decode` so sqlx maps the postgres

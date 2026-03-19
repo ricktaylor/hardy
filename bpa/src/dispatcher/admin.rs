@@ -95,7 +95,7 @@ impl Dispatcher {
                         self.drop_bundle(bundle, None).await;
                     }
                     None => {
-                        let desired = BundleStatus::WaitingForService {
+                        let desired = bundle::BundleStatus::WaitingForService {
                             service: report.bundle_id.source.clone(),
                         };
 

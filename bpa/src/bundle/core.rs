@@ -1,14 +1,20 @@
-use super::*;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use hardy_bpv7::eid::Eid;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+use time::{Duration, OffsetDateTime};
+
+use super::metadata::BundleMetadata;
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Bundle {
-    pub bundle: hardy_bpv7::bundle::Bundle,
-    pub metadata: metadata::BundleMetadata,
+    pub bundle: Bpv7Bundle,
+    pub metadata: BundleMetadata,
 }
 
 impl Bundle {
-    pub fn creation_time(&self) -> time::OffsetDateTime {
+    pub fn creation_time(&self) -> OffsetDateTime {
         self.bundle.id.timestamp.as_datetime().unwrap_or_else(|| {
             self.metadata
                 .read_only
@@ -18,18 +24,14 @@ impl Bundle {
         })
     }
 
-    pub fn expiry(&self) -> time::OffsetDateTime {
-        self.creation_time().saturating_add(
-            self.bundle
-                .lifetime
-                .try_into()
-                .unwrap_or(time::Duration::MAX),
-        )
+    pub fn expiry(&self) -> OffsetDateTime {
+        self.creation_time()
+            .saturating_add(self.bundle.lifetime.try_into().unwrap_or(Duration::MAX))
     }
 
     #[inline]
     pub fn has_expired(&self) -> bool {
-        self.expiry() <= time::OffsetDateTime::now_utc()
+        self.expiry() <= OffsetDateTime::now_utc()
     }
 
     /// Returns the EID of the node that forwarded this bundle.
@@ -37,7 +39,7 @@ impl Bundle {
     /// Prefers the Previous Node extension block (in-band), falling back to
     /// the CLA peer node ID (out-of-band). Per RFC 9171 Section 4.4.1, both
     /// identify the immediate 1-hop forwarding node when present.
-    pub fn previous_node(&self) -> Option<hardy_bpv7::eid::Eid> {
+    pub fn previous_node(&self) -> Option<Eid> {
         self.bundle.previous_node.clone().or_else(|| {
             self.metadata
                 .read_only

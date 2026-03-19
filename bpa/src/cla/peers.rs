@@ -85,7 +85,7 @@ impl Peer {
         queue: Option<u32>,
     ) -> storage::channel::Sender {
         let (tx, rx) = store.channel(
-            metadata::BundleStatus::ForwardPending { peer, queue },
+            bundle::BundleStatus::ForwardPending { peer, queue },
             poll_channel_depth,
         );
 

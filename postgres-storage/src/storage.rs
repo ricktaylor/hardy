@@ -134,10 +134,7 @@ struct WaitingRow {
 }
 
 impl WaitingRow {
-    fn decode(
-        self,
-        status: &hardy_bpa::metadata::BundleStatus,
-    ) -> Option<hardy_bpa::bundle::Bundle> {
+    fn decode(self, status: &hardy_bpa::bundle::BundleStatus) -> Option<hardy_bpa::bundle::Bundle> {
         decode_bundle(self.bundle, Some(status.clone()))
     }
 }
@@ -204,7 +201,7 @@ impl PendingRow {
 // We still override status from typed columns to guard against any blob/column skew.
 fn decode_bundle(
     bundle_bytes: Vec<u8>,
-    status: Option<hardy_bpa::metadata::BundleStatus>,
+    status: Option<hardy_bpa::bundle::BundleStatus>,
 ) -> Option<hardy_bpa::bundle::Bundle> {
     let Some(status) = status else {
         warn!("Failed to decode metadata status");
@@ -398,7 +395,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::metadata::BundleMetadata>> {
+    ) -> storage::Result<Option<hardy_bpa::bundle::BundleMetadata>> {
         let bundle_key = bundle_id.to_key();
 
         // Atomic: SELECT + DELETE in one transaction so a concurrent
@@ -604,7 +601,7 @@ impl storage::MetadataStorage for Storage {
                 last_id = r.id;
                 // Status is 'waiting' by the WHERE clause; override the blob's status
                 // field (which may lag by one write) to keep them consistent.
-                let Some(bundle) = r.decode(&hardy_bpa::metadata::BundleStatus::Waiting) else {
+                let Some(bundle) = r.decode(&hardy_bpa::bundle::BundleStatus::Waiting) else {
                     continue;
                 };
                 if tx.send_async(bundle).await.is_err() {
@@ -626,8 +623,7 @@ impl storage::MetadataStorage for Storage {
     ) -> storage::Result<()> {
         let source_str = source.to_string();
         // Construct once; all bundles on this poll share the same WaitingForService status.
-        let bundle_status =
-            hardy_bpa::metadata::BundleStatus::WaitingForService { service: source };
+        let bundle_status = hardy_bpa::bundle::BundleStatus::WaitingForService { service: source };
 
         let mut conn = begin_snapshot(&self.pool).await?;
 
@@ -677,7 +673,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_adu_fragments(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
-        status: &hardy_bpa::metadata::BundleStatus,
+        status: &hardy_bpa::bundle::BundleStatus,
     ) -> storage::Result<()> {
         let sf = status::StatusFields::try_from(status)?;
 
@@ -735,7 +731,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_pending(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
-        status: &hardy_bpa::metadata::BundleStatus,
+        status: &hardy_bpa::bundle::BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
         let sf = status::StatusFields::try_from(status)?;
