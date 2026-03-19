@@ -94,6 +94,7 @@ impl BpaBuilder {
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
         {
             use crate::filters::rfc9171::Rfc9171ValidityFilter;
+            use crate::filters::{Filter, Hook};
 
             filter_registry
                 .register(
