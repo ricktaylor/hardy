@@ -1,5 +1,7 @@
 use hardy_async::async_trait;
 use hardy_bpv7::eid::NodeId;
+#[cfg(feature = "tracing")]
+use tracing::instrument;
 
 use crate::builder::BpaBuilder;
 use crate::cla::registry::Registry as ClaRegistry;
