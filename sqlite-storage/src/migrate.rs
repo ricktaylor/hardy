@@ -143,16 +143,11 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
 mod tests {
     // #[test]
     // fn test_migration_logic_sql_01() {
-    //     // TODO: SQL-01 Migration Logic
-    //     // Verify that the database schema is correctly created and upgraded from previous versions.
-    //     todo!("Implement test_migration_logic_sql_01");
+    //     // Verify schema is correctly created and upgraded from previous versions.
     // }
 
     // #[test]
     // fn test_migration_errors_sql_04() {
-    //     // TODO: SQL-04 Migration Errors
-    //     // Verify the migration logic correctly fails if the schema is missing historic migrations,
-    //     // has extra migrations, or has altered hashes.
-    //     todo!("Implement test_migration_errors_sql_04");
+    //     // Verify migration fails correctly for missing/extra/altered migrations.
     // }
 }
