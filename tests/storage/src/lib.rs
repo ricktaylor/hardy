@@ -17,7 +17,9 @@ pub mod metadata_suite;
 pub fn memory_meta_setup() -> ((), Arc<dyn MetadataStorage>) {
     (
         (),
-        hardy_bpa::storage::metadata_mem::new(&Default::default()),
+        Arc::new(hardy_bpa::storage::metadata_mem::MetadataMemStorage::new(
+            &Default::default(),
+        )),
     )
 }
 
@@ -32,7 +34,12 @@ pub fn sqlite_meta_setup() -> (tempfile::TempDir, Arc<dyn MetadataStorage>) {
 }
 
 pub fn memory_blob_setup() -> ((), Arc<dyn BundleStorage>) {
-    ((), hardy_bpa::storage::bundle_mem::new(&Default::default()))
+    (
+        (),
+        Arc::new(hardy_bpa::storage::bundle_mem::BundleMemStorage::new(
+            &Default::default(),
+        )),
+    )
 }
 
 pub fn localdisk_blob_setup() -> (tempfile::TempDir, Arc<dyn BundleStorage>) {

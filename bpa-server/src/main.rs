@@ -47,10 +47,10 @@ async fn init_storage(
     storage: &config::StorageConfig,
     upgrade_storage: bool,
 ) -> anyhow::Result<StorageBackends> {
-    let metadata_storage = match storage.metadata.as_ref() {
+    let metadata_storage: Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> = match storage.metadata.as_ref() {
         None => None,
         Some(cfg) => Some(match cfg {
-            config::MetadataStorage::Memory(cfg) => hardy_bpa::storage::metadata_mem::new(cfg),
+            config::MetadataStorage::Memory(cfg) => Arc::new(hardy_bpa::storage::metadata_mem::MetadataMemStorage::new(cfg)),
 
             #[cfg(feature = "sqlite-storage")]
             config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
@@ -64,10 +64,10 @@ async fn init_storage(
         }),
     };
 
-    let bundle_storage = match storage.bundle.as_ref() {
+    let bundle_storage: Option<Arc<dyn hardy_bpa::storage::BundleStorage>> = match storage.bundle.as_ref() {
         None => None,
         Some(cfg) => Some(match cfg {
-            config::BundleStorage::Memory(cfg) => hardy_bpa::storage::bundle_mem::new(cfg),
+            config::BundleStorage::Memory(cfg) => Arc::new(hardy_bpa::storage::bundle_mem::BundleMemStorage::new(cfg)),
 
             #[cfg(feature = "localdisk-storage")]
             config::BundleStorage::LocalDisk(cfg) => {
@@ -121,17 +121,23 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
     let (metadata_storage, bundle_storage) =
         init_storage(&config.storage, cli.upgrade_storage).await?;
 
-    let bpa_config = hardy_bpa::config::Config {
-        lru_capacity: config.storage.lru_capacity,
-        max_cached_bundle_size: config.storage.max_cached_bundle_size,
-        ..config.bpa
-    };
-    info!("Configured node IDs: {}", bpa_config.node_ids);
-    let bpa = Arc::new(hardy_bpa::bpa::Bpa::new(
-        bpa_config,
-        metadata_storage,
-        bundle_storage,
-    ));
+    let mut builder = hardy_bpa::bpa::Bpa::builder()
+        .status_reports(config.bpa.status_reports)
+        .poll_channel_depth(config.bpa.poll_channel_depth)
+        .processing_pool_size(config.bpa.processing_pool_size)
+        .lru_capacity(config.storage.lru_capacity)
+        .max_cached_bundle_size(config.storage.max_cached_bundle_size)
+        .node_ids(config.bpa.node_ids);
+
+    if let Some(metadata_storage) = metadata_storage {
+        builder = builder.metadata_storage(metadata_storage);
+    }
+
+    if let Some(bundle_storage) = bundle_storage {
+        builder = builder.bundle_storage(bundle_storage);
+    }
+
+    let bpa = Arc::new(builder.build());
 
     // Prepare for graceful shutdown
     let tasks = TaskPool::new();

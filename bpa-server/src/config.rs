@@ -80,6 +80,33 @@ impl Default for StorageConfig {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct BpaConfig {
+    pub status_reports: bool,
+    pub poll_channel_depth: core::num::NonZeroUsize,
+    pub processing_pool_size: core::num::NonZeroUsize,
+    pub lru_capacity: core::num::NonZeroUsize,
+    pub max_cached_bundle_size: core::num::NonZeroUsize,
+    pub node_ids: hardy_bpa::node_ids::NodeIds,
+}
+
+impl Default for BpaConfig {
+    fn default() -> Self {
+        Self {
+            status_reports: false,
+            poll_channel_depth: core::num::NonZeroUsize::new(16).unwrap(),
+            processing_pool_size: core::num::NonZeroUsize::new(
+                hardy_async::available_parallelism().get() * 4,
+            )
+            .unwrap(),
+            lru_capacity: core::num::NonZeroUsize::new(1024).unwrap(),
+            max_cached_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
+            node_ids: hardy_bpa::node_ids::NodeIds::default(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct BuiltInServicesConfig {
@@ -100,7 +127,7 @@ pub struct Config {
 
     /// Flattened BPA settings
     #[serde(flatten, default)]
-    pub bpa: hardy_bpa::config::Config,
+    pub bpa: BpaConfig,
 
     /// gRPC options
     #[serde(default)]

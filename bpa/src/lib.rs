@@ -40,9 +40,9 @@ mod dispatcher;
 mod rib;
 
 pub mod bpa;
+pub mod builder;
 pub mod bundle;
 pub mod cla;
-pub mod config;
 pub mod filters;
 pub mod keys;
 pub mod metadata;
