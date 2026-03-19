@@ -82,13 +82,17 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
 
     #[cfg(feature = "postgres-storage")]
     {
-        builder = builder.metadata_storage(hardy_postgres_storage::new(
-            &hardy_postgres_storage::Config {
-                database_url: "postgres://hardy:hardy@localhost:5432/hardy".to_string(),
-                ..Default::default()
-            },
-            true,
-        ));
+        builder = builder.metadata_storage(
+            hardy_postgres_storage::new(
+                &hardy_postgres_storage::Config {
+                    database_url: "postgres://hardy:hardy@localhost:5432/hardy".to_string(),
+                    ..Default::default()
+                },
+                true,
+            )
+            .await
+            .expect("Failed to create postgres metadata storage"),
+        );
     }
 
     let bpa = builder.build();
