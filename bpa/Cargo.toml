@@ -24,6 +24,7 @@ std = [
     "foldhash/std",
 ]
 tracing = ["hardy-async/tracing"]
+bp-arp = ["hardy-bpv7/bp-arp"]
 
 [lib]
 path = "src/lib.rs"
