@@ -186,6 +186,17 @@ impl Store {
             .trace_expect("Failed to replace metadata")
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: metadata::BundleStatus) {
+        if bundle.metadata.status != status {
+            bundle.metadata.status = status;
+            self.metadata_storage
+                .update_status(bundle)
+                .await
+                .trace_expect("Failed to update bundle status");
+        }
+    }
+
     #[cfg_attr(feature = "tracing", instrument(skip_all))]
     pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) {
         self.metadata_storage

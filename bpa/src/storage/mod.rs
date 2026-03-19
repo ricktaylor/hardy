@@ -71,6 +71,12 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the replacement was successful.
     async fn replace(&self, bundle: &bundle::Bundle) -> Result<()>;
 
+    /// Updates only the typed status columns for an existing bundle's metadata.
+    ///
+    /// Cheaper than `replace` because the bundle blob is not written. Use this
+    /// for pure state-machine transitions where no other metadata has changed.
+    async fn update_status(&self, bundle: &bundle::Bundle) -> Result<()>;
+
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
     /// A tombstone marks the bundle as deleted, preventing it from being re-inserted
     /// or processed further. This method does not error if the bundle does not exist.

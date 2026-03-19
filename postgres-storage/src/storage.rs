@@ -331,6 +331,41 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
+    async fn update_status(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+        let bundle_key = bundle.bundle.id.to_key();
+        let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
+
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status      = $2,
+                 peer_id     = $3,
+                 queue_id    = $4,
+                 adu_source  = $5,
+                 adu_ts_ms   = $6,
+                 adu_ts_seq  = $7,
+                 service_eid = $8
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
+        )
+        .bind(bundle_key)
+        .bind(sf.status)
+        .bind(sf.peer_id)
+        .bind(sf.queue_id)
+        .bind(sf.adu_source)
+        .bind(sf.adu_ts_ms)
+        .bind(sf.adu_ts_seq)
+        .bind(sf.service_eid)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if rows == 0 {
+            return Err(sqlx::Error::RowNotFound.into());
+        }
+
+        Ok(())
+    }
+
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let bundle_key = bundle_id.to_key();

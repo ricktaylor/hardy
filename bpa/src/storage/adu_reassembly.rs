@@ -54,8 +54,7 @@ impl Store {
 
         // See if we can collect all the fragments
         let Some(results) = self.poll_fragments(bundle, &status).await else {
-            bundle.metadata.status = status;
-            self.update_metadata(bundle).await;
+            self.update_status(bundle, status).await;
             return None;
         };
 

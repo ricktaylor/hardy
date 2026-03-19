@@ -276,10 +276,9 @@ impl Dispatcher {
 
     /// Queue a bundle for dispatch processing
     pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
-        if bundle.metadata.status != BundleStatus::Dispatching {
-            bundle.metadata.status = BundleStatus::Dispatching;
-            self.store.update_metadata(&bundle).await;
-        }
+        self.store
+            .update_status(&mut bundle, BundleStatus::Dispatching)
+            .await;
 
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");
@@ -358,10 +357,9 @@ impl Dispatcher {
                 // No route available - wait for one
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                if bundle.metadata.status != BundleStatus::Waiting {
-                    bundle.metadata.status = BundleStatus::Waiting;
-                    self.store.update_metadata(&bundle).await;
-                }
+                self.store
+                    .update_status(&mut bundle, BundleStatus::Waiting)
+                    .await;
                 self.store.watch_bundle(bundle).await
             }
         }
