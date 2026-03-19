@@ -47,10 +47,15 @@ async fn init_storage(
     storage: &config::StorageConfig,
     upgrade_storage: bool,
 ) -> anyhow::Result<StorageBackends> {
-    let metadata_storage: Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> = match storage.metadata.as_ref() {
+    let metadata_storage: Option<Arc<dyn hardy_bpa::storage::MetadataStorage>> = match storage
+        .metadata
+        .as_ref()
+    {
         None => None,
         Some(cfg) => Some(match cfg {
-            config::MetadataStorage::Memory(cfg) => Arc::new(hardy_bpa::storage::metadata_mem::MetadataMemStorage::new(cfg)),
+            config::MetadataStorage::Memory(cfg) => Arc::new(
+                hardy_bpa::storage::metadata_mem::MetadataMemStorage::new(cfg),
+            ),
 
             #[cfg(feature = "sqlite-storage")]
             config::MetadataStorage::Sqlite(cfg) => hardy_sqlite_storage::new(cfg, upgrade_storage),
@@ -64,20 +69,23 @@ async fn init_storage(
         }),
     };
 
-    let bundle_storage: Option<Arc<dyn hardy_bpa::storage::BundleStorage>> = match storage.bundle.as_ref() {
-        None => None,
-        Some(cfg) => Some(match cfg {
-            config::BundleStorage::Memory(cfg) => Arc::new(hardy_bpa::storage::bundle_mem::BundleMemStorage::new(cfg)),
+    let bundle_storage: Option<Arc<dyn hardy_bpa::storage::BundleStorage>> =
+        match storage.bundle.as_ref() {
+            None => None,
+            Some(cfg) => Some(match cfg {
+                config::BundleStorage::Memory(cfg) => {
+                    Arc::new(hardy_bpa::storage::bundle_mem::BundleMemStorage::new(cfg))
+                }
 
-            #[cfg(feature = "localdisk-storage")]
-            config::BundleStorage::LocalDisk(cfg) => {
-                hardy_localdisk_storage::new(cfg, upgrade_storage)
-            }
+                #[cfg(feature = "localdisk-storage")]
+                config::BundleStorage::LocalDisk(cfg) => {
+                    hardy_localdisk_storage::new(cfg, upgrade_storage)
+                }
 
-            #[cfg(feature = "s3-storage")]
-            config::BundleStorage::S3(cfg) => hardy_s3_storage::new(cfg).await?,
-        }),
-    };
+                #[cfg(feature = "s3-storage")]
+                config::BundleStorage::S3(cfg) => hardy_s3_storage::new(cfg).await?,
+            }),
+        };
 
     Ok((metadata_storage, bundle_storage))
 }
