@@ -70,9 +70,9 @@ impl Rib {
         match result {
             InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
             InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
-            InternalFindResult::Forward(peers) => {
-                Some(FindResult::Forward(peers.first().unwrap().0))
-            }
+            InternalFindResult::Forward(peers) => Some(FindResult::Forward(
+                peers.first().trace_expect("Forward with empty peers!").0,
+            )),
             InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
             InternalFindResult::Reflect => {
                 unreachable!("Reflect filtered by find_local before calling map_result")
@@ -271,8 +271,8 @@ fn find_recurse<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{add_local_forward, add_route, make_rib};
     use super::*;
+    use rib::tests::{add_local_forward, add_route, make_rib};
 
     fn make_bundle(destination: &str) -> bundle::Bundle {
         bundle::Bundle {
