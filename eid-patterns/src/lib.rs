@@ -48,6 +48,18 @@ impl EidPattern {
         }
     }
 
+    /// Harmonized Specificity Score.
+    ///
+    /// Returns `None` for union sets (multiple items) or patterns violating
+    /// monotonic constraints.
+    pub fn specificity_score(&self) -> Option<u32> {
+        match self {
+            EidPattern::Any => Some(0),
+            EidPattern::Set(items) if items.len() == 1 => items[0].specificity_score(),
+            EidPattern::Set(_) => None, // Union sets not valid for scoring
+        }
+    }
+
     /// Is `self`` a subset (or equal to) `other`
     pub fn is_subset(&self, other: &Self) -> bool {
         match (self, other) {
@@ -283,6 +295,19 @@ impl EidPatternItem {
             #[cfg(feature = "dtn-pat-item")]
             EidPatternItem::DtnPatternItem(i) => i.try_to_eid(),
             _ => None,
+        }
+    }
+
+    /// Harmonized Specificity Score.
+    ///
+    /// Returns `None` if the pattern violates monotonic constraints.
+    pub fn specificity_score(&self) -> Option<u32> {
+        match self {
+            EidPatternItem::IpnPatternItem(i) => i.specificity_score(),
+            #[cfg(feature = "dtn-pat-item")]
+            EidPatternItem::DtnPatternItem(i) => i.specificity_score(),
+            // Scheme-level wildcards score 0 (equivalent to ipn:** / dtn:**)
+            EidPatternItem::AnyNumericScheme(_) | EidPatternItem::AnyTextScheme(_) => Some(0),
         }
     }
 }

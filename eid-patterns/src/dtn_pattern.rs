@@ -77,6 +77,43 @@ impl DtnPatternItem {
         }
     }
 
+    /// Harmonized Specificity Score.
+    ///
+    /// Returns `None` for patterns with multiple wildcards in the authority
+    /// or non-leftmost authority wildcards.
+    pub fn specificity_score(&self) -> Option<u32> {
+        match self {
+            DtnPatternItem::None => Some(256),
+            DtnPatternItem::Any => Some(0),
+            DtnPatternItem::Exact(node_name, service_name) => {
+                Some(256 + node_name.len() as u32 + service_name.len() as u32)
+            }
+            DtnPatternItem::Glob(pattern) => {
+                let s = pattern.as_str();
+                let authority = s.split('/').next().unwrap_or(s);
+
+                // Single wildcard constraint: at most one '*' in authority
+                if authority.chars().filter(|&c| c == '*').count() > 1 {
+                    return None;
+                }
+
+                // Monotonic constraint: wildcard only in left-most label
+                if authority.contains('*') {
+                    let before_first_dot = authority.split('.').next().unwrap_or("");
+                    if !before_first_dot.contains('*') {
+                        return None; // wildcard not in leftmost label
+                    }
+                }
+
+                let literal_len = s
+                    .chars()
+                    .filter(|c| !matches!(c, '*' | '?' | '[' | ']'))
+                    .count() as u32;
+                Some(literal_len)
+            }
+        }
+    }
+
     pub(crate) fn new_glob(pattern: &str) -> Result<Self, Error> {
         Ok(Self::Glob(
             glob::Pattern::new(
