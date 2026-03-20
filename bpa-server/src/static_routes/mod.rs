@@ -1,5 +1,7 @@
 use super::*;
+use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::routes::Action;
+use hardy_bpa::routes::{RoutingAgent, RoutingSink};
 use hardy_eid_patterns as eid_patterns;
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
@@ -40,84 +42,99 @@ struct StaticRoute {
     action: Action,
 }
 
-#[derive(Clone)]
 pub struct StaticRoutes {
     routes_file: PathBuf,
     priority: u32,
     watch: bool,
-    protocol_id: String,
-    bpa: Arc<hardy_bpa::bpa::Bpa>,
-    routes: Vec<StaticRoute>,
+    sink: hardy_async::sync::spin::Once<Arc<dyn RoutingSink>>,
+    routes: Arc<std::sync::Mutex<Vec<StaticRoute>>>,
+    tasks: hardy_async::TaskPool,
 }
 
 impl StaticRoutes {
-    async fn init(mut self, tasks: &hardy_async::TaskPool) -> anyhow::Result<()> {
-        info!(
-            "Loading static routes from '{}'",
-            self.routes_file.display()
-        );
-
-        self.refresh_routes(false).await?;
-
-        if self.watch {
-            info!("Monitoring static routes file for changes");
-
-            // Set up file watcher
-            self.watch(tasks);
+    fn new(routes_file: PathBuf, priority: u32, watch: bool) -> Self {
+        Self {
+            routes_file,
+            priority,
+            watch,
+            sink: hardy_async::sync::spin::Once::new(),
+            routes: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tasks: hardy_async::TaskPool::new(),
         }
-
-        Ok(())
     }
 
-    async fn refresh_routes(&mut self, ignore_errors: bool) -> anyhow::Result<()> {
-        // Reload the routes
-        let mut new_routes =
-            parse::load_routes(&self.routes_file, ignore_errors, self.watch).await?;
+    async fn refresh_routes(&self, ignore_errors: bool) {
+        let sink = match self.sink.get() {
+            Some(sink) => sink,
+            None => return,
+        };
 
-        // Calculate routes to drop (present in current but missing or changed in new) and drop routes
-        for r in self
-            .routes
-            .extract_if(.., |r| !new_routes.iter().any(|r2| r == r2))
+        let new_routes =
+            match parse::load_routes(&self.routes_file, ignore_errors, self.watch).await {
+                Ok(routes) => routes,
+                Err(e) => {
+                    error!("Failed to load static routes: {e}");
+                    return;
+                }
+            };
+
+        // Compute diff under lock (no awaits while holding lock)
+        let (to_remove, to_add) = {
+            let routes = self.routes.lock().unwrap();
+            let to_remove: Vec<_> = routes
+                .iter()
+                .filter(|r| !new_routes.iter().any(|r2| *r == r2))
+                .cloned()
+                .collect();
+            let to_add: Vec<_> = new_routes
+                .into_iter()
+                .filter(|r| !routes.iter().any(|r2| r == r2))
+                .collect();
+            (to_remove, to_add)
+        };
+
+        // Apply removals (no lock held)
+        for r in &to_remove {
+            sink.remove_route(&r.pattern, &r.action, r.priority.unwrap_or(self.priority))
+                .await
+                .ok();
+        }
+
+        // Apply additions (no lock held)
+        for r in &to_add {
+            sink.add_route(
+                r.pattern.clone(),
+                r.action.clone(),
+                r.priority.unwrap_or(self.priority),
+            )
+            .await
+            .ok();
+        }
+
+        // Update internal state
         {
-            self.bpa
-                .remove_route(
-                    &self.protocol_id,
-                    &r.pattern,
-                    &r.action,
-                    r.priority.unwrap_or(self.priority),
-                )
-                .await;
+            let mut routes = self.routes.lock().unwrap();
+            routes.retain(|r| !to_remove.contains(r));
+            for r in to_add {
+                routes.push(r);
+            }
         }
-
-        // Calculate routes to add (present in new but missing in current)
-        new_routes.retain(|r| !self.routes.iter().any(|r2| r == r2));
-
-        // Add routes
-        for r in new_routes {
-            self.bpa
-                .add_route(
-                    self.protocol_id.clone(),
-                    r.pattern.clone(),
-                    r.action.clone(),
-                    r.priority.unwrap_or(self.priority),
-                )
-                .await;
-            self.routes.push(r);
-        }
-        Ok(())
     }
 
-    fn watch(&self, tasks: &hardy_async::TaskPool) {
+    fn start_watcher(&self) {
         let routes_dir = self
             .routes_file
             .parent()
             .trace_expect("Failed to get 'routes_file' parent directory!")
             .to_path_buf();
         let routes_file = self.routes_file.clone();
+        let priority = self.priority;
+        let sink = self.sink.get().unwrap().clone();
+        let routes = self.routes.clone();
+        let watch = self.watch;
+        let cancel_token = self.tasks.cancel_token().clone();
 
-        let mut self_cloned = self.clone();
-        let cancel_token = tasks.cancel_token().clone();
-        hardy_async::spawn!(tasks, "static_routes_watcher", async move {
+        hardy_async::spawn!(self.tasks, "static_routes_watcher", async move {
             let (tx, rx) = flume::unbounded();
             let mut debouncer = new_debouncer(
                 std::time::Duration::from_secs(1),
@@ -157,7 +174,7 @@ impl StaticRoutes {
                                 _ => false
                             } {
                                 info!("Reloading static routes from '{}' (event: {:?})", routes_file.display(), event.kind);
-                                self_cloned.refresh_routes(false).await.trace_expect("Failed to process static routes file");
+                                refresh_routes_inner(&routes_file, priority, &*sink, &routes, watch).await;
                             }
                         },
                     },
@@ -170,10 +187,89 @@ impl StaticRoutes {
     }
 }
 
+/// Standalone refresh function for use in the watcher task (avoids needing &self).
+async fn refresh_routes_inner(
+    routes_file: &PathBuf,
+    priority: u32,
+    sink: &dyn RoutingSink,
+    routes: &std::sync::Mutex<Vec<StaticRoute>>,
+    watch: bool,
+) {
+    let new_routes = match parse::load_routes(routes_file, true, watch).await {
+        Ok(routes) => routes,
+        Err(e) => {
+            error!("Failed to load static routes: {e}");
+            return;
+        }
+    };
+
+    let (to_remove, to_add) = {
+        let routes = routes.lock().unwrap();
+        let to_remove: Vec<_> = routes
+            .iter()
+            .filter(|r| !new_routes.iter().any(|r2| *r == r2))
+            .cloned()
+            .collect();
+        let to_add: Vec<_> = new_routes
+            .into_iter()
+            .filter(|r| !routes.iter().any(|r2| r == r2))
+            .collect();
+        (to_remove, to_add)
+    };
+
+    for r in &to_remove {
+        sink.remove_route(&r.pattern, &r.action, r.priority.unwrap_or(priority))
+            .await
+            .ok();
+    }
+
+    for r in &to_add {
+        sink.add_route(
+            r.pattern.clone(),
+            r.action.clone(),
+            r.priority.unwrap_or(priority),
+        )
+        .await
+        .ok();
+    }
+
+    {
+        let mut routes = routes.lock().unwrap();
+        routes.retain(|r| !to_remove.contains(r));
+        for r in to_add {
+            routes.push(r);
+        }
+    }
+}
+
+#[hardy_async::async_trait]
+impl RoutingAgent for StaticRoutes {
+    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[hardy_bpv7::eid::NodeId]) {
+        let sink: Arc<dyn RoutingSink> = sink.into();
+        self.sink.call_once(|| sink);
+
+        info!(
+            "Loading static routes from '{}'",
+            self.routes_file.display()
+        );
+
+        self.refresh_routes(false).await;
+
+        if self.watch {
+            info!("Monitoring static routes file for changes");
+            self.start_watcher();
+        }
+    }
+
+    async fn on_unregister(&self) {
+        self.tasks.shutdown().await;
+    }
+}
+
 pub async fn init(
     config: &Config,
-    bpa: &Arc<hardy_bpa::bpa::Bpa>,
-    tasks: &hardy_async::TaskPool,
+    bpa: &dyn BpaRegistration,
+    _tasks: &hardy_async::TaskPool,
 ) -> anyhow::Result<()> {
     // Ensure it's absolute
     let routes_file = std::env::current_dir()
@@ -194,14 +290,15 @@ pub async fn init(
         }
     };
 
-    StaticRoutes {
-        priority: config.priority,
-        protocol_id: config.protocol_id.clone(),
+    let agent = Arc::new(StaticRoutes::new(
         routes_file,
-        watch: config.watch,
-        bpa: bpa.clone(),
-        routes: Vec::new(),
-    }
-    .init(tasks)
-    .await
+        config.priority,
+        config.watch,
+    ));
+
+    bpa.register_routing_agent(config.protocol_id.clone(), agent)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register static routes agent: {e}"))?;
+
+    Ok(())
 }

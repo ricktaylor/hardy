@@ -115,7 +115,7 @@ impl Drop for Sink {
 }
 
 pub(crate) struct Registry {
-    node_ids: Vec<NodeId>,
+    node_ids: Arc<node_ids::NodeIds>,
     // sync::spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
     clas: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Cla>>>,
     rib: Arc<rib::Rib>,
@@ -127,7 +127,7 @@ pub(crate) struct Registry {
 
 impl Registry {
     pub fn new(
-        node_ids: Vec<NodeId>,
+        node_ids: Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
         rib: Arc<rib::Rib>,
         store: Arc<storage::Store>,
@@ -188,6 +188,8 @@ impl Registry {
             self.rib.add_address_type(address_type, cla.clone());
         }
 
+        let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+
         cla.cla
             .on_register(
                 Box::new(Sink {
@@ -195,11 +197,11 @@ impl Registry {
                     registry: self.clone(),
                     dispatcher: dispatcher.clone(),
                 }),
-                &self.node_ids,
+                &node_ids,
             )
             .await;
 
-        Ok(self.node_ids.clone())
+        Ok(node_ids)
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {

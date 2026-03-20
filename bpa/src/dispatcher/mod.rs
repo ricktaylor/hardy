@@ -24,7 +24,7 @@ pub(crate) struct Dispatcher {
 
     // Config options
     status_reports: bool,
-    node_ids: node_ids::NodeIds,
+    node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
 }
 
@@ -34,7 +34,7 @@ impl Dispatcher {
         status_reports: bool,
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
-        node_ids: node_ids::NodeIds,
+        node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
         cla_registry: Arc<cla::registry::Registry>,
         rib: Arc<rib::Rib>,
@@ -61,7 +61,7 @@ impl Dispatcher {
         status_reports: bool,
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
-        node_ids: node_ids::NodeIds,
+        node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
         cla_registry: Arc<cla::registry::Registry>,
         rib: Arc<rib::Rib>,

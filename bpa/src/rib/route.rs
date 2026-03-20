@@ -135,6 +135,49 @@ impl Rib {
         true
     }
 
+    pub async fn remove_by_source(&self, source: &str) {
+        let vias = {
+            let mut inner = self.inner.write();
+            let mut vias = HashSet::new();
+
+            inner.routes.retain(|_priority, patterns| {
+                patterns.retain(|_pattern, actions| {
+                    actions.retain(|entry| {
+                        if entry.source == source {
+                            if let routes::Action::Via(to) = &entry.action {
+                                vias.insert(to.clone());
+                            }
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    !actions.is_empty()
+                });
+                !patterns.is_empty()
+            });
+            vias
+        };
+
+        if vias.is_empty() {
+            return;
+        }
+
+        debug!("Removed all routes from source '{source}'");
+
+        let mut changed = false;
+        for v in vias {
+            if let Some(peers) = self.find_peers(&v)
+                && self.reset_peer_queues(peers).await
+            {
+                changed = true;
+            }
+        }
+        if changed {
+            self.notify_updated().await;
+        }
+    }
+
     async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
         let mut updated = false;
         for p in peers {

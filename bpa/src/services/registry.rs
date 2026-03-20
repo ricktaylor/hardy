@@ -177,7 +177,7 @@ impl Drop for Sink {
 }
 
 pub(crate) struct Registry {
-    node_ids: node_ids::NodeIds,
+    node_ids: Arc<node_ids::NodeIds>,
     rib: Arc<rib::Rib>,
     // sync::spin::Mutex for O(1) service HashMap operations
     services: hardy_async::sync::spin::Mutex<HashMap<Eid, Arc<Service>>>,
@@ -185,7 +185,7 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub fn new(node_ids: node_ids::NodeIds, rib: Arc<rib::Rib>) -> Self {
+    pub fn new(node_ids: Arc<node_ids::NodeIds>, rib: Arc<rib::Rib>) -> Self {
         Self {
             node_ids,
             rib,
