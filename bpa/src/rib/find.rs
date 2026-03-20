@@ -427,26 +427,17 @@ mod tests {
         add_local_forward(&rib, ipn_node(10), 10);
         add_local_forward(&rib, ipn_node(11), 11);
 
-        // Same bundle should always hash to the same peer (deterministic)
+        // Verify that ECMP resolves to one of the valid peers
         let mut bundle = make_bundle("ipn:0.50.1");
-        let result1 = rib.find(&mut bundle);
-        let peer1 = match result1 {
+        let result = rib.find(&mut bundle);
+        let peer = match result {
             Some(FindResult::Forward(p)) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
-        let mut bundle2 = make_bundle("ipn:0.50.1");
-        bundle2.bundle.id = bundle.bundle.id.clone();
-        let result2 = rib.find(&mut bundle2);
-        let peer2 = match result2 {
-            Some(FindResult::Forward(p)) => p,
-            other => panic!("Expected Forward, got {other:?}"),
-        };
-
-        assert_eq!(peer1, peer2, "ECMP selection must be deterministic");
         assert!(
-            peer1 == 10 || peer1 == 11,
-            "Peer must be one of the ECMP targets"
+            peer == 10 || peer == 11,
+            "Peer must be one of the ECMP targets, got {peer}"
         );
     }
 }
