@@ -90,6 +90,31 @@ impl IpnPatternItem {
             service_number: self.service_number.try_to_eid()?,
         })
     }
+
+    /// Harmonized Specificity Score.
+    ///
+    /// Returns `None` if the pattern violates monotonic constraints:
+    /// each component in the hierarchy (Allocator → Node → Service) must be
+    /// at least as broad as the next — if a component is not exact, the
+    /// following component must be a wildcard.
+    pub fn specificity_score(&self) -> Option<u32> {
+        // Monotonic constraint: if allocator is not exact, node must be wildcard
+        if !self.allocator_id.is_exact() && !matches!(self.node_number, IpnPattern::Wildcard) {
+            return None;
+        }
+        // Monotonic constraint: if node is not exact, service must be wildcard
+        if !self.node_number.is_exact() && !matches!(self.service_number, IpnPattern::Wildcard) {
+            return None;
+        }
+
+        let is_exact = self.allocator_id.is_exact()
+            && self.node_number.is_exact()
+            && self.service_number.is_exact();
+        let literal_bits = self.allocator_id.literal_bits()
+            + self.node_number.literal_bits()
+            + self.service_number.literal_bits();
+        Some((if is_exact { 256 } else { 0 }) + literal_bits)
+    }
 }
 
 impl core::fmt::Display for IpnPatternItem {
@@ -140,6 +165,32 @@ impl IpnPattern {
         match self {
             IpnPattern::Range(r) if r.len() == 1 => r[0].try_to_u32(),
             _ => None,
+        }
+    }
+
+    /// True if this component is a single specific value.
+    pub(crate) fn is_exact(&self) -> bool {
+        matches!(self, IpnPattern::Range(r) if r.len() == 1 && matches!(r[0], IpnInterval::Number(_)))
+    }
+
+    /// Effective bit depth for specificity scoring.
+    /// Specific value = 32, Wildcard = 0, Range = 32 - ceil(log2(count)).
+    ///
+    /// All three IPN components (Allocator, Node, Service Number) use a
+    /// 32-bit address space. RFC 9758 reserves Service Numbers >= 2^32
+    /// for future expansion.
+    pub(crate) fn literal_bits(&self) -> u32 {
+        match self {
+            IpnPattern::Wildcard => 0,
+            IpnPattern::Range(intervals) => {
+                let total_count: u64 = intervals.iter().map(|i| i.count()).sum();
+                if total_count <= 1 {
+                    32
+                } else {
+                    let log2_ceil = u64::BITS - (total_count - 1).leading_zeros();
+                    32u32.saturating_sub(log2_ceil)
+                }
+            }
         }
     }
 }
@@ -231,6 +282,14 @@ impl IpnInterval {
         match self {
             IpnInterval::Number(n) => Some(*n),
             IpnInterval::Range(_) => None,
+        }
+    }
+
+    /// Number of values covered by this interval.
+    fn count(&self) -> u64 {
+        match self {
+            IpnInterval::Number(_) => 1,
+            IpnInterval::Range(r) => (*r.end() as u64) - (*r.start() as u64) + 1,
         }
     }
 }
