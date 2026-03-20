@@ -33,6 +33,10 @@ pub struct Rib {
     // Routing agent tracking: spin::Mutex for O(1) HashMap operations
     agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<agent::Agent>>>,
     node_ids: Arc<node_ids::NodeIds>,
+    // Fixed per-instance seed for deterministic ECMP peer selection.
+    // Random across BPA instances (unpredictable), but consistent within
+    // an instance so the same bundle always selects the same peer.
+    ecmp_hash_state: foldhash::quality::RandomState,
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
     store: Arc<storage::Store>,
@@ -48,6 +52,7 @@ impl Rib {
             }),
             agents: Default::default(),
             node_ids,
+            ecmp_hash_state: foldhash::quality::RandomState::default(),
             tasks: hardy_async::TaskPool::new(),
             poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
             store,
