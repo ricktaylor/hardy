@@ -380,6 +380,31 @@ fn score(s: &str) -> Option<u32> {
         .specificity_score()
 }
 
+#[test]
+fn test_specificity_ordering() {
+    use alloc::collections::BTreeSet;
+
+    let exact: EidPattern = "ipn:100.1.5".parse().unwrap(); // score 352
+    let svc_wild: EidPattern = "ipn:100.1.*".parse().unwrap(); // score 64
+    let node_wild: EidPattern = "ipn:100.*.*".parse().unwrap(); // score 32
+    let any: EidPattern = "*:**".parse().unwrap(); // score 0
+
+    // Higher score = Less (comes first)
+    assert!(exact < svc_wild);
+    assert!(svc_wild < node_wild);
+    assert!(node_wild < any);
+
+    // BTreeSet iteration = most specific first
+    let mut set = BTreeSet::new();
+    set.insert(any.clone());
+    set.insert(node_wild.clone());
+    set.insert(exact.clone());
+    set.insert(svc_wild.clone());
+
+    let ordered: Vec<_> = set.into_iter().collect();
+    assert_eq!(ordered, vec![exact, svc_wild, node_wild, any]);
+}
+
 /// Helper to parse pattern and check subset relationship
 fn is_subset(lhs: &str, rhs: &str) -> bool {
     let lhs_pattern: EidPattern = lhs.parse().expect("Failed to parse lhs");

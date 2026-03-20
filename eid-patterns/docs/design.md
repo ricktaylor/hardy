@@ -48,6 +48,16 @@ Consider an administrative policy that allows a user to route bundles matching `
 
 For interval-based IPN patterns, subset checking verifies that every interval in the candidate pattern is contained within some interval in the reference pattern. This is more complex than simple equality but enables flexible policy delegation.
 
+## Specificity Scoring
+
+The library provides a Harmonized Specificity Score for route selection, following the formula defined in the DTN Peering Protocol specification. The score allows integer-based `ipn` patterns and string-based `dtn` patterns to coexist in a single routing decision.
+
+The score `(IsExact × 256) + LiteralLength` produces a `u32` where exact patterns always outrank wildcard patterns, and within each class, patterns with more literal content rank higher. For IPN patterns, each 32-bit component (allocator, node, service) contributes its effective bit depth. For DTN patterns, all non-wildcard characters across authority and service path are counted.
+
+Patterns violating strict monotonic constraints (e.g., specific child under wildcard parent) return `None` from `specificity_score()`. These are valid for matching but cannot be ranked in the specificity hierarchy.
+
+`EidPattern` implements `Ord` using specificity score as the primary sort key (descending), so `BTreeMap<EidPattern, _>` iterates from most-specific to least-specific. This enables first-match-wins routing with correct longest-prefix semantics.
+
 ## Parser Design
 
 The pattern syntax is parsed using winnow, a parser combinator library. Parser combinators build complex parsers by composing smaller parsers - conceptually similar to building regex patterns from smaller pieces, but with the full power of a programming language for the composition logic.
