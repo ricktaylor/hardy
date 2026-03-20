@@ -5,9 +5,16 @@ use core::hash::BuildHasher;
 enum InternalFindResult<'a> {
     AdminEndpoint,
     Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(HashMap<u32, &'a Eid>),                    // peer -> next_hop mapping
+    Forward(Vec<(u32, &'a Eid)>),                      // sorted peer -> next_hop pairs
     Drop(Option<ReasonCode>),                          // Drop with reason code
     Reflect,                                           // Reflect
+}
+
+/// Insert into a sorted vec, maintaining sort order by peer id. Skips duplicates.
+fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
+    if let Err(idx) = peers.binary_search_by_key(&peer, |&(p, _)| p) {
+        peers.insert(idx, (peer, next_hop));
+    }
 }
 
 impl Rib {
@@ -63,9 +70,8 @@ impl Rib {
         match result {
             InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
             InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
-            InternalFindResult::Forward(peer_map) => {
-                let peers: Vec<_> = peer_map.iter().collect();
-                Some(FindResult::Forward(*peers.first().unwrap().0))
+            InternalFindResult::Forward(peers) => {
+                Some(FindResult::Forward(peers.first().unwrap().0))
             }
             InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
             InternalFindResult::Reflect => {
@@ -82,10 +88,10 @@ impl Rib {
         // TODO: this is should be for *all* tables
         let table = &inner.routes;
 
-        if let Some(InternalFindResult::Forward(peer_map)) =
+        if let Some(InternalFindResult::Forward(peers)) =
             find_recurse(&inner, table, to, false, &mut HashSet::new())
         {
-            Some(peer_map.into_keys().collect())
+            Some(peers.into_iter().map(|(peer, _)| peer).collect())
         } else {
             None
         }
@@ -102,9 +108,8 @@ fn map_result(
         InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
         InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
         InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
-        InternalFindResult::Forward(peer_map) => {
-            let peers: Vec<_> = peer_map.iter().collect();
-            let &(&peer, &next_hop) = if peers.len() > 1 {
+        InternalFindResult::Forward(peers) => {
+            let &(peer, next_hop) = if peers.len() > 1 {
                 peers
                     .get(
                         (ecmp_hash_state.hash_one((
@@ -131,7 +136,7 @@ fn map_result(
 
 #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
 fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
-    let mut peer_map: Option<HashMap<u32, &'a Eid>> = None;
+    let mut peers: Option<Vec<(u32, &'a Eid)>> = None;
 
     // Iterate through all local patterns and find matches
     for (pattern, actions) in &inner.locals.actions {
@@ -148,10 +153,10 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
                     }
                     local::Action::Forward(peer) => {
                         // The 'to' Eid is the next-hop for all peers found here
-                        if let Some(peer_map) = &mut peer_map {
-                            peer_map.insert(*peer, to);
+                        if let Some(peers) = &mut peers {
+                            sorted_insert(peers, *peer, to);
                         } else {
-                            peer_map = Some([(*peer, to)].into());
+                            peers = Some(vec![(*peer, to)]);
                         }
                     }
                 }
@@ -159,11 +164,11 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
         }
     }
 
-    if let Some(ref map) = peer_map {
+    if let Some(ref peers) = peers {
         debug!(
             "Forward to CLA peer{} {}",
-            if map.len() == 1 { "" } else { "s:" },
-            map.iter().fold(String::new(), |acc, (k, v)| {
+            if peers.len() == 1 { "" } else { "s:" },
+            peers.iter().fold(String::new(), |acc, (k, v)| {
                 if acc.is_empty() {
                     format!("{k} ({v})")
                 } else {
@@ -174,7 +179,7 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
     } else {
         debug!("No CLA peers found");
     }
-    peer_map.map(InternalFindResult::Forward)
+    peers.map(InternalFindResult::Forward)
 }
 
 #[cfg_attr(feature = "tracing", instrument(skip(inner, table, to, trail),fields(to = %to)))]
@@ -223,20 +228,24 @@ fn find_recurse<'a>(
                             trail.remove(to);
 
                             if let Some(sub_result) = sub_result {
-                                let InternalFindResult::Forward(sub_peer_map) = sub_result else {
+                                let InternalFindResult::Forward(sub_peers) = sub_result else {
                                     // If we find a non-forward, then get out
                                     return Some(sub_result);
                                 };
 
                                 // The 'via' Eid is the next-hop for all peers found through this path
-                                let sub_peers_with_via: HashMap<u32, &'a Eid> =
-                                    sub_peer_map.into_keys().map(|peer| (peer, via)).collect();
-
-                                // Append peers to the running map
-                                if let Some(InternalFindResult::Forward(peer_map)) = &mut result {
-                                    peer_map.extend(sub_peers_with_via);
+                                // Append peers to the running vec, maintaining sort order
+                                if let Some(InternalFindResult::Forward(peers)) = &mut result {
+                                    for (peer, _) in sub_peers {
+                                        sorted_insert(peers, peer, via);
+                                    }
                                 } else {
-                                    result = Some(InternalFindResult::Forward(sub_peers_with_via));
+                                    let mut peers: Vec<(u32, &'a Eid)> = sub_peers
+                                        .into_iter()
+                                        .map(|(peer, _)| (peer, via))
+                                        .collect();
+                                    peers.sort_unstable_by_key(|&(peer, _)| peer);
+                                    result = Some(InternalFindResult::Forward(peers));
                                 }
                             } else {
                                 // TODO: Kick off a resolver lookup for `via`
@@ -427,17 +436,26 @@ mod tests {
         add_local_forward(&rib, ipn_node(10), 10);
         add_local_forward(&rib, ipn_node(11), 11);
 
-        // Verify that ECMP resolves to one of the valid peers
+        // Same bundle should always hash to the same peer (deterministic)
         let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
-        let peer = match result {
+        let result1 = rib.find(&mut bundle);
+        let peer1 = match result1 {
             Some(FindResult::Forward(p)) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
+        let mut bundle2 = make_bundle("ipn:0.50.1");
+        bundle2.bundle.id = bundle.bundle.id.clone();
+        let result2 = rib.find(&mut bundle2);
+        let peer2 = match result2 {
+            Some(FindResult::Forward(p)) => p,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+
+        assert_eq!(peer1, peer2, "ECMP selection must be deterministic");
         assert!(
-            peer == 10 || peer == 11,
-            "Peer must be one of the ECMP targets, got {peer}"
+            peer1 == 10 || peer1 == 11,
+            "Peer must be one of the ECMP targets, got {peer1}"
         );
     }
 }
