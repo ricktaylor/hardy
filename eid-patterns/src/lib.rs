@@ -30,13 +30,36 @@ pub enum Error {
     NotExact,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "String"))]
 #[cfg_attr(feature = "serde", serde(try_from = "Cow<'_,str>"))]
 pub enum EidPattern {
     Any,
     Set(Box<[EidPatternItem]>),
+}
+
+impl PartialOrd for EidPattern {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for EidPattern {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        // Higher specificity score = Less (most specific patterns first in BTreeMap)
+        let self_score = self.specificity_score().unwrap_or(0);
+        let other_score = other.specificity_score().unwrap_or(0);
+        other_score.cmp(&self_score).then_with(|| {
+            // Structural tiebreaker for equal scores
+            match (self, other) {
+                (EidPattern::Any, EidPattern::Any) => core::cmp::Ordering::Equal,
+                (EidPattern::Any, EidPattern::Set(_)) => core::cmp::Ordering::Less,
+                (EidPattern::Set(_), EidPattern::Any) => core::cmp::Ordering::Greater,
+                (EidPattern::Set(a), EidPattern::Set(b)) => a.cmp(b),
+            }
+        })
+    }
 }
 
 impl EidPattern {

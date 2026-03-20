@@ -70,7 +70,7 @@ There is no separate FIB. Instead, forwarding decisions are recorded in bundle m
 
 ### Data Structures
 
-The RIB contains a local endpoint table and a pattern-based route table. The route table uses a three-level nested structure: `BTreeMap<priority, BTreeMap<EidPattern, BTreeSet<Entry>>>`. Lower priority numbers are checked first. Within a priority level, patterns are matched in order.
+The RIB contains a local endpoint table and a pattern-based route table. The route table uses a three-level nested structure: `BTreeMap<priority, BTreeMap<EidPattern, BTreeSet<Entry>>>`. Lower priority numbers are checked first. Within a priority level, patterns are ordered by specificity score (most specific first), so the first matching pattern is always the best match.
 
 Each route entry contains an action (Drop, Reflect, or Via) and a source identifier for debugging (e.g., "static_routes", "control").
 
@@ -82,7 +82,7 @@ Each route entry contains an action (Drop, Reflect, or Via) and a source identif
 | `Reflect` | Return to sender (previous node or source) |
 | `Via(Eid)` | Forward toward the specified EID (recursive lookup) |
 
-When multiple entries match at the same priority, precedence is: Drop > Reflect > Via.
+When multiple entries exist under the same pattern, precedence is: Drop > Reflect > Via. Across patterns at the same priority, the most specific matching pattern takes precedence (highest specificity score wins).
 
 ### Local Table
 
@@ -144,7 +144,8 @@ Local table: NodeId → Forward(peer_id)
 
 2. **Search route table by priority**
    - Iterate priorities low to high
-   - For each priority, match patterns against destination
+   - Within each priority, patterns are ordered by specificity score (descending)
+   - The first matching pattern is the most specific match
    - Stop at first match
 
 3. **Handle Via(eid) recursively**
@@ -155,6 +156,21 @@ Local table: NodeId → Forward(peer_id)
 4. **ECMP selection** (if multiple peers)
    - Hash of: bundle source + destination + flow_label
    - Uses a per-instance `RandomState` (seeded once at RIB creation) for deterministic peer selection within a BPA instance
+
+### Specificity Scoring
+
+EID patterns have a Harmonized Specificity Score (see `eid-patterns` crate) that determines pattern ordering within a priority level. The score follows the formula `(IsExact × 256) + LiteralLength`, where IsExact is 1 if the pattern contains no wildcards, and LiteralLength measures the information content (bit depth for IPN, character count for DTN).
+
+This gives a two-axis route selection model analogous to IP routing:
+
+| Axis | Mechanism | Analogy |
+|------|-----------|---------|
+| **Primary** | Priority (lower = checked first) | Administrative distance |
+| **Secondary** | Specificity score (higher = preferred) | Longest prefix match |
+
+Priority provides inter-agent ordering (static routes vs DPP vs SAND). Specificity provides intra-priority ordering (more specific patterns win). An operator's explicit `Drop` at a low priority number overrides all learned routes regardless of specificity — a feature not available in IP routing without policy routing.
+
+Patterns with non-monotonic structure (e.g., union sets) receive a specificity score of 0, sorting them with the broadest patterns.
 
 ### FindResult
 
