@@ -42,20 +42,25 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 *Objective: Verify the route lookup algorithms (Static & default routes).*
 
-| Test Scenario | Description | Source File | Input | Expected Output |
-| ----- | ----- | ----- | ----- | ----- |
-| **Exact Match** | Lookup exact EID match. | `src/rib/find.rs` | Table: `ipn:1.1->CLA1`<br>Input: `ipn:1.1` | Result: `CLA1` |
-| **Longest Prefix** | Lookup with overlapping routes. | `src/rib/find.rs` | Table: `ipn:2.*->CLA1`, `ipn:2.1->CLA2`<br>Input: `ipn:2.1` | Result: `CLA2` (Specific wins) |
-| **Default Route** | Lookup with no match but default set. | `src/rib/find.rs` | Table: `default->CLA3`<br>Input: `ipn:99.99` | Result: `CLA3` |
-| **ECMP Hashing** | Verify deterministic peer selection (REQ-6.1.10). | `src/rib/find.rs` | Route: `ipn:3.1 -> {CLA1, CLA2}`<br>Input: `Bundle(Flow=1)` vs `Bundle(Flow=2)` | Result: Deterministic selection (Same flow->Same CLA). |
-| **Recursion Loop** | Verify detection of routing loops. | `src/rib/find.rs` | Route: `ipn:4.1 -> Via ipn:4.2`<br>`ipn:4.2 -> Via ipn:4.1` | Result: `Drop(NoKnownRoute)` |
-| **Reflection** | Verify routing to previous node (REQ-6.1.8). | `src/rib/find.rs` | Route: `ipn:5.1 -> Reflect`<br>Input: `Bundle(Prev=ipn:9.9)` | Result: Route lookup for `ipn:9.9`. |
-| **Local Ephemeral** | Verify drop for known-local but unregistered service. | `src/rib/local.rs` | Config: `NodeId=ipn:1.0`<br>Input: `ipn:1.99` (Unregistered) | Result: `Drop(DestUnavailable)` |
-| **Action Precedence** | Verify Drop takes precedence over Via. | `src/rib/route.rs` | Route: `ipn:6.1 -> {Drop, Via X}` | Result: `Drop`. |
-| **Local Action Sort** | Verify `Ord` impl for `local::Action`. | `src/rib/local.rs` | Input: `[Forward, Admin, Local]` | Result: `[Admin, Local, Forward]` |
-| **Route Entry Sort** | Verify `Ord` impl for `route::Entry`. | `src/rib/route.rs` | Input: `[Via, Drop, Reflect]` | Result: `[Drop, Reflect, Via]` |
-| **Implicit Routes** | Verify default routes created on startup. | `src/rib/local.rs` | Config: `NodeId=ipn:1.1` | Result: `Rib` contains `ipn:1.1 -> AdminEndpoint`. |
-| **Impacted Subsets** | Verify `Rib::add` detects affected sub-routes. | `src/rib/mod.rs` | 1. Add `ipn:1.1 -> Via A`<br>2. Add `ipn:1.* -> Via B` | Result: `ipn:1.1` identified as impacted/reset. |
+All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic peer selection.
+
+| Test Scenario | Description | Source File | Status |
+| ----- | ----- | ----- | ----- |
+| **Exact Match** | Lookup exact EID match via local forward. | `src/rib/find.rs` | Done |
+| **Default Route** | Catch-all `*:**` Via route resolves unknown destinations. | `src/rib/find.rs` | Done |
+| **No Route** | No routes installed — returns None (wait for route). | `src/rib/find.rs` | Done |
+| **ECMP Hashing** | Deterministic peer selection across lookups (REQ-6.1.10). | `src/rib/find.rs` | Done |
+| **Recursion Loop** | Circular Via routes detected → Drop(NoKnownRoute). | `src/rib/find.rs` | Done |
+| **Reflection** | Reflect route sends bundle back via previous node's peer (REQ-6.1.8). | `src/rib/find.rs` | Done |
+| **No Double Reflect** | Both destination and previous-hop reflect → None. | `src/rib/find.rs` | Done |
+| **Local Ephemeral** | Known-local EID with no service → Drop(DestUnavailable). | `src/rib/local.rs` | Done |
+| **Action Precedence** | Verify Drop < Reflect < Via ordering. | `src/rib/route.rs` | Done |
+| **Local Action Sort** | Verify `Ord` impl for `local::Action`. | `src/rib/local.rs` | Done |
+| **Route Entry Sort** | Verify `Ord` impl for `route::Entry` in BTreeSet. | `src/rib/route.rs` | Done |
+| **Entry Source Tiebreak** | Same action, different source — sorted alphabetically. | `src/rib/route.rs` | Done |
+| **Entry Dedup** | Duplicate entries rejected by BTreeSet. | `src/rib/route.rs` | Done |
+| **Implicit Routes** | Verify default routes created on startup. | `src/rib/local.rs` | Done |
+| **Impacted Subsets** | Verify `Rib::add` inserts routes at correct priority. | `src/rib/mod.rs` | Done |
 
 *(Note: Expiry/Time math is explicitly excluded here as it is verified in `hardy-bpv7`)*
 

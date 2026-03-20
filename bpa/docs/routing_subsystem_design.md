@@ -11,7 +11,7 @@ This document describes the routing infrastructure in the Bundle Protocol Agent 
 
 ## Overview
 
-The BPA routing system consists of three interconnected components:
+The BPA routing system consists of three interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `RoutingAgent` / `RoutingSink` trait pair (see `bpa/src/routes.rs`):
 
 | Component | Purpose | Key Structure |
 |-----------|---------|---------------|
@@ -28,15 +28,15 @@ There is no separate FIB. Instead, forwarding decisions are recorded in bundle m
                           │                    RIB                      │
                           │                                             │
 ┌──────────────────┐      │  ┌────────────────┐    ┌─────────────────┐  │
-│  Route Sources   │      │  │  Local Table   │    │   Route Table   │  │
-│                  │      │  │                │    │                 │  │
-│  - static_routes │─────►│  │ Eid → Actions  │    │ Priority →      │  │
-│  - control plane │      │  │                │    │   Pattern →     │  │
-│  - CLA peers     │      │  │ - AdminEndpoint│    │     Actions     │  │
-└──────────────────┘      │  │ - Local(svc)   │    │                 │  │
-                          │  │ - Forward(peer)│    │ - Drop          │  │
-                          │  └────────────────┘    │ - Reflect       │  │
-                          │          │             │ - Via(Eid)      │  │
+│ Routing Agents   │      │  │  Local Table   │    │   Route Table   │  │
+│ (RoutingAgent    │      │  │                │    │                 │  │
+│  trait + Sink)   │─────►│  │ Eid → Actions  │    │ Priority →      │  │
+│                  │      │  │                │    │   Pattern →     │  │
+│  - StaticRoutes  │      │  │ - AdminEndpoint│    │     Actions     │  │
+│  - SAND (future) │      │  │ - Local(svc)   │    │                 │  │
+│  - CLA peers     │      │  │ - Forward(peer)│    │ - Drop          │  │
+└──────────────────┘      │  │                │    │ - Reflect       │  │
+                          │  └────────────────┘    │ - Via(Eid)      │  │
                           │          │             └─────────────────┘  │
                           │          │                     │            │
                           │          └──────────┬──────────┘            │
@@ -154,7 +154,7 @@ Local table: NodeId → Forward(peer_id)
 
 4. **ECMP selection** (if multiple peers)
    - Hash of: bundle source + destination + flow_label
-   - Deterministic peer selection
+   - Uses a per-instance `RandomState` (seeded once at RIB creation) for deterministic peer selection within a BPA instance
 
 ### FindResult
 
@@ -288,6 +288,43 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
    Success: delete bundle, send forwarded report
    Failure: reset_peer_queue(5), bundle → Waiting
 ```
+
+## Routing Agent API
+
+External routing protocols interact with the RIB through the `RoutingAgent` / `RoutingSink` trait pair defined in `bpa/src/routes.rs`. This follows the same bidirectional Sink pattern used by CLAs and Services.
+
+### Trait Overview
+
+| Trait | Direction | Methods |
+|-------|-----------|---------|
+| `RoutingAgent` | BPA → Agent | `on_register(sink, node_ids)`, `on_unregister()` |
+| `RoutingSink` | Agent → BPA | `add_route(pattern, action, priority)`, `remove_route(...)`, `unregister()` |
+
+The Sink automatically injects the agent's registered name as the route `source`, so each agent can only manage its own routes. When the Sink is dropped, the BPA removes all routes from that agent.
+
+### Registration Flow
+
+```
+Agent                         BPA
+  │                            │
+  │  register_routing_agent()  │
+  │ ──────────────────────────►│
+  │                            │ create Agent + Sink
+  │  on_register(sink, ids)    │
+  │ ◄──────────────────────────│
+  │                            │
+  │  sink.add_route(...)       │
+  │ ──────────────────────────►│ RIB::add()
+  │                            │
+```
+
+### Built-in Agents
+
+- **`StaticRoutingAgent`** — installs a fixed set of routes on registration. Used by `bpa-server/static_routes` and the `ping` tool.
+
+### gRPC Support
+
+Remote routing agents connect via `routing.proto` (bidirectional streaming), with server and client implementations in `proto/src/server/routing.rs` and `proto/src/client/routing.rs`.
 
 ## Synchronization
 
