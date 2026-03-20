@@ -27,7 +27,12 @@ impl Rib {
         )?;
         if !matches!(result, InternalFindResult::Reflect) {
             // Drop the mutex before the mapping
-            return map_result(result, &bundle.bundle, &mut bundle.metadata);
+            return map_result(
+                result,
+                &self.ecmp_hash_state,
+                &bundle.bundle,
+                &mut bundle.metadata,
+            );
         };
 
         // Reflect: return the bundle via the previous forwarding node,
@@ -41,7 +46,12 @@ impl Rib {
             // Ignore double reflection
             None
         } else {
-            map_result(result, &bundle.bundle, &mut bundle.metadata)
+            map_result(
+                result,
+                &self.ecmp_hash_state,
+                &bundle.bundle,
+                &mut bundle.metadata,
+            )
         }
     }
 
@@ -84,6 +94,7 @@ impl Rib {
 
 fn map_result(
     result: InternalFindResult,
+    ecmp_hash_state: &foldhash::quality::RandomState,
     bundle: &hardy_bpv7::bundle::Bundle,
     metadata: &mut metadata::BundleMetadata,
 ) -> Option<FindResult> {
@@ -96,7 +107,7 @@ fn map_result(
             let &(&peer, &next_hop) = if peers.len() > 1 {
                 peers
                     .get(
-                        (foldhash::quality::RandomState::default().hash_one((
+                        (ecmp_hash_state.hash_one((
                             &bundle.id.source,
                             &bundle.destination,
                             &metadata.writable.flow_label,
