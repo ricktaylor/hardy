@@ -191,17 +191,62 @@ impl Rib {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
-    // // TODO: Implement test for 'Action Precedence' (Verify Drop takes precedence over Via)
-    // #[test]
-    // fn test_action_precedence() {
-    //     todo!("Verify Drop takes precedence over Via");
-    // }
+    fn entry(action: routes::Action, source: &str) -> Entry {
+        Entry {
+            action,
+            source: source.to_string(),
+        }
+    }
 
-    // // TODO: Implement test for 'Route Entry Sort' (Verify Ord impl for route::Entry)
-    // #[test]
-    // fn test_route_entry_sort() {
-    //     todo!("Verify Ord impl for route::Entry");
-    // }
+    #[test]
+    fn test_action_precedence() {
+        // Drop < Reflect < Via in ordering
+        let drop_entry = entry(routes::Action::Drop(None), "a");
+        let reflect_entry = entry(routes::Action::Reflect, "a");
+        let via_entry = entry(routes::Action::Via("ipn:1.0".parse().unwrap()), "a");
+
+        assert!(drop_entry < reflect_entry);
+        assert!(reflect_entry < via_entry);
+        assert!(drop_entry < via_entry);
+    }
+
+    #[test]
+    fn test_route_entry_sort() {
+        let mut set = BTreeSet::new();
+
+        let via2 = entry(routes::Action::Via("ipn:2.0".parse().unwrap()), "src1");
+        let via1 = entry(routes::Action::Via("ipn:1.0".parse().unwrap()), "src1");
+        let drop_none = entry(routes::Action::Drop(None), "src1");
+        let reflect = entry(routes::Action::Reflect, "src1");
+
+        set.insert(via2);
+        set.insert(via1);
+        set.insert(drop_none);
+        set.insert(reflect);
+
+        let sorted: Vec<_> = set.into_iter().collect();
+        assert!(matches!(sorted[0].action, routes::Action::Drop(_)));
+        assert!(matches!(sorted[1].action, routes::Action::Reflect));
+        assert!(matches!(sorted[2].action, routes::Action::Via(_)));
+        assert!(matches!(sorted[3].action, routes::Action::Via(_)));
+    }
+
+    #[test]
+    fn test_entry_source_tiebreak() {
+        // Same action, different source — sorted by source name
+        let a = entry(routes::Action::Reflect, "alpha");
+        let b = entry(routes::Action::Reflect, "beta");
+        assert!(a < b);
+    }
+
+    #[test]
+    fn test_entry_dedup() {
+        let mut set = BTreeSet::new();
+        let e1 = entry(routes::Action::Reflect, "src");
+        let e2 = entry(routes::Action::Reflect, "src");
+        assert!(set.insert(e1));
+        assert!(!set.insert(e2)); // duplicate
+    }
 }
