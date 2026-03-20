@@ -11,7 +11,7 @@ use crate::filters::registry::Registry as FilterRegistry;
 use crate::filters::{self, Filter, Hook};
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
-use crate::routes::Action;
+use crate::routes::{self, RoutingAgent};
 use crate::services::Service;
 use crate::services::registry::Registry as ServiceRegistry;
 use crate::storage::Store;
@@ -109,6 +109,17 @@ use crate::{Arc, services};
 /// - `add_peer()` / `remove_peer()` - Manage peer connections (keyed by CL address)
 /// - `unregister()` - Disconnect from the BPA
 ///
+/// # For Routing Agent Implementors
+///
+/// Routing agents receive [`routes::RoutingSink`] in
+/// [`routes::RoutingAgent::on_register`]. Key Sink methods:
+///
+/// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
+/// - `unregister()` - Disconnect from the BPA
+///
+/// For simple static route sets, use [`routes::StaticRoutingAgent`] instead
+/// of implementing the trait manually.
+///
 /// # For Service Implementors
 ///
 /// Services receive [`services::ServiceSink`] (low-level, full bundle access) or
@@ -176,6 +187,25 @@ pub trait BpaRegistration: Send + Sync {
         service_id: Option<hardy_bpv7::eid::Service>,
         application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
+
+    /// Register a Routing Agent with the BPA.
+    ///
+    /// The routing agent will receive a [`routes::RoutingSink`] via
+    /// [`routes::RoutingAgent::on_register`] for managing routes in the RIB.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Unique name for this routing agent instance (used as route source)
+    /// * `agent` - The routing agent implementation
+    ///
+    /// # Returns
+    ///
+    /// The BPA's node IDs on success
+    async fn register_routing_agent(
+        &self,
+        name: String,
+        agent: Arc<dyn RoutingAgent>,
+    ) -> routes::Result<Vec<hardy_bpv7::eid::NodeId>>;
 }
 
 pub struct Bpa {
@@ -223,50 +253,25 @@ impl Bpa {
     pub async fn shutdown(&self) {
         // Shutdown order is critical for clean termination:
         //
-        // 1. CLAs - Stop external bundle sources (network I/O)
-        // 2. Services - Stop internal bundle sources (applications calling sink.send())
-        // 3. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
-        // 4. RIB - No more routing lookups needed
-        // 5. Store - No more data access needed
+        // 1. Routing agents - Remove dynamic routes (prevents new forwarding decisions)
+        // 2. CLAs - Stop external bundle sources (network I/O)
+        // 3. Services - Stop internal bundle sources (applications calling sink.send())
+        // 4. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
+        // 5. RIB - No more routing lookups needed
+        // 6. Store - No more data access needed
         //
-        // CLAs and Services must shut down BEFORE dispatcher because they are
-        // bundle sources. The dispatcher's processing pool may have tasks blocked
-        // on CLA forwarding or waiting for service responses.
+        // Routing agents shut down first so their routes are removed before CLAs
+        // drain. CLAs and Services must shut down BEFORE dispatcher because they
+        // are bundle sources. The dispatcher's processing pool may have tasks
+        // blocked on CLA forwarding or waiting for service responses.
 
+        self.rib.shutdown_agents().await;
         self.cla_registry.shutdown().await;
         self.service_registry.shutdown().await;
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
         self.filter_registry.clear();
-    }
-
-    #[cfg_attr(
-        feature = "tracing",
-        instrument(skip(self, pattern, action), fields(pattern = %pattern, action = %action))
-    )]
-    pub async fn add_route(
-        &self,
-        source: String,
-        pattern: hardy_eid_patterns::EidPattern,
-        action: Action,
-        priority: u32,
-    ) -> bool {
-        self.rib.add(pattern, source, action, priority).await
-    }
-
-    #[cfg_attr(
-        feature = "tracing",
-        instrument(skip(self, pattern, action), fields(pattern = %pattern, action = %action))
-    )]
-    pub async fn remove_route(
-        &self,
-        source: &str,
-        pattern: &hardy_eid_patterns::EidPattern,
-        action: &Action,
-        priority: u32,
-    ) -> bool {
-        self.rib.remove(pattern, source, action, priority).await
     }
 
     /// Register a filter at a hook point
@@ -329,5 +334,14 @@ impl BpaRegistration for Bpa {
         self.cla_registry
             .register(name, address_type, cla, &self.dispatcher, policy)
             .await
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(self, agent)))]
+    async fn register_routing_agent(
+        &self,
+        name: String,
+        agent: Arc<dyn RoutingAgent>,
+    ) -> routes::Result<Vec<NodeId>> {
+        self.rib.register_agent(name, agent).await
     }
 }

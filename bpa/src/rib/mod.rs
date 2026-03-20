@@ -7,6 +7,7 @@ use hardy_bpv7::{
 };
 use hardy_eid_patterns::EidPattern;
 
+pub(crate) mod agent;
 mod find;
 mod local;
 mod route;
@@ -28,19 +29,24 @@ struct RibInner {
 
 pub struct Rib {
     inner: RwLock<RibInner>,
+    // Routing agent tracking: spin::Mutex for O(1) HashMap operations
+    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<agent::Agent>>>,
+    node_ids: Arc<node_ids::NodeIds>,
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
     store: Arc<storage::Store>,
 }
 
 impl Rib {
-    pub(crate) fn new(node_ids: node_ids::NodeIds, store: Arc<storage::Store>) -> Self {
+    pub(crate) fn new(node_ids: Arc<node_ids::NodeIds>, store: Arc<storage::Store>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(&node_ids),
                 routes: BTreeMap::new(),
                 address_types: HashMap::new(),
             }),
+            agents: Default::default(),
+            node_ids,
             tasks: hardy_async::TaskPool::new(),
             poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
             store,

@@ -136,39 +136,35 @@ impl Msg {
                     .expect("Failed to register CLA");
 
                 // Load static routes
-                bpa.add_route(
+                bpa.register_routing_agent(
                     "fuzz".to_string(),
-                    "ipn:*.*".parse().unwrap(),
-                    hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
-                    30,
+                    Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[
+                        (
+                            "ipn:*.*".parse().unwrap(),
+                            hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
+                            30,
+                        ),
+                        (
+                            "dtn://drop/**".parse().unwrap(),
+                            hardy_bpa::routes::Action::Drop(Some(
+                                hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
+                            )),
+                            50,
+                        ),
+                        (
+                            "dtn://drop2/**".parse().unwrap(),
+                            hardy_bpa::routes::Action::Drop(None),
+                            50,
+                        ),
+                        (
+                            "dtn://**/**".parse().unwrap(),
+                            hardy_bpa::routes::Action::Reflect,
+                            100,
+                        ),
+                    ])),
                 )
-                .await;
-
-                bpa.add_route(
-                    "fuzz".to_string(),
-                    "dtn://drop/**".parse().unwrap(),
-                    hardy_bpa::routes::Action::Drop(Some(
-                        hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
-                    )),
-                    50,
-                )
-                .await;
-
-                bpa.add_route(
-                    "fuzz".to_string(),
-                    "dtn://drop2/**".parse().unwrap(),
-                    hardy_bpa::routes::Action::Drop(None),
-                    50,
-                )
-                .await;
-
-                bpa.add_route(
-                    "fuzz".to_string(),
-                    "dtn://**/**".parse().unwrap(),
-                    hardy_bpa::routes::Action::Reflect,
-                    100,
-                )
-                .await;
+                .await
+                .expect("Failed to register routing agent");
 
                 let service = Arc::new(service::PipeService::new());
                 bpa.register_application(None, service.clone())

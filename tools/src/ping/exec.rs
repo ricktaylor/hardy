@@ -28,15 +28,18 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         .build();
 
     // Add a default 'drop' route, we don't want to cache locally
-    bpa.add_route(
+    bpa.register_routing_agent(
         "ping".to_string(),
-        "*:**".parse().unwrap(),
-        hardy_bpa::routes::Action::Drop(Some(
-            hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
-        )),
-        1000,
+        std::sync::Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[(
+            "*:**".parse().unwrap(),
+            hardy_bpa::routes::Action::Drop(Some(
+                hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
+            )),
+            1000,
+        )])),
     )
-    .await;
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
 
     bpa.start(false);
 
@@ -114,17 +117,17 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     })?;
 
     // Now add a route if we are targeting a service
-    if args.destination.service().is_some()
-        && !bpa
-            .add_route(
-                "ping".to_string(),
+    if args.destination.service().is_some() {
+        bpa.register_routing_agent(
+            "ping-target".to_string(),
+            std::sync::Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routes::Action::Via(peer.into()),
                 1,
-            )
-            .await
-    {
-        return Err(anyhow::anyhow!("Failed to add route"));
+            )])),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
     }
 
     let cancel_token = tokio_util::sync::CancellationToken::new();

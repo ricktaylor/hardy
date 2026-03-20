@@ -78,16 +78,18 @@ impl BpaBuilder {
             self.bundle_storage,
         ));
 
-        let rib = Arc::new(Rib::new(self.node_ids.clone(), store.clone()));
+        let node_ids = Arc::new(self.node_ids);
+
+        let rib = Arc::new(Rib::new(node_ids.clone(), store.clone()));
 
         let cla_registry = Arc::new(ClaRegistry::new(
-            (&self.node_ids).into(),
+            node_ids.clone(),
             self.poll_channel_depth.into(),
             rib.clone(),
             store.clone(),
         ));
         let keys_registry = Arc::new(KeyRegistry::new());
-        let service_registry = Arc::new(ServiceRegistry::new(self.node_ids.clone(), rib.clone()));
+        let service_registry = Arc::new(ServiceRegistry::new(node_ids.clone(), rib.clone()));
         let filter_registry = Arc::new(FilterRegistry::new());
 
         // Auto-register RFC9171 validity filter unless disabled
@@ -110,7 +112,7 @@ impl BpaBuilder {
             self.status_reports,
             self.poll_channel_depth,
             self.processing_pool_size,
-            self.node_ids,
+            node_ids,
             store.clone(),
             cla_registry.clone(),
             rib.clone(),
