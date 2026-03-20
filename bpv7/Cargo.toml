@@ -48,7 +48,7 @@ winnow = { version = "1.0.0", default-features = false, features = ["alloc", "as
 hashbrown = "0.16.1"
 smallvec = "1.15"
 hmac = { version = "0.12.1", default-features = false, optional = true }
-aes-gcm = { version = "0.10.3", default-features = false, features = ["alloc", "aes", "getrandom", "zeroize"], optional = true }
+aes-gcm = { version = "0.10.3", default-features = false, features = ["alloc", "aes", "zeroize"], optional = true }
 aes-kw = { version = "0.2.1", default-features = false, features = ["alloc"], optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc","derive"], optional = true }
 

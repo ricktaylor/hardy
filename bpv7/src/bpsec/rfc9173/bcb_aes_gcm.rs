@@ -1,5 +1,5 @@
 use super::*;
-use aes_gcm::{AeadCore, KeyInit};
+use aes_gcm::KeyInit;
 use alloc::rc::Rc;
 
 #[allow(clippy::upper_case_acronyms)]
@@ -264,15 +264,11 @@ impl Operation {
                 }
                 match &jwk.enc_algorithm {
                     Some(key::EncAlgorithm::A128GCM) => (
-                        Some(zeroize::Zeroizing::from(Box::from(
-                            aes_gcm::Aes128Gcm::generate_key(aes_gcm::aead::OsRng).as_ref(),
-                        ))),
+                        Some(zeroize::Zeroizing::from(rand_bytes::<16>()?)),
                         AesVariant::A128GCM,
                     ),
                     None | Some(key::EncAlgorithm::A256GCM) => (
-                        Some(zeroize::Zeroizing::from(Box::from(
-                            aes_gcm::Aes256Gcm::generate_key(aes_gcm::aead::OsRng).as_ref(),
-                        ))),
+                        Some(zeroize::Zeroizing::from(rand_bytes::<32>()?)),
                         AesVariant::A256GCM,
                     ),
                     _ => return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone())),
@@ -307,22 +303,12 @@ impl Operation {
             AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(active_cek)
                 .map_err(|e| Error::Algorithm(e.to_string()))
                 .and_then(|cipher| {
-                    encrypt_inner(
-                        cipher,
-                        (*aes_gcm::Aes128Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
-                        &aad,
-                        payload.as_ref(),
-                    )
+                    encrypt_inner(cipher, rand_bytes::<12>()?, &aad, payload.as_ref())
                 }),
             AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(active_cek)
                 .map_err(|e| Error::Algorithm(e.to_string()))
                 .and_then(|cipher| {
-                    encrypt_inner(
-                        cipher,
-                        (*aes_gcm::Aes256Gcm::generate_nonce(aes_gcm::aead::OsRng)).into(),
-                        &aad,
-                        payload.as_ref(),
-                    )
+                    encrypt_inner(cipher, rand_bytes::<12>()?, &aad, payload.as_ref())
                 }),
             AesVariant::Unrecognised(_) => {
                 unreachable!("Unrecognised variants filtered before encryption")

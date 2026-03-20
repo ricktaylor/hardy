@@ -74,24 +74,17 @@ optional functionality:
 - **`std`**: Enables system clock access and propagates `std` to dependencies.
 - **`rfc9173`** (default): Enables RFC 9173 security contexts, which require random number generation.
 - **`serde`**: Enables serialization support. Requires `std`.
-- **`critical-section`**: Enables fallback for targets without native 64-bit atomics.
+- **`critical-section`**: Enables atomic fallback via `critical-section` for targets without native CAS (e.g., Cortex-M0).
 
 ## Embedded Targets
 
 When using the `rfc9173` feature on embedded targets without OS-provided entropy, you must
-provide a custom RNG backend. The cryptographic dependencies use the [`getrandom`] crate,
-which supports [custom backends](https://docs.rs/getrandom/latest/getrandom/#custom-backend)
-for targets not supported out of the box.
+provide a custom RNG backend. The `rand` dependency uses [`getrandom`] v0.4, which supports
+[custom backends](https://docs.rs/getrandom/0.4/getrandom/#custom-backend) for targets not
+supported out of the box. See `getrandom` v0.4 documentation for the target-specific
+configuration required (typically a `RUSTFLAGS` override or a platform crate dependency).
 
-To use a custom entropy source:
-
-1. Add `getrandom` with the `custom` feature to your `Cargo.toml`
-2. Implement the `__getrandom_v03_custom` function to provide entropy from your hardware RNG
-
-See the [design documentation](https://github.com/example/hardy/blob/main/bpv7/docs/design.md#embedded-targets-and-custom-rng)
-for detailed instructions.
-
-[`getrandom`]: https://docs.rs/getrandom
+[`getrandom`]: https://docs.rs/getrandom/0.4
 */
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;

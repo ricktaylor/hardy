@@ -10,7 +10,6 @@ use hmac::{
         typenum,
     },
 };
-use rand::TryRng;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -232,13 +231,6 @@ where
     Ok(mac.finalize().into_bytes())
 }
 
-fn rand_key(mut cek: Box<[u8]>) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
-    rand::rngs::SysRng
-        .try_fill_bytes(&mut cek)
-        .map_err(|e| Error::Algorithm(e.to_string()))?;
-    Ok(zeroize::Zeroizing::from(cek))
-}
-
 enum KeyWrap {
     Aes128,
     Aes192,
@@ -325,8 +317,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
-                    // lgtm[rust/hard-coded-cryptographic-value] - buffer is immediately filled with random bytes
-                    Some(rand_key(Box::from([0u8; 32]))?)
+                    Some(zeroize::Zeroizing::from(rand_bytes::<32>()?))
                 }
                 KeyWrap::Aes192 => {
                     if let Some(ops) = &jwk.operations
@@ -334,8 +325,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
-                    // lgtm[rust/hard-coded-cryptographic-value] - buffer is immediately filled with random bytes
-                    Some(rand_key(Box::from([0u8; 48]))?)
+                    Some(zeroize::Zeroizing::from(rand_bytes::<48>()?))
                 }
                 KeyWrap::Aes256 => {
                     if let Some(ops) = &jwk.operations
@@ -343,8 +333,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
-                    // lgtm[rust/hard-coded-cryptographic-value] - buffer is immediately filled with random bytes
-                    Some(rand_key(Box::from([0u8; 64]))?)
+                    Some(zeroize::Zeroizing::from(rand_bytes::<64>()?))
                 }
             }
         } else {

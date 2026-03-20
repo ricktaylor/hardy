@@ -1,8 +1,17 @@
 use super::*;
 use core::ops::Range;
+use rand::TryRng;
 
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
+
+fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
+    let mut buf = vec![0u8; N].into_boxed_slice();
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut buf)
+        .map_err(|e| Error::Algorithm(e.to_string()))?;
+    Ok(buf)
+}
 
 #[cfg(all(test, feature = "serde"))]
 mod test;
