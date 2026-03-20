@@ -124,7 +124,7 @@ Each component type has a dedicated Registry that manages registration, lifecycl
 | `services::registry::Registry` | `Application` | `ApplicationSink` | High-level payload services |
 | `filters::registry::Registry` | `Filter` | — | Traffic filtering (no Sink needed) |
 | `keys::registry::Registry` | `KeyProvider` | — | BPSec key management |
-| (planned) | `RoutingAgent` | `RoutingSink` | Dynamic routing protocols |
+| `rib::Rib` (via `rib::agent`) | `RoutingAgent` | `RoutingSink` | Dynamic routing protocols |
 
 #### Bidirectional Sink Pattern
 
