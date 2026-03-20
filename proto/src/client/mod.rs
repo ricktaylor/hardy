@@ -3,6 +3,7 @@ use proxy::*;
 
 mod application;
 mod cla;
+mod routing;
 mod service;
 
 fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, tonic::Status> {
@@ -74,12 +75,9 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
 
     async fn register_routing_agent(
         &self,
-        _name: String,
-        _agent: Arc<dyn hardy_bpa::routes::RoutingAgent>,
+        name: String,
+        agent: Arc<dyn hardy_bpa::routes::RoutingAgent>,
     ) -> hardy_bpa::routes::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        // Routing agent registration over gRPC is not yet implemented
-        Err(hardy_bpa::routes::Error::Internal(
-            "Routing agent registration over gRPC is not yet supported".into(),
-        ))
+        routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
     }
 }
