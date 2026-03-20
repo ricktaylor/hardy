@@ -137,7 +137,7 @@ pub trait BpaRegistration: Send + Sync {
         address_type: Option<ClaAddressType>,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn EgressPolicy>>,
-    ) -> cla::Result<alloc::vec::Vec<hardy_bpv7::eid::NodeId>>;
+    ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
     ///
