@@ -24,7 +24,7 @@ std = [
     "aes-gcm?/std",
     "aes-kw?/std",
 ]
-# Enable this feature on targets without native 64-bit atomics (e.g., thumbv6m).
+# Enable this feature on targets without native CAS instructions (e.g., thumbv6m / Cortex-M0).
 # Requires a critical-section implementation - see https://docs.rs/portable-atomic
 critical-section = ["portable-atomic/critical-section"]
 rfc9173 = ["bpsec", "dep:hmac", "dep:sha2", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
@@ -42,7 +42,7 @@ percent-encoding = { version = "2.3.2", default-features = false, features = ["a
 crc = "3.4.0"
 sha2 = { version = "0.10.9", default-features = false, optional = true }
 rand = { version = "0.10.0", default-features = false, features = ["alloc","sys_rng"], optional = true }
-portable-atomic = { version = "1", default-features = false }
+portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
 zeroize = { version = "1.8.2", features = ["derive"] }
 winnow = { version = "1.0.0", default-features = false, features = ["alloc", "ascii"] }
 hashbrown = "0.16.1"
