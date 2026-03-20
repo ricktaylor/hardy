@@ -211,6 +211,112 @@ pub mod service {
     }
 }
 
+pub mod routing {
+    use super::*;
+
+    tonic::include_proto!("routing");
+
+    impl proxy::RecvMsg for BpaToAgent {
+        type Msg = bpa_to_agent::Msg;
+
+        fn msg_id(&self) -> u32 {
+            self.msg_id
+        }
+
+        fn msg(self) -> Result<Self::Msg, tonic::Status> {
+            match self.msg {
+                None => Err(tonic::Status::invalid_argument("Unknown message")),
+                Some(Self::Msg::Status(status)) => Err(status.into()),
+                Some(msg) => Ok(msg),
+            }
+        }
+    }
+
+    impl proxy::RecvMsg for AgentToBpa {
+        type Msg = agent_to_bpa::Msg;
+
+        fn msg_id(&self) -> u32 {
+            self.msg_id
+        }
+
+        fn msg(self) -> Result<Self::Msg, tonic::Status> {
+            match self.msg {
+                None => Err(tonic::Status::invalid_argument("Unknown message")),
+                Some(Self::Msg::Status(status)) => Err(status.into()),
+                Some(msg) => Ok(msg),
+            }
+        }
+    }
+
+    impl proxy::SendMsg for AgentToBpa {
+        type Msg = agent_to_bpa::Msg;
+
+        fn compose(msg_id: u32, msg: Self::Msg) -> Self {
+            Self {
+                msg_id,
+                msg: Some(msg),
+            }
+        }
+    }
+
+    impl proxy::SendMsg for BpaToAgent {
+        type Msg = bpa_to_agent::Msg;
+
+        fn compose(msg_id: u32, msg: Self::Msg) -> Self {
+            Self {
+                msg_id,
+                msg: Some(msg),
+            }
+        }
+    }
+
+    impl TryFrom<RouteAction> for hardy_bpa::routes::Action {
+        type Error = tonic::Status;
+
+        fn try_from(value: RouteAction) -> Result<Self, Self::Error> {
+            match value.action {
+                None => Err(tonic::Status::invalid_argument("Missing action")),
+                Some(route_action::Action::Drop(drop)) => {
+                    let reason = if drop.has_reason {
+                        Some(drop.reason_code.try_into().map_err(|e| {
+                            tonic::Status::invalid_argument(format!("Invalid reason code: {e}"))
+                        })?)
+                    } else {
+                        None
+                    };
+                    Ok(hardy_bpa::routes::Action::Drop(reason))
+                }
+                Some(route_action::Action::Reflect(_)) => Ok(hardy_bpa::routes::Action::Reflect),
+                Some(route_action::Action::Via(eid)) => {
+                    let eid = eid.parse().map_err(|e| {
+                        tonic::Status::invalid_argument(format!("Invalid EID: {e}"))
+                    })?;
+                    Ok(hardy_bpa::routes::Action::Via(eid))
+                }
+            }
+        }
+    }
+
+    impl From<&hardy_bpa::routes::Action> for RouteAction {
+        fn from(value: &hardy_bpa::routes::Action) -> Self {
+            match value {
+                hardy_bpa::routes::Action::Drop(reason) => RouteAction {
+                    action: Some(route_action::Action::Drop(DropAction {
+                        has_reason: reason.is_some(),
+                        reason_code: reason.map(|r| r.into()).unwrap_or(0),
+                    })),
+                },
+                hardy_bpa::routes::Action::Reflect => RouteAction {
+                    action: Some(route_action::Action::Reflect(ReflectAction {})),
+                },
+                hardy_bpa::routes::Action::Via(eid) => RouteAction {
+                    action: Some(route_action::Action::Via(eid.to_string())),
+                },
+            }
+        }
+    }
+}
+
 pub mod google {
     pub mod rpc {
         tonic::include_proto!("google.rpc");

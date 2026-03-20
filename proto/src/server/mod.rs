@@ -9,6 +9,7 @@ use proxy::*;
 
 mod application;
 mod cla;
+mod routing;
 mod service;
 
 fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
@@ -25,7 +26,7 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
 pub struct Config {
     /// Address to bind the gRPC server to.
     pub address: std::net::SocketAddr,
-    /// List of services to enable: "cla", "service", "application"
+    /// List of services to enable: "cla", "service", "application", "routing"
     pub services: Vec<String>,
 }
 
@@ -69,6 +70,9 @@ pub fn init(
             }
             "service" => {
                 routes.add_service(service::new_endpoint_service(bpa));
+            }
+            "routing" => {
+                routes.add_service(routing::new_routing_agent_service(bpa));
             }
             s => {
                 warn!("Ignoring unknown gRPC service {s}");

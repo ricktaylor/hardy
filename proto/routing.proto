@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+import "google/rpc/status.proto";
+
+package routing;
+
+// The RoutingAgent service provides an interface for routing agents to interact
+// with the BPA's Routing Information Base (RIB). This is a bidirectional stream
+// allowing agents to push routes to the BPA asynchronously.
+//
+// Routing agents are purely push-based: they discover or compute routes and
+// install them in the RIB via add_route/remove_route. The BPA never calls back
+// into the agent to request work.
+//
+// Protocol flow:
+//   1. Agent calls Register() to establish a bidirectional stream.
+//   2. First message from the agent *must* be a RegisterRoutingAgentRequest.
+//   3. BPA responds with RegisterRoutingAgentResponse containing node IDs.
+//   4. Agent sends AddRoute/RemoveRoute messages; BPA responds with results.
+//   5. Either side can initiate unregistration.
+service RoutingAgent {
+  // Connect to the BPA and set up a bidirectional stream.
+  rpc Register(stream AgentToBpa) returns (stream BpaToAgent);
+}
+
+// A message sent from the routing agent to the BPA.
+message AgentToBpa {
+  // A unique identifier for the message, used to correlate requests and
+  // responses.
+  uint32 msg_id = 1;
+  // The message content.
+  oneof msg {
+    // A status message. Used to indicate an error from the agent.
+    google.rpc.Status                status        = 2;
+    // Registration request. Must be the first message.
+    RegisterRoutingAgentRequest      register      = 3;
+    // Request to add a route to the RIB.
+    AddRouteRequest                  add_route     = 4;
+    // Request to remove a route from the RIB.
+    RemoveRouteRequest               remove_route  = 5;
+    // Acknowledgement of forced unregistration (response to OnUnregisterRoutingAgentRequest).
+    OnUnregisterRoutingAgentResponse on_unregister = 6;
+    // Request to voluntarily unregister.
+    UnregisterRoutingAgentRequest    unregister    = 7;
+  }
+}
+
+// A message sent from the BPA to the routing agent.
+message BpaToAgent {
+  // A unique identifier for the message, used to correlate requests and
+  // responses.
+  uint32 msg_id = 1;
+  // The message content.
+  oneof msg {
+    // A status message. Used to indicate an error from the BPA.
+    google.rpc.Status                status        = 2;
+    // Response to a registration request.
+    RegisterRoutingAgentResponse     register      = 3;
+    // Response to an add route request.
+    AddRouteResponse                 add_route     = 4;
+    // Response to a remove route request.
+    RemoveRouteResponse              remove_route  = 5;
+    // Notification of forced unregistration from the BPA.
+    OnUnregisterRoutingAgentRequest  on_unregister = 6;
+    // Response to a voluntary unregister request.
+    UnregisterRoutingAgentResponse   unregister    = 7;
+  }
+}
+
+// Represents a routing action. Corresponds to hardy_bpa::routes::Action.
+message RouteAction {
+  oneof action {
+    // Drop the bundle. The reason code is from RFC 9171 Section 6.1.1.
+    // Use 0 for "no reason" (maps to None in Rust).
+    DropAction  drop    = 1;
+    // Return the bundle to the previous hop.
+    ReflectAction reflect = 2;
+    // Recursive lookup via the specified EID.
+    string      via     = 3;
+  }
+}
+
+// Drop action with optional reason code.
+message DropAction {
+  // If true, a reason code is provided; if false, no reason (maps to None).
+  bool   has_reason  = 1;
+  // RFC 9171 reason code. Only meaningful when has_reason is true.
+  uint64 reason_code = 2;
+}
+
+// Reflect action (no fields needed).
+message ReflectAction {}
+
+// A request to register a routing agent with the BPA.
+message RegisterRoutingAgentRequest {
+  // The unique name for this routing agent instance (used as route source).
+  string name = 1;
+}
+
+// A response to a registration request.
+message RegisterRoutingAgentResponse {
+  // The BPA's node identifiers.
+  repeated string node_ids = 1;
+}
+
+// A request to add a route to the RIB.
+message AddRouteRequest {
+  // The EID pattern to match (e.g., "ipn:*.*", "dtn://node/**").
+  string      pattern  = 1;
+  // The action to take for matching bundles.
+  RouteAction action   = 2;
+  // Route priority (lower values = higher priority).
+  uint32      priority = 3;
+}
+
+// A response to an add route request.
+message AddRouteResponse {
+  // True if the route was newly inserted, false if it already existed.
+  bool added = 1;
+}
+
+// A request to remove a route from the RIB.
+message RemoveRouteRequest {
+  // The EID pattern of the route to remove.
+  string      pattern  = 1;
+  // The action of the route to remove.
+  RouteAction action   = 2;
+  // The priority of the route to remove.
+  uint32      priority = 3;
+}
+
+// A response to a remove route request.
+message RemoveRouteResponse {
+  // True if the route was found and removed.
+  bool removed = 1;
+}
+
+// A notification of forced unregistration from the BPA.
+message OnUnregisterRoutingAgentRequest {}
+
+// Acknowledgement of forced unregistration.
+message OnUnregisterRoutingAgentResponse {}
+
+// A request to voluntarily unregister.
+message UnregisterRoutingAgentRequest {}
+
+// A response to a voluntary unregister request.
+message UnregisterRoutingAgentResponse {}
