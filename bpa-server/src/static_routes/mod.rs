@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::routes::Action;
 use hardy_bpa::routes::{RoutingAgent, RoutingSink};
@@ -42,7 +43,7 @@ struct StaticRoute {
     action: Action,
 }
 
-pub struct StaticRoutes {
+pub struct StaticRoutesAgent {
     routes_file: PathBuf,
     priority: u32,
     watch: bool,
@@ -51,7 +52,7 @@ pub struct StaticRoutes {
     tasks: hardy_async::TaskPool,
 }
 
-impl StaticRoutes {
+impl StaticRoutesAgent {
     fn new(routes_file: PathBuf, priority: u32, watch: bool) -> Self {
         Self {
             routes_file,
@@ -243,7 +244,7 @@ async fn refresh_routes_inner(
 }
 
 #[hardy_async::async_trait]
-impl RoutingAgent for StaticRoutes {
+impl RoutingAgent for StaticRoutesAgent {
     async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[hardy_bpv7::eid::NodeId]) {
         let sink: Arc<dyn RoutingSink> = sink.into();
         self.sink.call_once(|| sink);
@@ -273,7 +274,7 @@ pub async fn init(
 ) -> anyhow::Result<()> {
     // Ensure it's absolute
     let routes_file = std::env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {e}"))?
+        .context("Failed to get current directory")?
         .join(&config.routes_file);
 
     // Try to create canonical file path
@@ -290,7 +291,7 @@ pub async fn init(
         }
     };
 
-    let agent = Arc::new(StaticRoutes::new(
+    let agent = Arc::new(StaticRoutesAgent::new(
         routes_file,
         config.priority,
         config.watch,
@@ -298,7 +299,7 @@ pub async fn init(
 
     bpa.register_routing_agent(config.protocol_id.clone(), agent)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to register static routes agent: {e}"))?;
+        .context("Failed to register static routes agent")?;
 
     Ok(())
 }
