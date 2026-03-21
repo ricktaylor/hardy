@@ -10,11 +10,13 @@ needs to load CLA or other plugins at runtime).
 */
 
 use super::*;
-use libloading::{Library, Symbol};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info};
+
+pub use libloading::Library;
+use libloading::Symbol;
 
 /// Entry point type for CLA factory functions.
 ///
@@ -54,32 +56,6 @@ unsafe fn load_and_check(path: &Path) -> Result<Library, PluginLoadError> {
     Ok(lib)
 }
 
-/// Resolve a plugin name to a shared library path.
-///
-/// Uses the platform-appropriate naming convention:
-/// - Linux: `lib{name}.so`
-/// - macOS: `lib{name}.dylib`
-/// - Windows: `{name}.dll`
-pub fn plugin_path(plugin_dir: &Path, name: &str) -> Result<PathBuf, PluginLoadError> {
-    #[cfg(target_os = "linux")]
-    let path = plugin_dir.join(format!("lib{name}.so"));
-
-    #[cfg(target_os = "macos")]
-    let path = plugin_dir.join(format!("lib{name}.dylib"));
-
-    #[cfg(target_os = "windows")]
-    let path = plugin_dir.join(format!("{name}.dll"));
-
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(PluginLoadError::NotFound {
-            name: name.to_string(),
-            dir: plugin_dir.to_path_buf(),
-        })
-    }
-}
-
 /// Load a CLA plugin by file path and call its factory function.
 ///
 /// Returns the `Library` handle (caller must keep it alive for the
@@ -115,23 +91,6 @@ pub unsafe fn load_cla_plugin(
     }
 }
 
-/// Load a CLA plugin by name from a plugin directory.
-///
-/// Resolves the name to a `.so`/`.dylib`/`.dll` path, then delegates
-/// to [`load_cla_plugin`].
-///
-/// # Safety
-///
-/// Loads and executes arbitrary native code.
-pub unsafe fn load_cla_plugin_by_name(
-    plugin_dir: &Path,
-    name: &str,
-    config_json: &str,
-) -> Result<(Library, Arc<dyn hardy_bpa::cla::Cla>), PluginLoadError> {
-    let path = plugin_path(plugin_dir, name)?;
-    unsafe { load_cla_plugin(&path, config_json) }
-}
-
 /// Errors that can occur during plugin loading.
 #[derive(Debug, Error)]
 pub enum PluginLoadError {
@@ -150,9 +109,6 @@ pub enum PluginLoadError {
         host: String,
         plugin: String,
     },
-
-    #[error("Plugin '{name}' not found in {}", dir.display())]
-    NotFound { name: String, dir: PathBuf },
 
     #[error("{}: missing {symbol} symbol", path.display())]
     MissingSymbol { path: PathBuf, symbol: String },
