@@ -12,6 +12,16 @@ pub enum ExitCode {
     Error = 2,
 }
 
+/// Returns true if the --cla value looks like a file path (plugin) rather
+/// than a built-in CLA name.
+fn is_plugin_path(cla: &str) -> bool {
+    cla.contains('/')
+        || cla.contains('\\')
+        || cla.ends_with(".so")
+        || cla.ends_with(".dylib")
+        || cla.ends_with(".dll")
+}
+
 async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     if !args.quiet {
         eprintln!(
@@ -43,8 +53,19 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
     bpa.start(false);
 
-    // Register TCPCLv4 CLA
-    let cla_name = "tcp0".to_string();
+    if is_plugin_path(&args.cla) {
+        exec_plugin_cla(args, &bpa).await
+    } else {
+        exec_builtin_cla(args, &bpa).await
+    }
+}
+
+async fn exec_builtin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
+    match args.cla.as_str() {
+        "tcpclv4" => {}
+        other => return Err(anyhow::anyhow!("Unknown built-in CLA: '{other}'")),
+    }
+
     let mut tcpclv4_config = hardy_tcpclv4::config::Config {
         address: None,
         session_defaults: hardy_tcpclv4::config::SessionConfig {
@@ -81,20 +102,17 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
     let cla = std::sync::Arc::new(
         hardy_tcpclv4::Cla::new(&tcpclv4_config)
-            .map_err(|e| anyhow::anyhow!("Failed to create CLA '{cla_name}': {e}"))?,
+            .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
     );
 
-    cla.register(&bpa, cla_name.clone(), None)
+    cla.register(bpa, args.cla.clone(), None)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to start CLA '{cla_name}': {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", args.cla))?;
 
     let peer_addr = if let Some(peer) = &args.peer {
         peer.parse()
             .map_err(|e| anyhow::anyhow!("Failed to parse peer address '{}': {e}", peer))?
     } else {
-        // TODO: DNS resolution for EIDs
-        // https://datatracker.ietf.org/doc/draft-ek-dtn-ipn-arpa/
-
         return Err(anyhow::anyhow!(
             "No peer address specified for destination EID, and no DNS support currently available"
         ));
@@ -130,17 +148,54 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
     }
 
+    run_ping(args, bpa).await
+}
+
+#[cfg(feature = "dynamic-plugins")]
+async fn exec_plugin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
+    if args.peer.is_some() {
+        eprintln!(
+            "Warning: peer address argument is ignored when using a plugin CLA; \
+             pass peer info via --cla-config instead"
+        );
+    }
+
+    let config_json = args.cla_config.as_deref().unwrap_or("{}");
+    let path = std::path::Path::new(&args.cla);
+
+    let (_lib, cla) = unsafe { hardy_plugin_abi::host::load_cla_plugin(path, config_json) }
+        .map_err(|e| anyhow::anyhow!("Failed to load CLA plugin: {e}"))?;
+
+    // Register with BPA — the plugin's on_register() will call
+    // sink.add_peer() if peer/peer-node are in the config, creating
+    // the wildcard RIB entry needed for routing.
+    bpa.register_cla("plugin0".to_string(), None, cla, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register plugin CLA: {e}"))?;
+
+    run_ping(args, bpa).await
+
+    // _lib dropped here, after bpa.shutdown() in run_ping
+}
+
+#[cfg(not(feature = "dynamic-plugins"))]
+async fn exec_plugin_cla(args: &Command, _bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
+    Err(anyhow::anyhow!(
+        "CLA plugin '{}' requires the dynamic-plugins feature",
+        args.cla
+    ))
+}
+
+async fn run_ping(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     cancel::listen_for_cancel(&cancel_token);
 
-    let stats = exec_inner(args, &bpa, &cancel_token).await?;
+    let stats = exec_inner(args, bpa, &cancel_token).await?;
 
-    // Stop waiting for cancel
     cancel_token.cancel();
 
     bpa.shutdown().await;
 
-    // Determine exit code based on statistics (matching Linux ping)
     if stats.received > 0 {
         Ok(ExitCode::Success)
     } else {
