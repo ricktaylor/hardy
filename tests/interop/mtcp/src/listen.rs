@@ -31,8 +31,9 @@ impl Listener {
                         let sink = self.sink.clone();
                         let framing = self.framing.clone();
                         let max_bundle_size = self.max_bundle_size;
+                        let cancel = tasks.cancel_token().clone();
                         hardy_async::spawn!(tasks, "mtcp_rx", async move {
-                            handle_connection(stream, remote_addr, framing, max_bundle_size, sink).await;
+                            handle_connection(stream, remote_addr, framing, max_bundle_size, sink, cancel).await;
                         });
                     }
                     Err(e) => {
@@ -52,28 +53,35 @@ async fn receive_loop<S>(
     remote_addr: SocketAddr,
     sink: &Arc<dyn hardy_bpa::cla::Sink>,
     peer_addr: &Option<hardy_bpa::cla::ClaAddress>,
+    cancel: &hardy_async::CancellationToken,
 ) where
     S: StreamExt<Item = Result<Bytes, std::io::Error>> + Unpin,
 {
-    while let Some(result) = framed.next().await {
-        match result {
-            Ok(bundle) => {
-                debug!(%remote_addr, len = bundle.len(), "Received bundle");
-                if let Err(e) = sink
-                    .dispatch(bundle, None, peer_addr.as_ref())
-                    .await
-                {
-                    warn!(%remote_addr, "Dispatch failed: {e:?}");
+    loop {
+        tokio::select! {
+            result = framed.next() => match result {
+                Some(Ok(bundle)) => {
+                    debug!(%remote_addr, len = bundle.len(), "Received bundle");
+                    if let Err(e) = sink.dispatch(bundle, None, peer_addr.as_ref()).await {
+                        warn!(%remote_addr, "Dispatch failed: {e:?}");
+                        return;
+                    }
+                }
+                Some(Err(e)) => {
+                    debug!(%remote_addr, "Connection error: {e}");
                     return;
                 }
-            }
-            Err(e) => {
-                debug!(%remote_addr, "Connection error: {e}");
+                None => {
+                    debug!(%remote_addr, "Connection closed");
+                    return;
+                }
+            },
+            _ = cancel.cancelled() => {
+                debug!(%remote_addr, "Connection cancelled");
                 return;
             }
         }
     }
-    debug!(%remote_addr, "Connection closed");
 }
 
 async fn handle_connection(
@@ -82,17 +90,18 @@ async fn handle_connection(
     framing: config::Framing,
     max_bundle_size: u64,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
+    cancel: hardy_async::CancellationToken,
 ) {
     let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(remote_addr));
 
     match framing {
         config::Framing::Mtcp => {
             let mut framed = codec::MtcpCodec::new(max_bundle_size).framed(stream);
-            receive_loop(&mut framed, remote_addr, &sink, &peer_addr).await;
+            receive_loop(&mut framed, remote_addr, &sink, &peer_addr, &cancel).await;
         }
         config::Framing::Stcp => {
             let mut framed = codec::StcpCodec::new(max_bundle_size).framed(stream);
-            receive_loop(&mut framed, remote_addr, &sink, &peer_addr).await;
+            receive_loop(&mut framed, remote_addr, &sink, &peer_addr, &cancel).await;
         }
     }
 }

@@ -1,5 +1,8 @@
 [workspace]
 resolver = "2"
+exclude = [
+    "tests/interop/mtcp",
+]
 members = [
     "async",
     "bibe",
