@@ -8,7 +8,7 @@
 # Prerequisites:
 #   - Docker installed (for ION container)
 #   - Hardy tools and bpa-server built (with dynamic-plugins feature)
-#   - MTCP/STCP CLA plugin built (tests/interop/mtcp/cla/)
+#   - MTCP/STCP CLA plugin built (tests/interop/mtcp/)
 #   - ION Docker image built (ion-interop)
 #
 # Usage:
@@ -23,7 +23,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INTEROP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-MTCP_CLA_DIR="$INTEROP_DIR/mtcp/cla"
+MTCP_CLA_DIR="$INTEROP_DIR/mtcp"
 
 # Configuration
 HARDY_NODE_NUM=1
@@ -126,7 +126,9 @@ log_info "Using test directory: $TEST_DIR"
 if [ "$SKIP_BUILD" = false ]; then
     log_step "Building Hardy tools and bpa-server..."
     cd "$WORKSPACE_DIR"
-    cargo build --release -p hardy-tools -p hardy-bpa-server --features dynamic-plugins
+    cargo build --release \
+        -p hardy-tools --features hardy-tools/dynamic-plugins \
+        -p hardy-bpa-server --features hardy-bpa-server/dynamic-plugins
 
     log_step "Building MTCP/STCP CLA plugin..."
     cd "$MTCP_CLA_DIR"
@@ -193,7 +195,7 @@ if [ "$USE_DOCKER" = true ]; then
     log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
     log_info "Waiting for ION to initialize..."
-    sleep 5
+    sleep 8
 
     if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
         log_error "ION container exited unexpectedly. Logs:"
@@ -202,11 +204,11 @@ if [ "$USE_DOCKER" = true ]; then
         exit 1
     fi
 
-    # Start bpecho service in the container
+    # Start bpecho service — must wait until BP stack is fully running
     log_step "Starting bpecho service on ipn:$ION_NODE_NUM.7..."
     docker exec -d "$ION_CONTAINER" bpecho "ipn:$ION_NODE_NUM.7"
 
-    sleep 2
+    sleep 3
 else
     log_error "Native ION mode not yet implemented - use Docker mode"
     exit 1
@@ -216,9 +218,9 @@ fi
 log_step "Hardy pinging ION echo service at ipn:$ION_NODE_NUM.7 via STCP..."
 echo ""
 
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
+PING_OUTPUT=$(timeout 30s "$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
     --cla "$CLA_PLUGIN" \
-    --cla-config "{\"framing\":\"stcp\",\"peer\":\"127.0.0.1:$ION_STCP_PORT\",\"peer-node\":\"ipn:$ION_NODE_NUM.0\"}" \
+    --cla-config "{\"framing\":\"stcp\",\"peer\":\"127.0.0.1:$ION_STCP_PORT\",\"peer-node\":\"ipn:$ION_NODE_NUM.0\",\"address\":\"0.0.0.0:$HARDY_STCP_PORT\"}" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
     --no-sign \
@@ -253,6 +255,8 @@ if [ "$USE_DOCKER" = true ]; then
     docker stop "$ION_CONTAINER" 2>/dev/null || true
     docker rm -f "$ION_CONTAINER" 2>/dev/null || true
     ION_CONTAINER=""
+    # Clean up stale ION shared memory from --ipc=host
+    docker run --rm --ipc=host --entrypoint killm "$ION_IMAGE" 2>/dev/null || true
 fi
 
 sleep 1
@@ -270,7 +274,6 @@ cat > "$TEST_DIR/hardy_config.toml" << EOF
 log-level = "info"
 status-reports = true
 node-ids = "ipn:$HARDY_NODE_NUM.0"
-plugin-dir = "$(dirname "$CLA_PLUGIN")"
 
 [built-in-services]
 echo = [7]
@@ -285,10 +288,12 @@ type = "memory"
 primary-block-integrity = false
 
 [[clas]]
-name = "stcp0"
-type = "hardy_mtcp_cla"
+name = "cl0"
+type = "$CLA_PLUGIN"
 framing = "stcp"
 address = "[::]:$HARDY_STCP_PORT"
+peer = "127.0.0.1:$ION_STCP_PORT"
+peer-node = "ipn:$ION_NODE_NUM.0"
 EOF
 
 log_step "Starting Hardy BPA server with STCP CLA plugin..."
@@ -321,7 +326,9 @@ if [ "$USE_DOCKER" = true ]; then
         "$ION_IMAGE")
 
     log_info "Started ION container: ${ION_CONTAINER:0:12}"
-    sleep 5
+
+    log_info "Waiting for ION to initialize..."
+    sleep 8
 
     if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
         log_error "ION container exited unexpectedly. Logs:"
@@ -340,15 +347,18 @@ if [ "$USE_DOCKER" = true ]; then
         echo "$PING_OUTPUT"
         echo ""
 
-        # bping reports round-trip times like "time = X.XXX s"
-        RESPONSE_COUNT=$(echo "$PING_OUTPUT" | grep -c "time =" || echo "0")
+        # bping reports "N bundles transmitted, M bundles received, X% bundle loss"
+        STATS_LINE=$(echo "$PING_OUTPUT" | grep "bundle loss" | head -1)
+        RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) bundles received.*/\1/')
 
-        if [ "$RESPONSE_COUNT" = "$PING_COUNT" ]; then
-            log_info "TEST 2 PASSED: ION received $RESPONSE_COUNT/$PING_COUNT responses from Hardy"
-            TEST2_RESULT="PASS"
-        elif [ "$RESPONSE_COUNT" -ge 1 ]; then
-            log_error "TEST 2 FAILED: Partial loss - only $RESPONSE_COUNT/$PING_COUNT responses received"
-            TEST2_RESULT="FAIL"
+        if [ -n "$RECEIVED" ] && [ "$RECEIVED" -ge 1 ] 2>/dev/null; then
+            if echo "$STATS_LINE" | grep -q "0.00% bundle loss"; then
+                log_info "TEST 2 PASSED: ION received $RECEIVED responses from Hardy"
+                TEST2_RESULT="PASS"
+            else
+                log_error "TEST 2 FAILED: Partial loss ($STATS_LINE)"
+                TEST2_RESULT="FAIL"
+            fi
         else
             log_error "TEST 2 FAILED: No echo responses received"
             TEST2_RESULT="FAIL"

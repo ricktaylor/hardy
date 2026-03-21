@@ -51,13 +51,14 @@ docker run --rm \
     "$ION_IMAGE" &
 
 CONTAINER_PID=$!
-sleep 5
+echo "Waiting for ION to initialize..."
+sleep 8
 
 # Start echo service
 echo "Starting bpecho on ipn:$ION_NODE_NUM.7..."
 docker exec -d ion-interop-test bpecho "ipn:$ION_NODE_NUM.7"
 
-sleep 1
+sleep 3
 
 echo ""
 echo "============================================"
@@ -70,7 +71,7 @@ echo ""
 echo "Test with:"
 echo "  bp ping ipn:$ION_NODE_NUM.7 \\"
 echo "    --cla /path/to/libhardy_mtcp_cla.so \\"
-echo "    --cla-config '{\"framing\":\"stcp\",\"peer\":\"127.0.0.1:$ION_STCP_PORT\",\"peer-node\":\"ipn:$ION_NODE_NUM.0\"}' \\"
+echo "    --cla-config '{\"framing\":\"stcp\",\"peer\":\"127.0.0.1:$ION_STCP_PORT\",\"peer-node\":\"ipn:$ION_NODE_NUM.0\",\"address\":\"0.0.0.0:$HARDY_STCP_PORT\"}' \\"
 echo "    --source ipn:$HARDY_NODE_NUM.12345 --no-sign"
 echo ""
 echo "Press Ctrl+C to stop..."
