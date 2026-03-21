@@ -6,19 +6,11 @@ mod listen;
 use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
-use trace_err::*;
 use tracing::{debug, error, info, warn};
-
-/// Registration-time state from BPA.
-struct Inner {
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
-    #[allow(dead_code)]
-    node_ids: Arc<[NodeId]>,
-}
 
 pub struct Cla {
     config: config::Config,
-    inner: Once<Inner>,
+    sink: Once<Arc<dyn hardy_bpa::cla::Sink>>,
     tasks: Arc<hardy_async::TaskPool>,
 }
 
@@ -26,7 +18,7 @@ impl Cla {
     pub fn new(config: config::Config) -> Self {
         Self {
             config,
-            inner: Once::new(),
+            sink: Once::new(),
             tasks: Arc::new(hardy_async::TaskPool::new()),
         }
     }
@@ -34,13 +26,9 @@ impl Cla {
 
 #[hardy_bpa::async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-
-        self.inner.call_once(|| Inner {
-            sink: sink.clone(),
-            node_ids: node_ids.into(),
-        });
+        self.sink.call_once(|| sink.clone());
 
         // Register static peer if configured
         if let (Some(peer_addr), Some(peer_node)) =
