@@ -1,0 +1,25 @@
+[package]
+name = "hardy-plugin-abi"
+description = "ABI boundary types and plugin loading for Hardy BPA plugins"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+host = ["dep:libloading", "dep:hardy-bpa"]
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+
+# Host-side only (for loading plugins)
+libloading = { version = "0.8", optional = true }
+hardy-bpa = { path = "../bpa", optional = true }
+
+[build-dependencies]
+rustc_version = "0.4"
