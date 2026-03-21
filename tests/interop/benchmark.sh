@@ -263,6 +263,21 @@ else
     log_warn "DTNME test script not found, skipping"
 fi
 
+# ION
+if [ -x "$SCRIPT_DIR/ION/test_ion_ping.sh" ]; then
+    if docker image inspect ion-interop &>/dev/null; then
+        log_step "Running ION test..."
+        OUTPUT=$("$SCRIPT_DIR/ION/test_ion_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        extract_rtt_stats "$OUTPUT" "ION"
+        log_info "ION complete"
+    else
+        log_warn "ion-interop Docker image not found, skipping"
+        RESULTS+=("ION|-|-|-|-|No image|-|")
+    fi
+else
+    log_warn "ION test script not found, skipping"
+fi
+
 # =============================================================================
 # Generate Markdown Table
 # =============================================================================
@@ -332,7 +347,7 @@ OUTPUT_FILE="$SCRIPT_DIR/benchmark_results.md"
     echo ""
     echo "- **Pings**: Received/Transmitted count"
     echo "- **vs Hardy**: Percentage relative to Hardy baseline (100% = same, >100% = slower)"
-    echo "- All tests use TCPCLv4 over localhost"
+    echo "- Most tests use TCPCLv4 over localhost; ION uses STCP via plugin CLA"
     echo "- Hardy baseline runs inline; other tests use existing interop scripts"
     echo ""
     echo "_$PING_COUNT pings per test, generated $(date '+%Y-%m-%d %H:%M:%S')_"
