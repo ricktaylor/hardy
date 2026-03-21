@@ -16,7 +16,6 @@ depend on `hardy-bpa` directly for trait definitions.
 */
 
 use std::ffi::{CStr, c_char};
-use thiserror::Error;
 
 #[cfg(feature = "host")]
 pub mod host;

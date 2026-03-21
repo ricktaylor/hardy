@@ -6,6 +6,7 @@ edition.workspace = true
 
 [lib]
 path = "src/lib.rs"
+crate-type = ["rlib"]
 
 [features]
 default = []

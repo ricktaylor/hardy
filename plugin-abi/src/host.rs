@@ -13,6 +13,7 @@ use super::*;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use thiserror::Error;
 use tracing::{debug, info};
 
 pub use libloading::Library;
