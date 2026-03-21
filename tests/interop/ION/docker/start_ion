@@ -54,7 +54,18 @@ cat > /ion/ion.ionrc << EOF
 1 ${ION_NODE_NUM} ion.ionconfig
 s
 m horizon +0
+a range +0 +86400 ${ION_NODE_NUM} ${ION_NODE_NUM} 0
 EOF
+
+# Add contact/range to remote node if configured
+if [ -n "$REMOTE_HOST" ]; then
+    cat >> /ion/ion.ionrc << EOF
+a range +0 +86400 ${ION_NODE_NUM} ${REMOTE_NODE} 1
+a range +0 +86400 ${REMOTE_NODE} ${ION_NODE_NUM} 1
+a contact +0 +86400 ${ION_NODE_NUM} ${REMOTE_NODE} 100000
+a contact +0 +86400 ${REMOTE_NODE} ${ION_NODE_NUM} 100000
+EOF
+fi
 
 cat > /ion/ion.ionsecrc << EOF
 1
@@ -95,8 +106,13 @@ fi
 
 echo "Starting ION..."
 
-# Initialize and start ION using ionstart helper
-# ionstart reads .ionrc, .ionsecrc, .bprc, .ipnrc
+# Clean up any stale ION shared memory/semaphores from previous runs.
+# With --ipc=host, these persist across container restarts.
+echo "Cleaning stale ION IPC state..."
+killm 2>/dev/null || true
+sleep 1
+
+# Initialize and start ION
 cd /ion
 ionadmin ion.ionrc
 ionsecadmin ion.ionsecrc
@@ -108,7 +124,7 @@ echo "  STCP port:   ${STCP_PORT}"
 
 # Keep the container running - ION runs as background daemons
 # Wait for any signal to shut down
-trap 'echo "Shutting down ION..."; bpadmin . ; ionadmin . ; exit 0' SIGTERM SIGINT
+trap 'echo "Shutting down ION..."; bpadmin . 2>/dev/null; ionadmin . 2>/dev/null; killm 2>/dev/null; exit 0' SIGTERM SIGINT
 
 # Block forever (ION daemons run in background)
 while true; do
