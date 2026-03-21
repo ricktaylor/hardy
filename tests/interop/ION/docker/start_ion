@@ -1,0 +1,117 @@
+#!/bin/bash
+# ION interop test wrapper script
+#
+# This script starts ION with STCP convergence layer for interoperability
+# testing with Hardy.
+#
+# Environment variables:
+#   ION_NODE_NUM  - Node number for IPN EID (default: 2)
+#   STCP_PORT     - STCP listening port (default: 4556)
+#   REMOTE_HOST   - Hostname/IP of remote DTN node (optional)
+#   REMOTE_PORT   - Remote STCP port (default: 4557)
+#   REMOTE_NODE   - Remote node number (default: 1)
+
+set -e
+
+ION_NODE_NUM=${ION_NODE_NUM:-2}
+STCP_PORT=${STCP_PORT:-4556}
+REMOTE_HOST=${REMOTE_HOST:-}
+REMOTE_PORT=${REMOTE_PORT:-4557}
+REMOTE_NODE=${REMOTE_NODE:-1}
+
+echo "ION Interop Testing"
+echo "  Node:        ipn:$ION_NODE_NUM.0"
+echo "  STCP:        port $STCP_PORT"
+if [ -n "$REMOTE_HOST" ]; then
+    echo "  Remote:      $REMOTE_HOST:$REMOTE_PORT (ipn:$REMOTE_NODE.0)"
+fi
+echo ""
+
+# Report SysV shared memory limits (ION uses shmget)
+echo "SysV IPC limits:"
+echo "  shmmax: $(cat /proc/sys/kernel/shmmax 2>/dev/null || echo 'N/A')"
+echo "  shmall: $(cat /proc/sys/kernel/shmall 2>/dev/null || echo 'N/A')"
+echo "  shmmni: $(cat /proc/sys/kernel/shmmni 2>/dev/null || echo 'N/A')"
+echo ""
+
+# ION requires wmKey and sdrName to match compiled-in defaults on first
+# initialization (wmKey=65281, sdrName="ion"). Each container runs a single
+# ION instance so there's no collision risk.
+
+# Create ION configuration files
+# wmKey and sdrName MUST match ION's compiled-in defaults (65281 and "ion").
+# All fields must be specified — ION zero-initializes unspecified fields
+# rather than using defaults when an ionconfig file is provided.
+cat > /ion/ion.ionconfig << EOF
+wmKey 65281
+sdrName ion
+wmSize 5000000
+configFlags 1
+heapWords 5000000
+EOF
+
+cat > /ion/ion.ionrc << EOF
+1 ${ION_NODE_NUM} ion.ionconfig
+s
+m horizon +0
+EOF
+
+cat > /ion/ion.ionsecrc << EOF
+1
+EOF
+
+# Build bprc with STCP protocol
+cat > /ion/ion.bprc << EOF
+1
+a scheme ipn 'ipnfw' 'ipnadminep'
+a endpoint ipn:${ION_NODE_NUM}.0 x
+a endpoint ipn:${ION_NODE_NUM}.1 x
+a endpoint ipn:${ION_NODE_NUM}.7 x
+a protocol stcp 1400 100 -1
+a induct stcp 0.0.0.0:${STCP_PORT} stcpcli
+EOF
+
+# Add outduct to remote node if configured
+if [ -n "$REMOTE_HOST" ]; then
+    cat >> /ion/ion.bprc << EOF
+a outduct stcp ${REMOTE_HOST}:${REMOTE_PORT} stcpclo
+EOF
+fi
+
+cat >> /ion/ion.bprc << EOF
+r 'ipnadmin ion.ipnrc'
+s
+EOF
+
+# Build ipnrc with route to remote node
+cat > /ion/ion.ipnrc << EOF
+EOF
+
+if [ -n "$REMOTE_HOST" ]; then
+    cat >> /ion/ion.ipnrc << EOF
+a plan ${REMOTE_NODE} stcp/${REMOTE_HOST}:${REMOTE_PORT}
+EOF
+fi
+
+echo "Starting ION..."
+
+# Initialize and start ION using ionstart helper
+# ionstart reads .ionrc, .ionsecrc, .bprc, .ipnrc
+cd /ion
+ionadmin ion.ionrc
+ionsecadmin ion.ionsecrc
+bpadmin ion.bprc
+
+echo "ION started successfully"
+echo "  Local EID:   ipn:${ION_NODE_NUM}.0"
+echo "  STCP port:   ${STCP_PORT}"
+
+# Keep the container running - ION runs as background daemons
+# Wait for any signal to shut down
+trap 'echo "Shutting down ION..."; bpadmin . ; ionadmin . ; exit 0' SIGTERM SIGINT
+
+# Block forever (ION daemons run in background)
+while true; do
+    sleep 3600 &
+    wait $!
+done
