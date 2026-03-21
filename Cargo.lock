@@ -1851,6 +1851,7 @@ dependencies = [
  "hardy-ipn-legacy-filter",
  "hardy-localdisk-storage",
  "hardy-otel",
+ "hardy-plugin-abi",
  "hardy-postgres-storage",
  "hardy-proto",
  "hardy-s3-storage",
@@ -2040,6 +2041,19 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "hardy-plugin-abi"
+version = "0.1.0"
+dependencies = [
+ "hardy-bpa",
+ "libloading",
+ "rustc_version",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -2725,6 +2739,16 @@ checksum = "f12a681b7dd8ce12bff52488013ba614b869148d54dd79836ab85aafdd53f08d"
 dependencies = [
  "arbitrary",
  "cc",
+]
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
 ]
 
 [[package]]
