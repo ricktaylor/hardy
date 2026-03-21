@@ -5,7 +5,11 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+tracing = ["hardy-async/tracing"]
 
 [dependencies]
 hardy-plugin-abi = { path = "../../../plugin-abi" }
@@ -13,11 +17,9 @@ hardy-bpa = { path = "../../../bpa" }
 hardy-bpv7 = { path = "../../../bpv7" }
 hardy-cbor = { path = "../../../cbor" }
 hardy-async = { path = "../../../async" }
-tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util"] }
+tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util", "rt-multi-thread"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 futures = "0.3"
 tracing = "0.1.44"
-trace-err = "1.0.0"
-thiserror = "2.0.18"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"

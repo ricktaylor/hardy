@@ -2,7 +2,7 @@ use super::*;
 use futures::SinkExt;
 use tokio::net::TcpStream;
 use tokio_util::bytes::Bytes;
-use tokio_util::codec::Encoder;
+use tokio_util::codec::Decoder;
 
 /// Send a single bundle to a remote peer via a fresh TCP connection.
 ///

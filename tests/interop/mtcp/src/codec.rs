@@ -1,4 +1,3 @@
-use super::*;
 use tokio_util::bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// MTCP codec: CBOR byte string framing (draft-ietf-dtn-mtcpcl-01).
@@ -60,6 +59,16 @@ impl tokio_util::codec::Decoder for MtcpCodec {
             }
         }) {
             Ok((range, consumed)) => {
+                if self.max_bundle_size > 0 && range.len() as u64 > self.max_bundle_size {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "MTCP bundle length {} exceeds maximum {}",
+                            range.len(),
+                            self.max_bundle_size
+                        ),
+                    ));
+                }
                 // The entire CBOR byte string (header + payload) was in the buffer.
                 // Extract just the payload bytes.
                 let payload = Bytes::copy_from_slice(&src[range]);
