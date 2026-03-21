@@ -10,7 +10,7 @@ Hardy's subsystems are trait-based and extensible by design, but the only way to
 - **Non-standards-track protocols** (e.g., MTCP/STCP for interop testing with ION and ud3tn) that should not appear in the main binary.
 - **Third-party components** that need independent release cadences without forking the server.
 
-The plugin system allows operators to drop shared libraries into a configured directory, and tools like `bp ping` to load a CLA by path on the command line. The design prioritises simplicity and safety over generality — there is no stable ABI, no hot-reload, and no C plugin interface.
+The plugin system allows operators to load shared libraries by explicit path in the configuration file or on the command line. The design prioritises simplicity and safety over generality — there is no stable ABI, no hot-reload, no directory scanning, and no C plugin interface.
 
 ## Architecture Overview
 
@@ -22,13 +22,13 @@ The system has two sides, both provided by `hardy-plugin-abi`:
 
 The separation into a single crate with feature-gated facets keeps the plugin crate's dependency tree minimal (no `libloading`) while giving any host binary access to the loader.
 
-### Loading Modes
+### Loading Model: Explicit Paths Only
 
-There are two loading strategies, reflecting different configuration patterns:
+Plugins are loaded by **explicit file path** specified in the configuration file or on the command line. The system does not scan directories for `.so` files or resolve plugin names to paths. Every plugin that gets loaded is one that an operator deliberately configured.
 
-- **By name or path.** CLA and storage plugins are loaded individually. In the server, the config `type` field names the plugin and the host resolves it to `lib{name}.so` in the plugin directory. In tools, the user provides an explicit file path. Each plugin exports a single factory function that returns a trait object.
+This is a deliberate security decision. Directory scanning would mean that any `.so` file dropped into a directory — whether by an attacker, a misconfigured package manager, or a stale build artifact — would be loaded and executed with the full privileges of the BPA process. Since plugins receive a `Sink` with the ability to dispatch bundles, modify routing, and access the BPA's internal state, loading untrusted code would be a complete compromise.
 
-- **By directory scan.** Filter and policy factory plugins are discovered by scanning the plugin directory. Every `.so` file is loaded and probed for registration symbols. This scan-based approach is appropriate because multiple filters and policy factories can coexist, and they register themselves by calling methods on `&Bpa` rather than returning objects.
+In the server config, the CLA `type` field is either a built-in name (`tcpclv4`, `file-cla`) or an absolute path to a shared library. In tools like `bp ping`, the `--cla` flag takes a path directly.
 
 ## Key Design Decisions
 
@@ -54,10 +54,6 @@ Entry points use `extern "C"` linkage for symbol lookup (`dlsym`), but the funct
 
 A panic unwinding across an `extern "C"` boundary is undefined behaviour. The `guard()` and `guard_factory()` helpers wrap entry point bodies in `catch_unwind`, converting panics to error codes. This is a defence-in-depth measure — well-written plugins should not panic, but the host must not crash if they do.
 
-### Platform-native library naming
-
-`plugin_path()` uses `#[cfg(target_os)]` to select the platform-appropriate shared library name (`lib{name}.so` on Linux, `.dylib` on macOS, `.dll` on Windows) rather than probing multiple extensions. This avoids filesystem overhead and makes the resolution deterministic.
-
 ## Integration
 
 ### With `hardy-bpa`
@@ -68,7 +64,7 @@ Future plugin types (storage, filters, policy factories) will require upstream c
 
 ### With `hardy-bpa-server`
 
-The server adds a `dynamic-plugins` feature gating `hardy-plugin-abi/host`. The `ClaConfig` enum gains a `Plugin` catch-all variant (via `#[serde(untagged)]`) that captures unrecognised `type` values and their remaining config fields as JSON. During `clas::init()`, unrecognised types are resolved to `.so` files in the plugin directory via `load_cla_plugin_by_name()`.
+The server adds a `dynamic-plugins` feature gating `hardy-plugin-abi/host`. The `ClaConfig` enum gains an `Other` catch-all variant (via `#[serde(untagged)]`) that captures unrecognised `type` values and their remaining config fields as JSON. During `clas::init()`, the `type` value is treated as a file path and loaded via `load_cla_plugin()`.
 
 ### With `hardy-tools` (`bp ping`)
 
