@@ -37,22 +37,8 @@ pub enum ClaConfig {
     },
 }
 
-#[cfg(feature = "dynamic-plugins")]
-pub struct PluginLibraries(Vec<hardy_plugin_abi::host::Library>);
-
-#[cfg(feature = "dynamic-plugins")]
-impl PluginLibraries {
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
-}
-
 #[allow(unused_variables)]
-pub async fn init(
-    config: &[Cla],
-    bpa: &dyn BpaRegistration,
-    #[cfg(feature = "dynamic-plugins")] plugin_libs: &mut PluginLibraries,
-) -> anyhow::Result<()> {
+pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<()> {
     for cla_config in config {
         let policy = if let Some(p) = &cla_config.policy {
             policy::init(&cla_config.name, p).await?
@@ -92,12 +78,10 @@ pub async fn init(
                 #[cfg(feature = "dynamic-plugins")]
                 {
                     let config_json = serde_json::to_string(config)?;
-                    let (lib, cla) = unsafe {
-                        hardy_plugin_abi::host::load_cla_plugin(
-                            std::path::Path::new(plugin_path),
-                            &config_json,
-                        )
-                    }
+                    let cla = hardy_plugin_abi::host::load_cla_plugin(
+                        std::path::Path::new(plugin_path),
+                        &config_json,
+                    )
                     .map_err(|e| {
                         anyhow::anyhow!("Failed to load CLA plugin '{}': {e}", cla_config.name)
                     })?;
@@ -107,8 +91,6 @@ pub async fn init(
                         .map_err(|e| {
                             anyhow::anyhow!("Failed to register CLA '{}': {e}", cla_config.name)
                         })?;
-
-                    plugin_libs.0.push(lib);
                 }
 
                 #[cfg(not(feature = "dynamic-plugins"))]

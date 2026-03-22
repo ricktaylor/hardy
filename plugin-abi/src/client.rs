@@ -2,6 +2,8 @@
 ///
 /// This macro emits:
 /// - `HARDY_ABI_TOKEN` — the static ABI version token
+/// - `hardy_create_runtime` — creates a tokio runtime using the plugin's
+///   copy of tokio (so worker threads have the plugin's TLS)
 /// - `hardy_create_cla` — the `extern "C"` factory function with panic
 ///   guard, config parsing, and error handling
 ///
@@ -20,6 +22,22 @@ macro_rules! export_cla {
     ($config_type:ty, $factory:expr) => {
         #[unsafe(no_mangle)]
         pub static HARDY_ABI_TOKEN: &str = $crate::ABI_TOKEN;
+
+        /// Create a tokio runtime using the plugin's copy of tokio.
+        /// Worker threads will have the plugin's TLS, which is critical
+        /// for cdylib plugins where host and plugin have separate TLS.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn hardy_create_runtime() -> *mut ::tokio::runtime::Runtime {
+            match ::tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .thread_name("plugin-cla")
+                .build()
+            {
+                Ok(rt) => ::std::boxed::Box::into_raw(::std::boxed::Box::new(rt)),
+                Err(_) => ::std::ptr::null_mut(),
+            }
+        }
 
         #[unsafe(no_mangle)]
         pub extern "C" fn hardy_create_cla(

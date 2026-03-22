@@ -126,11 +126,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()> {
-    // Plugin libraries must outlive the BPA (they provide trait objects).
-    // Declared before `bpa` so Rust's reverse drop order ensures correct cleanup.
-    #[cfg(feature = "dynamic-plugins")]
-    let mut plugin_libs = clas::PluginLibraries::new();
-
     let (metadata_storage, bundle_storage) =
         init_storage(&config.storage, cli.upgrade_storage).await?;
 
@@ -183,13 +178,7 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
 
     bpa.start(cli.recover_storage);
 
-    clas::init(
-        &config.clas,
-        bpa.as_ref(),
-        #[cfg(feature = "dynamic-plugins")]
-        &mut plugin_libs,
-    )
-    .await?;
+    clas::init(&config.clas, bpa.as_ref()).await?;
 
     if let Some(config) = &config.grpc {
         grpc::init(config, &bpa, &tasks);

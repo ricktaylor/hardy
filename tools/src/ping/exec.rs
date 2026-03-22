@@ -163,7 +163,7 @@ async fn exec_plugin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::R
     let config_json = args.cla_config.as_deref().unwrap_or("{}");
     let path = std::path::Path::new(&args.cla);
 
-    let (_lib, cla) = unsafe { hardy_plugin_abi::host::load_cla_plugin(path, config_json) }
+    let cla = hardy_plugin_abi::host::load_cla_plugin(path, config_json)
         .map_err(|e| anyhow::anyhow!("Failed to load CLA plugin: {e}"))?;
 
     // Register with BPA — the plugin's on_register() will call
@@ -174,8 +174,6 @@ async fn exec_plugin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::R
         .map_err(|e| anyhow::anyhow!("Failed to register plugin CLA: {e}"))?;
 
     run_ping(args, bpa).await
-
-    // _lib dropped here, after bpa.shutdown() in run_ping
 }
 
 #[cfg(not(feature = "dynamic-plugins"))]
