@@ -85,6 +85,8 @@ struct SharedState {
     stats: Statistics,
     /// Path hops discovered via status reports, keyed by sequence number.
     path_hops: HashMap<u32, Vec<PathHop>>,
+    /// Sequence numbers that received echo replies (to filter "Lost" display).
+    replied: std::collections::HashSet<u32>,
     /// Reverse lookup: creation timestamp -> (seqno, send_time).
     /// Used to match return-trip status reports where bundle_id.source is the echo service.
     creation_to_seqno: HashMap<CreationTimestamp, (u32, time::OffsetDateTime)>,
@@ -139,6 +141,7 @@ impl Service {
                 expected_responses: HashMap::new(),
                 stats: Statistics::default(),
                 path_hops: HashMap::new(),
+                replied: std::collections::HashSet::new(),
                 creation_to_seqno: HashMap::new(),
             }),
         }
@@ -324,18 +327,27 @@ impl Service {
             );
         }
 
-        // Show last-seen info for lost bundles (remaining entries in path_hops)
-        let remaining_hops = &state.path_hops;
+        // Show last-seen info for truly lost bundles — those that have
+        // status reports but never received an echo reply.
+        let lost_seqnos: Vec<_> = {
+            let mut seqnos: Vec<_> = state
+                .path_hops
+                .keys()
+                .filter(|seqno| !state.replied.contains(seqno))
+                .copied()
+                .collect();
+            seqnos.sort();
+            seqnos
+        };
 
-        if !remaining_hops.is_empty() {
+        if !lost_seqnos.is_empty() {
             println!();
             println!("Lost bundles last seen:");
 
-            let mut seqnos: Vec<_> = remaining_hops.keys().copied().collect();
-            seqnos.sort();
+            let seqnos = lost_seqnos;
 
             for seqno in seqnos {
-                if let Some(hops) = remaining_hops.get(&seqno) {
+                if let Some(hops) = state.path_hops.get(&seqno) {
                     // Find the latest status report for this bundle
                     if let Some(last_hop) = hops.iter().max_by_key(|h| h.elapsed) {
                         let status = match last_hop.kind {
@@ -552,11 +564,11 @@ impl hardy_bpa::services::Service for Service {
         // This avoids clock synchronization issues between nodes
         if let Ok(rtt) = (receive_time - sent_time).try_into() {
             // Record statistics
-            self.state
-                .lock()
-                .trace_expect("Failed to lock state mutex")
-                .stats
-                .record_rtt(rtt);
+            {
+                let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+                state.stats.record_rtt(rtt);
+                state.replied.insert(payload.seqno);
+            }
 
             if !self.quiet {
                 println!(
