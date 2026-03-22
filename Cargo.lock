@@ -2023,12 +2023,15 @@ dependencies = [
 name = "hardy-plugin-abi"
 version = "0.1.0"
 dependencies = [
+ "flume",
  "hardy-bpa",
+ "hardy-bpv7",
  "libloading",
  "rustc_version",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
