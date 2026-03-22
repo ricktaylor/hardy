@@ -7,32 +7,44 @@ their ABI tokens, and calling their factory entry points.
 
 Used by `hardy-bpa-server` and `bp ping` (and any future tool that
 needs to load CLA or other plugins at runtime).
+
+## Apartment Pattern
+
+`cdylib` plugins link their own copy of tokio with separate thread-local
+storage. Calls from the plugin's runtime threads into the host's BPA code
+(via trait method vtables) fail because `tokio::spawn` can't find the
+host's runtime in the plugin's TLS.
+
+This is solved with an apartment pattern inspired by Windows COM: trait
+objects given to plugins are wrapped in channel-based proxies. Each method
+call is serialized into a message, sent over a channel, and executed by a
+dispatcher task on the host's runtime. The plugin sees a normal trait
+object; the channel crossing is invisible.
+
+Each trait family (CLA Sink, future Service Sink, etc.) has its own proxy
+implementation in a submodule.
 */
+
+mod cla;
 
 use super::*;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::debug;
 
 pub use libloading::Library;
 use libloading::Symbol;
 
-/// Entry point type for CLA factory functions.
-///
-/// `Arc<dyn Cla>` is not FFI-safe by Rust's definition, but is safe under
-/// the same-rustc-version constraint enforced by the ABI token check.
-#[allow(improper_ctypes_definitions)]
-type ClaFactoryFn =
-    unsafe extern "C" fn(*const std::ffi::c_char) -> PluginResult<Arc<dyn hardy_bpa::cla::Cla>>;
+// Re-export the CLA loader as the public API
+pub use cla::load_cla_plugin;
 
 /// Load a shared library and verify its ABI token matches the host.
 ///
 /// # Safety
 ///
 /// Loads and executes arbitrary native code.
-unsafe fn load_and_check(path: &Path) -> Result<Library, PluginLoadError> {
+pub(crate) unsafe fn load_and_check(path: &Path) -> Result<Library, PluginLoadError> {
     let lib = unsafe {
         Library::new(path).map_err(|e| PluginLoadError::Load {
             path: path.to_path_buf(),
@@ -55,41 +67,6 @@ unsafe fn load_and_check(path: &Path) -> Result<Library, PluginLoadError> {
 
     debug!("Loaded plugin: {} (ABI OK)", path.display());
     Ok(lib)
-}
-
-/// Load a CLA plugin by file path and call its factory function.
-///
-/// Returns the `Library` handle (caller must keep it alive for the
-/// lifetime of the returned CLA) and the CLA trait object.
-///
-/// # Safety
-///
-/// Loads and executes arbitrary native code from `path`.
-pub unsafe fn load_cla_plugin(
-    path: &Path,
-    config_json: &str,
-) -> Result<(Library, Arc<dyn hardy_bpa::cla::Cla>), PluginLoadError> {
-    info!("Loading CLA plugin: {}", path.display());
-    let lib = unsafe { load_and_check(path)? };
-
-    let factory: Symbol<ClaFactoryFn> =
-        unsafe { lib.get(b"hardy_create_cla") }.map_err(|_| PluginLoadError::MissingSymbol {
-            path: path.to_path_buf(),
-            symbol: "hardy_create_cla".to_string(),
-        })?;
-
-    let config_cstr = CString::new(config_json).map_err(|_| PluginLoadError::InvalidConfig {
-        reason: "config JSON contains null byte".to_string(),
-    })?;
-
-    match unsafe { factory(config_cstr.as_ptr()) } {
-        PluginResult::Ok(cla) => Ok((lib, cla)),
-        PluginResult::Err(code) => Err(PluginLoadError::FactoryFailed {
-            path: path.to_path_buf(),
-            symbol: "hardy_create_cla".to_string(),
-            code,
-        }),
-    }
 }
 
 /// Errors that can occur during plugin loading.
