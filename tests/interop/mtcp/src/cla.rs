@@ -14,6 +14,14 @@ impl Cla {
             tasks: Arc::new(hardy_async::TaskPool::new()),
         }
     }
+
+    /// Unregisters this CLA from the BPA.
+    pub async fn unregister(&self) {
+        self.tasks.shutdown().await;
+        if let Some(sink) = self.sink.get() {
+            sink.unregister().await;
+        }
+    }
 }
 
 #[hardy_bpa::async_trait]

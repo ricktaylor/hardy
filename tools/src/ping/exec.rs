@@ -158,17 +158,16 @@ async fn exec_external_cla(
 ) -> anyhow::Result<ExitCode> {
     let bpa_reg: std::sync::Arc<dyn BpaRegistration> = bpa.clone();
 
-    // Create notification for CLA registration
-    let cla_registered = std::sync::Arc::new(hardy_async::Notify::new());
-
     // Start gRPC server with CLA service
     let tasks = hardy_async::TaskPool::new();
-    let mut grpc_config = hardy_proto::server::Config {
+    let grpc_config = hardy_proto::server::Config {
         address: args.grpc_listen,
         services: vec!["cla".to_string()],
-        on_cla_register: Some(cla_registered.clone()),
     };
-    hardy_proto::server::init(&mut grpc_config, &bpa_reg, &tasks);
+    hardy_proto::server::init(&grpc_config, &bpa_reg, &tasks);
+
+    // Yield to let the gRPC server task bind and start listening
+    tokio::task::yield_now().await;
 
     // Spawn the CLA binary as a subprocess
     let mut cmd = tokio::process::Command::new(&args.cla);
@@ -184,23 +183,54 @@ async fn exec_external_cla(
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to start CLA process '{}': {e}", args.cla))?;
 
-    // Wait for the CLA to register, with timeout and process exit detection
-    tokio::select! {
-        _ = cla_registered.notified() => {
-            if !args.quiet {
-                eprintln!("External CLA registered");
+    // Wait for the CLA to fully register (including add_peer creating forward
+    // entries). The CLA subprocess connects via gRPC and the registration
+    // completes asynchronously — we need the forward entries to exist before
+    // we start sending pings.
+    // TODO: Replace with proper RoutingAgent notification API when available
+    {
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(10));
+        tokio::pin!(timeout);
+        tokio::select! {
+            _ = &mut timeout => {
+                let _ = child.kill().await;
+                return Err(anyhow::anyhow!("CLA didn't start within 10 seconds"));
+            }
+            status = child.wait() => {
+                return Err(anyhow::anyhow!(
+                    "CLA process exited unexpectedly: {}",
+                    status?
+                ));
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                if !args.quiet {
+                    eprintln!("External CLA started");
+                }
             }
         }
-        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-            let _ = child.kill().await;
-            return Err(anyhow::anyhow!("CLA didn't register within 10 seconds"));
-        }
-        status = child.wait() => {
-            return Err(anyhow::anyhow!(
-                "CLA process exited unexpectedly: {}",
-                status?
-            ));
-        }
+    }
+
+    // Add a route for the destination via the peer node
+    // (the CLA's add_peer creates a forward entry, but the BPA also needs
+    // a route to resolve the destination EID to the peer node)
+    if args.destination.service().is_some() {
+        let peer: NodeId = args.destination.clone().try_to_node_id().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid destination EID {} for ping service",
+                args.destination
+            )
+        })?;
+
+        bpa.register_routing_agent(
+            "ping-target".to_string(),
+            std::sync::Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[(
+                args.destination.clone().into(),
+                hardy_bpa::routes::Action::Via(peer.into()),
+                1,
+            )])),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to add route: {e}"))?;
     }
 
     let result = run_ping(args, bpa).await;

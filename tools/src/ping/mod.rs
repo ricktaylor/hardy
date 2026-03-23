@@ -114,7 +114,7 @@ pub struct Command {
     cla: String,
 
     /// Arguments to pass to the external CLA binary (use with --cla /path/to/binary)
-    #[arg(long = "cla-args")]
+    #[arg(long = "cla-args", allow_hyphen_values = true)]
     cla_args: Option<String>,
 
     /// gRPC listen address for external CLA registration (use with --cla /path/to/binary)

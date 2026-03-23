@@ -91,7 +91,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         .register_cla(
             config.cla_name.clone(),
             Some(hardy_bpa::cla::ClaAddressType::Tcp),
-            cla,
+            cla.clone(),
             None,
         )
         .await
@@ -109,6 +109,9 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     info!("Started successfully");
 
     tasks.cancel_token().cancelled().await;
+
+    // Gracefully unregister from the BPA before shutting down
+    cla.unregister().await;
 
     tasks.shutdown().await;
 

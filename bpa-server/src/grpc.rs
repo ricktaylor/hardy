@@ -26,13 +26,12 @@ pub fn init(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) {
-    let mut proto_config = hardy_proto::server::Config {
+    let proto_config = hardy_proto::server::Config {
         address: config.address,
         services: config.services.clone(),
-        ..Default::default()
     };
 
-    hardy_proto::server::init(&mut proto_config, bpa, tasks);
+    hardy_proto::server::init(&proto_config, bpa, tasks);
 }
 
 #[cfg(not(feature = "grpc"))]
