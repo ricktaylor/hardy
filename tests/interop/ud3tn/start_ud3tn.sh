@@ -4,9 +4,19 @@
 # Usage:
 #   ./tests/interop/ud3tn/start_ud3tn.sh
 #
-# Then in another terminal:
-#   bp ping ipn:2.7 --cla /path/to/libhardy_mtcp_cla.so \
-#       --cla-config '{"framing":"mtcp","peer":"127.0.0.1:4556","peer-node":"ipn:2.0","address":"[::]:4557"}' \
+# Then in another terminal, create a CLA config file (e.g. /tmp/cla.toml):
+#   bpa-address = "http://[::1]:50051"
+#   cla-name = "cl0"
+#   framing = "mtcp"
+#   peer = "127.0.0.1:4556"
+#   peer-node = "ipn:2.0"
+#   address = "[::]:4557"
+#
+# Then run:
+#   bp ping ipn:2.7 \
+#       --cla /path/to/mtcp-cla \
+#       --cla-args "--config /tmp/cla.toml" \
+#       --grpc-listen "[::1]:50051" \
 #       --source ipn:1.12345 --no-sign
 
 set -e
@@ -19,6 +29,7 @@ UD3TN_MTCP_PORT=4556
 UD3TN_AAP2_PORT=4243
 HARDY_NODE_NUM=1
 HARDY_MTCP_PORT=4557
+HARDY_GRPC_PORT=50051
 
 cleanup() {
     echo ""
@@ -53,13 +64,33 @@ docker run --rm \
 CONTAINER_PID=$!
 sleep 3
 
-# Start echo agent
+# Start echo agent (ud3tn doesn't ship one, so we create it inline).
+# Uses two AAP2 connections (subscriber for recv, active for send)
+# because ud3tn's subscriber mode is receive-only.
+# Must send RESPONSE_STATUS_SUCCESS (1) after each received ADU.
 echo "Starting echo agent on ipn:$UD3TN_NODE_NUM.7..."
 docker exec -d ud3tn-interop-test \
-    python3 -m ud3tn_utils.aap.bin.aap_echo \
-    --agentid 7 \
-    --tcp 127.0.0.1 4242 \
-    2>/dev/null || echo "Warning: could not start echo agent via AAP1"
+    python3 -c "
+from ud3tn_utils.aap2 import AAP2TCPClient, BundleADU
+recv_client = AAP2TCPClient(('127.0.0.1', $UD3TN_AAP2_PORT))
+recv_client.connect()
+secret = recv_client.configure('7', subscribe=True)
+send_client = AAP2TCPClient(('127.0.0.1', $UD3TN_AAP2_PORT))
+send_client.connect()
+send_client.configure('7', subscribe=False, secret=secret)
+while True:
+    msg = recv_client.receive_msg()
+    t = msg.WhichOneof('msg')
+    if t == 'keepalive':
+        recv_client.send_response_status(2)
+        continue
+    if t != 'adu':
+        continue
+    adu, data = recv_client.receive_adu(msg.adu)
+    recv_client.send_response_status(1)
+    send_client.send_adu(BundleADU(dst_eid=adu.src_eid, payload_length=len(data)), data)
+    send_client.receive_response()
+" || echo "Warning: echo agent exited"
 
 # Configure contact to Hardy
 echo "Configuring contact to Hardy (ipn:$HARDY_NODE_NUM.0)..."
@@ -81,10 +112,19 @@ echo "  Echo:     ipn:$UD3TN_NODE_NUM.7"
 echo "  MTCP:     127.0.0.1:$UD3TN_MTCP_PORT"
 echo "  AAP2:     127.0.0.1:$UD3TN_AAP2_PORT"
 echo ""
-echo "Test with:"
+echo "Create a CLA config file (e.g. /tmp/cla.toml):"
+echo "  bpa-address = \"http://[::1]:$HARDY_GRPC_PORT\""
+echo "  cla-name = \"cl0\""
+echo "  framing = \"mtcp\""
+echo "  peer = \"127.0.0.1:$UD3TN_MTCP_PORT\""
+echo "  peer-node = \"ipn:$UD3TN_NODE_NUM.0\""
+echo "  address = \"[::]:$HARDY_MTCP_PORT\""
+echo ""
+echo "Then test with:"
 echo "  bp ping ipn:$UD3TN_NODE_NUM.7 \\"
-echo "    --cla /path/to/libhardy_mtcp_cla.so \\"
-echo "    --cla-config '{\"framing\":\"mtcp\",\"peer\":\"127.0.0.1:$UD3TN_MTCP_PORT\",\"peer-node\":\"ipn:$UD3TN_NODE_NUM.0\",\"address\":\"[::]:$HARDY_MTCP_PORT\"}' \\"
+echo "    --cla /path/to/mtcp-cla \\"
+echo "    --cla-args \"--config /tmp/cla.toml\" \\"
+echo "    --grpc-listen \"[::1]:$HARDY_GRPC_PORT\" \\"
 echo "    --source ipn:$HARDY_NODE_NUM.12345 --no-sign"
 echo ""
 echo "Press Ctrl+C to stop..."

@@ -7,15 +7,15 @@
 #
 # Prerequisites:
 #   - Docker installed (for ud3tn container)
-#   - Hardy tools and bpa-server built (with dynamic-plugins feature)
-#   - MTCP/STCP CLA plugin built (tests/interop/mtcp/cla/)
+#   - Hardy tools and bpa-server built
+#   - MTCP/STCP CLA binary built (tests/interop/mtcp/)
 #   - ud3tn Docker image built (ud3tn-interop)
 #
 # Usage:
 #   ./tests/interop/ud3tn/test_ud3tn_ping.sh [--skip-build] [--no-docker]
 #
 # Options:
-#   --skip-build   Skip building Hardy and CLA plugin binaries
+#   --skip-build   Skip building Hardy and CLA binaries
 #   --no-docker    Use local ud3tn binaries instead of Docker
 
 set -e
@@ -23,13 +23,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INTEROP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-MTCP_CLA_DIR="$INTEROP_DIR/mtcp/cla"
+MTCP_CLA_DIR="$INTEROP_DIR/mtcp"
 
 # Configuration
 HARDY_NODE_NUM=1
 UD3TN_NODE_NUM=2
 UD3TN_MTCP_PORT=4556
 HARDY_MTCP_PORT=4557
+HARDY_GRPC_PORT=50051
 # ud3tn AAP2 port for agent registration
 UD3TN_AAP2_PORT=4243
 UD3TN_IMAGE="ud3tn-interop"
@@ -74,6 +75,7 @@ done
 # Cleanup function
 UD3TN_CONTAINER=""
 HARDY_PID=""
+CLA_PID=""
 CLEANUP_IN_PROGRESS=""
 
 kill_process() {
@@ -83,7 +85,7 @@ kill_process() {
         log_info "Stopping $name (PID $pid)..."
         kill "$pid" 2>/dev/null || true
         local count=0
-        while kill -0 "$pid" 2>/dev/null && [ $count -lt 30 ]; do
+        while kill -0 "$pid" 2>/dev/null && [ $count -lt 50 ]; do
             sleep 0.1
             count=$((count + 1))
         done
@@ -109,6 +111,7 @@ cleanup() {
     fi
     docker rm -f ud3tn-interop-test 2>/dev/null || true
 
+    kill_process "$CLA_PID" "mtcp-cla"
     kill_process "$HARDY_PID" "hardy-bpa-server"
 
     if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
@@ -123,28 +126,28 @@ trap cleanup EXIT INT TERM
 TEST_DIR=$(mktemp -d)
 log_info "Using test directory: $TEST_DIR"
 
-# Build Hardy tools, server, and MTCP CLA plugin if needed
+# Build Hardy tools, server, and MTCP CLA binary if needed
 if [ "$SKIP_BUILD" = false ]; then
     log_step "Building Hardy tools and bpa-server..."
     cd "$WORKSPACE_DIR"
-    cargo build --release -p hardy-tools -p hardy-bpa-server --features dynamic-plugins
+    cargo build --release -p hardy-tools -p hardy-bpa-server
 
-    log_step "Building MTCP/STCP CLA plugin..."
+    log_step "Building MTCP/STCP CLA binary..."
     cd "$MTCP_CLA_DIR"
     cargo build --release
 fi
 
 BP_BIN="$WORKSPACE_DIR/target/release/bp"
 BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
-CLA_PLUGIN="$MTCP_CLA_DIR/target/release/libhardy_mtcp_cla.so"
+CLA_BIN="$MTCP_CLA_DIR/target/release/mtcp-cla"
 
 if [ ! -x "$BP_BIN" ]; then
     log_error "bp binary not found at $BP_BIN"
     exit 1
 fi
 
-if [ ! -f "$CLA_PLUGIN" ]; then
-    log_error "MTCP CLA plugin not found at $CLA_PLUGIN"
+if [ ! -x "$CLA_BIN" ]; then
+    log_error "mtcp-cla binary not found at $CLA_BIN"
     log_error "Build it with: cd $MTCP_CLA_DIR && cargo build --release"
     exit 1
 fi
@@ -203,21 +206,34 @@ if [ "$USE_DOCKER" = true ]; then
         exit 1
     fi
 
-    # Start echo agent via AAP inside the container
-    # aap_echo registers on a service endpoint and echoes bundles back
+    # Start echo agent via AAP2 inside the container.
+    # ud3tn doesn't ship an echo agent, so we create one inline.
+    # Uses two AAP2 connections (subscriber for recv, active for send)
+    # because ud3tn's subscriber mode is receive-only.
+    # Must send RESPONSE_STATUS_SUCCESS (1) after each received ADU.
     log_step "Starting echo agent on ipn:$UD3TN_NODE_NUM.7..."
     docker exec -d "$UD3TN_CONTAINER" \
-        python3 -m ud3tn_utils.aap.bin.aap_echo \
-        --agentid 7 \
-        --tcp 127.0.0.1 4242 \
-        2>/dev/null || {
-        # Fallback: try AAP2-based echo if AAP1 isn't available
-        docker exec -d "$UD3TN_CONTAINER" \
-            python3 -m ud3tn_utils.aap2.bin.aap2_receive \
-            --agentid 7 \
-            --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
-            2>/dev/null || log_warn "Could not start echo agent"
-    }
+        python3 -c "
+from ud3tn_utils.aap2 import AAP2TCPClient, BundleADU
+recv_client = AAP2TCPClient(('127.0.0.1', $UD3TN_AAP2_PORT))
+recv_client.connect()
+secret = recv_client.configure('7', subscribe=True)
+send_client = AAP2TCPClient(('127.0.0.1', $UD3TN_AAP2_PORT))
+send_client.connect()
+send_client.configure('7', subscribe=False, secret=secret)
+while True:
+    msg = recv_client.receive_msg()
+    t = msg.WhichOneof('msg')
+    if t == 'keepalive':
+        recv_client.send_response_status(2)
+        continue
+    if t != 'adu':
+        continue
+    adu, data = recv_client.receive_adu(msg.adu)
+    recv_client.send_response_status(1)
+    send_client.send_adu(BundleADU(dst_eid=adu.src_eid, payload_length=len(data)), data)
+    send_client.receive_response()
+" || log_warn "Echo agent exited"
 
     sleep 2
 else
@@ -236,14 +252,24 @@ docker exec "$UD3TN_CONTAINER" \
 
 sleep 1
 
-# Hardy pings ud3tn echo service via MTCP using the CLA plugin
-# Note: Hardy also needs to listen for MTCP responses from ud3tn
+# Create CLA config for bp ping (TEST 1)
+cat > "$TEST_DIR/cla_ping.toml" << EOF
+bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
+cla-name = "cl0"
+framing = "mtcp"
+peer = "127.0.0.1:$UD3TN_MTCP_PORT"
+peer-node = "ipn:$UD3TN_NODE_NUM.0"
+address = "[::]:$HARDY_MTCP_PORT"
+EOF
+
+# Hardy pings ud3tn echo service via MTCP using the external CLA binary
 log_step "Hardy pinging ud3tn echo service at ipn:$UD3TN_NODE_NUM.7 via MTCP..."
 echo ""
 
 PING_OUTPUT=$("$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
-    --cla "$CLA_PLUGIN" \
-    --cla-config "{\"framing\":\"mtcp\",\"peer\":\"127.0.0.1:$UD3TN_MTCP_PORT\",\"peer-node\":\"ipn:$UD3TN_NODE_NUM.0\",\"address\":\"[::]:$HARDY_MTCP_PORT\"}" \
+    --cla "$CLA_BIN" \
+    --cla-args "--config $TEST_DIR/cla_ping.toml" \
+    --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
     --no-sign \
@@ -290,12 +316,11 @@ echo "============================================================"
 log_info "TEST 2: Hardy server with echo, ud3tn pings via MTCP"
 echo "============================================================"
 
-# Create Hardy config for server mode with MTCP CLA plugin
+# Create Hardy bpa-server config
 cat > "$TEST_DIR/hardy_config.toml" << EOF
 log-level = "info"
 status-reports = true
 node-ids = "ipn:$HARDY_NODE_NUM.0"
-plugin-dir = "$(dirname "$CLA_PLUGIN")"
 
 [built-in-services]
 echo = [7]
@@ -309,24 +334,44 @@ type = "memory"
 [rfc9171-validity]
 primary-block-integrity = false
 
-[[clas]]
-name = "mtcp0"
-type = "hardy_mtcp_cla"
-framing = "mtcp"
-address = "[::]:$HARDY_MTCP_PORT"
+[grpc]
+address = "[::1]:$HARDY_GRPC_PORT"
+services = ["cla"]
 EOF
 
-log_step "Starting Hardy BPA server with MTCP CLA plugin..."
+# Create CLA config for the standalone MTCP CLA process
+cat > "$TEST_DIR/cla_server.toml" << EOF
+bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
+cla-name = "cl0"
+framing = "mtcp"
+address = "[::]:$HARDY_MTCP_PORT"
+peer = "127.0.0.1:$UD3TN_MTCP_PORT"
+peer-node = "ipn:$UD3TN_NODE_NUM.0"
+EOF
+
+log_step "Starting Hardy BPA server..."
 "$BPA_BIN" -c "$TEST_DIR/hardy_config.toml" &
 HARDY_PID=$!
 
-sleep 3
+sleep 2
 
 if ! kill -0 "$HARDY_PID" 2>/dev/null; then
     log_error "Hardy BPA server failed to start"
     exit 1
 fi
 log_info "Hardy BPA server started with PID $HARDY_PID"
+
+log_step "Starting MTCP CLA process..."
+"$CLA_BIN" --config "$TEST_DIR/cla_server.toml" &
+CLA_PID=$!
+
+sleep 2
+
+if ! kill -0 "$CLA_PID" 2>/dev/null; then
+    log_error "MTCP CLA failed to start"
+    exit 1
+fi
+log_info "MTCP CLA started with PID $CLA_PID"
 
 # Start ud3tn to ping Hardy
 log_step "Starting ud3tn to ping Hardy..."
@@ -378,15 +423,19 @@ if [ "$USE_DOCKER" = true ]; then
         echo "$PING_OUTPUT"
         echo ""
 
-        # aap2_ping reports round-trip times; count lines with time info
-        RESPONSE_COUNT=$(echo "$PING_OUTPUT" | grep -ci "time\|reply\|response\|ms" || echo "0")
+        # aap2_ping output: "Ping ran for X seconds, received N of M sent"
+        STATS_LINE=$(echo "$PING_OUTPUT" | grep "received .* of .* sent" | tail -1)
+        RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*received ([0-9]+) of.*/\1/')
+        SENT=$(echo "$STATS_LINE" | sed -E 's/.*of ([0-9]+) sent.*/\1/')
 
-        if [ "$RESPONSE_COUNT" -ge "$PING_COUNT" ]; then
-            log_info "TEST 2 PASSED: ud3tn received responses from Hardy"
-            TEST2_RESULT="PASS"
-        elif [ "$RESPONSE_COUNT" -ge 1 ]; then
-            log_error "TEST 2 FAILED: Partial loss - only $RESPONSE_COUNT responses detected"
-            TEST2_RESULT="FAIL"
+        if [ -n "$RECEIVED" ] && [ "$RECEIVED" -ge 1 ] 2>/dev/null; then
+            if [ "$RECEIVED" = "$SENT" ]; then
+                log_info "TEST 2 PASSED: ud3tn received $RECEIVED/$SENT responses from Hardy"
+                TEST2_RESULT="PASS"
+            else
+                log_error "TEST 2 FAILED: Partial loss ($RECEIVED/$SENT)"
+                TEST2_RESULT="FAIL"
+            fi
         else
             log_error "TEST 2 FAILED: No echo responses received"
             TEST2_RESULT="FAIL"
