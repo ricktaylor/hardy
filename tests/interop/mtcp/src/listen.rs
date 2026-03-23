@@ -92,6 +92,11 @@ async fn handle_connection(
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     cancel: hardy_async::CancellationToken,
 ) {
+    stream
+        .set_nodelay(true)
+        .inspect_err(|e| warn!("Failed to set TCP_NODELAY: {e}"))
+        .ok();
+
     let peer_addr = Some(hardy_bpa::cla::ClaAddress::Tcp(remote_addr));
 
     match framing {
