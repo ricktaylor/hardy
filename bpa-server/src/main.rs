@@ -181,7 +181,8 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
     clas::init(&config.clas, bpa.as_ref()).await?;
 
     if let Some(config) = &config.grpc {
-        grpc::init(config, &bpa, &tasks);
+        let bpa_reg: Arc<dyn hardy_bpa::bpa::BpaRegistration> = bpa.clone();
+        grpc::init(config, &bpa_reg, &tasks);
     }
 
     listen_for_cancel(&tasks);

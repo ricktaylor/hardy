@@ -109,13 +109,17 @@ pub struct Command {
     /// Peer address (host:port) for built-in CLAs
     peer: Option<String>,
 
-    /// CLA to use: built-in name (tcpclv4) or path to a plugin .so
+    /// CLA to use: built-in name (tcpclv4) or path to an external CLA binary
     #[arg(long, default_value = "tcpclv4")]
     cla: String,
 
-    /// JSON config string for the CLA (plugin or built-in)
-    #[arg(long)]
-    cla_config: Option<String>,
+    /// Arguments to pass to the external CLA binary (use with --cla /path/to/binary)
+    #[arg(long = "cla-args")]
+    cla_args: Option<String>,
+
+    /// gRPC listen address for external CLA registration (use with --cla /path/to/binary)
+    #[arg(long = "grpc-listen", default_value = "[::1]:50051")]
+    grpc_listen: std::net::SocketAddr,
 
     /// Accept self-signed TLS certificates (TCPCLv4 only)
     #[arg(long = "tls-insecure")]

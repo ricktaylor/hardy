@@ -1827,7 +1827,6 @@ dependencies = [
  "hardy-ipn-legacy-filter",
  "hardy-localdisk-storage",
  "hardy-otel",
- "hardy-plugin-abi",
  "hardy-postgres-storage",
  "hardy-proto",
  "hardy-s3-storage",

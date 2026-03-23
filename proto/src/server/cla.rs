@@ -205,6 +205,7 @@ impl ProxyHandler for Handler {
 pub struct Service {
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     channel_size: usize,
+    on_register: Option<Arc<hardy_async::Notify>>,
 }
 
 #[async_trait]
@@ -248,6 +249,10 @@ impl cla_server::Cla for Service {
                         .map(|node_id| node_id.to_string())
                         .collect();
 
+                    if let Some(notify) = &self.on_register {
+                        notify.notify_one();
+                    }
+
                     Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
                 }
                 _ => {
@@ -272,11 +277,20 @@ impl cla_server::Cla for Service {
 }
 
 /// Create a new CLA gRPC service.
+///
+/// # Arguments
+///
+/// * `bpa` - BPA registration interface
+/// * `on_register` - Optional [`Notify`](hardy_async::Notify) signaled after successful
+///   CLA registration. Used by `bp ping` to know when an external CLA subprocess is ready.
+///   Pass `None` for normal server operation.
 pub fn new_cla_service(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    on_register: Option<Arc<hardy_async::Notify>>,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
         bpa: bpa.clone(),
         channel_size: 16,
+        on_register,
     })
 }
