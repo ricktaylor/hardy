@@ -1,21 +1,13 @@
-mod codec;
-pub mod config;
-mod connect;
-mod listen;
-
-use hardy_async::sync::spin::Once;
-use hardy_bpv7::eid::NodeId;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use super::*;
 
 pub struct Cla {
-    config: config::Config,
+    config: config::ClaConfig,
     sink: Once<Arc<dyn hardy_bpa::cla::Sink>>,
     tasks: Arc<hardy_async::TaskPool>,
 }
 
 impl Cla {
-    pub fn new(config: config::Config) -> Self {
+    pub fn new(config: config::ClaConfig) -> Self {
         Self {
             config,
             sink: Once::new(),
@@ -91,9 +83,3 @@ impl hardy_bpa::cla::Cla for Cla {
         Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
     }
 }
-
-// --- Plugin entry point ---
-
-hardy_plugin_abi::export_cla!(config::Config, |config| {
-    Ok(Arc::new(Cla::new(config)))
-});
