@@ -22,7 +22,6 @@ members = [
     "ipn-legacy-filter",
     "localdisk-storage",
     "otel",
-    "plugin-abi",
     "s3-storage",
     "proto",
     "sqlite-storage",

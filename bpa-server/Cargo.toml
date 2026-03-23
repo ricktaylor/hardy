@@ -21,7 +21,6 @@ tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
 echo = ["dep:hardy-echo-service"]
-dynamic-plugins = ["dep:hardy-plugin-abi"]
 tracing = ["hardy-async/tracing"]
 
 [dependencies]
@@ -39,7 +38,6 @@ hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { path = "../echo-service", optional = true }
-hardy-plugin-abi = { path = "../plugin-abi", features = ["host"], optional = true }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "signal"] }
 config = { version = "0.15.22", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
