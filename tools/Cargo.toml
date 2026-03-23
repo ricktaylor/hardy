@@ -12,19 +12,19 @@ name = "bp"
 path = "src/bp.rs"
 
 [features]
-dynamic-plugins = ["dep:hardy-plugin-abi"]
 tracing = ["hardy-bpa/tracing","hardy-tcpclv4/tracing"]
 
 [dependencies]
 anyhow = "1.0.102"
+hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
+hardy-proto = { path = "../proto" }
 hardy-tcpclv4 = { path = "../tcpclv4" }
-hardy-plugin-abi = { path = "../plugin-abi", features = ["host"], optional = true }
 clap = { version = "4.6.0", features = ["derive"] }
 humantime = "2.3.0"
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "time", "signal"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "time", "signal", "process"] }
 tokio-util = "0.7.18"
 time = { version = "0.3.47", features = ["parsing"] }
 rand = "0.10.0"

@@ -12,14 +12,10 @@ pub enum ExitCode {
     Error = 2,
 }
 
-/// Returns true if the --cla value looks like a file path (plugin) rather
-/// than a built-in CLA name.
-fn is_plugin_path(cla: &str) -> bool {
-    cla.contains('/')
-        || cla.contains('\\')
-        || cla.ends_with(".so")
-        || cla.ends_with(".dylib")
-        || cla.ends_with(".dll")
+/// Returns true if the --cla value looks like a file path (external binary)
+/// rather than a built-in CLA name.
+fn is_external_cla(cla: &str) -> bool {
+    cla.contains('/') || cla.contains('\\')
 }
 
 async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
@@ -32,10 +28,12 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     }
 
     let node_ids = [args.node_id()?].as_slice().try_into().unwrap();
-    let bpa = hardy_bpa::bpa::Bpa::builder()
-        .status_reports(true)
-        .node_ids(node_ids)
-        .build();
+    let bpa = std::sync::Arc::new(
+        hardy_bpa::bpa::Bpa::builder()
+            .status_reports(true)
+            .node_ids(node_ids)
+            .build(),
+    );
 
     // Add a default 'drop' route, we don't want to cache locally
     bpa.register_routing_agent(
@@ -53,14 +51,17 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
     bpa.start(false);
 
-    if is_plugin_path(&args.cla) {
-        exec_plugin_cla(args, &bpa).await
+    if is_external_cla(&args.cla) {
+        exec_external_cla(args, &bpa).await
     } else {
         exec_builtin_cla(args, &bpa).await
     }
 }
 
-async fn exec_builtin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
+async fn exec_builtin_cla(
+    args: &Command,
+    bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
+) -> anyhow::Result<ExitCode> {
     match args.cla.as_str() {
         "tcpclv4" => {}
         other => return Err(anyhow::anyhow!("Unknown built-in CLA: '{other}'")),
@@ -105,7 +106,7 @@ async fn exec_builtin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::
             .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
     );
 
-    cla.register(bpa, args.cla.clone(), None)
+    cla.register(bpa.as_ref(), args.cla.clone(), None)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", args.cla))?;
 
@@ -151,44 +152,74 @@ async fn exec_builtin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::
     run_ping(args, bpa).await
 }
 
-#[cfg(feature = "dynamic-plugins")]
-async fn exec_plugin_cla(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
-    if args.peer.is_some() {
-        eprintln!(
-            "Warning: peer address argument is ignored when using a plugin CLA; \
-             pass peer info via --cla-config instead"
-        );
+async fn exec_external_cla(
+    args: &Command,
+    bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
+) -> anyhow::Result<ExitCode> {
+    let bpa_reg: std::sync::Arc<dyn BpaRegistration> = bpa.clone();
+
+    // Create notification for CLA registration
+    let cla_registered = std::sync::Arc::new(hardy_async::Notify::new());
+
+    // Start gRPC server with CLA service
+    let tasks = hardy_async::TaskPool::new();
+    let mut grpc_config = hardy_proto::server::Config {
+        address: args.grpc_listen,
+        services: vec!["cla".to_string()],
+        on_cla_register: Some(cla_registered.clone()),
+    };
+    hardy_proto::server::init(&mut grpc_config, &bpa_reg, &tasks);
+
+    // Spawn the CLA binary as a subprocess
+    let mut cmd = tokio::process::Command::new(&args.cla);
+
+    // Pass through user-supplied arguments
+    if let Some(cla_args) = &args.cla_args {
+        for arg in cla_args.split_whitespace() {
+            cmd.arg(arg);
+        }
     }
 
-    let config_json = args.cla_config.as_deref().unwrap_or("{}");
-    let path = std::path::Path::new(&args.cla);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to start CLA process '{}': {e}", args.cla))?;
 
-    let cla = hardy_plugin_abi::host::load_cla_plugin(path, config_json)
-        .map_err(|e| anyhow::anyhow!("Failed to load CLA plugin: {e}"))?;
+    // Wait for the CLA to register, with timeout and process exit detection
+    tokio::select! {
+        _ = cla_registered.notified() => {
+            if !args.quiet {
+                eprintln!("External CLA registered");
+            }
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+            let _ = child.kill().await;
+            return Err(anyhow::anyhow!("CLA didn't register within 10 seconds"));
+        }
+        status = child.wait() => {
+            return Err(anyhow::anyhow!(
+                "CLA process exited unexpectedly: {}",
+                status?
+            ));
+        }
+    }
 
-    // Register with BPA — the plugin's on_register() will call
-    // sink.add_peer() if peer/peer-node are in the config, creating
-    // the wildcard RIB entry needed for routing.
-    bpa.register_cla("plugin0".to_string(), None, cla, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to register plugin CLA: {e}"))?;
+    let result = run_ping(args, bpa).await;
 
-    run_ping(args, bpa).await
+    // Clean up: stop gRPC server and kill CLA subprocess
+    tasks.shutdown().await;
+    let _ = child.kill().await;
+
+    result
 }
 
-#[cfg(not(feature = "dynamic-plugins"))]
-async fn exec_plugin_cla(args: &Command, _bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
-    Err(anyhow::anyhow!(
-        "CLA plugin '{}' requires the dynamic-plugins feature",
-        args.cla
-    ))
-}
-
-async fn run_ping(args: &Command, bpa: &hardy_bpa::bpa::Bpa) -> anyhow::Result<ExitCode> {
+async fn run_ping(
+    args: &Command,
+    bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
+) -> anyhow::Result<ExitCode> {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     cancel::listen_for_cancel(&cancel_token);
 
-    let stats = exec_inner(args, bpa, &cancel_token).await?;
+    let stats = exec_inner(args, bpa.as_ref(), &cancel_token).await?;
 
     cancel_token.cancel();
 
