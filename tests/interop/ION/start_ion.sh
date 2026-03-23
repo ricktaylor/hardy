@@ -4,9 +4,19 @@
 # Usage:
 #   ./tests/interop/ION/start_ion.sh
 #
-# Then in another terminal:
-#   bp ping ipn:2.7 --cla /path/to/libhardy_mtcp_cla.so \
-#       --cla-config '{"framing":"stcp","peer":"127.0.0.1:4556","peer-node":"ipn:2.0"}' \
+# Then in another terminal, create a CLA config file (e.g. /tmp/cla.toml):
+#   bpa-address = "http://[::1]:50051"
+#   cla-name = "cl0"
+#   framing = "stcp"
+#   peer = "127.0.0.1:4556"
+#   peer-node = "ipn:2.0"
+#   address = "0.0.0.0:4557"
+#
+# Then run:
+#   bp ping ipn:2.7 \
+#       --cla /path/to/mtcp-cla \
+#       --cla-args "--config /tmp/cla.toml" \
+#       --grpc-listen "[::1]:50051" \
 #       --source ipn:1.12345 --no-sign
 
 set -e
@@ -18,6 +28,7 @@ ION_NODE_NUM=2
 ION_STCP_PORT=4556
 HARDY_NODE_NUM=1
 HARDY_STCP_PORT=4557
+HARDY_GRPC_PORT=50051
 
 cleanup() {
     echo ""
@@ -68,10 +79,19 @@ echo "  Node:     ipn:$ION_NODE_NUM.0"
 echo "  Echo:     ipn:$ION_NODE_NUM.7"
 echo "  STCP:     127.0.0.1:$ION_STCP_PORT"
 echo ""
-echo "Test with:"
+echo "Create a CLA config file (e.g. /tmp/cla.toml):"
+echo "  bpa-address = \"http://[::1]:$HARDY_GRPC_PORT\""
+echo "  cla-name = \"cl0\""
+echo "  framing = \"stcp\""
+echo "  peer = \"127.0.0.1:$ION_STCP_PORT\""
+echo "  peer-node = \"ipn:$ION_NODE_NUM.0\""
+echo "  address = \"0.0.0.0:$HARDY_STCP_PORT\""
+echo ""
+echo "Then test with:"
 echo "  bp ping ipn:$ION_NODE_NUM.7 \\"
-echo "    --cla /path/to/libhardy_mtcp_cla.so \\"
-echo "    --cla-config '{\"framing\":\"stcp\",\"peer\":\"127.0.0.1:$ION_STCP_PORT\",\"peer-node\":\"ipn:$ION_NODE_NUM.0\",\"address\":\"0.0.0.0:$HARDY_STCP_PORT\"}' \\"
+echo "    --cla /path/to/mtcp-cla \\"
+echo "    --cla-args \"--config /tmp/cla.toml\" \\"
+echo "    --grpc-listen \"[::1]:$HARDY_GRPC_PORT\" \\"
 echo "    --source ipn:$HARDY_NODE_NUM.12345 --no-sign"
 echo ""
 echo "Press Ctrl+C to stop..."

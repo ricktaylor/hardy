@@ -7,15 +7,15 @@
 #
 # Prerequisites:
 #   - Docker installed (for ION container)
-#   - Hardy tools and bpa-server built (with dynamic-plugins feature)
-#   - MTCP/STCP CLA plugin built (tests/interop/mtcp/)
+#   - Hardy tools and bpa-server built
+#   - MTCP/STCP CLA binary built (tests/interop/mtcp/)
 #   - ION Docker image built (ion-interop)
 #
 # Usage:
 #   ./tests/interop/ION/test_ion_ping.sh [--skip-build] [--no-docker]
 #
 # Options:
-#   --skip-build   Skip building Hardy and CLA plugin binaries
+#   --skip-build   Skip building Hardy and CLA binaries
 #   --no-docker    Use local ION binaries instead of Docker
 
 set -e
@@ -30,6 +30,7 @@ HARDY_NODE_NUM=1
 ION_NODE_NUM=2
 ION_STCP_PORT=4556
 HARDY_STCP_PORT=4557
+HARDY_GRPC_PORT=50051
 ION_IMAGE="ion-interop"
 PING_COUNT=5
 
@@ -72,6 +73,7 @@ done
 # Cleanup function
 ION_CONTAINER=""
 HARDY_PID=""
+CLA_PID=""
 CLEANUP_IN_PROGRESS=""
 
 # Helper to kill a process with SIGTERM, then SIGKILL if needed
@@ -82,7 +84,7 @@ kill_process() {
         log_info "Stopping $name (PID $pid)..."
         kill "$pid" 2>/dev/null || true
         local count=0
-        while kill -0 "$pid" 2>/dev/null && [ $count -lt 30 ]; do
+        while kill -0 "$pid" 2>/dev/null && [ $count -lt 50 ]; do
             sleep 0.1
             count=$((count + 1))
         done
@@ -108,6 +110,7 @@ cleanup() {
     fi
     docker rm -f ion-interop-test 2>/dev/null || true
 
+    kill_process "$CLA_PID" "mtcp-cla"
     kill_process "$HARDY_PID" "hardy-bpa-server"
 
     if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
@@ -122,30 +125,28 @@ trap cleanup EXIT INT TERM
 TEST_DIR=$(mktemp -d)
 log_info "Using test directory: $TEST_DIR"
 
-# Build Hardy tools, server, and MTCP CLA plugin if needed
+# Build Hardy tools, server, and MTCP CLA binary if needed
 if [ "$SKIP_BUILD" = false ]; then
     log_step "Building Hardy tools and bpa-server..."
     cd "$WORKSPACE_DIR"
-    cargo build --release \
-        -p hardy-tools --features hardy-tools/dynamic-plugins \
-        -p hardy-bpa-server --features hardy-bpa-server/dynamic-plugins
+    cargo build --release -p hardy-tools -p hardy-bpa-server
 
-    log_step "Building MTCP/STCP CLA plugin..."
+    log_step "Building MTCP/STCP CLA binary..."
     cd "$MTCP_CLA_DIR"
     cargo build --release
 fi
 
 BP_BIN="$WORKSPACE_DIR/target/release/bp"
 BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
-CLA_PLUGIN="$MTCP_CLA_DIR/target/release/libhardy_mtcp_cla.so"
+CLA_BIN="$MTCP_CLA_DIR/target/release/mtcp-cla"
 
 if [ ! -x "$BP_BIN" ]; then
     log_error "bp binary not found at $BP_BIN"
     exit 1
 fi
 
-if [ ! -f "$CLA_PLUGIN" ]; then
-    log_error "MTCP CLA plugin not found at $CLA_PLUGIN"
+if [ ! -x "$CLA_BIN" ]; then
+    log_error "mtcp-cla binary not found at $CLA_BIN"
     log_error "Build it with: cd $MTCP_CLA_DIR && cargo build --release"
     exit 1
 fi
@@ -214,13 +215,24 @@ else
     exit 1
 fi
 
-# Hardy pings ION echo service via STCP using the CLA plugin
+# Create CLA config for bp ping (TEST 1)
+cat > "$TEST_DIR/cla_ping.toml" << EOF
+bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
+cla-name = "cl0"
+framing = "stcp"
+peer = "127.0.0.1:$ION_STCP_PORT"
+peer-node = "ipn:$ION_NODE_NUM.0"
+address = "0.0.0.0:$HARDY_STCP_PORT"
+EOF
+
+# Hardy pings ION echo service via STCP using the external CLA binary
 log_step "Hardy pinging ION echo service at ipn:$ION_NODE_NUM.7 via STCP..."
 echo ""
 
 PING_OUTPUT=$(timeout 30s "$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
-    --cla "$CLA_PLUGIN" \
-    --cla-config "{\"framing\":\"stcp\",\"peer\":\"127.0.0.1:$ION_STCP_PORT\",\"peer-node\":\"ipn:$ION_NODE_NUM.0\",\"address\":\"0.0.0.0:$HARDY_STCP_PORT\"}" \
+    --cla "$CLA_BIN" \
+    --cla-args "--config $TEST_DIR/cla_ping.toml" \
+    --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
     --no-sign \
@@ -269,7 +281,7 @@ echo "============================================================"
 log_info "TEST 2: Hardy server with echo, ION pings via STCP"
 echo "============================================================"
 
-# Create Hardy config for server mode with STCP CLA plugin
+# Create Hardy bpa-server config
 cat > "$TEST_DIR/hardy_config.toml" << EOF
 log-level = "info"
 status-reports = true
@@ -287,26 +299,44 @@ type = "memory"
 [rfc9171-validity]
 primary-block-integrity = false
 
-[[clas]]
-name = "cl0"
-type = "$CLA_PLUGIN"
+[grpc]
+address = "[::1]:$HARDY_GRPC_PORT"
+services = ["cla"]
+EOF
+
+# Create CLA config for the standalone STCP CLA process
+cat > "$TEST_DIR/cla_server.toml" << EOF
+bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
+cla-name = "cl0"
 framing = "stcp"
 address = "[::]:$HARDY_STCP_PORT"
 peer = "127.0.0.1:$ION_STCP_PORT"
 peer-node = "ipn:$ION_NODE_NUM.0"
 EOF
 
-log_step "Starting Hardy BPA server with STCP CLA plugin..."
+log_step "Starting Hardy BPA server..."
 "$BPA_BIN" -c "$TEST_DIR/hardy_config.toml" &
 HARDY_PID=$!
 
-sleep 3
+sleep 2
 
 if ! kill -0 "$HARDY_PID" 2>/dev/null; then
     log_error "Hardy BPA server failed to start"
     exit 1
 fi
 log_info "Hardy BPA server started with PID $HARDY_PID"
+
+log_step "Starting MTCP/STCP CLA process..."
+"$CLA_BIN" --config "$TEST_DIR/cla_server.toml" &
+CLA_PID=$!
+
+sleep 2
+
+if ! kill -0 "$CLA_PID" 2>/dev/null; then
+    log_error "MTCP/STCP CLA failed to start"
+    exit 1
+fi
+log_info "MTCP/STCP CLA started with PID $CLA_PID"
 
 # Start ION to ping Hardy
 log_step "Starting ION to ping Hardy..."
