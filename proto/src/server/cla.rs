@@ -272,43 +272,40 @@ async fn run_cla_session(
     });
 
     // Wait for the client's registration message and process it
-    let result =
-        RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-            match msg {
-                cla_to_bpa::Msg::Register(request) => {
-                    let node_ids = bpa
-                        .register_cla(
-                            request.name,
-                            request.address_type.map(|address_type| {
-                                match address_type.try_into() {
-                                    Ok(ClaAddressType::Tcp) => {
-                                        hardy_bpa::cla::ClaAddressType::Tcp
-                                    }
-                                    Err(_) | Ok(ClaAddressType::Private) => {
-                                        hardy_bpa::cla::ClaAddressType::Private
-                                    }
+    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
+        match msg {
+            cla_to_bpa::Msg::Register(request) => {
+                let node_ids = bpa
+                    .register_cla(
+                        request.name,
+                        request
+                            .address_type
+                            .map(|address_type| match address_type.try_into() {
+                                Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
+                                Err(_) | Ok(ClaAddressType::Private) => {
+                                    hardy_bpa::cla::ClaAddressType::Private
                                 }
                             }),
-                            cla.clone(),
-                            None,
-                        )
-                        .await
-                        .map_err(|e| tonic::Status::from_error(e.into()))?
-                        .into_iter()
-                        .map(|node_id| node_id.to_string())
-                        .collect();
+                        cla.clone(),
+                        None,
+                    )
+                    .await
+                    .map_err(|e| tonic::Status::from_error(e.into()))?
+                    .into_iter()
+                    .map(|node_id| node_id.to_string())
+                    .collect();
 
-                    Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
-                }
-                _ => {
-                    warn!("CLA sent incorrect message: {msg:?}");
-                    Err(tonic::Status::internal(format!(
-                        "Unexpected response: {msg:?}"
-                    )))
-                }
+                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
             }
-        })
-        .await;
+            _ => {
+                warn!("CLA sent incorrect message: {msg:?}");
+                Err(tonic::Status::internal(format!(
+                    "Unexpected response: {msg:?}"
+                )))
+            }
+        }
+    })
+    .await;
 
     if let Err(e) = result {
         warn!("CLA registration failed: {e}");
