@@ -291,6 +291,21 @@ else
     log_warn "ION test script not found, skipping"
 fi
 
+# ud3tn (MTCP)
+if [ -x "$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" ]; then
+    if docker image inspect ud3tn-interop &>/dev/null; then
+        log_step "Running ud3tn test..."
+        OUTPUT=$("$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        extract_rtt_stats "$OUTPUT" "ud3tn"
+        log_info "ud3tn complete"
+    else
+        log_warn "ud3tn-interop Docker image not found, skipping"
+        RESULTS+=("ud3tn|-|-|-|-|No image|-|")
+    fi
+else
+    log_warn "ud3tn test script not found, skipping"
+fi
+
 # =============================================================================
 # Generate Markdown Table
 # =============================================================================
@@ -360,7 +375,7 @@ OUTPUT_FILE="$SCRIPT_DIR/benchmark_results.md"
     echo ""
     echo "- **Pings**: Received/Transmitted count"
     echo "- **vs Hardy**: Percentage relative to Hardy baseline (100% = same, >100% = slower)"
-    echo "- Most tests use TCPCLv4 over localhost; ION uses STCP via plugin CLA"
+    echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION uses STCP via plugin CLA"
     echo "- Hardy baseline runs inline; other tests use existing interop scripts"
     echo ""
     echo "_$PING_COUNT pings per test, generated $(date '+%Y-%m-%d %H:%M:%S')_"
