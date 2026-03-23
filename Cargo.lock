@@ -2020,22 +2020,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-plugin-abi"
-version = "0.1.0"
-dependencies = [
- "flume",
- "hardy-bpa",
- "hardy-bpv7",
- "libloading",
- "rustc_version",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "hardy-postgres-storage"
 version = "0.1.0"
 dependencies = [
@@ -2151,10 +2135,11 @@ dependencies = [
  "caps",
  "check_elevation",
  "clap",
+ "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-cbor",
- "hardy-plugin-abi",
+ "hardy-proto",
  "hardy-tcpclv4",
  "humantime",
  "libc",
@@ -2672,16 +2657,6 @@ checksum = "f12a681b7dd8ce12bff52488013ba614b869148d54dd79836ab85aafdd53f08d"
 dependencies = [
  "arbitrary",
  "cc",
-]
-
-[[package]]
-name = "libloading"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
-dependencies = [
- "cfg-if",
- "windows-link",
 ]
 
 [[package]]

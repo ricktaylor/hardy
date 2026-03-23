@@ -75,32 +75,10 @@ pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<(
                 plugin_path,
                 config,
             } => {
-                #[cfg(feature = "dynamic-plugins")]
-                {
-                    let config_json = serde_json::to_string(config)?;
-                    let cla = hardy_plugin_abi::host::load_cla_plugin(
-                        std::path::Path::new(plugin_path),
-                        &config_json,
-                    )
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to load CLA plugin '{}': {e}", cla_config.name)
-                    })?;
-
-                    bpa.register_cla(cla_config.name.clone(), None, cla, policy)
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to register CLA '{}': {e}", cla_config.name)
-                        })?;
-                }
-
-                #[cfg(not(feature = "dynamic-plugins"))]
-                {
-                    warn!(
-                        "Ignoring CLA '{}' with unknown type '{}' \
-                         (enable dynamic-plugins feature to load plugins)",
-                        cla_config.name, plugin_path
-                    );
-                }
+                warn!(
+                    "Ignoring CLA '{}' with unknown type '{}'",
+                    cla_config.name, plugin_path
+                );
             }
         };
     }
