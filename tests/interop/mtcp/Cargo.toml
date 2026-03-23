@@ -1,25 +1,32 @@
 [package]
 name = "hardy-mtcp-cla"
-description = "MTCP/STCP CLA plugin for interop testing (not a standards-track protocol)"
+description = "MTCP/STCP CLA binary for interop testing (not a standards-track protocol)"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-crate-type = ["cdylib"]
+[[bin]]
+name = "mtcp-cla"
+path = "src/main.rs"
 
 [features]
 default = []
+otel = ["dep:hardy-otel"]
 tracing = ["hardy-async/tracing"]
 
 [dependencies]
-hardy-plugin-abi = { path = "../../../plugin-abi" }
+hardy-proto = { path = "../../../proto" }
 hardy-bpa = { path = "../../../bpa" }
 hardy-bpv7 = { path = "../../../bpv7" }
 hardy-cbor = { path = "../../../cbor" }
 hardy-async = { path = "../../../async" }
-tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util", "rt-multi-thread"] }
+hardy-otel = { path = "../../../otel", optional = true }
+tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util", "rt-multi-thread", "signal"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 futures = "0.3"
+clap = { version = "4.6.0", features = ["derive"] }
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+trace-err = "1.0.0"
+anyhow = "1"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1"
+config = { version = "0.15.22", features = ["toml"] }
