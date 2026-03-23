@@ -20,7 +20,7 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
 }
 
 /// Configuration for the gRPC server.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
@@ -28,19 +28,6 @@ pub struct Config {
     pub address: std::net::SocketAddr,
     /// List of services to enable: "cla", "service", "application", "routing"
     pub services: Vec<String>,
-    /// Optional [`Notify`](hardy_async::Notify) signaled after successful CLA registration.
-    /// Used by `bp ping` to know when an external CLA subprocess is ready.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub on_cla_register: Option<Arc<hardy_async::Notify>>,
-}
-
-impl std::fmt::Debug for Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Config")
-            .field("address", &self.address)
-            .field("services", &self.services)
-            .finish()
-    }
 }
 
 impl Default for Config {
@@ -51,7 +38,6 @@ impl Default for Config {
                 50051,
             ),
             services: Vec::new(),
-            on_cla_register: None,
         }
     }
 }
@@ -64,7 +50,7 @@ impl Default for Config {
 /// * `bpa` - BPA registration interface (can be local Bpa or remote)
 /// * `tasks` - Task pool for spawning server task and cancellation
 pub fn init(
-    config: &mut Config,
+    config: &Config,
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) {
@@ -80,7 +66,7 @@ pub fn init(
                 routes.add_service(application::new_application_service(bpa));
             }
             "cla" => {
-                routes.add_service(cla::new_cla_service(bpa, config.on_cla_register.take()));
+                routes.add_service(cla::new_cla_service(bpa));
             }
             "service" => {
                 routes.add_service(service::new_endpoint_service(bpa));

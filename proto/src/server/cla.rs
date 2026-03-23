@@ -8,6 +8,9 @@ struct ClaInner {
 struct Cla {
     inner: Once<ClaInner>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
+    /// Set when the client initiates unregistration, so on_unregister()
+    /// knows not to try sending through the proxy (which would deadlock).
+    client_unregistering: std::sync::atomic::AtomicBool,
 }
 
 impl Cla {
@@ -94,7 +97,20 @@ impl Cla {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn unregister(&self) {
+    // TODO: The AtomicBool workaround for client-initiated unregister is a
+    // symptom of a deeper issue: the proxy run() loop processes messages
+    // sequentially, so on_notify handlers cannot make re-entrant calls
+    // through the same proxy. The same pattern exists in service.rs,
+    // application.rs, and routing.rs — all need the same fix or a proper
+    // architectural solution (e.g. spawning outbound calls instead of
+    // awaiting inline in the proxy loop).
+
+    /// Called by the Handler when the CLIENT initiates unregistration.
+    /// Sets a flag so on_unregister() won't try to notify the client
+    /// (which would deadlock the proxy), then tells the BPA to unregister.
+    async fn client_unregister(&self) {
+        self.client_unregistering
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(inner) = self.inner.get() {
             inner.sink.unregister().await
         }
@@ -113,22 +129,30 @@ impl hardy_bpa::cla::Cla for Cla {
     }
 
     async fn on_unregister(&self) {
-        match self
-            .call(bpa_to_cla::Msg::Unregister(UnregisterClaResponse {}))
-            .await
+        // If the client initiated unregistration, don't try to notify it
+        // back through the proxy — that would deadlock since the proxy's
+        // run() loop is already inside on_notify handling the unregister.
+        if !self
+            .client_unregistering
+            .load(std::sync::atomic::Ordering::Acquire)
         {
-            Ok(cla_to_bpa::Msg::Unregister(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
+            match self
+                .call(bpa_to_cla::Msg::Unregister(UnregisterClaResponse {}))
+                .await
+            {
+                Ok(cla_to_bpa::Msg::Unregister(_)) => {}
+                Ok(msg) => {
+                    warn!("Unexpected response: {msg:?}");
+                }
+                Err(e) => {
+                    warn!("Failed to notify CLA of unregistration: {e}");
+                }
             }
-            Err(e) => {
-                warn!("Failed to notify CLA of unregistration: {e}");
-            }
-        }
 
-        // Close the proxy, nothing else is going to be processed
-        if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            // Close the proxy, nothing else is going to be processed
+            if let Some(proxy) = self.proxy.get() {
+                proxy.close().await;
+            }
         }
     }
 
@@ -182,7 +206,7 @@ impl ProxyHandler for Handler {
             cla_to_bpa::Msg::AddPeer(msg) => self.cla.add_peer(msg).await,
             cla_to_bpa::Msg::RemovePeer(msg) => self.cla.remove_peer(msg).await,
             cla_to_bpa::Msg::Unregister(_) => {
-                self.cla.unregister().await;
+                self.cla.client_unregister().await;
                 Ok(bpa_to_cla::Msg::Unregister(UnregisterClaResponse {}))
             }
             _ => {
@@ -205,7 +229,6 @@ impl ProxyHandler for Handler {
 pub struct Service {
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     channel_size: usize,
-    on_register: Option<Arc<hardy_async::Notify>>,
 }
 
 #[async_trait]
@@ -216,25 +239,51 @@ impl cla_server::Cla for Service {
         &self,
         request: tonic::Request<tonic::Streaming<ClaToBpa>>,
     ) -> Result<tonic::Response<Self::RegisterStream>, tonic::Status> {
-        let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
-        let mut channel_receiver = request.into_inner();
+        let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
+        let channel_receiver = request.into_inner();
 
-        let cla = Arc::new(Cla {
-            inner: Once::new(),
-            proxy: Once::new(),
+        // Spawn the registration handshake and proxy — we must return the
+        // response stream immediately so the client can start sending messages.
+        // The handshake (recv registration, register with BPA, send response)
+        // runs in the spawned task once both sides of the bidi stream are open.
+        // TODO: service.rs, application.rs, and routing.rs still have the
+        // original deadlock where RpcProxy::recv blocks before returning the
+        // response stream — they need the same spawned-task fix.
+        let bpa = self.bpa.clone();
+        tokio::spawn(async move {
+            run_cla_session(channel_sender, channel_receiver, bpa).await;
         });
 
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
+}
+
+async fn run_cla_session(
+    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
+    mut channel_receiver: tonic::Streaming<ClaToBpa>,
+    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+) {
+    let cla = Arc::new(Cla {
+        inner: Once::new(),
+        proxy: Once::new(),
+        client_unregistering: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    // Wait for the client's registration message and process it
+    let result =
         RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
             match msg {
                 cla_to_bpa::Msg::Register(request) => {
-                    // Register the CLA and respond
-                    let node_ids = self
-                        .bpa
+                    let node_ids = bpa
                         .register_cla(
                             request.name,
                             request.address_type.map(|address_type| {
                                 match address_type.try_into() {
-                                    Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
+                                    Ok(ClaAddressType::Tcp) => {
+                                        hardy_bpa::cla::ClaAddressType::Tcp
+                                    }
                                     Err(_) | Ok(ClaAddressType::Private) => {
                                         hardy_bpa::cla::ClaAddressType::Private
                                     }
@@ -249,10 +298,6 @@ impl cla_server::Cla for Service {
                         .map(|node_id| node_id.to_string())
                         .collect();
 
-                    if let Some(notify) = &self.on_register {
-                        notify.notify_one();
-                    }
-
                     Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
                 }
                 _ => {
@@ -263,34 +308,25 @@ impl cla_server::Cla for Service {
                 }
             }
         })
-        .await?;
+        .await;
 
-        // Start the proxy
-        let handler = Box::new(Handler { cla: cla.clone() });
-        cla.proxy
-            .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
-
-        Ok(tonic::Response::new(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
+    if let Err(e) = result {
+        warn!("CLA registration failed: {e}");
+        return;
     }
+
+    // Start the proxy for ongoing communication
+    let handler = Box::new(Handler { cla: cla.clone() });
+    cla.proxy
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
 /// Create a new CLA gRPC service.
-///
-/// # Arguments
-///
-/// * `bpa` - BPA registration interface
-/// * `on_register` - Optional [`Notify`](hardy_async::Notify) signaled after successful
-///   CLA registration. Used by `bp ping` to know when an external CLA subprocess is ready.
-///   Pass `None` for normal server operation.
 pub fn new_cla_service(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    on_register: Option<Arc<hardy_async::Notify>>,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
         bpa: bpa.clone(),
         channel_size: 16,
-        on_register,
     })
 }
