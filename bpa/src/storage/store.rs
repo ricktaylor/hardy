@@ -4,7 +4,8 @@ impl Store {
     /// Create a new Store with the configured storage backends.
     /// Uses in-memory storage if no backends are provided.
     pub fn new(
-        cache_config: Option<storage::CacheConfig>,
+        lru_capacity: Option<core::num::NonZeroUsize>,
+        max_cached_bundle_size: core::num::NonZeroUsize,
         reaper_cache_size: core::num::NonZeroUsize,
         metadata_storage: Arc<dyn storage::MetadataStorage>,
         bundle_storage: Arc<dyn storage::BundleStorage>,
@@ -13,9 +14,9 @@ impl Store {
             tasks: hardy_async::TaskPool::new(),
             metadata_storage,
             bundle_storage,
-            bundle_cache: cache_config.map(|cfg| storage::BundleCache {
-                lru: hardy_async::sync::spin::Mutex::new(LruCache::new(cfg.capacity)),
-                max_bundle_size: cfg.max_bundle_size.into(),
+            bundle_cache: lru_capacity.map(|capacity| storage::BundleCache {
+                lru: hardy_async::sync::spin::Mutex::new(LruCache::new(capacity)),
+                max_bundle_size: max_cached_bundle_size.into(),
             }),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),

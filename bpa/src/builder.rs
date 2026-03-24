@@ -17,8 +17,9 @@ pub struct BpaBuilder {
     status_reports: bool,
     poll_channel_depth: NonZeroUsize,
     processing_pool_size: NonZeroUsize,
-    cache_config: Option<crate::storage::CacheConfig>,
-    cache_explicitly_set: bool,
+    lru_capacity: Option<NonZeroUsize>,
+    max_cached_bundle_size: NonZeroUsize,
+    cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Arc<dyn MetadataStorage>,
     bundle_storage: Arc<dyn BundleStorage>,
@@ -32,9 +33,10 @@ impl BpaBuilder {
     pub fn bundle_storage(mut self, bundle_storage: Arc<dyn BundleStorage>) -> Self {
         self.bundle_storage = bundle_storage;
         // Auto-enable cache for non-default (presumably persistent) storage,
-        // unless the caller has already set the cache config explicitly.
-        if !self.cache_explicitly_set {
-            self.cache_config = Some(Default::default());
+        // unless the caller has explicitly disabled caching.
+        if !self.cache_disabled {
+            self.lru_capacity
+                .get_or_insert(crate::storage::DEFAULT_LRU_CAPACITY);
         }
         self
     }
@@ -59,9 +61,19 @@ impl BpaBuilder {
         self
     }
 
-    pub fn bundle_cache(mut self, config: Option<crate::storage::CacheConfig>) -> Self {
-        self.cache_config = config;
-        self.cache_explicitly_set = true;
+    pub fn lru_capacity(mut self, v: NonZeroUsize) -> Self {
+        self.lru_capacity = Some(v);
+        self
+    }
+
+    pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
+        self.max_cached_bundle_size = v;
+        self
+    }
+
+    pub fn no_cache(mut self) -> Self {
+        self.lru_capacity = None;
+        self.cache_disabled = true;
         self
     }
 
@@ -72,7 +84,8 @@ impl BpaBuilder {
 
     pub fn build(self) -> Bpa {
         let store = Arc::new(Store::new(
-            self.cache_config,
+            self.lru_capacity,
+            self.max_cached_bundle_size,
             self.poll_channel_depth,
             self.metadata_storage,
             self.bundle_storage,
@@ -145,8 +158,9 @@ impl Default for BpaBuilder {
             status_reports,
             poll_channel_depth,
             processing_pool_size,
-            cache_config: None,
-            cache_explicitly_set: false,
+            lru_capacity: None,
+            max_cached_bundle_size: crate::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+            cache_disabled: false,
             node_ids,
             metadata_storage,
             bundle_storage,

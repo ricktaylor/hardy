@@ -71,10 +71,9 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        let cache_defaults = hardy_bpa::storage::CacheConfig::default();
         Self {
-            lru_capacity: cache_defaults.capacity,
-            max_cached_bundle_size: cache_defaults.max_bundle_size,
+            lru_capacity: hardy_bpa::storage::DEFAULT_LRU_CAPACITY,
+            max_cached_bundle_size: hardy_bpa::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             metadata: None,
             bundle: None,
         }
