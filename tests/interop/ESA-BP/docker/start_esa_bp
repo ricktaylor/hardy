@@ -1,0 +1,175 @@
+#!/bin/sh
+set -e
+
+# Configuration via environment variables
+NODE_ID="${NODE_ID:-10}"
+STCP_LISTEN_PORT="${STCP_LISTEN_PORT:-4556}"
+STCP_DEST_IP="${STCP_DEST_IP:-127.0.0.1}"
+STCP_DEST_PORT="${STCP_DEST_PORT:-4557}"
+REMOTE_NODE_ID="${REMOTE_NODE_ID:-1}"
+
+CONFIG_DIR="/opt/esa-bp/interop-cfg"
+mkdir -p "$CONFIG_DIR/etc" "$CONFIG_DIR/etc/LTP" "$CONFIG_DIR/var/routing-mib" "$CONFIG_DIR/var/LTP" "$CONFIG_DIR/var/storage/model/store/property" "$CONFIG_DIR/var/storage/model/requests"
+# Empty identity map (required by configFiles.bn.identity.file)
+echo '<?xml version="1.0" encoding="UTF-8"?><identities/>' > "$CONFIG_DIR/var/identity_map.xml"
+# Empty model template (required by bundleStore.requestFileTemplate)
+echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Requests />' > "$CONFIG_DIR/var/storage/model/requests/modelTemplate.xml"
+
+# Generate NODE.yml — based on the reference config with interop values
+cat > "$CONFIG_DIR/etc/NODE.yml" << EOF
+---
+identity:
+    nodeId: ipn:${NODE_ID}.0
+
+ipn-endpoints:
+    deferred-delivery: "0, 1, 2, 7, 100, 2047"
+
+status_report:
+    reception_report:
+        active: false
+    forwarding_report:
+        active: false
+    deletion_report:
+        active: false
+    delivery_report:
+        active: false
+
+bibe:
+    segmentSizeBytes: 1024
+
+bpsec:
+    enabled: false
+    keyStoreFileName: dummy
+    keyStorePassword: dummy
+
+handlers:
+    queueBufferSize: 1024
+    dispatchMax: 20
+    aaQueueRate: 200
+    minForward: 20
+
+bundleStore:
+    implementation: "esa.egos.bp.bundle.store.implementation.BundleStoreImpl"
+    appendFile: "_bundle"
+    modelDir: "${CONFIG_DIR}/var/storage/model/store/property"
+    softLimit: 30000000
+    hardLimit: 50000000
+    compressedCustodyAcceptanceLimit: 30000000
+    requestFile: "${CONFIG_DIR}/var/storage/model/requests/bundle_requests.xml"
+    requestFileTemplate: "${CONFIG_DIR}/var/storage/model/requests/modelTemplate.xml"
+
+configFiles:
+    mib.folder: ${CONFIG_DIR}/etc/
+    daemon.properties.file: ${CONFIG_DIR}/etc/DAEMON.yml
+    routing.mib.folder: ${CONFIG_DIR}/var/routing-mib/
+    bn.identity.file: ${CONFIG_DIR}/var/identity_map.xml
+    logging.config.path: ${CONFIG_DIR}/etc/logging.properties
+    ltp.static.config.folder: ${CONFIG_DIR}/etc/LTP/
+    ltp.dynamic.config.folder: ${CONFIG_DIR}/var/LTP/
+
+request.model.persist.rate: 200
+
+blocks:
+    default_parameters:
+        crc_type: NO_CRC
+        hop_limit: 10
+    ANY:
+        typecode: -1
+    PRIMARY:
+        typecode: 0
+        crc_type: CRC_16_X25
+    PAYLOAD:
+        typecode: 1
+        crc_type: CRC_16_X25
+    PREVIOUS_NODE:
+        typecode: 6
+    BUNDLE_AGE:
+        typecode: 7
+    HOP_COUNT:
+        typecode: 10
+    INTEGRITY:
+        typecode: 11
+    CONFIDENTIALITY:
+        typecode: 12
+    COMPRESSED_REPORTING:
+        typecode: 13
+        maxBundleBeforeReport: 10
+        maxCounterValue: 256
+        sendingTimeout: 5000
+        duplicateSuppression: false
+    COMPRESSED_CUSTODY:
+        typecode: 14
+        maxBundleBeforeReport: 10
+        maxCounterValue: 256
+        sendingTimeout: 5000
+        compressedCustodyLifetime: 10000
+EOF
+
+# Generate CL.yml with STCP element
+cat > "$CONFIG_DIR/etc/CL.yml" << EOF
+---
+adapters-defaults:
+  poll: 1000
+  flush: 1000
+  maxQueueSize: 20
+  maxBundleSize: 65000
+  activeOnStartup: false
+
+elements-defaults:
+  singleton: true
+
+adapters:
+  - id: HARDY_STCP
+    endpointId: ipn:${REMOTE_NODE_ID}.0
+    activeOnStartup: true
+    poll: 500
+    flush: 500
+    maxQueueSize: 100
+    maxBundleSize: 65000
+    bibe: false
+    retransmissionLimit: 1
+    elements:
+      - STCP_E1
+
+elements:
+  - id: STCP_E1
+    status: B
+    implClassName: esa.egos.bp.convergence.layers.elements.ClElementStcp
+    singleton: false
+    element-specific:
+      destinationIP: ${STCP_DEST_IP}
+      destinationPort: ${STCP_DEST_PORT}
+      listeningPort: ${STCP_LISTEN_PORT}
+EOF
+
+# Generate DAEMON.yml (disable gRPC TLS for simplicity)
+cat > "$CONFIG_DIR/etc/DAEMON.yml" << EOF
+grpc.address: localhost
+grpc.port: 5672
+grpc.secure.channel: false
+EOF
+
+# Generate routing table
+cat > "$CONFIG_DIR/var/routing-mib/NHT.csv" << EOF
+# priority, destination, adapter, hopcount
+1 ipn:${REMOTE_NODE_ID}.0 HARDY_STCP 1
+EOF
+
+# Minimal logging config
+cat > "$CONFIG_DIR/etc/logging.properties" << EOF
+handlers = java.util.logging.ConsoleHandler
+.level = INFO
+java.util.logging.ConsoleHandler.level = INFO
+java.util.logging.ConsoleHandler.formatter = java.util.logging.SimpleFormatter
+EOF
+
+echo "Starting ESA-BP node ipn:${NODE_ID}.0"
+echo "  STCP listen: ${STCP_LISTEN_PORT}"
+echo "  STCP dest:   ${STCP_DEST_IP}:${STCP_DEST_PORT}"
+echo "  Route:       ipn:${REMOTE_NODE_ID}.0 -> HARDY_STCP"
+
+cd /opt/esa-bp
+exec java -Xmx512m \
+    -Dnode.configuration="${CONFIG_DIR}/etc/NODE.yml" \
+    -cp "esa.egos.bp.node/jars/node.jar:/opt/esa-bp/interop-cle" \
+    esa.egos.bp.node.BundleNodeMain
