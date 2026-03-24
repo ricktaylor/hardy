@@ -129,12 +129,21 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
     let (metadata_storage, bundle_storage) =
         init_storage(&config.storage, cli.upgrade_storage).await?;
 
+    // Only enable the bundle LRU cache for persistent storage backends;
+    // in-memory storage already keeps data in memory, so caching would double-store.
+    let cache_config = match &config.storage.bundle {
+        None | Some(config::BundleStorage::Memory(_)) => None,
+        Some(_) => Some(hardy_bpa::storage::CacheConfig {
+            capacity: config.storage.lru_capacity,
+            max_bundle_size: config.storage.max_cached_bundle_size,
+        }),
+    };
+
     let mut builder = hardy_bpa::bpa::Bpa::builder()
         .status_reports(config.bpa.status_reports)
         .poll_channel_depth(config.bpa.poll_channel_depth)
         .processing_pool_size(config.bpa.processing_pool_size)
-        .lru_capacity(config.storage.lru_capacity)
-        .max_cached_bundle_size(config.storage.max_cached_bundle_size)
+        .bundle_cache(cache_config)
         .node_ids(config.bpa.node_ids);
 
     if let Some(metadata_storage) = metadata_storage {

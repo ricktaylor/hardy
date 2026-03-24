@@ -17,8 +17,8 @@ pub struct BpaBuilder {
     status_reports: bool,
     poll_channel_depth: NonZeroUsize,
     processing_pool_size: NonZeroUsize,
-    lru_capacity: NonZeroUsize,
-    max_cached_bundle_size: NonZeroUsize,
+    cache_config: Option<crate::storage::CacheConfig>,
+    cache_explicitly_set: bool,
     node_ids: NodeIds,
     metadata_storage: Arc<dyn MetadataStorage>,
     bundle_storage: Arc<dyn BundleStorage>,
@@ -31,6 +31,11 @@ impl BpaBuilder {
 
     pub fn bundle_storage(mut self, bundle_storage: Arc<dyn BundleStorage>) -> Self {
         self.bundle_storage = bundle_storage;
+        // Auto-enable cache for non-default (presumably persistent) storage,
+        // unless the caller has already set the cache config explicitly.
+        if !self.cache_explicitly_set {
+            self.cache_config = Some(Default::default());
+        }
         self
     }
 
@@ -54,13 +59,9 @@ impl BpaBuilder {
         self
     }
 
-    pub fn lru_capacity(mut self, v: NonZeroUsize) -> Self {
-        self.lru_capacity = v;
-        self
-    }
-
-    pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
-        self.max_cached_bundle_size = v;
+    pub fn bundle_cache(mut self, config: Option<crate::storage::CacheConfig>) -> Self {
+        self.cache_config = config;
+        self.cache_explicitly_set = true;
         self
     }
 
@@ -71,8 +72,7 @@ impl BpaBuilder {
 
     pub fn build(self) -> Bpa {
         let store = Arc::new(Store::new(
-            self.lru_capacity,
-            self.max_cached_bundle_size,
+            self.cache_config,
             self.poll_channel_depth,
             self.metadata_storage,
             self.bundle_storage,
@@ -137,8 +137,6 @@ impl Default for BpaBuilder {
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
-        let lru_capacity = NonZeroUsize::new(1024).unwrap();
-        let max_cached_bundle_size = NonZeroUsize::new(16 * 1024).unwrap();
         let node_ids = NodeIds::default();
         let metadata_storage = Arc::new(MetadataMemStorage::new(&Default::default()));
         let bundle_storage = Arc::new(BundleMemStorage::new(&Default::default()));
@@ -147,8 +145,8 @@ impl Default for BpaBuilder {
             status_reports,
             poll_channel_depth,
             processing_pool_size,
-            lru_capacity,
-            max_cached_bundle_size,
+            cache_config: None,
+            cache_explicitly_set: false,
             node_ids,
             metadata_storage,
             bundle_storage,
