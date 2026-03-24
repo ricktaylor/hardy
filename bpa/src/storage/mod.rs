@@ -285,26 +285,13 @@ pub trait BundleStorage: Send + Sync {
     async fn delete(&self, storage_name: &str) -> Result<()>;
 }
 
-/// Configuration for the optional bundle data LRU cache.
-///
-/// When provided to the [`Store`], recently-accessed bundle data is kept in
-/// memory to avoid repeated reads from persistent storage backends.
-/// Not needed when the bundle storage is already in-memory.
-pub struct CacheConfig {
-    /// Maximum number of entries in the LRU cache.
-    pub capacity: core::num::NonZeroUsize,
-    /// Bundles larger than this (in bytes) are not cached.
-    pub max_bundle_size: core::num::NonZeroUsize,
-}
+/// Default LRU cache capacity (number of entries).
+pub const DEFAULT_LRU_CAPACITY: core::num::NonZeroUsize =
+    core::num::NonZeroUsize::new(1024).unwrap();
 
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            capacity: core::num::NonZeroUsize::new(1024).unwrap(),
-            max_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
-        }
-    }
-}
+/// Default maximum bundle size (in bytes) eligible for caching.
+pub const DEFAULT_MAX_CACHED_BUNDLE_SIZE: core::num::NonZeroUsize =
+    core::num::NonZeroUsize::new(16 * 1024).unwrap();
 
 /// Bundles the LRU and its size threshold together so that
 /// [`Store`] only needs a single `Option` field.

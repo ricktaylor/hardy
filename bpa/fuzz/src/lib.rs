@@ -48,10 +48,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
 
     let mut builder = hardy_bpa::bpa::Bpa::builder()
         .status_reports(true)
-        .bundle_cache(Some(hardy_bpa::storage::CacheConfig {
-            capacity: core::num::NonZeroUsize::new(16).unwrap(),
-            ..Default::default()
-        }))
+        .lru_capacity(core::num::NonZeroUsize::new(16).unwrap())
         .node_ids(
             [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
                 allocator_id: 0,
