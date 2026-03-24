@@ -285,19 +285,47 @@ pub trait BundleStorage: Send + Sync {
     async fn delete(&self, storage_name: &str) -> Result<()>;
 }
 
+/// Configuration for the optional bundle data LRU cache.
+///
+/// When provided to the [`Store`], recently-accessed bundle data is kept in
+/// memory to avoid repeated reads from persistent storage backends.
+/// Not needed when the bundle storage is already in-memory.
+pub struct CacheConfig {
+    /// Maximum number of entries in the LRU cache.
+    pub capacity: core::num::NonZeroUsize,
+    /// Bundles larger than this (in bytes) are not cached.
+    pub max_bundle_size: core::num::NonZeroUsize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            capacity: core::num::NonZeroUsize::new(1024).unwrap(),
+            max_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
+        }
+    }
+}
+
+/// Bundles the LRU and its size threshold together so that
+/// [`Store`] only needs a single `Option` field.
+struct BundleCache {
+    // Using sync::spin::Mutex - see comment at top of file
+    lru: hardy_async::sync::spin::Mutex<LruCache<Arc<str>, Bytes>>,
+    max_bundle_size: usize,
+}
+
 // Storage helper
 pub(crate) struct Store {
     tasks: hardy_async::TaskPool,
     metadata_storage: Arc<dyn storage::MetadataStorage>,
     bundle_storage: Arc<dyn storage::BundleStorage>,
 
-    // Using sync::spin::Mutex for bundle_cache - see comment at top of file
-    bundle_cache: hardy_async::sync::spin::Mutex<LruCache<Arc<str>, Bytes>>,
+    // None when the bundle storage backend is already in-memory (avoids double-caching).
+    bundle_cache: Option<BundleCache>,
 
     reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
     reaper_wakeup: Arc<hardy_async::Notify>,
 
     // Config
-    max_cached_bundle_size: usize,
     reaper_cache_size: usize,
 }

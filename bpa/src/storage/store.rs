@@ -4,8 +4,7 @@ impl Store {
     /// Create a new Store with the configured storage backends.
     /// Uses in-memory storage if no backends are provided.
     pub fn new(
-        lru_capacity: core::num::NonZeroUsize,
-        max_cached_bundle_size: core::num::NonZeroUsize,
+        cache_config: Option<storage::CacheConfig>,
         reaper_cache_size: core::num::NonZeroUsize,
         metadata_storage: Arc<dyn storage::MetadataStorage>,
         bundle_storage: Arc<dyn storage::BundleStorage>,
@@ -14,10 +13,12 @@ impl Store {
             tasks: hardy_async::TaskPool::new(),
             metadata_storage,
             bundle_storage,
-            bundle_cache: hardy_async::sync::spin::Mutex::new(LruCache::new(lru_capacity)),
+            bundle_cache: cache_config.map(|cfg| storage::BundleCache {
+                lru: hardy_async::sync::spin::Mutex::new(LruCache::new(cfg.capacity)),
+                max_bundle_size: cfg.max_bundle_size.into(),
+            }),
             reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
             reaper_wakeup: Arc::new(hardy_async::Notify::new()),
-            max_cached_bundle_size: max_cached_bundle_size.into(),
             reaper_cache_size: reaper_cache_size.into(),
         }
     }
@@ -84,9 +85,10 @@ impl Store {
     /// back to the bundle storage backend if not cached.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
-        // sync::spin::Mutex::lock() returns guard directly (no Result)
-        if let Some(data) = self.bundle_cache.lock().peek(storage_name) {
-            return Some(data.clone());
+        if let Some(cache) = &self.bundle_cache {
+            if let Some(data) = cache.lru.lock().peek(storage_name) {
+                return Some(data.clone());
+            }
         }
 
         self.bundle_storage
@@ -107,11 +109,10 @@ impl Store {
             .await
             .trace_expect("Failed to save bundle data");
 
-        if data.len() < self.max_cached_bundle_size {
-            // sync::spin::Mutex::lock() returns guard directly (no Result)
-            self.bundle_cache
-                .lock()
-                .put(storage_name.clone(), data.clone());
+        if let Some(cache) = &self.bundle_cache {
+            if data.len() < cache.max_bundle_size {
+                cache.lru.lock().put(storage_name.clone(), data.clone());
+            }
         }
 
         storage_name
@@ -122,8 +123,9 @@ impl Store {
     /// Removes from the LRU cache first, then deletes from the backend.
     #[cfg_attr(feature = "tracing", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
-        // sync::spin::Mutex::lock() returns guard directly (no Result)
-        self.bundle_cache.lock().pop(storage_name);
+        if let Some(cache) = &self.bundle_cache {
+            cache.lru.lock().pop(storage_name);
+        }
 
         self.bundle_storage
             .delete(storage_name)

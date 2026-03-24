@@ -118,8 +118,7 @@ pub(super) mod tests {
         });
 
         let store = Arc::new(storage::Store::new(
-            core::num::NonZeroUsize::new(64).unwrap(),
-            core::num::NonZeroUsize::new(4096).unwrap(),
+            None, // No cache for in-memory storage
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(storage::metadata_mem::MetadataMemStorage::new(
                 &Default::default(),
