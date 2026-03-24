@@ -119,6 +119,7 @@ pub(super) mod tests {
 
         let store = Arc::new(storage::Store::new(
             None, // No cache for in-memory storage
+            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(storage::metadata_mem::MetadataMemStorage::new(
                 &Default::default(),
