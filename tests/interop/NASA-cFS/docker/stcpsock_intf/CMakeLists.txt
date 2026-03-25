@@ -1,0 +1,2 @@
+add_psp_module(stcpsock_intf stcpsock_intf.c)
+target_link_libraries(stcpsock_intf PRIVATE iodriver)
