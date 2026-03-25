@@ -196,13 +196,33 @@ if [ "$USE_DOCKER" = true ]; then
 
     log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
 
+    # Wait for ud3tn to start (ss preferred — no TCP connection created)
     log_info "Waiting for ud3tn to initialize..."
-    sleep 3
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
+            log_error "ud3tn container exited unexpectedly. Logs:"
+            docker logs "$UD3TN_CONTAINER" 2>&1 | tail -50
+            docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
+            exit 1
+        fi
 
-    if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
-        log_error "ud3tn container exited unexpectedly. Logs:"
-        docker logs "$UD3TN_CONTAINER" 2>&1 | tail -50
-        docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
+        if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
+            log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give ud3tn time to finish internal setup after port opens
+    sleep 2
+
+    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+        log_error "ud3tn did not start listening on port $UD3TN_MTCP_PORT within ${WAIT_TIMEOUT}s"
+        docker logs "$UD3TN_CONTAINER" 2>&1 | tail -30
         exit 1
     fi
 
@@ -390,7 +410,24 @@ if [ "$USE_DOCKER" = true ]; then
         -R)
 
     log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
-    sleep 3
+
+    log_info "Waiting for ud3tn to initialize..."
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
+            break
+        fi
+        if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
+            log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give ud3tn time to finish internal setup after port opens
+    sleep 2
 
     if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
         log_error "ud3tn container exited unexpectedly. Logs:"
