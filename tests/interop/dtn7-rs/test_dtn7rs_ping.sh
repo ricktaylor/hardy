@@ -195,15 +195,33 @@ if [ "$USE_DOCKER" = true ]; then
 
     log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
-    # Wait for dtnd to start and be ready
+    # Wait for dtnd to start (ss preferred — no TCP connection created)
     log_info "Waiting for dtnd to initialize..."
-    sleep 3
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
+            log_error "dtn7-rs container exited unexpectedly. Logs:"
+            docker logs "$DTN7_CONTAINER" 2>&1 | tail -50
+            docker rm "$DTN7_CONTAINER" 2>/dev/null || true
+            exit 1
+        fi
 
-    # Check if container is still running
-    if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
-        log_error "dtn7-rs container exited unexpectedly. Logs:"
-        docker logs "$DTN7_CONTAINER" 2>&1 | tail -50
-        docker rm "$DTN7_CONTAINER" 2>/dev/null || true
+        if ss -tln 2>/dev/null | grep -q ":$DTN7_PORT "; then
+            log_info "dtnd is listening on port $DTN7_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give dtnd time to finish internal setup after port opens
+    sleep 2
+
+    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+        log_error "dtnd did not start listening on port $DTN7_PORT within ${WAIT_TIMEOUT}s"
+        docker logs "$DTN7_CONTAINER" 2>&1 | tail -30
         exit 1
     fi
 
@@ -353,9 +371,25 @@ if [ "$USE_DOCKER" = true ]; then
         -d -i0 -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$((TCPCLV4_PORT+1))")
 
     log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
-    sleep 3
 
-    # Check if container is still running
+    log_info "Waiting for dtnd to initialize..."
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
+            break
+        fi
+        if ss -tln 2>/dev/null | grep -q ":$DTN7_PORT "; then
+            log_info "dtnd is listening on port $DTN7_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give dtnd time to finish internal setup after port opens
+    sleep 2
+
     if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
         log_error "dtn7-rs container exited unexpectedly. Logs:"
         docker logs "$DTN7_CONTAINER" 2>&1 | tail -20

@@ -216,6 +216,9 @@ if [ "$USE_DOCKER" = true ]; then
         WAIT_COUNT=$((WAIT_COUNT + 1))
     done
 
+    # Give HDTN time to finish internal setup after port opens
+    sleep 2
+
     if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
         log_error "HDTN did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
         log_error "Checking what ports are listening inside container:"
@@ -340,7 +343,24 @@ if [ "$USE_DOCKER" = true ]; then
     log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
     sleep 1
 
-    # Check if container is still running
+    log_info "Waiting for HDTN to initialize..."
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
+            break
+        fi
+        if ss -tln 2>/dev/null | grep -q ":$HDTN_PORT "; then
+            log_info "HDTN is listening on port $HDTN_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give HDTN time to finish internal setup after port opens
+    sleep 2
+
     if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
         log_error "HDTN container exited unexpectedly. Logs:"
         docker logs "$HDTN_CONTAINER" 2>&1 | tail -20

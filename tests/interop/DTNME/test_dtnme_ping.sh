@@ -193,15 +193,33 @@ if [ "$USE_DOCKER" = true ]; then
 
     log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
 
-    # Wait for DTNME to start and be ready
+    # Wait for DTNME to start (ss preferred — no TCP connection created)
     log_info "Waiting for DTNME to initialize..."
-    sleep 5
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
+            log_error "DTNME container exited unexpectedly. Logs:"
+            docker logs "$DTNME_CONTAINER" 2>&1 | tail -50
+            docker rm "$DTNME_CONTAINER" 2>/dev/null || true
+            exit 1
+        fi
 
-    # Check if container is still running
-    if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
-        log_error "DTNME container exited unexpectedly. Logs:"
-        docker logs "$DTNME_CONTAINER" 2>&1 | tail -50
-        docker rm "$DTNME_CONTAINER" 2>/dev/null || true
+        if ss -tln 2>/dev/null | grep -q ":$DTNME_PORT "; then
+            log_info "DTNME is listening on port $DTNME_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give DTNME time to finish internal setup after port opens
+    sleep 2
+
+    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+        log_error "DTNME did not start listening on port $DTNME_PORT within ${WAIT_TIMEOUT}s"
+        docker logs "$DTNME_CONTAINER" 2>&1 | tail -30
         exit 1
     fi
 
@@ -340,7 +358,25 @@ if [ "$USE_DOCKER" = true ]; then
         "$DTNME_IMAGE")
 
     log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
-    sleep 5
+
+    # Wait for DTNME to start
+    log_info "Waiting for DTNME to initialize..."
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
+            break
+        fi
+        if ss -tln 2>/dev/null | grep -q ":$DTNME_PORT "; then
+            log_info "DTNME is listening on port $DTNME_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give DTNME time to finish internal setup after port opens
+    sleep 2
 
     # Check if container is still running
     if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
