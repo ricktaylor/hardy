@@ -6,7 +6,7 @@ See also: [Interoperability Test Plan](../../docs/interop_test_plan.md)
 
 ## Overview
 
-Hardy is tested against five other DTN Bundle Protocol implementations:
+Hardy is tested against multiple other DTN Bundle Protocol implementations:
 
 | Implementation | CLA | Echo Service | Status |
 |---|---|---|---|
@@ -20,6 +20,7 @@ Hardy is tested against five other DTN Bundle Protocol implementations:
 | [NASA cFS BPNode](NASA-cFS/) | STCP (custom PSP module) | SB routing echo (service 7) | Passing |
 
 Each test verifies bidirectional bundle exchange:
+
 - **TEST 1**: Hardy pings the other implementation's echo service
 - **TEST 2**: The other implementation pings Hardy's echo service
 
@@ -131,14 +132,17 @@ STCP framing (4-byte big-endian u32 length prefix) rather than TCPCLv4, so Hardy
 this separate CLA to communicate with it.
 
 The binary supports two framing modes:
+
 - **MTCP**: CBOR byte string framing (draft-ietf-dtn-mtcpcl-01), used by ud3tn/D3TN
 - **STCP**: 4-byte big-endian u32 length prefix, used by ION
 
 The CLA registers with Hardy's BPA via gRPC and can be used in two ways:
+
 - **Standalone**: Run alongside `hardy-bpa-server` (registers via gRPC)
 - **Inline**: Launched by `bp ping --cla /path/to/mtcp-cla --cla-args "--config config.toml"`
 
 The mtcp-cla is excluded from the main cargo workspace and must be built separately:
+
 ```bash
 cd tests/interop/mtcp && cargo build --release
 ```
@@ -189,15 +193,6 @@ TEST 2: ION pings Hardy
 
 The `benchmark.sh` script runs all available interop tests and produces an RTT comparison table:
 
-```
-| Implementation | Min    | Avg    | Max    | Stddev | Loss | Pings | vs Hardy |
-|----------------|--------|--------|--------|--------|------|-------|----------|
-| Hardy          | 2.1ms  | 3.4ms  | 5.2ms  | 0.8ms  | 0%   | 20/20 | baseline |
-| dtn7-rs        | 8.3ms  | 12.1ms | 18.4ms | 2.7ms  | 0%   | 20/20 | 356%     |
-| HDTN           | 3.8ms  | 5.9ms  | 9.1ms  | 1.2ms  | 0%   | 20/20 | 174%     |
-| DTNME          | 4.2ms  | 6.7ms  | 11.3ms | 1.8ms  | 0%   | 20/20 | 197%     |
-```
-
 Results are saved to `benchmark_results.md`.
 
 ## Common Options
@@ -216,12 +211,14 @@ All Docker images are built automatically on first test run. They clone source f
 GitHub, so no local source is needed. Images are cached for subsequent runs.
 
 To rebuild an image:
+
 ```bash
 docker rmi hdtn-interop    # Remove cached image
 ./tests/interop/HDTN/test_hdtn_ping.sh   # Rebuilds automatically
 ```
 
 Build args can be used to pin versions:
+
 ```bash
 docker build -t hdtn-interop --build-arg HDTN_REF=v1.0.0 tests/interop/HDTN/docker
 docker build -t dtn7-interop --build-arg DTN7_REF=v0.21.0 tests/interop/dtn7-rs/docker
@@ -231,16 +228,19 @@ docker build -t dtnme-interop --build-arg DTNME_REF=main tests/interop/DTNME/doc
 ## Troubleshooting
 
 **Container fails to start:**
+
 ```bash
 docker logs <container-name>    # Check container output
 docker ps -a                    # Check container status
 ```
 
 **Port conflicts:**
+
 - Tests use `--network host` so ports must be free on the host
 - Default ports: 4556 (other impl), 4557 (Hardy)
 - Kill stale containers: `docker rm -f hdtn-interop-test`
 
 **Build failures:**
+
 - Ensure Docker has sufficient memory (HDTN needs ~4GB)
 - Check network access to GitHub for cloning
