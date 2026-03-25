@@ -30,7 +30,7 @@ trap cleanup EXIT INT TERM
 # Build image if needed
 if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     log_info "Building $IMAGE_NAME Docker image (this may take a while)..."
-    docker build -t "$IMAGE_NAME" "$SCRIPT_DIR/docker"
+    docker build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
 else
     log_info "Using existing $IMAGE_NAME image"
 fi

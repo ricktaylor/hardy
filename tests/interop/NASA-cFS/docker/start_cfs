@@ -23,15 +23,6 @@ cd "$CFS_DIR"
 mkdir -p cf
 cp -n /opt/cfs/cfe_es_startup.scr cf/ 2>/dev/null || true
 
-# Debug: list files and check .tbl headers
-echo "Available files in cf/:"
-ls -la cf/ 2>/dev/null || echo "  (no cf/ directory)"
-echo "sch_lab table header (first 128 bytes):"
-od -A x -t x1z -N 128 cf/sch_lab_table.tbl 2>/dev/null || true
-echo "---"
-echo "bpnode_channel table header (first 128 bytes):"
-od -A x -t x1z -N 128 cf/bpnode_channel.tbl 2>/dev/null || true
-
 echo "Starting cFS BPNode (STCP echo mode)..."
 echo "  STCP listen port: 4501"
 echo "  STCP connect to:  127.0.0.1:4551"

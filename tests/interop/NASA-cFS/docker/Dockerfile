@@ -4,14 +4,11 @@
 # Builds cFS with BPNode using an STCP PSP module for
 # interoperability testing with Hardy.
 #
-# Build:
-#   docker build -t cfs-interop -f Dockerfile .
-#
-# Build with specific version:
-#   docker build -t cfs-interop --build-arg BPNODE_REF=v7.0.5 .
+# Build (context = NASA-cFS/ directory):
+#   docker build -t cfs-interop -f docker/Dockerfile .
 #
 # Run:
-#   docker run -it --rm --network host cfs-interop
+#   docker run -it --rm --network host --privileged cfs-interop
 #
 ##############################################
 
@@ -71,7 +68,6 @@ RUN git clone --depth 1 https://github.com/laurencelundblade/QCBOR.git && \
     cd QCBOR && make && make install PREFIX=/usr/local
 
 # Inject STCP PSP module into the cFS PSP modules directory
-# (psp/fsw/modules is in MISSION_MODULE_SEARCH_PATH)
 COPY stcpsock_intf cfs-bundle/psp/fsw/modules/stcpsock_intf
 
 # Apply AduUnwrapping fix (completing the existing TODO in fwp_adup.c)
@@ -100,7 +96,6 @@ RUN sed -i '0,/\.AduWrapping.*= false/{s/\.AduWrapping.*= false/.AduWrapping    
     src/bpnode/fsw/tables/bpnode_channel.c
 
 # Shorten table names that exceed cFS default 16-char limit.
-# Must rename in both registration code AND CFE_TBL_FILEDEF (which embeds name in .tbl header).
 # Use word-boundary matching to avoid renaming type names like BPLib_NC_MIBConfigPNTable_t.
 RUN sed -i \
     's/\bMIBConfigPNTable\b/MIBCfgPNTbl/g; s/\bMIBConfigPSTable\b/MIBCfgPSTbl/g' \
@@ -122,25 +117,24 @@ RUN mkdir ./interop_defs && \
         src/bpnode/.github/buildconfig/*.cmake \
         src/bpnode/.github/buildconfig/*.scr && \
     true
-
-# Custom sch_lab table with BPNode wakeup (must be at top level of mission defs)
-COPY config/sch_lab_table.c          ./interop_defs/sch_lab_table.c
 SHELL ["/bin/sh", "-c"]
+
+# Custom sch_lab table with BPNode wakeup
+COPY cfs-config/sch_lab_table.c      ./interop_defs/sch_lab_table.c
 
 # Copy app topicids headers into mission defs (needed for table compilation)
 RUN cp -v cfs-bundle/apps/ci_lab/fsw/inc/ci_lab_topicids.h ./interop_defs/ && \
     cp -v cfs-bundle/apps/to_lab/fsw/inc/to_lab_topicids.h ./interop_defs/
 
 # Overlay our interop-specific configuration
-COPY config/targets.cmake            ./interop_defs/targets.cmake
-COPY config/bpnode_mission_cfg.h     ./interop_defs/bpnode_mission_cfg.h
-COPY config/cfe_es_startup.scr       ./interop_defs/cfe_es_startup.scr
-COPY config/extra_install.cmake      ./interop_defs/extra_install.cmake
-COPY config/install_custom.cmake     ./interop_defs/install_custom.cmake
-# NOTE: not providing cfe_tbl_platform_cfg.h — using cFS defaults for now
+COPY cfs-config/targets.cmake        ./interop_defs/targets.cmake
+COPY cfs-config/bpnode_mission_cfg.h ./interop_defs/bpnode_mission_cfg.h
+COPY cfs-config/cfe_es_startup.scr   ./interop_defs/cfe_es_startup.scr
+COPY cfs-config/extra_install.cmake  ./interop_defs/extra_install.cmake
+COPY cfs-config/install_custom.cmake ./interop_defs/install_custom.cmake
 
-# Custom ADU proxy table for echo wiring (contacts and channel tables use defaults)
-COPY config/bpnode_adup.c            src/bpnode/fsw/tables/bpnode_adup.c
+# Custom ADU proxy table for echo wiring
+COPY cfs-config/bpnode_adup.c        src/bpnode/fsw/tables/bpnode_adup.c
 
 # Run CMake
 RUN cmake \
@@ -153,7 +147,6 @@ RUN cmake \
     -S cfs-bundle/cfe
 
 # Copy all app topicids headers into the generated include directory
-# (table compilation needs these but the build system doesn't generate wrappers for them)
 RUN find cfs-bundle/apps src -name '*_topicids.h' -exec cp -v {} build/native/default/inc/ \;
 
 # Build and install
@@ -170,7 +163,6 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libc6 \
         libsqlite3-0 \
-        # Networking tools for debugging
         iproute2 \
         iputils-ping \
         net-tools \
@@ -181,15 +173,14 @@ RUN apt-get update && \
 # Copy built cFS binaries and tables
 COPY --from=builder /build/exe /opt/cfs
 
-
 # Copy the host utilities (cmdUtil etc.)
 COPY --from=builder /build/exe/host /opt/cfs/host
 
-# Copy startup script to a known location (cFS expects it at ./cf/cfe_es_startup.scr)
-COPY config/cfe_es_startup.scr /opt/cfs/cfe_es_startup.scr
+# Copy startup script to a known location
+COPY cfs-config/cfe_es_startup.scr /opt/cfs/cfe_es_startup.scr
 
 # Copy start script
-COPY start_cfs /usr/local/bin/start_cfs
+COPY docker/start_cfs /usr/local/bin/start_cfs
 RUN chmod +x /usr/local/bin/start_cfs
 
 ENV PATH="${PATH}:/opt/cfs/host:/usr/local/bin"
