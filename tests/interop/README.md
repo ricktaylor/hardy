@@ -4,404 +4,243 @@ This directory contains tests for verifying Hardy's interoperability with other 
 
 See also: [Interoperability Test Plan](../../docs/interop_test_plan.md)
 
+## Overview
+
+Hardy is tested against five other DTN Bundle Protocol implementations:
+
+| Implementation | CLA | Echo Service | Status |
+|---|---|---|---|
+| [Hardy](hardy/) | TCPCLv4 | Built-in (service 7) | Passing |
+| [dtn7-rs](dtn7-rs/) | TCPCLv4 | dtnecho2 (service 7) | Passing |
+| [HDTN](HDTN/) | TCPCLv4 | Built-in (service 2047) | Passing |
+| [DTNME](DTNME/) | TCPCLv4 | echo_me (service 7) | Passing |
+| [ION](ION/) | STCP (via mtcp-cla) | bpecho (service 7) | Passing |
+| [D3TN/ud3tn](ud3tn/) | MTCP (via mtcp-cla) | AAP2 echo agent (service 7) | Passing |
+| [ESA BP](ESA-BP/) | STCP (via mtcp-cla) | STCP CLE + echo (service 7) | Passing |
+| [NASA cFS BPNode](NASA-cFS/) | STCP (custom PSP module) | SB routing echo (service 7) | Passing |
+
+Each test verifies bidirectional bundle exchange:
+- **TEST 1**: Hardy pings the other implementation's echo service
+- **TEST 2**: The other implementation pings Hardy's echo service
+
 ## Directory Structure
 
 ```
 tests/interop/
-├── hardy/                     # Hardy-to-Hardy interoperability tests
-│   └── test_hardy_ping.sh     # Two-node ping/echo test
-├── dtn7-rs/                   # dtn7-rs interoperability tests
-│   ├── docker/                # Docker configuration
-│   │   ├── Dockerfile         # dtn7-rs build
-│   │   └── start_dtnd         # Wrapper script for dtnd
-│   ├── start_dtn7rs.sh        # Start dtn7-rs for interactive testing
-│   └── test_dtn7rs_ping.sh    # dtn7-rs ping/echo test
-├── HDTN/                      # NASA HDTN interoperability tests
-│   ├── docker/                # Docker configuration
-│   │   ├── Dockerfile         # HDTN build
-│   │   └── start_hdtn         # Wrapper script for hdtn-one-process
-│   ├── start_hdtn.sh          # Start HDTN for interactive testing
-│   └── test_hdtn_ping.sh      # HDTN ping/echo test
-├── DTNME/                     # NASA DTNME interoperability tests
-│   ├── docker/                # Docker configuration
-│   │   ├── Dockerfile         # DTNME build
-│   │   ├── dtnme.cfg.template # Configuration template
-│   │   └── start_dtnme        # Wrapper script for dtnme
-│   ├── start_dtnme.sh         # Start DTNME for interactive testing
-│   └── test_dtnme_ping.sh     # DTNME ping/echo test
-└── README.md
+├── README.md
+├── benchmark.sh                  # Run all tests and compare RTT
+├── mtcp/                         # MTCP/STCP CLA binary (for ION interop)
+│   ├── Cargo.toml
+│   ├── design.md                 # Wire format specification
+│   └── src/                      # Rust source
+├── hardy/                        # Hardy-to-Hardy tests
+│   ├── test_hardy_ping.sh
+│   └── run_hardy_ping_test.sh
+├── dtn7-rs/                      # dtn7-rs interop tests
+│   ├── docker/
+│   │   ├── Dockerfile
+│   │   └── start_dtnd
+│   ├── start_dtn7rs.sh
+│   └── test_dtn7rs_ping.sh
+├── HDTN/                         # NASA HDTN interop tests
+│   ├── docker/
+│   │   ├── Dockerfile
+│   │   └── start_hdtn
+│   ├── start_hdtn.sh
+│   └── test_hdtn_ping.sh
+├── DTNME/                        # NASA DTNME interop tests
+│   ├── docker/
+│   │   ├── Dockerfile
+│   │   ├── dtnme.cfg.template
+│   │   └── start_dtnme
+│   ├── start_dtnme.sh
+│   └── test_dtnme_ping.sh
+├── ION/                          # JPL ION interop tests
+│   ├── docker/
+│   │   ├── Dockerfile
+│   │   └── start_ion
+│   ├── start_ion.sh
+│   └── test_ion_ping.sh
+├── ud3tn/                        # D3TN/ud3tn interop tests
+│   ├── docker/
+│   │   └── start_ud3tn
+│   ├── start_ud3tn.sh
+│   └── test_ud3tn_ping.sh
+├── ESA-BP/                       # ESA BP interop tests
+│   ├── docker/
+│   │   ├── Dockerfile
+│   │   └── start_esa_bp
+│   ├── start_esa_bp.sh
+│   └── test_esa_bp_ping.sh
+└── NASA-cFS/                     # NASA cFS BPNode interop tests
+    ├── docker/
+    │   ├── Dockerfile
+    │   └── start_cfs
+    ├── stcpsock_intf/            # STCP PSP module for cFS
+    │   ├── stcpsock_intf.c
+    │   └── CMakeLists.txt
+    ├── cfs-config/               # cFS build/mission config overrides
+    ├── start_cfs.sh
+    └── test_cfs_ping.sh
 ```
 
 ## Quick Start
 
-For interactive debugging, use the start scripts for each implementation:
+### Run All Tests (Benchmark)
 
-### dtn7-rs
 ```bash
-# Terminal 1: Start dtn7-rs
-./tests/interop/dtn7-rs/start_dtn7rs.sh
+# Run all interop tests and produce RTT comparison
+./tests/interop/benchmark.sh
 
-# Terminal 2: Ping it
-bp ping ipn:23.7 127.0.0.1:4556 --no-sign
+# Specify number of pings per test
+./tests/interop/benchmark.sh --count 20
+
+# Skip building Hardy binaries
+./tests/interop/benchmark.sh --skip-build
 ```
 
-### HDTN
+### Run Individual Tests
+
 ```bash
-# Terminal 1: Start HDTN (auto-builds Docker image if needed)
+# Full test (builds Hardy, builds Docker image if needed)
+./tests/interop/HDTN/test_hdtn_ping.sh
+
+# Skip cargo build
+./tests/interop/HDTN/test_hdtn_ping.sh --skip-build
+
+# Specify ping count
+./tests/interop/HDTN/test_hdtn_ping.sh --count 10
+```
+
+### Interactive Testing
+
+Each implementation has a `start_*.sh` script for manual testing:
+
+```bash
+# Terminal 1: Start the other implementation
 ./tests/interop/HDTN/start_hdtn.sh
 
 # Terminal 2: Ping it (HDTN uses service 2047 for echo)
 bp ping ipn:10.2047 127.0.0.1:4556 --no-sign
 ```
 
-### DTNME
+## MTCP/STCP CLA
+
+The `mtcp/` directory contains a standalone CLA binary for ION interop testing. ION uses
+STCP framing (4-byte big-endian u32 length prefix) rather than TCPCLv4, so Hardy needs
+this separate CLA to communicate with it.
+
+The binary supports two framing modes:
+- **MTCP**: CBOR byte string framing (draft-ietf-dtn-mtcpcl-01), used by ud3tn/D3TN
+- **STCP**: 4-byte big-endian u32 length prefix, used by ION
+
+The CLA registers with Hardy's BPA via gRPC and can be used in two ways:
+- **Standalone**: Run alongside `hardy-bpa-server` (registers via gRPC)
+- **Inline**: Launched by `bp ping --cla /path/to/mtcp-cla --cla-args "--config config.toml"`
+
+The mtcp-cla is excluded from the main cargo workspace and must be built separately:
 ```bash
-# Terminal 1: Start DTNME (auto-builds Docker image if needed)
-./tests/interop/DTNME/start_dtnme.sh
-
-# Terminal 2: Ping it
-bp ping ipn:1.7 127.0.0.1:4556 --no-sign
+cd tests/interop/mtcp && cargo build --release
 ```
 
-## Tests
+See [mtcp/design.md](mtcp/design.md) for wire format details.
 
-### Hardy-to-Hardy Ping/Echo (`test_hardy_ping.sh`)
+## Test Architecture
 
-Tests bidirectional ping/echo between two Hardy BPA servers. This is the simplest interop test since both nodes are Hardy.
+### TCPCLv4 Tests (dtn7-rs, HDTN, DTNME)
 
-#### Prerequisites
+These tests use Hardy's built-in TCPCLv4 CLA:
 
-- Rust toolchain (for building Hardy)
+```
+TEST 1: Hardy pings other implementation
+┌──────────┐  TCPCLv4   ┌──────────────┐
+│ bp ping  │◄──────────►│  Other BPA   │
+│ ipn:1.0  │   :4556    │  + echo svc  │
+└──────────┘            └──────────────┘
 
-#### What It Tests
+TEST 2: Other implementation pings Hardy
+┌──────────────┐  TCPCLv4   ┌──────────────┐
+│ hardy-bpa    │◄──────────►│  Other BPA   │
+│ + echo svc   │   :4557    │  + ping tool │
+│ ipn:1.0      │            │              │
+└──────────────┘            └──────────────┘
+```
 
-| Test | Description | Node 1 | Node 2 |
-|------|-------------|--------|--------|
-| **TEST 1** | Node 1 pings Node 2 | Client (`bp ping`) | Server (echo on ipn:2.7) |
-| **TEST 2** | Node 2 pings Node 1 | Server (echo on ipn:1.7) | Client (`bp ping`) |
+### STCP Tests (ION)
 
-Both tests use TCPCLv4 as the convergence layer.
+ION uses STCP framing, so Hardy needs the standalone mtcp-cla:
 
-#### Usage
+```
+TEST 1: Hardy pings ION
+┌──────────┐  gRPC   ┌───────────┐  STCP    ┌──────────┐
+│ bp ping  │◄───────►│ mtcp-cla  │◄────────►│   ION    │
+│ ipn:1.0  │ :50051  │ (STCP)    │  :4556   │ + bpecho │
+└──────────┘         └───────────┘          └──────────┘
 
+TEST 2: ION pings Hardy
+┌──────────────┐  gRPC  ┌───────────┐  STCP   ┌──────────┐
+│ hardy-bpa    │◄──────►│ mtcp-cla  │◄───────►│   ION    │
+│ + echo svc   │:50051  │ (STCP)    │ :4557   │ + bpsrc  │
+│ ipn:1.0      │        └───────────┘         └──────────┘
+└──────────────┘
+```
+
+## Benchmark
+
+The `benchmark.sh` script runs all available interop tests and produces an RTT comparison table:
+
+```
+| Implementation | Min    | Avg    | Max    | Stddev | Loss | Pings | vs Hardy |
+|----------------|--------|--------|--------|--------|------|-------|----------|
+| Hardy          | 2.1ms  | 3.4ms  | 5.2ms  | 0.8ms  | 0%   | 20/20 | baseline |
+| dtn7-rs        | 8.3ms  | 12.1ms | 18.4ms | 2.7ms  | 0%   | 20/20 | 356%     |
+| HDTN           | 3.8ms  | 5.9ms  | 9.1ms  | 1.2ms  | 0%   | 20/20 | 174%     |
+| DTNME          | 4.2ms  | 6.7ms  | 11.3ms | 1.8ms  | 0%   | 20/20 | 197%     |
+```
+
+Results are saved to `benchmark_results.md`.
+
+## Common Options
+
+All test scripts support:
+
+| Option | Description |
+|--------|-------------|
+| `--skip-build` | Skip building Hardy binaries |
+| `--count N` / `-c N` | Number of pings to send (default: 5) |
+| `--no-docker` | Use local binaries instead of Docker (where supported) |
+
+## Docker Images
+
+All Docker images are built automatically on first test run. They clone source from
+GitHub, so no local source is needed. Images are cached for subsequent runs.
+
+To rebuild an image:
 ```bash
-# Run full test (builds Hardy first)
-./tests/interop/hardy/test_hardy_ping.sh
-
-# Skip cargo build (use existing binaries)
-./tests/interop/hardy/test_hardy_ping.sh --skip-build
+docker rmi hdtn-interop    # Remove cached image
+./tests/interop/HDTN/test_hdtn_ping.sh   # Rebuilds automatically
 ```
 
-#### Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Node 1 | ipn:1.0 | First Hardy BPA server |
-| Node 2 | ipn:2.0 | Second Hardy BPA server |
-| Node 1 TCPCLv4 Port | 4560 | Port Node 1 listens on |
-| Node 2 TCPCLv4 Port | 4561 | Port Node 2 listens on |
-| Echo Service | ipn:X.7 | Standard echo service number |
-| Ping Source | ipn:X.128 | Fixed source EID for routing |
-
-#### How It Works
-
-The test relies on automatic wildcard route registration:
-
-1. When the `bp ping` tool connects to a BPA server via TCPCLv4, it registers with a node ID (e.g., `ipn:1.0`)
-
-2. The BPA automatically adds a wildcard route for that peer's entire EID space (e.g., `ipn:1.*`)
-
-3. The `bp ping` tool uses a fixed source EID (`--source ipn:X.128`) for consistent routing
-
-4. When the echo service reflects a bundle back to `ipn:1.128`, the wildcard route
-   matches and forwards via the CLA peer (the ping tool's connection)
-
-#### Expected Output
-
-```
-[INFO] TEST 1: Node 1 pings Node 2's echo service
-[STEP] Pinging Node 2's echo service at ipn:2.7 (source: ipn:1.128)...
-
-Pinging ipn:2.7 from ipn:1.128
-Sending ping 0...
-Response 0 received after 5.2ms
-...
-
-[INFO] TEST 1 PASSED: Successfully pinged Node 2 with echo responses
-
-[INFO] TEST 2: Node 2 pings Node 1's echo service
-[STEP] Pinging Node 1's echo service at ipn:1.7 (source: ipn:2.128)...
-
-Pinging ipn:1.7 from ipn:2.128
-Sending ping 0...
-Response 0 received after 4.8ms
-...
-
-[INFO] TEST 2 PASSED: Successfully pinged Node 1 with echo responses
-[INFO] Hardy-to-Hardy interoperability test completed successfully
-```
-
----
-
-### dtn7-rs Ping/Echo (`test_dtn7rs_ping.sh`)
-
-Tests bidirectional ping/echo between Hardy and [dtn7-rs](https://github.com/dtn7/dtn7-rs).
-
-#### Prerequisites
-
-- Docker (or local dtn7-rs installation with `--no-docker`)
-- Rust toolchain (for building Hardy)
-
-#### What It Tests
-
-| Test | Description | Hardy Role | dtn7-rs Role |
-|------|-------------|------------|--------------|
-| **TEST 1** | Hardy pings dtn7-rs | Client (`bp ping`) | Server (dtnd + dtnecho2) |
-| **TEST 2** | dtn7-rs pings Hardy | Server (bpa-server + echo) | Client (dtnsend) |
-
-Both tests use TCPCLv4 as the convergence layer.
-
-#### Usage
-
+Build args can be used to pin versions:
 ```bash
-# Run full test (builds Hardy and Docker image)
-./tests/interop/dtn7-rs/test_dtn7rs_ping.sh
-
-# Skip cargo build (use existing binaries)
-./tests/interop/dtn7-rs/test_dtn7rs_ping.sh --skip-build
-
-# Use local dtnd/dtnecho2 instead of Docker
-./tests/interop/dtn7-rs/test_dtn7rs_ping.sh --no-docker
+docker build -t hdtn-interop --build-arg HDTN_REF=v1.0.0 tests/interop/HDTN/docker
+docker build -t dtn7-interop --build-arg DTN7_REF=v0.21.0 tests/interop/dtn7-rs/docker
+docker build -t dtnme-interop --build-arg DTNME_REF=main tests/interop/DTNME/docker
 ```
 
-#### Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Hardy Node | ipn:1.0 | Hardy's administrative endpoint |
-| dtn7-rs Node | ipn:23.0 | dtn7-rs administrative endpoint |
-| Hardy TCPCLv4 Port | 4557 | Port Hardy listens on (TEST 2) |
-| dtn7-rs TCPCLv4 Port | 4556 | Port dtn7-rs listens on (TEST 1) |
-| Echo Service | ipn:X.7 | Standard echo service number |
-
-#### dtn7-rs Architecture
-
-dtn7-rs uses a modular architecture where services connect to the daemon via WebSocket:
-
-```
-┌─────────────────────────────────────────┐
-│              dtn7-rs Container          │
-│                                         │
-│  ┌─────────┐         ┌──────────┐       │
-│  │  dtnd   │◄───────►│ dtnecho2 │       │
-│  │         │   WS    │          │       │
-│  │ TCPCLv4 │ :3000   │ ipn:23.7 │       │
-│  │ :4556   │         └──────────┘       │
-│  └────┬────┘                            │
-└───────┼─────────────────────────────────┘
-        │ TCPCLv4
-        ▼
-┌───────────────┐
-│    Hardy      │
-│  bp ping      │
-│  ipn:1.0      │
-└───────────────┘
-```
-
-**Key commands:**
-- `dtnd -d -i0 -r epidemic -n 23 -C tcp:port=4556` - Start daemon with TCPCLv4
-- `dtnecho2 -v` - Start echo service (connects to dtnd on localhost:3000)
-
-#### Docker Image
-
-The `Dockerfile` builds:
-- `dtnd` - The dtn7-rs daemon
-- `dtnecho2` - Echo service example
-- `dtnsend` - Bundle sending utility
-- `dtn7-plus` tools - Additional utilities
-
-Build manually:
-```bash
-docker build -t dtn7-interop tests/interop/dtn7-rs/docker
-```
-
-The image uses a `start_dtnd` wrapper that:
-- Auto-detects broadcast addresses for discovery
-- Uses `NODE_ID` env var for IPN naming scheme
-- Passes additional arguments to dtnd
-
-#### Expected Output
-
-Successful TEST 1:
-```
-[INFO] TEST 1: dtn7-rs server with echo, Hardy pings
-[STEP] Starting dtn7-rs daemon with TCPCLv4...
-[INFO] Started dtn7-rs container: abc123def456
-[STEP] Starting dtnecho2 service in container...
-[STEP] Hardy pinging dtn7-rs echo service at ipn:23.7...
-
-PING ipn:23.7 via 127.0.0.1:4556
-64 bytes from ipn:23.7: seq=1 time=12.3ms
-64 bytes from ipn:23.7: seq=2 time=8.1ms
-...
-
-[INFO] TEST 1 PASSED: Hardy successfully pinged dtn7-rs
-```
-
-#### Troubleshooting
+## Troubleshooting
 
 **Container fails to start:**
 ```bash
-# Check container logs
-docker logs dtn7-interop-test
-
-# Verify image was built
-docker images | grep dtn7-interop
+docker logs <container-name>    # Check container output
+docker ps -a                    # Check container status
 ```
 
-**Connection refused:**
-- Verify ports 4556/4557 are not in use
-- Check `--network host` is working (may need `--add-host` on some systems)
+**Port conflicts:**
+- Tests use `--network host` so ports must be free on the host
+- Default ports: 4556 (other impl), 4557 (Hardy)
+- Kill stale containers: `docker rm -f hdtn-interop-test`
 
-**Echo service not responding:**
-- Ensure dtnecho2 had time to connect (script waits 2s)
-- Check dtnd WebSocket is accessible on port 3000
-
----
-
-### HDTN Ping/Echo (`test_hdtn_ping.sh`)
-
-Tests bidirectional ping/echo between Hardy and [NASA HDTN](https://github.com/nasa/HDTN).
-
-#### Prerequisites
-
-- Docker (image is auto-built from GitHub if needed)
-- Rust toolchain (for building Hardy)
-
-#### What It Tests
-
-| Test | Description | Hardy Role | HDTN Role |
-|------|-------------|------------|-----------|
-| **TEST 1** | Hardy pings HDTN | Client (`bp ping`) | Server (hdtn-one-process with echo service 2047) |
-| **TEST 2** | HDTN pings Hardy | Server (bpa-server + echo) | Client (bping) |
-
-Both tests use TCPCLv4 as the convergence layer.
-
-#### Usage
-
-```bash
-# Run full test (builds Hardy)
-./tests/interop/HDTN/test_hdtn_ping.sh
-
-# Skip cargo build (use existing binaries)
-./tests/interop/HDTN/test_hdtn_ping.sh --skip-build
-```
-
-#### Building the HDTN Docker Image
-
-The HDTN Docker image is built directly from GitHub:
-
-```bash
-# Build from the docker directory (clones HDTN from GitHub)
-docker build -t hdtn-interop tests/interop/HDTN/docker
-
-# Build with specific version/tag
-docker build -t hdtn-interop --build-arg HDTN_REF=v1.0.0 tests/interop/HDTN/docker
-
-# Build with more cores for faster compilation
-docker build -t hdtn-interop --build-arg CORES=8 tests/interop/HDTN/docker
-```
-
-#### Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Hardy Node | ipn:1.0 | Hardy's administrative endpoint |
-| HDTN Node | ipn:10.0 | HDTN administrative endpoint |
-| Hardy TCPCLv4 Port | 4557 | Port Hardy listens on (TEST 2) |
-| HDTN TCPCLv4 Port | 4556 | Port HDTN listens on (TEST 1) |
-| HDTN Echo Service | ipn:10.2047 | HDTN uses service 2047 for echo |
-| Hardy Echo Service | ipn:1.7 | Hardy uses standard service 7 for echo |
-
----
-
-### DTNME Ping/Echo (`test_dtnme_ping.sh`)
-
-Tests bidirectional ping/echo between Hardy and [NASA DTNME](https://github.com/nasa/DTNME).
-
-#### Prerequisites
-
-- Docker (image is auto-built from GitHub if needed)
-- Rust toolchain (for building Hardy)
-
-#### What It Tests
-
-| Test | Description | Hardy Role | DTNME Role |
-|------|-------------|------------|------------|
-| **TEST 1** | Hardy pings DTNME | Client (`bp ping`) | Server (dtnme + echo_me on service 7) |
-| **TEST 2** | DTNME pings Hardy | Server (bpa-server + echo) | Client (ping_me) |
-
-Both tests use TCPCLv4 as the convergence layer.
-
-#### Usage
-
-```bash
-# Run full test (builds Hardy)
-./tests/interop/DTNME/test_dtnme_ping.sh
-
-# Skip cargo build (use existing binaries)
-./tests/interop/DTNME/test_dtnme_ping.sh --skip-build
-```
-
-#### Building the DTNME Docker Image
-
-The DTNME Docker image is built directly from GitHub using Debian buster (Boost 1.67).
-DTNME requires Boost 1.66-1.69 due to Beast/Asio API compatibility.
-
-```bash
-# Build from the docker directory (clones DTNME from GitHub)
-docker build -t dtnme-interop tests/interop/DTNME/docker
-
-# Build with specific version/tag
-docker build -t dtnme-interop --build-arg DTNME_REF=v1.0.0 tests/interop/DTNME/docker
-```
-
-#### Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| Hardy Node | ipn:1.0 | Hardy's administrative endpoint |
-| DTNME Node | ipn:2.0 | DTNME administrative endpoint |
-| Hardy TCPCLv4 Port | 4557 | Port Hardy listens on (TEST 2) |
-| DTNME TCP Port | 4556 | Port DTNME listens on (TEST 1) |
-| Echo Service | ipn:X.7 | Standard echo service number |
-
-#### DTNME Architecture
-
-DTNME uses a daemon plus separate application binaries:
-
-```
-┌─────────────────────────────────────────┐
-│            DTNME Container              │
-│                                         │
-│  ┌─────────┐         ┌──────────┐       │
-│  │  dtnme  │◄───────►│ echo_me  │       │
-│  │         │   API   │          │       │
-│  │  TCP CL │  :5010  │ ipn:X.7  │       │
-│  │  :4556  │         └──────────┘       │
-│  └────┬────┘                            │
-└───────┼─────────────────────────────────┘
-        │ TCPCLv4
-        ▼
-┌───────────────┐
-│    Hardy      │
-│  bp ping      │
-│  ipn:1.0      │
-└───────────────┘
-```
-
-**Key binaries:**
-- `dtnme` - Main DTN daemon
-- `echo_me` - Echo service
-- `ping_me` - Ping utility
-- `send_me` / `recv_me` - Bundle send/receive
+**Build failures:**
+- Ensure Docker has sufficient memory (HDTN needs ~4GB)
+- Check network access to GitHub for cloning

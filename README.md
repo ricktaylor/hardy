@@ -56,7 +56,9 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 | Crate | Description |
 |-------|-------------|
 | [**`hardy-sqlite-storage`**](./sqlite-storage/) | SQLite-based metadata storage engine with automatic schema migration. |
+| [**`hardy-postgres-storage`**](./postgres-storage/) | PostgreSQL-based metadata storage engine. |
 | [**`hardy-localdisk-storage`**](./localdisk-storage/) | Filesystem-based bundle storage with configurable fsync and recovery support. |
+| [**`hardy-s3-storage`**](./s3-storage/) | S3-compatible object storage for bundle data, supporting AWS S3 and MinIO. |
 
 ### Convergence Layer Adapters
 
@@ -154,6 +156,33 @@ cbor inspect data.cbor
 
 See the [bpv7-tools README](./bpv7/tools/README.md) and [cbor-tools README](./cbor/tools/README.md) for comprehensive usage guides.
 
+## Interoperability
+
+Hardy is tested for bidirectional bundle exchange against multiple BPv7 implementations:
+
+| Implementation | CLA | Source |
+|---|---|---|
+| Hardy (self-test) | TCPCLv4 | - |
+| [dtn7-rs](https://github.com/dtn7/dtn7-rs) | TCPCLv4 | GitHub |
+| [NASA HDTN](https://github.com/nasa/HDTN) | TCPCLv4 | GitHub |
+| [NASA DTNME](https://github.com/nasa/DTNME) | TCPCLv4 | GitHub |
+| [JPL ION](https://github.com/nasa-jpl/ION-DTN) | STCP | GitHub |
+| [D3TN/ud3tn](https://gitlab.com/d3tn/ud3tn) | MTCP | GitLab |
+| ESA BP | STCP | ESA ESSR |
+| [NASA cFS BPNode](https://github.com/nasa/bp) | STCP | GitHub |
+
+Each test verifies ping/echo in both directions. A benchmark script compares RTT across all implementations.
+
+```bash
+# Run all interop tests with RTT comparison
+./tests/interop/benchmark.sh
+
+# Run a single implementation test
+./tests/interop/HDTN/test_hdtn_ping.sh
+```
+
+See [tests/interop/README.md](./tests/interop/README.md) for details.
+
 ## Key Documentation
 
 | Document | Description |
@@ -161,6 +190,7 @@ See the [bpv7-tools README](./bpv7/tools/README.md) and [cbor-tools README](./cb
 | [**Architecture Overview**](./docs/design.md) | High-level system architecture and design principles. |
 | [**Requirements**](./docs/requirements.md) | High-level and low-level requirements with RFC traceability. |
 | [**Test Strategy**](./docs/test_strategy.md) | Overall testing approach including unit, integration, and fuzz testing. |
+| [**Interop Tests**](./tests/interop/README.md) | Interoperability test suite for other BPv7 implementations. |
 
 ## Contributing
 
