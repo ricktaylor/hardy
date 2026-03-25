@@ -196,20 +196,39 @@ if [ "$USE_DOCKER" = true ]; then
     log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
     log_info "Waiting for ION to initialize..."
-    sleep 8
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
+            log_error "ION container exited unexpectedly. Logs:"
+            docker logs "$ION_CONTAINER" 2>&1 | tail -50
+            docker rm "$ION_CONTAINER" 2>/dev/null || true
+            exit 1
+        fi
 
-    if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
-        log_error "ION container exited unexpectedly. Logs:"
-        docker logs "$ION_CONTAINER" 2>&1 | tail -50
-        docker rm "$ION_CONTAINER" 2>/dev/null || true
+        if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
+            log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give ION time to finish internal setup after port opens
+    sleep 2
+
+    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+        log_error "ION did not start listening on port $ION_STCP_PORT within ${WAIT_TIMEOUT}s"
+        docker logs "$ION_CONTAINER" 2>&1 | tail -30
         exit 1
     fi
 
-    # Start bpecho service — must wait until BP stack is fully running
+    # Start bpecho service
     log_step "Starting bpecho service on ipn:$ION_NODE_NUM.7..."
     docker exec -d "$ION_CONTAINER" bpecho "ipn:$ION_NODE_NUM.7"
 
-    sleep 3
+    sleep 2
 else
     log_error "Native ION mode not yet implemented - use Docker mode"
     exit 1
@@ -358,7 +377,22 @@ if [ "$USE_DOCKER" = true ]; then
     log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
     log_info "Waiting for ION to initialize..."
-    sleep 8
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
+            break
+        fi
+        if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
+            log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    # Give ION time to finish internal setup after port opens
+    sleep 2
 
     if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
         log_error "ION container exited unexpectedly. Logs:"
