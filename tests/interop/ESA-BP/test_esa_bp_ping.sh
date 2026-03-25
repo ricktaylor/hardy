@@ -202,20 +202,21 @@ while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
         exit 1
     fi
 
-    if nc -z 127.0.0.1 "$ESA_BP_PORT" 2>/dev/null; then
+    # Check if port is open (ss preferred — no TCP connection created)
+    if ss -tln 2>/dev/null | grep -q ":$ESA_BP_PORT "; then
         log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s)"
         break
-    elif timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$ESA_BP_PORT" 2>/dev/null; then
+    elif nc -z 127.0.0.1 "$ESA_BP_PORT" 2>/dev/null; then
         log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s)"
-        break
-    elif ss -tlnp 2>/dev/null | grep -q ":$ESA_BP_PORT "; then
-        log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s, via ss)"
         break
     fi
 
     sleep 1
     WAIT_COUNT=$((WAIT_COUNT + 1))
 done
+
+# Give ESA-BP time to finish internal setup after port opens
+sleep 2
 
 if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
     log_error "ESA-BP did not start within ${WAIT_TIMEOUT}s"
@@ -369,7 +370,23 @@ ESA_BP_CONTAINER=$(docker run -d \
 log_info "Started ESA-BP container: ${ESA_BP_CONTAINER:0:12}"
 
 # Wait for ESA-BP to initialize
-sleep 10
+log_info "Waiting for ESA-BP to initialize..."
+WAIT_TIMEOUT=60
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$ESA_BP_CONTAINER" | grep -q .; then
+        break
+    fi
+    if ss -tln 2>/dev/null | grep -q ":$ESA_BP_PORT "; then
+        log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Give ESA-BP time to finish internal setup after port opens
+sleep 2
 
 if ! docker ps -q -f "id=$ESA_BP_CONTAINER" | grep -q .; then
     log_error "ESA-BP container exited unexpectedly. Logs:"
