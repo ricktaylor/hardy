@@ -291,10 +291,6 @@ static int32 stcpsock_intf_ReadPacket(stcpsock_intf_State_t *State,
     if (rc == 0)
         return CFE_PSP_ERROR_TIMEOUT;
 
-    /* Debug: show what poll reported */
-    if (pfd.revents & POLLHUP)
-        OS_printf("CFE_PSP: STCP poll got POLLHUP (peer disconnected)\n");
-
     /* Read/accumulate length prefix */
     while (State->LenBytesRead < 4)
     {
@@ -305,17 +301,12 @@ static int32 stcpsock_intf_ReadPacket(stcpsock_intf_State_t *State,
         {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 return CFE_PSP_ERROR_TIMEOUT;
-            /* Connection closed or error */
-            OS_printf("CFE_PSP: STCP header recv returned %zd, errno=%d, revents=0x%x, had %zu/4 bytes\n",
-                      n, (n < 0) ? errno : 0, (unsigned)pfd.revents, State->LenBytesRead);
+            /* Connection closed or error — reset and wait for new connection */
             stcpsock_resetConnection(State);
             return CFE_PSP_ERROR_TIMEOUT;
         }
         State->LenBytesRead += n;
     }
-
-    OS_printf("CFE_PSP: STCP got 4 header bytes: %02x %02x %02x %02x\n",
-              State->LenBuf[0], State->LenBuf[1], State->LenBuf[2], State->LenBuf[3]);
 
     /* Parse length prefix (first time after header complete) */
     if (State->PendingLen == 0)
@@ -328,9 +319,6 @@ static int32 stcpsock_intf_ReadPacket(stcpsock_intf_State_t *State,
             State->LenBytesRead = 0;
             return CFE_PSP_ERROR_TIMEOUT;
         }
-
-        OS_printf("CFE_PSP: STCP parsed length=%u, buffer=%lu\n",
-                  State->PendingLen, (unsigned long)Dest->BufferSize);
 
         if (State->PendingLen > Dest->BufferSize)
         {
@@ -353,14 +341,13 @@ static int32 stcpsock_intf_ReadPacket(stcpsock_intf_State_t *State,
         {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 return CFE_PSP_ERROR_TIMEOUT;
-            OS_printf("CFE_PSP: STCP connection closed during payload read\n");
             stcpsock_resetConnection(State);
             return CFE_PSP_ERROR_TIMEOUT;
         }
         State->PayloadBytesRead += n;
     }
 
-    /* Complete bundle received */
+    /* Complete bundle received — log is checked by test script */
     OS_printf("CFE_PSP: STCP received complete bundle: %u bytes\n", (unsigned)State->PendingLen);
     Dest->BufferSize = State->PendingLen;
 
