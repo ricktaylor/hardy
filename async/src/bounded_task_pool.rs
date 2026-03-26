@@ -63,6 +63,7 @@ use crate::task_pool::TaskPool;
 /// 1. The cancellation token is triggered
 /// 2. No new tasks can be spawned
 /// 3. All running tasks are awaited to completion
+#[derive(Clone)]
 pub struct BoundedTaskPool {
     inner: TaskPool,
     semaphore: Arc<tokio::sync::Semaphore>,
