@@ -1,8 +1,10 @@
-use super::*;
 use core::ops::Range;
 use futures::{FutureExt, join, select_biased};
 
-struct ReassemblyResult {
+use super::*;
+use crate::bundle::RawBundle;
+
+struct CollectedFragments {
     received_at: time::OffsetDateTime,
     adus: HashMap<u64, (hardy_bpv7::bundle::Id, Arc<str>, Range<usize>)>,
 }
@@ -46,38 +48,40 @@ struct ReassemblyResult {
 // }
 
 impl Store {
-    pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
+    pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Result<Option<RawBundle>> {
         let status = bundle::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
 
-        // See if we can collect all the fragments
-        let Some(results) = self.poll_fragments(bundle, &status).await else {
-            self.update_status(bundle, status).await;
-            return None;
+        let Some(fragments) = self.poll_fragments(bundle, &status).await? else {
+            self.update_status(bundle, status).await?;
+            return Ok(None);
         };
 
-        // Now try to reassemble
-        let result = self.reassemble(&results).await;
+        let raw_bundle = self.reassemble(&fragments).await?;
 
-        // Remove the fragments from bundle_storage even if we failed to fully reassemble
-        for (bundle_id, storage_name, _) in results.adus.values() {
-            self.delete_data(storage_name).await;
-            self.tombstone_metadata(bundle_id).await;
+        // Remove the fragments from bundle_storage even if reassembly failed or returned None;
+        // attempt all cleanups regardless of individual failures.
+        for (bundle_id, storage_name, _) in fragments.adus.values() {
+            if let Err(e) = self.delete_data(storage_name).await {
+                warn!("Failed to delete fragment data {storage_name}: {e}");
+            }
+            if let Err(e) = self.tombstone_metadata(bundle_id).await {
+                warn!("Failed to tombstone fragment metadata {bundle_id}: {e}");
+            }
         }
 
         // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
 
-        result
+        Ok(raw_bundle)
     }
 
     async fn poll_fragments(
         &self,
         bundle: &bundle::Bundle,
         status: &bundle::BundleStatus,
-    ) -> Option<ReassemblyResult> {
-        // Poll the store for the other fragments
+    ) -> Result<Option<CollectedFragments>> {
         let cancel_token = self.tasks.cancel_token().clone();
 
         let source = bundle.bundle.id.source.clone();
@@ -100,7 +104,7 @@ impl Store {
             .payload_range();
 
         let mut adu_totals = payload.len() as u64;
-        let mut results = ReassemblyResult {
+        let mut fragments = CollectedFragments {
             received_at: bundle.metadata.read_only.received_at,
             adus: [(
                 fragment_info.offset,
@@ -119,16 +123,9 @@ impl Store {
 
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
 
-        join!(
-            // Producer: poll for fragment bundles
-            async {
-                let _ = self
-                    .metadata_storage
-                    .poll_adu_fragments(tx, status)
-                    .await
-                    .inspect_err(|e| error!("Failed to poll store for fragmented bundles: {e}"));
-                // When tx is dropped, consumer will see channel close and return result
-            },
+        let (producer_result, consumer_result) = join!(
+            // Producer: poll for fragment bundles; tx drop signals consumer to stop
+            async { self.metadata_storage.poll_adu_fragments(tx, status).await },
             // Consumer: collect fragments
             async {
                 loop {
@@ -136,7 +133,7 @@ impl Store {
                         bundle = rx.recv_async().fuse() => {
                             let Ok(bundle) = bundle else {
                                 // Done (>= is just so we can capture invalid bundles and handle them at re-dispatch)
-                                break (adu_totals >= total_adu_len).then_some(results);
+                                break (adu_totals >= total_adu_len).then_some(fragments);
                             };
 
                             if source == bundle.bundle.id.source &&
@@ -152,8 +149,8 @@ impl Store {
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
-                                results.received_at = results.received_at.min(bundle.metadata.read_only.received_at);
-                                results.adus.insert(fragment_info.offset,
+                                fragments.received_at = fragments.received_at.min(bundle.metadata.read_only.received_at);
+                                fragments.adus.insert(fragment_info.offset,
                                     (
                                         bundle.bundle.id,
                                         bundle.metadata
@@ -170,20 +167,23 @@ impl Store {
                     }
                 }
             }
-        ).1
+        );
+
+        producer_result?;
+        Ok(consumer_result)
     }
 
-    async fn reassemble(&self, results: &ReassemblyResult) -> Option<(Arc<str>, Bytes)> {
-        let first = results.adus.get(&0).or_else(|| {
+    async fn reassemble(&self, results: &CollectedFragments) -> Result<Option<RawBundle>> {
+        let Some(first) = results.adus.get(&0) else {
             debug!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
                 &results.adus.values().next().unwrap().0
             );
-            None
-        })?;
+            return Ok(None);
+        };
 
         let bundle = self.get_metadata(&first.0).await?;
-        let old_data = self
+        let Some(old_data) = self
             .load_data(
                 bundle
                     .metadata
@@ -191,7 +191,10 @@ impl Store {
                     .as_ref()
                     .trace_expect("Invalid bundle in reassembly?!"),
             )
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
 
         // TODO:  There's a lot of mem copies going on here!
         let mut new_data: Vec<u8> = old_data
@@ -213,17 +216,19 @@ impl Store {
                 debug!(
                     "Total ADU length mismatch during fragment reassembly detected: {bundle_id}"
                 );
-                return None;
+                return Ok(None);
             }
             if fi.offset != next_offset {
                 debug!("Misalignment in offsets during fragment reassembly detected: {bundle_id}");
-                return None;
+                return Ok(None);
             }
 
             next_offset = next_offset.saturating_add(payload.len() as u64);
 
-            let adu = self.load_data(storage_name).await?.slice(payload.clone());
-            new_data.extend_from_slice(adu.as_ref());
+            let Some(data) = self.load_data(storage_name).await? else {
+                return Err(Error::BundleDataMissing);
+            };
+            new_data.extend_from_slice(data.slice(payload.clone()).as_ref());
         }
 
         if next_offset
@@ -239,37 +244,25 @@ impl Store {
                 "Total reassembled ADU does not match fragment info: {:?}",
                 first.0
             );
-            return None;
+            return Ok(None);
         }
 
         // Rewrite primary block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data);
-        editor = match editor.with_fragment_info(None) {
-            Ok(e) => e,
-            Err((_, e)) => {
-                debug!("Failed to clear fragment info: {e}");
-                return None;
-            }
-        };
-
-        // Now rebuild
-        let new_data = match editor.update_block(1) {
-            Err((_, e)) => {
-                debug!("Missing payload block?: {e}");
-                return None;
-            }
-            Ok(b) => match b.with_data(new_data.into()).rebuild().rebuild() {
-                Err(e) => {
-                    debug!("Failed to rebuild bundle: {e}");
-                    return None;
-                }
-                Ok(new_data) => new_data,
-            },
-        };
+        let editor =
+            hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data).with_fragment_info(None)?;
+        let builder = editor.update_block(1)?;
+        let new_data: Bytes = builder
+            .with_data(new_data.into())
+            .rebuild()
+            .rebuild()?
+            .into();
 
         // Write the rewritten bundle now for safety
-        let new_data = Bytes::from(new_data);
-        let new_storage_name = self.save_data(&new_data).await;
-        Some((new_storage_name, new_data))
+        let new_storage_name = self.save_data(&new_data).await?;
+
+        Ok(Some(RawBundle {
+            storage_name: new_storage_name,
+            data: new_data,
+        }))
     }
 }
