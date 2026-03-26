@@ -26,15 +26,15 @@ This Strategy is the parent document. Verification is executed according to the 
 | **BPv7 Core** | Unit | [`UTP-BPV7-01`](../bpv7/docs/unit_test_plan.md) | RFC 9171 parsing, factories, EID logic. |
 | **BPv7 Core** | Fuzz | [`FUZZ-BPV7-01`](../bpv7/docs/fuzz_test_plan.md) | Bundle parsing, EID string/CBOR parsing. |
 | **BPv7 Core** | Component | [`COMP-BPV7-CLI-01`](../bpv7/docs/component_test_plan.md) | CLI-driven verification of library logic. |
-| **BPSec** | Unit | [`UTP-BPSEC-01`](../bpv7/src/bpsec/unit_test_plan.md) | RFC 9172/3 Integrity & Confidentiality. |
+| **BPSec** | Unit | [`UTP-BPSEC-01`](../bpv7/docs/unit_test_plan_bpsec.md) | RFC 9172/3 Integrity & Confidentiality. |
 | **EID Patterns** | Unit | [`UTP-PAT-01`](../eid-patterns/docs/unit_test_plan.md) | Draft-05 Pattern matching logic. |
 | **EID Patterns** | Fuzz | [`FUZZ-PAT-01`](../eid-patterns/docs/fuzz_test_plan.md) | Pattern DSL parser robustness. |
 | **BPA Logic** | Unit | [`UTP-BPA-01`](../bpa/docs/unit_test_plan.md) | BPA internal algorithms (Routing, Policy). |
-| **BPA Logic** | Integration | [`PLAN-BPA-01`](../bpa/src/component_test_plan.md) | Routing, Pipeline, Performance Benchmarks. |
+| **BPA Logic** | Integration | [`PLAN-BPA-01`](../bpa/docs/component_test_plan.md) | Routing, Pipeline, Performance Benchmarks. |
 | **BPA Pipeline** | Fuzz | [`FUZZ-BPA-01`](../bpa/docs/fuzz_test_plan.md) | Async pipeline stability and deadlocks. |
 | **TCPCLv4** | Component | [`PLAN-TCPCL-01`](../tcpclv4/docs/component_test_plan.md) | Session state machine via `duplex` harness. |
 | **TCPCLv4** | Fuzz | [`FUZZ-TCPCL-01`](../tcpclv4/docs/fuzz_test_plan.md) | Protocol stream parsing and state machine robustness. |
-| **TCPCLv4 Server** | System | [`PLAN-TCPCL-SERVER-01`](../tcpclv4-server/src/test_plan.md) | Application lifecycle, config, packaging. |
+| **TCPCLv4 Server** | System | [`PLAN-TCPCL-SERVER-01`](../tcpclv4-server/docs/test_plan.md) | Application lifecycle, config, packaging. |
 | **CLA Trait** | Integration | [`PLAN-CLA-01`](../bpa/docs/cla_integration_test_plan.md) | Generic Convergence Layer Trait verification. |
 | **Service Trait** | Integration | [`PLAN-SVC-01`](../bpa/docs/service_integration_test_plan.md) | Generic Application Service Trait verification. |
 | **Storage** | Integration | [`PLAN-STORE-01`](../bpa/docs/storage_integration_test_plan.md) | Generic Storage Trait verification. |
@@ -137,5 +137,5 @@ To simulate a realistic cloud deployment, the following architecture is required
 
 Performance verification (REQ-13) is distributed across the testing hierarchy to ensure bottlenecks are identified early:
 
-* **Component Level:** Micro-benchmarks for specific algorithms (e.g., Reassembly, Routing Table lookups) are defined in [`PLAN-BPA-01`](../bpa/src/component_test_plan.md).
+* **Component Level:** Micro-benchmarks for specific algorithms (e.g., Reassembly, Routing Table lookups) are defined in [`PLAN-BPA-01`](../bpa/docs/component_test_plan.md).
 * **System Level:** End-to-end throughput, latency, and storage scalability tests (10Gbps, 1TB capacity) are defined in [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md).

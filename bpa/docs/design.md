@@ -281,7 +281,7 @@ Key external dependencies:
 ## Testing
 
 - [Unit Test Plan](unit_test_plan.md) - BPA internal algorithms (routing, policy)
-- [Component Test Plan](../src/component_test_plan.md) - Pipeline integration, performance benchmarks
+- [Component Test Plan](component_test_plan.md) - Pipeline integration, performance benchmarks
 - [CLA Integration Tests](cla_integration_test_plan.md) - Generic CLA trait verification
 - [Service Integration Tests](service_integration_test_plan.md) - Generic service trait verification
 - [Storage Integration Tests](storage_integration_test_plan.md) - Generic storage trait verification

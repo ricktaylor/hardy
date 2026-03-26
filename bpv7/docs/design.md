@@ -193,4 +193,4 @@ See [portable-atomic's documentation](https://docs.rs/portable-atomic) for detai
 - [Unit Test Plan](unit_test_plan.md) - RFC 9171 parsing, factories, EID logic
 - [Fuzz Test Plan](fuzz_test_plan.md) - Bundle parsing, EID string/CBOR parsing
 - [Component Test Plan](component_test_plan.md) - CLI-driven verification of library logic
-- [BPSec Unit Test Plan](../src/bpsec/unit_test_plan.md) - RFC 9172/3 Integrity & Confidentiality
+- [BPSec Unit Test Plan](unit_test_plan_bpsec.md) - RFC 9172/3 Integrity & Confidentiality
