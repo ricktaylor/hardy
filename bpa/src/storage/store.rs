@@ -189,7 +189,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: metadata::BundleStatus) {
+    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: bundle::BundleStatus) {
         if bundle.metadata.status != status {
             bundle.metadata.status = status;
             self.metadata_storage
