@@ -17,7 +17,7 @@ hardy-async = { path = "../async" }
 hardy-otel = { path = "../otel", optional = true }
 tokio = { version = "1.50", features = ["full"] }
 clap = { version = "4.6", features = ["derive"] }
-tracing = "0.1"
+tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trace-err = "1.0.0"
 anyhow = "1.0"

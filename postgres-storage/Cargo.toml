@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-tracing = []
+instrument = ["tracing/attributes"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa", features = ["serde", "tokio"] }
@@ -16,4 +16,4 @@ sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "r
 thiserror = "2"
 time = { version = "0.3", features = ["std"] }
 trace-err = "1.0"
-tracing = "0.1"
+tracing = { version = "0.1", default-features = false }

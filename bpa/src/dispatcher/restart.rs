@@ -2,7 +2,7 @@ use super::*;
 use storage::recover::RestartResult;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub(crate) async fn restart_bundle(
         self: &Arc<Self>,
         storage_name: Arc<str>,

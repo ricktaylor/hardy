@@ -48,7 +48,7 @@ impl Store {
     /// Takes a bundle with pre-populated metadata (e.g., from filter processing).
     /// Updates the storage_name field after saving data.
     /// Returns false if duplicate bundle already exists.
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn store(&self, bundle: &mut bundle::Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
         let storage_name = self.save_data(data).await;
@@ -84,7 +84,7 @@ impl Store {
     ///
     /// Checks the LRU cache first (peek without updating order), then falls
     /// back to the bundle storage backend if not cached.
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
         if let Some(cache) = &self.bundle_cache {
             if let Some(data) = cache.lru.lock().peek(storage_name) {
@@ -102,7 +102,7 @@ impl Store {
     ///
     /// Always persists to the bundle storage backend first, then caches
     /// in the LRU if the data size is below `max_cached_bundle_size`.
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn save_data(&self, data: &Bytes) -> Arc<str> {
         let storage_name = self
             .bundle_storage
@@ -122,7 +122,7 @@ impl Store {
     /// Delete bundle data from cache and storage backend.
     ///
     /// Removes from the LRU cache first, then deletes from the backend.
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
         if let Some(cache) = &self.bundle_cache {
             cache.lru.lock().pop(storage_name);
@@ -134,7 +134,7 @@ impl Store {
             .trace_expect("Failed to delete bundle data")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> bool {
         self.metadata_storage
             .insert(bundle)
@@ -142,7 +142,7 @@ impl Store {
             .trace_expect("Failed to insert metadata")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     pub async fn get_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Option<bundle::Bundle> {
         let m = self
             .metadata_storage
@@ -161,7 +161,7 @@ impl Store {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     pub async fn tombstone_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) {
         self.metadata_storage
             .tombstone(bundle_id)
@@ -169,7 +169,7 @@ impl Store {
             .trace_expect("Failed to tombstone metadata")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     pub async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -180,7 +180,7 @@ impl Store {
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn update_metadata(&self, bundle: &bundle::Bundle) {
         self.metadata_storage
             .replace(bundle)
@@ -188,8 +188,8 @@ impl Store {
             .trace_expect("Failed to replace metadata")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: bundle::BundleStatus) {
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: metadata::BundleStatus) {
         if bundle.metadata.status != status {
             bundle.metadata.status = status;
             self.metadata_storage
@@ -199,7 +199,7 @@ impl Store {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) {
         self.metadata_storage
             .poll_waiting(tx)
@@ -207,7 +207,7 @@ impl Store {
             .trace_expect("Failed to poll for waiting bundles")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn poll_service_waiting(&self, source: Eid, tx: storage::Sender<bundle::Bundle>) {
         self.metadata_storage
             .poll_service_waiting(source, tx)
@@ -215,7 +215,7 @@ impl Store {
             .trace_expect("Failed to poll for waiting bundles")
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn reset_peer_queue(&self, peer: u32) -> bool {
         self.metadata_storage
             .reset_peer_queue(peer)

@@ -58,7 +58,7 @@ use alloc::sync::{Arc, Weak};
 use trace_err::*;
 use tracing::{debug, error, info, warn};
 
-#[cfg(feature = "tracing")]
+#[cfg(feature = "instrument")]
 use tracing::instrument;
 
 // Centralized collections for future no_std compatibility

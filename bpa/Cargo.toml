@@ -23,7 +23,7 @@ std = [
     "base64?/std",
     "foldhash/std",
 ]
-tracing = ["hardy-async/tracing"]
+instrument = ["tracing/attributes"]
 
 [lib]
 path = "src/lib.rs"

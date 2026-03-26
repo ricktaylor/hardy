@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 [features]
 default = []
 serde = ["dep:serde"]
-tracing = ["hardy-async/tracing"]
+instrument = ["tracing/attributes"]
 
 [dependencies]
 hardy-async = { path = "../async" }
@@ -26,7 +26,7 @@ prost = "0.14.3"
 prost-types = "0.14.3"
 serde = { version = "1.0.228", optional = true }
 time = "0.3.47"
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"

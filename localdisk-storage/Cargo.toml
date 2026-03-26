@@ -11,14 +11,14 @@ crate-type = ["rlib"]
 default = []
 mmap = ["dep:memmap2"]
 serde = ["dep:serde","hardy-bpa/serde"]
-tracing = []
+instrument = ["tracing/attributes"]
 
 [dependencies]
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.50.0", features = ["fs"] }
 rand = "0.10.0"
 directories = "6.0.0"
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 time = "0.3.47"
 trace-err = "1.0.0"
 memmap2 = { version = "0.9.10", optional = true }

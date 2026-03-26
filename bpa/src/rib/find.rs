@@ -18,7 +18,7 @@ fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a E
 }
 
 impl Rib {
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
         let inner = self.inner.read();
 
@@ -62,7 +62,7 @@ impl Rib {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
     pub fn find_local(&self, to: &Eid) -> Option<FindResult> {
         let inner = self.inner.read();
 
@@ -81,7 +81,7 @@ impl Rib {
     }
 
     /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
     pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
         let inner = self.inner.read();
 
@@ -134,7 +134,7 @@ fn map_result(
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip_all,fields(to = %to)))]
+#[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
 fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
     let mut peers: Option<Vec<(u32, &'a Eid)>> = None;
 
@@ -182,7 +182,7 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
     peers.map(InternalFindResult::Forward)
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(inner, table, to, trail),fields(to = %to)))]
+#[cfg_attr(feature = "instrument", instrument(skip(inner, table, to, trail),fields(to = %to)))]
 fn find_recurse<'a>(
     inner: &'a RibInner,
     table: &'a RouteTable,

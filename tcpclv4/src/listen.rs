@@ -53,7 +53,7 @@ impl std::fmt::Debug for Listener {
 }
 
 impl Listener {
-    #[cfg_attr(feature = "tracing", instrument(skip(tasks)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(tasks)))]
     pub async fn listen(self, tasks: Arc<hardy_async::TaskPool>, address: std::net::SocketAddr) {
         let Ok(listener) = TcpListener::bind(address)
             .await

@@ -13,7 +13,7 @@ postgres-storage = ["dep:hardy-postgres-storage"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 file-cla = ["dep:hardy-file-cla"]
-tracing = ["hardy-bpa/tracing","hardy-sqlite-storage?/tracing","hardy-localdisk-storage?/tracing","hardy-file-cla?/tracing"]
+instrument = ["hardy-bpa/instrument","hardy-sqlite-storage?/instrument","hardy-localdisk-storage?/instrument","hardy-file-cla?/instrument"]
 
 [dependencies]
 libfuzzer-sys = "0.4"
@@ -27,7 +27,7 @@ hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 hardy-file-cla = { path = "../../file-cla", optional = true }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "time"] }
 time = { version = "0.3.47", features = ["parsing"] }
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 arbitrary = { version = "1.4.2", features = ["derive"] }
 flume = "0.12.0"
 percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc"] }

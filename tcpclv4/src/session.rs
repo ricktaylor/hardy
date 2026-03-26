@@ -114,7 +114,7 @@ where
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn on_transfer(&mut self, msg: codec::TransferSegmentMessage) -> Result<(), Error> {
         if msg.message_flags.start {
             if self.ingress_bundle.is_some() {
@@ -179,7 +179,7 @@ where
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
     async fn send_segment(
         &mut self,
         transfer_id: u64,
@@ -287,7 +287,7 @@ where
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     async fn send_once(
         &mut self,
         mut bundle: Bytes,
@@ -344,7 +344,7 @@ where
         })
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn forward_to_peer(
         &mut self,
         bundle: Bytes,
@@ -380,7 +380,7 @@ where
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn shutdown(mut self, reason_code: codec::SessionTermReasonCode) {
         // Stop allowing more transfers
         self.from_sink.close();
@@ -436,7 +436,7 @@ where
         self.writer.close().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn on_terminate(mut self, mut msg: codec::SessionTermMessage) {
         // The remote end has started to end the session
 
@@ -503,14 +503,14 @@ where
         self.writer.close().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn close(self) {
         // The remote end has died completely
         // Close the writer
         self.writer.close().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn recv_from_peer(&mut self) -> Result<codec::Message, Error> {
         loop {
             match if let Some(keepalive_interval) = self.keepalive_interval {
@@ -543,7 +543,7 @@ where
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn run(mut self) {
         let cancel_token = self.cancel_token.clone();
         let e = loop {

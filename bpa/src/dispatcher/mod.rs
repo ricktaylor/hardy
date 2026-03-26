@@ -106,7 +106,7 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_data(&self, bundle: &bundle::Bundle) -> Option<Bytes> {
         let storage_name = bundle
             .metadata
@@ -122,7 +122,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
         if let Some(reason) = reason {
             self.report_bundle_deletion(&bundle, reason).await;
@@ -131,7 +131,7 @@ impl Dispatcher {
         self.delete_bundle(bundle).await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn delete_bundle(&self, bundle: bundle::Bundle) {
         // Delete the bundle from the bundle store
         if let Some(storage_name) = &bundle.metadata.storage_name {

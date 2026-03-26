@@ -4,7 +4,7 @@ use hardy_bpv7::status_report::{
 };
 
 impl Dispatcher {
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_reception(
         &self,
         bundle: &bundle::Bundle,
@@ -38,7 +38,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_forwarded(&self, bundle: &bundle::Bundle) {
         debug!("Bundle {} forwarded", bundle.bundle.id);
 
@@ -70,7 +70,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_delivery(&self, bundle: &bundle::Bundle) {
         debug!("Bundle {} delivered", bundle.bundle.id);
 
@@ -100,7 +100,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn report_bundle_deletion(&self, bundle: &bundle::Bundle, reason: ReasonCode) {
         // Check if a report is requested
         if bundle.bundle.flags.delete_report_requested {
@@ -129,7 +129,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, payload),fields(report_to = %report_to)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, payload),fields(report_to = %report_to)))]
     async fn dispatch_status_report(&self, payload: Vec<u8>, report_to: &Eid) {
         // Check reports are enabled
         if self.status_reports {
