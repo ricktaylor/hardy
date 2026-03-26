@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/rpc/status.proto";
+
+package tvr;
+
+// Time-Variant Routing session service.
+//
+// Each client opens a bidirectional streaming session. The first message
+// must be OpenSessionRequest. Subsequent messages add, remove, or replace
+// contacts within the session. When the stream closes (client disconnect
+// or crash), all contacts from this session are automatically withdrawn.
+service Tvr {
+  rpc Session(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// -- Session Envelope --
+
+message ClientMessage {
+  uint32 msg_id = 1;
+  oneof msg {
+    OpenSessionRequest open = 2;
+    AddContactsRequest add = 3;
+    RemoveContactsRequest remove = 4;
+    ReplaceContactsRequest replace = 5;
+  }
+}
+
+message ServerMessage {
+  uint32 msg_id = 1;
+  oneof msg {
+    google.rpc.Status status = 2;
+    OpenSessionResponse open = 3;
+    AddContactsResponse add = 4;
+    RemoveContactsResponse remove = 5;
+    ReplaceContactsResponse replace = 6;
+  }
+}
+
+// -- Session Lifecycle --
+
+message OpenSessionRequest {
+  string name = 1;                              // Session identity
+  uint32 default_priority = 2;                  // Default priority for contacts without override
+}
+
+message OpenSessionResponse {}
+
+// -- Contact Operations --
+
+message Contact {
+  string pattern = 1;                           // EID pattern
+  optional uint32 priority = 2;                 // Override session default
+
+  oneof action {
+    string via = 10;                            // Forward via next-hop EID
+    DropAction drop = 11;                       // Explicit discard
+  }
+
+  oneof schedule {
+    OneShot one_shot = 20;
+    Recurring recurring = 21;
+  }
+  // If no schedule: permanent (always active)
+
+  optional uint64 bandwidth_bps = 30;           // Informational: bits/sec
+  optional uint32 delay_us = 31;                // Informational: one-way delay, microseconds
+}
+
+message DropAction {
+  uint32 reason_code = 1;                       // BPv7 reason code (0 = none)
+}
+
+message OneShot {
+  google.protobuf.Timestamp start = 1;          // If absent: immediate
+  google.protobuf.Timestamp end = 2;            // If absent: until withdrawn
+}
+
+message Recurring {
+  string cron = 1;                              // 5-field cron expression
+  google.protobuf.Duration duration = 2;        // Length of each occurrence
+  google.protobuf.Timestamp until = 3;          // Optional: end of recurrence
+}
+
+message AddContactsRequest {
+  repeated Contact contacts = 1;
+}
+
+message AddContactsResponse {
+  uint32 added = 1;
+  uint32 active = 2;                            // Immediately installed
+  uint32 skipped = 3;                           // Past contacts ignored
+}
+
+message RemoveContactsRequest {
+  repeated Contact contacts = 1;
+}
+
+message RemoveContactsResponse {
+  uint32 removed = 1;
+}
+
+message ReplaceContactsRequest {
+  repeated Contact contacts = 1;                // New complete set for this session
+}
+
+message ReplaceContactsResponse {
+  uint32 added = 1;
+  uint32 removed = 2;
+  uint32 unchanged = 3;
+}

@@ -2207,6 +2207,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-tvr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "config",
+ "hardy-async",
+ "hardy-bpa",
+ "hardy-bpv7",
+ "hardy-eid-patterns",
+ "hardy-otel",
+ "hardy-proto",
+ "prost",
+ "prost-types",
+ "serde",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
