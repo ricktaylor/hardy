@@ -4211,10 +4211,14 @@ dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-localdisk-storage",
+ "hardy-postgres-storage",
+ "hardy-s3-storage",
  "hardy-sqlite-storage",
+ "sqlx",
  "tempfile",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
