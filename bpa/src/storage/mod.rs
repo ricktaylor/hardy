@@ -3,6 +3,9 @@ use hardy_async::sync::Mutex;
 use hardy_bpv7::eid::Eid;
 use lru::LruCache;
 
+pub(crate) mod error;
+pub use error::{Error, Result};
+
 // For bundle_cache we use hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1): peek, put, pop
 // 2. Critical sections are very short (LRU HashMap lookups)
@@ -12,8 +15,6 @@ use lru::LruCache;
 // Other caches (metadata_mem, bundle_mem) use hardy_async::sync::Mutex because
 // they perform O(n) iteration while holding the lock.
 
-pub type Error = Box<dyn core::error::Error + Send + Sync>;
-pub type Result<T> = core::result::Result<T, Error>;
 pub type Sender<T> = flume::Sender<T>;
 
 pub mod bundle_mem;
@@ -58,7 +59,7 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` containing a boolean indicating whether the insertion was successful.
-    async fn insert(&self, bundle: &bundle::Bundle) -> Result<bool>;
+    async fn insert(&self, bundle: &bundle::Bundle) -> Result<()>;
 
     /// Replaces an existing bundle's metadata in the storage.
     ///

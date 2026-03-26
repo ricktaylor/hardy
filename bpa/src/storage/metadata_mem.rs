@@ -45,13 +45,15 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(self.entries.lock().peek(bundle_id).cloned().flatten())
     }
 
-    async fn insert(&self, bundle: &Bundle) -> Result<bool> {
+    async fn insert(&self, bundle: &Bundle) -> Result<()> {
         let mut entries = self.entries.lock();
         if entries.get(&bundle.bundle.id).is_some() {
-            Ok(false)
+            Err(super::Error::DuplicateBundle {
+                id: bundle.bundle.id.clone(),
+            })
         } else {
             entries.put(bundle.bundle.id.clone(), Some(bundle.clone()));
-            Ok(true)
+            Ok(())
         }
     }
 
