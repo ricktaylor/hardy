@@ -1,0 +1,38 @@
+[package]
+name = "hardy-tvr"
+version = "0.1.0"
+description = "Time-Variant Routing agent for Hardy DTN"
+edition.workspace = true
+
+[[bin]]
+name = "hardy-tvr"
+path = "src/main.rs"
+
+[features]
+default = []
+otel = ["dep:hardy-otel"]
+instrument = ["hardy-async/instrument"]
+
+[dependencies]
+hardy-bpa = { path = "../bpa" }
+hardy-bpv7 = { path = "../bpv7" }
+hardy-proto = { path = "../proto" }
+hardy-async = { path = "../async" }
+hardy-eid-patterns = { path = "../eid-patterns" }
+hardy-otel = { path = "../otel", optional = true }
+tokio = { version = "1.50", features = ["full"] }
+clap = { version = "4.6", features = ["derive"] }
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+config = { version = "0.15.22", features = ["toml"] }
+time = "0.3"
+tonic = "0.14.5"
+tonic-prost = "0.14.5"
+prost = "0.14.3"
+prost-types = "0.14.3"
+tokio-stream = "0.1"
+
+[build-dependencies]
+tonic-prost-build = "0.14.5"
