@@ -15,7 +15,7 @@ impl Dispatcher {
     ///
     /// See [Bundle State Machine Design](../../docs/bundle_state_machine_design.md)
     /// for the complete state transition diagram.
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn receive_bundle(
         self: &Arc<Self>,
         mut data: Bytes,
@@ -215,7 +215,7 @@ impl Dispatcher {
     ///
     /// See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
     /// filter execution details.
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn ingest_bundle_inner(&self, mut bundle: bundle::Bundle, mut data: Bytes) {
         if let Some(u) = bundle.bundle.flags.unrecognised {
             debug!("Bundle primary block has unrecognised flag bits set: {u:#x}");
@@ -327,7 +327,7 @@ impl Dispatcher {
     /// | `None` | Wait for route | `Dispatching` → `Waiting` |
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {

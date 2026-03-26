@@ -59,12 +59,12 @@ impl Store {
         });
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn start_metadata_storage_recovery(&self) {
         self.metadata_storage.start_recovery().await;
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
@@ -104,7 +104,7 @@ impl Store {
         );
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<bundle::Bundle>(16);

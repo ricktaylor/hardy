@@ -1,4 +1,4 @@
-#[cfg(feature = "tracing")]
+#[cfg(feature = "instrument")]
 use tracing::instrument;
 
 use aws_sdk_s3::primitives::ByteStream;
@@ -143,7 +143,7 @@ impl Storage {
 
 #[async_trait]
 impl storage::BundleStorage for Storage {
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let mut continuation_token: Option<String> = None;
 
@@ -194,7 +194,7 @@ impl storage::BundleStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         match self
             .client
@@ -216,7 +216,7 @@ impl storage::BundleStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let storage_name = uuid::Uuid::new_v4().to_string();
         let key = self.full_key(&storage_name);
@@ -237,7 +237,7 @@ impl storage::BundleStorage for Storage {
         Ok(storage_name.into())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         self.client
             .delete_object()

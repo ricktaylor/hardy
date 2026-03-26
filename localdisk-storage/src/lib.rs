@@ -6,7 +6,7 @@ pub use config::Config;
 use trace_err::*;
 use tracing::{error, info, warn};
 
-#[cfg(feature = "tracing")]
+#[cfg(feature = "instrument")]
 use tracing::instrument;
 
 pub fn new(

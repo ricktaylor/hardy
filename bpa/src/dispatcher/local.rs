@@ -32,7 +32,7 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, payload)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
     pub async fn local_dispatch(
         self: &Arc<Self>,
         source: Eid,
@@ -86,7 +86,7 @@ impl Dispatcher {
 
     /// Dispatch a bundle from raw bytes (for low-level Service trait)
     /// Parses and validates the bundle (security boundary)
-    #[cfg_attr(feature = "tracing", instrument(skip(self, data)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
     pub async fn local_dispatch_raw(
         self: &Arc<Self>,
         expected_source: &Eid,
@@ -156,7 +156,7 @@ impl Dispatcher {
         true
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn deliver_bundle(
         &self,
         service: Arc<services::registry::Service>,

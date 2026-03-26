@@ -22,7 +22,7 @@ pub enum Error {
     Codec(#[from] codec::Error),
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(transport, cancel_token)))]
+#[cfg_attr(feature = "instrument", instrument(skip(transport, cancel_token)))]
 pub async fn terminate<T>(
     mut transport: T,
     reason_code: codec::SessionTermReasonCode,
@@ -98,7 +98,7 @@ pub async fn terminate<T>(
     })
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(transport, cancel_token)))]
+#[cfg_attr(feature = "instrument", instrument(skip(transport, cancel_token)))]
 pub async fn next_with_timeout<T>(
     transport: &mut T,
     timeout: u16,

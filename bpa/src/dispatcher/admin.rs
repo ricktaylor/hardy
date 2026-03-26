@@ -2,7 +2,7 @@ use super::*;
 use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn administrative_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {

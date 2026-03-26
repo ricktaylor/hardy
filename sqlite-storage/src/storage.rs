@@ -230,7 +230,7 @@ fn to_status(
 
 #[async_trait]
 impl storage::MetadataStorage for Storage {
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn get(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -268,7 +268,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
@@ -288,7 +288,7 @@ impl storage::MetadataStorage for Storage {
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
@@ -313,7 +313,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     async fn update_status(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
@@ -334,7 +334,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_vec(bundle_id)?;
         if self
@@ -353,7 +353,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn start_recovery(&self) {
         self
             .write(move |conn| {
@@ -366,7 +366,7 @@ impl storage::MetadataStorage for Storage {
         })
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -415,7 +415,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn remove_unconfirmed(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
@@ -476,7 +476,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
         // Ensure status codes match
         debug_assert!(
@@ -502,7 +502,7 @@ impl storage::MetadataStorage for Storage {
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_expiry(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
@@ -555,7 +555,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn poll_waiting(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
@@ -628,7 +628,7 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_service_waiting(
         &self,
         source: hardy_bpv7::eid::Eid,
@@ -673,7 +673,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_adu_fragments(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,
@@ -712,7 +712,7 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, tx)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_pending(
         &self,
         tx: storage::Sender<hardy_bpa::bundle::Bundle>,

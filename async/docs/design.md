@@ -36,7 +36,7 @@ The default concurrency limit matches the available CPU parallelism, which is se
 
 ## Spawn Macro
 
-The `spawn!` macro provides a convenient syntax for spawning tasks with optional tracing instrumentation. When the `tracing` feature is enabled, spawned tasks automatically get a span with a `follows_from` relationship to the spawning context.
+The `spawn!` macro provides a convenient syntax for spawning tasks with optional tracing instrumentation. When the `instrument` feature is enabled, spawned tasks automatically get a span with a `follows_from` relationship to the spawning context.
 
 This addresses a common problem in async code: when work moves across task boundaries, the causal relationship between tasks can be lost in traces. The macro ensures spawn points are consistently instrumented without requiring manual span management at every call site.
 
@@ -77,7 +77,7 @@ The consistent pattern means shutdown signals propagate uniformly through the sy
 
 ### With Observability
 
-When the `tracing` feature is enabled, the `spawn!` macro integrates with the distributed tracing infrastructure. This provides visibility into task relationships and helps diagnose concurrency issues in production.
+When the `instrument` feature is enabled, the `spawn!` macro integrates with the distributed tracing infrastructure. This provides visibility into task relationships and helps diagnose concurrency issues in production.
 
 ## Dependencies
 
@@ -85,7 +85,7 @@ Feature flags control runtime backend and optional capabilities:
 
 - **`tokio`** (default): Tokio runtime backend. Implies `std`.
 - **`std`**: Enables std-based synchronization primitives and system thread count queries.
-- **`tracing`**: Enables span instrumentation in the `spawn!` macro.
+- **`instrument`**: Enables span instrumentation in the `spawn!` macro.
 
 Key external dependencies:
 

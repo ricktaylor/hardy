@@ -175,9 +175,7 @@ impl TaskPool {
         self.task_tracker.spawn(async move {
             match inner.await {
                 Ok(output) => output,
-                #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
                 Err(e) => {
-                    #[cfg(feature = "tracing")]
                     if e.is_panic() {
                         tracing::error!("task panicked, aborting process");
                     } else {

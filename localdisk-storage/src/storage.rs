@@ -29,7 +29,7 @@ impl Storage {
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip_all))]
+#[cfg_attr(feature = "instrument", instrument(skip_all))]
 fn random_file_path(root: &Path) -> Result<PathBuf, std::io::Error> {
     let mut rng = rand::rng();
 
@@ -62,7 +62,7 @@ fn random_file_path(root: &Path) -> Result<PathBuf, std::io::Error> {
     }
 }
 
-#[cfg_attr(feature = "tracing", instrument(skip(tx)))]
+#[cfg_attr(feature = "instrument", instrument(skip(tx)))]
 fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
@@ -152,7 +152,7 @@ fn walk_dirs(
 
 #[async_trait]
 impl BundleStorage for Storage {
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
@@ -203,7 +203,7 @@ impl BundleStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
 
@@ -232,7 +232,7 @@ impl BundleStorage for Storage {
             })
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip_all))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn save(&self, data: Bytes) -> storage::Result<Arc<str>> {
         let storage_name = if self.fsync {
             let root = self.store_root.clone();
@@ -315,7 +315,7 @@ impl BundleStorage for Storage {
             .into())
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?))
             .await

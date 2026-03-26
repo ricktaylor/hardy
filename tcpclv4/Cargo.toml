@@ -11,13 +11,13 @@ crate-type = ["rlib"]
 [features]
 default = []
 serde = ["dep:serde"]
-tracing = ["hardy-async/tracing"]
+instrument = ["tracing/attributes"]
 
 [dependencies]
 hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 tower = { version = "0.5.3", features = ["util", "limit"] }

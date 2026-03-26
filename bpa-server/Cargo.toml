@@ -21,7 +21,18 @@ tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
 echo = ["dep:hardy-echo-service"]
-tracing = ["hardy-async/tracing"]
+instrument = [
+    "tracing/attributes",
+    "hardy-bpa/instrument",
+    "hardy-proto?/instrument",
+    "hardy-sqlite-storage?/instrument",
+    "hardy-postgres-storage?/instrument",
+    "hardy-localdisk-storage?/instrument",
+    "hardy-s3-storage?/instrument",
+    "hardy-tcpclv4?/instrument",
+    "hardy-file-cla?/instrument",
+    "hardy-echo-service?/instrument",
+]
 
 [dependencies]
 hardy-async = { path = "../async" }
@@ -43,7 +54,7 @@ config = { version = "0.15.22", features = ["toml"] }
 serde = { version = "1.0.228", features = ["derive"] }
 getopts = "0.2.24"
 directories = "6.0.0"
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 notify-debouncer-full = "0.7.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }

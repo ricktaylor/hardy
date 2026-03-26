@@ -21,7 +21,7 @@ impl std::fmt::Debug for Connector {
 }
 
 impl Connector {
-    #[cfg_attr(feature = "tracing", instrument)]
+    #[cfg_attr(feature = "instrument", instrument)]
     pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), transport::Error> {
         let mut stream = TcpStream::connect(remote_addr)
             .await
@@ -127,7 +127,7 @@ impl Connector {
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(stream)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(stream)))]
     async fn tls_handshake(
         self: Connector,
         stream: TcpStream,
@@ -172,7 +172,7 @@ impl Connector {
         .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(transport)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(transport)))]
     async fn new_active<T>(
         self,
         local_addr: SocketAddr,

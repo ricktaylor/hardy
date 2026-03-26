@@ -219,7 +219,7 @@ The gRPC interfaces defined in hardy-proto enable distributed deployment where C
 
 The BPA is instrumented for observability through two mechanisms:
 
-**Tracing**: The `tracing` feature enables `#[instrument]` attributes on key methods, providing structured span data for distributed tracing. The embedding application (e.g., hardy-bpa-server with hardy-otel) configures the tracing subscriber.
+**Tracing**: The `instrument` feature enables `#[instrument]` attributes on key methods, providing structured span data for distributed tracing. The embedding application (e.g., hardy-bpa-server with hardy-otel) configures the tracing subscriber.
 
 **Metrics**: The `metrics` crate provides hooks for counters, gauges, and histograms. Key processing events emit metrics that the embedding application can export to monitoring systems. Current coverage is foundational; expanding metric coverage across all subsystems is ongoing work.
 
@@ -263,7 +263,7 @@ Feature flags control optional functionality:
 - **`rfc9173`**: RFC 9173 default security contexts via hardy-bpv7.
 - **`std`**: Standard library support for time and collections.
 - **`serde`**: Serialization support for configuration and metadata.
-- **`tracing`**: Span instrumentation for async tasks.
+- **`instrument`**: Span instrumentation for async tasks.
 - **`no-rfc9171-autoregister`**: Disable auto-registration of the RFC 9171 validity filter. Use this when the embedding application needs to register the filter with custom configuration.
 
 Key external dependencies:

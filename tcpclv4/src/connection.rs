@@ -57,7 +57,7 @@ impl ConnectionPool {
             .push(conn);
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn add_peer(&self, node_id: NodeId) {
         if self
             .inner
@@ -99,7 +99,7 @@ impl ConnectionPool {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     async fn try_send(
         &self,
         bundle: hardy_bpa::Bytes,
@@ -187,7 +187,7 @@ impl ConnectionRegistry {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn shutdown(&self) {
         // Closing tx channels causes session::run tasks to exit
         self.pools
@@ -196,7 +196,7 @@ impl ConnectionRegistry {
             .clear();
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, sink, conn)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
     pub async fn register_session(
         &self,
         sink: Arc<dyn hardy_bpa::cla::Sink>,
@@ -230,7 +230,7 @@ impl ConnectionRegistry {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn unregister_session(&self, local_addr: &SocketAddr, remote_addr: &SocketAddr) {
         let pool = self
             .pools
@@ -249,7 +249,7 @@ impl ConnectionRegistry {
         }
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, bundle)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn forward(
         &self,
         remote_addr: &SocketAddr,

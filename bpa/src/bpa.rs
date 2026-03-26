@@ -1,6 +1,6 @@
 use hardy_async::async_trait;
 use hardy_bpv7::eid::NodeId;
-#[cfg(feature = "tracing")]
+#[cfg(feature = "instrument")]
 use tracing::instrument;
 
 use crate::builder::BpaBuilder;
@@ -240,7 +240,7 @@ impl Bpa {
         BpaBuilder::new()
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub fn start(&self, recover_storage: bool) {
         // Start the store
         self.store.start(self.dispatcher.clone(), recover_storage);
@@ -249,7 +249,7 @@ impl Bpa {
         self.rib.start(self.dispatcher.clone());
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn shutdown(&self) {
         // Shutdown order is critical for clean termination:
         //
@@ -275,7 +275,7 @@ impl Bpa {
     }
 
     /// Register a filter at a hook point
-    #[cfg_attr(feature = "tracing", instrument(skip(self, filter)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, filter)))]
     pub fn register_filter(
         &self,
         hook: Hook,
@@ -287,7 +287,7 @@ impl Bpa {
     }
 
     /// Unregister a filter by name from a hook point
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub fn unregister_filter(
         &self,
         hook: Hook,
@@ -300,7 +300,7 @@ impl Bpa {
 #[async_trait]
 impl BpaRegistration for Bpa {
     /// Register an Application (high-level, payload-only access)
-    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_application(
         &self,
         service_id: Option<hardy_bpv7::eid::Service>,
@@ -312,7 +312,7 @@ impl BpaRegistration for Bpa {
     }
 
     /// Register a low-level Service (full bundle access)
-    #[cfg_attr(feature = "tracing", instrument(skip(self, service)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_service(
         &self,
         service_id: Option<hardy_bpv7::eid::Service>,
@@ -323,7 +323,7 @@ impl BpaRegistration for Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, cla, policy)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, cla, policy)))]
     async fn register_cla(
         &self,
         name: String,
@@ -336,7 +336,7 @@ impl BpaRegistration for Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(self, agent)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, agent)))]
     async fn register_routing_agent(
         &self,
         name: String,

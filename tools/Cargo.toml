@@ -12,7 +12,7 @@ name = "bp"
 path = "src/bp.rs"
 
 [features]
-tracing = ["hardy-bpa/tracing","hardy-tcpclv4/tracing"]
+instrument = ["hardy-bpa/instrument","hardy-tcpclv4/instrument"]
 
 [dependencies]
 anyhow = "1.0.102"
@@ -28,7 +28,7 @@ tokio = { version = "1.50.0", features = ["rt-multi-thread", "time", "signal", "
 tokio-util = "0.7.18"
 time = { version = "0.3.47", features = ["parsing"] }
 rand = "0.10.0"
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = "0.3.23"
 trace-err = "1.0.0"
 

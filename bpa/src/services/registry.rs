@@ -212,7 +212,7 @@ impl Registry {
     }
 
     /// Register an Application (high-level, payload-only access)
-    #[cfg_attr(feature = "tracing", instrument(skip(self, app, dispatcher)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, app, dispatcher)))]
     pub async fn register_application(
         self: &Arc<Self>,
         service_id: Option<hardy_bpv7::eid::Service>,
@@ -224,7 +224,7 @@ impl Registry {
     }
 
     /// Register a low-level Service directly
-    #[cfg_attr(feature = "tracing", instrument(skip(self, service, dispatcher)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service, dispatcher)))]
     pub async fn register_service(
         self: &Arc<Self>,
         service_id: Option<hardy_bpv7::eid::Service>,

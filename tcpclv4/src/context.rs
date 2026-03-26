@@ -78,7 +78,7 @@ impl ConnectionContext {
     }
 
     /// Handle a new incoming contact (passive/server side).
-    #[cfg_attr(feature = "tracing", instrument(skip(self)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn new_contact(self, mut stream: TcpStream, remote_addr: SocketAddr) {
         // Disable Nagle's algorithm to ensure timely delivery of small messages
         // like XFER_ACK, KEEPALIVE, and SESS_TERM
@@ -174,7 +174,7 @@ impl ConnectionContext {
     }
 
     /// Handle a new passive session (server side).
-    #[cfg_attr(feature = "tracing", instrument(skip(self, transport)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, transport)))]
     pub async fn new_passive<T>(
         self,
         local_addr: SocketAddr,
@@ -287,7 +287,7 @@ impl ConnectionContext {
         let task = async move {
             writer_task.run().await;
         };
-        #[cfg(feature = "tracing")]
+        #[cfg(feature = "instrument")]
         let task = {
             let span = tracing::trace_span!(parent: None, "passive_session_writer");
             span.follows_from(tracing::Span::current());
@@ -331,7 +331,7 @@ impl ConnectionContext {
     }
 
     /// Handle TLS accept (server side).
-    #[cfg_attr(feature = "tracing", instrument(skip(self, stream)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn tls_accept(
         self,
         stream: TcpStream,

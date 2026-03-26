@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 default = []
 otel = ["dep:hardy-otel"]
-tracing = ["hardy-async/tracing"]
+instrument = ["tracing/attributes"]
 
 [dependencies]
 hardy-proto = { path = "../../../proto" }
@@ -24,7 +24,7 @@ tokio = { version = "1.50.0", features = ["macros", "time", "net", "io-util", "r
 tokio-util = { version = "0.7.18", features = ["codec"] }
 futures = "0.3"
 clap = { version = "4.6.0", features = ["derive"] }
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trace-err = "1.0.0"
 anyhow = "1"
