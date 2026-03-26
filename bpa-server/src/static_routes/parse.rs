@@ -1,83 +1,148 @@
 use super::*;
-use winnow::{
-    ModalResult, Parser,
-    ascii::{Caseless, dec_uint, line_ending, space0, space1, till_line_ending},
-    combinator::{alt, cut_err, eof, opt, preceded, separated, terminated, trace},
-    stream::AsChar,
-    token::{rest, take_till},
-};
+use chumsky::prelude::*;
 
-fn parse_priority(input: &mut &[u8]) -> ModalResult<u32> {
-    preceded(Caseless("priority"), preceded(space1, dec_uint)).parse_next(input)
+type Span = SimpleSpan<usize>;
+type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
+
+fn pattern<'a>() -> impl Parser<'a, &'a str, eid_patterns::EidPattern, Extra<'a>> {
+    any()
+        .filter(|c: &char| !c.is_whitespace())
+        .repeated()
+        .at_least(1)
+        .to_slice()
+        .try_map(|s: &str, span| {
+            s.parse()
+                .map_err(|e| Rich::custom(span, format!("invalid EID pattern: {e}")))
+        })
+        .labelled("EID pattern")
 }
 
-fn parse_drop(input: &mut &[u8]) -> ModalResult<Action> {
-    preceded(
-        Caseless("drop"),
-        opt(preceded(space1, dec_uint.try_map(|v: u64| v.try_into()))),
-    )
-    .map(Action::Drop)
-    .parse_next(input)
+fn keyword<'a>(word: &'a str) -> impl Parser<'a, &'a str, (), Extra<'a>> {
+    just(word).ignored()
 }
 
-fn parse_via(input: &mut &[u8]) -> ModalResult<Action> {
-    preceded(
-        Caseless("via"),
-        preceded(space1, take_till(1.., AsChar::is_space).parse_to()),
-    )
-    .map(Action::Via)
-    .parse_next(input)
+fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+    keyword("drop")
+        .then(
+            any()
+                .filter(|c: &char| c.is_ascii_digit())
+                .repeated()
+                .at_least(1)
+                .to_slice()
+                .try_map(|s: &str, span| {
+                    let code: u64 = s
+                        .parse()
+                        .map_err(|e| Rich::custom(span, format!("invalid reason code: {e}")))?;
+                    code.try_into()
+                        .map_err(|e| Rich::custom(span, format!("invalid reason code: {e}")))
+                })
+                .padded_by(inline_whitespace())
+                .or_not(),
+        )
+        .map(|(_, reason)| Action::Drop(reason))
+        .labelled("drop action")
 }
 
-fn parse_reflect(input: &mut &[u8]) -> ModalResult<Action> {
-    Caseless("reflect")
-        .map(|_| Action::Reflect)
-        .parse_next(input)
+fn via_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+    keyword("via")
+        .then(required_whitespace())
+        .ignore_then(
+            any()
+                .filter(|c: &char| !c.is_whitespace())
+                .repeated()
+                .at_least(1)
+                .to_slice()
+                .try_map(|s: &str, span| {
+                    s.parse()
+                        .map_err(|e| Rich::custom(span, format!("invalid next-hop EID: {e}")))
+                })
+                .labelled("next-hop EID"),
+        )
+        .map(Action::Via)
+        .labelled("via action")
 }
 
-fn parse_action(input: &mut &[u8]) -> ModalResult<(Action, Option<u32>)> {
-    (
-        alt((parse_drop, parse_via, parse_reflect)),
-        opt(preceded(space1, parse_priority)),
-    )
-        .parse_next(input)
+fn reflect_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+    keyword("reflect")
+        .to(Action::Reflect)
+        .labelled("reflect action")
 }
 
-fn parse_pattern(input: &mut &[u8]) -> ModalResult<eid_patterns::EidPattern> {
-    take_till(1.., AsChar::is_space)
-        .parse_to()
-        .parse_next(input)
+fn action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+    choice((drop_action(), via_action(), reflect_action())).labelled("action")
 }
 
-fn parse_route(input: &mut &[u8]) -> ModalResult<StaticRoute> {
-    cut_err(
-        (parse_pattern, preceded(space1, parse_action)).map(|(pattern, (action, priority))| {
-            StaticRoute {
-                pattern,
-                priority,
-                action,
-            }
-        }),
-    )
-    .parse_next(input)
+fn priority<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
+    keyword("priority")
+        .then(required_whitespace())
+        .ignore_then(
+            any()
+                .filter(|c: &char| c.is_ascii_digit())
+                .repeated()
+                .at_least(1)
+                .to_slice()
+                .try_map(|s: &str, span| {
+                    s.parse()
+                        .map_err(|e| Rich::custom(span, format!("invalid priority: {e}")))
+                })
+                .labelled("priority value"),
+        )
+        .labelled("priority")
 }
 
-fn parse_line(input: &mut &[u8]) -> ModalResult<Option<StaticRoute>> {
-    preceded(
-        space0,
-        alt((
-            eof.map(|_| None),
-            ('#', rest).map(|_| None),
-            terminated(parse_route, space0).map(Some),
-        )),
-    )
-    .parse_next(input)
+fn route<'a>() -> impl Parser<'a, &'a str, StaticRoute, Extra<'a>> {
+    pattern()
+        .then(
+            required_whitespace()
+                .ignore_then(action())
+                .labelled("action"),
+        )
+        .then(required_whitespace().ignore_then(priority()).or_not())
+        .map(|((pattern, action), priority)| StaticRoute {
+            pattern,
+            action,
+            priority,
+        })
+        .labelled("route")
 }
 
-fn parse_routes(input: &mut &[u8]) -> ModalResult<Vec<StaticRoute>> {
-    separated(0.., till_line_ending.and_then(parse_line), line_ending)
-        .map(|v: Vec<Option<StaticRoute>>| v.into_iter().flatten().collect())
-        .parse_next(input)
+fn line<'a>() -> impl Parser<'a, &'a str, Option<StaticRoute>, Extra<'a>> {
+    inline_whitespace()
+        .ignore_then(choice((
+            just('#')
+                .then(any().and_is(just('\n').not()).repeated())
+                .ignored()
+                .to(None),
+            route().map(Some),
+            empty().to(None),
+        )))
+        .then_ignore(inline_whitespace())
+}
+
+fn routes<'a>() -> impl Parser<'a, &'a str, Vec<StaticRoute>, Extra<'a>> {
+    line()
+        .separated_by(just('\n'))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .map(|v| v.into_iter().flatten().collect())
+        .then_ignore(end())
+}
+
+/// Inline whitespace (spaces and tabs, not newlines) — zero or more
+fn inline_whitespace<'a>() -> impl Parser<'a, &'a str, (), Extra<'a>> {
+    any()
+        .filter(|c: &char| *c == ' ' || *c == '\t')
+        .repeated()
+        .ignored()
+}
+
+/// At least one inline whitespace character
+fn required_whitespace<'a>() -> impl Parser<'a, &'a str, (), Extra<'a>> {
+    any()
+        .filter(|c: &char| *c == ' ' || *c == '\t')
+        .repeated()
+        .at_least(1)
+        .ignored()
 }
 
 pub async fn load_routes(
@@ -85,7 +150,7 @@ pub async fn load_routes(
     ignore_errors: bool,
     watching: bool,
 ) -> anyhow::Result<Vec<StaticRoute>> {
-    match tokio::fs::read(routes_file).await {
+    match tokio::fs::read_to_string(routes_file).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
             debug!("Static routes file: '{}' not found", routes_file.display());
             Ok(Vec::new())
@@ -101,23 +166,29 @@ pub async fn load_routes(
             "Failed to read from static routes file '{}': {e}",
             routes_file.display()
         )),
-        Ok(input) => {
-            // Using the `trace` combinator for powerful debugging
-            match trace("parse_routes", parse_routes).parse(&input) {
-                Err(e) if ignore_errors => {
+        Ok(input) => match routes().parse(&input).into_result() {
+            Err(errors) if ignore_errors => {
+                for e in &errors {
                     error!(
                         "Failed to parse static routes file '{}': {e}",
                         routes_file.display()
                     );
-                    Ok(Vec::new())
                 }
-                Err(e) => Err(anyhow::anyhow!(
-                    "Failed to parse static routes file '{}': {e}",
-                    routes_file.display()
-                )),
-                Ok(v) => Ok(v),
+                Ok(Vec::new())
             }
-        }
+            Err(errors) => {
+                let msg = errors
+                    .iter()
+                    .map(|e| format!("{e}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                Err(anyhow::anyhow!(
+                    "Failed to parse static routes file '{}': {msg}",
+                    routes_file.display()
+                ))
+            }
+            Ok(v) => Ok(v),
+        },
     }
 }
 
@@ -125,57 +196,94 @@ pub async fn load_routes(
 mod test {
     use super::*;
 
+    fn parse_ok(input: &str) -> Vec<StaticRoute> {
+        routes()
+            .parse(input)
+            .into_result()
+            .unwrap_or_else(|errors| {
+                panic!(
+                    "Should parse '{input}', got errors: {:?}",
+                    errors.iter().map(|e| format!("{e}")).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    fn parse_err(input: &str) {
+        assert!(
+            routes().parse(input).into_result().is_err(),
+            "Parsing '{input}' should have failed"
+        );
+    }
+
     #[test]
-    fn test() {
-        parse_routes
-            .parse(b"ipn:*.*.* via ipn:0.1.0")
-            .expect("Should parse a simple valid route");
+    fn simple_route() {
+        let routes = parse_ok("ipn:*.*.* via ipn:0.1.0");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Via(_)));
+        assert_eq!(routes[0].priority, None);
+    }
 
-        parse_routes
-            .parse(b"dtn://**/** reflect priority 1200")
-            .expect("Should parse a route with action and priority");
+    #[test]
+    fn route_with_priority() {
+        let routes = parse_ok("dtn://**/** reflect priority 1200");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Reflect));
+        assert_eq!(routes[0].priority, Some(1200));
+    }
 
-        parse_routes
-            .parse(b"Broken")
-            .expect_err("Parsing 'Broken' should have failed");
-        parse_routes
-            .parse(b"ipn:*.*.* Broken")
-            .expect_err("Parsing 'ipn:*.*.* Broken' should have failed");
-        parse_routes
-            .parse(b"ipn:*.*.* via Broken")
-            .expect_err("Parsing 'ipn:*.*.* via Broken' should have failed");
+    #[test]
+    fn drop_action() {
+        let routes = parse_ok("ipn:99.*.* drop");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Drop(None)));
+    }
 
-        parse_routes
-            .parse(b"#")
-            .expect("Should parse a comment-only line");
-        parse_routes
-            .parse(b"#\n")
-            .expect("Should parse a comment with a newline");
-        parse_routes
-            .parse(b"#      ")
-            .expect("Should parse a comment with trailing spaces");
-        parse_routes
-            .parse(b"#      \n")
-            .expect("Should parse a comment with trailing spaces and a newline");
+    #[test]
+    fn drop_with_reason() {
+        let routes = parse_ok("ipn:99.*.* drop 3");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+    }
 
-        parse_routes
-            .parse(b"")
-            .expect("Should parse an empty string");
-        parse_routes
-            .parse(b"\n")
-            .expect("Should parse a newline character");
-        parse_routes
-            .parse(b"      ")
-            .expect("Should parse a line with only spaces");
-        parse_routes
-            .parse(b"      \n")
-            .expect("Should parse a line with only spaces and a newline");
-        parse_routes
-            .parse(b"   \n   \n   ")
-            .expect("Should parse multiple blank/whitespace lines");
+    #[test]
+    fn invalid_inputs() {
+        parse_err("Broken");
+        parse_err("ipn:*.*.* Broken");
+        parse_err("ipn:*.*.* via Broken");
+    }
 
-        parse_routes
-            .parse(b"ipn:*.*.* via ipn:0.1.0\ndtn://**/** reflect priority 1200")
-            .expect("Should parse multiple valid route lines");
+    #[test]
+    fn comments() {
+        parse_ok("#");
+        parse_ok("#\n");
+        parse_ok("#      ");
+        parse_ok("#      \n");
+    }
+
+    #[test]
+    fn blank_lines() {
+        parse_ok("");
+        parse_ok("\n");
+        parse_ok("      ");
+        parse_ok("      \n");
+        parse_ok("   \n   \n   ");
+    }
+
+    #[test]
+    fn multiple_routes() {
+        let routes = parse_ok("ipn:*.*.* via ipn:0.1.0\ndtn://**/** reflect priority 1200");
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[test]
+    fn error_messages_are_useful() {
+        let result = routes().parse("ipn:*.*.* Broken").into_result();
+        let errors = result.unwrap_err();
+        let msg = format!("{}", errors[0]);
+        // Should mention what was expected, not just "parse error"
+        assert!(
+            msg.contains("expected") || msg.contains("action"),
+            "Error should be descriptive, got: {msg}"
+        );
     }
 }
