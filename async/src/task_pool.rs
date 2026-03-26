@@ -63,6 +63,12 @@
 /// - The method blocks until all spawned tasks complete
 /// - Tasks can finish their current operation gracefully
 ///
+/// # Panic propagation
+///
+/// When a spawned task panics, the pool calls [`process::abort()`](std::process::abort)
+/// immediately. Panics indicate non-recoverable errors (broken invariants, failed
+/// infrastructure) where a graceful shutdown would likely hit the same failure again.
+///
 /// # Child Tokens
 ///
 /// For hierarchical cancellation (e.g., cancelling a subtask without affecting
@@ -163,7 +169,24 @@ impl TaskPool {
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        self.task_tracker.spawn(task)
+        // Inner task runs freely; the watchdog (tracked) holds its JoinHandle.
+        // On panic/abort → process::abort(). On normal return → pass through.
+        let inner = tokio::task::spawn(task);
+        self.task_tracker.spawn(async move {
+            match inner.await {
+                Ok(output) => output,
+                #[cfg_attr(not(feature = "tracing"), allow(unused_variables))]
+                Err(e) => {
+                    #[cfg(feature = "tracing")]
+                    if e.is_panic() {
+                        tracing::error!("task panicked, aborting process");
+                    } else {
+                        tracing::error!(error = %e, "task aborted, aborting process");
+                    }
+                    std::process::abort()
+                }
+            }
+        })
     }
 
     /// Initiates graceful shutdown and waits for all tasks to complete.
