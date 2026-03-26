@@ -75,7 +75,7 @@ impl hardy_bpa::routes::RoutingSink for Sink {
             }
         }
 
-        self.proxy.close().await;
+        self.proxy.close();
     }
 }
 
@@ -173,7 +173,8 @@ pub async fn register_routing_agent(
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler);
+    let tasks = hardy_async::TaskPool::new();
+    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, &tasks);
 
     // Call on_register()
     agent

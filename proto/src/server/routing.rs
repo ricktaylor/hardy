@@ -96,6 +96,8 @@ impl hardy_bpa::routes::RoutingAgent for RemoteRoutingAgent {
     }
 
     async fn on_unregister(&self) {
+        // Notify the remote agent. Safe from handler context — call() sends
+        // via the writer channel, independent of the reader task.
         match self
             .call(bpa_to_agent::Msg::OnUnregister(
                 OnUnregisterRoutingAgentRequest {},
@@ -112,7 +114,7 @@ impl hardy_bpa::routes::RoutingAgent for RemoteRoutingAgent {
         }
 
         if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            proxy.close();
         }
     }
 }
@@ -155,6 +157,7 @@ impl ProxyHandler for Handler {
 
 pub struct Service {
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
 
@@ -166,47 +169,16 @@ impl routing_agent_server::RoutingAgent for Service {
         &self,
         request: tonic::Request<tonic::Streaming<AgentToBpa>>,
     ) -> Result<tonic::Response<Self::RegisterStream>, tonic::Status> {
-        let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
-        let mut channel_receiver = request.into_inner();
+        let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
+        let channel_receiver = request.into_inner();
 
-        let agent = Arc::new(RemoteRoutingAgent {
-            inner: Once::new(),
-            proxy: Once::new(),
+        // Spawn the registration handshake and proxy — we must return the
+        // response stream immediately so the client can start sending messages.
+        let bpa = self.bpa.clone();
+        let session_tasks = self.session_tasks.clone();
+        hardy_async::spawn!(self.session_tasks, "routing_session", async move {
+            run_routing_session(channel_sender, channel_receiver, bpa, &session_tasks).await;
         });
-
-        RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-            match msg {
-                agent_to_bpa::Msg::Register(request) => {
-                    let node_ids = self
-                        .bpa
-                        .register_routing_agent(request.name, agent.clone())
-                        .await
-                        .map_err(|e| tonic::Status::from_error(e.into()))?
-                        .into_iter()
-                        .map(|node_id| node_id.to_string())
-                        .collect();
-
-                    Ok(bpa_to_agent::Msg::Register(RegisterRoutingAgentResponse {
-                        node_ids,
-                    }))
-                }
-                _ => {
-                    warn!("Routing agent sent incorrect message: {msg:?}");
-                    Err(tonic::Status::internal(format!(
-                        "Unexpected response: {msg:?}"
-                    )))
-                }
-            }
-        })
-        .await?;
-
-        // Start the proxy
-        let handler = Box::new(Handler {
-            agent: agent.clone(),
-        });
-        agent
-            .proxy
-            .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 
         Ok(tonic::Response::new(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -214,12 +186,65 @@ impl routing_agent_server::RoutingAgent for Service {
     }
 }
 
+async fn run_routing_session(
+    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToAgent, tonic::Status>>,
+    mut channel_receiver: tonic::Streaming<AgentToBpa>,
+    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
+) {
+    let agent = Arc::new(RemoteRoutingAgent {
+        inner: Once::new(),
+        proxy: Once::new(),
+    });
+
+    // Wait for the client's registration message and process it
+    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
+        match msg {
+            agent_to_bpa::Msg::Register(request) => {
+                let node_ids = bpa
+                    .register_routing_agent(request.name, agent.clone())
+                    .await
+                    .map_err(|e| tonic::Status::from_error(e.into()))?
+                    .into_iter()
+                    .map(|node_id| node_id.to_string())
+                    .collect();
+
+                Ok(bpa_to_agent::Msg::Register(RegisterRoutingAgentResponse {
+                    node_ids,
+                }))
+            }
+            _ => {
+                warn!("Routing agent sent incorrect message: {msg:?}");
+                Err(tonic::Status::internal(format!(
+                    "Unexpected response: {msg:?}"
+                )))
+            }
+        }
+    })
+    .await;
+
+    if let Err(e) = result {
+        warn!("Routing agent registration failed: {e}");
+        return;
+    }
+
+    // Start the proxy for ongoing communication
+    let handler = Box::new(Handler {
+        agent: agent.clone(),
+    });
+    agent
+        .proxy
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, tasks));
+}
+
 /// Create a new RoutingAgent gRPC service.
 pub fn new_routing_agent_service(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
 ) -> routing_agent_server::RoutingAgentServer<Service> {
     routing_agent_server::RoutingAgentServer::new(Service {
         bpa: bpa.clone(),
+        session_tasks: tasks.clone(),
         channel_size: 16,
     })
 }

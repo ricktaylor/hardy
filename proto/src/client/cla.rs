@@ -116,7 +116,7 @@ impl hardy_bpa::cla::Sink for Sink {
             }
         }
 
-        self.proxy.close().await;
+        self.proxy.close();
     }
 }
 
@@ -143,7 +143,7 @@ impl ProxyHandler for Handler {
                     ))
                 }
             }
-            bpa_to_cla::Msg::Unregister(_) => {
+            bpa_to_cla::Msg::OnUnregister(_) => {
                 if let Some(cla) = self.cla.upgrade() {
                     cla.on_unregister().await;
                 }
@@ -236,7 +236,8 @@ pub async fn register_cla(
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler);
+    let tasks = hardy_async::TaskPool::new();
+    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, &tasks);
 
     // Call on_register()
     cla.on_register(Box::new(Sink { proxy }), node_ids.as_slice())
