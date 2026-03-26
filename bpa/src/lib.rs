@@ -12,7 +12,7 @@ This crate is `no_std` compatible with a heap allocator. Feature flags control f
 - **`tokio`** (default): Enables Tokio runtime support. Implies `std`.
 - **`rfc9173`**: Enables RFC 9173 security contexts via hardy-bpv7.
 - **`serde`**: Enables serialization support for metadata.
-- **`tracing`**: Enables tracing instrumentation.
+- **`instrument`**: Enables span instrumentation.
 
 ## Current Limitations
 

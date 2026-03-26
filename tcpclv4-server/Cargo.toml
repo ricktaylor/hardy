@@ -7,7 +7,12 @@ edition.workspace = true
 [features]
 default = []
 otel = ["dep:hardy-otel"]
-tracing = ["hardy-async/tracing"]
+instrument = [
+    "tracing/attributes",
+    "hardy-bpa/instrument",
+    "hardy-tcpclv4/instrument",
+    "hardy-proto/instrument",
+]
 
 [dependencies]
 hardy-tcpclv4 = { path = "../tcpclv4" }
