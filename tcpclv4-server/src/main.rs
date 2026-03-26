@@ -3,7 +3,6 @@ use hardy_async::TaskPool;
 use hardy_bpa::bpa::BpaRegistration;
 use std::path::PathBuf;
 use std::sync::Arc;
-use trace_err::*;
 use tracing::{error, info};
 
 mod config;
@@ -18,7 +17,6 @@ struct Args {
     #[arg(short, long)]
     config: Option<PathBuf>,
 }
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -15,7 +15,6 @@ use tracing::{debug, error, info, warn};
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-
 type StorageBackends = (
     Option<Arc<dyn hardy_bpa::storage::MetadataStorage>>,
     Option<Arc<dyn hardy_bpa::storage::BundleStorage>>,
