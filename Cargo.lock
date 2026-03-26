@@ -1814,6 +1814,7 @@ name = "hardy-bpa-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chumsky",
  "config",
  "directories",
  "flume",
@@ -1840,7 +1841,6 @@ dependencies = [
  "trace-err",
  "tracing",
  "tracing-subscriber",
- "winnow",
 ]
 
 [[package]]
