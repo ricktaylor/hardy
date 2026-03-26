@@ -8,9 +8,6 @@ struct ClaInner {
 struct Cla {
     inner: Once<ClaInner>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
-    /// Set when the client initiates unregistration, so on_unregister()
-    /// knows not to try sending through the proxy (which would deadlock).
-    client_unregistering: std::sync::atomic::AtomicBool,
 }
 
 impl Cla {
@@ -97,20 +94,7 @@ impl Cla {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    // TODO: The AtomicBool workaround for client-initiated unregister is a
-    // symptom of a deeper issue: the proxy run() loop processes messages
-    // sequentially, so on_notify handlers cannot make re-entrant calls
-    // through the same proxy. The same pattern exists in service.rs,
-    // application.rs, and routing.rs — all need the same fix or a proper
-    // architectural solution (e.g. spawning outbound calls instead of
-    // awaiting inline in the proxy loop).
-
-    /// Called by the Handler when the CLIENT initiates unregistration.
-    /// Sets a flag so on_unregister() won't try to notify the client
-    /// (which would deadlock the proxy), then tells the BPA to unregister.
     async fn client_unregister(&self) {
-        self.client_unregistering
-            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(inner) = self.inner.get() {
             inner.sink.unregister().await
         }
@@ -129,30 +113,25 @@ impl hardy_bpa::cla::Cla for Cla {
     }
 
     async fn on_unregister(&self) {
-        // If the client initiated unregistration, don't try to notify it
-        // back through the proxy — that would deadlock since the proxy's
-        // run() loop is already inside on_notify handling the unregister.
-        if !self
-            .client_unregistering
-            .load(std::sync::atomic::Ordering::Acquire)
+        // Notify the remote CLA. This is safe even when called from a handler
+        // context — call() sends via the writer channel, which is independent
+        // of the reader task that dispatched the handler.
+        match self
+            .call(bpa_to_cla::Msg::OnUnregister(OnUnregisterClaRequest {}))
+            .await
         {
-            match self
-                .call(bpa_to_cla::Msg::Unregister(UnregisterClaResponse {}))
-                .await
-            {
-                Ok(cla_to_bpa::Msg::Unregister(_)) => {}
-                Ok(msg) => {
-                    warn!("Unexpected response: {msg:?}");
-                }
-                Err(e) => {
-                    warn!("Failed to notify CLA of unregistration: {e}");
-                }
+            Ok(cla_to_bpa::Msg::OnUnregister(_)) => {}
+            Ok(msg) => {
+                warn!("Unexpected response: {msg:?}");
             }
+            Err(e) => {
+                warn!("Failed to notify CLA of unregistration: {e}");
+            }
+        }
 
-            // Close the proxy, nothing else is going to be processed
-            if let Some(proxy) = self.proxy.get() {
-                proxy.close().await;
-            }
+        // Close the proxy, nothing else is going to be processed
+        if let Some(proxy) = self.proxy.get() {
+            proxy.close();
         }
     }
 
@@ -228,6 +207,7 @@ impl ProxyHandler for Handler {
 
 pub struct Service {
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
 
@@ -244,14 +224,10 @@ impl cla_server::Cla for Service {
 
         // Spawn the registration handshake and proxy — we must return the
         // response stream immediately so the client can start sending messages.
-        // The handshake (recv registration, register with BPA, send response)
-        // runs in the spawned task once both sides of the bidi stream are open.
-        // TODO: service.rs, application.rs, and routing.rs still have the
-        // original deadlock where RpcProxy::recv blocks before returning the
-        // response stream — they need the same spawned-task fix.
         let bpa = self.bpa.clone();
-        tokio::spawn(async move {
-            run_cla_session(channel_sender, channel_receiver, bpa).await;
+        let session_tasks = self.session_tasks.clone();
+        hardy_async::spawn!(self.session_tasks, "cla_session", async move {
+            run_cla_session(channel_sender, channel_receiver, bpa, &session_tasks).await;
         });
 
         Ok(tonic::Response::new(
@@ -264,11 +240,11 @@ async fn run_cla_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ClaToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
 ) {
     let cla = Arc::new(Cla {
         inner: Once::new(),
         proxy: Once::new(),
-        client_unregistering: std::sync::atomic::AtomicBool::new(false),
     });
 
     // Wait for the client's registration message and process it
@@ -315,15 +291,17 @@ async fn run_cla_session(
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { cla: cla.clone() });
     cla.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, tasks));
 }
 
 /// Create a new CLA gRPC service.
 pub fn new_cla_service(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {
         bpa: bpa.clone(),
+        session_tasks: tasks.clone(),
         channel_size: 16,
     })
 }

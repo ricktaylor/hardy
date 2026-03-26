@@ -63,16 +63,16 @@ pub fn init(
     for service in &config.services {
         match service.as_str() {
             "application" => {
-                routes.add_service(application::new_application_service(bpa));
+                routes.add_service(application::new_application_service(bpa, tasks));
             }
             "cla" => {
-                routes.add_service(cla::new_cla_service(bpa));
+                routes.add_service(cla::new_cla_service(bpa, tasks));
             }
             "service" => {
-                routes.add_service(service::new_endpoint_service(bpa));
+                routes.add_service(service::new_endpoint_service(bpa, tasks));
             }
             "routing" => {
-                routes.add_service(routing::new_routing_agent_service(bpa));
+                routes.add_service(routing::new_routing_agent_service(bpa, tasks));
             }
             s => {
                 warn!("Ignoring unknown gRPC service {s}");

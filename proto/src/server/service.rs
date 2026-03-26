@@ -78,10 +78,10 @@ impl hardy_bpa::services::Service for LowLevelService {
 
     async fn on_unregister(&self) {
         match self
-            .call(bpa_to_service::Msg::Unregister(UnregisterResponse {}))
+            .call(bpa_to_service::Msg::OnUnregister(OnUnregisterRequest {}))
             .await
         {
-            Ok(service_to_bpa::Msg::Unregister(_)) => {}
+            Ok(service_to_bpa::Msg::OnUnregister(_)) => {}
             Ok(msg) => {
                 warn!("Unexpected response: {msg:?}");
             }
@@ -92,7 +92,7 @@ impl hardy_bpa::services::Service for LowLevelService {
 
         // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            proxy.close();
         }
     }
 
@@ -193,6 +193,7 @@ impl ProxyHandler for Handler {
 
 pub struct GrpcService {
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
 
@@ -205,55 +206,16 @@ impl service_server::Service for GrpcService {
         &self,
         request: tonic::Request<tonic::Streaming<ServiceToBpa>>,
     ) -> Result<tonic::Response<Self::RegisterStream>, tonic::Status> {
-        let (mut channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
-        let mut channel_receiver = request.into_inner();
+        let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
+        let channel_receiver = request.into_inner();
 
-        let svc = Arc::new(LowLevelService {
-            inner: Once::new(),
-            proxy: Once::new(),
+        // Spawn the registration handshake and proxy — we must return the
+        // response stream immediately so the client can start sending messages.
+        let bpa = self.bpa.clone();
+        let session_tasks = self.session_tasks.clone();
+        hardy_async::spawn!(self.session_tasks, "service_session", async move {
+            run_service_session(channel_sender, channel_receiver, bpa, &session_tasks).await;
         });
-        RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
-            match msg {
-                service_to_bpa::Msg::Register(request) => {
-                    // Register the Service and respond
-                    let endpoint_id = self
-                        .bpa
-                        .register_service(
-                            request
-                                .service_id
-                                .as_ref()
-                                .map(|service_id| match service_id {
-                                    register_request::ServiceId::Dtn(s) => {
-                                        hardy_bpv7::eid::Service::Dtn(s.clone().into())
-                                    }
-                                    register_request::ServiceId::Ipn(s) => {
-                                        hardy_bpv7::eid::Service::Ipn(*s)
-                                    }
-                                }),
-                            svc.clone(),
-                        )
-                        .await
-                        .map(|endpoint_id| endpoint_id.to_string())
-                        .map_err(|e| tonic::Status::from_error(e.into()))?;
-
-                    Ok(bpa_to_service::Msg::Register(RegisterResponse {
-                        endpoint_id,
-                    }))
-                }
-                _ => {
-                    warn!("Service sent incorrect message: {msg:?}");
-                    Err(tonic::Status::internal(format!(
-                        "Unexpected response: {msg:?}"
-                    )))
-                }
-            }
-        })
-        .await?;
-
-        // Start the proxy
-        let handler = Box::new(Handler { svc: svc.clone() });
-        svc.proxy
-            .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 
         Ok(tonic::Response::new(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -261,12 +223,72 @@ impl service_server::Service for GrpcService {
     }
 }
 
+async fn run_service_session(
+    mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToService, tonic::Status>>,
+    mut channel_receiver: tonic::Streaming<ServiceToBpa>,
+    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
+) {
+    let svc = Arc::new(LowLevelService {
+        inner: Once::new(),
+        proxy: Once::new(),
+    });
+
+    let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
+        match msg {
+            service_to_bpa::Msg::Register(request) => {
+                let endpoint_id = bpa
+                    .register_service(
+                        request
+                            .service_id
+                            .as_ref()
+                            .map(|service_id| match service_id {
+                                register_request::ServiceId::Dtn(s) => {
+                                    hardy_bpv7::eid::Service::Dtn(s.clone().into())
+                                }
+                                register_request::ServiceId::Ipn(s) => {
+                                    hardy_bpv7::eid::Service::Ipn(*s)
+                                }
+                            }),
+                        svc.clone(),
+                    )
+                    .await
+                    .map(|endpoint_id| endpoint_id.to_string())
+                    .map_err(|e| tonic::Status::from_error(e.into()))?;
+
+                Ok(bpa_to_service::Msg::Register(RegisterResponse {
+                    endpoint_id,
+                }))
+            }
+            _ => {
+                warn!("Service sent incorrect message: {msg:?}");
+                Err(tonic::Status::internal(format!(
+                    "Unexpected response: {msg:?}"
+                )))
+            }
+        }
+    })
+    .await;
+
+    if let Err(e) = result {
+        warn!("Service registration failed: {e}");
+        return;
+    }
+
+    // Start the proxy for ongoing communication
+    let handler = Box::new(Handler { svc: svc.clone() });
+    svc.proxy
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, tasks));
+}
+
 /// Create a new low-level Service gRPC service.
 pub fn new_endpoint_service(
     bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
 ) -> service_server::ServiceServer<GrpcService> {
     service_server::ServiceServer::new(GrpcService {
         bpa: bpa.clone(),
+        session_tasks: tasks.clone(),
         channel_size: 16,
     })
 }
