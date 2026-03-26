@@ -3,7 +3,6 @@ use hardy_bpv7::eid::{Eid, NodeId};
 use rand::RngExt;
 use trace_err::*;
 
-mod cancel;
 mod exec;
 mod payload;
 mod service;
