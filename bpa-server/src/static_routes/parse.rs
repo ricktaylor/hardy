@@ -145,6 +145,44 @@ fn required_whitespace<'a>() -> impl Parser<'a, &'a str, (), Extra<'a>> {
         .ignored()
 }
 
+/// Format a parse error with line number, column, source context, and a caret.
+///
+/// Example output:
+/// ```text
+/// line 3: expected action
+///   ipn:*.*.* Broken
+///             ^
+/// ```
+fn format_error(input: &str, error: &Rich<'_, char, Span>) -> String {
+    let offset = error.span().start;
+
+    // Compute line number (1-based) and column (1-based)
+    let mut line_num = 1;
+    let mut line_start = 0;
+    for (i, ch) in input.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line_num += 1;
+            line_start = i + 1;
+        }
+    }
+    let col = offset - line_start + 1;
+
+    // Extract the source line
+    let line_end = input[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(input.len());
+    let source_line = &input[line_start..line_end];
+
+    // Build the caret indicator
+    let caret = format!("{:>width$}", "^", width = col);
+
+    format!("line {line_num}: {error}\n  {source_line}\n  {caret}")
+}
+
 pub async fn load_routes(
     routes_file: &PathBuf,
     ignore_errors: bool,
@@ -170,8 +208,10 @@ pub async fn load_routes(
             Err(errors) if ignore_errors => {
                 for e in &errors {
                     error!(
-                        "Failed to parse static routes file '{}': {e}",
-                        routes_file.display()
+                        "{}:{}\n{}",
+                        routes_file.display(),
+                        format_error(&input, e),
+                        ""
                     );
                 }
                 Ok(Vec::new())
@@ -179,11 +219,11 @@ pub async fn load_routes(
             Err(errors) => {
                 let msg = errors
                     .iter()
-                    .map(|e| format!("{e}"))
+                    .map(|e| format_error(&input, e))
                     .collect::<Vec<_>>()
-                    .join("; ");
+                    .join("\n");
                 Err(anyhow::anyhow!(
-                    "Failed to parse static routes file '{}': {msg}",
+                    "Failed to parse '{}':\n{msg}",
                     routes_file.display()
                 ))
             }
@@ -277,13 +317,40 @@ mod test {
 
     #[test]
     fn error_messages_are_useful() {
-        let result = routes().parse("ipn:*.*.* Broken").into_result();
+        let input = "ipn:*.*.* Broken";
+        let result = routes().parse(input).into_result();
         let errors = result.unwrap_err();
-        let msg = format!("{}", errors[0]);
-        // Should mention what was expected, not just "parse error"
+        let formatted = format_error(input, &errors[0]);
+
+        // Should include line number, source context, and caret
         assert!(
-            msg.contains("expected") || msg.contains("action"),
-            "Error should be descriptive, got: {msg}"
+            formatted.contains("line 1"),
+            "Should include line number, got: {formatted}"
+        );
+        assert!(
+            formatted.contains("Broken"),
+            "Should include source context, got: {formatted}"
+        );
+        assert!(
+            formatted.contains('^'),
+            "Should include caret indicator, got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn multiline_error_shows_correct_line() {
+        let input = "ipn:*.*.* via ipn:0.1.0\nBroken line here\nipn:2.*.* drop";
+        let result = routes().parse(input).into_result();
+        let errors = result.unwrap_err();
+        let formatted = format_error(input, &errors[0]);
+
+        assert!(
+            formatted.contains("line 2"),
+            "Should point to line 2, got: {formatted}"
+        );
+        assert!(
+            formatted.contains("Broken line here"),
+            "Should show the offending line, got: {formatted}"
         );
     }
 }
