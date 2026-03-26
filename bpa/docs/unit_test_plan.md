@@ -5,7 +5,7 @@
 | **Functional Area** | BPA Internal Logic & Algorithms |
 | **Module** | `hardy-bpa` |
 | **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [REQ-2](../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR](../../docs/requirements.md#part-3-low-level-requirements-llr) |
-| **Parent Plan** | `bpa/src/test_plan.md` |
+| **Parent Plan** | `bpa/docs/component_test_plan.md` |
 | **Test Suite ID** | UTP-BPA-01 |
 
 ## 1. Introduction
