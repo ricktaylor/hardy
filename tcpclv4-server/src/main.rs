@@ -19,27 +19,6 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-fn listen_for_cancel(tasks: &TaskPool) {
-    #[cfg(unix)]
-    let mut term_handler =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .trace_expect("Failed to register signal handlers");
-    #[cfg(not(unix))]
-    let mut term_handler = std::future::pending();
-
-    let cancel_token = tasks.cancel_token().clone();
-    hardy_async::spawn!(tasks, "signal_handler", async move {
-        tokio::select! {
-            _ = term_handler.recv() => {
-                info!("Received terminate signal, stopping...");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received CTRL+C, stopping...");
-            }
-        }
-        cancel_token.cancel();
-    });
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -97,7 +76,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     );
 
     let tasks = TaskPool::new();
-    listen_for_cancel(&tasks);
+    hardy_async::signal::listen_for_cancel(&tasks);
 
     info!("Started successfully");
 
