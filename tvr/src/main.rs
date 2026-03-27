@@ -11,6 +11,7 @@ mod cron;
 mod parser;
 mod scheduler;
 mod server;
+mod watcher;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -114,7 +115,14 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
                 error!("Failed to load contact plan: {e}");
             }
         }
-        // TODO: start file watcher if config.watch
+        if config.watch {
+            watcher::start(
+                contact_plan.clone(),
+                config.priority,
+                scheduler_handle.clone(),
+                &tasks,
+            );
+        }
     }
 
     info!("Started successfully");
