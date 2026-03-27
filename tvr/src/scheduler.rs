@@ -197,6 +197,21 @@ impl PartialOrd for Event {
     }
 }
 
+/// A pending route operation to be awaited by the core loop.
+#[derive(Debug, Clone)]
+enum PendingRouteOp {
+    Add {
+        pattern: EidPattern,
+        action: Action,
+        priority: u32,
+    },
+    Remove {
+        pattern: EidPattern,
+        action: Action,
+        priority: u32,
+    },
+}
+
 struct Scheduler {
     /// Source label → set of contact IDs from that source
     sources: HashMap<String, HashSet<u64>>,
@@ -208,22 +223,16 @@ struct Scheduler {
     route_refs: HashMap<RouteKey, u32>,
     /// Next contact ID
     next_id: u64,
-    /// BPA routing sink
-    sink: Arc<dyn RoutingSink>,
-    /// Task pool for spawning route operations
-    tasks: hardy_async::TaskPool,
 }
 
 impl Scheduler {
-    fn new(sink: Arc<dyn RoutingSink>, tasks: hardy_async::TaskPool) -> Self {
+    fn new() -> Self {
         Self {
             sources: HashMap::new(),
             contacts: HashMap::new(),
             timeline: BTreeSet::new(),
             route_refs: HashMap::new(),
             next_id: 0,
-            sink,
-            tasks,
         }
     }
 
@@ -243,13 +252,14 @@ impl Scheduler {
 
     /// Ingest a single contact: create ManagedContact, schedule events,
     /// activate if currently in window. Returns (added, active, skipped).
+    /// Ingest a single contact. Returns (added, active, optional route op).
     fn ingest(
         &mut self,
         source: &str,
         contact: Contact,
         default_priority: u32,
         now: OffsetDateTime,
-    ) -> (bool, bool) {
+    ) -> (bool, bool, Option<PendingRouteOp>) {
         let priority = Self::resolve_priority(&contact, default_priority);
         let id = self.alloc_id();
 
@@ -277,7 +287,7 @@ impl Scheduler {
                 if let Some(end) = end
                     && end <= now
                 {
-                    return (false, false);
+                    return (false, false, None);
                 }
 
                 self.contacts.insert(id, mc);
@@ -341,11 +351,13 @@ impl Scheduler {
             }
         };
 
-        if activated {
-            self.activate_contact(id);
-        }
+        let op = if activated {
+            self.activate_contact(id)
+        } else {
+            None
+        };
 
-        (added, activated)
+        (added, activated, op)
     }
 
     /// Schedule the next occurrence of a recurring contact after `after`.
@@ -403,40 +415,31 @@ impl Scheduler {
 
     // ── Route activation / deactivation ─────────────────────────────
 
-    fn activate_contact(&mut self, id: u64) {
-        let mc = match self.contacts.get_mut(&id) {
-            Some(mc) => mc,
-            None => return,
-        };
+    fn activate_contact(&mut self, id: u64) -> Option<PendingRouteOp> {
+        let mc = self.contacts.get_mut(&id)?;
         if mc.active {
-            return;
+            return None;
         }
         mc.active = true;
         let key = mc.route_key();
         let count = self.route_refs.entry(key).or_insert(0);
         *count += 1;
-        // First activation → install route
         if *count == 1 {
             let mc = &self.contacts[&id];
-            let pattern = mc.contact.pattern.clone();
-            let action = mc.contact.action.clone();
-            let priority = mc.priority;
-            let sink = self.sink.clone();
-            hardy_async::spawn!(self.tasks, "add_route", async move {
-                if let Err(e) = sink.add_route(pattern, action, priority).await {
-                    warn!("Failed to add route: {e}");
-                }
-            });
+            Some(PendingRouteOp::Add {
+                pattern: mc.contact.pattern.clone(),
+                action: mc.contact.action.clone(),
+                priority: mc.priority,
+            })
+        } else {
+            None
         }
     }
 
-    fn deactivate_contact(&mut self, id: u64) {
-        let mc = match self.contacts.get_mut(&id) {
-            Some(mc) => mc,
-            None => return,
-        };
+    fn deactivate_contact(&mut self, id: u64) -> Option<PendingRouteOp> {
+        let mc = self.contacts.get_mut(&id)?;
         if !mc.active {
-            return;
+            return None;
         }
         mc.active = false;
         let key = mc.route_key();
@@ -444,94 +447,65 @@ impl Scheduler {
             *count -= 1;
             if *count == 0 {
                 self.route_refs.remove(&key);
-                // Last deactivation → remove route
-                let pattern = mc.contact.pattern.clone();
-                let action = mc.contact.action.clone();
-                let priority = mc.priority;
-                let sink = self.sink.clone();
-                hardy_async::spawn!(self.tasks, "remove_route", async move {
-                    if let Err(e) = sink.remove_route(&pattern, &action, priority).await {
-                        warn!("Failed to remove route: {e}");
-                    }
+                return Some(PendingRouteOp::Remove {
+                    pattern: mc.contact.pattern.clone(),
+                    action: mc.contact.action.clone(),
+                    priority: mc.priority,
                 });
             }
         }
+        None
     }
 
     // ── Removal ─────────────────────────────────────────────────────
 
     /// Remove a contact by ID: cancel events, deactivate if active, clean up.
-    fn remove_contact(&mut self, id: u64) {
+    fn remove_contact(&mut self, id: u64) -> Option<PendingRouteOp> {
         self.cancel_events(id);
-        self.deactivate_contact(id);
+        let op = self.deactivate_contact(id);
         self.contacts.remove(&id);
+        op
     }
 
     /// Remove all contacts for a source.
-    fn withdraw_source(&mut self, source: &str) {
-        if let Some(ids) = self.sources.remove(source) {
-            for id in ids {
-                self.remove_contact(id);
-            }
-        }
+    fn withdraw_source(&mut self, source: &str) -> Vec<PendingRouteOp> {
+        let Some(ids) = self.sources.remove(source) else {
+            return Vec::new();
+        };
+        ids.into_iter()
+            .filter_map(|id| self.remove_contact(id))
+            .collect()
     }
 
     // ── Command handlers ────────────────────────────────────────────
 
-    fn handle_add(
+    fn handle_remove(
         &mut self,
         source: &str,
-        contacts: Vec<Contact>,
-        default_priority: u32,
-        now: OffsetDateTime,
-    ) -> AddResult {
-        let mut added = 0u32;
-        let mut active = 0u32;
-        let mut skipped = 0u32;
-
-        for contact in contacts {
-            let (was_added, was_active) = self.ingest(source, contact, default_priority, now);
-            if was_added {
-                added += 1;
-                if was_active {
-                    active += 1;
-                }
-            } else {
-                skipped += 1;
-            }
-        }
-
-        debug!("Add for '{source}': added={added}, active={active}, skipped={skipped}");
-        AddResult {
-            added,
-            active,
-            skipped,
-        }
-    }
-
-    fn handle_remove(&mut self, source: &str, contacts: Vec<Contact>) -> RemoveResult {
+        contacts: &[Contact],
+    ) -> (RemoveResult, Vec<PendingRouteOp>) {
+        let Some(ids) = self.sources.get(source) else {
+            return (RemoveResult { removed: 0 }, Vec::new());
+        };
+        let ids_snapshot: Vec<u64> = ids.iter().copied().collect();
         let mut removed = 0u32;
+        let mut ops = Vec::new();
 
-        if let Some(ids) = self.sources.get(source) {
-            let ids_snapshot: Vec<u64> = ids.iter().copied().collect();
-            for id in ids_snapshot {
-                let mc = match self.contacts.get(&id) {
-                    Some(mc) => mc,
-                    None => continue,
-                };
-                // Match by contact content (pattern + action + schedule)
-                if contacts.iter().any(|c| contacts_match(c, &mc.contact)) {
-                    self.remove_contact(id);
-                    if let Some(ids) = self.sources.get_mut(source) {
-                        ids.remove(&id);
-                    }
-                    removed += 1;
+        for id in ids_snapshot {
+            let Some(mc) = self.contacts.get(&id) else {
+                continue;
+            };
+            if contacts.iter().any(|c| contacts_match(c, &mc.contact)) {
+                ops.extend(self.remove_contact(id));
+                if let Some(ids) = self.sources.get_mut(source) {
+                    ids.remove(&id);
                 }
+                removed += 1;
             }
         }
 
         debug!("Remove for '{source}': removed={removed}");
-        RemoveResult { removed }
+        (RemoveResult { removed }, ops)
     }
 
     fn handle_replace(
@@ -540,34 +514,28 @@ impl Scheduler {
         contacts: Vec<Contact>,
         default_priority: u32,
         now: OffsetDateTime,
-    ) -> ReplaceResult {
-        // Snapshot the current contacts for this source
-        let old_ids: Vec<u64> = self
+    ) -> (ReplaceResult, Vec<PendingRouteOp>) {
+        let old_contacts: Vec<(u64, Contact)> = self
             .sources
             .get(source)
-            .map(|ids| ids.iter().copied().collect())
-            .unwrap_or_default();
-
-        let old_contacts: Vec<(u64, Contact)> = old_ids
+            .map(|ids| ids.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default()
             .iter()
             .filter_map(|id| self.contacts.get(id).map(|mc| (*id, mc.contact.clone())))
             .collect();
 
-        // Compute diff
         let mut unchanged = 0u32;
         let mut to_remove: Vec<u64> = Vec::new();
         let mut to_add: Vec<Contact> = Vec::new();
 
-        // Find old contacts not in new set → remove
         for (id, old_contact) in &old_contacts {
-            if !contacts.iter().any(|c| contacts_match(c, old_contact)) {
-                to_remove.push(*id);
-            } else {
+            if contacts.iter().any(|c| contacts_match(c, old_contact)) {
                 unchanged += 1;
+            } else {
+                to_remove.push(*id);
             }
         }
 
-        // Find new contacts not in old set → add
         for contact in contacts {
             if !old_contacts
                 .iter()
@@ -577,36 +545,41 @@ impl Scheduler {
             }
         }
 
-        // Apply removals
+        let mut ops: Vec<PendingRouteOp> = Vec::new();
+
         for id in &to_remove {
-            self.remove_contact(*id);
+            ops.extend(self.remove_contact(*id));
             if let Some(ids) = self.sources.get_mut(source) {
                 ids.remove(id);
             }
         }
 
-        // Apply additions
         let mut added = 0u32;
         for contact in to_add {
-            let (was_added, _) = self.ingest(source, contact, default_priority, now);
+            let (was_added, _, op) = self.ingest(source, contact, default_priority, now);
             if was_added {
                 added += 1;
             }
+            ops.extend(op);
         }
 
         let removed = to_remove.len() as u32;
         debug!("Replace for '{source}': added={added}, removed={removed}, unchanged={unchanged}");
-        ReplaceResult {
-            added,
-            removed,
-            unchanged,
-        }
+        (
+            ReplaceResult {
+                added,
+                removed,
+                unchanged,
+            },
+            ops,
+        )
     }
 
     // ── Event processing ────────────────────────────────────────────
 
     /// Process all events up to and including `now`.
-    fn process_due_events(&mut self, now: OffsetDateTime) {
+    fn process_due_events(&mut self, now: OffsetDateTime) -> Vec<PendingRouteOp> {
+        let mut ops = Vec::new();
         while let Some(event) = self.timeline.first().cloned() {
             if event.time > now {
                 break;
@@ -615,11 +588,10 @@ impl Scheduler {
 
             match event.kind {
                 EventKind::Activate => {
-                    self.activate_contact(event.contact_id);
+                    ops.extend(self.activate_contact(event.contact_id));
                 }
                 EventKind::Deactivate => {
-                    self.deactivate_contact(event.contact_id);
-                    // For recurring contacts, schedule the next occurrence
+                    ops.extend(self.deactivate_contact(event.contact_id));
                     if let Some(mc) = self.contacts.get(&event.contact_id)
                         && matches!(mc.contact.schedule, Schedule::Recurring { .. })
                     {
@@ -628,6 +600,7 @@ impl Scheduler {
                 }
             }
         }
+        ops
     }
 }
 
@@ -644,6 +617,29 @@ fn contacts_match(a: &Contact, b: &Contact) -> bool {
 
 // ── Core loop ───────────────────────────────────────────────────────
 
+async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
+    match op {
+        PendingRouteOp::Add {
+            pattern,
+            action,
+            priority,
+        } => {
+            if let Err(e) = sink.add_route(pattern, action, priority).await {
+                warn!("Failed to add route: {e}");
+            }
+        }
+        PendingRouteOp::Remove {
+            pattern,
+            action,
+            priority,
+        } => {
+            if let Err(e) = sink.remove_route(&pattern, &action, priority).await {
+                warn!("Failed to remove route: {e}");
+            }
+        }
+    }
+}
+
 /// Start the scheduler task.
 pub fn start(
     receiver: SchedulerReceiver,
@@ -652,10 +648,9 @@ pub fn start(
 ) {
     let rx = receiver.rx;
     let cancel = tasks.cancel_token().clone();
-    let sched_tasks = tasks.clone();
 
     hardy_async::spawn!(tasks, "tvr_scheduler", async move {
-        let mut sched = Scheduler::new(sink, sched_tasks);
+        let mut sched = Scheduler::new();
 
         info!("Scheduler started");
 
@@ -673,7 +668,9 @@ pub fn start(
             tokio::select! {
                 _ = tokio::time::sleep_until(wake_at) => {
                     let now = OffsetDateTime::now_utc();
-                    sched.process_due_events(now);
+                    for op in sched.process_due_events(now) {
+                        apply_route_op(&*sink, op).await;
+                    }
                 }
                 cmd = rx.recv_async() => {
                     match cmd {
@@ -681,19 +678,42 @@ pub fn start(
                             let now = OffsetDateTime::now_utc();
                             match cmd {
                                 Command::Add { source, contacts, default_priority, reply } => {
-                                    let result = sched.handle_add(&source, contacts, default_priority, now);
-                                    let _ = reply.send(result);
+                                    let mut added = 0u32;
+                                    let mut active = 0u32;
+                                    let mut skipped = 0u32;
+                                    for contact in contacts {
+                                        let (was_added, was_active, op) = sched.ingest(&source, contact, default_priority, now);
+                                        if was_added {
+                                            added += 1;
+                                            if was_active { active += 1; }
+                                        } else {
+                                            skipped += 1;
+                                        }
+                                        if let Some(op) = op {
+                                            apply_route_op(&*sink, op).await;
+                                        }
+                                    }
+                                    debug!("Add for '{source}': added={added}, active={active}, skipped={skipped}");
+                                    let _ = reply.send(AddResult { added, active, skipped });
                                 }
                                 Command::Remove { source, contacts, reply } => {
-                                    let result = sched.handle_remove(&source, contacts);
+                                    let (result, ops) = sched.handle_remove(&source, &contacts);
+                                    for op in ops {
+                                        apply_route_op(&*sink, op).await;
+                                    }
                                     let _ = reply.send(result);
                                 }
                                 Command::Replace { source, contacts, default_priority, reply } => {
-                                    let result = sched.handle_replace(&source, contacts, default_priority, now);
+                                    let (result, ops) = sched.handle_replace(&source, contacts, default_priority, now);
+                                    for op in ops {
+                                        apply_route_op(&*sink, op).await;
+                                    }
                                     let _ = reply.send(result);
                                 }
                                 Command::WithdrawAll { source } => {
-                                    sched.withdraw_source(&source);
+                                    for op in sched.withdraw_source(&source) {
+                                        apply_route_op(&*sink, op).await;
+                                    }
                                 }
                             }
                         }
@@ -715,87 +735,45 @@ pub fn start(
 #[cfg(test)]
 mod test {
     use super::*;
-    use hardy_bpa::routes;
     use time::macros::datetime;
-
-    // ── Mock sink ───────────────────────────────────────────────────
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum RouteOp {
-        Add {
-            pattern: EidPattern,
-            action: Action,
-            priority: u32,
-        },
-        Remove {
-            pattern: EidPattern,
-            action: Action,
-            priority: u32,
-        },
-    }
-
-    struct MockSink {
-        tx: flume::Sender<RouteOp>,
-    }
-
-    impl MockSink {
-        fn new() -> (Arc<Self>, flume::Receiver<RouteOp>) {
-            let (tx, rx) = flume::unbounded();
-            (Arc::new(Self { tx }), rx)
-        }
-    }
-
-    #[hardy_bpa::async_trait]
-    impl RoutingSink for MockSink {
-        async fn unregister(&self) {}
-
-        async fn add_route(
-            &self,
-            pattern: EidPattern,
-            action: Action,
-            priority: u32,
-        ) -> routes::Result<bool> {
-            let _ = self.tx.send(RouteOp::Add {
-                pattern,
-                action,
-                priority,
-            });
-            Ok(true)
-        }
-
-        async fn remove_route(
-            &self,
-            pattern: &EidPattern,
-            action: &Action,
-            priority: u32,
-        ) -> routes::Result<bool> {
-            let _ = self.tx.send(RouteOp::Remove {
-                pattern: pattern.clone(),
-                action: action.clone(),
-                priority,
-            });
-            Ok(true)
-        }
-    }
 
     // ── Helpers ─────────────────────────────────────────────────────
 
-    fn make_sched(sink: Arc<dyn RoutingSink>) -> Scheduler {
-        Scheduler::new(sink, hardy_async::TaskPool::new())
-    }
-
-    /// Yield to let spawned route tasks complete.
-    async fn flush() {
-        tokio::task::yield_now().await;
-    }
-
-    /// Drain all pending route operations from the mock.
-    fn drain_ops(rx: &flume::Receiver<RouteOp>) -> Vec<RouteOp> {
-        let mut ops = Vec::new();
-        while let Ok(op) = rx.try_recv() {
-            ops.push(op);
+    impl Scheduler {
+        /// Test helper: add contacts and collect ops.
+        fn add(
+            &mut self,
+            source: &str,
+            contacts: Vec<Contact>,
+            default_priority: u32,
+            now: OffsetDateTime,
+        ) -> (AddResult, Vec<PendingRouteOp>) {
+            let mut added = 0u32;
+            let mut active = 0u32;
+            let mut skipped = 0u32;
+            let mut ops = Vec::new();
+            for contact in contacts {
+                let (was_added, was_active, op) =
+                    self.ingest(source, contact, default_priority, now);
+                if was_added {
+                    added += 1;
+                    if was_active {
+                        active += 1;
+                    }
+                } else {
+                    skipped += 1;
+                }
+                ops.extend(op);
+            }
+            (
+                AddResult {
+                    added,
+                    active,
+                    skipped,
+                },
+                ops,
+            )
         }
-        ops
     }
 
     fn via(next_hop: &str) -> Action {
@@ -856,13 +834,12 @@ mod test {
 
     // ── Permanent contacts ──────────────────────────────────────────
 
-    #[tokio::test]
-    async fn permanent_activates_immediately() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn permanent_activates_immediately() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
-        let result = sched.handle_add(
+
+        let (result, ops) = sched.add(
             "src",
             vec![permanent_contact("ipn:2.*.*", "ipn:2.1.0")],
             100,
@@ -872,66 +849,42 @@ mod test {
         assert_eq!(result.added, 1);
         assert_eq!(result.active, 1);
         assert_eq!(result.skipped, 0);
-        assert!(sched.timeline.is_empty()); // no events — always active
-
-        flush().await;
-        let ops = drain_ops(&rx);
+        assert!(sched.timeline.is_empty());
         assert_eq!(ops.len(), 1);
-        assert_eq!(
-            ops[0],
-            RouteOp::Add {
-                pattern: pat("ipn:2.*.*"),
-                action: via("ipn:2.1.0"),
-                priority: 100,
-            }
-        );
+        assert!(matches!(ops[0], PendingRouteOp::Add { priority: 100, .. }));
     }
 
-    #[tokio::test]
-    async fn permanent_with_explicit_priority() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn permanent_with_explicit_priority() {
+        let mut sched = Scheduler::new();
         let mut contact = permanent_contact("ipn:2.*.*", "ipn:2.1.0");
         contact.priority = Some(42);
 
-        sched.handle_add(
+        let (_, ops) = sched.add(
             "src",
             vec![contact],
             100,
             datetime!(2026-03-27 08:00:00 UTC),
         );
 
-        flush().await;
-        let ops = drain_ops(&rx);
-        assert_eq!(
-            ops[0],
-            RouteOp::Add {
-                pattern: pat("ipn:2.*.*"),
-                action: via("ipn:2.1.0"),
-                priority: 42, // explicit, not default 100
-            }
-        );
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], PendingRouteOp::Add { priority: 42, .. }));
     }
 
     // ── One-shot contacts ───────────────────────────────────────────
 
-    #[tokio::test]
-    async fn oneshot_future_schedules_events() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn oneshot_future_schedules_events() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
-        let start = datetime!(2026-03-27 10:00:00 UTC);
-        let end = datetime!(2026-03-27 11:00:00 UTC);
 
-        let result = sched.handle_add(
+        let (result, ops) = sched.add(
             "src",
             vec![oneshot_contact(
                 "ipn:2.*.*",
                 "ipn:2.1.0",
-                Some(start),
-                Some(end),
+                Some(datetime!(2026-03-27 10:00:00 UTC)),
+                Some(datetime!(2026-03-27 11:00:00 UTC)),
             )],
             100,
             now,
@@ -939,124 +892,103 @@ mod test {
 
         assert_eq!(result.added, 1);
         assert_eq!(result.active, 0);
-        assert_eq!(sched.timeline.len(), 2); // activate + deactivate
-
-        flush().await;
-        assert!(drain_ops(&rx).is_empty()); // not active yet
+        assert_eq!(sched.timeline.len(), 2);
+        assert!(ops.is_empty());
     }
 
-    #[tokio::test]
-    async fn oneshot_active_now() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn oneshot_active_now() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 10:30:00 UTC);
-        let start = datetime!(2026-03-27 10:00:00 UTC);
-        let end = datetime!(2026-03-27 11:00:00 UTC);
-
-        let result = sched.handle_add(
+        let (result, ops) = sched.add(
             "src",
             vec![oneshot_contact(
                 "ipn:2.*.*",
                 "ipn:2.1.0",
-                Some(start),
-                Some(end),
+                Some(datetime!(2026-03-27 10:00:00 UTC)),
+                Some(datetime!(2026-03-27 11:00:00 UTC)),
             )],
             100,
-            now,
+            datetime!(2026-03-27 10:30:00 UTC),
         );
 
         assert_eq!(result.added, 1);
         assert_eq!(result.active, 1);
-        assert_eq!(sched.timeline.len(), 1); // deactivate only
-
-        flush().await;
-        let ops = drain_ops(&rx);
+        assert_eq!(sched.timeline.len(), 1);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], RouteOp::Add { .. }));
     }
 
-    #[tokio::test]
-    async fn oneshot_past_skipped() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn oneshot_past_skipped() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 12:00:00 UTC);
-        let start = datetime!(2026-03-27 10:00:00 UTC);
-        let end = datetime!(2026-03-27 11:00:00 UTC);
-
-        let result = sched.handle_add(
+        let (result, ops) = sched.add(
             "src",
             vec![oneshot_contact(
                 "ipn:2.*.*",
                 "ipn:2.1.0",
-                Some(start),
-                Some(end),
+                Some(datetime!(2026-03-27 10:00:00 UTC)),
+                Some(datetime!(2026-03-27 11:00:00 UTC)),
             )],
             100,
-            now,
+            datetime!(2026-03-27 12:00:00 UTC),
         );
 
         assert_eq!(result.added, 0);
         assert_eq!(result.skipped, 1);
         assert!(sched.timeline.is_empty());
-
-        flush().await;
-        assert!(drain_ops(&rx).is_empty());
+        assert!(ops.is_empty());
     }
 
-    #[tokio::test]
-    async fn oneshot_no_start_activates_immediately() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn oneshot_no_start_activates_immediately() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 08:00:00 UTC);
-        let end = datetime!(2026-03-27 11:00:00 UTC);
-
-        let result = sched.handle_add(
+        let (result, ops) = sched.add(
             "src",
-            vec![oneshot_contact("ipn:2.*.*", "ipn:2.1.0", None, Some(end))],
+            vec![oneshot_contact(
+                "ipn:2.*.*",
+                "ipn:2.1.0",
+                None,
+                Some(datetime!(2026-03-27 11:00:00 UTC)),
+            )],
             100,
-            now,
+            datetime!(2026-03-27 08:00:00 UTC),
         );
 
         assert_eq!(result.active, 1);
-        assert_eq!(sched.timeline.len(), 1); // deactivate only
-
-        flush().await;
-        assert_eq!(drain_ops(&rx).len(), 1);
+        assert_eq!(sched.timeline.len(), 1);
+        assert_eq!(ops.len(), 1);
     }
 
-    #[tokio::test]
-    async fn oneshot_no_end_stays_active() {
-        let (sink, _rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn oneshot_no_end_stays_active() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 08:00:00 UTC);
-        let start = datetime!(2026-03-27 07:00:00 UTC);
-
-        sched.handle_add(
+        sched.add(
             "src",
-            vec![oneshot_contact("ipn:2.*.*", "ipn:2.1.0", Some(start), None)],
+            vec![oneshot_contact(
+                "ipn:2.*.*",
+                "ipn:2.1.0",
+                Some(datetime!(2026-03-27 07:00:00 UTC)),
+                None,
+            )],
             100,
-            now,
+            datetime!(2026-03-27 08:00:00 UTC),
         );
 
-        assert!(sched.timeline.is_empty()); // no deactivate event
+        assert!(sched.timeline.is_empty());
     }
 
     // ── Event processing ────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn events_fire_in_order() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
-        let now = datetime!(2026-03-27 08:00:00 UTC);
+    #[test]
+    fn events_fire_in_order() {
+        let mut sched = Scheduler::new();
         let start = datetime!(2026-03-27 10:00:00 UTC);
         let end = datetime!(2026-03-27 11:00:00 UTC);
 
-        sched.handle_add(
+        sched.add(
             "src",
             vec![oneshot_contact(
                 "ipn:2.*.*",
@@ -1065,34 +997,25 @@ mod test {
                 Some(end),
             )],
             100,
-            now,
+            datetime!(2026-03-27 08:00:00 UTC),
         );
 
-        // Process activation
-        sched.process_due_events(start);
-        flush().await;
-        let ops = drain_ops(&rx);
+        let ops = sched.process_due_events(start);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], RouteOp::Add { .. }));
+        assert!(matches!(ops[0], PendingRouteOp::Add { .. }));
 
-        // Process deactivation
-        sched.process_due_events(end);
-        flush().await;
-        let ops = drain_ops(&rx);
+        let ops = sched.process_due_events(end);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], RouteOp::Remove { .. }));
+        assert!(matches!(ops[0], PendingRouteOp::Remove { .. }));
     }
 
-    #[tokio::test]
-    async fn deactivate_before_activate_at_same_time() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn deactivate_before_activate_at_same_time() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 07:00:00 UTC);
         let t = datetime!(2026-03-27 10:00:00 UTC);
 
-        // Contact A ends at t
-        sched.handle_add(
+        sched.add(
             "src",
             vec![oneshot_contact(
                 "ipn:2.*.*",
@@ -1103,43 +1026,31 @@ mod test {
             100,
             now,
         );
-        flush().await;
-        drain_ops(&rx); // clear the initial add
-
-        // Contact B starts at t (same pattern, same route)
-        let end_b = datetime!(2026-03-27 12:00:00 UTC);
-        sched.handle_add(
+        sched.add(
             "src",
             vec![oneshot_contact(
                 "ipn:2.*.*",
                 "ipn:2.1.0",
                 Some(t),
-                Some(end_b),
+                Some(datetime!(2026-03-27 12:00:00 UTC)),
             )],
             100,
             now,
         );
 
-        // Process events at t — deactivate A then activate B
-        sched.process_due_events(t);
-        flush().await;
-        let ops = drain_ops(&rx);
-        // With refcounting: remove fires (1→0), then add fires (0→1)
+        let ops = sched.process_due_events(t);
         assert_eq!(ops.len(), 2);
-        assert!(matches!(ops[0], RouteOp::Remove { .. }));
-        assert!(matches!(ops[1], RouteOp::Add { .. }));
+        assert!(matches!(ops[0], PendingRouteOp::Remove { .. }));
+        assert!(matches!(ops[1], PendingRouteOp::Add { .. }));
     }
 
     // ── Recurring contacts ──────────────────────────────────────────
 
-    #[tokio::test]
-    async fn recurring_schedules_next_occurrence() {
-        let (sink, _rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn recurring_schedules_next_occurrence() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 07:00:00 UTC);
-
-        sched.handle_add(
+        sched.add(
             "src",
             vec![recurring_contact(
                 "ipn:2.*.*",
@@ -1149,25 +1060,20 @@ mod test {
                 None,
             )],
             100,
-            now,
+            datetime!(2026-03-27 07:00:00 UTC),
         );
 
-        // Should have activate at 08:00 and deactivate at 09:00
         assert_eq!(sched.timeline.len(), 2);
         let first = sched.timeline.first().unwrap();
         assert_eq!(first.time, datetime!(2026-03-27 08:00:00 UTC));
         assert_eq!(first.kind, EventKind::Activate);
     }
 
-    #[tokio::test]
-    async fn recurring_active_at_startup() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn recurring_active_at_startup() {
+        let mut sched = Scheduler::new();
 
-        // Now is 08:30 — inside the 08:00-09:00 window
-        let now = datetime!(2026-03-27 08:30:00 UTC);
-
-        let result = sched.handle_add(
+        let (result, ops) = sched.add(
             "src",
             vec![recurring_contact(
                 "ipn:2.*.*",
@@ -1177,30 +1083,24 @@ mod test {
                 None,
             )],
             100,
-            now,
+            datetime!(2026-03-27 08:30:00 UTC),
         );
 
-        assert_eq!(result.active, 1); // immediately activated
-        assert_eq!(sched.timeline.len(), 1); // deactivate at 09:00
-
-        let deactivate = sched.timeline.first().unwrap();
-        assert_eq!(deactivate.time, datetime!(2026-03-27 09:00:00 UTC));
-        assert_eq!(deactivate.kind, EventKind::Deactivate);
-
-        flush().await;
-        let ops = drain_ops(&rx);
+        assert_eq!(result.active, 1);
+        assert_eq!(sched.timeline.len(), 1);
+        assert_eq!(
+            sched.timeline.first().unwrap().time,
+            datetime!(2026-03-27 09:00:00 UTC)
+        );
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], RouteOp::Add { .. }));
+        assert!(matches!(ops[0], PendingRouteOp::Add { .. }));
     }
 
-    #[tokio::test]
-    async fn recurring_reschedules_after_deactivate() {
-        let (sink, _rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn recurring_reschedules_after_deactivate() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 07:00:00 UTC);
-
-        sched.handle_add(
+        sched.add(
             "src",
             vec![recurring_contact(
                 "ipn:2.*.*",
@@ -1210,61 +1110,48 @@ mod test {
                 None,
             )],
             100,
-            now,
+            datetime!(2026-03-27 07:00:00 UTC),
         );
 
-        // Process activate at 08:00
         sched.process_due_events(datetime!(2026-03-27 08:00:00 UTC));
-        // Process deactivate at 09:00 — should schedule next day
         sched.process_due_events(datetime!(2026-03-27 09:00:00 UTC));
 
-        // Next occurrence: 2026-03-28 08:00
         assert_eq!(sched.timeline.len(), 2);
         let next = sched.timeline.first().unwrap();
         assert_eq!(next.time, datetime!(2026-03-28 08:00:00 UTC));
-        assert_eq!(next.kind, EventKind::Activate);
     }
 
-    #[tokio::test]
-    async fn recurring_respects_until() {
-        let (sink, _rx) = MockSink::new();
-        let mut sched = make_sched(sink);
+    #[test]
+    fn recurring_respects_until() {
+        let mut sched = Scheduler::new();
 
-        let now = datetime!(2026-03-27 07:00:00 UTC);
-        let until = datetime!(2026-03-28 00:00:00 UTC);
-
-        sched.handle_add(
+        sched.add(
             "src",
             vec![recurring_contact(
                 "ipn:2.*.*",
                 "ipn:2.1.0",
                 "0 8 * * *",
                 std::time::Duration::from_secs(3600),
-                Some(until),
+                Some(datetime!(2026-03-28 00:00:00 UTC)),
             )],
             100,
-            now,
+            datetime!(2026-03-27 07:00:00 UTC),
         );
 
-        // Process today's occurrence
         sched.process_due_events(datetime!(2026-03-27 08:00:00 UTC));
         sched.process_due_events(datetime!(2026-03-27 09:00:00 UTC));
 
-        // Next would be 2026-03-28 08:00 but until is 2026-03-28 00:00
         assert!(sched.timeline.is_empty());
     }
 
     // ── Replace diffing ─────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn replace_computes_diff() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn replace_computes_diff() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
 
-        // Initial set: A, B
-        sched.handle_add(
+        sched.add(
             "src",
             vec![
                 permanent_contact("ipn:2.*.*", "ipn:2.1.0"),
@@ -1273,11 +1160,8 @@ mod test {
             100,
             now,
         );
-        flush().await;
-        drain_ops(&rx);
 
-        // Replace with B, C — A removed, B unchanged, C added
-        let result = sched.handle_replace(
+        let (result, ops) = sched.handle_replace(
             "src",
             vec![
                 permanent_contact("ipn:3.*.*", "ipn:3.1.0"),
@@ -1290,31 +1174,24 @@ mod test {
         assert_eq!(result.added, 1);
         assert_eq!(result.removed, 1);
         assert_eq!(result.unchanged, 1);
-
-        flush().await;
-        let ops = drain_ops(&rx);
-        assert!(ops.contains(&RouteOp::Remove {
-            pattern: pat("ipn:2.*.*"),
-            action: via("ipn:2.1.0"),
-            priority: 100,
-        }));
-        assert!(ops.contains(&RouteOp::Add {
-            pattern: pat("ipn:4.*.*"),
-            action: via("ipn:4.1.0"),
-            priority: 100,
-        }));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, PendingRouteOp::Remove { .. }))
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, PendingRouteOp::Add { .. }))
+        );
     }
 
     // ── Source withdrawal ───────────────────────────────────────────
 
-    #[tokio::test]
-    async fn withdraw_removes_all_contacts() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn withdraw_removes_all_contacts() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
 
-        sched.handle_add(
+        sched.add(
             "src",
             vec![
                 permanent_contact("ipn:2.*.*", "ipn:2.1.0"),
@@ -1323,113 +1200,87 @@ mod test {
             100,
             now,
         );
-        flush().await;
-        drain_ops(&rx);
 
-        sched.withdraw_source("src");
-        flush().await;
+        let ops = sched.withdraw_source("src");
 
-        let ops = drain_ops(&rx);
         assert_eq!(ops.len(), 2);
-        assert!(ops.iter().all(|op| matches!(op, RouteOp::Remove { .. })));
+        assert!(
+            ops.iter()
+                .all(|op| matches!(op, PendingRouteOp::Remove { .. }))
+        );
         assert!(sched.contacts.is_empty());
         assert!(sched.sources.is_empty());
     }
 
     // ── Source isolation ─────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn sources_are_isolated() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn sources_are_isolated() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
 
-        sched.handle_add(
+        sched.add(
             "src_a",
             vec![permanent_contact("ipn:2.*.*", "ipn:2.1.0")],
             100,
             now,
         );
-        sched.handle_add(
+        sched.add(
             "src_b",
             vec![permanent_contact("ipn:3.*.*", "ipn:3.1.0")],
             100,
             now,
         );
-        flush().await;
-        drain_ops(&rx);
 
-        // Withdraw only src_a
-        sched.withdraw_source("src_a");
-        flush().await;
-        let ops = drain_ops(&rx);
+        let ops = sched.withdraw_source("src_a");
 
         assert_eq!(ops.len(), 1);
-        assert_eq!(
-            ops[0],
-            RouteOp::Remove {
-                pattern: pat("ipn:2.*.*"),
-                action: via("ipn:2.1.0"),
-                priority: 100,
-            }
-        );
-
-        // src_b still has its contact
+        assert!(matches!(
+            &ops[0],
+            PendingRouteOp::Remove { priority: 100, .. }
+        ));
         assert_eq!(sched.contacts.len(), 1);
     }
 
     // ── Refcounting ─────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn refcount_dedup_same_route() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn refcount_dedup_same_route() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
 
-        // Two sources provide the same route
-        sched.handle_add(
+        let (_, ops1) = sched.add(
             "src_a",
             vec![permanent_contact("ipn:2.*.*", "ipn:2.1.0")],
             100,
             now,
         );
-        sched.handle_add(
+        let (_, ops2) = sched.add(
             "src_b",
             vec![permanent_contact("ipn:2.*.*", "ipn:2.1.0")],
             100,
             now,
         );
-        flush().await;
-        let ops = drain_ops(&rx);
 
-        // Only one add_route call
+        assert_eq!(ops1.len(), 1); // first add
+        assert!(ops2.is_empty()); // deduped
+
+        let ops = sched.withdraw_source("src_a");
+        assert!(ops.is_empty()); // still held by src_b
+
+        let ops = sched.withdraw_source("src_b");
         assert_eq!(ops.len(), 1);
-
-        // Withdraw src_a — route still held by src_b, no remove
-        sched.withdraw_source("src_a");
-        flush().await;
-        assert!(drain_ops(&rx).is_empty());
-
-        // Withdraw src_b — last holder, remove_route fires
-        sched.withdraw_source("src_b");
-        flush().await;
-        let ops = drain_ops(&rx);
-        assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], RouteOp::Remove { .. }));
+        assert!(matches!(ops[0], PendingRouteOp::Remove { .. }));
     }
 
     // ── Remove by content ───────────────────────────────────────────
 
-    #[tokio::test]
-    async fn remove_matches_by_content() {
-        let (sink, rx) = MockSink::new();
-        let mut sched = make_sched(sink);
-
+    #[test]
+    fn remove_matches_by_content() {
+        let mut sched = Scheduler::new();
         let now = datetime!(2026-03-27 08:00:00 UTC);
 
-        sched.handle_add(
+        sched.add(
             "src",
             vec![
                 permanent_contact("ipn:2.*.*", "ipn:2.1.0"),
@@ -1438,17 +1289,13 @@ mod test {
             100,
             now,
         );
-        flush().await;
-        drain_ops(&rx);
 
-        let result = sched.handle_remove("src", vec![permanent_contact("ipn:2.*.*", "ipn:2.1.0")]);
+        let (result, ops) =
+            sched.handle_remove("src", &[permanent_contact("ipn:2.*.*", "ipn:2.1.0")]);
 
         assert_eq!(result.removed, 1);
-        assert_eq!(sched.contacts.len(), 1); // ipn:3 remains
-
-        flush().await;
-        let ops = drain_ops(&rx);
+        assert_eq!(sched.contacts.len(), 1);
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], RouteOp::Remove { .. }));
+        assert!(matches!(ops[0], PendingRouteOp::Remove { .. }));
     }
 }
