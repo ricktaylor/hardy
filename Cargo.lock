@@ -2211,6 +2211,7 @@ name = "hardy-tvr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chumsky",
  "clap",
  "config",
  "hardy-async",

@@ -8,7 +8,7 @@ use tracing::{debug, info};
 pub struct Contact {
     pub pattern: hardy_eid_patterns::EidPattern,
     pub action: Action,
-    pub priority: u32,
+    pub priority: Option<u32>,
     pub schedule: Schedule,
     pub bandwidth_bps: Option<u64>,
     pub delay_us: Option<u32>,
