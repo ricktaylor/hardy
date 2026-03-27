@@ -170,13 +170,13 @@ fn duration_field<'a>() -> impl Parser<'a, &'a str, std::time::Duration, Extra<'
         .labelled("duration field")
 }
 
-fn bps_field<'a>() -> impl Parser<'a, &'a str, u64, Extra<'a>> {
-    keyword("bps")
+fn bandwidth_field<'a>() -> impl Parser<'a, &'a str, u64, Extra<'a>> {
+    keyword("bandwidth")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(
-            text::int(10)
+            non_ws_token()
                 .try_map(|s: &str, span| {
-                    s.parse()
+                    parse_bandwidth(s)
                         .map_err(|e| Rich::custom(span, format!("invalid bandwidth: {e}")))
                 })
                 .labelled("bandwidth value"),
@@ -188,14 +188,48 @@ fn delay_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
     keyword("delay")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(
-            text::int(10)
+            non_ws_token()
                 .try_map(|s: &str, span| {
-                    s.parse()
-                        .map_err(|e| Rich::custom(span, format!("invalid delay: {e}")))
+                    let d = humantime::parse_duration(s)
+                        .map_err(|e| Rich::custom(span, format!("invalid delay: {e}")))?;
+                    let us = d.as_micros();
+                    u32::try_from(us).map_err(|_| {
+                        Rich::custom(span, format!("delay too large: {us}us exceeds u32 range"))
+                    })
                 })
                 .labelled("delay value"),
         )
         .labelled("delay")
+}
+
+/// Parse a bandwidth value with optional SI suffix.
+///
+/// Accepts: `10G`, `256K`, `1M`, `9600` (bare = bps).
+/// Case-insensitive suffixes: `K` (×1,000), `M` (×1,000,000),
+/// `G` (×1,000,000,000), `T` (×1,000,000,000,000).
+fn parse_bandwidth(s: &str) -> Result<u64, String> {
+    let s_upper = s.to_ascii_uppercase();
+    let (num_part, multiplier) =
+        if let Some(num) = s_upper.strip_suffix("TBPS").or(s_upper.strip_suffix('T')) {
+            (num, 1_000_000_000_000u64)
+        } else if let Some(num) = s_upper.strip_suffix("GBPS").or(s_upper.strip_suffix('G')) {
+            (num, 1_000_000_000)
+        } else if let Some(num) = s_upper.strip_suffix("MBPS").or(s_upper.strip_suffix('M')) {
+            (num, 1_000_000)
+        } else if let Some(num) = s_upper.strip_suffix("KBPS").or(s_upper.strip_suffix('K')) {
+            (num, 1_000)
+        } else if let Some(num) = s_upper.strip_suffix("BPS") {
+            (num, 1)
+        } else {
+            (s_upper.as_str(), 1)
+        };
+
+    let n: u64 = num_part
+        .parse()
+        .map_err(|_| format!("'{s}' is not a valid bandwidth"))?;
+
+    n.checked_mul(multiplier)
+        .ok_or_else(|| format!("'{s}' overflows u64"))
 }
 
 // ── Contact fields (order-independent keyword fields) ───────────────
@@ -233,7 +267,7 @@ fn field<'a>() -> impl Parser<'a, &'a str, Field, Extra<'a>> {
         cron_field().map(Field::Cron),
         duration_field().map(Field::Duration),
         until_field().map(Field::Until),
-        bps_field().map(Field::Bps),
+        bandwidth_field().map(Field::Bps),
         delay_field().map(Field::Delay),
     ))
     .labelled("field")
@@ -590,7 +624,7 @@ mod test {
     #[test]
     fn oneshot_with_bps() {
         let c = parse_ok(
-            "ipn:2.*.* via ipn:2.1.0 start 2026-03-27T08:00:00Z end 2026-03-27T09:30:00Z bps 256000",
+            "ipn:2.*.* via ipn:2.1.0 start 2026-03-27T08:00:00Z end 2026-03-27T09:30:00Z bandwidth 256K",
         );
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].bandwidth_bps, Some(256000));
@@ -633,7 +667,7 @@ mod test {
     #[test]
     fn recurring_with_bps_and_priority() {
         let c = parse_ok(
-            "ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 90m bps 256000 priority 10",
+            "ipn:2.*.* via ipn:2.1.0 cron \"0 8 * * *\" duration 90m bandwidth 256K priority 10",
         );
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].bandwidth_bps, Some(256000));
@@ -733,22 +767,64 @@ mod test {
     // ── Link properties ─────────────────────────────────────────────
 
     #[test]
-    fn bps_field() {
-        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bps 1000000");
-        assert_eq!(c[0].bandwidth_bps, Some(1000000));
+    fn bandwidth_bare_number() {
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 9600");
+        assert_eq!(c[0].bandwidth_bps, Some(9600));
     }
 
     #[test]
-    fn delay_field() {
-        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 delay 500000");
-        assert_eq!(c[0].delay_us, Some(500000));
+    fn bandwidth_si_suffixes() {
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 256K");
+        assert_eq!(c[0].bandwidth_bps, Some(256_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 1M");
+        assert_eq!(c[0].bandwidth_bps, Some(1_000_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 10G");
+        assert_eq!(c[0].bandwidth_bps, Some(10_000_000_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 1T");
+        assert_eq!(c[0].bandwidth_bps, Some(1_000_000_000_000));
+    }
+
+    #[test]
+    fn bandwidth_long_suffixes() {
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 256Kbps");
+        assert_eq!(c[0].bandwidth_bps, Some(256_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 10Gbps");
+        assert_eq!(c[0].bandwidth_bps, Some(10_000_000_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 100bps");
+        assert_eq!(c[0].bandwidth_bps, Some(100));
+    }
+
+    #[test]
+    fn bandwidth_case_insensitive() {
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 10g");
+        assert_eq!(c[0].bandwidth_bps, Some(10_000_000_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 256kbps");
+        assert_eq!(c[0].bandwidth_bps, Some(256_000));
+    }
+
+    #[test]
+    fn delay_humantime() {
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 delay 500ms");
+        assert_eq!(c[0].delay_us, Some(500_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 delay 1s");
+        assert_eq!(c[0].delay_us, Some(1_000_000));
+
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 delay 250us");
+        assert_eq!(c[0].delay_us, Some(250));
     }
 
     #[test]
     fn all_link_properties() {
-        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bps 256000 delay 500000 priority 10");
-        assert_eq!(c[0].bandwidth_bps, Some(256000));
-        assert_eq!(c[0].delay_us, Some(500000));
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 256K delay 500ms priority 10");
+        assert_eq!(c[0].bandwidth_bps, Some(256_000));
+        assert_eq!(c[0].delay_us, Some(500_000));
         assert_eq!(c[0].priority, Some(10));
     }
 
@@ -763,8 +839,8 @@ mod test {
         assert_eq!(c[0].priority, Some(10));
         assert!(matches!(c[0].schedule, Schedule::OneShot { .. }));
 
-        // bps before cron
-        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bps 256000 cron \"0 8 * * *\" duration 90m");
+        // bandwidth before cron
+        let c = parse_ok("ipn:2.*.* via ipn:2.1.0 bandwidth 256K cron \"0 8 * * *\" duration 90m");
         assert_eq!(c[0].bandwidth_bps, Some(256000));
         assert!(matches!(c[0].schedule, Schedule::Recurring { .. }));
     }
@@ -802,10 +878,10 @@ mod test {
     fn mixed_with_comments_and_blanks() {
         let input = "\
 # Mars relay
-ipn:2.*.* via ipn:2.1.0 start 2026-03-27T08:00:00Z end 2026-03-27T09:30:00Z bps 256000
+ipn:2.*.* via ipn:2.1.0 start 2026-03-27T08:00:00Z end 2026-03-27T09:30:00Z bandwidth 256K
 
 # Daily pass
-ipn:4.*.* via ipn:4.1.0 cron \"*/93 * * * *\" duration 12m bps 1000000
+ipn:4.*.* via ipn:4.1.0 cron \"*/93 * * * *\" duration 12m bandwidth 1M
 
 # Permanent ground link
 ipn:3.*.* via ipn:3.1.0 priority 10
