@@ -2,9 +2,17 @@ use super::*;
 
 impl Dispatcher {
     pub async fn reassemble(&self, bundle: bundle::Bundle) {
-        let Some((storage_name, data)) = self.store.adu_reassemble(&bundle).await else {
-            // Not all fragments have arrived yet, wait for siblings
-            return self.wait_for_fragments(bundle).await;
+        let (storage_name, data) = match self.store.adu_reassemble(&bundle).await {
+            storage::adu_reassembly::ReassemblyOutcome::NotReady => {
+                return self.wait_for_fragments(bundle).await;
+            }
+            storage::adu_reassembly::ReassemblyOutcome::Failed => {
+                // Fragment data already deleted; drop the trigger bundle silently.
+                return self.drop_bundle(bundle, None).await;
+            }
+            storage::adu_reassembly::ReassemblyOutcome::Done(storage_name, data) => {
+                (storage_name, data)
+            }
         };
 
         let metadata = bundle::BundleMetadata {
@@ -13,7 +21,6 @@ impl Dispatcher {
         };
 
         // Reparse the reconstituted bundle, for sanity
-
         match hardy_bpv7::bundle::ParsedBundle::parse(&data, self.key_provider()) {
             Ok(hardy_bpv7::bundle::ParsedBundle { bundle, .. }) => {
                 let bundle = bundle::Bundle { metadata, bundle };

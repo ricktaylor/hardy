@@ -45,15 +45,34 @@ struct ReassemblyResult {
 //     }
 // }
 
+/// Outcome of an ADU reassembly attempt.
+///
+/// Three distinct outcomes require three distinct caller actions — `Option`
+/// would collapse `NotReady` and `Failed` into the same `None` arm, leading
+/// the caller to incorrectly treat a failed (data-deleted) reassembly as
+/// "wait for more siblings".
+pub(crate) enum ReassemblyOutcome {
+    /// Not all sibling fragments have arrived; fragment data is still in storage.
+    /// Caller should transition the bundle to `AduFragment` and wait.
+    NotReady,
+    /// All fragments arrived and the ADU was successfully reassembled.
+    Done(Arc<str>, Bytes),
+    /// All fragments arrived but reassembly failed (corrupt/misaligned data).
+    /// Fragment data has already been deleted; caller should drop the trigger bundle.
+    Failed,
+}
+
 impl Store {
-    pub async fn adu_reassemble(&self, bundle: &bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
+    pub async fn adu_reassemble(&self, bundle: &bundle::Bundle) -> ReassemblyOutcome {
         let status = bundle::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
 
         // See if we can collect all the fragments
-        let results = self.poll_fragments(bundle, &status).await?;
+        let Some(results) = self.poll_fragments(bundle, &status).await else {
+            return ReassemblyOutcome::NotReady;
+        };
 
         // Now try to reassemble
         let result = self.reassemble(&results).await;
@@ -66,7 +85,10 @@ impl Store {
 
         // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
 
-        result
+        match result {
+            Some((storage_name, data)) => ReassemblyOutcome::Done(storage_name, data),
+            None => ReassemblyOutcome::Failed,
+        }
     }
 
     async fn poll_fragments(
@@ -88,7 +110,8 @@ impl Store {
 
         let total_adu_len = fragment_info.total_adu_length;
 
-        // Initialize with bundle's ADU len, as we haven't set the status yet
+        // Seed with the current bundle's payload. The current bundle is still
+        // Dispatching, so poll_adu_fragments (which queries for AduFragment) won't return it.
         let payload = &bundle
             .bundle
             .blocks
