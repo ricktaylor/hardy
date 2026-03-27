@@ -7,7 +7,9 @@ use tracing::{error, info};
 
 mod config;
 mod contacts;
+mod cron;
 mod parser;
+mod scheduler;
 mod server;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -54,8 +56,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
+    // Create scheduler channel (handle available immediately, task starts after registration)
+    let (scheduler_handle, scheduler_rx) = scheduler::channel();
+
     // Create the routing agent
-    let agent = Arc::new(contacts::TvrAgent::new(config.priority));
+    let agent = Arc::new(contacts::TvrAgent::new(
+        config.priority,
+        scheduler_handle.clone(),
+    ));
 
     // Connect to BPA and register as a RoutingAgent
     info!("Connecting to BPA at {}", config.bpa_address);
@@ -76,13 +84,36 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
+    // Start scheduler task (sink is now available after registration)
+    {
+        let sink = agent.sink().expect("sink should be set after registration");
+        scheduler::start(scheduler_rx, sink, &tasks);
+    }
+
     // Start TVR gRPC session server
     server::start(config.grpc_listen, &agent, &tasks).await;
 
     // Load contact plan file if configured
     if let Some(contact_plan) = &config.contact_plan {
         info!("Loading contact plan from '{}'", contact_plan.display());
-        // TODO: parse file, feed into scheduler
+        match parser::load_contacts(contact_plan, false, config.watch).await {
+            Ok(contacts) => {
+                let source = format!("file:{}", contact_plan.display());
+                if let Some(result) = scheduler_handle
+                    .replace_contacts(&source, contacts, config.priority)
+                    .await
+                {
+                    info!(
+                        "Loaded contact plan: {} added, {} active",
+                        result.added,
+                        result.added - result.removed, // all new on first load
+                    );
+                }
+            }
+            Err(e) => {
+                error!("Failed to load contact plan: {e}");
+            }
+        }
         // TODO: start file watcher if config.watch
     }
 

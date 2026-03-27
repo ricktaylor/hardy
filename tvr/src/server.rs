@@ -111,10 +111,12 @@ async fn run_session(
     };
 
     // Process subsequent messages
+    let scheduler = agent.scheduler();
     loop {
         match stream.message().await {
             Ok(Some(msg)) => {
-                let response = handle_message(msg, &agent, &session_name, default_priority).await;
+                let response =
+                    handle_message(msg, scheduler, &session_name, default_priority).await;
                 if let Some(response) = response
                     && tx.send(Ok(response)).await.is_err()
                 {
@@ -134,14 +136,14 @@ async fn run_session(
 
     // Session ended — withdraw all contacts from this source
     info!("Withdrawing contacts for session '{session_name}'");
-    // TODO: scheduler.withdraw_all(&session_name)
+    scheduler.withdraw_all(&session_name).await;
 }
 
 async fn handle_message(
     msg: ClientMessage,
-    _agent: &TvrAgent,
+    scheduler: &crate::scheduler::SchedulerHandle,
     session_name: &str,
-    _default_priority: u32,
+    default_priority: u32,
 ) -> Option<ServerMessage> {
     let msg_id = msg.msg_id;
 
@@ -160,13 +162,21 @@ async fn handle_message(
                 "TVR session '{session_name}': AddContacts ({} contacts)",
                 req.contacts.len()
             );
-            // TODO: parse contacts, feed into scheduler
+            // TODO: convert proto contacts to internal Contact structs
+            let contacts = Vec::new(); // placeholder
+            let result = scheduler
+                .add_contacts(session_name, contacts, default_priority)
+                .await;
+            let (added, active, skipped) = match result {
+                Some(r) => (r.added, r.active, r.skipped),
+                None => (0, 0, req.contacts.len() as u32),
+            };
             Some(ServerMessage {
                 msg_id,
                 msg: Some(server_message::Msg::Add(AddContactsResponse {
-                    added: req.contacts.len() as u32,
-                    active: 0,
-                    skipped: 0,
+                    added,
+                    active,
+                    skipped,
                 })),
             })
         }
@@ -175,11 +185,14 @@ async fn handle_message(
                 "TVR session '{session_name}': RemoveContacts ({} contacts)",
                 req.contacts.len()
             );
-            // TODO: remove from scheduler
+            // TODO: convert proto contacts to internal Contact structs
+            let contacts = Vec::new(); // placeholder
+            let result = scheduler.remove_contacts(session_name, contacts).await;
+            let removed = result.map(|r| r.removed).unwrap_or(0);
             Some(ServerMessage {
                 msg_id,
                 msg: Some(server_message::Msg::Remove(RemoveContactsResponse {
-                    removed: 0,
+                    removed,
                 })),
             })
         }
@@ -188,13 +201,21 @@ async fn handle_message(
                 "TVR session '{session_name}': ReplaceContacts ({} contacts)",
                 req.contacts.len()
             );
-            // TODO: replace in scheduler
+            // TODO: convert proto contacts to internal Contact structs
+            let contacts = Vec::new(); // placeholder
+            let result = scheduler
+                .replace_contacts(session_name, contacts, default_priority)
+                .await;
+            let (added, removed, unchanged) = match result {
+                Some(r) => (r.added, r.removed, r.unchanged),
+                None => (0, 0, 0),
+            };
             Some(ServerMessage {
                 msg_id,
                 msg: Some(server_message::Msg::Replace(ReplaceContactsResponse {
-                    added: 0,
-                    removed: 0,
-                    unchanged: 0,
+                    added,
+                    removed,
+                    unchanged,
                 })),
             })
         }

@@ -1,4 +1,5 @@
 use crate::contacts::{Contact, Schedule};
+use crate::cron::CronExpr;
 use chumsky::prelude::*;
 use hardy_bpa::routes::Action;
 use hardy_eid_patterns as eid_patterns;
@@ -134,18 +135,31 @@ fn quoted_string<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> {
         .labelled("quoted string")
 }
 
-fn cron_field<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> {
+fn cron_field<'a>() -> impl Parser<'a, &'a str, CronExpr, Extra<'a>> {
     keyword("cron")
         .then(text::inline_whitespace().at_least(1))
-        .ignore_then(quoted_string())
-        .labelled("cron expression")
+        .ignore_then(
+            quoted_string()
+                .try_map(|s: &str, span| {
+                    CronExpr::parse(s)
+                        .map_err(|e| Rich::custom(span, format!("invalid cron expression: {e}")))
+                })
+                .labelled("cron expression"),
+        )
+        .labelled("cron")
 }
 
 /// Duration value: e.g. "90m", "2h", "4h30m", "1h15m30s"
-/// Supports: Nh, Nm, Ns and combinations thereof.
 fn duration_value<'a>() -> impl Parser<'a, &'a str, std::time::Duration, Extra<'a>> {
     non_ws_token()
-        .try_map(|s: &str, span| parse_duration(s, span))
+        .try_map(|s: &str, span| {
+            let d = humantime::parse_duration(s)
+                .map_err(|e| Rich::custom(span, format!("invalid duration: {e}")))?;
+            if d.is_zero() {
+                return Err(Rich::custom(span, "duration must be greater than zero"));
+            }
+            Ok(d)
+        })
         .labelled("duration")
 }
 
@@ -188,11 +202,11 @@ fn delay_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
 
 /// All optional fields that can appear after the action, in any order.
 #[derive(Default)]
-struct ContactFields<'a> {
+struct ContactFields {
     priority: Option<u32>,
     start: Option<time::OffsetDateTime>,
     end: Option<time::OffsetDateTime>,
-    cron: Option<&'a str>,
+    cron: Option<CronExpr>,
     duration: Option<std::time::Duration>,
     until: Option<time::OffsetDateTime>,
     bps: Option<u64>,
@@ -200,18 +214,18 @@ struct ContactFields<'a> {
 }
 
 /// A single optional field — parsed one at a time, accumulated into ContactFields.
-enum Field<'a> {
+enum Field {
     Priority(u32),
     Start(time::OffsetDateTime),
     End(time::OffsetDateTime),
-    Cron(&'a str),
+    Cron(CronExpr),
     Duration(std::time::Duration),
     Until(time::OffsetDateTime),
     Bps(u64),
     Delay(u32),
 }
 
-fn field<'a>() -> impl Parser<'a, &'a str, Field<'a>, Extra<'a>> {
+fn field<'a>() -> impl Parser<'a, &'a str, Field, Extra<'a>> {
     choice((
         priority_field().map(Field::Priority),
         start_field().map(Field::Start),
@@ -225,7 +239,7 @@ fn field<'a>() -> impl Parser<'a, &'a str, Field<'a>, Extra<'a>> {
     .labelled("field")
 }
 
-fn contact_fields<'a>() -> impl Parser<'a, &'a str, ContactFields<'a>, Extra<'a>> {
+fn contact_fields<'a>() -> impl Parser<'a, &'a str, ContactFields, Extra<'a>> {
     text::inline_whitespace()
         .at_least(1)
         .ignore_then(field())
@@ -318,7 +332,7 @@ fn contact<'a>() -> impl Parser<'a, &'a str, Contact, Extra<'a>> {
 /// Resolve schedule from parsed fields. Validates mutual exclusivity of
 /// one-shot (start/end) vs recurring (cron/duration/until).
 fn resolve_schedule<'a>(
-    fields: &ContactFields<'a>,
+    fields: &ContactFields,
     span: Span,
 ) -> Result<Schedule, Rich<'a, char, Span>> {
     let has_oneshot = fields.start.is_some() || fields.end.is_some();
@@ -341,12 +355,13 @@ fn resolve_schedule<'a>(
     if has_recurring {
         let cron = fields
             .cron
+            .clone()
             .ok_or_else(|| Rich::custom(span, "'duration' requires 'cron' expression"))?;
         let duration = fields
             .duration
             .ok_or_else(|| Rich::custom(span, "'cron' requires 'duration' field"))?;
         Ok(Schedule::Recurring {
-            cron: cron.to_string(),
+            cron,
             duration,
             until: fields.until,
         })
@@ -388,64 +403,6 @@ fn contacts<'a>() -> impl Parser<'a, &'a str, Vec<Contact>, Extra<'a>> {
         .collect::<Vec<_>>()
         .map(|v| v.into_iter().flatten().collect())
         .then_ignore(end())
-}
-
-// ── Duration parsing ────────────────────────────────────────────────
-
-/// Parse a duration string like "90m", "2h", "4h30m", "1h15m30s".
-fn parse_duration<'a>(s: &str, span: Span) -> Result<std::time::Duration, Rich<'a, char, Span>> {
-    let mut total_secs: u64 = 0;
-    let mut current_num = String::new();
-    let mut found_unit = false;
-
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            current_num.push(c);
-        } else {
-            if current_num.is_empty() {
-                return Err(Rich::custom(
-                    span,
-                    format!("invalid duration '{s}': expected number before '{c}'"),
-                ));
-            }
-            let n: u64 = current_num
-                .parse()
-                .map_err(|e| Rich::custom(span, format!("invalid duration '{s}': {e}")))?;
-            current_num.clear();
-            match c {
-                'h' => total_secs += n * 3600,
-                'm' => total_secs += n * 60,
-                's' => total_secs += n,
-                _ => {
-                    return Err(Rich::custom(
-                        span,
-                        format!("invalid duration '{s}': unknown unit '{c}' (expected h/m/s)"),
-                    ));
-                }
-            }
-            found_unit = true;
-        }
-    }
-
-    if !current_num.is_empty() {
-        return Err(Rich::custom(
-            span,
-            format!("invalid duration '{s}': missing unit suffix (expected h/m/s)"),
-        ));
-    }
-
-    if !found_unit {
-        return Err(Rich::custom(span, format!("invalid duration '{s}': empty")));
-    }
-
-    if total_secs == 0 {
-        return Err(Rich::custom(
-            span,
-            format!("invalid duration '{s}': must be greater than zero"),
-        ));
-    }
-
-    Ok(std::time::Duration::from_secs(total_secs))
 }
 
 // ── Error formatting ────────────────────────────────────────────────
@@ -651,7 +608,7 @@ mod test {
                 duration,
                 until,
             } => {
-                assert_eq!(cron, "0 8 * * *");
+                assert_eq!(cron.to_string(), "0 8 * * *");
                 assert_eq!(*duration, std::time::Duration::from_secs(90 * 60));
                 assert!(until.is_none());
             }
@@ -681,6 +638,12 @@ mod test {
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].bandwidth_bps, Some(256000));
         assert_eq!(c[0].priority, Some(10));
+    }
+
+    #[test]
+    fn invalid_cron_expression() {
+        parse_err("ipn:2.*.* via ipn:2.1.0 cron \"0 8 *\" duration 90m");
+        parse_err("ipn:2.*.* via ipn:2.1.0 cron \"60 8 * * *\" duration 90m");
     }
 
     #[test]
