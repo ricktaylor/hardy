@@ -359,12 +359,7 @@ impl Dispatcher {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 self.cla_registry.forward(peer, bundle).await
             }
-            Some(rib::FindResult::Deliver(None)) => {
-                // Destination is local but the service isn't registered yet
-                let service = bundle.bundle.destination.clone();
-                self.wait_for_service(bundle, service).await
-            }
-            None => {
+            _ => {
                 // No route known, re-dispatch when RIB updates
                 self.wait_for_route(bundle).await
             }

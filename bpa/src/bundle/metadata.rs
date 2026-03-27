@@ -24,7 +24,7 @@ pub struct ReadOnlyMetadata {
     /// Not persisted. Recomputed on every dispatch cycle.
     /// Read-only from filters' perspective; access via `Bundle::next_hop()`.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate) next_hop: Option<Eid>,
+    pub next_hop: Option<Eid>,
 }
 
 impl Default for ReadOnlyMetadata {
