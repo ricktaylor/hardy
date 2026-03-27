@@ -627,6 +627,7 @@ async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
             if let Err(e) = sink.add_route(pattern, action, priority).await {
                 warn!("Failed to add route: {e}");
             }
+            metrics::counter!("tvr_route_installs").increment(1);
         }
         PendingRouteOp::Remove {
             pattern,
@@ -636,8 +637,15 @@ async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
             if let Err(e) = sink.remove_route(&pattern, &action, priority).await {
                 warn!("Failed to remove route: {e}");
             }
+            metrics::counter!("tvr_route_withdrawals").increment(1);
         }
     }
+}
+
+fn update_gauges(sched: &Scheduler) {
+    metrics::gauge!("tvr_contacts").set(sched.contacts.len() as f64);
+    metrics::gauge!("tvr_active_routes").set(sched.route_refs.len() as f64);
+    metrics::gauge!("tvr_timeline_depth").set(sched.timeline.len() as f64);
 }
 
 /// Start the scheduler task.
@@ -728,6 +736,8 @@ pub fn start(
                     break;
                 }
             }
+
+            update_gauges(&sched);
         }
     });
 }
