@@ -24,11 +24,9 @@ fn keyword<'a>(word: &'a str) -> impl Parser<'a, &'a str, (), Extra<'a>> {
 fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
     keyword("drop")
         .then(
-            any()
-                .filter(|c: &char| c.is_ascii_digit())
-                .repeated()
+            text::inline_whitespace()
                 .at_least(1)
-                .to_slice()
+                .ignore_then(text::int(10))
                 .try_map(|s: &str, span| {
                     let code: u64 = s
                         .parse()
@@ -36,7 +34,6 @@ fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
                     code.try_into()
                         .map_err(|e| Rich::custom(span, format!("invalid reason code: {e}")))
                 })
-                .padded_by(inline_whitespace())
                 .or_not(),
         )
         .map(|(_, reason)| Action::Drop(reason))
@@ -45,7 +42,7 @@ fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
 
 fn via_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
     keyword("via")
-        .then(required_whitespace())
+        .then(text::inline_whitespace().at_least(1))
         .ignore_then(
             any()
                 .filter(|c: &char| !c.is_whitespace())
@@ -74,13 +71,9 @@ fn action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
 
 fn priority<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
     keyword("priority")
-        .then(required_whitespace())
+        .then(text::inline_whitespace().at_least(1))
         .ignore_then(
-            any()
-                .filter(|c: &char| c.is_ascii_digit())
-                .repeated()
-                .at_least(1)
-                .to_slice()
+            text::int(10)
                 .try_map(|s: &str, span| {
                     s.parse()
                         .map_err(|e| Rich::custom(span, format!("invalid priority: {e}")))
@@ -93,11 +86,17 @@ fn priority<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
 fn route<'a>() -> impl Parser<'a, &'a str, StaticRoute, Extra<'a>> {
     pattern()
         .then(
-            required_whitespace()
+            text::inline_whitespace()
+                .at_least(1)
                 .ignore_then(action())
                 .labelled("action"),
         )
-        .then(required_whitespace().ignore_then(priority()).or_not())
+        .then(
+            text::inline_whitespace()
+                .at_least(1)
+                .ignore_then(priority())
+                .or_not(),
+        )
         .map(|((pattern, action), priority)| StaticRoute {
             pattern,
             action,
@@ -107,7 +106,7 @@ fn route<'a>() -> impl Parser<'a, &'a str, StaticRoute, Extra<'a>> {
 }
 
 fn line<'a>() -> impl Parser<'a, &'a str, Option<StaticRoute>, Extra<'a>> {
-    inline_whitespace()
+    text::inline_whitespace()
         .ignore_then(choice((
             just('#')
                 .then(any().and_is(just('\n').not()).repeated())
@@ -116,7 +115,7 @@ fn line<'a>() -> impl Parser<'a, &'a str, Option<StaticRoute>, Extra<'a>> {
             route().map(Some),
             empty().to(None),
         )))
-        .then_ignore(inline_whitespace())
+        .then_ignore(text::inline_whitespace())
 }
 
 fn routes<'a>() -> impl Parser<'a, &'a str, Vec<StaticRoute>, Extra<'a>> {
@@ -126,23 +125,6 @@ fn routes<'a>() -> impl Parser<'a, &'a str, Vec<StaticRoute>, Extra<'a>> {
         .collect::<Vec<_>>()
         .map(|v| v.into_iter().flatten().collect())
         .then_ignore(end())
-}
-
-/// Inline whitespace (spaces and tabs, not newlines) — zero or more
-fn inline_whitespace<'a>() -> impl Parser<'a, &'a str, (), Extra<'a>> {
-    any()
-        .filter(|c: &char| *c == ' ' || *c == '\t')
-        .repeated()
-        .ignored()
-}
-
-/// At least one inline whitespace character
-fn required_whitespace<'a>() -> impl Parser<'a, &'a str, (), Extra<'a>> {
-    any()
-        .filter(|c: &char| *c == ' ' || *c == '\t')
-        .repeated()
-        .at_least(1)
-        .ignored()
 }
 
 /// Format a parse error with line number, column, source context, and a caret.
@@ -283,6 +265,30 @@ mod test {
         let routes = parse_ok("ipn:99.*.* drop 3");
         assert_eq!(routes.len(), 1);
         assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+    }
+
+    #[test]
+    fn drop_with_priority() {
+        let routes = parse_ok("ipn:99.*.* drop priority 5");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Drop(None)));
+        assert_eq!(routes[0].priority, Some(5));
+    }
+
+    #[test]
+    fn drop_with_reason_and_priority() {
+        let routes = parse_ok("ipn:99.*.* drop 3 priority 5");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+        assert_eq!(routes[0].priority, Some(5));
+    }
+
+    #[test]
+    fn via_with_priority() {
+        let routes = parse_ok("ipn:*.*.* via ipn:0.1.0 priority 42");
+        assert_eq!(routes.len(), 1);
+        assert!(matches!(routes[0].action, Action::Via(_)));
+        assert_eq!(routes[0].priority, Some(42));
     }
 
     #[test]
