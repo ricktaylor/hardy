@@ -79,7 +79,7 @@ message OneShot {
 }
 
 message Recurring {
-  string cron = 1;                              // 5-field cron expression
+  string cron = 1;                              // Cron expression (5 or 6 field, or @shortcut)
   google.protobuf.Duration duration = 2;        // Length of each occurrence
   google.protobuf.Timestamp until = 3;          // Optional: end of recurrence
 }

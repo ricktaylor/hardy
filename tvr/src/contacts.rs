@@ -1,5 +1,7 @@
+use crate::scheduler::SchedulerHandle;
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// A scheduled contact — the canonical internal representation used by
@@ -28,7 +30,7 @@ pub enum Schedule {
 
     /// Recurring via cron expression.
     Recurring {
-        cron: String,
+        cron: crate::cron::CronExpr,
         duration: std::time::Duration,
         until: Option<time::OffsetDateTime>,
     },
@@ -38,19 +40,30 @@ pub enum Schedule {
 /// into the BPA's FIB via the RoutingSink.
 pub struct TvrAgent {
     default_priority: u32,
-    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+    scheduler: SchedulerHandle,
+    sink: hardy_async::sync::spin::Once<Arc<dyn RoutingSink>>,
 }
 
 impl TvrAgent {
-    pub fn new(default_priority: u32) -> Self {
+    pub fn new(default_priority: u32, scheduler: SchedulerHandle) -> Self {
         Self {
             default_priority,
+            scheduler,
             sink: hardy_async::sync::spin::Once::new(),
         }
     }
 
     pub fn default_priority(&self) -> u32 {
         self.default_priority
+    }
+
+    pub fn scheduler(&self) -> &SchedulerHandle {
+        &self.scheduler
+    }
+
+    /// Get the stored sink (available after registration).
+    pub fn sink(&self) -> Option<Arc<dyn RoutingSink>> {
+        self.sink.get().cloned()
     }
 
     /// Explicitly unregister from the BPA.
@@ -68,6 +81,7 @@ impl RoutingAgent for TvrAgent {
             "TVR agent registered, node IDs: {:?}",
             node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
         );
+        let sink: Arc<dyn RoutingSink> = sink.into();
         self.sink.call_once(|| sink);
     }
 
