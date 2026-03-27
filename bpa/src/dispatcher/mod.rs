@@ -107,6 +107,19 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
+    /// Delete bundle data and tombstone its metadata.
+    ///
+    /// This is a low-level primitive used by `drop_bundle` and by the few
+    /// internal paths where data is already gone or was never written.
+    /// Prefer `drop_bundle` for all externally-visible termination paths.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
+    pub(super) async fn delete_bundle(&self, bundle: bundle::Bundle) {
+        if let Some(storage_name) = &bundle.metadata.storage_name {
+            self.store.delete_data(storage_name).await;
+        }
+        self.store.tombstone_metadata(&bundle.bundle.id).await
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn load_data(&self, bundle: &bundle::Bundle) -> Option<Bytes> {
         let storage_name = bundle

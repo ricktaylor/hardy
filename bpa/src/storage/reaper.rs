@@ -103,7 +103,7 @@ impl Store {
     ///
     /// 1. Sleep until the next bundle expiry (or indefinitely if cache empty)
     /// 2. Wake on: shutdown signal, new bundle notification, or expiry timeout
-    /// 3. Expire all bundles past their lifetime via `tombstone_with_report()`
+    /// 3. Expire all bundles past their lifetime via `drop_bundle()`
     /// 4. Spawn `refill_cache()` if cache is depleted
     ///
     /// Uses `select_biased!` to prioritize shutdown handling.

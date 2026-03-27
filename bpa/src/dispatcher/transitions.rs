@@ -24,7 +24,7 @@
 //!        ├──► wait_for_service  → WaitingForService                                   │
 //!        │         re-dispatched on service registration                              │
 //!        │                                                                             │
-//!        └──► ForwardPending { peer, queue }  ──► drop_bundle / delete_bundle          │
+//!        └──► ForwardPending { peer, queue }  ──► drop_bundle                          │
 //!                  CLA unavailable → wait_for_route ──────────────────────────────────┘
 //! ```
 //!
@@ -81,18 +81,5 @@ impl Dispatcher {
     pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: ReasonCode) {
         self.report_bundle_deletion(&bundle, reason).await;
         self.delete_bundle(bundle).await
-    }
-
-    /// `* → Tombstone`: delete bundle data and mark as tombstoned.
-    ///
-    /// Use when bundle data is already known to be gone (e.g. `load_data` returned `None`).
-    /// Skips the `delete_data` call that `drop_bundle` would make.
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
-    pub async fn delete_bundle(&self, bundle: bundle::Bundle) {
-        // Delete the bundle from the bundle store
-        if let Some(storage_name) = &bundle.metadata.storage_name {
-            self.store.delete_data(storage_name).await;
-        }
-        self.store.tombstone_metadata(&bundle.bundle.id).await
     }
 }
