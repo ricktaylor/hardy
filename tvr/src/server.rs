@@ -181,6 +181,7 @@ async fn run_session(
             };
 
             info!("TVR session opened: '{name}' (priority {priority})");
+            metrics::gauge!("tvr_sessions").increment(1.0);
 
             let response = ServerMessage {
                 msg_id,
@@ -237,6 +238,7 @@ async fn run_session(
 
     // Session ended — withdraw all contacts from this source
     info!("Withdrawing contacts for session '{session_name}'");
+    metrics::gauge!("tvr_sessions").decrement(1.0);
     scheduler.withdraw_all(&session_name).await;
 }
 

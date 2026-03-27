@@ -57,6 +57,39 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
+    // Describe metrics
+    metrics::describe_gauge!(
+        "tvr_contacts",
+        metrics::Unit::Count,
+        "Total managed contacts"
+    );
+    metrics::describe_gauge!(
+        "tvr_active_routes",
+        metrics::Unit::Count,
+        "Routes currently installed in BPA FIB"
+    );
+    metrics::describe_gauge!(
+        "tvr_timeline_depth",
+        metrics::Unit::Count,
+        "Pending events in scheduler timeline"
+    );
+    metrics::describe_counter!(
+        "tvr_route_installs",
+        metrics::Unit::Count,
+        "Total route install operations"
+    );
+    metrics::describe_counter!(
+        "tvr_route_withdrawals",
+        metrics::Unit::Count,
+        "Total route withdrawal operations"
+    );
+    metrics::describe_gauge!("tvr_sessions", metrics::Unit::Count, "Active gRPC sessions");
+    metrics::describe_counter!(
+        "tvr_file_reloads",
+        metrics::Unit::Count,
+        "Contact plan file reload attempts"
+    );
+
     // Create scheduler channel (handle available immediately, task starts after registration)
     let (scheduler_handle, scheduler_rx) = scheduler::channel();
 

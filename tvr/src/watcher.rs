@@ -109,9 +109,11 @@ async fn reload(
                     result.added, result.removed, result.unchanged
                 );
             }
+            metrics::counter!("tvr_file_reloads", "outcome" => "success").increment(1);
         }
         Err(e) => {
             error!("Failed to reload contact plan: {e}");
+            metrics::counter!("tvr_file_reloads", "outcome" => "error").increment(1);
         }
     }
 }
