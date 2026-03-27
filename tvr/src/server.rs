@@ -1,4 +1,6 @@
-use crate::contacts::TvrAgent;
+use crate::contacts::{Contact, Schedule, TvrAgent};
+use crate::cron::CronExpr;
+use hardy_bpa::routes::Action;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -25,6 +27,104 @@ mod proto {
 }
 
 use proto::tvr::*;
+
+// ── Proto → internal conversion ─────────────────────────────────────
+
+fn convert_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, tonic::Status> {
+    time::OffsetDateTime::from_unix_timestamp(t.seconds)
+        .map(|dt| dt + time::Duration::nanoseconds(t.nanos.into()))
+        .map_err(|e| tonic::Status::invalid_argument(format!("invalid timestamp: {e}")))
+}
+
+fn convert_duration(d: prost_types::Duration) -> Result<std::time::Duration, tonic::Status> {
+    if d.seconds < 0 || d.nanos < 0 {
+        return Err(tonic::Status::invalid_argument("duration must be positive"));
+    }
+    Ok(std::time::Duration::new(d.seconds as u64, d.nanos as u32))
+}
+
+fn convert_contact(proto: proto::tvr::Contact) -> Result<Contact, tonic::Status> {
+    let pattern = proto
+        .pattern
+        .parse()
+        .map_err(|e| tonic::Status::invalid_argument(format!("invalid EID pattern: {e}")))?;
+
+    let action = match proto.action {
+        Some(contact::Action::Via(eid)) => {
+            let eid = eid.parse().map_err(|e| {
+                tonic::Status::invalid_argument(format!("invalid next-hop EID: {e}"))
+            })?;
+            Action::Via(eid)
+        }
+        Some(contact::Action::Drop(drop_action)) => {
+            let reason = if drop_action.reason_code == 0 {
+                None
+            } else {
+                Some((drop_action.reason_code as u64).try_into().map_err(|e| {
+                    tonic::Status::invalid_argument(format!("invalid reason code: {e}"))
+                })?)
+            };
+            Action::Drop(reason)
+        }
+        None => {
+            return Err(tonic::Status::invalid_argument(
+                "contact must have an action",
+            ));
+        }
+    };
+
+    let schedule = match proto.schedule {
+        Some(contact::Schedule::OneShot(one_shot)) => {
+            let start = one_shot.start.map(convert_timestamp).transpose()?;
+            let end = one_shot.end.map(convert_timestamp).transpose()?;
+            if let (Some(s), Some(e)) = (start, end)
+                && e <= s {
+                    return Err(tonic::Status::invalid_argument(
+                        "'end' must be after 'start'",
+                    ));
+                }
+            Schedule::OneShot { start, end }
+        }
+        Some(contact::Schedule::Recurring(recurring)) => {
+            let cron = CronExpr::parse(&recurring.cron)
+                .map_err(|e| tonic::Status::invalid_argument(format!("invalid cron: {e}")))?;
+            let duration = recurring
+                .duration
+                .map(convert_duration)
+                .transpose()?
+                .ok_or_else(|| {
+                    tonic::Status::invalid_argument("recurring contact requires duration")
+                })?;
+            if duration.is_zero() {
+                return Err(tonic::Status::invalid_argument(
+                    "duration must be greater than zero",
+                ));
+            }
+            let until = recurring.until.map(convert_timestamp).transpose()?;
+            Schedule::Recurring {
+                cron,
+                duration,
+                until,
+            }
+        }
+        None => Schedule::Permanent,
+    };
+
+    Ok(Contact {
+        pattern,
+        action,
+        priority: proto.priority,
+        schedule,
+        bandwidth_bps: proto.bandwidth_bps,
+        delay_us: proto.delay_us,
+    })
+}
+
+fn convert_contacts(protos: Vec<proto::tvr::Contact>) -> Result<Vec<Contact>, tonic::Status> {
+    protos.into_iter().map(convert_contact).collect()
+}
+
+// ── Service ─────────────────────────────────────────────────────────
 
 pub struct TvrService {
     agent: Arc<TvrAgent>,
@@ -162,14 +262,21 @@ async fn handle_message(
                 "TVR session '{session_name}': AddContacts ({} contacts)",
                 req.contacts.len()
             );
-            // TODO: convert proto contacts to internal Contact structs
-            let contacts = Vec::new(); // placeholder
+            let contacts = match convert_contacts(req.contacts) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(ServerMessage {
+                        msg_id,
+                        msg: Some(server_message::Msg::Status(e.into())),
+                    });
+                }
+            };
             let result = scheduler
                 .add_contacts(session_name, contacts, default_priority)
                 .await;
             let (added, active, skipped) = match result {
                 Some(r) => (r.added, r.active, r.skipped),
-                None => (0, 0, req.contacts.len() as u32),
+                None => (0, 0, 0),
             };
             Some(ServerMessage {
                 msg_id,
@@ -185,8 +292,15 @@ async fn handle_message(
                 "TVR session '{session_name}': RemoveContacts ({} contacts)",
                 req.contacts.len()
             );
-            // TODO: convert proto contacts to internal Contact structs
-            let contacts = Vec::new(); // placeholder
+            let contacts = match convert_contacts(req.contacts) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(ServerMessage {
+                        msg_id,
+                        msg: Some(server_message::Msg::Status(e.into())),
+                    });
+                }
+            };
             let result = scheduler.remove_contacts(session_name, contacts).await;
             let removed = result.map(|r| r.removed).unwrap_or(0);
             Some(ServerMessage {
@@ -201,8 +315,15 @@ async fn handle_message(
                 "TVR session '{session_name}': ReplaceContacts ({} contacts)",
                 req.contacts.len()
             );
-            // TODO: convert proto contacts to internal Contact structs
-            let contacts = Vec::new(); // placeholder
+            let contacts = match convert_contacts(req.contacts) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Some(ServerMessage {
+                        msg_id,
+                        msg: Some(server_message::Msg::Status(e.into())),
+                    });
+                }
+            };
             let result = scheduler
                 .replace_contacts(session_name, contacts, default_priority)
                 .await;
