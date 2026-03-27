@@ -7,6 +7,7 @@ use tracing::{error, info};
 
 mod config;
 mod contacts;
+mod parser;
 mod server;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
