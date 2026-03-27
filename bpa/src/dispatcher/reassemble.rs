@@ -8,7 +8,7 @@ impl Dispatcher {
             }
             storage::adu_reassembly::ReassemblyOutcome::Failed => {
                 // Fragment data already deleted; drop the trigger bundle silently.
-                return self.drop_bundle(bundle, None).await;
+                return self.delete_bundle(bundle).await;
             }
             storage::adu_reassembly::ReassemblyOutcome::Done(storage_name, data) => {
                 (storage_name, data)

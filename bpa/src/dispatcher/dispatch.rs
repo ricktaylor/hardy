@@ -170,7 +170,7 @@ impl Dispatcher {
 
         if let Some(reason) = reason {
             // Not valid, drop it
-            self.drop_bundle(bundle, Some(reason)).await;
+            self.drop_bundle(bundle, reason).await;
         } else {
             // Spawn into processing pool for rate limiting
             self.ingest_bundle(bundle, data).await;
@@ -224,9 +224,7 @@ impl Dispatcher {
         // Check lifetime first
         if bundle.has_expired() {
             debug!("Bundle lifetime has expired");
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
-                .await;
+            return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
         // Check hop count exceeded
@@ -234,9 +232,7 @@ impl Dispatcher {
             && hop_info.count > hop_info.limit
         {
             debug!("Bundle hop-limit {} exceeded", hop_info.limit);
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
-                .await;
+            return self.drop_bundle(bundle, ReasonCode::HopLimitExceeded).await;
         }
 
         // Ingress filter hook
@@ -270,8 +266,11 @@ impl Dispatcher {
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            filters::registry::ExecResult::Drop(bundle, Some(reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            filters::registry::ExecResult::Drop(bundle, None) => {
+                return self.delete_bundle(bundle).await;
             }
         };
 
@@ -297,8 +296,7 @@ impl Dispatcher {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
                 debug!("Bundle lifetime has expired while queued");
-                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
-                    .await;
+                self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
                 continue;
             }
 
@@ -339,7 +337,7 @@ impl Dispatcher {
                 debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
                 self.drop_bundle(
                     bundle,
-                    Some(reason.unwrap_or(ReasonCode::NoAdditionalInformation)),
+                    reason.unwrap_or(ReasonCode::NoAdditionalInformation),
                 )
                 .await
             }
@@ -393,7 +391,7 @@ impl Dispatcher {
 
                             if bundle.has_expired() {
                                 debug!("Bundle lifetime has expired");
-                                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired)).await;
+                                self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
                                 continue;
                             }
 

@@ -74,17 +74,12 @@ impl Dispatcher {
         self.store.watch_bundle(bundle).await;
     }
 
-    /// `* → Tombstone`: delete bundle data and mark as tombstoned.
+    /// `* → Tombstone`: send a deletion status report then delete bundle data.
     ///
-    /// If `reason` is `Some`, a deletion status report is sent first.
-    /// Pass `None` after successful delivery/forwarding (report already sent)
-    /// or when a filter silently drops a bundle.
+    /// Use when the BPA is responsible for the deletion and must notify the source.
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
-    pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
-        if let Some(reason) = reason {
-            self.report_bundle_deletion(&bundle, reason).await;
-        }
-
+    pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: ReasonCode) {
+        self.report_bundle_deletion(&bundle, reason).await;
         self.delete_bundle(bundle).await
     }
 

@@ -45,8 +45,11 @@ impl Dispatcher {
             .trace_expect("Egress filter execution failed")
         {
             filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            filters::registry::ExecResult::Drop(bundle, Some(reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            filters::registry::ExecResult::Drop(bundle, None) => {
+                return self.delete_bundle(bundle).await;
             }
         };
 
@@ -54,7 +57,7 @@ impl Dispatcher {
         match cla.forward(queue, cla_addr, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 self.report_bundle_forwarded(&bundle).await;
-                self.drop_bundle(bundle, None).await;
+                self.delete_bundle(bundle).await;
                 return;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
