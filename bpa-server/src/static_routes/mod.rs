@@ -267,11 +267,7 @@ impl RoutingAgent for StaticRoutesAgent {
     }
 }
 
-pub async fn init(
-    config: &Config,
-    bpa: &dyn BpaRegistration,
-    _tasks: &hardy_async::TaskPool,
-) -> anyhow::Result<()> {
+pub async fn init(config: &Config, bpa: &dyn BpaRegistration) -> anyhow::Result<()> {
     // Ensure it's absolute
     let routes_file = std::env::current_dir()
         .context("Failed to get current directory")?

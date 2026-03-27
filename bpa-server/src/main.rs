@@ -141,7 +141,7 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
 
     // Load static routes
     if let Some(config) = &config.static_routes {
-        static_routes::init(config, bpa.as_ref(), &tasks).await?;
+        static_routes::init(config, bpa.as_ref()).await?;
     }
 
     // Register filters
