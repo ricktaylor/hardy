@@ -15,28 +15,6 @@ use tracing::{debug, error, info, warn};
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn listen_for_cancel(tasks: &TaskPool) {
-    #[cfg(unix)]
-    let mut term_handler =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .trace_expect("Failed to register signal handlers");
-    #[cfg(not(unix))]
-    let mut term_handler = std::future::pending();
-
-    let cancel_token = tasks.cancel_token().clone();
-    hardy_async::spawn!(tasks, "signal_handler", async move {
-        tokio::select! {
-            _ = term_handler.recv() => {
-                info!("Received terminate signal, stopping...");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received CTRL+C, stopping...");
-            }
-        }
-        cancel_token.cancel();
-    });
-}
-
 type StorageBackends = (
     Option<Arc<dyn hardy_bpa::storage::MetadataStorage>>,
     Option<Arc<dyn hardy_bpa::storage::BundleStorage>>,
@@ -185,7 +163,7 @@ async fn inner_main(config: config::Config, cli: cli::Args) -> anyhow::Result<()
         grpc::init(config, &bpa_reg, &tasks);
     }
 
-    listen_for_cancel(&tasks);
+    hardy_async::signal::listen_for_cancel(&tasks);
 
     info!("Started successfully");
 

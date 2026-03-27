@@ -246,12 +246,12 @@ async fn run_ping(
     args: &Command,
     bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    cancel::listen_for_cancel(&cancel_token);
+    let tasks = hardy_async::TaskPool::new();
+    hardy_async::signal::listen_for_cancel(&tasks);
 
-    let stats = exec_inner(args, bpa.as_ref(), &cancel_token).await?;
+    let stats = exec_inner(args, bpa.as_ref(), tasks.cancel_token()).await?;
 
-    cancel_token.cancel();
+    tasks.shutdown().await;
 
     bpa.shutdown().await;
 
