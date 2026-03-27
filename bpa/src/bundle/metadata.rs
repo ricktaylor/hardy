@@ -20,6 +20,11 @@ pub struct ReadOnlyMetadata {
     /// The CLA that received this bundle (transient, not persisted)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ingress_cla: Option<Arc<str>>,
+    /// Transient next-hop EID set by the RIB on each lookup; consumed by egress filters.
+    /// Not persisted. Recomputed on every dispatch cycle.
+    /// Read-only from filters' perspective; access via `Bundle::next_hop()`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) next_hop: Option<Eid>,
 }
 
 impl Default for ReadOnlyMetadata {
@@ -29,6 +34,7 @@ impl Default for ReadOnlyMetadata {
             ingress_peer_node: None,
             ingress_peer_addr: None,
             ingress_cla: None,
+            next_hop: None,
         }
     }
 }
@@ -49,10 +55,6 @@ pub struct BundleMetadata {
     /// Current processing status
     #[cfg_attr(feature = "serde", serde(skip))]
     pub status: BundleStatus,
-    /// Transient next-hop EID set by the RIB on each lookup; consumed by egress filters.
-    /// Not persisted. It is recomputed on every dispatch cycle.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub next_hop: Option<Eid>,
     /// Immutable ingress context
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub read_only: ReadOnlyMetadata,
@@ -66,7 +68,6 @@ impl Default for BundleMetadata {
         Self {
             storage_name: None,
             status: BundleStatus::New,
-            next_hop: None,
             read_only: ReadOnlyMetadata::default(),
             writable: WritableMetadata::default(),
         }

@@ -34,6 +34,14 @@ impl Bundle {
         self.expiry() <= OffsetDateTime::now_utc()
     }
 
+    /// Returns the next-hop EID set by the RIB for this dispatch cycle.
+    ///
+    /// This is transient derived data — set by `rib::find()` and consumed by
+    /// egress filters. Not persisted.
+    pub fn next_hop(&self) -> Option<&Eid> {
+        self.metadata.read_only.next_hop.as_ref()
+    }
+
     /// Returns the EID of the node that forwarded this bundle.
     ///
     /// Prefers the Previous Node extension block (in-band), falling back to

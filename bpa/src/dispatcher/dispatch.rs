@@ -78,6 +78,7 @@ impl Dispatcher {
                                 ingress_peer_node,
                                 ingress_peer_addr,
                                 ingress_cla,
+                                next_hop: None,
                             },
                             ..Default::default()
                         },
@@ -106,6 +107,7 @@ impl Dispatcher {
                                     ingress_peer_node,
                                     ingress_peer_addr,
                                     ingress_cla,
+                                    next_hop: None,
                                 },
                                 ..Default::default()
                             },
@@ -131,6 +133,7 @@ impl Dispatcher {
                                     ingress_peer_node,
                                     ingress_peer_addr,
                                     ingress_cla,
+                                    next_hop: None,
                                 },
                                 ..Default::default()
                             },

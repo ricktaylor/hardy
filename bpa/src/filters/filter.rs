@@ -317,7 +317,6 @@ impl PreparedFilters {
                                 metadata: bundle::BundleMetadata {
                                     storage_name: bundle.metadata.storage_name,
                                     status: bundle.metadata.status,
-                                    next_hop: bundle.metadata.next_hop,
                                     read_only: bundle.metadata.read_only,
                                     writable,
                                 },
@@ -332,7 +331,6 @@ impl PreparedFilters {
                             bundle::BundleMetadata {
                                 storage_name: bundle.metadata.storage_name,
                                 status: bundle.metadata.status,
-                                next_hop: bundle.metadata.next_hop,
                                 read_only: bundle.metadata.read_only,
                                 writable,
                             }

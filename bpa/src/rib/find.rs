@@ -124,7 +124,7 @@ fn map_result(
             };
 
             // Set the next-hop for Egress filters (transient, not persisted)
-            metadata.next_hop = Some(next_hop.clone());
+            metadata.read_only.next_hop = Some(next_hop.clone());
 
             Some(FindResult::Forward(peer))
         }
