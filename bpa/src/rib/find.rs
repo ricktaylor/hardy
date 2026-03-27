@@ -123,8 +123,8 @@ fn map_result(
                 peers.first().trace_expect("Empty CLA result from find?!?")
             };
 
-            // Set the next-hop for Egress filters
-            metadata.read_only.next_hop = Some(next_hop.clone());
+            // Set the next-hop for Egress filters (transient, not persisted)
+            metadata.next_hop = Some(next_hop.clone());
 
             Some(FindResult::Forward(peer))
         }

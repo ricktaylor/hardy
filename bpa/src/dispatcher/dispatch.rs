@@ -78,7 +78,6 @@ impl Dispatcher {
                                 ingress_peer_node,
                                 ingress_peer_addr,
                                 ingress_cla,
-                                ..Default::default()
                             },
                             ..Default::default()
                         },
@@ -107,7 +106,6 @@ impl Dispatcher {
                                     ingress_peer_node,
                                     ingress_peer_addr,
                                     ingress_cla,
-                                    ..Default::default()
                                 },
                                 ..Default::default()
                             },
@@ -133,7 +131,6 @@ impl Dispatcher {
                                     ingress_peer_node,
                                     ingress_peer_addr,
                                     ingress_cla,
-                                    ..Default::default()
                                 },
                                 ..Default::default()
                             },
@@ -168,9 +165,9 @@ impl Dispatcher {
         )
         .await;
 
-        if reason.is_some() {
+        if let Some(reason) = reason {
             // Not valid, drop it
-            self.drop_bundle(bundle, reason).await;
+            self.tombstone_with_report(bundle, reason).await;
         } else {
             // Spawn into processing pool for rate limiting
             self.ingest_bundle(bundle, data).await;
@@ -225,7 +222,7 @@ impl Dispatcher {
         if bundle.has_expired() {
             debug!("Bundle lifetime has expired");
             return self
-                .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
+                .tombstone_with_report(bundle, ReasonCode::LifetimeExpired)
                 .await;
         }
 
@@ -235,7 +232,7 @@ impl Dispatcher {
         {
             debug!("Bundle hop-limit {} exceeded", hop_info.limit);
             return self
-                .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
+                .tombstone_with_report(bundle, ReasonCode::HopLimitExceeded)
                 .await;
         }
 
@@ -261,13 +258,20 @@ impl Dispatcher {
                     }
                     bundle.metadata.storage_name = Some(new_storage_name);
                 }
-                // Always checkpoint to Dispatching (crash safety)
+                // Checkpoint to Dispatching before routing (crash safety).
+                // Use update_metadata (full blob rewrite), not update_status, because
+                // the ingress filter may have mutated the bundle data (storage_name,
+                // flow_label, etc.) and those changes must be persisted atomically
+                // with the status transition.
                 bundle.metadata.status = bundle::BundleStatus::Dispatching;
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }
             filters::registry::ExecResult::Drop(bundle, reason) => {
-                return self.drop_bundle(bundle, reason).await;
+                return match reason {
+                    Some(r) => self.tombstone_with_report(bundle, r).await,
+                    None => self.tombstone(bundle).await,
+                };
             }
         };
 
@@ -293,7 +297,7 @@ impl Dispatcher {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
                 debug!("Bundle lifetime has expired while queued");
-                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
+                self.tombstone_with_report(bundle, ReasonCode::LifetimeExpired)
                     .await;
                 continue;
             }
@@ -304,7 +308,7 @@ impl Dispatcher {
                     dispatcher.process_bundle(bundle, data).await;
                 } else {
                     // Bundle data was deleted while queued
-                    dispatcher.drop_bundle(bundle, None).await;
+                    dispatcher.tombstone(bundle).await;
                 }
             })
             .await;
@@ -333,7 +337,11 @@ impl Dispatcher {
         match self.rib.find(&mut bundle) {
             Some(rib::FindResult::Drop(reason)) => {
                 debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
-                self.drop_bundle(bundle, reason).await
+                self.tombstone_with_report(
+                    bundle,
+                    reason.unwrap_or(ReasonCode::NoAdditionalInformation),
+                )
+                .await
             }
             Some(rib::FindResult::AdminEndpoint) => {
                 // The bundle is for the Administrative Endpoint
@@ -353,14 +361,14 @@ impl Dispatcher {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 self.cla_registry.forward(peer, bundle).await
             }
-            _ => {
-                // No route available - wait for one
-                debug!("Storing bundle until a forwarding opportunity arises");
-
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await;
-                self.store.watch_bundle(bundle).await
+            Some(rib::FindResult::Deliver(None)) => {
+                // Destination is local but the service isn't registered yet
+                let service = bundle.bundle.destination.clone();
+                self.wait_for_service(bundle, service).await
+            }
+            None => {
+                // No route known, re-dispatch when RIB updates
+                self.wait_for_route(bundle).await
             }
         }
     }
@@ -385,7 +393,7 @@ impl Dispatcher {
 
                             if bundle.has_expired() {
                                 debug!("Bundle lifetime has expired");
-                                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired)).await;
+                                self.tombstone_with_report(bundle, ReasonCode::LifetimeExpired).await;
                                 continue;
                             }
 
@@ -395,7 +403,7 @@ impl Dispatcher {
                                     dispatcher.process_bundle(bundle, data).await
                                 } else {
                                     // Bundle data was deleted sometime while we waited, drop the bundle
-                                    dispatcher.drop_bundle(bundle, None).await
+                                    dispatcher.tombstone(bundle).await
                                 }
                             }).await;
                         }

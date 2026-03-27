@@ -53,9 +53,7 @@ impl Store {
         };
 
         // See if we can collect all the fragments
-        let Some(results) = self.poll_fragments(bundle, &status).await else {
-            return None;
-        };
+        let results = self.poll_fragments(bundle, &status).await?;
 
         // Now try to reassemble
         let result = self.reassemble(&results).await;

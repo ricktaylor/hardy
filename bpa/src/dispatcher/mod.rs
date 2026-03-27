@@ -9,6 +9,7 @@ mod local;
 mod reassemble;
 mod report;
 mod restart;
+mod transitions;
 
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
@@ -122,24 +123,6 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
-    pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
-        if let Some(reason) = reason {
-            self.report_bundle_deletion(&bundle, reason).await;
-        }
-
-        self.delete_bundle(bundle).await
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
-    pub async fn delete_bundle(&self, bundle: bundle::Bundle) {
-        // Delete the bundle from the bundle store
-        if let Some(storage_name) = &bundle.metadata.storage_name {
-            self.store.delete_data(storage_name).await;
-        }
-        self.store.tombstone_metadata(&bundle.bundle.id).await
-    }
-
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
         let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
 
@@ -152,7 +135,7 @@ impl Dispatcher {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
                     dispatcher.ingest_bundle(bundle, data).await;
                 } else {
-                    dispatcher.drop_bundle(bundle, None).await;
+                    dispatcher.tombstone(bundle).await;
                 }
             }
         });

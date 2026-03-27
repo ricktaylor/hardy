@@ -1,10 +1,10 @@
 use super::*;
 
 impl Dispatcher {
-    pub async fn reassemble(&self, mut bundle: bundle::Bundle) {
-        let Some((storage_name, data)) = self.store.adu_reassemble(&mut bundle).await else {
-            // Nothing more to do, all the fragments have yet to arrive
-            return self.store.watch_bundle(bundle).await;
+    pub async fn reassemble(&self, bundle: bundle::Bundle) {
+        let Some((storage_name, data)) = self.store.adu_reassemble(&bundle).await else {
+            // Not all fragments have arrived yet, wait for siblings
+            return self.wait_for_fragments(bundle).await;
         };
 
         let metadata = bundle::BundleMetadata {

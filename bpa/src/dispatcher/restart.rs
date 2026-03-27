@@ -233,7 +233,7 @@ impl Dispatcher {
                 }
 
                 // Drop the 'new' bundle
-                self.drop_bundle(bundle, Some(reason)).await;
+                self.tombstone_with_report(bundle, reason).await;
 
                 // Report the bundle as an orphan
                 RestartResult::Orphan

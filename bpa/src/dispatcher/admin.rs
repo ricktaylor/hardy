@@ -3,14 +3,14 @@ use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn administrative_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
+    pub(super) async fn administrative_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             debug!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
             return self
-                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                .tombstone_with_report(bundle, ReasonCode::BlockUnintelligible)
                 .await;
         }
 
@@ -27,7 +27,7 @@ impl Dispatcher {
             Err(e) => {
                 debug!("Received an invalid administrative record: {e}");
                 return self
-                    .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                    .tombstone_with_report(bundle, ReasonCode::BlockUnintelligible)
                     .await;
             }
             Ok(data) => data,
@@ -36,7 +36,7 @@ impl Dispatcher {
         match hardy_cbor::decode::parse(data.as_ref()) {
             Err(e) => {
                 debug!("Failed to parse administrative record: {e}");
-                self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                self.tombstone_with_report(bundle, ReasonCode::BlockUnintelligible)
                     .await
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
@@ -89,19 +89,14 @@ impl Dispatcher {
                                 )
                                 .await;
                         }
-                        self.drop_bundle(bundle, None).await;
+                        self.tombstone(bundle).await;
                     }
                     Some(_) => {
-                        self.drop_bundle(bundle, None).await;
+                        self.tombstone(bundle).await;
                     }
                     None => {
-                        let desired = bundle::BundleStatus::WaitingForService {
-                            service: report.bundle_id.source.clone(),
-                        };
-
-                        self.store.update_status(&mut bundle, &desired).await;
-
-                        self.store.watch_bundle(bundle).await;
+                        self.wait_for_service(bundle, report.bundle_id.source.clone())
+                            .await;
                     }
                 }
             }
