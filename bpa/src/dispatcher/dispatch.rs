@@ -170,7 +170,7 @@ impl Dispatcher {
 
         if let Some(reason) = reason {
             // Not valid, drop it
-            self.tombstone_with_report(bundle, reason).await;
+            self.drop_bundle(bundle, Some(reason)).await;
         } else {
             // Spawn into processing pool for rate limiting
             self.ingest_bundle(bundle, data).await;
@@ -225,7 +225,7 @@ impl Dispatcher {
         if bundle.has_expired() {
             debug!("Bundle lifetime has expired");
             return self
-                .tombstone_with_report(bundle, ReasonCode::LifetimeExpired)
+                .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
                 .await;
         }
 
@@ -235,7 +235,7 @@ impl Dispatcher {
         {
             debug!("Bundle hop-limit {} exceeded", hop_info.limit);
             return self
-                .tombstone_with_report(bundle, ReasonCode::HopLimitExceeded)
+                .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
                 .await;
         }
 
@@ -271,10 +271,7 @@ impl Dispatcher {
                 (bundle, data)
             }
             filters::registry::ExecResult::Drop(bundle, reason) => {
-                return match reason {
-                    Some(r) => self.tombstone_with_report(bundle, r).await,
-                    None => self.tombstone(bundle).await,
-                };
+                return self.drop_bundle(bundle, reason).await;
             }
         };
 
@@ -300,7 +297,7 @@ impl Dispatcher {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
                 debug!("Bundle lifetime has expired while queued");
-                self.tombstone_with_report(bundle, ReasonCode::LifetimeExpired)
+                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
                     .await;
                 continue;
             }
@@ -311,7 +308,7 @@ impl Dispatcher {
                     dispatcher.process_bundle(bundle, data).await;
                 } else {
                     // Bundle data was deleted while queued
-                    dispatcher.tombstone(bundle).await;
+                    dispatcher.delete_bundle(bundle).await;
                 }
             })
             .await;
@@ -340,9 +337,9 @@ impl Dispatcher {
         match self.rib.find(&mut bundle) {
             Some(rib::FindResult::Drop(reason)) => {
                 debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
-                self.tombstone_with_report(
+                self.drop_bundle(
                     bundle,
-                    reason.unwrap_or(ReasonCode::NoAdditionalInformation),
+                    Some(reason.unwrap_or(ReasonCode::NoAdditionalInformation)),
                 )
                 .await
             }
@@ -396,7 +393,7 @@ impl Dispatcher {
 
                             if bundle.has_expired() {
                                 debug!("Bundle lifetime has expired");
-                                self.tombstone_with_report(bundle, ReasonCode::LifetimeExpired).await;
+                                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired)).await;
                                 continue;
                             }
 
@@ -405,8 +402,8 @@ impl Dispatcher {
                                 if let Some(data) = dispatcher.load_data(&bundle).await {
                                     dispatcher.process_bundle(bundle, data).await
                                 } else {
-                                    // Bundle data was deleted sometime while we waited, drop the bundle
-                                    dispatcher.tombstone(bundle).await
+                                    // Bundle data was deleted sometime while we waited
+                                    dispatcher.delete_bundle(bundle).await
                                 }
                             }).await;
                         }

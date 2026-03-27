@@ -10,7 +10,7 @@
 //!  [Receive / Originate]
 //!        │
 //!        ▼
-//!      New ──────────────────────────────────────────► tombstone_with_report (filter / TTL / invalid)
+//!      New ──────────────────────────────────────────► drop_bundle (filter / TTL / invalid)
 //!        │ ingress filter; checkpoint before routing
 //!        ▼
 //!   Dispatching ──────────────────────────────────────────────────────────────────────┐
@@ -24,7 +24,7 @@
 //!        ├──► wait_for_service  → WaitingForService                                   │
 //!        │         re-dispatched on service registration                              │
 //!        │                                                                             │
-//!        └──► ForwardPending { peer, queue }  ──► tombstone (CLA acked)               │
+//!        └──► ForwardPending { peer, queue }  ──► drop_bundle / delete_bundle          │
 //!                  CLA unavailable → wait_for_route ──────────────────────────────────┘
 //! ```
 //!
@@ -74,20 +74,30 @@ impl Dispatcher {
         self.store.watch_bundle(bundle).await;
     }
 
-    /// `* → Tombstone`: send a deletion status report then tombstone.
-    pub async fn tombstone_with_report(&self, bundle: bundle::Bundle, reason: ReasonCode) {
-        self.report_bundle_deletion(&bundle, reason).await;
-        self.tombstone(bundle).await;
+    /// `* → Tombstone`: delete bundle data and mark as tombstoned.
+    ///
+    /// If `reason` is `Some`, a deletion status report is sent first.
+    /// Pass `None` after successful delivery/forwarding (report already sent)
+    /// or when a filter silently drops a bundle.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
+    pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
+        if let Some(reason) = reason {
+            self.report_bundle_deletion(&bundle, reason).await;
+        }
+
+        self.delete_bundle(bundle).await
     }
 
-    /// `* → Tombstone`: tombstone a bundle without sending a status report.
+    /// `* → Tombstone`: delete bundle data and mark as tombstoned.
     ///
-    /// Use when no deletion report should be sent: after successful delivery/forwarding
-    /// (the relevant report was already sent), or when a filter silently rejects a bundle.
-    pub async fn tombstone(&self, bundle: bundle::Bundle) {
+    /// Use when bundle data is already known to be gone (e.g. `load_data` returned `None`).
+    /// Skips the `delete_data` call that `drop_bundle` would make.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
+    pub async fn delete_bundle(&self, bundle: bundle::Bundle) {
+        // Delete the bundle from the bundle store
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await;
         }
-        self.store.tombstone_metadata(&bundle.bundle.id).await;
+        self.store.tombstone_metadata(&bundle.bundle.id).await
     }
 }

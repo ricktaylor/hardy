@@ -146,9 +146,9 @@ impl Store {
             for id in dead_bundle_ids {
                 if let Some(bundle) = self.get_metadata(&id).await {
                     dispatcher
-                        .tombstone_with_report(
+                        .drop_bundle(
                             bundle,
-                            hardy_bpv7::status_report::ReasonCode::LifetimeExpired,
+                            Some(hardy_bpv7::status_report::ReasonCode::LifetimeExpired),
                         )
                         .await;
                 }

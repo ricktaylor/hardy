@@ -13,7 +13,7 @@ impl Dispatcher {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
             // Bundle data was deleted sometime during processing
-            return;
+            return self.delete_bundle(bundle).await;
         };
 
         // Increment Hop Count, etc...
@@ -31,7 +31,7 @@ impl Dispatcher {
         // - If send fails or peer goes down, bundle returns to Waiting and may
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        // - On Drop result: call tombstone_with_report() and return early
+        // - On Drop result: call drop_bundle() and return early
         let (bundle, data) = match self
             .filter_registry
             .exec(
@@ -46,10 +46,7 @@ impl Dispatcher {
         {
             filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
             filters::registry::ExecResult::Drop(bundle, reason) => {
-                return match reason {
-                    Some(r) => self.tombstone_with_report(bundle, r).await,
-                    None => self.tombstone(bundle).await,
-                };
+                return self.drop_bundle(bundle, reason).await;
             }
         };
 
@@ -57,7 +54,7 @@ impl Dispatcher {
         match cla.forward(queue, cla_addr, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 self.report_bundle_forwarded(&bundle).await;
-                self.tombstone(bundle).await;
+                self.drop_bundle(bundle, None).await;
                 return;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {

@@ -10,7 +10,7 @@ impl Dispatcher {
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
             return self
-                .tombstone_with_report(bundle, ReasonCode::BlockUnintelligible)
+                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                 .await;
         }
 
@@ -27,7 +27,7 @@ impl Dispatcher {
             Err(e) => {
                 debug!("Received an invalid administrative record: {e}");
                 return self
-                    .tombstone_with_report(bundle, ReasonCode::BlockUnintelligible)
+                    .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                     .await;
             }
             Ok(data) => data,
@@ -36,7 +36,7 @@ impl Dispatcher {
         match hardy_cbor::decode::parse(data.as_ref()) {
             Err(e) => {
                 debug!("Failed to parse administrative record: {e}");
-                self.tombstone_with_report(bundle, ReasonCode::BlockUnintelligible)
+                self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                     .await
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
@@ -89,10 +89,10 @@ impl Dispatcher {
                                 )
                                 .await;
                         }
-                        self.tombstone(bundle).await;
+                        self.drop_bundle(bundle, None).await;
                     }
                     Some(_) => {
-                        self.tombstone(bundle).await;
+                        self.drop_bundle(bundle, None).await;
                     }
                     None => {
                         self.wait_for_service(bundle, report.bundle_id.source.clone())

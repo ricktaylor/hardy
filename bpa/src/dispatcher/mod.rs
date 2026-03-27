@@ -135,7 +135,7 @@ impl Dispatcher {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
                     dispatcher.ingest_bundle(bundle, data).await;
                 } else {
-                    dispatcher.tombstone(bundle).await;
+                    dispatcher.delete_bundle(bundle).await;
                 }
             }
         });
