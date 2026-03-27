@@ -88,7 +88,6 @@ impl TaskPool {
         }
     }
 
-
     /// Returns a reference to the cancellation token.
     ///
     /// Use this to check cancellation status or pass to tasks that need
