@@ -1,0 +1,67 @@
+# hardy-tvr example contact plan
+#
+# This file demonstrates the contact plan format supported by hardy-tvr.
+# Lines starting with # are comments. Blank lines are ignored.
+# Fields after the action (via/drop) may appear in any order.
+
+# ── Permanent routes ─────────────────────────────────────────────────
+#
+# No schedule fields — always active, equivalent to static routes.
+
+# High-bandwidth ground backbone link
+ipn:3.*.* via ipn:3.1.0 priority 10 bandwidth 10G
+
+# Default route to gateway
+dtn://**/** via dtn://gateway.example/ priority 200
+
+# ── One-shot contacts ────────────────────────────────────────────────
+#
+# Fixed time windows using start/end. Useful for planned passes,
+# maintenance windows, and known outages.
+
+# Mars relay pass — single window with known bandwidth and delay
+ipn:2.*.* via ipn:2.1.0 start 2026-03-27T08:00:00Z end 2026-03-27T09:30:00Z bandwidth 256K delay 4m
+
+# Planned maintenance — drop traffic during upgrade window
+ipn:9.*.* drop start 2026-04-01T02:00:00Z end 2026-04-01T06:00:00Z priority 0
+
+# ── Recurring contacts ───────────────────────────────────────────────
+#
+# Cron expressions with duration. Supports 5-field (min hr dom mon dow),
+# 6-field (sec min hr dom mon dow), named days/months, and @shortcuts.
+
+# Daily ground station pass at 08:00 UTC, 90 minutes
+ipn:2.*.* via ipn:2.1.0 cron "0 8 * * *" duration 90m bandwidth 256K
+
+# Same pass, limited to a campaign period
+ipn:2.*.* via ipn:2.1.0 cron "0 8 * * *" duration 90m until 2026-06-30T00:00:00Z bandwidth 256K
+
+# Weekday business hours — backup terrestrial link
+ipn:5.*.* via ipn:5.1.0 cron "0 9 * * MON-FRI" duration 8h priority 50 bandwidth 1G
+
+# Seasonal link — active March through October only
+ipn:8.*.* via ipn:8.1.0 cron "0 8 * MAR-OCT *" duration 2h bandwidth 10G delay 500ms
+
+# LEO relay — hourly 12-minute pass windows
+ipn:4.*.* via ipn:4.1.0 cron "@hourly" duration 12m bandwidth 1M
+
+# Weekly maintenance drop — every Sunday 02:00-06:00
+ipn:6.*.* drop cron "0 2 * * SUN" duration 4h priority 0
+
+# ── Notes ────────────────────────────────────────────────────────────
+#
+# Bandwidth suffixes: K (kbps), M (Mbps), G (Gbps), T (Tbps), or bare bps.
+#   Also accepts long forms: Kbps, Mbps, Gbps, Tbps. Case-insensitive.
+#
+# Delay uses humantime: 500ms, 1s, 4m, 250us, etc.
+#
+# Duration uses humantime: 90m, 2h, 4h30m, 1day, etc.
+#
+# Cron named values: SUN-SAT, JAN-DEC (case-insensitive).
+# Cron shortcuts: @yearly, @annually, @monthly, @weekly, @daily,
+#   @midnight, @hourly.
+#
+# Priority: lower = checked first. Default from config (typically 100).
+#
+# When no route matches, DTN default is store-and-wait (not drop).
+# A `drop` action is an explicit policy override.
