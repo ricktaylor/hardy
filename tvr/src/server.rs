@@ -78,11 +78,12 @@ fn convert_contact(proto: proto::tvr::Contact) -> Result<Contact, tonic::Status>
             let start = one_shot.start.map(convert_timestamp).transpose()?;
             let end = one_shot.end.map(convert_timestamp).transpose()?;
             if let (Some(s), Some(e)) = (start, end)
-                && e <= s {
-                    return Err(tonic::Status::invalid_argument(
-                        "'end' must be after 'start'",
-                    ));
-                }
+                && e <= s
+            {
+                return Err(tonic::Status::invalid_argument(
+                    "'end' must be after 'start'",
+                ));
+            }
             Schedule::OneShot { start, end }
         }
         Some(contact::Schedule::Recurring(recurring)) => {
