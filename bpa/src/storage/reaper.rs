@@ -103,7 +103,7 @@ impl Store {
     ///
     /// 1. Sleep until the next bundle expiry (or indefinitely if cache empty)
     /// 2. Wake on: shutdown signal, new bundle notification, or expiry timeout
-    /// 3. Expire all bundles past their lifetime via `drop_bundle()`
+    /// 3. Expire all bundles past their lifetime via `tombstone_with_report()`
     /// 4. Spawn `refill_cache()` if cache is depleted
     ///
     /// Uses `select_biased!` to prioritize shutdown handling.
@@ -144,16 +144,11 @@ impl Store {
             };
 
             for id in dead_bundle_ids {
-                if let Ok(Some(bundle)) = self
-                    .metadata_storage
-                    .get(&id)
-                    .await
-                    .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
-                {
+                if let Some(bundle) = self.get_metadata(&id).await {
                     dispatcher
-                        .drop_bundle(
+                        .tombstone_with_report(
                             bundle,
-                            Some(hardy_bpv7::status_report::ReasonCode::LifetimeExpired),
+                            hardy_bpv7::status_report::ReasonCode::LifetimeExpired,
                         )
                         .await;
                 }

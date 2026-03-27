@@ -46,7 +46,7 @@ impl MetadataStorage for MetadataMemStorage {
 
     async fn insert(&self, bundle: &Bundle) -> Result<bool> {
         let mut entries = self.entries.lock();
-        if entries.get(&bundle.bundle.id).is_some() {
+        if entries.peek(&bundle.bundle.id).is_some() {
             Ok(false)
         } else {
             entries.put(bundle.bundle.id.clone(), Some(bundle.clone()));

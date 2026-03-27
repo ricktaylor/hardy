@@ -46,7 +46,7 @@ struct ReassemblyResult {
 // }
 
 impl Store {
-    pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
+    pub async fn adu_reassemble(&self, bundle: &bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
         let status = bundle::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
@@ -54,7 +54,6 @@ impl Store {
 
         // See if we can collect all the fragments
         let Some(results) = self.poll_fragments(bundle, &status).await else {
-            self.update_status(bundle, &status).await;
             return None;
         };
 
@@ -177,7 +176,7 @@ impl Store {
         let first = results.adus.get(&0).or_else(|| {
             debug!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
-                &results.adus.values().next().unwrap().0
+                results.adus.values().next().map(|v| &v.0)
             );
             None
         })?;
@@ -193,22 +192,22 @@ impl Store {
             )
             .await?;
 
-        // TODO:  There's a lot of mem copies going on here!
-        let mut new_data: Vec<u8> = old_data
-            .slice(
-                bundle
-                    .bundle
-                    .blocks
-                    .get(&1)
-                    .trace_expect("Bundle without payload?!")
-                    .payload_range(),
-            )
-            .into();
+        let total_adu_length = first
+            .0
+            .fragment_info
+            .as_ref()
+            .trace_expect("Fragment 0 missing fragment_info in reassembly?!")
+            .total_adu_length;
 
-        let mut next_offset = first.2.end as u64;
-        let total_adu_length = first.0.fragment_info.as_ref().unwrap().total_adu_length;
+        // Reassemble payload from all fragments in offset order.
+        // TODO: There's a lot of mem copies going on here!
+        let mut new_data: Vec<u8> = Vec::with_capacity(total_adu_length as usize);
+        let mut next_offset: u64 = 0;
         for (bundle_id, storage_name, payload) in results.adus.values() {
-            let fi = bundle_id.fragment_info.as_ref().unwrap();
+            let fi = bundle_id
+                .fragment_info
+                .as_ref()
+                .trace_expect("Fragment missing fragment_info in reassembly?!");
             if fi.total_adu_length != total_adu_length {
                 debug!(
                     "Total ADU length mismatch during fragment reassembly detected: {bundle_id}"
@@ -226,15 +225,7 @@ impl Store {
             new_data.extend_from_slice(adu.as_ref());
         }
 
-        if next_offset
-            != bundle
-                .bundle
-                .id
-                .fragment_info
-                .as_ref()
-                .unwrap()
-                .total_adu_length
-        {
+        if next_offset != total_adu_length {
             debug!(
                 "Total reassembled ADU does not match fragment info: {:?}",
                 first.0
