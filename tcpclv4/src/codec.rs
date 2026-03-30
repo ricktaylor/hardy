@@ -156,14 +156,15 @@ impl SessionInitMessage {
             if src_cloned.len() < item_length as usize {
                 return Ok(None);
             }
+            let ext_size = 5usize.saturating_add(item_length as usize);
             session_extensions.push(SessionInitExtension {
                 flags,
                 item_type,
                 item_length,
                 item_value: src_cloned.split_to(item_length as usize).into(),
             });
-            consumed += 5 + item_length as usize;
-            ext_remaining -= 5 + item_length as usize;
+            consumed = consumed.saturating_add(ext_size);
+            ext_remaining = ext_remaining.saturating_sub(ext_size);
         }
         src.advance(consumed);
         Ok(Some(Message::SessionInit(SessionInitMessage {
@@ -642,7 +643,7 @@ impl TransferSegmentMessage {
         let transfer_id = src_cloned.get_u64();
 
         // consumed includes header byte
-        let mut consumed = 10;
+        let mut consumed: usize = 10;
         let mut transfer_extensions = Vec::new();
         if message_flags.start {
             if src_cloned.len() < 4 {
@@ -660,6 +661,7 @@ impl TransferSegmentMessage {
                 let flags = src_cloned.get_u8().into();
                 let item_type = src_cloned.get_u16();
                 let item_length = src_cloned.get_u16(); // RFC 9174 Section 5.2.5: U16
+                let ext_size = 5usize.saturating_add(item_length as usize);
                 if src_cloned.len() < item_length as usize {
                     return Ok(None);
                 }
@@ -669,8 +671,8 @@ impl TransferSegmentMessage {
                     item_length,
                     item_value: src_cloned.split_to(item_length as usize).into(),
                 });
-                consumed += 5 + item_length as usize;
-                ext_remaining -= 5 + item_length as usize;
+                consumed = consumed.saturating_add(ext_size);
+                ext_remaining = ext_remaining.saturating_sub(ext_size);
             }
         }
         if src_cloned.len() < 8 {
@@ -681,7 +683,7 @@ impl TransferSegmentMessage {
             return Ok(None);
         }
         // Skip the header bytes (message type, flags, transfer_id, extensions, data_length)
-        let _ = src.split_to(consumed + 8);
+        let _ = src.split_to(consumed.saturating_add(8));
         Ok(Some(Message::TransferSegment(TransferSegmentMessage {
             message_flags,
             transfer_id,
