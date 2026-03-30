@@ -71,16 +71,16 @@ async fn writer_task<S>(
 /// Reader half: reads from the gRPC inbound stream, dispatches responses to
 /// pending callers and requests to handler tasks.
 ///
-/// Handler tasks are spawned on the shared task pool so they are tracked
-/// for graceful shutdown. The gRPC stream is inherently sequential (one
-/// message at a time), so handler spawn rate is naturally bounded by message
-/// arrival rate.
+/// Handler tasks are spawned on a bounded task pool, providing explicit
+/// backpressure: when max concurrency is reached, the reader stops consuming
+/// from the gRPC stream until a handler completes, which flows back through
+/// HTTP/2 flow control to the sender.
 async fn reader_task<S, R>(
     mut stream: tonic::Streaming<R>,
     write_tx: tokio::sync::mpsc::Sender<S>,
     pending: PendingMap<R::Msg>,
     handler: Arc<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
-    tasks: hardy_async::TaskPool,
+    tasks: hardy_async::BoundedTaskPool,
     cancel: hardy_async::CancellationToken,
 ) where
     R: RecvMsg + Send + 'static,
@@ -121,7 +121,7 @@ async fn reader_task<S, R>(
                                                 .await
                                                 .inspect_err(|_| debug!("Response dropped (connection closed)"));
                                         }
-                                    });
+                                    }).await;
                                 }
                                 Err(status) => warn!("{status}"),
                             }
@@ -167,7 +167,8 @@ where
     write_tx: tokio::sync::mpsc::Sender<S>,
     pending: PendingMap<R::Msg>,
     next_msg_id: Mutex<u32>,
-    cancel: hardy_async::CancellationToken,
+    tasks: hardy_async::TaskPool,
+    handler_tasks: hardy_async::BoundedTaskPool,
 }
 
 impl<S, R> RpcProxy<S, R>
@@ -227,22 +228,23 @@ where
 
     /// Start the proxy with split reader/writer tasks.
     ///
-    /// Tasks are spawned on the provided `TaskPool`, tracked for graceful
-    /// shutdown alongside sibling tasks (e.g. the gRPC server). The proxy
-    /// creates a child cancel token from the pool — cancelling the pool
-    /// (e.g. server shutdown) cascades to the proxy, and `close()` cancels
-    /// only this proxy without affecting siblings.
+    /// The proxy creates its own task pools: a `TaskPool` for the reader and
+    /// writer infrastructure tasks, and a `BoundedTaskPool` for handler tasks
+    /// (bounded to [`DEFAULT_MAX_HANDLERS`] concurrent handlers). Call
+    /// `close()` to shut down the proxy and await completion of all in-flight
+    /// handlers.
     ///
     /// After this call, use `call()` to send messages and await responses.
     pub fn run(
         channel_sender: Sender<S>,
         channel_receiver: tonic::Streaming<R>,
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
-        tasks: &hardy_async::TaskPool,
     ) -> Self {
+        let tasks = hardy_async::TaskPool::new();
+        let handler_tasks = hardy_async::BoundedTaskPool::default();
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
         let pending: PendingMap<R::Msg> = Arc::new(Mutex::new(Some(HashMap::new())));
-        let cancel = tasks.child_token();
+        let cancel = tasks.cancel_token().clone();
 
         // Writer task: write_rx → gRPC outbound
         let writer_sender = channel_sender;
@@ -251,11 +253,11 @@ where
             writer_task(write_rx, writer_sender, writer_cancel).await;
         });
 
-        // Reader task: gRPC inbound → dispatch handlers on shared pool
+        // Reader task: gRPC inbound → dispatch handlers on bounded pool
         let reader_write_tx = write_tx.clone();
         let reader_pending = pending.clone();
         let handler = Arc::from(handler);
-        let reader_tasks = tasks.clone();
+        let reader_tasks = handler_tasks.clone();
         let reader_cancel = cancel.clone();
         hardy_async::spawn!(tasks, "rpc_proxy_reader", async move {
             reader_task(
@@ -273,7 +275,8 @@ where
             write_tx,
             pending,
             next_msg_id: Mutex::new(1),
-            cancel,
+            tasks,
+            handler_tasks,
         }
     }
 
@@ -323,13 +326,14 @@ where
         r.map(Some)
     }
 
-    /// Close the proxy by cancelling its child token.
+    /// Close the proxy and await completion of all tasks.
     ///
-    /// The reader and writer tasks see the cancellation and exit. The parent
-    /// pool's `shutdown()` will await their completion. Calling `close()` on
-    /// an already-closed proxy (e.g. reader exited due to stream close) is
-    /// a no-op.
-    pub fn close(&self) {
-        self.cancel.cancel();
+    /// Shuts down the handler pool first, allowing in-flight handlers to
+    /// send their responses via the still-active writer. Then shuts down
+    /// the infrastructure pool (reader + writer). Calling `close()` on an
+    /// already-closed proxy is a no-op.
+    pub async fn close(&self) {
+        self.handler_tasks.shutdown().await;
+        self.tasks.shutdown().await;
     }
 }

@@ -133,7 +133,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
             }
         }
 
-        self.proxy.close();
+        self.proxy.close().await;
     }
 }
 
@@ -265,8 +265,7 @@ pub async fn register_endpoint_service(
     });
 
     // Start the proxy
-    let tasks = hardy_async::TaskPool::new();
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, &tasks);
+    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler);
 
     // Call on_register()
     service.on_register(&eid, Box::new(Sink { proxy })).await;

@@ -131,7 +131,7 @@ impl hardy_bpa::cla::Cla for Cla {
 
         // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.close();
+            proxy.close().await;
         }
     }
 
@@ -225,9 +225,8 @@ impl cla_server::Cla for Service {
         // Spawn the registration handshake and proxy — we must return the
         // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
-        let session_tasks = self.session_tasks.clone();
         hardy_async::spawn!(self.session_tasks, "cla_session", async move {
-            run_cla_session(channel_sender, channel_receiver, bpa, &session_tasks).await;
+            run_cla_session(channel_sender, channel_receiver, bpa).await;
         });
 
         Ok(tonic::Response::new(
@@ -240,7 +239,6 @@ async fn run_cla_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ClaToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    tasks: &hardy_async::TaskPool,
 ) {
     let cla = Arc::new(Cla {
         inner: Once::new(),
@@ -291,7 +289,7 @@ async fn run_cla_session(
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { cla: cla.clone() });
     cla.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, tasks));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
 /// Create a new CLA gRPC service.

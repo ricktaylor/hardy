@@ -114,7 +114,7 @@ impl hardy_bpa::routes::RoutingAgent for RemoteRoutingAgent {
         }
 
         if let Some(proxy) = self.proxy.get() {
-            proxy.close();
+            proxy.close().await;
         }
     }
 }
@@ -175,9 +175,8 @@ impl routing_agent_server::RoutingAgent for Service {
         // Spawn the registration handshake and proxy — we must return the
         // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
-        let session_tasks = self.session_tasks.clone();
         hardy_async::spawn!(self.session_tasks, "routing_session", async move {
-            run_routing_session(channel_sender, channel_receiver, bpa, &session_tasks).await;
+            run_routing_session(channel_sender, channel_receiver, bpa).await;
         });
 
         Ok(tonic::Response::new(
@@ -190,7 +189,6 @@ async fn run_routing_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToAgent, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<AgentToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    tasks: &hardy_async::TaskPool,
 ) {
     let agent = Arc::new(RemoteRoutingAgent {
         inner: Once::new(),
@@ -234,7 +232,7 @@ async fn run_routing_session(
     });
     agent
         .proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, tasks));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
 /// Create a new RoutingAgent gRPC service.
