@@ -12,7 +12,11 @@ fn tests() {
     assert!(!ipn_match("ipn:0.3.4", "ipn:0.4.3"));
     assert!(!ipn_match("ipn:0.3.4", "ipn:1.3.4"));
 
-    // TODO: Add test for Legacy IPN format (2-element) parsing: "ipn:1.2"
+    // Legacy IPN format (2-element)
+    assert!(ipn_match("ipn:1.2", "ipn:0.1.2"));
+    assert!(!ipn_match("ipn:1.2", "ipn:0.1.3"));
+    assert!(ipn_match("ipn:1.*", "ipn:0.1.999"));
+    assert!(ipn_match("ipn:*.*", "ipn:0.99.99"));
 
     ipn_parse(
         "ipn:0.3.*",
@@ -179,7 +183,18 @@ fn tests() {
         EidPattern::Any
     );
 
-    // TODO: Add tests for invalid syntax: "ipn:1-1", "ipn:[10-5]", "http://*"
+    // Invalid syntax rejection
+    assert!("ipn:1-1".parse::<EidPattern>().is_err());
+    assert!("http://*".parse::<EidPattern>().is_err());
+    assert!("".parse::<EidPattern>().is_err());
+    assert!(":::".parse::<EidPattern>().is_err());
+
+    // Inverted range is normalised by parser (min/max swap)
+    assert!(ipn_match("ipn:0.3.[10-5]", "ipn:0.3.7"));
+    assert!(ipn_match("ipn:0.3.[10-5]", "ipn:0.3.5"));
+    assert!(ipn_match("ipn:0.3.[10-5]", "ipn:0.3.10"));
+    assert!(!ipn_match("ipn:0.3.[10-5]", "ipn:0.3.4"));
+    assert!(!ipn_match("ipn:0.3.[10-5]", "ipn:0.3.11"));
 
     ipn_parse(
         "ipn:!.*",
@@ -218,19 +233,23 @@ fn tests() {
             DtnPatternItem::new_glob("**/some/serv").unwrap(),
         );
 
-        // TODO: Add tests for DTN matching logic: Exact, Prefix, Recursive
-        /*dtn_match(
-        "dtn://**/
-[%5B^a%5D]",
-            DtnSsp {
-                node_name: DtnNodeNamePattern::MultiWildcard,
-                demux: [DtnSinglePattern::PatternMatch(PatternMatch::Regex(
-                    HashableRegEx::try_new("[^a]").unwrap(),
-                ))]
-                .into(),
-                last_wild: false,
-            },
-        );*/
+        // DTN matching logic — exact match
+        assert!(dtn_match("dtn://node/service", "dtn://node/service"));
+        assert!(!dtn_match("dtn://node/service", "dtn://node/other"));
+        assert!(!dtn_match("dtn://node/service", "dtn://other/service"));
+
+        // None pattern
+        assert!(dtn_match("dtn:none", "dtn:none"));
+        assert!(!dtn_match("dtn:none", "dtn://node/service"));
+
+        // Scheme wildcard
+        assert!(dtn_match("dtn:**", "dtn://anything/here"));
+
+        // NOTE: Glob-based DTN matching (dtn://node/*, dtn://node/**, dtn://**/service)
+        // is known-incomplete — see dtn_pattern.rs:17 TODO. The glob pattern uses a
+        // single slash separator but do_glob matches against a double-slash form,
+        // causing mismatches with require_literal_separator. Glob parsing is tested
+        // above via struct equality; matching tests deferred until the glob rework.
 
         assert_eq!(
             "dtn:none".parse::<EidPattern>().expect("Failed to parse"),
@@ -291,6 +310,15 @@ fn ipn_parse(s: &str, expected: IpnPatternItem) {
         }
         EidPattern::Any => panic!("Not an ipn pattern item!"),
     }
+}
+
+#[cfg(feature = "dtn-pat-item")]
+fn dtn_match(pattern: &str, eid: &str) -> bool {
+    pattern
+        .parse::<EidPattern>()
+        .inspect_err(|e| print!("{e}"))
+        .expect("Failed to parse pattern")
+        .matches(&eid.parse().expect("Failed to parse EID"))
 }
 
 #[cfg(feature = "dtn-pat-item")]
