@@ -88,8 +88,12 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
 }
 
 /// The default listen address for fuzz targets.
-pub const FUZZ_ADDR: SocketAddr =
-    SocketAddr::V6(std::net::SocketAddrV6::new(std::net::Ipv6Addr::LOCALHOST, 4556, 0, 0));
+pub const FUZZ_ADDR: SocketAddr = SocketAddr::V6(std::net::SocketAddrV6::new(
+    std::net::Ipv6Addr::LOCALHOST,
+    4556,
+    0,
+    0,
+));
 
 /// Session config tuned for fuzzing — short timeouts to avoid blocking.
 fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
@@ -109,9 +113,7 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
         ..Default::default()
     };
 
-    let cla = Arc::new(
-        hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"),
-    );
+    let cla = Arc::new(hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"));
 
     cla.register(&MockBpa, "fuzz-tcpclv4".to_string(), None)
         .await
@@ -129,9 +131,7 @@ pub async fn setup_connector() -> Arc<hardy_tcpclv4::Cla> {
         ..Default::default()
     };
 
-    let cla = Arc::new(
-        hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"),
-    );
+    let cla = Arc::new(hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"));
 
     cla.register(&MockBpa, "fuzz-tcpclv4-active".to_string(), None)
         .await

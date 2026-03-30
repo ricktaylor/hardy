@@ -30,39 +30,46 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 
 fuzz_target!(|data: &[u8]| {
     get_runtime().block_on(async {
-        // Connect to the listener, retrying briefly if it's not ready yet
-        let mut stream = None;
-        for _ in 0..10 {
-            match tokio::net::TcpStream::connect(FUZZ_ADDR).await {
-                Ok(s) => {
-                    stream = Some(s);
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-                Err(e) => panic!("failed to connect: {e}"),
-            }
-        }
-        let stream = stream.expect("failed to connect to listener after retries");
-        let (mut rx, mut tx) = stream.into_split();
-
-        // Drain any responses from the server in the background
-        let drain = tokio::task::spawn(async move {
-            let mut buf = [0u8; 4096];
-            loop {
-                match rx.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    _ => {}
-                }
-            }
-        });
-
-        // Write fuzz data and close
-        let _ = tx.write_all(data).await;
-        let _ = tx.shutdown().await;
-
-        // Wait for server to close its side
-        let _ = drain.await;
+        // Timeout the entire iteration — the CLA's contact timeout is 2s,
+        // so 5s is generous. Prevents slow-unit reports from libfuzzer.
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), run_iteration(data)).await;
     });
 });
+
+async fn run_iteration(data: &[u8]) {
+    // Connect to the listener, retrying briefly if it's not ready yet
+    let mut stream = None;
+    for _ in 0..10 {
+        match tokio::net::TcpStream::connect(FUZZ_ADDR).await {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("failed to connect: {e}"),
+        }
+    }
+    let stream = stream.expect("failed to connect to listener after retries");
+    let (mut rx, mut tx) = stream.into_split();
+
+    // Drain any responses from the server in the background
+    let drain = tokio::task::spawn(async move {
+        let mut buf = [0u8; 4096];
+        loop {
+            match rx.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    // Write fuzz data and close
+    let _ = tx.write_all(data).await;
+    let _ = tx.shutdown().await;
+
+    // Wait for server to close its side
+    let _ = drain.await;
+}

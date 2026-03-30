@@ -43,40 +43,52 @@ fuzz_target!(|data: &[u8]| {
     let local_addr = listener.local_addr().unwrap();
 
     get_runtime().block_on(async {
-        // Spawn the CLA connect attempt — it will try to connect to our listener
-        let cla = cla.clone();
-        let connect_handle = tokio::task::spawn(async move {
-            // Ignore the result — we expect failures from fuzz data
-            let _ = cla.connect(&local_addr).await;
-        });
-
-        // Accept one connection from the CLA and send fuzz data as "server"
-        if let Ok(Ok((stream, _))) = tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            listener.accept(),
+        // Timeout the entire iteration — the CLA retries connect up to 5
+        // times with a 2s contact timeout, so 15s is generous.
+        let _ = tokio::time::timeout(
+            tokio::time::Duration::from_secs(15),
+            run_iteration(data, cla, listener, &local_addr),
         )
-        .await
-        {
-            let (mut rx, mut tx) = stream.into_split();
-
-            // Drain anything the CLA sends in the background
-            let drain = tokio::task::spawn(async move {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match rx.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        _ => {}
-                    }
-                }
-            });
-
-            // Write fuzz data as the "server" response and close
-            let _ = tx.write_all(data).await;
-            let _ = tx.shutdown().await;
-
-            let _ = drain.await;
-        }
-
-        let _ = connect_handle.await;
+        .await;
     });
 });
+
+async fn run_iteration(
+    data: &[u8],
+    cla: &std::sync::Arc<hardy_tcpclv4::Cla>,
+    listener: &TcpListener,
+    local_addr: &std::net::SocketAddr,
+) {
+    // Spawn the CLA connect attempt
+    let cla = cla.clone();
+    let addr = *local_addr;
+    let connect_handle = tokio::task::spawn(async move {
+        let _ = cla.connect(&addr).await;
+    });
+
+    // Accept one connection from the CLA and send fuzz data as "server"
+    if let Ok(Ok((stream, _))) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), listener.accept()).await
+    {
+        let (mut rx, mut tx) = stream.into_split();
+
+        // Drain anything the CLA sends in the background
+        let drain = tokio::task::spawn(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                match rx.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        // Write fuzz data as the "server" response and close
+        let _ = tx.write_all(data).await;
+        let _ = tx.shutdown().await;
+
+        let _ = drain.await;
+    }
+
+    let _ = connect_handle.await;
+}
