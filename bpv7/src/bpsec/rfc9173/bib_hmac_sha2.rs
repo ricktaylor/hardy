@@ -1,15 +1,6 @@
 use super::*;
-use aes_gcm::aes::cipher::BlockSizeUser;
 use alloc::rc::Rc;
-use hmac::{
-    Mac,
-    digest::{
-        HashMarker, block_buffer,
-        consts::U256,
-        core_api::{BufferKindUser, CoreProxy, FixedOutputCore, UpdateCore},
-        typenum,
-    },
-};
+use hmac::{KeyInit, Mac};
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -155,24 +146,16 @@ impl hardy_cbor::encode::ToCbor for Results {
     }
 }
 
-fn calculate_hmac<A>(
+fn calculate_hmac<D>(
     flags: &ScopeFlags,
     key: &[u8],
     args: &bib::OperationArgs,
-) -> Result<hmac::digest::Output<hmac::Hmac<A>>, Error>
+) -> Result<hmac::digest::Output<hmac::Hmac<D>>, Error>
 where
-    A: CoreProxy,
-    <A as CoreProxy>::Core: HashMarker
-        + UpdateCore
-        + FixedOutputCore
-        + BufferKindUser<BufferKind = block_buffer::Eager>
-        + Default
-        + Clone,
-    <<A as CoreProxy>::Core as BlockSizeUser>::BlockSize: typenum::IsLess<U256>,
-    typenum::Le<<<A as CoreProxy>::Core as BlockSizeUser>::BlockSize, U256>: typenum::NonZero,
+    D: hmac::EagerHash,
 {
     let mut mac =
-        hmac::Hmac::<A>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
+        hmac::Hmac::<D>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
 
     // Build IPT
     mac.update(
