@@ -53,6 +53,8 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **SYS-02** | **BPA Registration** | 1. Start Mock BPA (gRPC).<br>2. Start Server.<br>3. Check mock BPA received message. | Server connects to BPA.<br>Sends `RegisterClaRequest`. |
 | **SYS-03** | **Graceful Shutdown** | 1. Start Server.<br>2. Send `SIGINT` to process. | Logs show "Shutting down".<br>Process exits 0. |
 
+*Note: SYS-01 through SYS-03 are exercised by every interop test run, which starts a `hardy-bpa-server` and `hardy-tcpclv4-server` pair.*
+
 ### 4.2 Performance (REQ-13)
 
 *Objective: Verify throughput capabilities of the standalone server.*
@@ -68,7 +70,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | Test ID | Scenario | Procedure | Pass Criteria |
 | ----- | ----- | ----- | ----- |
 | **PKG-OCI-01** | **Image Structure** | Inspect image layers and metadata. | Base image is `distroless` or minimal.<br>Entrypoint is `hardy-tcpclv4-server`.<br>Non-root user. |
-| **PKG-HELM-01** | **Chart Install** | Install Helm chart. | Pod starts, Readiness probe passes. |
+| **PKG-HELM-01** | **Chart Install** | Install Helm chart. | Pod starts, Readiness probe passes. | *(Full Activity — Helm charts not yet implemented)* |
 
 ## 5. Execution Strategy
 

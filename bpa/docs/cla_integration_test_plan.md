@@ -63,7 +63,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 ## 4. Execution Strategy
 
-These tests are implemented as a generic harness that can be applied to any `Cla` implementation.
+These test scenarios are verified through the following methods:
 
-* **Harness File:** `tests/cla_harness.rs`
-* **Command:** `cargo test --test cla_harness`
+* **BPA Fuzz Harness:** `bpa/fuzz/src/cla.rs` — exercises the CLA trait interface with mock implementations
+* **Interop Tests:** `./tests/interop/benchmark.sh` — system-level verification against independent implementations
