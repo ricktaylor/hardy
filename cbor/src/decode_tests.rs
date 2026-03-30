@@ -590,3 +590,243 @@ fn opportunistic_parsing() {
     })
     .unwrap();
 }
+
+// LLR 1.1.7: Report non-canonical integer encodings
+//
+// RFC 8949 §4.2.1: integers must use the shortest encoding.
+// Values 0-23 fit in the minor value itself (1 byte total).
+// Values 24-255 require additional info 24 (2 bytes total).
+// Values 256-65535 require additional info 25 (3 bytes total).
+// Values 65536-4294967295 require additional info 26 (5 bytes total).
+#[test]
+fn non_canonical_integers() {
+    // Value 0 encoded as 2-byte (additional info 24): non-canonical
+    test_simple_long(0u64, &hex!("1800"));
+
+    // Value 23 encoded as 2-byte: non-canonical (fits in minor value)
+    test_simple_long(23u64, &hex!("1817"));
+
+    // Value 24 encoded as 2-byte: canonical (doesn't fit in minor)
+    test_simple(24u64, &hex!("1818"));
+
+    // Value 0 encoded as 3-byte (additional info 25): non-canonical
+    test_simple_long(0u64, &hex!("190000"));
+
+    // Value 255 encoded as 3-byte: non-canonical (fits in 2-byte)
+    test_simple_long(255u64, &hex!("1900ff"));
+
+    // Value 256 encoded as 3-byte: canonical
+    test_simple(256u64, &hex!("190100"));
+
+    // Value 0 encoded as 5-byte (additional info 26): non-canonical
+    test_simple_long(0u64, &hex!("1a00000000"));
+
+    // Value 65535 encoded as 5-byte: non-canonical (fits in 3-byte)
+    test_simple_long(65535u64, &hex!("1a0000ffff"));
+
+    // Value 65536 encoded as 5-byte: canonical
+    test_simple(65536u64, &hex!("1a00010000"));
+
+    // Value 0 encoded as 9-byte (additional info 27): non-canonical
+    test_simple_long(0u64, &hex!("1b0000000000000000"));
+
+    // Value 4294967295 encoded as 9-byte: non-canonical (fits in 5-byte)
+    test_simple_long(4294967295u64, &hex!("1b00000000ffffffff"));
+
+    // Value 4294967296 encoded as 9-byte: canonical
+    test_simple(4294967296u64, &hex!("1b0000000100000000"));
+
+    // Negative integers: same encoding rules, major type 1
+    // Value -1 (minor value 0) encoded as 2-byte: non-canonical
+    test_simple_long(-1i64, &hex!("3800"));
+
+    // Value -25 (minor value 24) encoded as 2-byte: canonical
+    test_simple(-25i64, &hex!("3818"));
+
+    // Value -24 (minor value 23) encoded as 2-byte: non-canonical
+    test_simple_long(-24i64, &hex!("3817"));
+}
+
+// Error path tests for malformed CBOR (beyond truncation)
+#[test]
+fn malformed_cbor() {
+    // Invalid minor values (28, 29, 30) are reserved and must be rejected
+    assert!(matches!(
+        parse::<u64>(&hex!("1c")),
+        Err(Error::InvalidMinorValue(28))
+    ));
+    assert!(matches!(
+        parse::<u64>(&hex!("1d")),
+        Err(Error::InvalidMinorValue(29))
+    ));
+    assert!(matches!(
+        parse::<u64>(&hex!("1e")),
+        Err(Error::InvalidMinorValue(30))
+    ));
+
+    // Reserved minor values in other major types (negative int, bytes, text)
+    assert!(matches!(
+        parse::<i64>(&hex!("3c")),
+        Err(Error::InvalidMinorValue(28))
+    ));
+    assert!(matches!(
+        parse_value(&hex!("5c"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidMinorValue(28))
+    ));
+    assert!(matches!(
+        parse_value(&hex!("7c"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidMinorValue(28))
+    ));
+
+    // Invalid simple values: 2-byte simple type with value < 32 is not allowed
+    // (values 0-31 must use the 1-byte encoding directly in the minor value)
+    assert!(matches!(
+        parse_value(&hex!("f800"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidSimpleType(0))
+    ));
+    assert!(matches!(
+        parse_value(&hex!("f81f"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidSimpleType(31))
+    ));
+    // Value 32 in 2-byte form is valid
+    parse_value(&hex!("f820"), |v, _, _| {
+        assert!(matches!(v, Value::Simple(32)));
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Invalid UTF-8 in text string
+    assert!(matches!(
+        parse_value(&hex!("62ff80"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidUtf8(_))
+    ));
+
+    // Indefinite-length byte string with wrong chunk type (text instead of bytes)
+    assert!(matches!(
+        parse_value(&hex!("5f6161ff"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidChunk)
+    ));
+
+    // Indefinite-length text string with wrong chunk type (bytes instead of text)
+    assert!(matches!(
+        parse_value(&hex!("7f4101ff"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidChunk)
+    ));
+
+    // Type mismatch: expecting u64, got text string
+    assert!(matches!(
+        parse::<u64>(&hex!("6161")),
+        Err(Error::IncorrectType(_, _))
+    ));
+
+    // Type mismatch: expecting u64, got array
+    assert!(matches!(
+        parse::<u64>(&hex!("80")),
+        Err(Error::IncorrectType(_, _))
+    ));
+
+    // AdditionalItems: array has 1 item but trying to parse 2
+    assert!(matches!(
+        parse_array(&hex!("8101"), |a, _, _| {
+            a.parse::<u64>()?;
+            a.parse::<u64>()?;
+            Ok::<_, Error>(())
+        }),
+        Err(Error::NoMoreItems)
+    ));
+
+    // Reserved minor values in major type 7 (simple/float)
+    // Minor values 28-30 are unassigned for major type 7
+    assert!(matches!(
+        parse_value(&hex!("fc"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidSimpleType(28))
+    ));
+    assert!(matches!(
+        parse_value(&hex!("fd"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidSimpleType(29))
+    ));
+    assert!(matches!(
+        parse_value(&hex!("fe"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidSimpleType(30))
+    ));
+
+    // Unterminated indefinite-length array: data ends before break code 0xFF
+    // 9f 01 02 = indefinite array with items 1, 2 but no break
+    assert!(matches!(
+        parse_value(&hex!("9f0102"), |v, _, _| {
+            match v {
+                Value::Array(a) => {
+                    a.try_parse::<u64>()?; // 1
+                    a.try_parse::<u64>()?; // 2
+                    a.try_parse::<u64>()?; // hits end of data
+                    Ok(())
+                }
+                _ => panic!("expected array"),
+            }
+        }),
+        Err(Error::NeedMoreData(_))
+    ));
+
+    // Unterminated indefinite-length map
+    assert!(matches!(
+        parse_value(&hex!("bf6161"), |v, _, _| {
+            match v {
+                Value::Map(m) => {
+                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?; // key "a"
+                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?; // hits end of data
+                    Ok(())
+                }
+                _ => panic!("expected map"),
+            }
+        }),
+        Err(Error::NeedMoreData(_))
+    ));
+
+    // PartialMap: indefinite-length map with a key but no value
+    // bf 61 61 ff = indefinite map { "a": <break> } — key "a" has no value
+    assert!(matches!(
+        parse_value(&hex!("bf6161ff"), |v, _, _| {
+            match v {
+                Value::Map(m) => {
+                    // Try to read key — should succeed
+                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?;
+                    // Trying to read value hits break code with odd item count
+                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?;
+                    Ok(())
+                }
+                _ => panic!("expected map"),
+            }
+        }),
+        Err(Error::PartialMap)
+    ));
+
+    // MaxRecursion: deeply nested arrays exceeding recursion limit
+    // Build a nested array 300 levels deep: [[[[...]]]]
+    // Each level is 0x81 (definite array of 1 item) with 0x00 at the centre
+    let depth = 300usize;
+    let mut nested = alloc::vec::Vec::with_capacity(depth + 1);
+    for _ in 0..depth {
+        nested.push(0x81u8); // array(1)
+    }
+    nested.push(0x00); // innermost value: unsigned 0
+    assert!(matches!(
+        parse_value(&nested, |mut v, _, _| {
+            v.skip(16)?; // limit recursion to 16 levels
+            Ok::<_, Error>(())
+        }),
+        Err(Error::MaxRecursion)
+    ));
+
+    // Verify skip succeeds when within recursion limit
+    let shallow_depth = 5usize;
+    let mut shallow = alloc::vec::Vec::with_capacity(shallow_depth + 1);
+    for _ in 0..shallow_depth {
+        shallow.push(0x81u8);
+    }
+    shallow.push(0x00);
+    parse_value(&shallow, |mut v, _, _| {
+        v.skip(16)?; // 5 levels, limit 16 — should succeed
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
