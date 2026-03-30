@@ -92,7 +92,7 @@ impl hardy_bpa::services::Service for LowLevelService {
 
         // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.close();
+            proxy.close().await;
         }
     }
 
@@ -212,9 +212,8 @@ impl service_server::Service for GrpcService {
         // Spawn the registration handshake and proxy — we must return the
         // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
-        let session_tasks = self.session_tasks.clone();
         hardy_async::spawn!(self.session_tasks, "service_session", async move {
-            run_service_session(channel_sender, channel_receiver, bpa, &session_tasks).await;
+            run_service_session(channel_sender, channel_receiver, bpa).await;
         });
 
         Ok(tonic::Response::new(
@@ -227,7 +226,6 @@ async fn run_service_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToService, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ServiceToBpa>,
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    tasks: &hardy_async::TaskPool,
 ) {
     let svc = Arc::new(LowLevelService {
         inner: Once::new(),
@@ -278,7 +276,7 @@ async fn run_service_session(
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { svc: svc.clone() });
     svc.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, tasks));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
 /// Create a new low-level Service gRPC service.
