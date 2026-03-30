@@ -9,7 +9,6 @@ use hardy_async::sync::spin::Once;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
-use trace_err::*;
 use tracing::{debug, error, info, warn};
 
 use clap::Parser;
@@ -26,7 +25,6 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -38,10 +36,6 @@ async fn main() -> anyhow::Result<()> {
         .or(config.log_level)
         .unwrap_or(tracing::Level::ERROR);
 
-    #[cfg(feature = "otel")]
-    let _guard = hardy_otel::init(PKG_NAME, PKG_VERSION, log_level);
-
-    #[cfg(not(feature = "otel"))]
     {
         use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
         let filter = EnvFilter::builder()

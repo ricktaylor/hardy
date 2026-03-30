@@ -79,9 +79,8 @@ pub fn load(path: Option<PathBuf>) -> anyhow::Result<Config> {
     if let Some(path) = path {
         builder = builder.add_source(config::File::from(path));
     } else {
-        builder = builder.add_source(
-            config::File::from(std::path::Path::new("mtcp-cla.toml")).required(false),
-        );
+        builder = builder
+            .add_source(config::File::from(std::path::Path::new("mtcp-cla.toml")).required(false));
     }
 
     builder = builder.add_source(config::Environment::with_prefix("MTCP_CLA"));

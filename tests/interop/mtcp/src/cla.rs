@@ -31,9 +31,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.sink.call_once(|| sink.clone());
 
         // Register static peer if configured
-        if let (Some(peer_addr), Some(peer_node)) =
-            (&self.config.peer, &self.config.peer_node)
-        {
+        if let (Some(peer_addr), Some(peer_node)) = (&self.config.peer, &self.config.peer_node) {
             if let Ok(addr) = peer_addr.parse::<std::net::SocketAddr>() {
                 if let Ok(node_id) = peer_node.parse::<NodeId>() {
                     let cla_addr = hardy_bpa::cla::ClaAddress::Tcp(addr);
@@ -79,7 +77,10 @@ impl hardy_bpa::cla::Cla for Cla {
             return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
         };
 
-        debug!("Forwarding bundle ({} bytes) to {remote_addr}", bundle.len());
+        debug!(
+            "Forwarding bundle ({} bytes) to {remote_addr}",
+            bundle.len()
+        );
 
         connect::forward(remote_addr, &self.config.framing, bundle)
             .await
