@@ -12,7 +12,18 @@ type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
 // ── Shared primitives ───────────────────────────────────────────────
 
 fn keyword<'a>(word: &'a str) -> impl Parser<'a, &'a str, (), Extra<'a>> {
-    just(word).ignored()
+    any()
+        .filter(|c: &char| c.is_ascii_alphabetic())
+        .repeated()
+        .exactly(word.len())
+        .to_slice()
+        .try_map(move |s: &str, span| {
+            if s.eq_ignore_ascii_case(word) {
+                Ok(())
+            } else {
+                Err(Rich::custom(span, format!("expected '{word}'")))
+            }
+        })
 }
 
 /// A non-whitespace token (used for EIDs, patterns, etc.)
@@ -421,7 +432,7 @@ fn line<'a>() -> impl Parser<'a, &'a str, Option<Contact>, Extra<'a>> {
     text::inline_whitespace()
         .ignore_then(choice((
             just('#')
-                .then(any().and_is(just('\n').not()).repeated())
+                .then(any().and_is(text::newline().not()).repeated())
                 .ignored()
                 .to(None),
             contact().map(Some),
@@ -432,7 +443,7 @@ fn line<'a>() -> impl Parser<'a, &'a str, Option<Contact>, Extra<'a>> {
 
 fn contacts<'a>() -> impl Parser<'a, &'a str, Vec<Contact>, Extra<'a>> {
     line()
-        .separated_by(just('\n'))
+        .separated_by(text::newline())
         .allow_trailing()
         .collect::<Vec<_>>()
         .map(|v| v.into_iter().flatten().collect())
