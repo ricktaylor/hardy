@@ -18,7 +18,18 @@ fn pattern<'a>() -> impl Parser<'a, &'a str, eid_patterns::EidPattern, Extra<'a>
 }
 
 fn keyword<'a>(word: &'a str) -> impl Parser<'a, &'a str, (), Extra<'a>> {
-    just(word).ignored()
+    any()
+        .filter(|c: &char| c.is_ascii_alphabetic())
+        .repeated()
+        .exactly(word.len())
+        .to_slice()
+        .try_map(move |s: &str, span| {
+            if s.eq_ignore_ascii_case(word) {
+                Ok(())
+            } else {
+                Err(Rich::custom(span, format!("expected '{word}'")))
+            }
+        })
 }
 
 fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
@@ -289,6 +300,30 @@ mod test {
         assert_eq!(routes.len(), 1);
         assert!(matches!(routes[0].action, Action::Via(_)));
         assert_eq!(routes[0].priority, Some(42));
+    }
+
+    #[test]
+    fn case_insensitive_keywords() {
+        // All-caps
+        let routes = parse_ok("ipn:*.*.* VIA ipn:0.1.0");
+        assert!(matches!(routes[0].action, Action::Via(_)));
+
+        let routes = parse_ok("ipn:99.*.* DROP");
+        assert!(matches!(routes[0].action, Action::Drop(None)));
+
+        let routes = parse_ok("dtn://**/** REFLECT");
+        assert!(matches!(routes[0].action, Action::Reflect));
+
+        let routes = parse_ok("ipn:*.*.* via ipn:0.1.0 PRIORITY 42");
+        assert_eq!(routes[0].priority, Some(42));
+
+        // Mixed case
+        let routes = parse_ok("ipn:*.*.* Via ipn:0.1.0");
+        assert!(matches!(routes[0].action, Action::Via(_)));
+
+        let routes = parse_ok("ipn:99.*.* Drop 3 Priority 5");
+        assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+        assert_eq!(routes[0].priority, Some(5));
     }
 
     #[test]
