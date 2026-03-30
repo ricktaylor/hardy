@@ -20,6 +20,8 @@ The verification strategy is two-fold:
 1. **Generic Trait Compliance:** The `tcpclv4` implementation is run against the generic test harness for the `Cla` trait ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)) to ensure it correctly interfaces with the BPA's routing and dispatch logic.
 2. **Protocol Compliance:** Specific component tests are defined to verify the on-the-wire behavior of the TCPCLv4 state machine, including session management, data segmentation, and TLS. These tests use a `duplex` harness to simulate a peer and inspect the byte stream.
 
+Currently, protocol compliance is verified through interoperability testing ([`PLAN-INTEROP-01`](../../docs/interop_test_plan.md)) against dtn7-rs, HDTN, and DTNME — all independent TCPCLv4 implementations. The `duplex` harness will provide isolated verification of edge cases not covered by interop (e.g. TCP-08 protocol errors).
+
 ## 3. Generic Test Coverage
 
 The following suites from the parent plan ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)) are executed against `tcpclv4` to verify its compliance with the `Cla` trait:
@@ -53,14 +55,14 @@ These tests verify the RFC 9174 protocol logic using a dedicated component test 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
 | **Message SerDes (UT-TCP-01)** | Verify encoding and decoding of all TCPCL message types. | `src/codec.rs` | Bytes of `SESS_INIT`, `XFER_SEGMENT`, etc. | Decoded structs match input / Encoded bytes match spec. |
-| **Contact Header (UT-TCP-02)** | Verify validation of the magic string and version. | `src/session.rs` | `dtn!` + Version 4. | Handshake proceeds. |
+| **Contact Header (UT-TCP-02)** | Verify validation of the magic string and version. | `src/connect.rs` | `dtn!` + Version 4. | Handshake proceeds. |
 | **Parameter Negotiation (UT-TCP-03)** | Verify negotiation of Keepalive and Segment Size. | `src/session.rs` | Local: 60s, Peer: 30s. | Negotiated: 30s (Min). |
 | **Fragment Logic (UT-TCP-04)** | Verify splitting payload into segments. | `src/session.rs` | Payload: 1000B, MTU: 100B. | 10 `XFER_SEGMENT` messages sent. |
 | **Reason Codes (UT-TCP-05)** | Verify mapping of internal errors to reason codes. | `src/session.rs` | `Error::StorageFull`. | `SESS_TERM` with `ResourceExhaustion`. |
 
 ## 6. Connection Scaling Tests
 
-*Objective: Verify TCPCL performance with many concurrent connections.*
+*Objective: Verify TCPCL performance with many concurrent connections. These tests are scoped for the Full Activity phase.*
 
 | Test ID | Scenario | Procedure | Pass Criteria |
 | :--- | :--- | :--- | :--- |
@@ -71,5 +73,5 @@ These tests verify the RFC 9174 protocol logic using a dedicated component test 
 
 ## 7. Execution Strategy
 
-* **Unit/Component Tests:** `cargo test -p hardy-tcpclv4`
-* **Integration Tests:** `cargo test --test cla_harness` (via `hardy-bpa` harness)
+* **Unit Tests:** `cargo test -p hardy-tcpclv4`
+* **Interop Tests:** `./tests/interop/benchmark.sh`
