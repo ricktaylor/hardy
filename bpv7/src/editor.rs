@@ -968,6 +968,191 @@ impl<'a> BlockBuilder<'a> {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Build a bundle, parse it, return (bundle, data) ready for editing.
+    fn make_bundle() -> (bundle::Bundle, Box<[u8]>) {
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_report_to("ipn:3.0".parse().unwrap())
+            .with_payload("Hello".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap()
+    }
+
+    /// Build a bundle with a hop count block, then re-parse so block keys match wire numbers.
+    fn make_bundle_with_hop_count() -> (bundle::Bundle, Box<[u8]>) {
+        let (_, data) =
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_hop_count(&hop_info::HopInfo {
+                    limit: 30,
+                    count: 0,
+                })
+                .with_payload("Hello".as_bytes().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+        let bundle = reparse(&data);
+        (bundle, data)
+    }
+
+    /// Unwrap a Result<T, (Editor, Error)> — panics with the error on failure.
+    fn ok<T>(result: Result<T, (Editor, Error)>) -> T {
+        result.unwrap_or_else(|(_, e)| panic!("Editor operation failed: {e}"))
+    }
+
+    /// Edit a bundle, rebuild, re-parse, and return the parsed bundle.
+    fn reparse(data: &[u8]) -> bundle::Bundle {
+        let keys = bpsec::key::KeySet::new(vec![]);
+        match bundle::RewrittenBundle::parse_with_keys(data, &keys).unwrap() {
+            bundle::RewrittenBundle::Valid { bundle, .. }
+            | bundle::RewrittenBundle::Rewritten { bundle, .. } => bundle,
+            bundle::RewrittenBundle::Invalid { error, .. } => panic!("Re-parse failed: {error}"),
+        }
+    }
+
+    #[test]
+    fn no_op_rebuild() {
+        let (bundle, data) = make_bundle();
+        let new_data = Editor::new(&bundle, &data).rebuild().unwrap();
+        let reparsed = reparse(&new_data);
+        assert_eq!(reparsed.id.source, bundle.id.source);
+        assert_eq!(reparsed.destination, bundle.destination);
+    }
+
+    #[test]
+    fn change_destination() {
+        let (bundle, data) = make_bundle();
+        let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
+        let new_data = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()))
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert_eq!(reparsed.destination, new_dest);
+        assert_eq!(reparsed.id.source, bundle.id.source);
+    }
+
+    #[test]
+    fn change_source() {
+        let (bundle, data) = make_bundle();
+        let new_src: eid::Eid = "ipn:50.0".parse().unwrap();
+        let new_data = ok(Editor::new(&bundle, &data).with_source(new_src.clone()))
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert_eq!(reparsed.id.source, new_src);
+    }
+
+    #[test]
+    fn change_report_to() {
+        let (bundle, data) = make_bundle();
+        let new_rt: eid::Eid = "ipn:77.0".parse().unwrap();
+        let new_data = ok(Editor::new(&bundle, &data).with_report_to(new_rt.clone()))
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert_eq!(reparsed.report_to, new_rt);
+    }
+
+    #[test]
+    fn change_lifetime() {
+        let (bundle, data) = make_bundle();
+        let new_lifetime = core::time::Duration::from_secs(7200);
+        let new_data = ok(Editor::new(&bundle, &data).with_lifetime(new_lifetime))
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert_eq!(reparsed.lifetime, new_lifetime);
+    }
+
+    #[test]
+    fn change_crc_type() {
+        let (bundle, data) = make_bundle();
+        let new_data =
+            ok(Editor::new(&bundle, &data).with_bundle_crc_type(crc::CrcType::CRC16_X25))
+                .rebuild()
+                .unwrap();
+        let reparsed = reparse(&new_data);
+        assert!(matches!(reparsed.crc_type, crc::CrcType::CRC16_X25));
+    }
+
+    #[test]
+    fn add_extension_block() {
+        let (bundle, data) = make_bundle();
+        let new_data = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+            .with_data((&[0xCA, 0xFE][..]).into())
+            .rebuild()
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert!(reparsed.blocks.contains_key(&2));
+    }
+
+    #[test]
+    fn remove_extension_block() {
+        let (bundle, data) = make_bundle_with_hop_count();
+        let hop_block = bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+            .map(|(n, _)| *n)
+            .expect("Should have hop count block");
+
+        let new_data = ok(Editor::new(&bundle, &data).remove_block(hop_block))
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert!(reparsed.hop_count.is_none());
+    }
+
+    #[test]
+    fn cannot_remove_payload() {
+        let (bundle, data) = make_bundle();
+        let result = Editor::new(&bundle, &data).remove_block(1);
+        assert!(matches!(result, Err((_, Error::PayloadBlock))));
+    }
+
+    #[test]
+    fn cannot_remove_primary() {
+        let (bundle, data) = make_bundle();
+        let result = Editor::new(&bundle, &data).remove_block(0);
+        assert!(matches!(result, Err((_, Error::PrimaryBlock))));
+    }
+
+    #[test]
+    fn cannot_add_duplicate_hop_count() {
+        let (bundle, data) = make_bundle_with_hop_count();
+        let result = Editor::new(&bundle, &data).push_block(block::Type::HopCount);
+        assert!(matches!(result, Err((_, Error::IllegalDuplicate(_)))));
+    }
+
+    #[test]
+    fn multiple_primary_changes() {
+        let (bundle, data) = make_bundle();
+        let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
+        let new_lifetime = core::time::Duration::from_secs(600);
+        let editor = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()));
+        let new_data = ok(editor.with_lifetime(new_lifetime)).rebuild().unwrap();
+        let reparsed = reparse(&new_data);
+        assert_eq!(reparsed.destination, new_dest);
+        assert_eq!(reparsed.lifetime, new_lifetime);
+        assert_eq!(reparsed.id.source, bundle.id.source);
+    }
+
+    #[test]
+    fn insert_new_block_type() {
+        let (bundle, data) = make_bundle();
+        // insert_block with a new type should add it
+        let new_data = ok(Editor::new(&bundle, &data).insert_block(block::Type::Unrecognised(200)))
+            .with_data((&[0x01, 0x02][..]).into())
+            .rebuild()
+            .rebuild()
+            .unwrap();
+        let reparsed = reparse(&new_data);
+        assert!(reparsed.blocks.contains_key(&2));
+    }
+}
+
 pub(crate) struct EditorBlockSet<'a> {
     pub editor: Editor<'a>,
 }

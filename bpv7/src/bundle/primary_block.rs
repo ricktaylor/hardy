@@ -301,12 +301,80 @@ impl PrimaryBlock {
 
 #[cfg(test)]
 mod test {
-    // TODO: Implement test for LLR 1.1.21: Parser must parse and validate all CRC values.
-    // Scenario: 1. Parse bundle with valid CRC. 2. Parse bundle with invalid CRC (expect error).
+    use super::*;
 
-    // TODO: Implement test for LLR 1.1.22: Parser must support all CRC types specified in RFC 9171.
-    // Scenario: Verify support for CRC-16 and CRC-32C types.
+    fn empty_keys() -> bpsec::key::KeySet {
+        bpsec::key::KeySet::new(vec![])
+    }
 
-    // TODO: Implement test for LLR 1.1.15: Parser must indicate that the Primary Block is valid.
-    // Scenario: Explicitly test Primary Block validation logic (e.g. invalid EIDs, timestamps).
+    fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_crc_type(crc_type)
+            .with_payload("Test".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap()
+            .1
+    }
+
+    // LLR 1.1.21: Parser must parse and validate all CRC values
+    #[test]
+    fn valid_crc() {
+        // CRC-32 (default) — valid bundle should parse
+        let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
+        assert!(bundle::ParsedBundle::parse_with_keys(&data, &empty_keys()).is_ok());
+
+        // CRC-16 — valid bundle should parse
+        let data = build_bundle_with_crc(crc::CrcType::CRC16_X25);
+        assert!(bundle::ParsedBundle::parse_with_keys(&data, &empty_keys()).is_ok());
+    }
+
+    #[test]
+    fn invalid_crc() {
+        let mut data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI).to_vec();
+
+        // Corrupt a byte in the primary block (flip a bit in the middle)
+        // The primary block starts at byte 1 (after 0x9F)
+        let corrupt_pos = data.len() / 3;
+        data[corrupt_pos] ^= 0x01;
+
+        let result = bundle::ParsedBundle::parse_with_keys(&data, &empty_keys());
+        assert!(result.is_err(), "Corrupted CRC should fail to parse");
+    }
+
+    // LLR 1.1.22: Parser must support all CRC types (CRC-16 and CRC-32)
+    #[test]
+    fn crc_types_supported() {
+        for crc_type in [crc::CrcType::CRC16_X25, crc::CrcType::CRC32_CASTAGNOLI] {
+            let data = build_bundle_with_crc(crc_type);
+            let parsed = bundle::ParsedBundle::parse_with_keys(&data, &empty_keys())
+                .expect("Should parse bundle with valid CRC");
+            assert!(!parsed.non_canonical, "Builder output should be canonical");
+        }
+    }
+
+    // LLR 1.1.15: Parser must indicate that the Primary Block is valid
+    #[test]
+    fn primary_block_validation() {
+        // Valid bundle parses successfully
+        let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
+        let parsed = bundle::ParsedBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        assert_eq!(parsed.bundle.id.source, "ipn:1.0".parse().unwrap());
+
+        // Bundle with version != 7 should fail
+        // The primary block starts at byte 1 (after 0x9F outer array).
+        // The primary block is a CBOR array, first element is version (7).
+        // Find and corrupt the version field.
+        let mut bad_version = data.to_vec();
+        // The version 7 is encoded as CBOR unsigned int 7 = 0x07
+        // It appears after the primary block array header
+        // Primary block: 0x89 (array of 9) then 0x07 (version 7)
+        if let Some(pos) = bad_version.windows(2).position(|w| w == [0x89, 0x07]) {
+            bad_version[pos + 1] = 0x06; // change version to 6
+            let result = bundle::ParsedBundle::parse_with_keys(&bad_version, &empty_keys());
+            assert!(
+                result.is_err(),
+                "Bundle with version 6 should fail to parse"
+            );
+        }
+    }
 }

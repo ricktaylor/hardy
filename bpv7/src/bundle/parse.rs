@@ -1190,24 +1190,360 @@ mod test {
     // by the BPA rfc9171-filter, not the parser. Parser accepts such bundles to allow
     // compatibility with RFC9173 test vectors.
 
-    // TODO: Implement test for LLR 1.1.34: Processing must process and act on Hop Count extension block.
-    // Scenario: Parse a bundle with a Hop Count block. Verify it is extracted into bundle.hop_count.
+    fn empty_keys() -> bpsec::key::KeySet {
+        bpsec::key::KeySet::new(vec![])
+    }
 
-    // TODO: Implement test for LLR 1.1.14: Parser must indicate when bundle rewriting has occurred.
-    // Scenario: Parse a non-canonical bundle (e.g., blocks out of order) that is otherwise valid. Expect RewrittenBundle::Rewritten.
+    /// Build a minimal valid bundle and return its serialised bytes.
+    fn build_minimal_bundle() -> Box<[u8]> {
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload("Hello".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap()
+            .1
+    }
 
-    // TODO: Implement test for LLR 1.1.19: Parser must parse/validate extension blocks specified in RFC 9171.
-    // Scenario: Verify correct parsing of PreviousNode, BundleAge, and HopCount blocks into the Bundle struct.
+    // Requirement: LLR 1.1.34
+    #[test]
+    fn hop_count_extraction() {
+        let hop = hop_info::HopInfo {
+            limit: 30,
+            count: 0,
+        };
+        let (_, data) =
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_hop_count(&hop)
+                .with_payload("Hello".as_bytes().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
 
-    // TODO: Implement test for LLR 1.1.1: Compliant with all mandatory requirements of CCSDS Bundle Protocol.
-    // Scenario: Verify general compliance (e.g. no floats, correct structure).
+        let result = RewrittenBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        let bundle = match &result {
+            RewrittenBundle::Valid { bundle, .. } | RewrittenBundle::Rewritten { bundle, .. } => {
+                bundle
+            }
+            RewrittenBundle::Invalid { error, .. } => panic!("Parse failed: {error}"),
+        };
 
-    // TODO: Implement test for LLR 1.1.30: Processing must enforce bundle rewriting rules when discarding unrecognised blocks.
-    // Scenario: Parse a bundle with an unrecognised block marked for deletion. Verify it is removed and bundle is rewritten.
+        let hop_count = bundle.hop_count.as_ref().expect("hop_count should be set");
+        assert_eq!(hop_count.limit, 30);
+        assert_eq!(hop_count.count, 0);
+    }
 
-    // TODO: Implement test for LLR 1.1.12: CBOR decoder must indicate if an incomplete item is found at end of buffer.
-    // Scenario: Feed truncated bundle data. Expect Error::NeedMoreData (or equivalent).
+    // Requirement: LLR 1.1.19
+    #[test]
+    fn extension_block_parsing() {
+        // Build a bundle with hop count — verifies HopCount extension is parsed
+        let hop = hop_info::HopInfo {
+            limit: 10,
+            count: 3,
+        };
+        let (_, data) =
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_hop_count(&hop)
+                .with_payload("Test".as_bytes().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
 
-    // TODO: Implement test for Trailing Data.
-    // Scenario: Feed a valid bundle followed by extra bytes. Expect Error::AdditionalData.
+        let result = RewrittenBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        let bundle = match &result {
+            RewrittenBundle::Valid { bundle, .. } | RewrittenBundle::Rewritten { bundle, .. } => {
+                bundle
+            }
+            RewrittenBundle::Invalid { error, .. } => panic!("Parse failed: {error}"),
+        };
+
+        // HopCount extracted into bundle.hop_count
+        assert!(bundle.hop_count.is_some());
+
+        // Payload block exists
+        assert!(bundle.blocks.contains_key(&1));
+    }
+
+    // Requirement: LLR 1.1.12
+    #[test]
+    fn truncated_bundle() {
+        let data = build_minimal_bundle();
+
+        // ParsedBundle and CheckedBundle always return Err on truncation
+        for len in [0, 1, 2, 5, data.len() / 2, data.len() - 1] {
+            assert!(
+                ParsedBundle::parse_with_keys(&data[..len], &empty_keys()).is_err(),
+                "ParsedBundle: truncated at {len} bytes should fail"
+            );
+            assert!(
+                CheckedBundle::parse_with_keys(&data[..len], &empty_keys()).is_err(),
+                "CheckedBundle: truncated at {len} bytes should fail"
+            );
+        }
+
+        // RewrittenBundle returns Err for very short data (can't parse primary block)
+        // but may return Ok(Invalid) for longer truncations where the primary block
+        // was successfully parsed — this is by design for status report generation
+        for len in [0, 1, 2, 5] {
+            assert!(
+                RewrittenBundle::parse_with_keys(&data[..len], &empty_keys()).is_err(),
+                "RewrittenBundle: truncated at {len} bytes should fail"
+            );
+        }
+    }
+
+    // Requirement: Trailing Data
+    #[test]
+    fn trailing_data() {
+        let data = build_minimal_bundle();
+        let mut with_trailing = data.to_vec();
+        with_trailing.push(0xFF);
+
+        // RewrittenBundle: trailing data returns Ok(Invalid) for status reporting
+        let result = RewrittenBundle::parse_with_keys(&with_trailing, &empty_keys()).unwrap();
+        assert!(
+            matches!(
+                result,
+                RewrittenBundle::Invalid {
+                    error: Error::AdditionalData,
+                    ..
+                }
+            ),
+            "RewrittenBundle with trailing data should return Invalid(AdditionalData), got: {result:?}"
+        );
+
+        // ParsedBundle: trailing data returns Err
+        assert!(
+            matches!(
+                ParsedBundle::parse_with_keys(&with_trailing, &empty_keys()),
+                Err(Error::AdditionalData)
+            ),
+            "ParsedBundle with trailing data should return Err(AdditionalData)"
+        );
+
+        // CheckedBundle: trailing data returns Err
+        assert!(
+            matches!(
+                CheckedBundle::parse_with_keys(&with_trailing, &empty_keys()),
+                Err(Error::AdditionalData)
+            ),
+            "CheckedBundle with trailing data should return Err(AdditionalData)"
+        );
+    }
+
+    // Requirement: LLR 1.1.25 — roundtrip: build → serialise → parse → verify
+    #[test]
+    fn build_parse_roundtrip() {
+        let src: eid::Eid = "ipn:1.0".parse().unwrap();
+        let dst: eid::Eid = "ipn:2.0".parse().unwrap();
+        let (original, data) = builder::Builder::new(src.clone(), dst.clone())
+            .with_payload("Roundtrip".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+
+        // ParsedBundle — preserves original encoding
+        let parsed = ParsedBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        assert_eq!(parsed.bundle.id.source, original.id.source);
+        assert_eq!(parsed.bundle.destination, original.destination);
+        assert!(!parsed.non_canonical, "Builder output should be canonical");
+
+        // CheckedBundle — canonicalizes but keeps all blocks
+        let checked = CheckedBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        assert_eq!(checked.bundle.id.source, original.id.source);
+        assert!(
+            checked.new_data.is_none(),
+            "Builder output should not need rewriting"
+        );
+
+        // RewrittenBundle — full processing
+        let result = RewrittenBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        match result {
+            RewrittenBundle::Valid { bundle, .. } => {
+                assert_eq!(bundle.id.source, original.id.source);
+                assert_eq!(bundle.destination, original.destination);
+                assert_eq!(bundle.report_to, original.report_to);
+                assert_eq!(bundle.lifetime, original.lifetime);
+            }
+            RewrittenBundle::Rewritten { .. } => {
+                panic!("Builder output should be Valid, not Rewritten")
+            }
+            RewrittenBundle::Invalid { error, .. } => {
+                panic!("Roundtrip parse failed: {error}")
+            }
+        }
+    }
+
+    // Requirement: LLR 1.1.14
+    #[test]
+    fn non_canonical_rewriting() {
+        let data = build_minimal_bundle();
+
+        // The Builder produces bundles with an indefinite-length outer array (0x9F...0xFF).
+        // Replacing the first byte with a definite-length array header makes it non-canonical.
+        assert_eq!(
+            data[0], 0x9F,
+            "Bundle should start with indefinite array marker"
+        );
+
+        // Count the blocks to build a definite-length header
+        // A minimal bundle has primary block + payload block = encoded in the indefinite array
+        // We need to replace 0x9F with 0x80+count (for small counts) — but we don't know the
+        // exact count without parsing. Instead, use a different non-canonical encoding:
+        // wrap the entire bundle data in a CBOR tag (tag 55799 = 0xD9D9F7 is the CBOR
+        // self-describing tag). The parser detects tags on the outer array as non-canonical.
+        let mut tagged = Vec::with_capacity(data.len() + 3);
+        tagged.extend_from_slice(&[0xD9, 0xD9, 0xF7]); // Tag 55799
+        tagged.extend_from_slice(&data);
+
+        // ParsedBundle: detects non-canonical
+        let parsed = ParsedBundle::parse_with_keys(&tagged, &empty_keys()).unwrap();
+        assert!(
+            parsed.non_canonical,
+            "Tagged bundle should be detected as non-canonical"
+        );
+
+        // RewrittenBundle: rewrites to remove the tag
+        let result = RewrittenBundle::parse_with_keys(&tagged, &empty_keys()).unwrap();
+        match result {
+            RewrittenBundle::Rewritten {
+                non_canonical,
+                new_data,
+                ..
+            } => {
+                assert!(non_canonical, "Should flag as non-canonical rewrite");
+                // Rewritten data should not have the tag
+                assert_eq!(
+                    new_data[0], 0x9F,
+                    "Rewritten bundle should start with indefinite array"
+                );
+            }
+            RewrittenBundle::Valid { .. } => {
+                panic!("Tagged bundle should be Rewritten, not Valid")
+            }
+            RewrittenBundle::Invalid { error, .. } => {
+                panic!("Tagged bundle should parse successfully: {error}")
+            }
+        }
+    }
+
+    // Requirement: LLR 1.1.30
+    #[test]
+    fn unknown_block_discard() {
+        let data = build_minimal_bundle();
+
+        // Insert an unknown extension block (type 999) with delete_block_on_failure flag
+        // between the primary block and the payload block.
+        //
+        // Bundle structure: 9F [primary] [ext_blocks...] [payload] FF
+        // We need to insert a block before the payload (last block before FF).
+        //
+        // Build the unknown block as CBOR:
+        // [block_type=999, block_number=2, block_flags=0x10(delete_block_on_failure),
+        //  crc_type=0, block_data=h'DEADBEEF']
+        let unknown_block = hardy_cbor::encode::emit_array(Some(5), |a| {
+            a.emit(&999u64); // block type
+            a.emit(&2u64); // block number
+            a.emit(&0x10u64); // flags: delete_block_on_failure
+            a.emit(&0u64); // CRC type: none
+            a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD, 0xBE, 0xEF]));
+        });
+
+        // The bundle is 9F [primary_array] [payload_array] FF
+        // We insert the unknown block between the primary block and the payload.
+        // Skip 0x9F (1 byte), then use parse_value + skip to find the primary block length.
+        assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
+
+        let (_, primary_len) = hardy_cbor::decode::parse_value(&data[1..], |mut v, _, _| {
+            v.skip(16)?;
+            Ok::<_, hardy_cbor::decode::Error>(())
+        })
+        .expect("Should skip primary block");
+
+        let insert_pos = 1 + primary_len;
+        let mut modified = Vec::with_capacity(data.len() + unknown_block.len());
+        modified.extend_from_slice(&data[..insert_pos]);
+        modified.extend_from_slice(&unknown_block);
+        modified.extend_from_slice(&data[insert_pos..]);
+
+        // ParsedBundle: preserves the unknown block
+        let parsed = ParsedBundle::parse_with_keys(&modified, &empty_keys()).unwrap();
+        assert!(
+            parsed.bundle.blocks.contains_key(&2),
+            "ParsedBundle should preserve unknown block"
+        );
+
+        // RewrittenBundle (Full mode): removes the unknown block
+        let result = RewrittenBundle::parse_with_keys(&modified, &empty_keys()).unwrap();
+        match result {
+            RewrittenBundle::Rewritten { bundle, .. } | RewrittenBundle::Valid { bundle, .. } => {
+                assert!(
+                    !bundle.blocks.contains_key(&2),
+                    "RewrittenBundle should have removed unknown block 2"
+                );
+                assert!(
+                    bundle.blocks.contains_key(&1),
+                    "Payload block should still be present"
+                );
+            }
+            RewrittenBundle::Invalid { error, .. } => {
+                panic!("Bundle with unknown block should parse: {error}")
+            }
+        }
+    }
+
+    // Requirement: LLR 1.1.22
+    #[test]
+    fn crc16_bundle() {
+        let (_, data) =
+            builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_crc_type(crc::CrcType::CRC16_X25)
+                .with_payload("CRC16 test".as_bytes().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+
+        // Parse and verify CRC type
+        let result = RewrittenBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        let bundle = match &result {
+            RewrittenBundle::Valid { bundle, .. } => bundle,
+            RewrittenBundle::Rewritten { bundle, .. } => bundle,
+            RewrittenBundle::Invalid { error, .. } => panic!("CRC-16 bundle failed: {error}"),
+        };
+        assert!(
+            matches!(bundle.crc_type, crc::CrcType::CRC16_X25),
+            "CRC type should be CRC-16"
+        );
+    }
+
+    // Requirement: LLR 1.1.1
+    #[test]
+    fn ccsds_compliance() {
+        // CCSDS 734.20-O-1 requires BPv7 per RFC 9171:
+        // - Indefinite-length outer array
+        // - Version 7 in primary block
+        // - Valid CRC on primary block
+        // - Payload block present
+
+        let data = build_minimal_bundle();
+
+        // Indefinite-length array marker
+        assert_eq!(data[0], 0x9F, "Bundle must use indefinite-length array");
+
+        // Break code at end
+        assert_eq!(
+            data[data.len() - 1],
+            0xFF,
+            "Bundle must end with break code"
+        );
+
+        // Parse and verify structural compliance
+        let parsed = ParsedBundle::parse_with_keys(&data, &empty_keys()).unwrap();
+        assert!(
+            !parsed.non_canonical,
+            "Builder output must be canonical CBOR"
+        );
+        assert!(
+            parsed.bundle.blocks.contains_key(&1),
+            "Payload block (block 1) must be present"
+        );
+        assert!(
+            !matches!(parsed.bundle.crc_type, crc::CrcType::None),
+            "Primary block must have a CRC"
+        );
+    }
 }

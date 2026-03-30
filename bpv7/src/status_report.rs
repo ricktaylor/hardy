@@ -382,3 +382,194 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
         .map(|((v, s), len)| (v, s, len))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use hardy_cbor::decode::FromCbor;
+
+    fn roundtrip_report(report: &BundleStatusReport) -> BundleStatusReport {
+        let encoded = hardy_cbor::encode::emit(report);
+        let (decoded, _, _) =
+            BundleStatusReport::from_cbor(&encoded.0).expect("Should decode status report");
+        decoded
+    }
+
+    fn roundtrip_admin(record: &AdministrativeRecord) -> AdministrativeRecord {
+        let encoded = hardy_cbor::encode::emit(record);
+        let (decoded, _, _) =
+            AdministrativeRecord::from_cbor(&encoded.0).expect("Should decode admin record");
+        decoded
+    }
+
+    // PICS Items 47, 48: Administrative record and status report formatting
+    #[test]
+    fn minimal_status_report_roundtrip() {
+        let report = BundleStatusReport {
+            bundle_id: bundle::Id {
+                source: "ipn:1.0".parse().unwrap(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            reason: ReasonCode::NoAdditionalInformation,
+            ..Default::default()
+        };
+
+        let decoded = roundtrip_report(&report);
+        assert_eq!(decoded.bundle_id.source, report.bundle_id.source);
+        assert_eq!(decoded.reason, ReasonCode::NoAdditionalInformation);
+        assert!(decoded.received.is_none());
+        assert!(decoded.forwarded.is_none());
+        assert!(decoded.delivered.is_none());
+        assert!(decoded.deleted.is_none());
+    }
+
+    // PICS Item 43: Bundle deletion status report
+    #[test]
+    fn deletion_report() {
+        let report = BundleStatusReport {
+            bundle_id: bundle::Id {
+                source: "ipn:10.0".parse().unwrap(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            deleted: Some(StatusAssertion(None)),
+            reason: ReasonCode::LifetimeExpired,
+            ..Default::default()
+        };
+
+        let decoded = roundtrip_report(&report);
+        assert!(decoded.deleted.is_some());
+        assert!(decoded.received.is_none());
+        assert_eq!(decoded.reason, ReasonCode::LifetimeExpired);
+    }
+
+    #[test]
+    fn all_assertions_set() {
+        let report = BundleStatusReport {
+            bundle_id: bundle::Id {
+                source: "ipn:1.0".parse().unwrap(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            received: Some(StatusAssertion(None)),
+            forwarded: Some(StatusAssertion(None)),
+            delivered: Some(StatusAssertion(None)),
+            deleted: Some(StatusAssertion(None)),
+            reason: ReasonCode::NoAdditionalInformation,
+        };
+
+        let decoded = roundtrip_report(&report);
+        assert!(decoded.received.is_some());
+        assert!(decoded.forwarded.is_some());
+        assert!(decoded.delivered.is_some());
+        assert!(decoded.deleted.is_some());
+    }
+
+    #[test]
+    fn fragment_info_roundtrip() {
+        let report = BundleStatusReport {
+            bundle_id: bundle::Id {
+                source: "ipn:1.0".parse().unwrap(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
+                fragment_info: Some(bundle::FragmentInfo {
+                    offset: 1000,
+                    total_adu_length: 5000,
+                }),
+            },
+            received: Some(StatusAssertion(None)),
+            reason: ReasonCode::NoAdditionalInformation,
+            ..Default::default()
+        };
+
+        let decoded = roundtrip_report(&report);
+        let frag = decoded
+            .bundle_id
+            .fragment_info
+            .expect("Fragment info should survive roundtrip");
+        assert_eq!(frag.offset, 1000);
+        assert_eq!(frag.total_adu_length, 5000);
+    }
+
+    #[test]
+    fn administrative_record_roundtrip() {
+        let report = BundleStatusReport {
+            bundle_id: bundle::Id {
+                source: "ipn:1.0".parse().unwrap(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            delivered: Some(StatusAssertion(None)),
+            reason: ReasonCode::NoAdditionalInformation,
+            ..Default::default()
+        };
+
+        let record = AdministrativeRecord::BundleStatusReport(report);
+        let decoded = roundtrip_admin(&record);
+        match decoded {
+            AdministrativeRecord::BundleStatusReport(r) => {
+                assert!(r.delivered.is_some());
+                assert_eq!(r.bundle_id.source, "ipn:1.0".parse().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn reason_code_roundtrip() {
+        // Test all defined reason codes
+        let codes = [
+            ReasonCode::NoAdditionalInformation,
+            ReasonCode::LifetimeExpired,
+            ReasonCode::ForwardedOverUnidirectionalLink,
+            ReasonCode::TransmissionCanceled,
+            ReasonCode::DepletedStorage,
+            ReasonCode::DestinationEndpointIDUnavailable,
+            ReasonCode::NoKnownRouteToDestinationFromHere,
+            ReasonCode::NoTimelyContactWithNextNodeOnRoute,
+            ReasonCode::BlockUnintelligible,
+            ReasonCode::HopLimitExceeded,
+            ReasonCode::TrafficPared,
+            ReasonCode::BlockUnsupported,
+            ReasonCode::MissingSecurityOperation,
+            ReasonCode::UnknownSecurityOperation,
+            ReasonCode::UnexpectedSecurityOperation,
+            ReasonCode::FailedSecurityOperation,
+            ReasonCode::ConflictingSecurityOperation,
+            ReasonCode::Unassigned(42),
+        ];
+
+        for code in codes {
+            let v: u64 = code.into();
+            let decoded = ReasonCode::try_from(v).expect("Should decode reason code");
+            assert_eq!(decoded, code);
+        }
+
+        // Reserved code 255 should be rejected
+        assert!(matches!(
+            ReasonCode::try_from(255u64),
+            Err(Error::ReservedStatusReportReason)
+        ));
+    }
+
+    #[test]
+    fn reason_code_cbor_roundtrip() {
+        let code = ReasonCode::HopLimitExceeded;
+        let encoded = hardy_cbor::encode::emit(&code);
+        let (decoded, _, _) =
+            ReasonCode::from_cbor(&encoded.0).expect("Should decode reason code from CBOR");
+        assert_eq!(decoded, code);
+    }
+
+    #[test]
+    fn unknown_admin_record_type() {
+        // Encode an admin record with type code 99 (unknown)
+        let data = hardy_cbor::encode::emit_array(Some(2), |a| {
+            a.emit(&99u64);
+            a.emit(&0u64);
+        });
+        assert!(matches!(
+            AdministrativeRecord::from_cbor(&data),
+            Err(Error::UnknownAdminRecordType(99))
+        ));
+    }
+}

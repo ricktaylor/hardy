@@ -164,11 +164,98 @@ fn rfc9173_appendix_a_4() {
         .expect("Failed to verify");
 }
 
-// TODO: Implement test for Wrapped Key Unwrap (LLR 2.2.4, 2.2.7).
-// Scenario: Verify unwrapping of a session key using a KEK.
+// LLR 2.2.4, 2.2.7: Wrapped Key Unwrap
+#[test]
+fn test_wrapped_key_sign_and_verify() {
+    // Use A128KW key-wrapping with HS256 HMAC — the sign operation generates
+    // a random CEK, wraps it with the KEK, and includes the wrapped CEK in
+    // the BIB parameters. Verification unwraps the CEK and uses it to verify.
 
-// TODO: Implement test for Wrapped Key Fail.
-// Scenario: Verify failure when unwrapping a corrupted key blob.
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"key-wrap test".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+
+    // Key with A128KW wrapping + HS256 HMAC
+    let kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
+        "k": "AAAAAAAAAAAAAAAAAAAAAA"
+    }))
+    .unwrap();
+    let keys = key::KeySet::new(vec![kek.clone()]);
+
+    // Sign with key wrapping
+    let signer = signer::Signer::new(&bundle, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("Failed to sign with key wrapping");
+    let signed_bytes = signer.rebuild().expect("Failed to rebuild");
+
+    // Verify — this unwraps the CEK from the BIB parameters
+    let parsed = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &keys)
+        .expect("Failed to parse signed bundle");
+    parsed
+        .bundle
+        .verify_block(1, &signed_bytes, &keys)
+        .expect("Key-wrap verification should succeed");
+}
+
+// LLR 2.2.4, 2.2.7: Wrapped Key Unwrap Failure
+#[test]
+fn test_wrapped_key_wrong_kek() {
+    // Sign with one KEK, attempt to verify with a different KEK — unwrap should fail
+
+    let (bundle, bundle_bytes) =
+        Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(b"key-wrap fail test".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+
+    let sign_kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["sign", "wrapKey"],
+        "k": "AAAAAAAAAAAAAAAAAAAAAA"
+    }))
+    .unwrap();
+
+    // Sign with the correct KEK
+    let signer = signer::Signer::new(&bundle, &bundle_bytes)
+        .sign_block(
+            1,
+            signer::Context::HMAC_SHA2(ScopeFlags::default()),
+            "ipn:2.1".parse().unwrap(),
+            &sign_kek,
+        )
+        .map_err(|(_, e)| e)
+        .expect("Failed to sign");
+    let signed_bytes = signer.rebuild().expect("Failed to rebuild");
+
+    // Verify with a DIFFERENT KEK — unwrap should fail
+    let wrong_kek: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "ipn:2.1",
+        "kty": "oct",
+        "alg": "HS256+A128KW",
+        "key_ops": ["verify", "unwrapKey"],
+        "k": "AQEBAQEBAQEBAQEBAQEBAQ"
+    }))
+    .unwrap();
+    let wrong_keys = key::KeySet::new(vec![wrong_kek]);
+
+    // Parsing with wrong KEK should fail during BIB verification
+    let result = bundle::ParsedBundle::parse_with_keys(&signed_bytes, &wrong_keys);
+    assert!(result.is_err(), "Verification with wrong KEK should fail");
+}
 
 #[test]
 fn test_sign_then_encrypt() {
