@@ -120,7 +120,7 @@ fn line<'a>() -> impl Parser<'a, &'a str, Option<StaticRoute>, Extra<'a>> {
     text::inline_whitespace()
         .ignore_then(choice((
             just('#')
-                .then(any().and_is(just('\n').not()).repeated())
+                .then(any().and_is(text::newline().not()).repeated())
                 .ignored()
                 .to(None),
             route().map(Some),
@@ -131,7 +131,7 @@ fn line<'a>() -> impl Parser<'a, &'a str, Option<StaticRoute>, Extra<'a>> {
 
 fn routes<'a>() -> impl Parser<'a, &'a str, Vec<StaticRoute>, Extra<'a>> {
     line()
-        .separated_by(just('\n'))
+        .separated_by(text::newline())
         .allow_trailing()
         .collect::<Vec<_>>()
         .map(|v| v.into_iter().flatten().collect())
@@ -348,6 +348,15 @@ mod test {
         parse_ok("      ");
         parse_ok("      \n");
         parse_ok("   \n   \n   ");
+    }
+
+    #[test]
+    fn crlf_line_endings() {
+        let routes = parse_ok("ipn:*.*.* via ipn:0.1.0\r\ndtn://**/** reflect priority 1200");
+        assert_eq!(routes.len(), 2);
+
+        parse_ok("# comment\r\nipn:99.*.* drop");
+        parse_ok("\r\n\r\n");
     }
 
     #[test]
