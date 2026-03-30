@@ -133,7 +133,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
             }
         }
 
-        self.proxy.close().await;
+        self.proxy.shutdown().await;
     }
 }
 

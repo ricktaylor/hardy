@@ -114,7 +114,7 @@ impl hardy_bpa::routes::RoutingAgent for RemoteRoutingAgent {
         }
 
         if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            proxy.on_unregister();
         }
     }
 }

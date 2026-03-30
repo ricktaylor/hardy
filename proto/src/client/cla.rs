@@ -116,7 +116,7 @@ impl hardy_bpa::cla::Sink for Sink {
             }
         }
 
-        self.proxy.close().await;
+        self.proxy.shutdown().await;
     }
 }
 

@@ -92,7 +92,7 @@ impl hardy_bpa::services::Service for LowLevelService {
 
         // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            proxy.on_unregister();
         }
     }
 

@@ -179,7 +179,7 @@ impl hardy_bpa::services::ApplicationSink for Sink {
             }
         }
 
-        self.proxy.close().await;
+        self.proxy.shutdown().await;
     }
 }
 

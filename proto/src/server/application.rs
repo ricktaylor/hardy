@@ -117,7 +117,7 @@ impl hardy_bpa::services::Application for Application {
 
         // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            proxy.on_unregister();
         }
     }
 

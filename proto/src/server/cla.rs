@@ -131,7 +131,7 @@ impl hardy_bpa::cla::Cla for Cla {
 
         // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.close().await;
+            proxy.on_unregister();
         }
     }
 
