@@ -75,7 +75,7 @@ impl hardy_bpa::routes::RoutingSink for Sink {
             }
         }
 
-        self.proxy.close().await;
+        self.proxy.shutdown().await;
     }
 }
 

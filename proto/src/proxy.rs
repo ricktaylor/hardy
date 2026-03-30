@@ -326,13 +326,22 @@ where
         r.map(Some)
     }
 
-    /// Close the proxy and await completion of all tasks.
+    /// Cancel the proxy without awaiting task completion.
     ///
-    /// Shuts down the handler pool first, allowing in-flight handlers to
-    /// send their responses via the still-active writer. Then shuts down
-    /// the infrastructure pool (reader + writer). Calling `close()` on an
-    /// already-closed proxy is a no-op.
-    pub async fn close(&self) {
+    /// Called when the BPA unregisters this component. Safe to call from
+    /// any context, including from within a handler task. Tasks exit
+    /// asynchronously.
+    pub fn on_unregister(&self) {
+        self.handler_tasks.cancel_token().cancel();
+        self.tasks.cancel_token().cancel();
+    }
+
+    /// Shut down the proxy and await completion of all tasks.
+    ///
+    /// Drains the handler pool first (allowing in-flight handlers to send
+    /// their responses via the still-active writer), then shuts down the
+    /// infrastructure pool (reader + writer).
+    pub async fn shutdown(&self) {
         self.handler_tasks.shutdown().await;
         self.tasks.shutdown().await;
     }
