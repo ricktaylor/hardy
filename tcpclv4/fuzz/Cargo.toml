@@ -1,0 +1,35 @@
+[package]
+name = "hardy-tcpclv4-fuzz"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[lib]
+name = "hardy_tcpclv4_fuzz"
+path = "src/lib.rs"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hardy-tcpclv4 = { path = "..", features = ["serde"] }
+hardy-bpa = { path = "../../bpa" }
+hardy-bpv7 = { path = "../../bpv7" }
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "time", "io-util", "net"] }
+bytes = "1"
+
+
+[[bin]]
+name = "passive"
+path = "fuzz_targets/passive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "active"
+path = "fuzz_targets/active.rs"
+test = false
+doc = false
+bench = false

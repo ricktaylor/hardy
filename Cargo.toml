@@ -26,6 +26,7 @@ members = [
     "proto",
     "sqlite-storage",
     "tcpclv4",
+    "tcpclv4/fuzz",
     "tcpclv4-server",
     "tools",
     "tvr",

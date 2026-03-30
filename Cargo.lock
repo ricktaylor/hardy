@@ -2163,6 +2163,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-tcpclv4-fuzz"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "hardy-bpa",
+ "hardy-bpv7",
+ "hardy-tcpclv4",
+ "libfuzzer-sys",
+ "tokio",
+]
+
+[[package]]
 name = "hardy-tcpclv4-server"
 version = "0.1.0"
 dependencies = [

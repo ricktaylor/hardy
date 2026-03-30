@@ -18,29 +18,52 @@ This document details the fuzz testing strategy for the `hardy-tcpclv4` module. 
 
 The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fuzz_targets/`.
 
-### 2.1 Target A: Protocol Stream (Parsing & State)
+### 2.1 Target A: Protocol Stream — Passive (Listener)
 
-* **Source File:** `session_stream.rs`
+* **Source File:** `passive.rs`
+* **Status:** Implemented
 
-* **Input:** Random byte stream (`Vec<u8>`).
+* **Input:** Random byte stream (`&[u8]`).
 
 * **Harness:**
 
-  1. Create an in-memory `tokio::io::duplex` pipe.
+  1. Spawn a real TCPCLv4 CLA listener on loopback with a mock BPA (once, at process start).
 
-  2. Spawn a `TcpclSession` attached to the server side of the pipe.
+  2. Connect to the listener via TCP for each fuzz iteration.
 
-  3. Write the random input bytes to the client side.
+  3. Write the random input bytes and close the connection.
 
-* **Goal:** Verify that the **Parser** and **State Machine** handle:
+* **Goal:** Verify that the **Parser** and **State Machine** handle adversarial client input:
 
   * Partial/Fragmented headers.
-
   * Invalid Magic Headers.
-
   * Unexpected message types (e.g., `XFER_ACK` before `SESS_INIT`).
-
   * Huge length fields (OOM protection).
+
+### 2.2 Target A: Protocol Stream — Active (Connector)
+
+* **Source File:** `active.rs`
+* **Status:** Implemented
+
+* **Input:** Random byte stream (`&[u8]`).
+
+* **Harness:**
+
+  1. Create a TCPCLv4 CLA with no listener and a mock BPA (once, at process start).
+
+  2. Bind a fake server on loopback (once, at process start).
+
+  3. Trigger `cla.connect()` for each fuzz iteration.
+
+  4. Accept the connection and write fuzz bytes as the "server" response.
+
+* **Goal:** Verify that the **Connector** handles adversarial server responses:
+
+  * Garbage contact headers.
+  * Invalid SESS_INIT responses.
+  * Unexpected messages during handshake.
+
+### 2.3 Target B: Service Logic (Structured)
 
 ### 2.2 Target B: Service Logic (Structured)
 
@@ -76,11 +99,14 @@ The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fu
 ### 4.1 Running the Fuzzer
 
 ```bash
-# Target A: Protocol Stream (Raw Bytes)
-cargo fuzz run session_stream -- -max_total_time=1800 # 30 Mins
+# Target A — Passive: Listener (Raw Bytes)
+cargo +nightly fuzz run passive -- -max_total_time=1800
 
-# Target B: Service Logic (Structs)
-cargo fuzz run service_logic -- -max_total_time=1800
+# Target A — Active: Connector (Raw Bytes)
+cargo +nightly fuzz run active -- -max_total_time=1800
+
+# Target B: Service Logic (Structs) — not yet implemented
+# cargo +nightly fuzz run service_logic -- -max_total_time=1800
 ```
 
 ### 4.2 Sanitizer Configuration
@@ -99,9 +125,16 @@ cargo fuzz run session_stream
 * **Panic:** `index out of bounds` in buffer parsing.
 * **Timeout:** `await` on a read future that never completes (deadlock).
 
-## 6. Corpus Management
+## 6. Shared Infrastructure
+
+* **Location:** `tcpclv4/fuzz/src/lib.rs`
+* **Provides:** `MockSink`, `MockBpa`, `setup_listener()`, `setup_connector()`, `FUZZ_ADDR`
+* **Session config:** 2s contact timeout, no keepalive, no TLS (tuned for fuzz throughput)
+
+## 7. Corpus Management
 
 * **Location:** `tcpclv4/fuzz/corpus/{target_name}/`
-* **Seed Data:**
-* **Stream:** Hex dump of a valid connection handshake (`dtn!04...`).
-* **Service:** Serialized sequence of `SessInit`, `XferSegment` structs.
+* **Seed Data** (to be created):
+  * **Passive:** Hex dump of a valid client contact header (`dtn!\x04\x00`).
+  * **Active:** Hex dump of a valid server contact header response.
+  * **Service:** Serialized sequence of `SessInit`, `XferSegment` structs.
