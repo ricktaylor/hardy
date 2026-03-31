@@ -125,7 +125,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     }
 
     // Start TVR gRPC session server
-    server::start(config.grpc_listen, &agent, &tasks).await;
+    let service = server::start(config.grpc_listen, &agent).await;
 
     // Load contact plan file if configured
     if let Some(contact_plan) = &config.contact_plan {
@@ -162,7 +162,8 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
 
     tasks.cancel_token().cancelled().await;
 
-    // Gracefully unregister from the BPA
+    // Drain gRPC sessions, then unregister from BPA
+    service.shutdown().await;
     agent.unregister().await;
 
     tasks.shutdown().await;

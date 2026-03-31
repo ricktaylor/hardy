@@ -128,14 +128,14 @@ fn convert_contacts(protos: Vec<proto::tvr::Contact>) -> Result<Vec<Contact>, to
 
 // ── Service ─────────────────────────────────────────────────────────
 
-pub struct TvrService {
+struct TvrService {
     agent: Arc<TvrAgent>,
     tasks: hardy_async::TaskPool,
     active_sessions: Arc<hardy_async::sync::spin::Mutex<HashSet<String>>>,
 }
 
 impl TvrService {
-    pub fn new(agent: &Arc<TvrAgent>, tasks: &hardy_async::TaskPool) -> Self {
+    fn new(agent: &Arc<TvrAgent>, tasks: &hardy_async::TaskPool) -> Self {
         Self {
             agent: agent.clone(),
             tasks: tasks.clone(),
@@ -383,16 +383,32 @@ async fn handle_message(
     }
 }
 
-/// Create and start the TVR gRPC server.
-pub async fn start(
-    listen_addr: std::net::SocketAddr,
-    agent: &Arc<TvrAgent>,
-    tasks: &hardy_async::TaskPool,
-) {
-    let service = TvrService::new(agent, tasks);
-    let cancel_token = tasks.cancel_token().clone();
+/// Handle for the TVR gRPC server, used for ordered shutdown.
+pub struct ServiceHandle {
+    tasks: hardy_async::TaskPool,
+}
 
-    hardy_async::spawn!(tasks, "tvr_grpc_server", async move {
+impl ServiceHandle {
+    /// Shut down the gRPC server and drain all active sessions.
+    ///
+    /// Cancels the service's task pool (stopping the gRPC server and
+    /// signalling sessions to exit) then waits for all session tasks to
+    /// complete their cleanup (including `withdraw_all` to the scheduler).
+    pub async fn shutdown(self) {
+        self.tasks.shutdown().await;
+    }
+}
+
+/// Create and start the TVR gRPC server.
+///
+/// Uses its own task pool so that sessions can be drained independently
+/// of the caller's pool (scheduler, watcher, etc.).
+pub async fn start(listen_addr: std::net::SocketAddr, agent: &Arc<TvrAgent>) -> ServiceHandle {
+    let service_tasks = hardy_async::TaskPool::new();
+    let service = TvrService::new(agent, &service_tasks);
+    let cancel_token = service_tasks.cancel_token().clone();
+
+    hardy_async::spawn!(&service_tasks, "tvr_grpc_server", async move {
         info!("TVR gRPC server listening on {listen_addr}");
         tonic::transport::Server::builder()
             .add_service(tvr_server::TvrServer::new(service))
@@ -400,4 +416,8 @@ pub async fn start(
             .await
             .expect("TVR gRPC server failed");
     });
+
+    ServiceHandle {
+        tasks: service_tasks,
+    }
 }
