@@ -68,7 +68,7 @@ impl RoutingAgent for MockRoutingAgent {
 #[tokio::test]
 async fn life_01_client_initiated_unregister() {
     let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_routing_server(&bpa).await;
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
     // Create a mock routing agent and register it via the gRPC client
     let agent = Arc::new(MockRoutingAgent::new());
@@ -122,7 +122,7 @@ async fn life_01_client_initiated_unregister() {
 #[tokio::test]
 async fn life_02_bpa_initiated_unregister() {
     let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_routing_server(&bpa).await;
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
     let agent = Arc::new(MockRoutingAgent::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
@@ -165,7 +165,7 @@ async fn life_02_bpa_initiated_unregister() {
 #[tokio::test]
 async fn life_03_drop_without_unregister() {
     let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_routing_server(&bpa).await;
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
     let agent = Arc::new(MockRoutingAgent::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
@@ -209,7 +209,7 @@ async fn life_03_drop_without_unregister() {
 #[tokio::test]
 async fn life_04_server_crash() {
     let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_routing_server(&bpa).await;
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
     let agent = Arc::new(MockRoutingAgent::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
@@ -246,7 +246,7 @@ async fn life_04_server_crash() {
 #[tokio::test]
 async fn life_05_simultaneous_unregister() {
     let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_routing_server(&bpa).await;
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
     let agent = Arc::new(MockRoutingAgent::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);
@@ -283,7 +283,7 @@ async fn life_05_simultaneous_unregister() {
 #[tokio::test]
 async fn life_06_exactly_once_unregister() {
     let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_routing_server(&bpa).await;
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["routing"]).await;
 
     let agent = Arc::new(MockRoutingAgent::new());
     let remote_bpa = RemoteBpa::new(grpc_addr);

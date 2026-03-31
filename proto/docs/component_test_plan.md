@@ -76,9 +76,9 @@ The tests utilize a **Mock Server** approach:
 
 | Test ID | Scenario | Client Action (Rust) | Mock Server Assertion | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **RTE-CLI-01** | **Registration** | Call `register_routing_agent("tvr", agent)` | Receives `RegisterRoutingAgentRequest { name: "tvr" }`.<br>Replies `RegisterRoutingAgentResponse { node_ids }`. Agent receives `on_register` with sink and node IDs. | Not implemented |
-| **RTE-CLI-02** | **Add Route** | Call `sink.add_route(pattern, action, priority)` | Receives `AddRouteRequest { pattern, action, priority }`.<br>Replies `AddRouteResponse { added: true }`. | Not implemented |
-| **RTE-CLI-03** | **Remove Route** | Call `sink.remove_route(pattern, action, priority)` | Receives `RemoveRouteRequest { pattern, action, priority }`.<br>Replies `RemoveRouteResponse { removed: true }`. | Not implemented |
+| **RTE-CLI-01** | **Registration** | Call `register_routing_agent("tvr", agent)` | Receives `RegisterRoutingAgentRequest { name: "tvr" }`.<br>Replies `RegisterRoutingAgentResponse { node_ids }`. Agent receives `on_register` with sink and node IDs. | Implemented |
+| **RTE-CLI-02** | **Add Route** | Call `sink.add_route(pattern, action, priority)` | Receives `AddRouteRequest { pattern, action, priority }`.<br>Replies `AddRouteResponse { added: true }`. | Implemented |
+| **RTE-CLI-03** | **Remove Route** | Call `sink.remove_route(pattern, action, priority)` | Receives `RemoveRouteRequest { pattern, action, priority }`.<br>Replies `RemoveRouteResponse { removed: true }`. | Implemented |
 
 ### Suite 5: Error Handling & Lifecycle
 

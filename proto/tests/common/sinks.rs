@@ -2,6 +2,7 @@
 //!
 //! Each mock tracks `unregister()` calls via an `AtomicBool`.
 //! Other methods return success with no side effects.
+#![allow(dead_code)]
 
 use hardy_async::async_trait;
 use hardy_bpa::{cla, routes, services};
@@ -63,10 +64,6 @@ impl MockClaSink {
             unregistered: AtomicBool::new(false),
         }
     }
-
-    pub fn is_unregistered(&self) -> bool {
-        self.unregistered.load(Ordering::Relaxed)
-    }
 }
 
 #[async_trait]
@@ -109,10 +106,6 @@ impl MockServiceSink {
             unregistered: AtomicBool::new(false),
         }
     }
-
-    pub fn is_unregistered(&self) -> bool {
-        self.unregistered.load(Ordering::Relaxed)
-    }
 }
 
 #[async_trait]
@@ -122,7 +115,9 @@ impl services::ServiceSink for MockServiceSink {
     }
 
     async fn send(&self, _data: hardy_bpa::Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        unimplemented!("send not needed for lifecycle tests")
+        Err(services::Error::Internal(
+            "mock sink: send not implemented".into(),
+        ))
     }
 
     async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
@@ -142,10 +137,6 @@ impl MockApplicationSink {
             unregistered: AtomicBool::new(false),
         }
     }
-
-    pub fn is_unregistered(&self) -> bool {
-        self.unregistered.load(Ordering::Relaxed)
-    }
 }
 
 #[async_trait]
@@ -161,7 +152,9 @@ impl services::ApplicationSink for MockApplicationSink {
         _lifetime: core::time::Duration,
         _options: Option<services::SendOptions>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
-        unimplemented!("send not needed for lifecycle tests")
+        Err(services::Error::Internal(
+            "mock sink: send not implemented".into(),
+        ))
     }
 
     async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
