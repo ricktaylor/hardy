@@ -40,10 +40,6 @@ message ClaToBpa {
     RemovePeerRequest       remove_peer   = 6;
     // A response to a forward bundle request.
     ForwardBundleResponse   forward       = 7;
-    // A response to an unregister CLA notification.
-    OnUnregisterClaResponse on_unregister = 8;
-    // A request to an unregister the CLA.
-    UnregisterClaRequest    unregister    = 9;
   }
 }
 
@@ -66,10 +62,6 @@ message BpaToCla {
     RemovePeerResponse     remove_peer   = 6;
     // A request to forward a bundle from the BPA to the CLA.
     ForwardBundleRequest   forward       = 7;
-    // A notification of unregistration from the BPA to the CLA.
-    OnUnregisterClaRequest on_unregister = 8;
-    // A responsae to an unregister request.
-    UnregisterClaResponse  unregister    = 9;
   }
 }
 
@@ -174,14 +166,3 @@ message ForwardBundleResponse {
   }
 }
 
-// A notification of unregistration from the BPA.
-message OnUnregisterClaRequest {}
-
-// A response to an unregister CLA notification.
-message OnUnregisterClaResponse {}
-
-// A request for unregistration from the CLA.
-message UnregisterClaRequest {}
-
-// A response to an unregister request.
-message UnregisterClaResponse {}

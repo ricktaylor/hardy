@@ -60,21 +60,8 @@ impl hardy_bpa::routes::RoutingSink for Sink {
     }
 
     async fn unregister(&self) {
-        match self
-            .call(agent_to_bpa::Msg::Unregister(
-                UnregisterRoutingAgentRequest {},
-            ))
-            .await
-        {
-            Ok(bpa_to_agent::Msg::Unregister(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
-            }
-            Err(e) => {
-                warn!("Failed to request unregistration: {e}");
-            }
-        }
-
+        // Just shut down the proxy. The stream close triggers on_close
+        // on the server, which unregisters from the BPA.
         self.proxy.shutdown().await;
     }
 }
@@ -89,19 +76,9 @@ impl ProxyHandler for Handler {
     type RMsg = bpa_to_agent::Msg;
 
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
-        match msg {
-            bpa_to_agent::Msg::OnUnregister(_) => {
-                if let Some(agent) = self.agent.upgrade() {
-                    agent.on_unregister().await;
-                }
-                Some(agent_to_bpa::Msg::OnUnregister(
-                    OnUnregisterRoutingAgentResponse {},
-                ))
-            }
-            _ => {
-                warn!("Ignoring unsolicited response: {msg:?}");
-                None
-            }
+        {
+            warn!("Ignoring unsolicited response: {msg:?}");
+            None
         }
     }
 

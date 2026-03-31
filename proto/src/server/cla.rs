@@ -1,16 +1,21 @@
 use super::*;
 use proto::cla::*;
 
-struct ClaInner {
-    sink: Box<dyn hardy_bpa::cla::Sink>,
-}
+type ClaSink = Arc<dyn hardy_bpa::cla::Sink>;
 
 struct Cla {
-    inner: Once<ClaInner>,
+    sink: Mutex<Option<ClaSink>>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
 }
 
 impl Cla {
+    fn sink(&self) -> Result<ClaSink, tonic::Status> {
+        self.sink
+            .lock()
+            .clone()
+            .ok_or(tonic::Status::unavailable("Unregistered"))
+    }
+
     async fn call(&self, msg: bpa_to_cla::Msg) -> hardy_bpa::cla::Result<cla_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
@@ -40,10 +45,7 @@ impl Cla {
         let peer_addr: Option<hardy_bpa::cla::ClaAddress> =
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
-        self.inner
-            .get()
-            .ok_or(tonic::Status::internal("on_register not called"))?
-            .sink
+        self.sink()?
             .dispatch(request.bundle, peer_node.as_ref(), peer_addr.as_ref())
             .await
             .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
@@ -65,10 +67,7 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.inner
-            .get()
-            .ok_or(tonic::Status::internal("on_register not called"))?
-            .sink
+        self.sink()?
             .add_peer(cla_addr, &node_ids)
             .await
             .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
@@ -84,19 +83,17 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.inner
-            .get()
-            .ok_or(tonic::Status::internal("on_register not called"))?
-            .sink
+        self.sink()?
             .remove_peer(&cla_addr)
             .await
             .map(|removed| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse { removed }))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn client_unregister(&self) {
-        if let Some(inner) = self.inner.get() {
-            inner.sink.unregister().await
+    async fn unregister(&self) {
+        let sink = self.sink.lock().take();
+        if let Some(sink) = sink {
+            sink.unregister().await;
         }
     }
 }
@@ -108,30 +105,16 @@ impl hardy_bpa::cla::Cla for Cla {
         sink: Box<dyn hardy_bpa::cla::Sink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
     ) {
-        // Ensure single initialization
-        self.inner.call_once(|| ClaInner { sink });
+        *self.sink.lock() = Some(Arc::from(sink));
     }
 
     async fn on_unregister(&self) {
-        // Notify the remote CLA. This is safe even when called from a handler
-        // context — call() sends via the writer channel, which is independent
-        // of the reader task that dispatched the handler.
-        match self
-            .call(bpa_to_cla::Msg::OnUnregister(OnUnregisterClaRequest {}))
-            .await
-        {
-            Ok(cla_to_bpa::Msg::OnUnregister(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
-            }
-            Err(e) => {
-                warn!("Failed to notify CLA of unregistration: {e}");
-            }
+        if self.sink.lock().take().is_none() {
+            return;
         }
 
-        // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.on_unregister();
+            proxy.shutdown().await;
         }
     }
 
@@ -184,10 +167,6 @@ impl ProxyHandler for Handler {
             cla_to_bpa::Msg::Dispatch(msg) => self.cla.dispatch(msg).await,
             cla_to_bpa::Msg::AddPeer(msg) => self.cla.add_peer(msg).await,
             cla_to_bpa::Msg::RemovePeer(msg) => self.cla.remove_peer(msg).await,
-            cla_to_bpa::Msg::Unregister(_) => {
-                self.cla.client_unregister().await;
-                Ok(bpa_to_cla::Msg::Unregister(UnregisterClaResponse {}))
-            }
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
@@ -201,7 +180,10 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        // Do nothing
+        self.cla.unregister().await;
+        if let Some(proxy) = self.cla.proxy.get() {
+            proxy.on_unregister();
+        }
     }
 }
 
@@ -241,7 +223,7 @@ async fn run_cla_session(
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
 ) {
     let cla = Arc::new(Cla {
-        inner: Once::new(),
+        sink: Mutex::new(None),
         proxy: Once::new(),
     });
 

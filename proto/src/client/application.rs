@@ -166,19 +166,6 @@ impl hardy_bpa::services::ApplicationSink for Sink {
     }
 
     async fn unregister(&self) {
-        match self
-            .call(app_to_bpa::Msg::Unregister(UnregisterRequest {}))
-            .await
-        {
-            Ok(bpa_to_app::Msg::Unregister(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
-            }
-            Err(e) => {
-                warn!("Failed to request unregistration: {e}");
-            }
-        }
-
         self.proxy.shutdown().await;
     }
 }
@@ -217,12 +204,6 @@ impl ProxyHandler for Handler {
                         tonic::Status::unavailable("Service has disconnected").into(),
                     ))
                 }
-            }
-            bpa_to_app::Msg::OnUnregister(_) => {
-                if let Some(service) = self.service.upgrade() {
-                    service.on_unregister().await;
-                }
-                Some(app_to_bpa::Msg::OnUnregister(OnUnregisterResponse {}))
             }
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
