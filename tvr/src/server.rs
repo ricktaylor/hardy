@@ -129,12 +129,14 @@ fn convert_contacts(protos: Vec<proto::tvr::Contact>) -> Result<Vec<Contact>, to
 
 pub struct TvrService {
     agent: Arc<TvrAgent>,
+    tasks: hardy_async::TaskPool,
 }
 
 impl TvrService {
-    pub fn new(agent: &Arc<TvrAgent>) -> Self {
+    pub fn new(agent: &Arc<TvrAgent>, tasks: &hardy_async::TaskPool) -> Self {
         Self {
             agent: agent.clone(),
+            tasks: tasks.clone(),
         }
     }
 }
@@ -151,9 +153,10 @@ impl tvr_server::Tvr for TvrService {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let stream = request.into_inner();
         let agent = self.agent.clone();
+        let cancel = self.tasks.cancel_token().clone();
 
-        tokio::spawn(async move {
-            run_session(stream, tx, agent).await;
+        hardy_async::spawn!(&self.tasks, "tvr_session", async move {
+            run_session(stream, tx, agent, cancel).await;
         });
 
         Ok(tonic::Response::new(
@@ -166,6 +169,7 @@ async fn run_session(
     mut stream: tonic::Streaming<ClientMessage>,
     tx: tokio::sync::mpsc::Sender<Result<ServerMessage, tonic::Status>>,
     agent: Arc<TvrAgent>,
+    cancel: hardy_async::CancellationToken,
 ) {
     // First message must be OpenSession
     let (session_name, default_priority) = match stream.message().await {
@@ -215,22 +219,28 @@ async fn run_session(
     // Process subsequent messages
     let scheduler = agent.scheduler();
     loop {
-        match stream.message().await {
-            Ok(Some(msg)) => {
-                let response =
-                    handle_message(msg, scheduler, &session_name, default_priority).await;
-                if let Some(response) = response
-                    && tx.send(Ok(response)).await.is_err()
-                {
+        tokio::select! {
+            result = stream.message() => match result {
+                Ok(Some(msg)) => {
+                    let response =
+                        handle_message(msg, scheduler, &session_name, default_priority).await;
+                    if let Some(response) = response
+                        && tx.send(Ok(response)).await.is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    debug!("TVR session closed: '{session_name}'");
                     break;
                 }
-            }
-            Ok(None) => {
-                debug!("TVR session closed: '{session_name}'");
-                break;
-            }
-            Err(e) => {
-                warn!("TVR session '{session_name}' stream error: {e}");
+                Err(e) => {
+                    warn!("TVR session '{session_name}' stream error: {e}");
+                    break;
+                }
+            },
+            _ = cancel.cancelled() => {
+                debug!("TVR session '{session_name}' cancelled");
                 break;
             }
         }
@@ -356,7 +366,7 @@ pub async fn start(
     agent: &Arc<TvrAgent>,
     tasks: &hardy_async::TaskPool,
 ) {
-    let service = TvrService::new(agent);
+    let service = TvrService::new(agent, tasks);
     let cancel_token = tasks.cancel_token().clone();
 
     hardy_async::spawn!(tasks, "tvr_grpc_server", async move {
