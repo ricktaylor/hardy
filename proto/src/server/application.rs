@@ -1,16 +1,21 @@
 use super::*;
 use proto::service::*;
 
-struct ApplicationInner {
-    sink: Box<dyn hardy_bpa::services::ApplicationSink>,
-}
+type AppSink = Arc<dyn hardy_bpa::services::ApplicationSink>;
 
 struct Application {
-    inner: Once<ApplicationInner>,
+    sink: Mutex<Option<AppSink>>,
     proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
+    fn sink(&self) -> Result<AppSink, tonic::Status> {
+        self.sink
+            .lock()
+            .clone()
+            .ok_or(tonic::Status::unavailable("Unregistered"))
+    }
+
     async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::services::Result<app_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
@@ -46,10 +51,7 @@ impl Application {
             }
         }
 
-        self.inner
-            .get()
-            .ok_or(tonic::Status::internal("on_register not called"))?
-            .sink
+        self.sink()?
             .send(
                 request
                     .destination
@@ -73,10 +75,7 @@ impl Application {
     async fn cancel(&self, request: CancelRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
         let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
-        self.inner
-            .get()
-            .ok_or(tonic::Status::internal("on_register not called"))?
-            .sink
+        self.sink()?
             .cancel(&bundle_id)
             .await
             .map(|cancelled| bpa_to_app::Msg::Cancel(CancelResponse { cancelled }))
@@ -84,8 +83,9 @@ impl Application {
     }
 
     async fn unregister(&self) {
-        if let Some(inner) = self.inner.get() {
-            inner.sink.unregister().await
+        let sink = self.sink.lock().take();
+        if let Some(sink) = sink {
+            sink.unregister().await;
         }
     }
 }
@@ -97,27 +97,16 @@ impl hardy_bpa::services::Application for Application {
         _source: &hardy_bpv7::eid::Eid,
         sink: Box<dyn hardy_bpa::services::ApplicationSink>,
     ) {
-        // Ensure single initialization
-        self.inner.call_once(|| ApplicationInner { sink });
+        *self.sink.lock() = Some(Arc::from(sink));
     }
 
     async fn on_unregister(&self) {
-        match self
-            .call(bpa_to_app::Msg::OnUnregister(OnUnregisterRequest {}))
-            .await
-        {
-            Ok(app_to_bpa::Msg::OnUnregister(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
-            }
-            Err(e) => {
-                warn!("Failed to notify service of unregistration: {e}");
-            }
+        if self.sink.lock().take().is_none() {
+            return;
         }
 
-        // Close the proxy, nothing else is going to be processed
         if let Some(proxy) = self.proxy.get() {
-            proxy.on_unregister();
+            proxy.shutdown().await;
         }
     }
 
@@ -203,10 +192,6 @@ impl ProxyHandler for Handler {
         let msg = match msg {
             app_to_bpa::Msg::Send(msg) => self.app.send(msg).await,
             app_to_bpa::Msg::Cancel(msg) => self.app.cancel(msg).await,
-            app_to_bpa::Msg::Unregister(_) => {
-                self.app.unregister().await;
-                Ok(bpa_to_app::Msg::Unregister(UnregisterResponse {}))
-            }
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
@@ -220,7 +205,10 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        // Do nothing
+        self.app.unregister().await;
+        if let Some(proxy) = self.app.proxy.get() {
+            proxy.on_unregister();
+        }
     }
 }
 
@@ -260,7 +248,7 @@ async fn run_application_session(
     bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
 ) {
     let app = Arc::new(Application {
-        inner: Once::new(),
+        sink: Mutex::new(None),
         proxy: Once::new(),
     });
 

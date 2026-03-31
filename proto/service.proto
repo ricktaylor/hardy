@@ -32,7 +32,7 @@ package service;
 //   2. Client sends RegisterRequest as first message
 //   3. BPA responds with RegisterResponse containing assigned endpoint ID
 //   4. Client and BPA exchange messages asynchronously using msg_id correlation
-//   5. Either side can initiate unregistration
+//   5. Either side can close the stream to unregister
 
 // =============================================================================
 // RPC Definitions
@@ -86,11 +86,6 @@ message AppToBpa {
     // Request to cancel a pending bundle transmission.
     CancelRequest cancel = 7;
 
-    // Acknowledgement of forced unregistration (response to OnUnregisterRequest).
-    OnUnregisterResponse on_unregister = 8;
-
-    // Request to voluntarily unregister this endpoint.
-    UnregisterRequest unregister = 9;
   }
 }
 
@@ -120,12 +115,6 @@ message BpaToApp {
     // Response to CancelRequest indicating success or failure.
     CancelResponse cancel = 7;
 
-    // Notification that this endpoint has been forcibly unregistered
-    // (e.g., due to BPA shutdown or administrative action).
-    OnUnregisterRequest on_unregister = 8;
-
-    // Response to UnregisterRequest confirming voluntary unregistration.
-    UnregisterResponse unregister = 9;
   }
 }
 
@@ -159,11 +148,6 @@ message ServiceToBpa {
     // Request to cancel a pending bundle transmission.
     CancelRequest cancel = 7;
 
-    // Acknowledgement of forced unregistration (response to OnUnregisterRequest).
-    OnUnregisterResponse on_unregister = 8;
-
-    // Request to voluntarily unregister this endpoint.
-    UnregisterRequest unregister = 9;
   }
 }
 
@@ -193,12 +177,6 @@ message BpaToService {
     // Response to CancelRequest indicating success or failure.
     CancelResponse cancel = 7;
 
-    // Notification that this endpoint has been forcibly unregistered
-    // (e.g., due to BPA shutdown or administrative action).
-    OnUnregisterRequest on_unregister = 8;
-
-    // Response to UnregisterRequest confirming voluntary unregistration.
-    UnregisterResponse unregister = 9;
   }
 }
 
@@ -300,24 +278,6 @@ message CancelResponse {
   // was not found or had already been transmitted.
   bool cancelled = 1;
 }
-
-// UnregisterRequest initiates voluntary unregistration of the endpoint.
-// After sending this, the client should wait for UnregisterResponse
-// before closing the stream.
-message UnregisterRequest {}
-
-// UnregisterResponse confirms that the endpoint has been unregistered.
-// The stream will be closed after this message.
-message UnregisterResponse {}
-
-// OnUnregisterRequest notifies the endpoint that it has been forcibly
-// unregistered by the BPA (e.g., due to shutdown, resource limits, or
-// administrative action).
-message OnUnregisterRequest {}
-
-// OnUnregisterResponse acknowledges the forced unregistration notification.
-// The stream will be closed after this message.
-message OnUnregisterResponse {}
 
 // =============================================================================
 // Application-Specific Messages

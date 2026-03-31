@@ -17,7 +17,7 @@ package routing;
 //   2. First message from the agent *must* be a RegisterRoutingAgentRequest.
 //   3. BPA responds with RegisterRoutingAgentResponse containing node IDs.
 //   4. Agent sends AddRoute/RemoveRoute messages; BPA responds with results.
-//   5. Either side can initiate unregistration.
+//   5. Either side can close the stream to unregister.
 service RoutingAgent {
   // Connect to the BPA and set up a bidirectional stream.
   rpc Register(stream AgentToBpa) returns (stream BpaToAgent);
@@ -38,10 +38,6 @@ message AgentToBpa {
     AddRouteRequest                  add_route     = 4;
     // Request to remove a route from the RIB.
     RemoveRouteRequest               remove_route  = 5;
-    // Acknowledgement of forced unregistration (response to OnUnregisterRoutingAgentRequest).
-    OnUnregisterRoutingAgentResponse on_unregister = 6;
-    // Request to voluntarily unregister.
-    UnregisterRoutingAgentRequest    unregister    = 7;
   }
 }
 
@@ -60,10 +56,6 @@ message BpaToAgent {
     AddRouteResponse                 add_route     = 4;
     // Response to a remove route request.
     RemoveRouteResponse              remove_route  = 5;
-    // Notification of forced unregistration from the BPA.
-    OnUnregisterRoutingAgentRequest  on_unregister = 6;
-    // Response to a voluntary unregister request.
-    UnregisterRoutingAgentResponse   unregister    = 7;
   }
 }
 
@@ -135,14 +127,3 @@ message RemoveRouteResponse {
   bool removed = 1;
 }
 
-// A notification of forced unregistration from the BPA.
-message OnUnregisterRoutingAgentRequest {}
-
-// Acknowledgement of forced unregistration.
-message OnUnregisterRoutingAgentResponse {}
-
-// A request to voluntarily unregister.
-message UnregisterRoutingAgentRequest {}
-
-// A response to a voluntary unregister request.
-message UnregisterRoutingAgentResponse {}
