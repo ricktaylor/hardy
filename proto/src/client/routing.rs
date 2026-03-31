@@ -60,8 +60,6 @@ impl hardy_bpa::routes::RoutingSink for Sink {
     }
 
     async fn unregister(&self) {
-        // Just shut down the proxy. The stream close triggers on_close
-        // on the server, which unregisters from the BPA.
         self.proxy.shutdown().await;
     }
 }

@@ -341,7 +341,14 @@ where
     /// Drains the handler pool first (allowing in-flight handlers to send
     /// their responses via the still-active writer), then shuts down the
     /// infrastructure pool (reader + writer).
+    ///
+    /// Safe to call multiple times (idempotent). If the proxy is already
+    /// cancelled (e.g., re-entrant call from within `on_close`), this
+    /// returns immediately to avoid deadlock.
     pub async fn shutdown(&self) {
+        if self.tasks.is_cancelled() {
+            return;
+        }
         self.handler_tasks.shutdown().await;
         self.tasks.shutdown().await;
     }
