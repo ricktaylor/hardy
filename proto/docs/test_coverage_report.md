@@ -10,16 +10,27 @@
 
 | Suite | Area | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| 1 | Application Client | 6 | 0 | Not started |
+| 1 | Application Client | 6 | 6 | **Complete** |
 | 2 | CLA Client | 5 | 5 | **Complete** |
 | 3 | Service Client | 5 | 5 | **Complete** |
 | 4 | Routing Agent Client | 3 | 3 | **Complete** |
 | 5 | Error Handling | 4 | 0 | Not started |
 | 6 | Unregistration & Lifecycle | 6 | 6 | **Complete** |
 | 7 | Server Proxy Handlers | 6 | 0 | Not started |
-| | **Total** | **35** | **19** | **54%** |
+| | **Total** | **35** | **25** | **71%** |
 
 ## 2. Test Inventory
+
+### Suite 1: Application Client (`tests/application_tests.rs`)
+
+| Test Function | Test ID | Scope |
+| :--- | :--- | :--- |
+| `app_cli_01_registration_ipn` | APP-CLI-01 | Register application (IPN), verify endpoint and on_register |
+| `app_cli_02_registration_dtn` | APP-CLI-02 | Register application (DTN service name) |
+| `app_cli_03_send_payload` | APP-CLI-03 | Send payload via sink, verify round-trip (mock returns error) |
+| `app_cli_04_receive_payload` | APP-CLI-04 | Receive payload (BPA→App) via server-side push |
+| `app_cli_05_status_notify` | APP-CLI-05 | Status notification (BPA→App) via server-side push |
+| `app_cli_06_cancel` | APP-CLI-06 | Cancel pending send via sink round-trip |
 
 ### Suite 2: CLA Client (`tests/cla_tests.rs`)
 

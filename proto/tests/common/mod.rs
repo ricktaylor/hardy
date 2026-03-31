@@ -26,6 +26,7 @@ pub struct MockBpa {
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routes::RoutingAgent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
     pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
+    pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
 }
 
 impl MockBpa {
@@ -36,6 +37,7 @@ impl MockBpa {
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
             last_cla: hardy_async::sync::spin::Mutex::new(None),
             last_service: hardy_async::sync::spin::Mutex::new(None),
+            last_application: hardy_async::sync::spin::Mutex::new(None),
         }
     }
 
@@ -88,6 +90,7 @@ impl BpaRegistration for MockBpa {
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockApplicationSink::new());
+        *self.last_application.lock() = Some(application.clone());
         application
             .on_register(&endpoint, Box::new(ApplicationSinkWrapper(sink)))
             .await;
