@@ -968,6 +968,20 @@ impl<'a> BlockBuilder<'a> {
     }
 }
 
+pub(crate) struct EditorBlockSet<'a> {
+    pub editor: Editor<'a>,
+}
+
+impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
+    fn block(
+        &'a self,
+        block_number: u64,
+    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        let (block, payload) = self.editor.block(block_number)?;
+        Some((block, payload.map(block::Payload::Borrowed)))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1150,19 +1164,5 @@ mod test {
             .unwrap();
         let reparsed = reparse(&new_data);
         assert!(reparsed.blocks.contains_key(&2));
-    }
-}
-
-pub(crate) struct EditorBlockSet<'a> {
-    pub editor: Editor<'a>,
-}
-
-impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
-        let (block, payload) = self.editor.block(block_number)?;
-        Some((block, payload.map(block::Payload::Borrowed)))
     }
 }

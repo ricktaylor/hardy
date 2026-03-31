@@ -804,10 +804,7 @@ fn malformed_cbor() {
     // Build a nested array 300 levels deep: [[[[...]]]]
     // Each level is 0x81 (definite array of 1 item) with 0x00 at the centre
     let depth = 300usize;
-    let mut nested = alloc::vec::Vec::with_capacity(depth + 1);
-    for _ in 0..depth {
-        nested.push(0x81u8); // array(1)
-    }
+    let mut nested = alloc::vec![0x81u8; depth];
     nested.push(0x00); // innermost value: unsigned 0
     assert!(matches!(
         parse_value(&nested, |mut v, _, _| {
@@ -819,10 +816,7 @@ fn malformed_cbor() {
 
     // Verify skip succeeds when within recursion limit
     let shallow_depth = 5usize;
-    let mut shallow = alloc::vec::Vec::with_capacity(shallow_depth + 1);
-    for _ in 0..shallow_depth {
-        shallow.push(0x81u8);
-    }
+    let mut shallow = alloc::vec![0x81u8; shallow_depth];
     shallow.push(0x00);
     parse_value(&shallow, |mut v, _, _| {
         v.skip(16)?; // 5 levels, limit 16 — should succeed
