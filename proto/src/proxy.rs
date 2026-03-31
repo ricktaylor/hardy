@@ -346,3 +346,19 @@ where
         self.tasks.shutdown().await;
     }
 }
+
+impl<S, R> Drop for RpcProxy<S, R>
+where
+    R: RecvMsg + Send,
+    R::Msg: Send,
+    S: SendMsg + Send,
+    S::Msg: Send,
+{
+    fn drop(&mut self) {
+        // Cancel tasks so the stream closes promptly. Matches the
+        // "Drop = unregister" design principle — an abandoned proxy
+        // should not leave orphaned tasks on the runtime.
+        self.handler_tasks.cancel_token().cancel();
+        self.tasks.cancel_token().cancel();
+    }
+}
