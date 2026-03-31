@@ -1,4 +1,8 @@
 //! Shared test infrastructure for proto component tests.
+//!
+//! Each integration test binary compiles this module independently,
+//! so items used by other test files appear unused in each binary.
+#![allow(dead_code)]
 
 pub mod sinks;
 
@@ -20,6 +24,8 @@ pub struct MockBpa {
     node_ids: Vec<NodeId>,
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routes::RoutingAgent>>>,
+    pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
+    pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
 }
 
 impl MockBpa {
@@ -28,15 +34,19 @@ impl MockBpa {
             node_ids: vec!["ipn:1.0".parse().unwrap()],
             last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
+            last_cla: hardy_async::sync::spin::Mutex::new(None),
+            last_service: hardy_async::sync::spin::Mutex::new(None),
         }
     }
 
     /// Simulate a server crash by forcing unregistration of all
-    /// registered agents. This closes the proxy and stream without
-    /// the client initiating it.
+    /// registered components.
     pub async fn crash(&self) {
         if let Some(agent) = self.last_routing_agent.lock().take() {
             agent.on_unregister().await;
+        }
+        if let Some(cla) = self.last_cla.lock().take() {
+            cla.on_unregister().await;
         }
     }
 }
@@ -51,6 +61,7 @@ impl BpaRegistration for MockBpa {
         _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         let sink = Arc::new(MockClaSink::new());
+        *self.last_cla.lock() = Some(cla.clone());
         cla.on_register(Box::new(ClaSinkWrapper(sink)), &self.node_ids)
             .await;
         Ok(self.node_ids.clone())
@@ -63,6 +74,7 @@ impl BpaRegistration for MockBpa {
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
         let sink = Arc::new(MockServiceSink::new());
+        *self.last_service.lock() = Some(service.clone());
         service
             .on_register(&endpoint, Box::new(ServiceSinkWrapper(sink)))
             .await;
@@ -212,9 +224,4 @@ pub async fn start_server(
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     (grpc_addr, tasks)
-}
-
-/// Start a gRPC server with the routing agent service.
-pub async fn start_routing_server(bpa: &Arc<MockBpa>) -> (String, hardy_async::TaskPool) {
-    start_server(bpa, &["routing"]).await
 }
