@@ -207,7 +207,7 @@ impl ProxyHandler for Handler {
     async fn on_close(&self) {
         self.app.unregister().await;
         if let Some(proxy) = self.app.proxy.get() {
-            proxy.on_unregister();
+            proxy.cancel();
         }
     }
 }

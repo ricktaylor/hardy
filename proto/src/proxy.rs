@@ -331,7 +331,7 @@ where
     /// Called when the BPA unregisters this component. Safe to call from
     /// any context, including from within a handler task. Tasks exit
     /// asynchronously.
-    pub fn on_unregister(&self) {
+    pub fn cancel(&self) {
         self.handler_tasks.cancel_token().cancel();
         self.tasks.cancel_token().cancel();
     }
