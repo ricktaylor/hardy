@@ -36,7 +36,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **tcpclv4-server** | System | [`PLAN-TCPCL-SERVER-01`](../tcpclv4-server/docs/test_plan.md) | [REQ-3](requirements.md#req-3-full-compliance-with-rfc9174), [REQ-15](requirements.md#req-15-independent-component-packaging), [REQ-16](requirements.md#req-16-kubernetes-packaging) | **Complete** |
 | **localdisk-storage** | Component | [`PLAN-LD-01`](../localdisk-storage/docs/test_plan.md) | [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Filesystem) | **Complete** |
 | **sqlite-storage** | Component | [`PLAN-SQLITE-01`](../sqlite-storage/docs/test_plan.md) | [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Metadata) | **Complete** |
-| **proto** | Component | [`COMP-GRPC-CLIENT-01`](../proto/docs/component_test_plan.md) | [REQ-18](requirements.md#req-18-grpc-based-internal-apis-for-component-communication) (API) | **Complete** |
+| **proto** | Component | [`COMP-GRPC-01`](../proto/docs/component_test_plan.md) | [REQ-18](requirements.md#req-18-grpc-based-internal-apis-for-component-communication) (API) | **Complete** |
 | **bpa-server** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | [REQ-14](requirements.md#req-14-reliability), [REQ-15](requirements.md#req-15-independent-component-packaging), [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) | **Complete** |
 | **System** | Interop | [`PLAN-INTEROP-01`](interop_test_plan.md) | [REQ-20](requirements.md#req-20-interoperability-with-reference-implementations) (ION/DTNME) | **Complete** |
 
