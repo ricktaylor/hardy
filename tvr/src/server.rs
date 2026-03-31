@@ -1,6 +1,7 @@
 use crate::contacts::{Contact, Schedule, TvrAgent};
 use crate::cron::CronExpr;
 use hardy_bpa::routes::Action;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -130,6 +131,7 @@ fn convert_contacts(protos: Vec<proto::tvr::Contact>) -> Result<Vec<Contact>, to
 pub struct TvrService {
     agent: Arc<TvrAgent>,
     tasks: hardy_async::TaskPool,
+    active_sessions: Arc<hardy_async::sync::spin::Mutex<HashSet<String>>>,
 }
 
 impl TvrService {
@@ -137,6 +139,7 @@ impl TvrService {
         Self {
             agent: agent.clone(),
             tasks: tasks.clone(),
+            active_sessions: Arc::new(hardy_async::sync::spin::Mutex::new(HashSet::new())),
         }
     }
 }
@@ -154,9 +157,10 @@ impl tvr_server::Tvr for TvrService {
         let stream = request.into_inner();
         let agent = self.agent.clone();
         let cancel = self.tasks.cancel_token().clone();
+        let active_sessions = self.active_sessions.clone();
 
         hardy_async::spawn!(&self.tasks, "tvr_session", async move {
-            run_session(stream, tx, agent, cancel).await;
+            run_session(stream, tx, agent, cancel, active_sessions).await;
         });
 
         Ok(tonic::Response::new(
@@ -170,6 +174,7 @@ async fn run_session(
     tx: tokio::sync::mpsc::Sender<Result<ServerMessage, tonic::Status>>,
     agent: Arc<TvrAgent>,
     cancel: hardy_async::CancellationToken,
+    active_sessions: Arc<hardy_async::sync::spin::Mutex<HashSet<String>>>,
 ) {
     // First message must be OpenSession
     let (session_name, default_priority) = match stream.message().await {
@@ -178,6 +183,18 @@ async fn run_session(
             msg: Some(client_message::Msg::Open(open)),
         })) => {
             let name = open.name.clone();
+
+            // Reject duplicate session names
+            if !active_sessions.lock().insert(name.clone()) {
+                warn!("TVR session name already in use: '{name}'");
+                let _ = tx
+                    .send(Err(tonic::Status::already_exists(format!(
+                        "session name '{name}' is already in use"
+                    ))))
+                    .await;
+                return;
+            }
+
             let priority = if open.default_priority == 0 {
                 agent.default_priority()
             } else {
@@ -192,6 +209,7 @@ async fn run_session(
                 msg: Some(server_message::Msg::Open(OpenSessionResponse {})),
             };
             if tx.send(Ok(response)).await.is_err() {
+                active_sessions.lock().remove(&name);
                 return;
             }
 
@@ -216,6 +234,9 @@ async fn run_session(
         }
     };
 
+    // Namespace the source key to avoid collisions with file sources
+    let source = format!("session:{session_name}");
+
     // Process subsequent messages
     let scheduler = agent.scheduler();
     loop {
@@ -223,7 +244,7 @@ async fn run_session(
             result = stream.message() => match result {
                 Ok(Some(msg)) => {
                     let response =
-                        handle_message(msg, scheduler, &session_name, default_priority).await;
+                        handle_message(msg, scheduler, &source, &session_name, default_priority).await;
                     if let Some(response) = response
                         && tx.send(Ok(response)).await.is_err()
                     {
@@ -249,12 +270,14 @@ async fn run_session(
     // Session ended — withdraw all contacts from this source
     info!("Withdrawing contacts for session '{session_name}'");
     metrics::gauge!("tvr_sessions").decrement(1.0);
-    scheduler.withdraw_all(&session_name).await;
+    scheduler.withdraw_all(&source).await;
+    active_sessions.lock().remove(&session_name);
 }
 
 async fn handle_message(
     msg: ClientMessage,
     scheduler: &crate::scheduler::SchedulerHandle,
+    source: &str,
     session_name: &str,
     default_priority: u32,
 ) -> Option<ServerMessage> {
@@ -285,7 +308,7 @@ async fn handle_message(
                 }
             };
             let result = scheduler
-                .add_contacts(session_name, contacts, default_priority)
+                .add_contacts(source, contacts, default_priority)
                 .await;
             let (added, active, skipped) = match result {
                 Some(r) => (r.added, r.active, r.skipped),
@@ -314,7 +337,7 @@ async fn handle_message(
                     });
                 }
             };
-            let result = scheduler.remove_contacts(session_name, contacts).await;
+            let result = scheduler.remove_contacts(source, contacts).await;
             let removed = result.map(|r| r.removed).unwrap_or(0);
             Some(ServerMessage {
                 msg_id,
@@ -338,7 +361,7 @@ async fn handle_message(
                 }
             };
             let result = scheduler
-                .replace_contacts(session_name, contacts, default_priority)
+                .replace_contacts(source, contacts, default_priority)
                 .await;
             let (added, removed, unchanged) = match result {
                 Some(r) => (r.added, r.removed, r.unchanged),
