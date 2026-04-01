@@ -110,34 +110,66 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Build Hardy image (cache)
-        uses: docker/build-push-action@v7
+      - name: Restore cache
+        uses: Swatinem/rust-cache@v2
         with:
-          context: .
-          file: ./bpa-server/Dockerfile
-          target: runtime
-          tags: hardy-bpa-server:latest
-          build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          load: true
+          shared-key: ci
+          save-if: false
 
-      - name: Build ping-tests image (cache)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./tests/Dockerfile.tools
-          tags: hardy-ping-tests:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          load: true
+      - name: Install Protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build binaries
+        run: cargo build --locked --all-features -p hardy-bpa-server -p hardy-tools
+
+      - name: Write config
+        run: |
+          cat > /tmp/hardy-ping-test.toml << 'EOF'
+          log-level = "info"
+          node-ids = ["ipn:1.0", "dtn://my-node/"]
+          status-reports = true
+          poll-channel-depth = 16
+          processing-pool-size = 16
+
+          [storage]
+          lru-capacity = 1024
+          max-cached-bundle-size = 16384
+
+          [storage.metadata]
+          type = "memory"
+
+          [storage.bundle]
+          type = "memory"
+
+          [grpc]
+          address = "[::]:50051"
+          services = ["application", "cla", "service"]
+
+          [rfc9171-validity]
+          primary-block-integrity = true
+          bundle-age-required = true
+
+          [built-in-services]
+          echo = [7, "echo"]
+
+          [[clas]]
+          name = "tcp-cla-1"
+          type = "tcpclv4"
+          address = "[::]:4556"
+          segment-mru = 16384
+          transfer-mru = 562949953421312
+          max-idle-connections = 6
+          contact-timeout = 15
+          keepalive-interval = 60
+          require-tls = false
+          EOF
 
       - name: Run ping tests
-        run: docker compose -f compose.yml -f tests/compose.ping-tests.yml up --no-build --abort-on-container-exit --exit-code-from ping-tests
-
-      - name: Cleanup
-        if: always()
-        run: docker compose -f compose.yml -f tests/compose.ping-tests.yml down -v
+        env:
+          BP_BIN: ./target/debug/bp
+        run: |
+          HARDY_BPA_SERVER_CONFIG_FILE=/tmp/hardy-ping-test.toml ./target/debug/hardy-bpa-server &
+          bash ./tests/interop/hardy/run_hardy_ping_test.sh --peer 127.0.0.1:4556 --count 5
