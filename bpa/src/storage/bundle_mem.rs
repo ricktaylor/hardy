@@ -112,8 +112,7 @@ impl BundleStorage for BundleMemStorage {
                 .capacity
                 .saturating_sub(old_len)
                 .saturating_add(new_len);
-            while inner.cache.len() > self.min_bundles
-                && inner.capacity > self.max_capacity.into()
+            while inner.cache.len() > self.min_bundles && inner.capacity > self.max_capacity.into()
             {
                 let Some((_, (_, d))) = inner.cache.pop_lru() else {
                     break;
