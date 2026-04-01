@@ -72,9 +72,10 @@ This matrix defines which implementations are tested and which suites are applic
 | **dtn7-rs** | 0.21.0 | `github.com/dtn7/dtn7-rs` | TCPCLv4 | A, B, C, E | ✅ A, B | Ping/echo tests implemented. See `tests/interop/dtn7-rs/`. |
 | **HDTN** | 2.0.0 | `github.com/nasa/HDTN` | TCPCLv4 | A, B, D | ✅ A, B | Ping/echo tests implemented. See `tests/interop/HDTN/`. |
 | **DTNME** | 1.3.2 | `github.com/nasa/DTNME` | TCPCLv4 | A, B, C, E | ✅ A, B | Ping/echo tests implemented. See `tests/interop/DTNME/`. |
-| **NASA ION** | 4.1.2+ | `github.com/nasa-jpl/ION-DTN` | File (Shared Vol) | B, C, D, E | ⏳ Planned | ION lacks TCPCLv4. Use `file-cla` bridge via Docker volumes. |
-| **µD3TN** | 0.14.5 | `gitlab.com/d3tn/ud3tn` | File (Shared Vol) | B, C | ⏳ Planned | No BPSec. Supports TCPCLv3 (not v4). Use AAP bridge. |
-| **ESA BP** | TBD | ESA Internal | File (Shared Vol) | B, C, D | ⏳ Planned | ESA reference implementation (CCSDS 734.20-O-1 Annex 14). |
+| **NASA ION** | 4.1.2+ | `github.com/nasa-jpl/ION-DTN` | STCP (via mtcp-cla) | B, C, D, E | ✅ A, B | Ping/echo tests implemented. See `tests/interop/ION/`. |
+| **µD3TN** | 0.14.5 | `gitlab.com/d3tn/ud3tn` | STCP (via mtcp-cla) | B, C | ✅ A, B | AAP2 protocol. Not yet merged to main. |
+| **ESA BP** | 1.0 | ESA Internal | STCP (via mtcp-cla) | B, C, D | ✅ A, B | STCP CLE interop. Not yet merged to main. See `tests/interop/ESA-BP/`. |
+| **NASA cFS** | TBD | NASA Internal | STCP (via mtcp-cla) | B | ✅ B | Not yet merged to main. |
 
 ## 4. Test Topologies
 
@@ -86,48 +87,52 @@ Tests are executed using a containerized environment (Docker Compose).
 * **Node B (Peer):** `ipn:2.0` (BPA), `ipn:2.1` (Sender/Receiver).
 * **Link:** TCPCLv4 over Docker bridge (`hardy:4556` <-> `peer:4556`).
 
-### Topology 2: File Bridge (Compatibility)
+### Topology 2: STCP (Compatibility)
 
-Used for implementations that do not support TCPCLv4 (e.g., ION).
+Used for implementations that do not support TCPCLv4 (e.g., ION, ESA-BP). Hardy's `mtcp-cla` binary provides STCP framing (4-byte length prefix) over TCP.
 
-* **Node A (Hardy):** Configured with `file-cla` watching `/shared/to_hardy`.
-* **Node B (Peer):** Configured (or adapted via bridge) to write bundles to `/shared/to_hardy` and read from `/shared/from_hardy`.
-* **Link:** Shared Docker Volume mounted at `/shared`.
+* **Node A (Hardy):** `ipn:1.0`, with `mtcp-cla` in STCP mode connecting to peer.
+* **Node B (Peer):** Configured with native STCP/MTCP support.
+* **Link:** STCP over `127.0.0.1` (both nodes on same host via `--network host`).
 
 ## 5. Execution Strategy
 
 ### Implemented Tests
 
-Ping/echo tests are implemented for TCPCLv4-capable implementations:
+Ping/echo tests are implemented for all 7 peer implementations. Tests on main use TCPCLv4 (dtn7-rs, HDTN, DTNME) or STCP via the `mtcp-cla` binary (ION). Tests on branches add ud3tn, ESA-BP, and cFS.
 
 ```bash
-# Run all implemented tests with benchmark comparison
+# Run all main-branch tests with benchmark comparison
 ./tests/interop/benchmark.sh [--skip-build] [--count N]
 
-# Run individual implementation tests
+# Run individual implementation tests (main branch)
 ./tests/interop/hardy/test_hardy_ping.sh      # Hardy-to-Hardy baseline
 ./tests/interop/dtn7-rs/test_dtn7rs_ping.sh   # Hardy <-> dtn7-rs
 ./tests/interop/HDTN/test_hdtn_ping.sh        # Hardy <-> HDTN
 ./tests/interop/DTNME/test_dtnme_ping.sh      # Hardy <-> DTNME
+./tests/interop/ION/test_ion_ping.sh          # Hardy <-> ION
+
+# On feature branches
+./tests/interop/ESA-BP/test_esa_bp_ping.sh    # Hardy <-> ESA-BP
 ```
 
 **Prerequisites:**
 
 1. Docker installed and running.
 2. Hardy tools and bpa-server built (scripts build automatically, or use `--skip-build`).
+3. For STCP-based tests: `mtcp-cla` binary built separately (`tests/interop/mtcp/`, workspace-excluded).
 
 Docker images for peer implementations are built automatically on first run from Dockerfiles in each test directory.
 
 ### Planned: Full Suite Runner
 
-For complete test coverage (Suites C, D, E) and File CLA implementations (ION, µD3TN):
+For complete test coverage (Suites C, D, E):
 
 ```bash
-./tests/interop/run_suite.sh --impl <ion|dtnme|hdtn|dtn7rs> --topology <tcp|file>
+./tests/interop/run_suite.sh --impl <ion|dtnme|hdtn|dtn7rs|esa-bp> --topology <tcp|stcp>
 ```
 
 This will require:
 
 1. Docker Compose configuration for multi-node topologies.
-2. File CLA bridge support for non-TCPCLv4 implementations.
-3. Extended test scripts for Status Reports, BPSec, and Fragmentation.
+2. Extended test scripts for Status Reports, BPSec, and Fragmentation.

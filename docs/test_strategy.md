@@ -59,7 +59,7 @@ We adhere to a risk-based testing pyramid:
   * Strict separation of "Syntax/Parsing" tests from "BPA/Policy" tests.
   * Verification of "Factories" (Builders/Editors) to ensure API correctness.
 
-* **Tooling:** `cargo test`, `tarpaulin` (coverage).
+* **Tooling:** `cargo test`, `cargo llvm-cov` (coverage).
 
 ### 3.2 Level 2: Component Testing (CLI Driver & Harnesses)
 

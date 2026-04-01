@@ -81,11 +81,11 @@ This document provides traceability between the CCSDS PICS (Protocol Implementat
 
 | PICS Item | Feature | Status | Impact | Action |
 | :--- | :--- | :--- | :--- | :--- |
-| 28 | BP Managed Information | M/N | Required for custody transfer | Document as known limitation or implement |
+| 28 | BP Managed Information (Annex C) | M/N | Out of scope for De-risk phase | Documented as known limitation |
 
 ### 4.2 Test Implementation Gaps
 
-15 PICS items now have mapped test scenarios in UTP-BPA-01 but the test code exists only as commented-out stubs (48 stubs across the `bpa/src/` tree). These need to be uncommented and implemented to achieve full verification coverage.
+15 PICS items now have mapped test scenarios in UTP-BPA-01 but the test code exists only as commented-out stubs (36 `todo!()` stubs across 11 files in `bpa/src/`). These need to be implemented to achieve full verification coverage.
 
 ## 5. Revision History
 
@@ -93,3 +93,4 @@ This document provides traceability between the CCSDS PICS (Protocol Implementat
 | :--- | :--- | :--- | :--- |
 | 2026-01-27 | 0.1 | Generated | Initial draft with partial mapping |
 | 2026-03-14 | 0.2 | Generated | Resolved all 15 TBD entries by mapping to UTP-BPA-01/PLAN-BPA-01 test scenarios |
+| 2026-04-01 | 0.3 | Generated | Corrected stub count (36 not 48), updated Item 28 status |
