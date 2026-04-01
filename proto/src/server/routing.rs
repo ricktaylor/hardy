@@ -207,6 +207,18 @@ async fn run_routing_session(
         .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
+/// Create a new RoutingAgent gRPC service.
+pub fn new_routing_agent_service(
+    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    tasks: &hardy_async::TaskPool,
+) -> routing_agent_server::RoutingAgentServer<Service> {
+    routing_agent_server::RoutingAgentServer::new(Service {
+        bpa: bpa.clone(),
+        session_tasks: tasks.clone(),
+        channel_size: 16,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,16 +358,4 @@ mod tests {
             .await
             .expect("unregister() should not deadlock");
     }
-}
-
-/// Create a new RoutingAgent gRPC service.
-pub fn new_routing_agent_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    tasks: &hardy_async::TaskPool,
-) -> routing_agent_server::RoutingAgentServer<Service> {
-    routing_agent_server::RoutingAgentServer::new(Service {
-        bpa: bpa.clone(),
-        session_tasks: tasks.clone(),
-        channel_size: 16,
-    })
 }
