@@ -4,11 +4,11 @@ services:
     environment:
       HARDY_BPA_SERVER_LOG_LEVEL: warn
 
-  e2e-tests:
+  ping-tests:
     build:
       context: .
       dockerfile: tests/Dockerfile.tools
-    image: hardy-e2e-tests:latest
+    image: hardy-ping-tests:latest
     depends_on:
       hardy:
         condition: service_healthy
