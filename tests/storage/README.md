@@ -37,10 +37,12 @@ TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
 
 ### S3 / MinIO
 
-Start MinIO:
+Start MinIO and create the test bucket:
 
 ```sh
-docker compose -f tests/compose.storage-tests.yml up -d minio minio-init
+docker compose -f tests/compose.storage-tests.yml up -d --wait
+docker compose -f tests/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
+docker compose -f tests/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
 ```
 
 AWS credentials are read from the standard environment variables. Each test uses a unique key prefix within the `hardy-test` bucket for isolation.
@@ -55,7 +57,9 @@ AWS_SECRET_ACCESS_KEY=minioadmin \
 ### All backends
 
 ```sh
-docker compose -f tests/compose.storage-tests.yml up -d
+docker compose -f tests/compose.storage-tests.yml up -d --wait
+docker compose -f tests/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
+docker compose -f tests/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
 
 TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
 TEST_S3_ENDPOINT=http://localhost:9000 \
