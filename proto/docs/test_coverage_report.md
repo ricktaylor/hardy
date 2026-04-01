@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Module** | `hardy-proto` |
 | **Test Plan** | [`COMP-GRPC-01`](component_test_plan.md) |
-| **Date** | 2026-03-31 |
+| **Date** | 2026-04-01 |
 
 ## 1. Coverage Summary
 
@@ -14,10 +14,10 @@
 | 2 | CLA Client | 5 | 5 | **Complete** |
 | 3 | Service Client | 5 | 5 | **Complete** |
 | 4 | Routing Agent Client | 3 | 3 | **Complete** |
-| 5 | Error Handling | 4 | 0 | Not started |
+| 5 | Error Handling | 3 | 3 | **Complete** |
 | 6 | Unregistration & Lifecycle | 6 | 6 | **Complete** |
 | 7 | Server Proxy Handlers | 6 | 0 | Not started |
-| | **Total** | **35** | **25** | **71%** |
+| | **Total** | **34** | **28** | **82%** |
 
 ## 2. Test Inventory
 
@@ -60,6 +60,16 @@
 | `rte_cli_02_add_route` | RTE-CLI-02 | Add route via sink, verify round-trip through gRPC proxy |
 | `rte_cli_03_remove_route` | RTE-CLI-03 | Remove route via sink, verify round-trip through gRPC proxy |
 
+### Suite 5: Error Handling (unit tests in `src/client/routing.rs`)
+
+These are unit tests because they use custom mock servers built from crate-internal proto types. ERR-CLI-01 (Connection Refused) was removed — it only exercised tonic's transport error path, not Hardy-specific logic.
+
+| Test Function | Test ID | Scope |
+| :--- | :--- | :--- |
+| `err_cli_02_premature_stream_end` | ERR-CLI-02 | Custom server closes stream after handshake, verify synthetic on_unregister |
+| `err_cli_03_duplicate_register_response` | ERR-CLI-03 | Custom server sends duplicate RegisterResponse, verify no panic |
+| `err_cli_04_invalid_message_sequence` | ERR-CLI-04 | Custom server sends out-of-sequence msg during handshake, verify error |
+
 ### Suite 6: Unregistration & Lifecycle (`tests/lifecycle_tests.rs`)
 
 | Test Function | Test ID | Scope |
@@ -89,7 +99,5 @@
 
 ## 4. Gaps
 
-- **Suites 1–3** (Application, CLA, Service client): message mapping tests not yet implemented. Exercised by interop tests at system level.
-- **Suite 5** (Error handling): connection refused, premature close, protocol violations not yet tested.
 - **Suite 7** (Server proxy handlers): sink ownership lifecycle, spin lock safety not yet unit tested. Covered implicitly by Suite 6 lifecycle tests.
 - **Line coverage**: not yet measured (`cargo llvm-cov` not available in container).

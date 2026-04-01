@@ -64,11 +64,11 @@ The tests utilize a **Mock Server** approach:
 
 | Test ID | Scenario | Client Action (Rust) | Mock Server Assertion | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **SVC-CLI-01** | **Registration (IPN)** | Call `register_service(Some(Ipn(42)))` | Receives `RegisterRequest { service_id: { ipn: 42 } }`.<br>Replies `RegisterResponse { endpoint_id: "ipn:1.42" }`. | Not implemented |
-| **SVC-CLI-02** | **Send Raw Bundle** | Call `sink.send(bundle_bytes)` | Receives `ServiceSendRequest { data: ... }`.<br>Replies `SendResponse { bundle_id }`. | Not implemented |
-| **SVC-CLI-03** | **Receive Raw Bundle** | Server injects `ServiceReceiveRequest`. | Client trait receives `on_receive(data, expiry)`. | Not implemented |
-| **SVC-CLI-04** | **Status Notification** | Server injects `StatusNotifyRequest`. | Client trait receives `on_status_notify(...)`. | Not implemented |
-| **SVC-CLI-05** | **Cancel Transmission** | Call `sink.cancel(bundle_id)` | Receives `CancelRequest { bundle_id }`.<br>Replies `CancelResponse { cancelled }`. | Not implemented |
+| **SVC-CLI-01** | **Registration (IPN)** | Call `register_service(Some(Ipn(42)))` | Receives `RegisterRequest { service_id: { ipn: 42 } }`.<br>Replies `RegisterResponse { endpoint_id: "ipn:1.42" }`. | Implemented |
+| **SVC-CLI-02** | **Send Raw Bundle** | Call `sink.send(bundle_bytes)` | Receives `ServiceSendRequest { data: ... }`.<br>Replies `SendResponse { bundle_id }`. | Implemented |
+| **SVC-CLI-03** | **Receive Raw Bundle** | Server injects `ServiceReceiveRequest`. | Client trait receives `on_receive(data, expiry)`. | Implemented |
+| **SVC-CLI-04** | **Status Notification** | Server injects `StatusNotifyRequest`. | Client trait receives `on_status_notify(...)`. | Implemented |
+| **SVC-CLI-05** | **Cancel Transmission** | Call `sink.cancel(bundle_id)` | Receives `CancelRequest { bundle_id }`.<br>Replies `CancelResponse { cancelled }`. | Implemented |
 
 ### Suite 4: Routing Agent Client Proxy
 
@@ -84,12 +84,13 @@ The tests utilize a **Mock Server** approach:
 
 *Objective: Verify the client handles protocol violations and connection issues gracefully.*
 
+*ERR-CLI-01 (Connection Refused) removed — it only exercised tonic's transport error path, not Hardy-specific logic.*
+
 | Test ID | Scenario | Setup | Expected Behavior | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **ERR-CLI-01** | **Connection Refused** | Server is offline. | Client `connect()` returns `Err(TransportError)`. | Implemented |
 | **ERR-CLI-02** | **Premature Stream End** | Server closes stream immediately after handshake. | Client `on_close` fires, delivering synthetic `on_unregister()` to trait impl. | Implemented |
-| **ERR-CLI-03** | **Protocol Violation** | Server sends `RegisterApplicationResponse` *twice*. | Client logic (if stateful) should handle or ignore, ensuring no panic. | Implemented |
-| **ERR-CLI-04** | **Invalid Message Sequence** | Server sends `ReceiveBundleRequest` before Registration completes. | Client should return error or drop message depending on strictness. | Implemented |
+| **ERR-CLI-03** | **Protocol Violation** | Server sends `RegisterRoutingAgentResponse` *twice*. | Client proxy ignores duplicate (no pending entry for msg_id 0), no panic. | Implemented |
+| **ERR-CLI-04** | **Invalid Message Sequence** | Server sends `AddRouteResponse` with wrong msg\_id before registration response. | Client handshake returns `Err(Status::aborted("Out of sequence response"))`. | Implemented |
 
 ### Suite 6: Unregistration & Lifecycle
 
@@ -99,12 +100,12 @@ Unregistration does not use explicit protocol messages. Closing the stream is th
 
 | Test ID | Scenario | Setup | Expected Behavior | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **LIFE-01** | **Client-initiated unregister** | Client calls `Sink::unregister()`. | Client proxy shuts down, stream closes. Server `on_close` fires: takes sink, calls `sink.unregister()` (BPA removes component), cancels proxy. Client `on_close` delivers synthetic `trait.on_unregister()`. | Not implemented |
-| **LIFE-02** | **BPA-initiated unregister** | BPA calls `shutdown_agents()` (or equivalent). | Server `on_unregister()` takes sink, calls `proxy.shutdown()`. Stream closes. Client `on_close` delivers synthetic `trait.on_unregister()`. | Not implemented |
-| **LIFE-03** | **Drop without unregister** | Client drops proxy without calling `unregister()`. | Proxy `Drop` cancels tasks, stream closes. Server `on_close` fires: takes sink, calls `sink.unregister()`, cancels proxy. BPA removes component. | Not implemented |
-| **LIFE-04** | **Server crash** | Server stream drops unexpectedly. | Client reader detects error/close, `on_close` fires: delivers synthetic `trait.on_unregister()` to trait impl. | Not implemented |
-| **LIFE-05** | **Race: simultaneous unregister** | Client and BPA unregister concurrently. | `Mutex<Option>.take()` ensures exactly one path takes the sink. No double-unregister, no deadlock. | Not implemented |
-| **LIFE-06** | **Synthetic on_unregister exactly once** | BPA sends `on_unregister` then stream closes. | Client trait impl receives `on_unregister()` exactly once (from `on_close`), not twice. | Not implemented |
+| **LIFE-01** | **Client-initiated unregister** | Client calls `Sink::unregister()`. | Client proxy shuts down, stream closes. Server `on_close` fires: takes sink, calls `sink.unregister()` (BPA removes component), cancels proxy. Client `on_close` delivers synthetic `trait.on_unregister()`. | Implemented |
+| **LIFE-02** | **BPA-initiated unregister** | BPA calls `shutdown_agents()` (or equivalent). | Server `on_unregister()` takes sink, calls `proxy.shutdown()`. Stream closes. Client `on_close` delivers synthetic `trait.on_unregister()`. | Implemented |
+| **LIFE-03** | **Drop without unregister** | Client drops proxy without calling `unregister()`. | Proxy `Drop` cancels tasks, stream closes. Server `on_close` fires: takes sink, calls `sink.unregister()`, cancels proxy. BPA removes component. | Implemented |
+| **LIFE-04** | **Server crash** | Server stream drops unexpectedly. | Client reader detects error/close, `on_close` fires: delivers synthetic `trait.on_unregister()` to trait impl. | Implemented |
+| **LIFE-05** | **Race: simultaneous unregister** | Client and BPA unregister concurrently. | `Mutex<Option>.take()` ensures exactly one path takes the sink. No double-unregister, no deadlock. | Implemented |
+| **LIFE-06** | **Synthetic on_unregister exactly once** | BPA sends `on_unregister` then stream closes. | Client trait impl receives `on_unregister()` exactly once (from `on_close`), not twice. | Implemented |
 
 ### Suite 7: Server Proxy Handlers
 
@@ -123,8 +124,12 @@ Unregistration does not use explicit protocol messages. Closing the stream is th
 
 These tests are implemented as integration tests within the `hardy-proto` package.
 
-* **Suites 1–4 (Client message mapping):** `tests/client_tests.rs` — mock server approach
-* **Suite 5 (Error handling):** `tests/client_tests.rs` — mock server approach
-* **Suites 6–7 (Lifecycle & Server):** `tests/lifecycle_tests.rs` — paired mock client/server
+* **Suite 1 (Application client):** `tests/application_tests.rs` — mock server approach
+* **Suite 2 (CLA client):** `tests/cla_tests.rs` — mock server approach
+* **Suite 3 (Service client):** `tests/service_tests.rs` — mock server approach
+* **Suite 4 (Routing agent client):** `tests/routing_agent_tests.rs` — mock server approach
+* **Suite 5 (Error handling):** `src/client/routing.rs` unit tests (ERR-CLI-02/03/04)
+* **Suite 6 (Lifecycle):** `tests/lifecycle_tests.rs` — paired mock client/server
+* **Suite 7 (Server proxy handlers):** TBD — paired mock client/server
 * **Command:** `cargo test -p hardy-proto`
 * **Dependencies:** `tokio`, `tonic`, `proptest` (optional for fuzzing inputs).
