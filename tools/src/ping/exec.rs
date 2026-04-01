@@ -235,9 +235,12 @@ async fn exec_external_cla(
 
     let result = run_ping(args, bpa).await;
 
-    // Clean up: stop gRPC server and kill CLA subprocess
-    tasks.shutdown().await;
+    // Clean up: kill CLA subprocess first, then stop gRPC server.
+    // Order matters: gRPC server shutdown (tonic serve_with_shutdown) waits
+    // for active connections to close. The CLA holds an active gRPC stream,
+    // so the server would hang if we tried to shut it down first.
     let _ = child.kill().await;
+    tasks.shutdown().await;
 
     result
 }
