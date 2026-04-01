@@ -16,8 +16,8 @@
 | 4 | Routing Agent Client | 3 | 3 | **Complete** |
 | 5 | Error Handling | 3 | 3 | **Complete** |
 | 6 | Unregistration & Lifecycle | 6 | 6 | **Complete** |
-| 7 | Server Proxy Handlers | 6 | 0 | Not started |
-| | **Total** | **34** | **28** | **82%** |
+| 7 | Server Proxy Handlers | 3 | 3 | **Complete** |
+| | **Total** | **31** | **31** | **100%** |
 
 ## 2. Test Inventory
 
@@ -88,6 +88,16 @@ These are unit tests because they use custom mock servers built from crate-inter
 | `common/mod.rs` | MockBpa (BpaRegistration impl), sink wrappers, server helpers, port allocation |
 | `common/sinks.rs` | Mock sink implementations (RoutingSink, CLA Sink, ServiceSink, ApplicationSink) |
 
+### Suite 7: Server Proxy Handlers (unit tests in `src/server/routing.rs`)
+
+These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration handshake), SRV-05 (on_close cancels proxy), and SRV-06 (on_unregister drains proxy) were removed — they are covered by Suites 1–4 and Suite 6 lifecycle tests respectively.
+
+| Test Function | Test ID | Scope |
+| :--- | :--- | :--- |
+| `srv_02_sink_available_after_register` | SRV-02 | `sink()` returns Ok after on_register stores a sink |
+| `srv_03_sink_unavailable_after_unregister` | SRV-03 | `sink()` returns Err(Unavailable) after sink is taken |
+| `srv_04_spin_lock_not_held_across_await` | SRV-04 | Re-entrant on_unregister during unregister() does not deadlock |
+
 ## 3. Key Bugs Found During Development
 
 | Bug | Root Cause | Fix |
@@ -97,7 +107,24 @@ These are unit tests because they use custom mock servers built from crate-inter
 | Orphaned proxy tasks on drop | RpcProxy Drop didn't cancel tasks | Added `Drop` impl that calls `cancel()` |
 | Re-entrant shutdown deadlock | `proxy.shutdown()` called from within reader task (on_close) | Added `is_cancelled()` guard in `shutdown()` |
 
-## 4. Gaps
+## 4. Line Coverage
 
-- **Suite 7** (Server proxy handlers): sink ownership lifecycle, spin lock safety not yet unit tested. Covered implicitly by Suite 6 lifecycle tests.
-- **Line coverage**: not yet measured (`cargo llvm-cov` not available in container).
+`cargo llvm-cov test --package hardy-proto`, 2026-04-01.
+
+| File | Lines | Coverage |
+| :--- | :--- | :--- |
+| `client/application.rs` | 100 / 175 | 57.1% |
+| `client/cla.rs` | 83 / 116 | 71.6% |
+| `client/mod.rs` | 16 / 20 | 80.0% |
+| `client/routing.rs` | 180 / 205 | 87.8% |
+| `client/service.rs` | 94 / 135 | 69.6% |
+| `proto.rs` | 142 / 192 | 74.0% |
+| `proxy.rs` | 175 / 195 | 89.7% |
+| `server/application.rs` | 114 / 160 | 71.3% |
+| `server/cla.rs` | 138 / 167 | 82.6% |
+| `server/mod.rs` | 44 / 56 | 78.6% |
+| `server/routing.rs` | 158 / 179 | 88.3% |
+| `server/service.rs` | 110 / 136 | 80.9% |
+| **Total** | **1354 / 1736** | **78.0%** |
+
+The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_receive`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
