@@ -111,14 +111,15 @@ Unregistration does not use explicit protocol messages. Closing the stream is th
 
 *Objective: Verify server-side proxy implementations correctly manage sink ownership and proxy lifecycle.*
 
+*SRV-01 (Registration handshake) removed — covered by every Suite 1–4 registration test.*
+*SRV-05 (on\_close cancels proxy) removed — covered by LIFE-03 and LIFE-04.*
+*SRV-06 (on\_unregister drains proxy) removed — covered by LIFE-02.*
+
 | Test ID | Scenario | Setup | Expected Behavior | Status |
 | ----- | ----- | ----- | ----- | ----- |
-| **SRV-01** | **Registration handshake** | Client sends `RegisterRequest` as first message. | Server creates `RemoteXxx`, registers with BPA via `BpaRegistration`, stores sink, starts proxy. | Not implemented |
-| **SRV-02** | **Sink available after register** | Handler receives a request after registration. | `sink()` returns `Ok(Arc<dyn Sink>)`, operation forwarded to BPA. | Not implemented |
-| **SRV-03** | **Sink unavailable after unregister** | Handler receives a request after sink has been taken. | `sink()` returns `Err(Unavailable)`, handler returns error response. | Not implemented |
-| **SRV-04** | **Spin lock not held across await** | `on_close` calls `unregister()`, BPA callback re-enters `on_unregister()`. | No deadlock. Spin lock released before `sink.unregister().await`. | Not implemented |
-| **SRV-05** | **on_close cancels proxy** | Stream closes after `on_close` completes. | `proxy.on_unregister()` called, writer task exits, tonic connection freed. | Not implemented |
-| **SRV-06** | **on_unregister drains proxy (BPA-initiated)** | BPA calls `on_unregister()` with sink present. | `proxy.shutdown().await` called, handler and infrastructure tasks drain before returning. | Not implemented |
+| **SRV-02** | **Sink available after register** | `on_register` stores a sink. | `sink()` returns `Ok(Arc<dyn Sink>)`. | Implemented |
+| **SRV-03** | **Sink unavailable after unregister** | Sink has been taken. | `sink()` returns `Err(Unavailable)`. | Implemented |
+| **SRV-04** | **Spin lock not held across await** | `unregister()` called, BPA callback re-enters `on_unregister()`. | No deadlock. Spin lock released before `sink.unregister().await`. | Implemented |
 
 ## 4. Execution Strategy
 
@@ -130,6 +131,6 @@ These tests are implemented as integration tests within the `hardy-proto` packag
 * **Suite 4 (Routing agent client):** `tests/routing_agent_tests.rs` — mock server approach
 * **Suite 5 (Error handling):** `src/client/routing.rs` unit tests (ERR-CLI-02/03/04)
 * **Suite 6 (Lifecycle):** `tests/lifecycle_tests.rs` — paired mock client/server
-* **Suite 7 (Server proxy handlers):** TBD — paired mock client/server
+* **Suite 7 (Server proxy handlers):** `src/server/routing.rs` unit tests (SRV-02/03/04)
 * **Command:** `cargo test -p hardy-proto`
 * **Dependencies:** `tokio`, `tonic`, `proptest` (optional for fuzzing inputs).
