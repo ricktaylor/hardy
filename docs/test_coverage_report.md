@@ -3,7 +3,7 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Project** | Hardy (Cloud-based DTN Router) |
-| **Date** | 2026-03-30 |
+| **Date** | 2026-04-01 |
 | **Status** | READY FOR REVIEW |
 
 ## 1. Executive Summary
@@ -16,6 +16,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 * **Storage:** High coverage (Generic Integration Suite in `tests/storage` covers trait-level CRUD, polling, and recovery for all backends). Backend-specific gaps: SQLite migration/concurrency/corruption; localdisk dirty-directory cleanup/filesystem structure.
 * **Transport:** High coverage (TCPCLv4 interop tests with 4 independent implementations + 2 fuzz targets). RFC 9174 compliance matrix complete (all 10 LLRs verified).
 * **System:** Moderate coverage (Basic End-to-End & Interop defined). Interop tests for dtn7-rs, HDTN, DTNME, ud3tn, and hardy-to-hardy passing.
+* **gRPC Proxies:** Full coverage (proto crate 31/31 plan tests, 78.0% line coverage). Client message mapping, error handling, lifecycle/unregistration, and server proxy handler tests all complete.
 * **BPA:** Low unit test coverage (28% — only RIB tested, 36 stubs with `todo!()`). Covered at system level by interop tests and fuzz harness.
 
 ## 2. Test Plan Inventory
@@ -57,6 +58,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **cbor** | [`test_coverage_report.md`](../cbor/docs/test_coverage_report.md) | 68.2% (generic monomorphisation) | 38/38 (100%) |
 | **bpv7** | [`test_coverage_report.md`](../bpv7/docs/test_coverage_report.md) | 78.2% | 21/21 (100%) |
 | **eid-patterns** | [`test_coverage_report.md`](../eid-patterns/docs/test_coverage_report.md) | 56.3% (DTN glob broken) | 22/26 (85%) |
+| **proto** | [`test_coverage_report.md`](../proto/docs/test_coverage_report.md) | 78.0% (generic monomorphisation) | 31/31 (100%) |
 | **tcpclv4** | [`test_coverage_report.md`](../tcpclv4/docs/test_coverage_report.md) | N/A (interop-verified) | 10/10 LLRs (100%) |
 
 ## 3. Test Statistics
@@ -86,7 +88,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **Azure Blob Storage** | [REQ-11](requirements.md#req-11-support-for-azure-blob-storage-for-bundle-storage) | **Missing** (Not Implemented) |
 | **Azure SQL Metadata** | [REQ-12](requirements.md#req-12-support-for-azure-sql-for-bundle-metadata-storage) | **Missing** (Not Implemented) |
 | **Helm Charts** | [REQ-16](requirements.md#req-16-kubernetes-packaging) | **Missing** (Defined in [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) but not implemented) |
-| **TVR Agent** | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Missing** (Scaffolding on feature branch; not on main) |
+| **TVR Agent** | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Missing** (PR ready to merge; not yet on main) |
 | **BP Tools (perf, send, trace)** | [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) (19.2.1, 19.2.3) | **Missing** (Only `bp ping` implemented) |
 
 ### 4.2 Implemented (with test gaps)
@@ -104,8 +106,8 @@ This report summarizes the test planning and execution status for the Hardy proj
 
 | PICS Item | Feature | Status | Impact |
 | :--- | :--- | :--- | :--- |
-| **28** | BP Managed Information (Annex C) | M / **N** | Only mandatory PICS item not implemented. CBSR-based approach planned instead. See [PICS_Test_Mapping.md](PICS_Test_Mapping.md) §4.1. |
+| **28** | BP Managed Information (Annex C) | M / **N** | Only mandatory PICS item not implemented. See [PICS_Test_Mapping.md](PICS_Test_Mapping.md) §4.1. |
 
 ## 5. Conclusion
 
-The project has a comprehensive verification strategy for all implemented features. All 22 test plan documents are present and substantive (55–201 lines each). The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage) and the proto crate (0 tests implemented despite a complete test plan).
+The project has a comprehensive verification strategy for all implemented features. All 22 test plan documents are present and substantive (55–201 lines each). The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. The proto crate has 100% plan coverage (31/31 tests, 78.0% line coverage) across 7 test suites covering client proxies, error handling, lifecycle, and server handlers. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary remaining test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage).
