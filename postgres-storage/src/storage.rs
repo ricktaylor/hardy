@@ -527,7 +527,6 @@ impl storage::MetadataStorage for Storage {
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
                  WHERE status != $1
-                   AND expiry <= NOW()
                    AND (expiry, id) > ($2, $3)
                  ORDER BY expiry ASC, id ASC
                  LIMIT $4",
