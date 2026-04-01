@@ -277,7 +277,7 @@ impl Dispatcher {
     /// Queue a bundle for dispatch processing
     pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
         self.store
-            .update_status(&mut bundle, bundle::BundleStatus::Dispatching)
+            .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
             .await;
 
         if self.dispatch_tx.send(bundle).await.is_err() {
@@ -358,7 +358,7 @@ impl Dispatcher {
                 debug!("Storing bundle until a forwarding opportunity arises");
 
                 self.store
-                    .update_status(&mut bundle, bundle::BundleStatus::Waiting)
+                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
                     .await;
                 self.store.watch_bundle(bundle).await
             }

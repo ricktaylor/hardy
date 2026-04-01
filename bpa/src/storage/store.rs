@@ -80,22 +80,28 @@ impl Store {
         }
     }
 
-    /// Load bundle data by storage name (cache-first strategy).
-    ///
-    /// Checks the LRU cache first (peek without updating order), then falls
-    /// back to the bundle storage backend if not cached.
+    /// Load bundle data by storage name (read-through cache).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
         if let Some(cache) = &self.bundle_cache {
-            if let Some(data) = cache.lru.lock().peek(storage_name) {
+            if let Some(data) = cache.lru.lock().get(storage_name) {
                 return Some(data.clone());
             }
         }
 
-        self.bundle_storage
+        let data = self
+            .bundle_storage
             .load(storage_name)
             .await
-            .trace_expect("Failed to load bundle data")
+            .trace_expect("Failed to load bundle data")?;
+
+        if let Some(cache) = &self.bundle_cache {
+            if data.len() < cache.max_bundle_size {
+                cache.lru.lock().put(Arc::from(storage_name), data.clone());
+            }
+        }
+
+        Some(data)
     }
 
     /// Save bundle data (persist-first, then cache small bundles).
@@ -189,9 +195,9 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: bundle::BundleStatus) {
-        if bundle.metadata.status != status {
-            bundle.metadata.status = status;
+    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: &bundle::BundleStatus) {
+        if bundle.metadata.status != *status {
+            bundle.metadata.status = status.clone();
             self.metadata_storage
                 .update_status(bundle)
                 .await

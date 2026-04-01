@@ -99,7 +99,7 @@ impl Dispatcher {
                             service: report.bundle_id.source.clone(),
                         };
 
-                        self.store.update_status(&mut bundle, desired).await;
+                        self.store.update_status(&mut bundle, &desired).await;
 
                         self.store.watch_bundle(bundle).await;
                     }

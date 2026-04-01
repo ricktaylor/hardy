@@ -129,7 +129,7 @@ impl Sender {
     /// Send a bundle, updating its status to match the channel's target status.
     pub async fn send(&self, mut bundle: bundle::Bundle) -> Result<(), SendError> {
         self.store
-            .update_status(&mut bundle, self.shared.status.clone())
+            .update_status(&mut bundle, &self.shared.status)
             .await;
 
         // State can change between load and CAS - this is fine, CAS handles races

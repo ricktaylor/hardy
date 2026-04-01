@@ -86,7 +86,7 @@ impl Default for NodeIds {
 
 impl From<&NodeIds> for Vec<NodeId> {
     fn from(value: &NodeIds) -> Self {
-        let mut v = Vec::new();
+        let mut v = Vec::with_capacity(2);
         if let Some(node_id) = &value.ipn {
             v.push(NodeId::Ipn(node_id.clone()));
         }
