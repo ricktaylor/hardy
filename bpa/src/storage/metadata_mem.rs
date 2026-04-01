@@ -4,7 +4,6 @@ use lru::LruCache;
 use tracing::info;
 
 use super::{MetadataStorage, Result, Sender};
-use crate::BTreeMap;
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 
 #[derive(Debug)]
@@ -100,22 +99,19 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
-    async fn poll_expiry(&self, tx: Sender<Bundle>, mut limit: usize) -> Result<()> {
-        let mut entries = BTreeMap::new();
-        for (_, v) in self.entries.lock().iter() {
-            if let Some(v) = v
-                && v.metadata.status != BundleStatus::New
-            {
-                entries.insert(v.expiry(), v.clone());
-            }
-        }
+    async fn poll_expiry(&self, tx: Sender<Bundle>, limit: usize) -> Result<()> {
+        let mut entries: Vec<Bundle> = self
+            .entries
+            .lock()
+            .iter()
+            .filter_map(|(_, v)| v.as_ref())
+            .filter(|v| v.metadata.status != BundleStatus::New)
+            .cloned()
+            .collect();
 
-        for (_, e) in entries {
-            if limit == 0 {
-                break;
-            }
-            limit -= 1;
+        entries.sort_unstable_by_key(|b| b.expiry());
 
+        for e in entries.into_iter().take(limit) {
             if tx.send_async(e).await.is_err() {
                 break;
             }
@@ -124,19 +120,18 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn poll_waiting(&self, tx: Sender<Bundle>) -> Result<()> {
-        let mut entries = BTreeMap::new();
-        for bundle in self
+        let mut entries: Vec<Bundle> = self
             .entries
             .lock()
             .iter()
-            .filter_map(|(_, bundle)| bundle.as_ref())
-        {
-            if bundle.metadata.status == BundleStatus::Waiting {
-                entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
-            }
-        }
+            .filter_map(|(_, v)| v.as_ref())
+            .filter(|b| b.metadata.status == BundleStatus::Waiting)
+            .cloned()
+            .collect();
 
-        for bundle in entries.into_values() {
+        entries.sort_unstable_by_key(|b| b.metadata.read_only.received_at);
+
+        for bundle in entries {
             if tx.send_async(bundle).await.is_err() {
                 break;
             }
@@ -145,16 +140,20 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) -> Result<()> {
-        let mut entries = BTreeMap::new();
-        for bundle in self.entries.lock().iter().filter_map(|(_, v)| v.as_ref()) {
-            if let BundleStatus::WaitingForService { service: s } = &bundle.metadata.status
-                && s == &source
-            {
-                entries.insert(bundle.metadata.read_only.received_at, bundle.clone());
-            }
-        }
+        let mut entries: Vec<Bundle> = self
+            .entries
+            .lock()
+            .iter()
+            .filter_map(|(_, v)| v.as_ref())
+            .filter(|b| {
+                matches!(&b.metadata.status, BundleStatus::WaitingForService { service } if service == &source)
+            })
+            .cloned()
+            .collect();
 
-        for bundle in entries.into_values() {
+        entries.sort_unstable_by_key(|b| b.metadata.read_only.received_at);
+
+        for bundle in entries {
             if tx.send_async(bundle).await.is_err() {
                 break;
             }
@@ -163,15 +162,22 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn poll_adu_fragments(&self, tx: Sender<Bundle>, status: &BundleStatus) -> Result<()> {
-        let mut entries = BTreeMap::new();
-        for (_, v) in self.entries.lock().iter() {
-            if let Some(v) = v
-                && &v.metadata.status == status
-                && let Some(fi) = &v.bundle.id.fragment_info
-            {
-                entries.insert(fi.offset, v.clone());
-            }
-        }
+        let mut entries: Vec<(u64, Bundle)> = self
+            .entries
+            .lock()
+            .iter()
+            .filter_map(|(_, v)| v.as_ref())
+            .filter(|v| &v.metadata.status == status)
+            .filter_map(|v| {
+                v.bundle
+                    .id
+                    .fragment_info
+                    .as_ref()
+                    .map(|fi| (fi.offset, v.clone()))
+            })
+            .collect();
+
+        entries.sort_unstable_by_key(|(offset, _)| *offset);
 
         for (_, e) in entries {
             if tx.send_async(e).await.is_err() {
@@ -185,23 +191,20 @@ impl MetadataStorage for MetadataMemStorage {
         &self,
         tx: Sender<Bundle>,
         state: &BundleStatus,
-        mut limit: usize,
+        limit: usize,
     ) -> Result<()> {
-        let mut entries = BTreeMap::new();
-        for (_, v) in self.entries.lock().iter() {
-            if let Some(v) = v
-                && &v.metadata.status == state
-            {
-                entries.insert(v.metadata.read_only.received_at, v.clone());
-            }
-        }
+        let mut entries: Vec<Bundle> = self
+            .entries
+            .lock()
+            .iter()
+            .filter_map(|(_, v)| v.as_ref())
+            .filter(|v| &v.metadata.status == state)
+            .cloned()
+            .collect();
 
-        for (_, e) in entries {
-            if limit == 0 {
-                break;
-            }
-            limit -= 1;
+        entries.sort_unstable_by_key(|b| b.metadata.read_only.received_at);
 
+        for e in entries.into_iter().take(limit) {
             if tx.send_async(e).await.is_err() {
                 break;
             }

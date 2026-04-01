@@ -89,37 +89,40 @@ impl BundleStorage for BundleMemStorage {
 
     async fn save(&self, data: Bytes) -> Result<Arc<str>> {
         let mut rng = rand::rng();
-        let mut inner = self.inner.lock();
-        let storage_name = loop {
-            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
-            if !inner.cache.contains(&storage_name) {
-                break storage_name;
-            }
-        };
-
         let new_len = data.len();
-        let old_len = inner
-            .cache
-            .put(
-                storage_name.clone(),
-                (time::OffsetDateTime::now_utc(), data),
-            )
-            .map(|(_, d)| d.len())
-            .unwrap_or(0);
 
-        // Ensure we cap the total stored, but keep 32 bundles
-        inner.capacity = inner
-            .capacity
-            .saturating_sub(old_len)
-            .saturating_add(new_len);
-        while inner.cache.len() > self.min_bundles && inner.capacity > self.max_capacity.into() {
-            let Some((_, (_, d))) = inner.cache.pop_lru() else {
-                break;
-            };
-            inner.capacity = inner.capacity.saturating_sub(d.len());
+        loop {
+            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
+
+            let mut inner = self.inner.lock();
+            if inner.cache.contains(&storage_name) {
+                continue;
+            }
+
+            let old_len = inner
+                .cache
+                .put(
+                    storage_name.clone(),
+                    (time::OffsetDateTime::now_utc(), data),
+                )
+                .map(|(_, d)| d.len())
+                .unwrap_or(0);
+
+            inner.capacity = inner
+                .capacity
+                .saturating_sub(old_len)
+                .saturating_add(new_len);
+            while inner.cache.len() > self.min_bundles
+                && inner.capacity > self.max_capacity.into()
+            {
+                let Some((_, (_, d))) = inner.cache.pop_lru() else {
+                    break;
+                };
+                inner.capacity = inner.capacity.saturating_sub(d.len());
+            }
+
+            return Ok(storage_name.into());
         }
-
-        Ok(storage_name.into())
     }
 
     async fn delete(&self, storage_name: &str) -> Result<()> {
