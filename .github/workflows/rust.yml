@@ -82,7 +82,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Start postgres and minio
-        run: docker compose -f tests/compose.storage-tests.yml up -d --wait
+        run: |
+          docker compose -f tests/compose.storage-tests.yml up -d --wait
+
+      - name: Create S3 test bucket
+        run: |
+          docker compose -f tests/compose.storage-tests.yml exec minio \
+            mc alias set local http://localhost:9000 minioadmin minioadmin
+          docker compose -f tests/compose.storage-tests.yml exec minio \
+            mc mb --ignore-existing local/hardy-test
 
       - name: Run storage tests
         env:
