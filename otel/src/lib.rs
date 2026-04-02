@@ -75,13 +75,13 @@ fn init_logs(resource: &Resource) -> SdkLoggerProvider {
 }
 
 pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level) -> OtelGuard {
-    // Create a filter with the specified level as default
+    // Create a filter using RUST_LOG if set, falling back to the configured level
     let make_filter = || {
         EnvFilter::builder()
             .with_default_directive(
                 tracing_subscriber::filter::LevelFilter::from_level(level).into(),
             )
-            .parse_lossy("")
+            .from_env_lossy()
     };
 
     let resource = Resource::builder()
