@@ -6,16 +6,22 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: hardy-bpa-server
-  DOCKERFILE_CONTEXT: "."
-  DOCKERFILE_TARGET: "runtime"
-  DOCKERFILE_PATH: "./bpa-server/Dockerfile"
 
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+
+    strategy:
+      matrix:
+        include:
+          - image: hardy-bpa-server
+            dockerfile: ./bpa-server/Dockerfile
+            build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
+          - image: hardy-tcpclv4-server
+            dockerfile: ./tcpclv4-server/Dockerfile
+            build-args: ""
 
     steps:
       - uses: actions/checkout@v6
@@ -34,21 +40,21 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}
           tags: |
             type=sha
             type=raw,value=latest
-        
+
       - name: Build and push with cache
         uses: docker/build-push-action@v7
         with:
-          context: ${{ env.DOCKERFILE_CONTEXT }}
-          file: ${{ env.DOCKERFILE_PATH }}
-          target: ${{ env.DOCKERFILE_TARGET }}
-          build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
+          context: "."
+          file: ${{ matrix.dockerfile }}
+          target: runtime
+          build-args: ${{ matrix.build-args }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:buildcache,mode=max
           platforms: linux/amd64,linux/arm64
