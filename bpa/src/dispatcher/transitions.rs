@@ -44,7 +44,7 @@ impl Dispatcher {
     /// The bundle will be re-dispatched when the RIB signals a matching route.
     pub(super) async fn wait_for_route(&self, mut bundle: bundle::Bundle) {
         self.store
-            .update_status(&mut bundle, bundle::BundleStatus::Waiting)
+            .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
             .await;
         self.store.watch_bundle(bundle).await;
     }
@@ -57,7 +57,7 @@ impl Dispatcher {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
-        self.store.update_status(&mut bundle, status).await;
+        self.store.update_status(&mut bundle, &status).await;
         self.store.watch_bundle(bundle).await;
     }
 
@@ -68,7 +68,7 @@ impl Dispatcher {
         self.store
             .update_status(
                 &mut bundle,
-                bundle::BundleStatus::WaitingForService { service },
+                &bundle::BundleStatus::WaitingForService { service },
             )
             .await;
         self.store.watch_bundle(bundle).await;
