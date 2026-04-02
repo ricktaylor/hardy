@@ -148,7 +148,9 @@ impl Dispatcher {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
                     dispatcher.ingest_bundle(bundle, data).await;
                 } else {
-                    dispatcher.delete_bundle(bundle).await;
+                    dispatcher
+                        .drop_bundle(bundle, ReasonCode::DepletedStorage)
+                        .await;
                 }
             }
         });
