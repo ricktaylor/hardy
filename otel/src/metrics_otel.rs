@@ -83,14 +83,14 @@ impl Recorder for OpenTelemetryRecorder {
             self.counters
                 .entry(key.get_hash())
                 .or_insert_with(|| {
-                    let mut counter = self.meter.u64_counter(key.name().to_string());
+                    let mut counter = self.meter.u64_counter(key.name().to_owned());
                     if let Some(desc) = self.counter_descs.get(key.name()) {
                         let (unit, description) = desc.value();
                         if let Some(u) = unit {
                             counter = counter.with_unit(otel_unit(u));
                         }
                         if !description.is_empty() {
-                            counter = counter.with_description(description.to_string());
+                            counter = counter.with_description(description.clone());
                         }
                     }
                     Arc::new(InnerCounter {
@@ -98,7 +98,7 @@ impl Recorder for OpenTelemetryRecorder {
                         labels: key
                             .labels()
                             .map(|label| {
-                                KeyValue::new(label.key().to_string(), label.value().to_string())
+                                KeyValue::new(label.key().to_owned(), label.value().to_owned())
                             })
                             .collect(),
                     })
@@ -113,14 +113,14 @@ impl Recorder for OpenTelemetryRecorder {
             self.gauges
                 .entry(key.get_hash())
                 .or_insert_with(|| {
-                    let mut gauge = self.meter.f64_gauge(key.name().to_string());
+                    let mut gauge = self.meter.f64_gauge(key.name().to_owned());
                     if let Some(desc) = self.gauge_descs.get(key.name()) {
                         let (unit, description) = desc.value();
                         if let Some(u) = unit {
                             gauge = gauge.with_unit(otel_unit(u));
                         }
                         if !description.is_empty() {
-                            gauge = gauge.with_description(description.to_string());
+                            gauge = gauge.with_description(description.clone());
                         }
                     }
                     Arc::new(InnerGauge {
@@ -128,9 +128,10 @@ impl Recorder for OpenTelemetryRecorder {
                         labels: key
                             .labels()
                             .map(|label| {
-                                KeyValue::new(label.key().to_string(), label.value().to_string())
+                                KeyValue::new(label.key().to_owned(), label.value().to_owned())
                             })
                             .collect(),
+                        current: AtomicU64::new(0f64.to_bits()),
                     })
                 })
                 .value()
@@ -143,14 +144,14 @@ impl Recorder for OpenTelemetryRecorder {
             self.histograms
                 .entry(key.get_hash())
                 .or_insert_with(|| {
-                    let mut histogram = self.meter.f64_histogram(key.name().to_string());
+                    let mut histogram = self.meter.f64_histogram(key.name().to_owned());
                     if let Some(desc) = self.histogram_descs.get(key.name()) {
                         let (unit, description) = desc.value();
                         if let Some(u) = unit {
                             histogram = histogram.with_unit(otel_unit(u));
                         }
                         if !description.is_empty() {
-                            histogram = histogram.with_description(description.to_string());
+                            histogram = histogram.with_description(description.clone());
                         }
                     }
                     Arc::new(InnerHistogram {
@@ -158,7 +159,7 @@ impl Recorder for OpenTelemetryRecorder {
                         labels: key
                             .labels()
                             .map(|label| {
-                                KeyValue::new(label.key().to_string(), label.value().to_string())
+                                KeyValue::new(label.key().to_owned(), label.value().to_owned())
                             })
                             .collect(),
                     })
