@@ -15,7 +15,7 @@ use crate::routes::{self, RoutingAgent};
 use crate::services::Service;
 use crate::services::registry::Registry as ServiceRegistry;
 use crate::storage::Store;
-use crate::{Arc, services};
+use crate::{Arc, otel_metrics, services};
 
 /// Trait for registering CLAs, services, and applications with a BPA.
 ///
@@ -242,6 +242,8 @@ impl Bpa {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub fn start(&self, recover_storage: bool) {
+        otel_metrics::init();
+
         // Start the store
         self.store.start(self.dispatcher.clone(), recover_storage);
 
