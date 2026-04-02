@@ -57,6 +57,8 @@ Instruments are lazily created and cached using `DashMap` for thread-safe concur
 
 The `metrics` crate's `GaugeFn` trait requires `increment(f64)` and `decrement(f64)`, but OpenTelemetry gauges only support `record(absolute_value)`. The recorder bridges this gap by maintaining an `AtomicU64` (storing `f64` bits via `to_bits()`/`from_bits()`) per gauge instrument. A compare-exchange loop atomically updates the value and calls `gauge.record()` with the result. `Relaxed` ordering is sufficient since gauges are observational snapshots, not synchronization primitives.
 
+**Known race condition:** The CAS update of `current` and the subsequent `gauge.record()` call are not atomic together. Under concurrent updates, a thread could record a stale value after a newer value has already been recorded by another thread. The internal `current` state is always correct (the CAS guarantees this), but the OTEL-exported value could momentarily reflect a previous state. This self-corrects on the next gauge operation — the race window is nanoseconds versus the typical 60-second OTEL export interval. A future improvement would be to use an OTEL observable gauge (pull model), where a callback reads `current` at export time, eliminating the race entirely.
+
 ### Telemetry Loop Prevention
 
 A common problem with OpenTelemetry integration is telemetry-induced-telemetry: the OTLP exporter uses HTTP/gRPC, which generates its own logs and traces, which get exported, creating an infinite loop.
