@@ -192,19 +192,43 @@ impl metrics::CounterFn for InnerCounter {
 struct InnerGauge {
     gauge: OtelGauge<f64>,
     labels: Vec<KeyValue>,
+    current: AtomicU64, // stores f64 bits via to_bits()/from_bits()
+}
+
+impl InnerGauge {
+    fn update_and_record(&self, f: impl Fn(f64) -> f64) {
+        let new_val = loop {
+            let bits = self.current.load(Ordering::Relaxed);
+            let new_val = f(f64::from_bits(bits));
+            if self
+                .current
+                .compare_exchange_weak(
+                    bits,
+                    new_val.to_bits(),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                break new_val;
+            }
+        };
+        self.gauge.record(new_val, &self.labels);
+    }
 }
 
 impl metrics::GaugeFn for InnerGauge {
-    fn increment(&self, _value: f64) {
-        unimplemented!("Incrementing a gauge is not supported by this OpenTelemetry recorder")
+    fn increment(&self, value: f64) {
+        self.update_and_record(|current| current + value);
     }
 
-    fn decrement(&self, _value: f64) {
-        unimplemented!("Decrementing a gauge is not supported by this OpenTelemetry recorder")
+    fn decrement(&self, value: f64) {
+        self.update_and_record(|current| current - value);
     }
 
     fn set(&self, value: f64) {
-        self.gauge.record(value, &self.labels)
+        self.current.store(value.to_bits(), Ordering::Relaxed);
+        self.gauge.record(value, &self.labels);
     }
 }
 
