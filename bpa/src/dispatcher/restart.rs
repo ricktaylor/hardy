@@ -1,5 +1,4 @@
 use super::*;
-use storage::recover::RestartResult;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -7,10 +6,11 @@ impl Dispatcher {
         self: &Arc<Self>,
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,
-    ) -> RestartResult {
+    ) {
         let Some(data) = self.store.load_data(&storage_name).await else {
             // Data has gone while we were restarting
-            return RestartResult::Missing;
+            metrics::counter!("bpa.restart.lost").increment(1);
+            return;
         };
 
         // Parse the bundle (again, just in case we have changed policies etc)
@@ -33,7 +33,7 @@ impl Dispatcher {
 
                         // Remove spurious duplicate
                         self.store.delete_data(&storage_name).await;
-                        RestartResult::Duplicate
+                        metrics::counter!("bpa.restart.duplicate").increment(1);
                     } else {
                         // Resume processing based on checkpoint status
                         match &metadata.status {
@@ -41,24 +41,21 @@ impl Dispatcher {
                                 // Ingress filter not yet complete - run full ingestion
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
-                                RestartResult::Valid
                             }
                             bundle::BundleStatus::Dispatching => {
                                 // Ingress filter done - enqueue for routing
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.dispatch_bundle(bundle).await;
-                                RestartResult::Valid
                             }
                             bundle::BundleStatus::WaitingForService { service: _ } => {
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
-                                RestartResult::Valid
                             }
                             // Other statuses are handled by their respective recovery mechanisms:
                             // - ForwardPending: CLA peer queue recovery
                             // - Waiting: poll_waiting recovery
                             // - AduFragment: fragment reassembly polling
-                            _ => RestartResult::Valid,
+                            _ => {}
                         }
                     }
                 } else {
@@ -93,7 +90,7 @@ impl Dispatcher {
                     self.ingest_bundle(bundle, data).await;
 
                     // Report the bundle as an orphan
-                    RestartResult::Orphan
+                    metrics::counter!("bpa.restart.orphan").increment(1);
                 }
             }
             Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
@@ -120,7 +117,8 @@ impl Dispatcher {
 
                         // Remove spurious duplicate
                         self.store.delete_data(&storage_name).await;
-                        return RestartResult::Duplicate;
+                        metrics::counter!("bpa.restart.duplicate").increment(1);
+                        return;
                     }
                     true
                 } else {
@@ -171,7 +169,7 @@ impl Dispatcher {
                 self.ingest_bundle(bundle, data).await;
 
                 // Report the bundle as an orphan
-                RestartResult::Orphan
+                metrics::counter!("bpa.restart.orphan").increment(1);
             }
             Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
                 bundle,
@@ -194,7 +192,8 @@ impl Dispatcher {
 
                         // Remove spurious duplicate
                         self.store.delete_data(&storage_name).await;
-                        return RestartResult::Duplicate;
+                        metrics::counter!("bpa.restart.duplicate").increment(1);
+                        return;
                     }
                     true
                 } else {
@@ -236,7 +235,7 @@ impl Dispatcher {
                 self.drop_bundle(bundle, Some(reason)).await;
 
                 // Report the bundle as an orphan
-                RestartResult::Orphan
+                metrics::counter!("bpa.restart.orphan").increment(1);
             }
             Err(e) => {
                 // Parse failed badly, no idea who to report to
@@ -246,7 +245,7 @@ impl Dispatcher {
 
                 // Drop the bundle
                 self.store.delete_data(&storage_name).await;
-                RestartResult::Junk
+                metrics::counter!("bpa.restart.junk").increment(1);
             }
         }
     }
