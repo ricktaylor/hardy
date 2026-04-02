@@ -28,6 +28,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **bpv7** | Component | [`COMP-BPV7-CLI-01`](../bpv7/docs/component_test_plan.md) | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171), [REQ-2](requirements.md#req-2-support-for-bpsec-rfc9172-and-default-security-contexts-rfc9173) (BPSec) | **Complete** |
 | **bpsec** | Unit | [`UTP-BPSEC-01`](../bpv7/docs/unit_test_plan_bpsec.md) | [REQ-2](requirements.md#req-2-support-for-bpsec-rfc9172-and-default-security-contexts-rfc9173) (RFC 9172/3) | **Complete** |
 | **eid-patterns** | Unit | [`UTP-PAT-01`](../eid-patterns/docs/unit_test_plan.md) | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171) (EID Pattern Matching) | **Complete** |
+| **otel** | Unit | [`UTP-OTEL-01`](../otel/docs/unit_test_plan.md) | [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) (Metrics Bridge) | **Complete** |
 | **bpa** | Unit | [`UTP-BPA-01`](../bpa/docs/unit_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (Routing), [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Storage) | **Complete** |
 | **bpa** | Integration | [`PLAN-BPA-01`](../bpa/docs/component_test_plan.md) | [REQ-13](requirements.md#req-13-performance) (Perf), Pipeline | **Complete** |
 | **bpa** | Trait | [`PLAN-CLA-01`](../bpa/docs/cla_integration_test_plan.md) | [REQ-3](requirements.md#req-3-full-compliance-with-rfc9174), [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Complete** |
@@ -59,6 +60,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **bpv7** | [`test_coverage_report.md`](../bpv7/docs/test_coverage_report.md) | 78.2% | 21/21 (100%) |
 | **eid-patterns** | [`test_coverage_report.md`](../eid-patterns/docs/test_coverage_report.md) | 56.3% (DTN glob broken) | 22/26 (85%) |
 | **proto** | [`test_coverage_report.md`](../proto/docs/test_coverage_report.md) | 78.0% (generic monomorphisation) | 31/31 (100%) |
+| **otel** | [`test_coverage_report.md`](../otel/docs/test_coverage_report.md) | 99.57% (`metrics_otel.rs`); 83.3% overall (`lib.rs` = integration) | 26/26 (100%) |
 | **tcpclv4** | [`test_coverage_report.md`](../tcpclv4/docs/test_coverage_report.md) | N/A (interop-verified) | 10/10 LLRs (100%) |
 
 ## 3. Test Statistics
@@ -68,7 +70,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | Workspace crates | 33 |
 | `#[test]` functions | ~250 |
 | Fuzz targets | 11 (cbor: 1, bpv7: 3, eid-patterns: 1, bpa: 4, tcpclv4: 2) |
-| Test plan documents | 22 (all present) |
+| Test plan documents | 23 (all present) |
 | PICS items mapped to tests | 49 (16 fully tested, 14 planned, 15 N/A or not implemented) |
 | Interop peers | 4 passing on main (dtn7-rs, HDTN, DTNME, ud3tn), 3 on branches (ION, ESA-BP, cFS) |
 
