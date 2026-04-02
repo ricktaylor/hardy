@@ -112,6 +112,7 @@ pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level
         "tower",
         "h2",
         "hyper_util",
+        "opentelemetry_otlp",
         "opentelemetry_sdk",
     ];
 
