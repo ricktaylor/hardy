@@ -37,6 +37,34 @@ impl OpenTelemetryRecorder {
     }
 }
 
+/// Map `metrics::Unit` strings to OTEL-compatible [UCUM](https://ucum.org/ucum) unit strings.
+///
+/// The `metrics` crate uses human-readable names ("seconds", "bytes") while the
+/// OpenTelemetry specification expects UCUM codes ("s", "By"). Unknown units are
+/// passed through as-is.
+fn otel_unit(unit: &Unit) -> Cow<'static, str> {
+    match unit.as_str() {
+        "count" => "1".into(),
+        "percent" => "%".into(),
+        "seconds" => "s".into(),
+        "milliseconds" => "ms".into(),
+        "microseconds" => "us".into(),
+        "nanoseconds" => "ns".into(),
+        "bytes" => "By".into(),
+        "kibibytes" => "KiBy".into(),
+        "mebibytes" => "MiBy".into(),
+        "gibibytes" => "GiBy".into(),
+        "tebibytes" => "TiBy".into(),
+        "bits_per_second" => "bit/s".into(),
+        "kilobits_per_second" => "kbit/s".into(),
+        "megabits_per_second" => "Mbit/s".into(),
+        "gigabits_per_second" => "Gbit/s".into(),
+        "terabits_per_second" => "Tbit/s".into(),
+        "count_per_second" => "1/s".into(),
+        other => other.into(),
+    }
+}
+
 impl Recorder for OpenTelemetryRecorder {
     fn describe_counter(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
         self.counter_descs.insert(key, (unit, description));
@@ -59,7 +87,7 @@ impl Recorder for OpenTelemetryRecorder {
                     if let Some(desc) = self.counter_descs.get(key.name()) {
                         let (unit, description) = desc.value();
                         if let Some(u) = unit {
-                            counter = counter.with_unit(u.as_str());
+                            counter = counter.with_unit(otel_unit(u));
                         }
                         if !description.is_empty() {
                             counter = counter.with_description(description.to_string());
@@ -89,7 +117,7 @@ impl Recorder for OpenTelemetryRecorder {
                     if let Some(desc) = self.gauge_descs.get(key.name()) {
                         let (unit, description) = desc.value();
                         if let Some(u) = unit {
-                            gauge = gauge.with_unit(u.as_str());
+                            gauge = gauge.with_unit(otel_unit(u));
                         }
                         if !description.is_empty() {
                             gauge = gauge.with_description(description.to_string());
@@ -119,7 +147,7 @@ impl Recorder for OpenTelemetryRecorder {
                     if let Some(desc) = self.histogram_descs.get(key.name()) {
                         let (unit, description) = desc.value();
                         if let Some(u) = unit {
-                            histogram = histogram.with_unit(u.as_str());
+                            histogram = histogram.with_unit(otel_unit(u));
                         }
                         if !description.is_empty() {
                             histogram = histogram.with_description(description.to_string());
