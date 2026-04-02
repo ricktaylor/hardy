@@ -13,12 +13,12 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct OpenTelemetryRecorder {
     meter: Meter,
-    counter_descs: Arc<DashMap<KeyName, (Option<Unit>, SharedString)>>,
-    counters: Arc<DashMap<u64, Arc<InnerCounter>>>,
-    gauge_descs: Arc<DashMap<KeyName, (Option<Unit>, SharedString)>>,
-    gauges: Arc<DashMap<u64, Arc<InnerGauge>>>,
-    histogram_descs: Arc<DashMap<KeyName, (Option<Unit>, SharedString)>>,
-    histograms: Arc<DashMap<u64, Arc<InnerHistogram>>>,
+    counter_descs: DashMap<KeyName, (Option<Unit>, SharedString)>,
+    counters: DashMap<u64, Arc<InnerCounter>>,
+    gauge_descs: DashMap<KeyName, (Option<Unit>, SharedString)>,
+    gauges: DashMap<u64, Arc<InnerGauge>>,
+    histogram_descs: DashMap<KeyName, (Option<Unit>, SharedString)>,
+    histograms: DashMap<u64, Arc<InnerHistogram>>,
 }
 
 impl OpenTelemetryRecorder {
@@ -27,12 +27,12 @@ impl OpenTelemetryRecorder {
     pub fn new(meter: Meter) -> Self {
         OpenTelemetryRecorder {
             meter,
-            counter_descs: Arc::new(DashMap::new()),
-            counters: Arc::new(DashMap::new()),
-            gauge_descs: Arc::new(DashMap::new()),
-            gauges: Arc::new(DashMap::new()),
-            histogram_descs: Arc::new(DashMap::new()),
-            histograms: Arc::new(DashMap::new()),
+            counter_descs: DashMap::new(),
+            counters: DashMap::new(),
+            gauge_descs: DashMap::new(),
+            gauges: DashMap::new(),
+            histogram_descs: DashMap::new(),
+            histograms: DashMap::new(),
         }
     }
 }
