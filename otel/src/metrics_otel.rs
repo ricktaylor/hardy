@@ -202,6 +202,11 @@ struct InnerGauge {
 }
 
 impl InnerGauge {
+    // TODO: The CAS update and gauge.record() are not atomic together — under concurrent
+    // updates a stale value can be recorded after a newer one. The internal `current` is
+    // always correct, but OTEL may briefly export a previous value. This self-corrects on
+    // the next operation. Consider switching to an OTEL observable gauge (pull model) where
+    // a callback reads `current` at export time, eliminating the race entirely.
     fn update_and_record(&self, f: impl Fn(f64) -> f64) {
         let new_val = loop {
             let bits = self.current.load(Ordering::Relaxed);
