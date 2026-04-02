@@ -257,13 +257,8 @@ impl Dispatcher {
                     }
                     bundle.metadata.storage_name = Some(new_storage_name);
                 }
-                // Checkpoint to Dispatching before routing (crash safety).
-                // Use update_metadata (full blob rewrite), not update_status, because
-                // the ingress filter may have mutated the bundle data (storage_name,
-                // flow_label, etc.) and those changes must be persisted atomically
-                // with the status transition.
-                bundle.metadata.status = bundle::BundleStatus::Dispatching;
-                self.store.update_metadata(&bundle).await;
+
+                self.dispatching(&mut bundle).await;
                 (bundle, data)
             }
             filters::registry::ExecResult::Drop(bundle, Some(reason)) => {
@@ -279,9 +274,7 @@ impl Dispatcher {
 
     /// Queue a bundle for dispatch processing
     pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
-        self.store
-            .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-            .await;
+        self.dispatching(&mut bundle).await;
 
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");

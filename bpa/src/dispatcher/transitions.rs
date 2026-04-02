@@ -39,6 +39,16 @@ use super::*;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
 impl Dispatcher {
+    /// `* → Dispatching`: transition bundle into the dispatch pipeline.
+    ///
+    /// Used both as the Ingress-filter checkpoint (`New → Dispatching`) and to
+    /// re-dispatch bundles returning from wait states. Always persists full
+    /// metadata because the Ingress filter may have mutated metadata fields.
+    pub(super) async fn dispatching(&self, bundle: &mut bundle::Bundle) {
+        bundle.metadata.status = bundle::BundleStatus::Dispatching;
+        self.store.update_metadata(bundle).await;
+    }
+
     /// `Dispatching → Waiting`: no route is currently known.
     ///
     /// The bundle will be re-dispatched when the RIB signals a matching route.

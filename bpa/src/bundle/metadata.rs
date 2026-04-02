@@ -17,12 +17,10 @@ pub struct ReadOnlyMetadata {
     pub ingress_peer_node: Option<NodeId>,
     /// The CLA address of the peer
     pub ingress_peer_addr: Option<ClaAddress>,
-    /// The CLA that received this bundle (transient, not persisted)
+    /// The CLA that received this bundle (transient)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ingress_cla: Option<Arc<str>>,
-    /// Transient next-hop EID set by the RIB on each lookup; consumed by egress filters.
-    /// Not persisted. Recomputed on every dispatch cycle.
-    /// Read-only from filters' perspective; access via `Bundle::next_hop()`.
+    /// Transient routing context (not persisted, set during RIB lookup)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub next_hop: Option<Eid>,
 }
