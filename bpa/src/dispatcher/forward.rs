@@ -42,7 +42,7 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
-            // TODO: Replace trace_expect with proper error handling and bpa.filter.error metric
+            // TODO: Replace trace_expect with proper error handling
             .trace_expect("Egress filter execution failed")
         {
             filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
