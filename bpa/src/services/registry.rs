@@ -203,6 +203,10 @@ impl Registry {
             .map(|(_, v)| v)
             .collect::<Vec<_>>();
 
+        if !services.is_empty() {
+            metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
+        }
+
         for service in services {
             self.unregister_service(service).await
         }
@@ -413,6 +417,7 @@ impl Registry {
         };
 
         info!("Registered new service: {service_id}");
+        metrics::gauge!("bpa.service.registered").increment(1.0);
 
         // Add local service to RIB
         self.rib
@@ -444,6 +449,7 @@ impl Registry {
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
+            metrics::gauge!("bpa.service.registered").decrement(1.0);
             self.unregister_service(service).await
         }
     }
