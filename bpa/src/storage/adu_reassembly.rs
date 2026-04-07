@@ -2,7 +2,18 @@ use super::*;
 use core::ops::Range;
 use futures::{FutureExt, join, select_biased};
 
-struct ReassemblyResult {
+pub(crate) enum ReassemblyResult {
+    /// Not all sibling fragments have arrived; fragment data is still in storage.
+    /// Caller should transition the bundle to `AduFragment` and wait.
+    NotReady,
+    /// All fragments arrived and the ADU was successfully reassembled.
+    Done(Arc<str>, Bytes),
+    /// All fragments arrived but reassembly failed (corrupt/misaligned data).
+    /// Fragment data has already been deleted; caller should drop the trigger bundle.
+    Failed,
+}
+
+struct FragmentSet {
     received_at: time::OffsetDateTime,
     adus: HashMap<u64, (hardy_bpv7::bundle::Id, Arc<str>, Range<usize>)>,
 }
@@ -46,37 +57,37 @@ struct ReassemblyResult {
 // }
 
 impl Store {
-    pub async fn adu_reassemble(&self, bundle: &mut bundle::Bundle) -> Option<(Arc<str>, Bytes)> {
+    pub async fn adu_reassemble(&self, bundle: &bundle::Bundle) -> ReassemblyResult {
         let status = bundle::BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
 
-        // See if we can collect all the fragments
-        let Some(results) = self.poll_fragments(bundle, &status).await else {
-            self.update_status(bundle, &status).await;
-            return None;
+        let Some(fragments) = self.poll_fragments(bundle, &status).await else {
+            return ReassemblyResult::NotReady;
         };
 
-        // Now try to reassemble
-        let result = self.reassemble(&results).await;
+        let result = self.reassemble(&fragments).await;
 
         // Remove the fragments from bundle_storage even if we failed to fully reassemble
-        for (bundle_id, storage_name, _) in results.adus.values() {
+        for (bundle_id, storage_name, _) in fragments.adus.values() {
             self.delete_data(storage_name).await;
             self.tombstone_metadata(bundle_id).await;
         }
 
         // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
 
-        result
+        match result {
+            Some((storage_name, data)) => ReassemblyResult::Done(storage_name, data),
+            None => ReassemblyResult::Failed,
+        }
     }
 
     async fn poll_fragments(
         &self,
         bundle: &bundle::Bundle,
         status: &bundle::BundleStatus,
-    ) -> Option<ReassemblyResult> {
+    ) -> Option<FragmentSet> {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();
 
@@ -90,8 +101,6 @@ impl Store {
             .trace_expect("Unfragmented bundle got into adu_reassemble?!");
 
         let total_adu_len = fragment_info.total_adu_length;
-
-        // Initialize with bundle's ADU len, as we haven't set the status yet
         let payload = &bundle
             .bundle
             .blocks
@@ -100,7 +109,7 @@ impl Store {
             .payload_range();
 
         let mut adu_totals = payload.len() as u64;
-        let mut results = ReassemblyResult {
+        let mut results = FragmentSet {
             received_at: bundle.metadata.read_only.received_at,
             adus: [(
                 fragment_info.offset,
@@ -173,11 +182,11 @@ impl Store {
         ).1
     }
 
-    async fn reassemble(&self, results: &ReassemblyResult) -> Option<(Arc<str>, Bytes)> {
+    async fn reassemble(&self, results: &FragmentSet) -> Option<(Arc<str>, Bytes)> {
         let first = results.adus.get(&0).or_else(|| {
             debug!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
-                &results.adus.values().next().unwrap().0
+                results.adus.values().next().map(|v| &v.0)
             );
             None
         })?;
@@ -193,48 +202,45 @@ impl Store {
             )
             .await?;
 
-        // TODO:  There's a lot of mem copies going on here!
-        let mut new_data: Vec<u8> = old_data
-            .slice(
-                bundle
-                    .bundle
-                    .blocks
-                    .get(&1)
-                    .trace_expect("Bundle without payload?!")
-                    .payload_range(),
-            )
-            .into();
+        let total_adu_length = first
+            .0
+            .fragment_info
+            .as_ref()
+            .trace_expect("Fragment 0 missing fragment_info in reassembly?!")
+            .total_adu_length;
 
-        let mut next_offset = first.2.end as u64;
-        let total_adu_length = first.0.fragment_info.as_ref().unwrap().total_adu_length;
+        // Reassemble payload by writing each fragment at its ADU offset.
+        // Iteration order does not matter. Each fragment is placed by offset.
+        // TODO: There's a lot of mem copies going on here!
+        let adu_len = total_adu_length as usize;
+        let mut new_data: Vec<u8> = vec![0; adu_len];
+        let mut bytes_written: u64 = 0;
+
         for (bundle_id, storage_name, payload) in results.adus.values() {
-            let fi = bundle_id.fragment_info.as_ref().unwrap();
+            let fi = bundle_id
+                .fragment_info
+                .as_ref()
+                .trace_expect("Fragment missing fragment_info in reassembly?!");
             if fi.total_adu_length != total_adu_length {
                 debug!(
                     "Total ADU length mismatch during fragment reassembly detected: {bundle_id}"
                 );
                 return None;
             }
-            if fi.offset != next_offset {
-                debug!("Misalignment in offsets during fragment reassembly detected: {bundle_id}");
+
+            let offset = fi.offset as usize;
+            let len = payload.len();
+            if offset.saturating_add(len) > adu_len {
+                debug!("Fragment extends beyond total ADU length: {bundle_id}");
                 return None;
             }
 
-            next_offset = next_offset.saturating_add(payload.len() as u64);
-
             let adu = self.load_data(storage_name).await?.slice(payload.clone());
-            new_data.extend_from_slice(adu.as_ref());
+            new_data[offset..offset + len].copy_from_slice(adu.as_ref());
+            bytes_written = bytes_written.saturating_add(len as u64);
         }
 
-        if next_offset
-            != bundle
-                .bundle
-                .id
-                .fragment_info
-                .as_ref()
-                .unwrap()
-                .total_adu_length
-        {
+        if bytes_written != total_adu_length {
             debug!(
                 "Total reassembled ADU does not match fragment info: {:?}",
                 first.0
