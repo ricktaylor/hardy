@@ -2,7 +2,7 @@ use super::*;
 use core::ops::Range;
 use futures::{FutureExt, join, select_biased};
 
-pub(crate) enum ReassemblyResult {
+pub enum ReassemblyResult {
     /// Not all sibling fragments have arrived; fragment data is still in storage.
     /// Caller should transition the bundle to `AduFragment` and wait.
     NotReady,
