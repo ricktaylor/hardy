@@ -149,8 +149,8 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// # Returns
     ///
-    /// A `Result` containing a boolean indicating whether any bundles were reset.
-    async fn reset_peer_queue(&self, peer: u32) -> Result<bool>;
+    /// A `Result` containing the number of bundles that were reset.
+    async fn reset_peer_queue(&self, peer: u32) -> Result<u64>;
 
     /// Returns the next `limit` bundles, not of status `BundleStatus::New`, ordered by expiry.
     /// The receiver will hang up when it has enough bundles.

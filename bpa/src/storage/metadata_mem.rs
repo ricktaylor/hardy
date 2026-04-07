@@ -85,15 +85,15 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn reset_peer_queue(&self, peer: u32) -> Result<bool> {
-        let mut updated = false;
+    async fn reset_peer_queue(&self, peer: u32) -> Result<u64> {
+        let mut updated = 0;
         for (_, v) in self.entries.lock().iter_mut() {
             if let Some(v) = v
                 && let BundleStatus::ForwardPending { peer: p, queue: _ } = v.metadata.status
                 && p == peer
             {
                 v.metadata.status = BundleStatus::Waiting;
-                updated = true;
+                updated += 1;
             }
         }
         Ok(updated)

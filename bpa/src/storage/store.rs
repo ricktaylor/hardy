@@ -223,10 +223,13 @@ impl Store {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn reset_peer_queue(&self, peer: u32) -> bool {
-        self.metadata_storage
+        let reset = self
+            .metadata_storage
             .reset_peer_queue(peer)
             .await
-            .trace_expect("Failed to reset peer queue")
+            .trace_expect("Failed to reset peer queue");
+
+        reset != 0
     }
 }
 

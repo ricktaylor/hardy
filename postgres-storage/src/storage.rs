@@ -487,7 +487,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
         let rows = sqlx::query(
             "UPDATE metadata
              SET status   = $2,
@@ -503,7 +503,7 @@ impl storage::MetadataStorage for Storage {
         .await?
         .rows_affected();
 
-        Ok(rows > 0)
+        Ok(rows)
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
