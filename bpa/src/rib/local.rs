@@ -77,6 +77,8 @@ impl LocalInner {
 }
 
 impl Rib {
+    // TODO: Add batched variants of add_local/remove_local that take a slice,
+    // acquire the write lock once, and call notify_updated() once per batch.
     async fn add_local(&self, pattern: EidPattern, action: Action) -> bool {
         debug!("Adding local route {pattern} => {action}");
 
