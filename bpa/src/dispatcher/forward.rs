@@ -72,7 +72,7 @@ impl Dispatcher {
                 );
             }
             Err(e) => {
-                metrics::counter!("bpa.bundle.forwarded.failed").increment(1);
+                metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
                 debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
             }
         }
