@@ -15,6 +15,7 @@ impl Dispatcher {
         // Check if a report is requested
         if bundle.bundle.flags.receipt_report_requested {
             debug!("Reporting bundle reception to {}", &bundle.bundle.report_to);
+            metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
@@ -48,6 +49,7 @@ impl Dispatcher {
                 "Reporting bundle as forwarded to {}",
                 &bundle.bundle.report_to
             );
+            metrics::counter!("bpa.status_report.sent", "type" => "forwarding").increment(1);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
@@ -77,6 +79,7 @@ impl Dispatcher {
         // Check if a report is requested
         if bundle.bundle.flags.delivery_report_requested {
             debug!("Reporting bundle delivery to {}", &bundle.bundle.report_to);
+            metrics::counter!("bpa.status_report.sent", "type" => "delivery").increment(1);
 
             // Create a bundle report
             self.dispatch_status_report(
@@ -105,6 +108,7 @@ impl Dispatcher {
         // Check if a report is requested
         if bundle.bundle.flags.delete_report_requested {
             debug!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
+            metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
 
             // Create a bundle report
             self.dispatch_status_report(
