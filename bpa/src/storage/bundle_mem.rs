@@ -118,7 +118,11 @@ impl BundleStorage for BundleMemStorage {
                     break;
                 };
                 inner.capacity = inner.capacity.saturating_sub(d.len());
+                metrics::counter!("bpa.mem_store.evictions").increment(1);
             }
+
+            metrics::gauge!("bpa.mem_store.bundles").set(inner.cache.len() as f64);
+            metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
 
             return Ok(storage_name.into());
         }
@@ -128,6 +132,8 @@ impl BundleStorage for BundleMemStorage {
         let mut inner = self.inner.lock();
         if let Some((_, d)) = inner.cache.pop(storage_name) {
             inner.capacity = inner.capacity.saturating_sub(d.len());
+            metrics::gauge!("bpa.mem_store.bundles").set(inner.cache.len() as f64);
+            metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
         }
         Ok(())
     }

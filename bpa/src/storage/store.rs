@@ -85,8 +85,10 @@ impl Store {
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
         if let Some(cache) = &self.bundle_cache {
             if let Some(data) = cache.lru.lock().get(storage_name) {
+                metrics::counter!("bpa.store.cache.hits").increment(1);
                 return Some(data.clone());
             }
+            metrics::counter!("bpa.store.cache.misses").increment(1);
         }
 
         let data = self
@@ -119,6 +121,8 @@ impl Store {
         if let Some(cache) = &self.bundle_cache {
             if data.len() < cache.max_bundle_size {
                 cache.lru.lock().put(storage_name.clone(), data.clone());
+            } else {
+                metrics::counter!("bpa.store.cache.oversized").increment(1);
             }
         }
 
