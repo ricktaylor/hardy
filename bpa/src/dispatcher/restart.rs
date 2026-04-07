@@ -203,8 +203,12 @@ impl Dispatcher {
                 // Remove it from bundle_storage, it shouldn't be there
                 self.store.delete_data(&storage_name).await;
 
-                // Whatever we have in the store isn't correct
+                if !exists {
+                    // Never knew about this bundle — nothing to report or clean up
+                    return;
+                }
 
+                // Previously accepted bundle — send deletion report and tombstone
                 let bundle = bundle::Bundle {
                     metadata: bundle::BundleMetadata {
                         read_only: bundle::ReadOnlyMetadata {
@@ -216,26 +220,8 @@ impl Dispatcher {
                     bundle,
                 };
 
-                if !exists {
-                    // Save the metadata
-                    self.store.insert_metadata(&bundle).await;
-
-                    // Report we have received the bundle
-                    self.report_bundle_reception(
-                        &bundle,
-                        hardy_bpv7::status_report::ReasonCode::NoAdditionalInformation,
-                    )
-                    .await;
-                } else {
-                    // Replace the metadata
-                    self.store.update_metadata(&bundle).await;
-                }
-
-                // Drop the 'new' bundle
-                self.drop_bundle(bundle, Some(reason)).await;
-
-                // Report the bundle as an orphan
-                metrics::counter!("bpa.restart.orphan").increment(1);
+                self.report_bundle_deletion(&bundle, reason).await;
+                self.store.tombstone_metadata(&bundle.bundle.id).await;
             }
             Err(e) => {
                 // Parse failed badly, no idea who to report to
