@@ -172,7 +172,9 @@ impl Dispatcher {
         // Report we have received the bundle
         self.report_bundle_reception(
             &bundle,
-            if report_unsupported {
+            if let Some(reason) = &reason {
+                *reason
+            } else if report_unsupported {
                 ReasonCode::BlockUnsupported
             } else {
                 ReasonCode::NoAdditionalInformation
@@ -181,8 +183,8 @@ impl Dispatcher {
         .await;
 
         if reason.is_some() {
-            // Not valid, drop it
-            self.drop_bundle(bundle, reason).await;
+            // Invalid bundle — never entered the pipeline, just clean up
+            self.store.tombstone_metadata(&bundle.bundle.id).await;
         } else {
             // Spawn into processing pool for rate limiting
             self.ingest_bundle(bundle, data).await;
