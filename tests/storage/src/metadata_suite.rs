@@ -381,9 +381,9 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_b).await.unwrap());
 
     let changed = store.reset_peer_queue(100).await.unwrap();
-    assert!(
-        changed,
-        "reset_peer_queue should return true when bundles were reset"
+    assert_eq!(
+        changed, 1,
+        "reset_peer_queue should return 1 when bundles were reset"
     );
 
     let got_a = store.get(&bundle_a.bundle.id).await.unwrap().unwrap();

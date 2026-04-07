@@ -477,7 +477,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<bool> {
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
         // Ensure status codes match
         debug_assert!(
             from_status(&BundleStatus::Waiting).0 == 1,
@@ -496,7 +496,7 @@ impl storage::MetadataStorage for Storage {
                 "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
             )?
             .execute((Some(peer),))
-            .map(|c| c > 0)
+            .map(|c| c as u64)
             .map_err(Into::into)
         })
         .await
