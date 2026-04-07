@@ -101,6 +101,9 @@ impl Dispatcher {
             }) => {
                 warn!("Bundle in non-canonical format found: {storage_name}");
 
+                // Remove the previous from bundle_storage
+                self.store.delete_data(&storage_name).await;
+
                 // Check if the metadata_storage knows about this bundle
                 let exists = if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
                     if metadata.storage_name.as_ref() != Some(&storage_name) {
@@ -115,8 +118,6 @@ impl Dispatcher {
                             );
                         }
 
-                        // Remove spurious duplicate
-                        self.store.delete_data(&storage_name).await;
                         metrics::counter!("bpa.restart.duplicate").increment(1);
                         return;
                     }
@@ -128,9 +129,6 @@ impl Dispatcher {
                 // Write the rewritten bundle now for safety
                 let data = Bytes::from(new_data);
                 let new_storage_name = self.store.save_data(&data).await;
-
-                // Remove the previous from bundle_storage
-                self.store.delete_data(&storage_name).await;
 
                 let bundle = bundle::Bundle {
                     metadata: bundle::BundleMetadata {
@@ -178,8 +176,12 @@ impl Dispatcher {
             }) => {
                 warn!("Invalid bundle found: {storage_name}, {error}");
 
+                // Remove it from bundle_storage, it shouldn't be there
+                self.store.delete_data(&storage_name).await;
+                metrics::counter!("bpa.restart.junk").increment(1);
+
                 // Check if the metadata_storage knows about this bundle
-                let exists = if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
+                if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
                     if metadata.storage_name.as_ref() != Some(&storage_name) {
                         if metadata.storage_name.is_none() {
                             warn!("Invalid copy of processed bundle data found: {storage_name}");
@@ -189,39 +191,24 @@ impl Dispatcher {
                                 metadata.storage_name.as_ref()
                             );
                         }
+                    } else {
+                        // Previously accepted bundle — send deletion report and tombstone
+                        let bundle = bundle::Bundle {
+                            metadata: bundle::BundleMetadata {
+                                read_only: bundle::ReadOnlyMetadata {
+                                    received_at: file_time,
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                            bundle,
+                        };
 
-                        // Remove spurious duplicate
-                        self.store.delete_data(&storage_name).await;
-                        metrics::counter!("bpa.restart.duplicate").increment(1);
-                        return;
+                        metrics::counter!("bpa.bundle.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                        self.report_bundle_deletion(&bundle, reason).await;
+                        self.store.tombstone_metadata(&bundle.bundle.id).await;
                     }
-                    true
-                } else {
-                    false
-                };
-
-                // Remove it from bundle_storage, it shouldn't be there
-                self.store.delete_data(&storage_name).await;
-
-                if !exists {
-                    // Never knew about this bundle — nothing to report or clean up
-                    return;
                 }
-
-                // Previously accepted bundle — send deletion report and tombstone
-                let bundle = bundle::Bundle {
-                    metadata: bundle::BundleMetadata {
-                        read_only: bundle::ReadOnlyMetadata {
-                            received_at: file_time,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    bundle,
-                };
-
-                self.report_bundle_deletion(&bundle, reason).await;
-                self.store.tombstone_metadata(&bundle.bundle.id).await;
             }
             Err(e) => {
                 // Parse failed badly, no idea who to report to
