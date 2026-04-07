@@ -63,6 +63,7 @@ impl Rib {
             }
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
+            metrics::gauge!("bpa.rib.entries", "source" => source.clone()).increment(1.0);
 
             // Start walking through the route table starting at this priority to find impacted routes
             let mut vias = HashSet::new();
@@ -124,6 +125,7 @@ impl Rib {
         }
 
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
+        metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).decrement(1.0);
 
         // See if we are removing a Via
         if let routes::Action::Via(to) = action
@@ -136,9 +138,10 @@ impl Rib {
     }
 
     pub async fn remove_by_source(&self, source: &str) {
-        let vias = {
+        let (vias, removed_count) = {
             let mut inner = self.inner.write();
             let mut vias = HashSet::new();
+            let mut removed_count = 0u64;
 
             inner.routes.retain(|_priority, patterns| {
                 patterns.retain(|_pattern, actions| {
@@ -147,6 +150,7 @@ impl Rib {
                             if let routes::Action::Via(to) = &entry.action {
                                 vias.insert(to.clone());
                             }
+                            removed_count += 1;
                             false
                         } else {
                             true
@@ -156,8 +160,13 @@ impl Rib {
                 });
                 !patterns.is_empty()
             });
-            vias
+            (vias, removed_count)
         };
+
+        if removed_count > 0 {
+            metrics::gauge!("bpa.rib.entries", "source" => source.to_string())
+                .decrement(removed_count as f64);
+        }
 
         if vias.is_empty() {
             return;
