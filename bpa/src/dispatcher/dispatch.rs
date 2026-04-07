@@ -25,12 +25,17 @@ impl Dispatcher {
     ) -> cla::Result<()> {
         // TODO: Really should not return errors when the bundle content is garbage - it's not the CLAs responsibility to fix it!
 
+        // Count every bundle received from a CLA, before any validation
+        metrics::counter!("bpa.bundle.received").increment(1);
+        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
+
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
         // Do a fast pre-check
         match data.first() {
             None => {
+                metrics::counter!("bpa.bundle.received.dropped").increment(1);
                 return Err(hardy_bpv7::Error::InvalidCBOR(
                     hardy_cbor::decode::Error::NeedMoreData(1),
                 )
@@ -38,6 +43,7 @@ impl Dispatcher {
             }
             Some(0x06) => {
                 debug!("Data looks like a BPv6 bundle");
+                metrics::counter!("bpa.bundle.received.dropped").increment(1);
                 return Err(hardy_bpv7::Error::InvalidCBOR(
                     hardy_cbor::decode::Error::IncorrectType(
                         "BPv7 bundle".to_string(),
@@ -53,6 +59,7 @@ impl Dispatcher {
                     data.len(),
                     &data[..data.len().min(32)]
                 );
+                metrics::counter!("bpa.bundle.received.dropped").increment(1);
                 return Err(hardy_bpv7::Error::InvalidCBOR(
                     hardy_cbor::decode::Error::IncorrectType(
                         "BPv7 bundle".to_string(),
@@ -65,11 +72,15 @@ impl Dispatcher {
 
         // Parse the bundle
         let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider())? {
-                hardy_bpv7::bundle::RewrittenBundle::Valid {
+            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
+                Err(e) => {
+                    metrics::counter!("bpa.bundle.received.dropped").increment(1);
+                    return Err(e.into());
+                }
+                Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
                     bundle,
                     report_unsupported,
-                } => (
+                }) => (
                     bundle::Bundle {
                         metadata: bundle::BundleMetadata {
                             storage_name: Some(self.store.save_data(&data).await),
@@ -87,12 +98,12 @@ impl Dispatcher {
                     None,
                     report_unsupported,
                 ),
-                hardy_bpv7::bundle::RewrittenBundle::Rewritten {
+                Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
                     bundle,
                     new_data,
                     report_unsupported,
                     non_canonical: _,
-                } => {
+                }) => {
                     debug!("Received bundle has been rewritten");
 
                     data = Bytes::from(new_data);
@@ -117,11 +128,11 @@ impl Dispatcher {
                         report_unsupported,
                     )
                 }
-                hardy_bpv7::bundle::RewrittenBundle::Invalid {
+                Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
                     bundle,
                     reason,
                     error,
-                } => {
+                }) => {
                     debug!("Invalid bundle received: {error}");
 
                     // Don't bother saving the bundle data, it's garbage
@@ -147,6 +158,7 @@ impl Dispatcher {
 
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store
+            metrics::counter!("bpa.bundle.received.duplicate").increment(1);
 
             // TODO: There may be custody transfer signalling that needs to happen here
 
@@ -170,6 +182,7 @@ impl Dispatcher {
 
         if reason.is_some() {
             // Not valid, drop it
+            metrics::counter!("bpa.bundle.received.dropped").increment(1);
             self.drop_bundle(bundle, reason).await;
         } else {
             // Spawn into processing pool for rate limiting
