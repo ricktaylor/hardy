@@ -150,6 +150,9 @@ impl Dispatcher {
             return Err(services::Error::DuplicateBundle);
         }
 
+        metrics::counter!("bpa.bundle.originated").increment(1);
+        metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
+
         let bundle_id = bundle.bundle.id.clone();
         self.ingest_bundle(bundle, data).await;
         Ok(bundle_id)
