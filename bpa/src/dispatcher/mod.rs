@@ -150,15 +150,7 @@ impl Dispatcher {
 
         join!(self.store.poll_service_waiting(source.clone(), tx), async {
             while let Ok(bundle) = rx.recv_async().await {
-                let dispatcher = dispatcher.clone();
-
-                if let Some(data) = dispatcher.load_data(&bundle).await {
-                    dispatcher.ingest_bundle(bundle, data).await;
-                } else {
-                    dispatcher
-                        .drop_bundle(bundle, Some(ReasonCode::DepletedStorage))
-                        .await;
-                }
+                dispatcher.dispatch_bundle(bundle).await;
             }
         });
     }

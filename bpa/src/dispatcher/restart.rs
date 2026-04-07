@@ -45,19 +45,24 @@ impl Dispatcher {
                             bundle::BundleStatus::Dispatching => {
                                 // Ingress filter done - enqueue for routing
                                 let bundle = bundle::Bundle { metadata, bundle };
-                                if self.dispatch_tx.send(bundle).await.is_err() {
-                                    debug!("Dispatch queue closed, bundle dropped");
-                                }
+                                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                                self.dispatch_bundle(bundle).await;
                             }
-                            bundle::BundleStatus::WaitingForService { service: _ } => {
-                                let bundle = bundle::Bundle { metadata, bundle };
-                                self.ingest_bundle(bundle, data).await;
+                            bundle::BundleStatus::ForwardPending { .. } => {
+                                // Peer ID is stale after restart — reset to Waiting
+                                let mut bundle = bundle::Bundle { metadata, bundle };
+                                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                                self.store
+                                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                                    .await;
                             }
                             // Other statuses are handled by their respective recovery mechanisms:
-                            // - ForwardPending: CLA peer queue recovery
                             // - Waiting: poll_waiting recovery
+                            // - WaitingForService: poll_service_waiting on service re-registration
                             // - AduFragment: fragment reassembly polling
-                            _ => {}
+                            _ => {
+                                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&metadata.status)).increment(1.0);
+                            }
                         }
                     }
                 } else {
