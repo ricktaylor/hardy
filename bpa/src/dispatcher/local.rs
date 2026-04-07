@@ -248,6 +248,7 @@ impl Dispatcher {
             }
         }
 
+        metrics::counter!("bpa.bundle.delivered").increment(1);
         self.report_bundle_delivery(&bundle).await;
         self.drop_bundle(bundle, None).await
     }
