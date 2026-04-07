@@ -1835,6 +1835,7 @@ dependencies = [
  "serde",
  "thiserror",
  "time",
+ "tokio",
  "trace-err",
  "tracing",
 ]
