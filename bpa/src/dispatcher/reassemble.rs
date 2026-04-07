@@ -30,6 +30,7 @@ impl Dispatcher {
 
         let parsed = ParsedBundle::parse(&data, self.key_provider());
         let Ok(ParsedBundle { bundle, .. }) = parsed else {
+            metrics::counter!("bpa.bundle.reassembly.failed").increment(1);
             debug!("Reassembled bundle is invalid: {}", parsed.unwrap_err());
 
             // TODO: Report this as a reception failure for all the fragments
