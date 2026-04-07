@@ -201,6 +201,9 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: &bundle::BundleStatus) {
         if bundle.metadata.status != *status {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
+
             bundle.metadata.status = status.clone();
             self.metadata_storage
                 .update_status(bundle)
@@ -232,6 +235,13 @@ impl Store {
             .reset_peer_queue(peer)
             .await
             .trace_expect("Failed to reset peer queue");
+
+        if reset > 0 {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle::BundleStatus::ForwardPending { peer, queue: None }))
+                .decrement(reset as f64);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle::BundleStatus::Waiting))
+                .increment(reset as f64);
+        }
 
         reset != 0
     }

@@ -167,6 +167,8 @@ impl Dispatcher {
                 return;
             }
 
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+
             // Just fire the report off now - it ensures sequential reporting (ish)
             Box::pin(self.ingest_bundle_inner(bundle, data)).await
         }

@@ -185,6 +185,7 @@ impl Dispatcher {
         if reason.is_some() {
             // Invalid bundle — never entered the pipeline, just clean up
             self.store.tombstone_metadata(&bundle.bundle.id).await;
+            metrics::counter!("bpa.bundle.received.dropped").increment(1);
         } else {
             // Spawn into processing pool for rate limiting
             self.ingest_bundle(bundle, data).await;
@@ -203,8 +204,11 @@ impl Dispatcher {
     /// Because this returns before the Ingress filter completes, bundles remain
     /// in `New` status until `ingest_bundle_inner()` checkpoints to `Dispatching`.
     pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+
         metrics::gauge!("bpa.processing_pool.active")
             .set(self.processing_pool.active_tasks() as f64);
+
         let dispatcher = self.clone();
         hardy_async::spawn!(self.processing_pool, "ingest_bundle", async move {
             dispatcher.ingest_bundle_inner(bundle, data).await
@@ -279,7 +283,9 @@ impl Dispatcher {
                     bundle.metadata.storage_name = Some(new_storage_name);
                 }
                 // Always checkpoint to Dispatching (crash safety)
+                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
                 bundle.metadata.status = bundle::BundleStatus::Dispatching;
+                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }

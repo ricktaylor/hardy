@@ -138,7 +138,9 @@ impl Dispatcher {
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await;
         }
-        self.store.tombstone_metadata(&bundle.bundle.id).await
+        self.store.tombstone_metadata(&bundle.bundle.id).await;
+
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {

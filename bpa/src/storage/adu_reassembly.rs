@@ -44,6 +44,7 @@ impl Store {
         for (bundle_id, storage_name, _) in fragments.adus.values() {
             self.delete_data(storage_name).await;
             self.tombstone_metadata(bundle_id).await;
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&status)).decrement(1.0);
         }
 
         // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
