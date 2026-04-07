@@ -182,7 +182,6 @@ impl Dispatcher {
 
         if reason.is_some() {
             // Not valid, drop it
-            metrics::counter!("bpa.bundle.received.dropped").increment(1);
             self.drop_bundle(bundle, reason).await;
         } else {
             // Spawn into processing pool for rate limiting
@@ -326,7 +325,9 @@ impl Dispatcher {
                     dispatcher.process_bundle(bundle, data).await;
                 } else {
                     // Bundle data was deleted while queued
-                    dispatcher.drop_bundle(bundle, None).await;
+                    dispatcher
+                        .drop_bundle(bundle, Some(ReasonCode::DepletedStorage))
+                        .await;
                 }
             })
             .await;
@@ -419,7 +420,7 @@ impl Dispatcher {
                                     dispatcher.process_bundle(bundle, data).await
                                 } else {
                                     // Bundle data was deleted sometime while we waited, drop the bundle
-                                    dispatcher.drop_bundle(bundle, None).await
+                                    dispatcher.drop_bundle(bundle, Some(ReasonCode::DepletedStorage)).await
                                 }
                             }).await;
                         }
