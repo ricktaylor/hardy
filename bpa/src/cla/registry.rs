@@ -147,6 +147,10 @@ impl Registry {
         // sync::spin::Mutex::lock() returns guard directly (no Result)
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
+        if !clas.is_empty() {
+            metrics::gauge!("bpa.cla.registered").decrement(clas.len() as f64);
+        }
+
         for cla in clas {
             self.unregister_cla(cla).await;
         }
@@ -183,6 +187,8 @@ impl Registry {
             .clone()
         };
 
+        metrics::gauge!("bpa.cla.registered").increment(1.0);
+
         // Register that the CLA is a handler for the address type
         if let Some(address_type) = address_type {
             self.rib.add_address_type(address_type, cla.clone());
@@ -208,6 +214,7 @@ impl Registry {
         let cla = self.clas.lock().remove(&cla.name);
 
         if let Some(cla) = cla {
+            metrics::gauge!("bpa.cla.registered").decrement(1.0);
             self.unregister_cla(cla).await;
         }
     }
