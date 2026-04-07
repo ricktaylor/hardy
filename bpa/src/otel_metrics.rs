@@ -59,7 +59,7 @@ pub fn init() {
         "Bundles forwarded via CLA"
     );
     metrics::describe_counter!(
-        "bpa.bundle.forwarded.failed",
+        "bpa.bundle.forwarding.failed",
         metrics::Unit::Count,
         "Bundle forward attempts that failed (CLA error)"
     );
