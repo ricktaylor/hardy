@@ -45,6 +45,8 @@ impl Dispatcher {
         let bundle = Bundle { metadata, bundle };
         self.store.insert_metadata(&bundle).await;
 
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+
         // Box::pin breaks the type recursion; call inner directly (already in pool)
         Box::pin(self.ingest_bundle_inner(bundle, data)).await;
     }
