@@ -62,8 +62,11 @@ impl Dispatcher {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
-                self.drop_bundle(bundle, None).await;
-                return;
+
+                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
+                self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
+                    .await;
+                return self.delete_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
                 // The neighbour has gone, kill the queue

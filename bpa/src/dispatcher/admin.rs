@@ -111,10 +111,15 @@ impl Dispatcher {
                                 )
                                 .await;
                         }
-                        self.drop_bundle(bundle, None).await;
+
+                        // Just delete the bundle, there's no required counters or reporting
+                        self.delete_bundle(bundle).await;
                     }
                     Some(_) => {
-                        self.drop_bundle(bundle, None).await;
+                        // TODO:  This match case can be removed when we fix Service registration
+
+                        // Just delete the bundle, there's no required counters or reporting
+                        self.delete_bundle(bundle).await;
                     }
                     None => {
                         let desired = bundle::BundleStatus::WaitingForService {

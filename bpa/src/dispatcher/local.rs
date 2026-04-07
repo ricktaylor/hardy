@@ -250,6 +250,10 @@ impl Dispatcher {
 
         metrics::counter!("bpa.bundle.delivered").increment(1);
         self.report_bundle_delivery(&bundle).await;
-        self.drop_bundle(bundle, None).await
+
+        // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
+        self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
+            .await;
+        self.delete_bundle(bundle).await
     }
 }

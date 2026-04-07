@@ -150,7 +150,6 @@ impl Store {
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
-                    metrics::counter!("bpa.bundle.expired").increment(1);
                     dispatcher
                         .drop_bundle(
                             bundle,

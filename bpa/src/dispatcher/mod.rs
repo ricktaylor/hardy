@@ -125,6 +125,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
         if let Some(reason) = reason {
+            metrics::counter!("bpa.bundle.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
             self.report_bundle_deletion(&bundle, reason).await;
         }
 
@@ -132,7 +133,7 @@ impl Dispatcher {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
-    pub async fn delete_bundle(&self, bundle: bundle::Bundle) {
+    async fn delete_bundle(&self, bundle: bundle::Bundle) {
         // Delete the bundle from the bundle store
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await;
@@ -152,7 +153,9 @@ impl Dispatcher {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
                     dispatcher.ingest_bundle(bundle, data).await;
                 } else {
-                    dispatcher.drop_bundle(bundle, None).await;
+                    dispatcher
+                        .drop_bundle(bundle, Some(ReasonCode::DepletedStorage))
+                        .await;
                 }
             }
         });

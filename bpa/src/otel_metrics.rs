@@ -64,9 +64,9 @@ pub fn init() {
         "Bundle forward attempts that failed (CLA error)"
     );
     metrics::describe_counter!(
-        "bpa.bundle.deleted",
+        "bpa.bundle.dropped",
         metrics::Unit::Count,
-        "Bundles deleted (by reason code)"
+        "Bundles dropped (by reason code)"
     );
     metrics::describe_counter!(
         "bpa.bundle.reassembled",
@@ -77,11 +77,6 @@ pub fn init() {
         "bpa.bundle.reassembly.failed",
         metrics::Unit::Count,
         "Reassembly failures (reconstituted bundle invalid)"
-    );
-    metrics::describe_counter!(
-        "bpa.bundle.expired",
-        metrics::Unit::Count,
-        "Bundles expired by the reaper"
     );
 
     // -- E. Filters --
@@ -230,28 +225,27 @@ pub fn init() {
 }
 
 /// Convert an optional ReasonCode to a static label string for the `"reason"` label
-/// on `bpa.bundle.deleted`.
-pub fn reason_label(reason: Option<&ReasonCode>) -> &'static str {
+/// on `bpa.bundle.dropped`.
+pub fn reason_label(reason: &ReasonCode) -> &'static str {
     match reason {
-        None => "none",
-        Some(ReasonCode::NoAdditionalInformation) => "no_info",
-        Some(ReasonCode::LifetimeExpired) => "lifetime_expired",
-        Some(ReasonCode::ForwardedOverUnidirectionalLink) => "unidirectional",
-        Some(ReasonCode::TransmissionCanceled) => "canceled",
-        Some(ReasonCode::DepletedStorage) => "depleted_storage",
-        Some(ReasonCode::DestinationEndpointIDUnavailable) => "dest_unavailable",
-        Some(ReasonCode::NoKnownRouteToDestinationFromHere) => "no_route",
-        Some(ReasonCode::NoTimelyContactWithNextNodeOnRoute) => "no_contact",
-        Some(ReasonCode::BlockUnintelligible) => "block_unintelligible",
-        Some(ReasonCode::HopLimitExceeded) => "hop_limit",
-        Some(ReasonCode::TrafficPared) => "traffic_pared",
-        Some(ReasonCode::BlockUnsupported) => "block_unsupported",
-        Some(ReasonCode::MissingSecurityOperation) => "missing_security",
-        Some(ReasonCode::UnknownSecurityOperation) => "unknown_security",
-        Some(ReasonCode::UnexpectedSecurityOperation) => "unexpected_security",
-        Some(ReasonCode::FailedSecurityOperation) => "failed_security",
-        Some(ReasonCode::ConflictingSecurityOperation) => "conflicting_security",
-        Some(ReasonCode::Unassigned(_)) => "unassigned",
+        ReasonCode::NoAdditionalInformation => "no_info",
+        ReasonCode::LifetimeExpired => "lifetime_expired",
+        ReasonCode::ForwardedOverUnidirectionalLink => "unidirectional",
+        ReasonCode::TransmissionCanceled => "canceled",
+        ReasonCode::DepletedStorage => "depleted_storage",
+        ReasonCode::DestinationEndpointIDUnavailable => "dest_unavailable",
+        ReasonCode::NoKnownRouteToDestinationFromHere => "no_route",
+        ReasonCode::NoTimelyContactWithNextNodeOnRoute => "no_contact",
+        ReasonCode::BlockUnintelligible => "block_unintelligible",
+        ReasonCode::HopLimitExceeded => "hop_limit",
+        ReasonCode::TrafficPared => "traffic_pared",
+        ReasonCode::BlockUnsupported => "block_unsupported",
+        ReasonCode::MissingSecurityOperation => "missing_security",
+        ReasonCode::UnknownSecurityOperation => "unknown_security",
+        ReasonCode::UnexpectedSecurityOperation => "unexpected_security",
+        ReasonCode::FailedSecurityOperation => "failed_security",
+        ReasonCode::ConflictingSecurityOperation => "conflicting_security",
+        ReasonCode::Unassigned(_) => "unassigned",
     }
 }
 
