@@ -297,6 +297,17 @@ impl Dispatcher {
         self.process_bundle(bundle, data).await;
     }
 
+    /// Queue a bundle for dispatch processing
+    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
+        self.store
+            .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+            .await;
+
+        if self.dispatch_tx.send(bundle).await.is_err() {
+            debug!("Dispatch queue closed, bundle dropped");
+        }
+    }
+
     /// Consumer task for the dispatch queue
     pub(super) async fn run_dispatch_queue(
         self: Arc<Self>,

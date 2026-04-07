@@ -146,6 +146,9 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.originated").increment(1);
         metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
+        // TODO: Originated bundles should skip ingress filter and call dispatch_bundle()
+        // directly. This requires storing with Dispatching status (not New) so that
+        // restart recovery doesn't re-run the ingress filter on originated bundles.
         let bundle_id = bundle.bundle.id.clone();
         self.ingest_bundle(bundle, data).await;
         Ok(bundle_id)
