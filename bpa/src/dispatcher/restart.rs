@@ -45,7 +45,9 @@ impl Dispatcher {
                             bundle::BundleStatus::Dispatching => {
                                 // Ingress filter done - enqueue for routing
                                 let bundle = bundle::Bundle { metadata, bundle };
-                                self.dispatch_bundle(bundle).await;
+                                if self.dispatch_tx.send(bundle).await.is_err() {
+                                    debug!("Dispatch queue closed, bundle dropped");
+                                }
                             }
                             bundle::BundleStatus::WaitingForService { service: _ } => {
                                 let bundle = bundle::Bundle { metadata, bundle };
