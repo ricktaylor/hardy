@@ -45,14 +45,8 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling and bpa.filter.error metric
             .trace_expect("Egress filter execution failed")
         {
-            filters::registry::ExecResult::Continue(mutation, bundle, data) => {
-                if mutation.bundle || mutation.metadata {
-                    metrics::counter!("bpa.filter.modified", "hook" => "egress").increment(1);
-                }
-                (bundle, data)
-            }
+            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
             filters::registry::ExecResult::Drop(bundle, reason) => {
-                metrics::counter!("bpa.filter.filtered", "hook" => "egress").increment(1);
                 return self.drop_bundle(bundle, reason).await;
             }
         };
