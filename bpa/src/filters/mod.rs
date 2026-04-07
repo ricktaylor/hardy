@@ -82,6 +82,17 @@ pub enum Hook {
     Egress,
 }
 
+impl Hook {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Hook::Ingress => "ingress",
+            Hook::Deliver => "deliver",
+            Hook::Originate => "originate",
+            Hook::Egress => "egress",
+        }
+    }
+}
+
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Hook {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

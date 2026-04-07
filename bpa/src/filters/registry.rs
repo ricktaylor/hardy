@@ -56,25 +56,35 @@ impl Registry {
         let mut inner = self.inner.write();
 
         match hook {
-            Hook::Ingress => inner.ingress.add_filter(name, filter, after),
-            Hook::Deliver => inner.deliver.add_filter(name, filter, after),
-            Hook::Originate => inner.originate.add_filter(name, filter, after),
-            Hook::Egress => inner.egress.add_filter(name, filter, after),
+            Hook::Ingress => inner.ingress.add_filter(name, filter, after)?,
+            Hook::Deliver => inner.deliver.add_filter(name, filter, after)?,
+            Hook::Originate => inner.originate.add_filter(name, filter, after)?,
+            Hook::Egress => inner.egress.add_filter(name, filter, after)?,
         }
+
+        metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).increment(1.0);
+        Ok(())
     }
 
     // Removes a filter by name from the specified hook.
     // Returns Ok(Some(filter)) if found and removed, Ok(None) if not found,
     // or Err(HasDependants) if other filters depend on it.
     pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>, Error> {
+        let hook_label = hook.label();
         let mut inner = self.inner.write();
 
-        match hook {
-            Hook::Ingress => inner.ingress.remove_filter(name),
-            Hook::Deliver => inner.deliver.remove_filter(name),
-            Hook::Originate => inner.originate.remove_filter(name),
-            Hook::Egress => inner.egress.remove_filter(name),
+        let result = match hook {
+            Hook::Ingress => inner.ingress.remove_filter(name)?,
+            Hook::Deliver => inner.deliver.remove_filter(name)?,
+            Hook::Originate => inner.originate.remove_filter(name)?,
+            Hook::Egress => inner.egress.remove_filter(name)?,
+        };
+
+        if result.is_some() {
+            metrics::gauge!("bpa.filter.registered", "hook" => hook_label).decrement(1.0);
         }
+
+        Ok(result)
     }
 
     // Executes the filter chain for the specified hook on the given bundle.
@@ -95,6 +105,8 @@ impl Registry {
             + Clone
             + Send,
     {
+        let hook_label = hook.label();
+
         let prepared = {
             let inner = self.inner.read();
             match hook {
@@ -104,6 +116,23 @@ impl Registry {
                 Hook::Egress => inner.egress.prepare(),
             }
         };
-        prepared.exec(pool, bundle, data, key_provider).await
+
+        let result = prepared.exec(pool, bundle, data, key_provider).await;
+
+        match &result {
+            Ok(ExecResult::Continue(mutation, _, _)) => {
+                if mutation.bundle || mutation.metadata {
+                    metrics::counter!("bpa.filter.modified", "hook" => hook_label).increment(1);
+                }
+            }
+            Ok(ExecResult::Drop(_, _)) => {
+                metrics::counter!("bpa.filter.filtered", "hook" => hook_label).increment(1);
+            }
+            Err(_) => {
+                metrics::counter!("bpa.filter.error", "hook" => hook_label).increment(1);
+            }
+        }
+
+        result
     }
 }
