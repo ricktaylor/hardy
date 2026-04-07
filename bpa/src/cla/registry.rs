@@ -232,6 +232,7 @@ impl Registry {
             // Remove RIB entries for all EIDs associated with this address
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
+                metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
             // Remove from peer table (stops forwarding, signals drain)
             self.peers.remove(peer_id).await;
@@ -274,10 +275,9 @@ impl Registry {
             return false;
         }
 
-        debug!(
-            "Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {}",
-            cla.name
-        );
+        let cla_name = cla.name.clone();
+
+        debug!("Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {cla_name}");
 
         // Start the peer polling the queue
         peer.start(
@@ -295,6 +295,7 @@ impl Registry {
         // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
         for node_id in node_ids {
             self.rib.add_forward(node_id.clone(), peer_id).await;
+            metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
         }
 
         true
@@ -308,6 +309,7 @@ impl Registry {
         self.peers.remove(peer_id).await;
         for node_id in node_ids {
             self.rib.remove_forward(node_id, peer_id).await;
+            metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
         }
 
         debug!("Removed peer {peer_id}");
