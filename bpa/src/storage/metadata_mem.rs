@@ -49,7 +49,15 @@ impl MetadataStorage for MetadataMemStorage {
         if entries.get(&bundle.bundle.id).is_some() {
             Ok(false)
         } else {
-            entries.put(bundle.bundle.id.clone(), Some(bundle.clone()));
+            if let Some((_, evicted)) = entries.push(bundle.bundle.id.clone(), Some(bundle.clone()))
+            {
+                // A different entry was evicted due to LRU capacity
+                match evicted {
+                    Some(_) => metrics::gauge!("bpa.mem_metadata.entries").decrement(1.0),
+                    None => metrics::gauge!("bpa.mem_metadata.tombstones").decrement(1.0),
+                }
+            }
+            metrics::gauge!("bpa.mem_metadata.entries").increment(1.0);
             Ok(true)
         }
     }
@@ -67,6 +75,8 @@ impl MetadataStorage for MetadataMemStorage {
 
     async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
         self.entries.lock().put(bundle_id.clone(), None);
+        metrics::gauge!("bpa.mem_metadata.entries").decrement(1.0);
+        metrics::gauge!("bpa.mem_metadata.tombstones").increment(1.0);
         Ok(())
     }
 
