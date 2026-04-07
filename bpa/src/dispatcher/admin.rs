@@ -4,11 +4,14 @@ use hardy_bpv7::status_report::AdministrativeRecord;
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn administrative_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
+        metrics::counter!("bpa.admin_record.received").increment(1);
+
         // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             debug!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
+            metrics::counter!("bpa.admin_record.unknown").increment(1);
             return self
                 .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                 .await;
@@ -36,11 +39,30 @@ impl Dispatcher {
         match hardy_cbor::decode::parse(data.as_ref()) {
             Err(e) => {
                 debug!("Failed to parse administrative record: {e}");
+                metrics::counter!("bpa.admin_record.unknown").increment(1);
                 self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
                     .await
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
                 debug!("Received administrative record: {report:?}");
+
+                // Count each assertion type present in the report
+                if report.received.is_some() {
+                    metrics::counter!("bpa.status_report.received", "type" => "reception")
+                        .increment(1);
+                }
+                if report.forwarded.is_some() {
+                    metrics::counter!("bpa.status_report.received", "type" => "forwarding")
+                        .increment(1);
+                }
+                if report.delivered.is_some() {
+                    metrics::counter!("bpa.status_report.received", "type" => "delivery")
+                        .increment(1);
+                }
+                if report.deleted.is_some() {
+                    metrics::counter!("bpa.status_report.received", "type" => "deletion")
+                        .increment(1);
+                }
 
                 // Find a live service to notify
                 match self.rib.find_local(&report.bundle_id.source) {
