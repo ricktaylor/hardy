@@ -252,9 +252,13 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
+            // TODO: Replace trace_expect with proper error handling and bpa.filter.error metric
             .trace_expect("Ingress filter execution failed")
         {
             filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
+                if mutation.bundle || mutation.metadata {
+                    metrics::counter!("bpa.filter.modified", "hook" => "ingress").increment(1);
+                }
                 // Persist any bundle data mutations
                 if mutation.bundle {
                     let new_storage_name = self.store.save_data(&data).await;
@@ -269,6 +273,7 @@ impl Dispatcher {
                 (bundle, data)
             }
             filters::registry::ExecResult::Drop(bundle, reason) => {
+                metrics::counter!("bpa.filter.filtered", "hook" => "ingress").increment(1);
                 return self.drop_bundle(bundle, reason).await;
             }
         };

@@ -23,12 +23,20 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
-            .inspect_err(|_e| error!("Originate filter execution failed"))?
-        {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => {
+            .inspect_err(|_e| {
+                metrics::counter!("bpa.filter.error", "hook" => "originate").increment(1);
+                error!("Originate filter execution failed");
+            })? {
+            filters::registry::ExecResult::Continue(mutation, bundle, data) => {
+                if mutation.bundle || mutation.metadata {
+                    metrics::counter!("bpa.filter.modified", "hook" => "originate").increment(1);
+                }
                 Ok(Some((bundle, data)))
             }
-            filters::registry::ExecResult::Drop(_bundle, _reason) => Ok(None),
+            filters::registry::ExecResult::Drop(_bundle, _reason) => {
+                metrics::counter!("bpa.filter.filtered", "hook" => "originate").increment(1);
+                Ok(None)
+            }
         }
     }
 
@@ -174,10 +182,17 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
+            // TODO: Replace trace_expect with proper error handling and bpa.filter.error metric
             .trace_expect("Deliver filter execution failed")
         {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
+            filters::registry::ExecResult::Continue(mutation, bundle, data) => {
+                if mutation.bundle || mutation.metadata {
+                    metrics::counter!("bpa.filter.modified", "hook" => "deliver").increment(1);
+                }
+                (bundle, data)
+            }
             filters::registry::ExecResult::Drop(bundle, reason) => {
+                metrics::counter!("bpa.filter.filtered", "hook" => "deliver").increment(1);
                 return self.drop_bundle(bundle, reason).await;
             }
         };
