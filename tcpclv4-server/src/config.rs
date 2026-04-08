@@ -41,7 +41,7 @@ pub fn load(path: Option<PathBuf>) -> anyhow::Result<Config> {
         builder = builder.add_source(config::File::from(path));
     } else {
         builder = builder.add_source(
-            config::File::from(std::path::Path::new("hardy-tcpclv4.toml")).required(false),
+            config::File::from(std::path::Path::new("hardy-tcpclv4.yaml")).required(false),
         );
     }
 
