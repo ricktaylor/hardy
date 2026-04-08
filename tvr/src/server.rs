@@ -401,3 +401,243 @@ pub async fn start(
             .expect("TVR gRPC server failed");
     });
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // ── Helper ───────────────────────────────────────────────────────
+
+    fn ts(seconds: i64, nanos: i32) -> prost_types::Timestamp {
+        prost_types::Timestamp { seconds, nanos }
+    }
+
+    fn dur(seconds: i64, nanos: i32) -> prost_types::Duration {
+        prost_types::Duration { seconds, nanos }
+    }
+
+    /// Build a minimal valid proto Contact with the given action.
+    fn proto_contact_via(pattern: &str, via: &str) -> proto::tvr::Contact {
+        proto::tvr::Contact {
+            eid_pattern: pattern.to_string(),
+            priority: None,
+            action: Some(contact::Action::Via(via.to_string())),
+            schedule: None,
+            bandwidth_bps: None,
+            delay_us: None,
+        }
+    }
+
+    fn proto_contact_drop(pattern: &str, reason_code: u32) -> proto::tvr::Contact {
+        proto::tvr::Contact {
+            eid_pattern: pattern.to_string(),
+            priority: None,
+            action: Some(contact::Action::Drop(DropAction { reason_code })),
+            schedule: None,
+            bandwidth_bps: None,
+            delay_us: None,
+        }
+    }
+
+    // ── 3.22 Timestamps ──────────────────────────────────────────────
+
+    #[test]
+    fn timestamp_valid_utc() {
+        let dt = convert_timestamp(ts(1774598400, 0)).unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), time::Month::March);
+        assert_eq!(dt.day(), 27);
+        assert_eq!(dt.hour(), 8);
+    }
+
+    #[test]
+    fn timestamp_with_nanos() {
+        let dt = convert_timestamp(ts(0, 500_000_000)).unwrap();
+        assert_eq!(dt.nanosecond(), 500_000_000);
+    }
+
+    #[test]
+    fn timestamp_negative_seconds() {
+        let dt = convert_timestamp(ts(-1, 0)).unwrap();
+        assert_eq!(dt.year(), 1969);
+        assert_eq!(dt.month(), time::Month::December);
+        assert_eq!(dt.day(), 31);
+    }
+
+    #[test]
+    fn timestamp_out_of_range() {
+        let result = convert_timestamp(ts(i64::MAX, 0));
+        assert!(result.is_err());
+    }
+
+    // ── 3.23 Durations ───────────────────────────────────────────────
+
+    #[test]
+    fn duration_valid() {
+        let d = convert_duration(dur(90, 0)).unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(90));
+    }
+
+    #[test]
+    fn duration_with_nanos() {
+        let d = convert_duration(dur(1, 500_000_000)).unwrap();
+        assert_eq!(d, std::time::Duration::new(1, 500_000_000));
+    }
+
+    #[test]
+    fn duration_negative_seconds() {
+        assert!(convert_duration(dur(-1, 0)).is_err());
+    }
+
+    #[test]
+    fn duration_negative_nanos() {
+        assert!(convert_duration(dur(0, -1)).is_err());
+    }
+
+    #[test]
+    fn duration_nanos_overflow() {
+        assert!(convert_duration(dur(0, 1_000_000_000)).is_err());
+    }
+
+    // ── 3.24 Contacts ────────────────────────────────────────────────
+
+    #[test]
+    fn contact_valid_via() {
+        let c = convert_contact(proto_contact_via("ipn:2.*.*", "ipn:2.1.0")).unwrap();
+        assert!(matches!(c.action, Action::Via(_)));
+        assert!(matches!(c.schedule, Schedule::Permanent));
+    }
+
+    #[test]
+    fn contact_valid_drop_with_reason() {
+        let c = convert_contact(proto_contact_drop("ipn:2.*.*", 6)).unwrap();
+        assert!(matches!(c.action, Action::Drop(Some(_))));
+    }
+
+    #[test]
+    fn contact_drop_zero_reason() {
+        let c = convert_contact(proto_contact_drop("ipn:2.*.*", 0)).unwrap();
+        assert!(matches!(c.action, Action::Drop(None)));
+    }
+
+    #[test]
+    fn contact_missing_action() {
+        let proto = proto::tvr::Contact {
+            eid_pattern: "ipn:2.*.*".to_string(),
+            priority: None,
+            action: None,
+            schedule: None,
+            bandwidth_bps: None,
+            delay_us: None,
+        };
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_invalid_eid_pattern() {
+        let proto = proto_contact_via("bad", "ipn:2.1.0");
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_invalid_next_hop_eid() {
+        let proto = proto_contact_via("ipn:2.*.*", "bad");
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_permanent_no_schedule() {
+        let c = convert_contact(proto_contact_via("ipn:2.*.*", "ipn:2.1.0")).unwrap();
+        assert!(matches!(c.schedule, Schedule::Permanent));
+    }
+
+    #[test]
+    fn contact_oneshot() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.schedule = Some(contact::Schedule::OneShot(OneShot {
+            start: Some(ts(1000, 0)),
+            end: Some(ts(2000, 0)),
+        }));
+        let c = convert_contact(proto).unwrap();
+        assert!(matches!(
+            c.schedule,
+            Schedule::OneShot {
+                start: Some(_),
+                end: Some(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn contact_oneshot_end_before_start() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.schedule = Some(contact::Schedule::OneShot(OneShot {
+            start: Some(ts(2000, 0)),
+            end: Some(ts(1000, 0)),
+        }));
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_recurring() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.schedule = Some(contact::Schedule::Recurring(Recurring {
+            cron: "0 8 * * *".to_string(),
+            duration: Some(dur(5400, 0)),
+            until: None,
+        }));
+        let c = convert_contact(proto).unwrap();
+        assert!(matches!(c.schedule, Schedule::Recurring { .. }));
+    }
+
+    #[test]
+    fn contact_recurring_invalid_cron() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.schedule = Some(contact::Schedule::Recurring(Recurring {
+            cron: "bad".to_string(),
+            duration: Some(dur(5400, 0)),
+            until: None,
+        }));
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_recurring_missing_duration() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.schedule = Some(contact::Schedule::Recurring(Recurring {
+            cron: "0 8 * * *".to_string(),
+            duration: None,
+            until: None,
+        }));
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_recurring_zero_duration() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.schedule = Some(contact::Schedule::Recurring(Recurring {
+            cron: "0 8 * * *".to_string(),
+            duration: Some(dur(0, 0)),
+            until: None,
+        }));
+        assert!(convert_contact(proto).is_err());
+    }
+
+    #[test]
+    fn contact_with_priority() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.priority = Some(50);
+        let c = convert_contact(proto).unwrap();
+        assert_eq!(c.priority, Some(50));
+    }
+
+    #[test]
+    fn contact_with_link_properties() {
+        let mut proto = proto_contact_via("ipn:2.*.*", "ipn:2.1.0");
+        proto.bandwidth_bps = Some(10_000_000_000);
+        proto.delay_us = Some(500_000);
+        let c = convert_contact(proto).unwrap();
+        assert_eq!(c.bandwidth_bps, Some(10_000_000_000));
+        assert_eq!(c.delay_us, Some(500_000));
+    }
+}

@@ -3,7 +3,7 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Project** | Hardy (Cloud-based DTN Router) |
-| **Date** | 2026-04-01 |
+| **Date** | 2026-04-08 |
 | **Status** | READY FOR REVIEW |
 
 ## 1. Executive Summary
@@ -17,6 +17,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 * **Transport:** High coverage (TCPCLv4 interop tests with 4 independent implementations + 2 fuzz targets). RFC 9174 compliance matrix complete (all 10 LLRs verified).
 * **System:** Moderate coverage (Basic End-to-End & Interop defined). Interop tests for dtn7-rs, HDTN, DTNME, ud3tn, and hardy-to-hardy passing.
 * **gRPC Proxies:** Full coverage (proto crate 31/31 plan tests, 78.0% line coverage). Client message mapping, error handling, lifecycle/unregistration, and server proxy handler tests all complete.
+* **TVR:** High coverage (127 unit tests, 75.3% line coverage, 10 system/component integration tests via grpcurl). Cron, parser, scheduler, and proto conversion fully covered.
 * **BPA:** Low unit test coverage (28% — only RIB tested, 36 stubs with `todo!()`). Covered at system level by interop tests and fuzz harness.
 
 ## 2. Test Plan Inventory
@@ -39,6 +40,8 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **localdisk-storage** | Component | [`PLAN-LD-01`](../localdisk-storage/docs/test_plan.md) | [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Filesystem) | **Complete** |
 | **sqlite-storage** | Component | [`PLAN-SQLITE-01`](../sqlite-storage/docs/test_plan.md) | [REQ-7](requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) (Metadata) | **Complete** |
 | **proto** | Component | [`COMP-GRPC-01`](../proto/docs/component_test_plan.md) | [REQ-18](requirements.md#req-18-grpc-based-internal-apis-for-component-communication) (API) | **Complete** |
+| **tvr** | Unit | [`UTP-TVR-01`](../tvr/docs/unit_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (Contact Scheduling) | **Complete** |
+| **tvr** | Component | [`COMP-TVR-01`](../tvr/docs/component_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (gRPC Sessions, Hot-Reload) | **Complete** (10 tests: 4 system + 6 gRPC session via grpcurl) |
 | **bpa-server** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | [REQ-14](requirements.md#req-14-reliability), [REQ-15](requirements.md#req-15-independent-component-packaging), [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) | **Complete** |
 | **System** | Interop | [`PLAN-INTEROP-01`](interop_test_plan.md) | [REQ-20](requirements.md#req-20-interoperability-with-reference-implementations) (ION/DTNME) | **Complete** |
 
@@ -62,15 +65,16 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **proto** | [`test_coverage_report.md`](../proto/docs/test_coverage_report.md) | 78.0% (generic monomorphisation) | 31/31 (100%) |
 | **otel** | [`test_coverage_report.md`](../otel/docs/test_coverage_report.md) | 99.57% (`metrics_otel.rs`); 83.3% overall (`lib.rs` = integration) | 26/26 (100%) |
 | **tcpclv4** | [`test_coverage_report.md`](../tcpclv4/docs/test_coverage_report.md) | N/A (interop-verified) | 10/10 LLRs (100%) |
+| **tvr** | [`test_coverage_report.md`](../tvr/docs/test_coverage_report.md) | 75.3% (2053/2725) | 127/127 unit (100%), 10/10 system (100%) |
 
 ## 3. Test Statistics
 
 | Metric | Count |
 | :--- | :--- |
 | Workspace crates | 33 |
-| `#[test]` functions | ~250 |
+| `#[test]` functions | ~290 |
 | Fuzz targets | 11 (cbor: 1, bpv7: 3, eid-patterns: 1, bpa: 4, tcpclv4: 2) |
-| Test plan documents | 23 (all present) |
+| Test plan documents | 24 (all present) |
 | PICS items mapped to tests | 49 (16 fully tested, 14 planned, 15 N/A or not implemented) |
 | Interop peers | 4 passing on main (dtn7-rs, HDTN, DTNME, ud3tn), 3 on branches (ION, ESA-BP, cFS) |
 
@@ -90,7 +94,6 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **Azure Blob Storage** | [REQ-11](requirements.md#req-11-support-for-azure-blob-storage-for-bundle-storage) | **Missing** (Not Implemented) |
 | **Azure SQL Metadata** | [REQ-12](requirements.md#req-12-support-for-azure-sql-for-bundle-metadata-storage) | **Missing** (Not Implemented) |
 | **Helm Charts** | [REQ-16](requirements.md#req-16-kubernetes-packaging) | **Missing** (Defined in [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) but not implemented) |
-| **TVR Agent** | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Missing** (PR ready to merge; not yet on main) |
 | **BP Tools (perf, send, trace)** | [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) (19.2.1, 19.2.3) | **Missing** (Only `bp ping` implemented) |
 
 ### 4.2 Implemented (with test gaps)
@@ -112,4 +115,4 @@ This report summarizes the test planning and execution status for the Hardy proj
 
 ## 5. Conclusion
 
-The project has a comprehensive verification strategy for all implemented features. All 22 test plan documents are present and substantive (55–201 lines each). The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. The proto crate has 100% plan coverage (31/31 tests, 78.0% line coverage) across 7 test suites covering client proxies, error handling, lifecycle, and server handlers. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary remaining test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage).
+The project has a comprehensive verification strategy for all implemented features. All 24 test plan documents are present and substantive. The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. The proto crate has 100% plan coverage (31/31 tests, 78.0% line coverage) across 7 test suites covering client proxies, error handling, lifecycle, and server handlers. The TVR crate has 127 unit tests (75.3% line coverage) plus 10 system/component integration tests covering contact scheduling, cron evaluation, and gRPC session lifecycle. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary remaining test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage).

@@ -190,6 +190,29 @@ These fields are informational — bandwidth enforcement requires
 implemented. The values are parsed and carried so the format is
 forward-compatible.
 
+## Time Basis
+
+All schedule evaluation — cron matching, event firing, contact window
+boundaries — operates in **UTC**. Cron expressions are matched against
+UTC wall-clock time, so there are no daylight-saving transitions and
+hours are never skipped or repeated. Timestamps in the contact plan
+file that carry a non-UTC offset are converted to UTC at parse time
+with a warning.
+
+The underlying time model is **POSIX time** (Unix epoch seconds). This
+applies to both the gRPC interface (`google.protobuf.Timestamp` is
+defined as seconds since 1970-01-01T00:00:00Z with leap seconds
+smeared) and the Rust `time::OffsetDateTime` used internally. Neither
+counts leap seconds — every day is exactly 86400 seconds.
+
+This means hardy-tvr's timestamps are **not TAI**. Systems that use
+TAI or GPS time internally (common in flight dynamics and spacecraft
+operations) must apply the UTC–TAI offset (currently 37 seconds) at
+the ingestion boundary before submitting contacts via the gRPC service
+or contact plan file. For contact windows measured in minutes or hours,
+the difference is operationally negligible, but second-granularity
+scheduling across time-scale boundaries requires explicit conversion.
+
 ## Integration
 
 hardy-tvr integrates with Hardy through two interfaces:
@@ -231,10 +254,5 @@ provide nanosecond precision throughout.
 
 ## Testing
 
-- **Parser tests** — 40+ tests in `parser.rs` covering all field
-  combinations, error formatting, and static route compatibility
-- **Cron tests** — 40+ tests in `cron.rs` covering 5/6-field parsing,
-  named values, shortcuts, `next_after`/`prev_before`
-- **Scheduler tests** — 17 tests in `scheduler.rs` covering permanent,
-  one-shot, recurring contacts, event ordering, replace diffing, source
-  isolation, and refcounting
+See [unit_test_plan.md](unit_test_plan.md) for the full test plan with
+requirements mapping and per-scenario coverage.

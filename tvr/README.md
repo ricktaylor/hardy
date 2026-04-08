@@ -89,6 +89,20 @@ ipn:2.*.* via ipn:2.1.0 cron "0 8 * * *" duration 90m
 ipn:5.*.* via ipn:5.1.0 cron "0 9 * * MON-FRI" duration 8h
 ```
 
+### Time Basis
+
+All timestamps and cron expressions are evaluated in **UTC**. There
+are no daylight-saving transitions — hours are never skipped or
+repeated.
+
+Timestamps in the contact plan file may use any RFC 3339 offset (e.g.
+`+05:30`), but they are converted to UTC at parse time with a warning.
+gRPC timestamps (`google.protobuf.Timestamp`) are inherently UTC.
+
+The time model is POSIX/Unix time — leap seconds are not counted.
+Systems using TAI or GPS time must apply the UTC–TAI offset before
+submitting contacts.
+
 ### Cron Expressions
 
 Standard 5-field (`min hr dom mon dow`) or 6-field with seconds
