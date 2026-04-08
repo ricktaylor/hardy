@@ -27,6 +27,23 @@ struct FragmentSet {
     adus: HashMap<u64, (Bpv7Id, Arc<str>, Range<usize>)>,
 }
 
+/// Outcome of an ADU reassembly attempt.
+///
+/// Three distinct outcomes require three distinct caller actions — `Option`
+/// would collapse `NotReady` and `Failed` into the same `None` arm, leading
+/// the caller to incorrectly treat a failed (data-deleted) reassembly as
+/// "wait for more siblings".
+pub(crate) enum ReassemblyOutcome {
+    /// Not all sibling fragments have arrived; fragment data is still in storage.
+    /// Caller should transition the bundle to `AduFragment` and wait.
+    NotReady,
+    /// All fragments arrived and the ADU was successfully reassembled.
+    Done(Arc<str>, Bytes),
+    /// All fragments arrived but reassembly failed (corrupt/misaligned data).
+    /// Fragment data has already been deleted; caller should drop the trigger bundle.
+    Failed,
+}
+
 impl Store {
     pub async fn adu_reassemble(&self, bundle: &Bundle) -> ReassemblyResult {
         let status = BundleStatus::AduFragment {

@@ -1,0 +1,94 @@
+//! Bundle state machine transitions.
+//!
+//! # State Machine
+//!
+//! ```text
+//!  [Receive / Originate]
+//!        │
+//!        ▼
+//!      New ──────────────────────────────────────────► drop_bundle (filter / TTL / invalid)
+//!        │ ingress filter; checkpoint before routing
+//!        ▼
+//!   Dispatching ──────────────────────────────────────────────────────────────────────┐
+//!        │                                                                             │
+//!        ├──► wait_for_route     → Waiting                                            │
+//!        │         re-dispatched on RIB update                                        │
+//!        │                                                                             │
+//!        ├──► wait_for_fragments → AduFragment                                        │
+//!        │         all siblings arrived → reassemble → re-enter Dispatching           │
+//!        │                                                                             │
+//!        ├──► wait_for_service  → WaitingForService                                   │
+//!        │         re-dispatched on service registration                              │
+//!        │                                                                             │
+//!        └──► ForwardPending { peer, queue }  ──► drop_bundle                          │
+//!                  CLA unavailable → wait_for_route ──────────────────────────────────┘
+//! ```
+//!
+//! # `ForwardPending` exception
+//!
+//! The `Dispatching → ForwardPending` transition is handled inside the egress
+//! channel send (see `cla/peers.rs`). This is unavoidable: the queue number is
+//! not known until CLA policy classifies the bundle at send time. The transition
+//! is documented here for completeness.
+
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
+
+use super::Dispatcher;
+use crate::bundle::{Bundle, BundleStatus};
+
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+impl Dispatcher {
+    /// `* → Dispatching`: transition bundle into the dispatch pipeline.
+    ///
+    /// Used both as the Ingress-filter checkpoint (`New → Dispatching`) and to
+    /// re-dispatch bundles returning from wait states. Always persists full
+    /// metadata because the Ingress filter may have mutated metadata fields.
+    pub(super) async fn dispatching(&self, bundle: &mut Bundle) {
+        bundle.metadata.status = BundleStatus::Dispatching;
+        self.store.update_metadata(bundle).await;
+    }
+
+    /// `Dispatching → Waiting`: no route is currently known.
+    ///
+    /// The bundle will be re-dispatched when the RIB signals a matching route.
+    pub(super) async fn wait_for_route(&self, mut bundle: Bundle) {
+        self.store
+            .update_status(&mut bundle, &BundleStatus::Waiting)
+            .await;
+        self.store.watch_bundle(bundle).await;
+    }
+
+    /// `Dispatching → AduFragment`: this bundle is a fragment; not all siblings have arrived.
+    ///
+    /// The bundle will be re-dispatched once all sibling fragments are present.
+    pub(super) async fn wait_for_fragments(&self, mut bundle: Bundle) {
+        let status = BundleStatus::AduFragment {
+            source: bundle.bundle.id.source.clone(),
+            timestamp: bundle.bundle.id.timestamp.clone(),
+        };
+        self.store.update_status(&mut bundle, &status).await;
+        self.store.watch_bundle(bundle).await;
+    }
+
+    /// `Dispatching → WaitingForService`: the target service is not yet registered.
+    ///
+    /// The bundle will be re-dispatched when the service registers with the BPA.
+    pub(super) async fn wait_for_service(&self, mut bundle: Bundle, service: Eid) {
+        self.store
+            .update_status(&mut bundle, &BundleStatus::WaitingForService { service })
+            .await;
+        self.store.watch_bundle(bundle).await;
+    }
+
+    /// `* → Tombstone`: send a deletion status report then delete bundle data.
+    ///
+    /// Use when the BPA is responsible for the deletion and must notify the source.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
+    pub async fn drop_bundle(&self, bundle: Bundle, reason: ReasonCode) {
+        self.report_bundle_deletion(&bundle, reason).await;
+        self.delete_bundle(bundle).await
+    }
+}

@@ -57,7 +57,7 @@ impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
         data: &[u8],
     ) -> Result<hardy_bpa::filters::RewriteResult, hardy_bpa::Error> {
         // Check if next-hop requires legacy encoding
-        let Some(next_hop) = &bundle.metadata.read_only.next_hop else {
+        let Some(next_hop) = bundle.metadata.read_only.next_hop.as_ref() else {
             return Ok(hardy_bpa::filters::RewriteResult::Continue(None, None));
         };
 

@@ -20,8 +20,7 @@ pub struct ReadOnlyMetadata {
     /// The CLA that received this bundle (transient)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ingress_cla: Option<Arc<str>>,
-
-    // Transient routing context (not persisted, set during RIB lookup)
+    /// Transient routing context (not persisted, set during RIB lookup)
     #[cfg_attr(feature = "serde", serde(skip))]
     pub next_hop: Option<Eid>,
 }

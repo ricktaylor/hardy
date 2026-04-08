@@ -144,16 +144,11 @@ impl Store {
             };
 
             for id in dead_bundle_ids {
-                if let Ok(Some(bundle)) = self
-                    .metadata_storage
-                    .get(&id)
-                    .await
-                    .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
-                {
+                if let Some(bundle) = self.get_metadata(&id).await {
                     dispatcher
                         .drop_bundle(
                             bundle,
-                            Some(hardy_bpv7::status_report::ReasonCode::LifetimeExpired),
+                            hardy_bpv7::status_report::ReasonCode::LifetimeExpired,
                         )
                         .await;
                 }

@@ -177,8 +177,11 @@ impl Dispatcher {
             .trace_expect("Deliver filter execution failed")
         {
             filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            filters::registry::ExecResult::Drop(bundle, Some(reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            filters::registry::ExecResult::Drop(bundle, None) => {
+                return self.delete_bundle(bundle).await;
             }
         };
 
@@ -208,7 +211,7 @@ impl Dispatcher {
                             // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
                             return self
-                                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                                .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
                                 .await;
                         }
                         Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
@@ -231,6 +234,6 @@ impl Dispatcher {
         }
 
         self.report_bundle_delivery(&bundle).await;
-        self.drop_bundle(bundle, None).await
+        self.delete_bundle(bundle).await
     }
 }
