@@ -72,9 +72,9 @@ This report summarizes the test planning and execution status for the Hardy proj
 | Metric | Count |
 | :--- | :--- |
 | Workspace crates | 33 |
-| `#[test]` functions | ~290 |
+| `#[test]` functions | ~315 |
 | Fuzz targets | 11 (cbor: 1, bpv7: 3, eid-patterns: 1, bpa: 4, tcpclv4: 2) |
-| Test plan documents | 24 (all present) |
+| Test plan documents | 25 (all present) |
 | PICS items mapped to tests | 49 (16 fully tested, 14 planned, 15 N/A or not implemented) |
 | Interop peers | 4 passing on main (dtn7-rs, HDTN, DTNME, ud3tn), 3 on branches (ION, ESA-BP, cFS) |
 
@@ -115,4 +115,4 @@ This report summarizes the test planning and execution status for the Hardy proj
 
 ## 5. Conclusion
 
-The project has a comprehensive verification strategy for all implemented features. All 24 test plan documents are present and substantive. The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. The proto crate has 100% plan coverage (31/31 tests, 78.0% line coverage) across 7 test suites covering client proxies, error handling, lifecycle, and server handlers. The TVR crate has 127 unit tests (75.3% line coverage) plus 10 system/component integration tests covering contact scheduling, cron evaluation, and gRPC session lifecycle. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary remaining test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage).
+The project has a comprehensive verification strategy for all implemented features. All 25 test plan documents are present and substantive. The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. The proto crate has 100% plan coverage (31/31 tests, 78.0% line coverage) across 7 test suites covering client proxies, error handling, lifecycle, and server handlers. The TVR crate has 127 unit tests (75.3% line coverage) plus 10 system/component integration tests covering contact scheduling, cron evaluation, and gRPC session lifecycle. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary remaining test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage).
