@@ -5,6 +5,9 @@
 ///
 /// Each field is a bitset of matching values, giving O(1) match checks.
 ///
+/// All evaluation is in UTC — there are no daylight-saving transitions,
+/// so hours are never skipped or repeated.
+///
 /// Supports:
 /// - Numeric values, ranges, steps, lists: `*`, `N`, `N-M`, `*/S`, `N-M/S`, `N,M,...`
 /// - Named weekdays: `SUN`–`SAT` (case-insensitive)
