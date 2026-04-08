@@ -24,9 +24,11 @@ impl Dispatcher {
         };
 
         let metadata = BundleMetadata {
-            storage_name: Some(storage_name),
+            storage_name: Some(storage_name.clone()),
             ..Default::default()
         };
+
+        // TODO:  This check isn't enough, and really we need to feed the bundle back into the bottom half of Dispatcher::receive_bundle
 
         let parsed = ParsedBundle::parse(&data, self.key_provider());
         let Ok(ParsedBundle { bundle, .. }) = parsed else {
@@ -36,14 +38,19 @@ impl Dispatcher {
             // TODO: Report this as a reception failure for all the fragments
             // TODO: Wrap damaged bundle in "Junk Bundle Payload" for lost+found
 
-            if let Some(storage_name) = metadata.storage_name {
-                self.store.delete_data(&storage_name).await;
-            }
-            return;
+            return self.store.delete_data(&storage_name).await;
         };
 
+        metrics::counter!("bpa.bundle.reassembled").increment(1);
+
         let bundle = Bundle { metadata, bundle };
-        self.store.insert_metadata(&bundle).await;
+        if !self.store.insert_metadata(&bundle).await {
+            // Bundle with matching id already exists in the metadata store
+            metrics::counter!("bpa.bundle.received.duplicate").increment(1);
+
+            // Drop the stored data and do not process further
+            return self.store.delete_data(&storage_name).await;
+        }
 
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
