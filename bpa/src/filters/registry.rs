@@ -1,18 +1,17 @@
 use super::*;
 use hardy_async::sync::RwLock;
 
+/// Tracks whether filters modified the bundle or its metadata.
 #[derive(Default)]
 pub struct Mutation {
-    pub metadata: bool,
     pub bundle: bool,
+    pub metadata: bool,
 }
 
 /// Result of executing the filter chain on a bundle.
 #[allow(clippy::large_enum_variant)]
 pub enum ExecResult {
-    /// Bundle passed all filters; continue processing with (possibly modified) bundle and data.
     Continue(Mutation, bundle::Bundle, Bytes),
-    /// Bundle was rejected by a filter; the bundle contains enough information for Dispatcher::drop_bundle to work.
     Drop(
         bundle::Bundle,
         Option<hardy_bpv7::status_report::ReasonCode>,
@@ -21,10 +20,30 @@ pub enum ExecResult {
 
 #[derive(Default)]
 struct RegistryInner {
-    ingress: filter::FilterNode,
-    deliver: filter::FilterNode,
-    originate: filter::FilterNode,
-    egress: filter::FilterNode,
+    ingress: filter::FilterChain,
+    deliver: filter::FilterChain,
+    originate: filter::FilterChain,
+    egress: filter::FilterChain,
+}
+
+impl RegistryInner {
+    fn chain(&self, hook: &Hook) -> &filter::FilterChain {
+        match hook {
+            Hook::Ingress => &self.ingress,
+            Hook::Deliver => &self.deliver,
+            Hook::Originate => &self.originate,
+            Hook::Egress => &self.egress,
+        }
+    }
+
+    fn chain_mut(&mut self, hook: &Hook) -> &mut filter::FilterChain {
+        match hook {
+            Hook::Ingress => &mut self.ingress,
+            Hook::Deliver => &mut self.deliver,
+            Hook::Originate => &mut self.originate,
+            Hook::Egress => &mut self.egress,
+        }
+    }
 }
 
 pub struct Registry {
@@ -53,45 +72,27 @@ impl Registry {
         after: &[&str],
         filter: Filter,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.write();
-
-        match hook {
-            Hook::Ingress => inner.ingress.add_filter(name, filter, after)?,
-            Hook::Deliver => inner.deliver.add_filter(name, filter, after)?,
-            Hook::Originate => inner.originate.add_filter(name, filter, after)?,
-            Hook::Egress => inner.egress.add_filter(name, filter, after)?,
-        }
+        self.inner
+            .write()
+            .chain_mut(&hook)
+            .add_filter(name, filter, after)?;
 
         metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).increment(1.0);
         Ok(())
     }
 
-    // Removes a filter by name from the specified hook.
-    // Returns Ok(Some(filter)) if found and removed, Ok(None) if not found,
-    // or Err(HasDependants) if other filters depend on it.
     pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>, Error> {
-        let hook_label = hook.label();
-        let mut inner = self.inner.write();
-
-        let result = match hook {
-            Hook::Ingress => inner.ingress.remove_filter(name)?,
-            Hook::Deliver => inner.deliver.remove_filter(name)?,
-            Hook::Originate => inner.originate.remove_filter(name)?,
-            Hook::Egress => inner.egress.remove_filter(name)?,
-        };
+        let result = self.inner.write().chain_mut(&hook).remove_filter(name)?;
 
         if result.is_some() {
-            metrics::gauge!("bpa.filter.registered", "hook" => hook_label).decrement(1.0);
+            metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).decrement(1.0);
         }
 
         Ok(result)
     }
 
-    // Executes the filter chain for the specified hook on the given bundle.
-    // Briefly holds the read lock to prepare (clone Arc refs), then releases
-    // before execution. This avoids holding a sync lock across await points
-    // (which isn't Send-safe) and prevents writer starvation.
-    // Uses the provided BoundedTaskPool for parallel ReadFilter execution.
+    /// Briefly holds the read lock to prepare (clone Arc refs), then releases
+    /// before execution — avoids holding a sync lock across await points.
     pub async fn exec<F>(
         &self,
         hook: Hook,
@@ -106,17 +107,7 @@ impl Registry {
             + Send,
     {
         let hook_label = hook.label();
-
-        let prepared = {
-            let inner = self.inner.read();
-            match hook {
-                Hook::Ingress => inner.ingress.prepare(),
-                Hook::Deliver => inner.deliver.prepare(),
-                Hook::Originate => inner.originate.prepare(),
-                Hook::Egress => inner.egress.prepare(),
-            }
-        };
-
+        let prepared = self.inner.read().chain(&hook).prepare();
         let result = prepared.exec(pool, bundle, data, key_provider).await;
 
         match &result {
