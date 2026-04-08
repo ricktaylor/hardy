@@ -1,49 +1,31 @@
-use super::*;
+use alloc::sync::Arc;
+use bytes::Bytes;
 use core::ops::Range;
 use futures::{FutureExt, join, select_biased};
+use hardy_bpv7::bundle::Id as Bpv7Id;
+use hardy_bpv7::editor::Editor;
+use time::OffsetDateTime;
+use trace_err::*;
+use tracing::{debug, error};
 
-struct ReassemblyResult {
-    received_at: time::OffsetDateTime,
-    adus: HashMap<u64, (hardy_bpv7::bundle::Id, Arc<str>, Range<usize>)>,
+use super::{HashMap, Store};
+use crate::bundle::{Bundle, BundleStatus};
+
+pub enum ReassemblyResult {
+    /// Not all sibling fragments have arrived; fragment data is still in storage.
+    /// Caller should transition the bundle to `AduFragment` and wait.
+    NotReady,
+    /// All fragments arrived and the ADU was successfully reassembled.
+    Done(Arc<str>, Bytes),
+    /// All fragments arrived but reassembly failed (corrupt/misaligned data).
+    /// Fragment data has already been deleted; caller should drop the trigger bundle.
+    Failed,
 }
 
-// struct Gather(VecDeque<Bytes>);
-
-// impl Buf for Gather {
-//     fn remaining(&self) -> usize {
-//         self.0.iter().map(|b| b.len()).sum()
-//     }
-
-//     fn chunk(&self) -> &[u8] {
-//         let Some(f) = self.0.front() else {
-//             return &[];
-//         };
-//         f.as_ref()
-//     }
-
-//     fn chunks_vectored<'a>(&'a self, dst: &mut [std::io::IoSlice<'a>]) -> usize {
-//         let mut total = 0;
-//         for (b, d) in self.0.iter().zip(dst) {
-//             total += b.len();
-//             *d = std::io::IoSlice::new(b.as_ref());
-//         }
-//         total
-//     }
-
-//     fn advance(&mut self, mut cnt: usize) {
-//         while cnt > 0 {
-//             let Some(len) = self.0.front().map(|f| f.len()) else {
-//                 break;
-//             };
-//             if cnt < len {
-//                 self.0.front_mut().unwrap().advance(cnt);
-//                 break;
-//             }
-//             cnt -= len;
-//             self.0.pop_front();
-//         }
-//     }
-// }
+struct FragmentSet {
+    received_at: OffsetDateTime,
+    adus: HashMap<u64, (Bpv7Id, Arc<str>, Range<usize>)>,
+}
 
 /// Outcome of an ADU reassembly attempt.
 ///
@@ -63,22 +45,20 @@ pub(crate) enum ReassemblyOutcome {
 }
 
 impl Store {
-    pub async fn adu_reassemble(&self, bundle: &bundle::Bundle) -> ReassemblyOutcome {
-        let status = bundle::BundleStatus::AduFragment {
+    pub async fn adu_reassemble(&self, bundle: &Bundle) -> ReassemblyResult {
+        let status = BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
         };
 
-        // See if we can collect all the fragments
-        let Some(results) = self.poll_fragments(bundle, &status).await else {
-            return ReassemblyOutcome::NotReady;
+        let Some(fragments) = self.poll_fragments(bundle, &status).await else {
+            return ReassemblyResult::NotReady;
         };
 
-        // Now try to reassemble
-        let result = self.reassemble(&results).await;
+        let result = self.reassemble(&fragments).await;
 
         // Remove the fragments from bundle_storage even if we failed to fully reassemble
-        for (bundle_id, storage_name, _) in results.adus.values() {
+        for (bundle_id, storage_name, _) in fragments.adus.values() {
             self.delete_data(storage_name).await;
             self.tombstone_metadata(bundle_id).await;
         }
@@ -86,16 +66,12 @@ impl Store {
         // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
 
         match result {
-            Some((storage_name, data)) => ReassemblyOutcome::Done(storage_name, data),
-            None => ReassemblyOutcome::Failed,
+            Some((storage_name, data)) => ReassemblyResult::Done(storage_name, data),
+            None => ReassemblyResult::Failed,
         }
     }
 
-    async fn poll_fragments(
-        &self,
-        bundle: &bundle::Bundle,
-        status: &bundle::BundleStatus,
-    ) -> Option<ReassemblyResult> {
+    async fn poll_fragments(&self, bundle: &Bundle, status: &BundleStatus) -> Option<FragmentSet> {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();
 
@@ -109,9 +85,6 @@ impl Store {
             .trace_expect("Unfragmented bundle got into adu_reassemble?!");
 
         let total_adu_len = fragment_info.total_adu_length;
-
-        // Seed with the current bundle's payload. The current bundle is still
-        // Dispatching, so poll_adu_fragments (which queries for AduFragment) won't return it.
         let payload = &bundle
             .bundle
             .blocks
@@ -120,7 +93,7 @@ impl Store {
             .payload_range();
 
         let mut adu_totals = payload.len() as u64;
-        let mut results = ReassemblyResult {
+        let mut results = FragmentSet {
             received_at: bundle.metadata.read_only.received_at,
             adus: [(
                 fragment_info.offset,
@@ -137,7 +110,7 @@ impl Store {
             .into(),
         };
 
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
+        let (tx, rx) = flume::bounded::<Bundle>(16);
 
         join!(
             // Producer: poll for fragment bundles
@@ -193,7 +166,7 @@ impl Store {
         ).1
     }
 
-    async fn reassemble(&self, results: &ReassemblyResult) -> Option<(Arc<str>, Bytes)> {
+    async fn reassemble(&self, results: &FragmentSet) -> Option<(Arc<str>, Bytes)> {
         let first = results.adus.get(&0).or_else(|| {
             debug!(
                 "Series of fragments with no offset 0 fragment found: {:?}",
@@ -220,10 +193,13 @@ impl Store {
             .trace_expect("Fragment 0 missing fragment_info in reassembly?!")
             .total_adu_length;
 
-        // Reassemble payload from all fragments in offset order.
+        // Reassemble payload by writing each fragment at its ADU offset.
+        // Iteration order does not matter. Each fragment is placed by offset.
         // TODO: There's a lot of mem copies going on here!
-        let mut new_data: Vec<u8> = Vec::with_capacity(total_adu_length as usize);
-        let mut next_offset: u64 = 0;
+        let adu_len = total_adu_length as usize;
+        let mut new_data: Vec<u8> = vec![0; adu_len];
+        let mut bytes_written: u64 = 0;
+
         for (bundle_id, storage_name, payload) in results.adus.values() {
             let fi = bundle_id
                 .fragment_info
@@ -235,18 +211,20 @@ impl Store {
                 );
                 return None;
             }
-            if fi.offset != next_offset {
-                debug!("Misalignment in offsets during fragment reassembly detected: {bundle_id}");
+
+            let offset = fi.offset as usize;
+            let len = payload.len();
+            if offset.saturating_add(len) > adu_len {
+                debug!("Fragment extends beyond total ADU length: {bundle_id}");
                 return None;
             }
 
-            next_offset = next_offset.saturating_add(payload.len() as u64);
-
             let adu = self.load_data(storage_name).await?.slice(payload.clone());
-            new_data.extend_from_slice(adu.as_ref());
+            new_data[offset..offset + len].copy_from_slice(adu.as_ref());
+            bytes_written = bytes_written.saturating_add(len as u64);
         }
 
-        if next_offset != total_adu_length {
+        if bytes_written != total_adu_length {
             debug!(
                 "Total reassembled ADU does not match fragment info: {:?}",
                 first.0
@@ -255,7 +233,7 @@ impl Store {
         }
 
         // Rewrite primary block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &old_data);
+        let mut editor = Editor::new(&bundle.bundle, &old_data);
         editor = match editor.with_fragment_info(None) {
             Ok(e) => e,
             Err((_, e)) => {
@@ -283,5 +261,152 @@ impl Store {
         let new_data = Bytes::from(new_data);
         let new_storage_name = self.save_data(&new_data).await;
         Some((new_storage_name, new_data))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::bundle::FragmentInfo;
+    use hardy_bpv7::creation_timestamp::CreationTimestamp;
+
+    use super::*;
+    use crate::bundle::BundleMetadata;
+    use crate::storage::{self, bundle_mem::BundleMemStorage, metadata_mem::MetadataMemStorage};
+
+    fn make_store() -> Store {
+        Store::new(
+            None,
+            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+            core::num::NonZeroUsize::new(16).unwrap(),
+            Arc::new(MetadataMemStorage::new(&Default::default())),
+            Arc::new(BundleMemStorage::new(&Default::default())),
+        )
+    }
+
+    fn make_id(source: &str, ts: &CreationTimestamp, offset: u64, total_adu_length: u64) -> Bpv7Id {
+        Bpv7Id {
+            source: source.parse().unwrap(),
+            timestamp: ts.clone(),
+            fragment_info: Some(FragmentInfo {
+                offset,
+                total_adu_length,
+            }),
+        }
+    }
+
+    async fn store_bytes(store: &Store, data: &[u8]) -> Arc<str> {
+        store.save_data(&Bytes::from(data.to_vec())).await
+    }
+
+    async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
+        let bundle = Bundle {
+            bundle: hardy_bpv7::bundle::Bundle {
+                id: id.clone(),
+                destination: "ipn:0.2.1".parse().unwrap(),
+                lifetime: core::time::Duration::from_secs(3600),
+                ..Default::default()
+            },
+            metadata: BundleMetadata {
+                storage_name: Some(storage_name.clone()),
+                ..Default::default()
+            },
+        };
+        store.insert_metadata(&bundle).await;
+    }
+
+    #[tokio::test]
+    async fn reassemble_rejects_missing_first_fragment() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+        let id = make_id("ipn:0.1.1", &ts, 5, 10);
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(5, (id, "unused".into(), 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should reject FragmentSet without offset 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn reassemble_rejects_adu_length_mismatch() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let data = b"HelloWorld";
+        let name0 = store_bytes(&store, data).await;
+        let name1 = store_bytes(&store, data).await;
+
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+        let id1 = make_id("ipn:0.1.1", &ts, 5, 99); // mismatched total
+
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should reject mismatched total_adu_length"
+        );
+    }
+
+    #[tokio::test]
+    async fn reassemble_rejects_fragment_beyond_bounds() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let data = b"HelloWorld";
+        let name0 = store_bytes(&store, data).await;
+        let name1 = store_bytes(&store, data).await;
+
+        // Fragment 1 at offset 8 with 5 bytes → 8+5=13 > 10
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+        let id1 = make_id("ipn:0.1.1", &ts, 8, 10);
+
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5)), (8, (id1, name1, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should reject fragment extending beyond ADU length"
+        );
+    }
+
+    #[tokio::test]
+    async fn reassemble_rejects_incomplete_coverage() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let data = b"HelloWorld";
+        let name0 = store_bytes(&store, data).await;
+
+        // Only 5 bytes written but total is 10
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should reject when bytes_written < total_adu_length"
+        );
     }
 }

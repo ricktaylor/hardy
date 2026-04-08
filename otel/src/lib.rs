@@ -75,13 +75,13 @@ fn init_logs(resource: &Resource) -> SdkLoggerProvider {
 }
 
 pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level) -> OtelGuard {
-    // Create a filter with the specified level as default
+    // Create a filter using RUST_LOG if set, falling back to the configured level
     let make_filter = || {
         EnvFilter::builder()
             .with_default_directive(
                 tracing_subscriber::filter::LevelFilter::from_level(level).into(),
             )
-            .parse_lossy("")
+            .from_env_lossy()
     };
 
     let resource = Resource::builder()
@@ -112,6 +112,7 @@ pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level
         "tower",
         "h2",
         "hyper_util",
+        "opentelemetry_otlp",
         "opentelemetry_sdk",
     ];
 
@@ -167,33 +168,3 @@ impl Drop for OtelGuard {
             .unwrap_or_else(|e| eprintln!("Failed to shutdown logger provider: {e}"));
     }
 }
-
-// Don't want this test to run every time
-// #[test]
-// fn test() {
-//     let rt = tokio::runtime::Builder::new_multi_thread()
-//         .enable_all()
-//         .build()
-//         .unwrap();
-
-//     rt.block_on(async {
-//         let guard = init(
-//             env!("CARGO_PKG_NAME"),
-//             env!("CARGO_PKG_VERSION"),
-//             None,
-//             Some(tracing::Level::INFO),
-//         );
-
-//         metrics::describe_counter!("test_counter", metrics::Unit::Count, "A test counter");
-
-//         for _ in 0..180 {
-//             metrics::counter!("test_counter").increment(1);
-
-//             tracing::info!("Incrementing counter!");
-
-//             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-//         }
-
-//         drop(guard);
-//     });
-// }

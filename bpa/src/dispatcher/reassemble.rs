@@ -1,46 +1,50 @@
-use super::*;
+use hardy_bpv7::bundle::ParsedBundle;
+use tracing::debug;
+
+use super::Dispatcher;
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use crate::storage::adu_reassembly::ReassemblyResult;
 
 impl Dispatcher {
-    pub async fn reassemble(&self, bundle: bundle::Bundle) {
+    pub async fn reassemble(&self, mut bundle: Bundle) {
         let (storage_name, data) = match self.store.adu_reassemble(&bundle).await {
-            storage::adu_reassembly::ReassemblyOutcome::NotReady => {
-                return self.wait_for_fragments(bundle).await;
+            ReassemblyResult::NotReady => {
+                let status = BundleStatus::AduFragment {
+                    source: bundle.bundle.id.source.clone(),
+                    timestamp: bundle.bundle.id.timestamp.clone(),
+                };
+                self.store.update_status(&mut bundle, &status).await;
+                return self.store.watch_bundle(bundle).await;
             }
-            storage::adu_reassembly::ReassemblyOutcome::Failed => {
-                // Fragment data already deleted; drop the trigger bundle silently.
-                return self.delete_bundle(bundle).await;
+            ReassemblyResult::Failed => {
+                debug!("Fragment reassembly failed for bundle {}", bundle.bundle.id);
+                return;
             }
-            storage::adu_reassembly::ReassemblyOutcome::Done(storage_name, data) => {
-                (storage_name, data)
-            }
+            ReassemblyResult::Done(storage_name, data) => (storage_name, data),
         };
 
-        let metadata = bundle::BundleMetadata {
+        let metadata = BundleMetadata {
             storage_name: Some(storage_name),
             ..Default::default()
         };
 
-        // Reparse the reconstituted bundle, for sanity
-        match hardy_bpv7::bundle::ParsedBundle::parse(&data, self.key_provider()) {
-            Ok(hardy_bpv7::bundle::ParsedBundle { bundle, .. }) => {
-                let bundle = bundle::Bundle { metadata, bundle };
-                self.store.insert_metadata(&bundle).await;
+        let parsed = ParsedBundle::parse(&data, self.key_provider());
+        let Ok(ParsedBundle { bundle, .. }) = parsed else {
+            debug!("Reassembled bundle is invalid: {}", parsed.unwrap_err());
 
-                // Box::pin breaks the type recursion; call inner directly (already in pool)
-                Box::pin(self.ingest_bundle_inner(bundle, data)).await;
+            // TODO: Report this as a reception failure for all the fragments
+            // TODO: Wrap damaged bundle in "Junk Bundle Payload" for lost+found
+
+            if let Some(storage_name) = metadata.storage_name {
+                self.store.delete_data(&storage_name).await;
             }
-            Err(error) => {
-                // Reconstituted bundle is garbage
-                debug!("Reassembled bundle is invalid: {error}");
+            return;
+        };
 
-                // TODO: Report this as a reception failure for all the fragments, if we can identify them (we can at least report the fragment we just received)
+        let bundle = Bundle { metadata, bundle };
+        self.store.insert_metadata(&bundle).await;
 
-                // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
-
-                if let Some(storage_name) = metadata.storage_name {
-                    self.store.delete_data(&storage_name).await;
-                }
-            }
-        }
+        // Box::pin breaks the type recursion; call inner directly (already in pool)
+        Box::pin(self.ingest_bundle_inner(bundle, data)).await;
     }
 }
