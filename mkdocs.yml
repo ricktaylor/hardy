@@ -1,0 +1,84 @@
+site_name: Hardy DTN User Guide
+site_url: https://ricktaylor.github.io/hardy/
+site_description: >-
+  User guide for Hardy, a performant BPv7 Delay-Tolerant Networking
+  router for cloud-based ground systems.
+
+repo_name: ricktaylor/hardy
+repo_url: https://github.com/ricktaylor/hardy
+
+copyright: >-
+  Copyright &copy; 2024-2026 Hardy Project Contributors.
+  Licensed under Apache 2.0.
+
+docs_dir: docs/user-docs
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: getting-started/quick-start.md
+    - Docker Deployment: getting-started/docker.md
+  - Configuration:
+    - BPA Server: configuration/bpa-server.md
+    - Storage Backends: configuration/storage.md
+    - Convergence Layers: configuration/convergence-layers.md
+  - Operations:
+    - CLI Tools: operations/tools.md
+    - Observability: operations/observability.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ricktaylor/hardy
