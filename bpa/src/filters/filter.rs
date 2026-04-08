@@ -39,6 +39,19 @@ pub struct FilterChain {
 }
 
 impl FilterChain {
+    #[cfg(test)]
+    pub fn level_count(&self) -> usize {
+        self.levels.len()
+    }
+
+    #[cfg(test)]
+    pub fn names_at_level(&self, level: usize) -> Vec<&str> {
+        self.levels
+            .get(level)
+            .map(|l| l.names().collect())
+            .unwrap_or_default()
+    }
+
     pub fn clear(&mut self) {
         self.levels.clear();
     }
@@ -224,5 +237,282 @@ impl PreparedFilters {
             bundle,
             data,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct PassFilter;
+
+    #[async_trait]
+    impl ReadFilter for PassFilter {
+        async fn filter(
+            &self,
+            _bundle: &bundle::Bundle,
+            _data: &[u8],
+        ) -> Result<FilterResult, crate::Error> {
+            Ok(FilterResult::Continue)
+        }
+    }
+
+    struct DropFilter;
+
+    #[async_trait]
+    impl ReadFilter for DropFilter {
+        async fn filter(
+            &self,
+            _bundle: &bundle::Bundle,
+            _data: &[u8],
+        ) -> Result<FilterResult, crate::Error> {
+            Ok(FilterResult::Drop(None))
+        }
+    }
+
+    struct NoopWriter;
+
+    #[async_trait]
+    impl WriteFilter for NoopWriter {
+        async fn filter(
+            &self,
+            _bundle: &bundle::Bundle,
+            _data: &[u8],
+        ) -> Result<RewriteResult, crate::Error> {
+            Ok(RewriteResult::Continue(None, None))
+        }
+    }
+
+    fn read(name: &str, after: &[&str], chain: &mut FilterChain) {
+        chain
+            .add_filter(name, Filter::Read(Arc::new(PassFilter)), after)
+            .unwrap();
+    }
+
+    fn write(name: &str, after: &[&str], chain: &mut FilterChain) {
+        chain
+            .add_filter(name, Filter::Write(Arc::new(NoopWriter)), after)
+            .unwrap();
+    }
+
+    // --- Registration ---
+
+    #[test]
+    fn add_no_deps() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        read("b", &[], &mut chain);
+        write("c", &[], &mut chain);
+
+        assert_eq!(chain.level_count(), 1);
+        let names: Vec<&str> = chain.names_at_level(0);
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
+        assert!(names.contains(&"c"));
+    }
+
+    #[test]
+    fn add_linear_deps() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        write("b", &["a"], &mut chain);
+        read("c", &["b"], &mut chain);
+
+        assert_eq!(chain.level_count(), 3);
+        assert_eq!(chain.names_at_level(0), vec!["a"]);
+        assert_eq!(chain.names_at_level(1), vec!["b"]);
+        assert_eq!(chain.names_at_level(2), vec!["c"]);
+    }
+
+    #[test]
+    fn add_parallel_at_same_level() {
+        let mut chain = FilterChain::default();
+        write("root", &[], &mut chain);
+        read("a", &["root"], &mut chain);
+        read("b", &["root"], &mut chain);
+        write("c", &["root"], &mut chain);
+
+        assert_eq!(chain.level_count(), 2);
+        assert_eq!(chain.names_at_level(0), vec!["root"]);
+        let level1 = chain.names_at_level(1);
+        assert!(level1.contains(&"a"));
+        assert!(level1.contains(&"b"));
+        assert!(level1.contains(&"c"));
+    }
+
+    #[test]
+    fn add_multiple_deps() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        read("b", &[], &mut chain);
+        write("c", &["a", "b"], &mut chain);
+
+        assert_eq!(chain.level_count(), 2);
+        assert_eq!(chain.names_at_level(1), vec!["c"]);
+    }
+
+    #[test]
+    fn add_deps_across_non_adjacent_levels() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        read("b", &["a"], &mut chain);
+        read("c", &["b"], &mut chain);
+        // depends on level 0 and level 2 — should land at level 3
+        read("d", &["a", "c"], &mut chain);
+
+        assert_eq!(chain.level_count(), 4);
+        assert_eq!(chain.names_at_level(3), vec!["d"]);
+    }
+
+    #[test]
+    fn add_duplicate_name_errors() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+
+        let err = chain
+            .add_filter("a", Filter::Read(Arc::new(PassFilter)), &[])
+            .unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists(_)));
+    }
+
+    #[test]
+    fn add_missing_dep_errors() {
+        let mut chain = FilterChain::default();
+
+        let err = chain
+            .add_filter("a", Filter::Read(Arc::new(PassFilter)), &["missing"])
+            .unwrap_err();
+        assert!(matches!(err, Error::DependencyNotFound(_)));
+    }
+
+    // --- Removal ---
+
+    #[test]
+    fn remove_filter() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        write("b", &[], &mut chain);
+
+        let removed = chain.remove_filter("a").unwrap();
+        assert!(removed.is_some());
+        assert!(matches!(removed.unwrap(), Filter::Read(_)));
+        assert_eq!(chain.names_at_level(0), vec!["b"]);
+    }
+
+    #[test]
+    fn remove_not_found() {
+        let mut chain = FilterChain::default();
+        let removed = chain.remove_filter("x").unwrap();
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn remove_with_dependants_errors() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        read("b", &["a"], &mut chain);
+
+        assert!(matches!(
+            chain.remove_filter("a"),
+            Err(Error::HasDependants(_, _))
+        ));
+    }
+
+    #[test]
+    fn remove_cleans_empty_levels() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        read("b", &["a"], &mut chain);
+
+        // Remove b (level 1), then a (level 0)
+        chain.remove_filter("b").unwrap();
+        assert_eq!(chain.level_count(), 1);
+
+        chain.remove_filter("a").unwrap();
+        assert_eq!(chain.level_count(), 0);
+    }
+
+    // --- Clear ---
+
+    #[test]
+    fn clear_empties_chain() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        write("b", &["a"], &mut chain);
+
+        chain.clear();
+        assert_eq!(chain.level_count(), 0);
+    }
+
+    // --- Prepare ---
+
+    #[test]
+    fn prepare_empty_chain() {
+        let chain = FilterChain::default();
+        let prepared = chain.prepare();
+        assert_eq!(prepared.levels.len(), 0);
+    }
+
+    // --- Exec ---
+
+    async fn run_chain(chain: &FilterChain) -> registry::ExecResult {
+        let prepared = chain.prepare();
+        let pool = hardy_async::BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
+        let bundle = bundle::Bundle {
+            bundle: Default::default(),
+            metadata: Default::default(),
+        };
+        prepared
+            .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn exec_all_continue() {
+        let mut chain = FilterChain::default();
+        read("a", &[], &mut chain);
+        read("b", &[], &mut chain);
+
+        assert!(matches!(
+            run_chain(&chain).await,
+            registry::ExecResult::Continue(_, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_read_filter_drops() {
+        let mut chain = FilterChain::default();
+        chain
+            .add_filter("pass", Filter::Read(Arc::new(PassFilter)), &[])
+            .unwrap();
+        chain
+            .add_filter("drop", Filter::Read(Arc::new(DropFilter)), &[])
+            .unwrap();
+
+        assert!(matches!(
+            run_chain(&chain).await,
+            registry::ExecResult::Drop(_, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_writer_noop() {
+        let mut chain = FilterChain::default();
+        write("w", &[], &mut chain);
+
+        assert!(matches!(
+            run_chain(&chain).await,
+            registry::ExecResult::Continue(_, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_empty_chain() {
+        let chain = FilterChain::default();
+        assert!(matches!(
+            run_chain(&chain).await,
+            registry::ExecResult::Continue(_, _)
+        ));
     }
 }

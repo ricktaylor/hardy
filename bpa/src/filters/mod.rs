@@ -25,8 +25,6 @@ pub enum Error {
     HasDependants(String, Vec<String>),
 }
 
-// Result types
-
 /// Outcome of a read-only filter evaluation.
 #[derive(Debug, Default)]
 pub enum FilterResult {
@@ -71,8 +69,6 @@ pub trait WriteFilter: Send + Sync {
         data: &[u8],
     ) -> Result<RewriteResult, crate::Error>;
 }
-
-// Registration types
 
 /// Filter wrapper enum for registration
 pub enum Filter {
