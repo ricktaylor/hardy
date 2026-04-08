@@ -47,7 +47,7 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Egress filter execution failed")
         {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => (bundle, data),
+            filters::registry::ExecResult::Continue(_, bundle, data) => (bundle, data),
             filters::registry::ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }

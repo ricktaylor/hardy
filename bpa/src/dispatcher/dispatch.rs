@@ -270,14 +270,13 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Ingress filter execution failed")
         {
-            filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
-                // Persist any bundle data mutations
-                if mutation.bundle {
-                    let new_storage_name = self.store.save_data(&data).await;
-                    if let Some(old_storage_name) = bundle.metadata.storage_name.take() {
-                        self.store.delete_data(&old_storage_name).await;
-                    }
-                    bundle.metadata.storage_name = Some(new_storage_name);
+            filters::registry::ExecResult::Continue(_, mut bundle, data) => {
+                // Persist bundle data and checkpoint to Dispatching (crash safety)
+                let new_storage_name = self.store.save_data(&data).await;
+                if let Some(old_storage_name) =
+                    bundle.metadata.storage_name.replace(new_storage_name)
+                {
+                    self.store.delete_data(&old_storage_name).await;
                 }
                 // Always checkpoint to Dispatching (crash safety)
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);

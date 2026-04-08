@@ -11,7 +11,7 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 - **[Routing Design](routing_subsystem_design.md)**: RIB lookup and forwarding decisions that determine which filter hooks run
 - **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status transitions and filter checkpoint semantics
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Ingress filters can set flow_label for queue classification
-- **[Storage Subsystem Design](storage_subsystem_design.md)**: Filter mutation persistence
+- **[Storage Subsystem Design](storage_subsystem_design.md)**: Filter persistence
 
 ---
 
@@ -23,8 +23,8 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 | **Filter Types** | 2 async traits: `ReadFilter` (read-only), `WriteFilter` (read-write) |
 | **Registration** | `Filter` enum with trait object variants, `register(hook, name, after, filter)` |
 | **Ordering** | DAG-based via `after` dependencies (not numeric priorities) |
-| **Parallelism** | ReadFilters: parallel within a DAG level; WriteFilters: sequential |
-| **Execution** | Single DAG per hook; `prepare()/exec()` split for lock-free async |
+| **Parallelism** | ReadFilters: parallel within a level; WriteFilters: sequential |
+| **Execution** | `FilterChain` per hook; `prepare()/exec()` split for lock-free async |
 | **Result Semantics** | `Continue` = "no objection"; `Drop` = veto (stops processing) |
 
 **Hook naming:**
@@ -123,7 +123,7 @@ The optional `ReasonCode` in `Drop` allows filters to indicate why the bundle wa
 
 ## Filter Traits
 
-See `bpa/src/filters/filter.rs` for trait definitions and result types.
+See `bpa/src/filters/mod.rs` for trait definitions and result types.
 
 Two async traits with identical signatures, differing only in return type:
 
@@ -137,21 +137,18 @@ The `RewriteResult::Continue` variant carries optional modifications:
 - `(None, Some(data))` — bundle bytes changed (rare)
 - `(Some(meta), Some(data))` — both changed
 
-### Mutation Tracking and Persistence
+### Persistence
 
-The filter chain aggregates modifications into a `Mutation` struct that tracks whether metadata and/or bundle data were modified. After `ExecResult::Continue`, persistence depends on the hook (see [Bundle State Machine Design](bundle_state_machine_design.md) for checkpoint semantics):
+The bundle and data always flow through the filter chain. WriteFilters mutate the bundle in place. The `ExecResult` carries the final bundle and data — no separate mutation tracking.
+
+Persistence depends on the hook (see [Bundle State Machine Design](bundle_state_machine_design.md) for checkpoint semantics):
 
 | Hook | Persistence Strategy |
 |------|---------------------|
-| **Ingress** | Persist mutations inline, then checkpoint to `Dispatching` status |
-| **Originate** | No persistence (bundle stored after filter with modified metadata) |
+| **Ingress** | Always persist bundle data, then checkpoint to `Dispatching` status |
+| **Originate** | No persistence (bundle stored after filter) |
 | **Deliver** | No persistence (bundle consumed immediately after) |
 | **Egress** | No persistence (bundle leaving node, may re-run on retry) |
-
-For Ingress (the only hook that persists):
-
-1. **If `mutation.bundle`**: Save new bundle data to store, delete old data (crash-safe order), update `storage_name` in metadata
-2. **Always**: Checkpoint status to `Dispatching` to prevent filter re-run on restart
 
 ---
 
@@ -171,20 +168,22 @@ The `Filter` enum wraps either a `ReadFilter` or `WriteFilter` trait object in a
 
 See `bpa/src/bpa.rs:register_filter()` and `unregister_filter()` for the public interface.
 
-Filters are registered with a unique name and optional `after` dependencies. Filter names must be unique within a hook (not globally), since each hook maintains its own DAG and `after` dependencies are resolved per-hook. Unregistration checks for dependants and fails if other filters would be orphaned.
+Filters are registered with a unique name and optional `after` dependencies. Filter names must be unique within a hook (not globally), since each hook maintains its own `FilterChain` and `after` dependencies are resolved per-hook. Unregistration checks for dependants and fails if other filters would be orphaned.
 
 ---
 
 ## Execution Model
 
-### DAG-Based Ordering
+### FilterChain and Levels
 
-Filters declare dependencies via `after`. The DAG executor:
+Each hook has a `FilterChain` — a flat `Vec<Level>`. Each `Level` groups filters with no mutual dependencies. At registration time, a filter is placed at the level after the last level containing one of its dependencies.
+
+Filters declare dependencies via `after`. The executor:
 
 1. Resolves dependencies at registration time
-2. Groups filters by "level" (same dependencies satisfied)
+2. Groups filters into levels (same dependencies satisfied)
 3. Runs ReadFilters in parallel within a level
-4. Runs WriteFilters sequentially
+4. Runs WriteFilters sequentially within a level
 5. Stops immediately on any `Drop` result
 
 ```
@@ -233,7 +232,7 @@ The pool is shared across all bundle processing work (ingress, filter execution,
 
 | Trait | Parallelism |
 |-------|-------------|
-| **ReadFilter** | Parallel with other ReadFilters at same DAG level |
+| **ReadFilter** | Parallel with other ReadFilters at same level |
 | **WriteFilter** | Sequential (rewrites chain through each filter) |
 
 ---
@@ -251,7 +250,7 @@ CLA.on_receive(data)
               └─▶ ingest_bundle_inner(bundle)
                     ├─ check lifetime/hop count
                     ├─ ◀── HOOK: Ingress
-                    ├─ persist mutations + checkpoint to Dispatching
+                    ├─ persist data + checkpoint to Dispatching
                     └─▶ process_bundle(bundle)
                           ├─ RIB lookup (see routing_subsystem_design.md)
                           ├─ Deliver:
