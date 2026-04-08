@@ -42,6 +42,8 @@ This Strategy is the parent document. Verification is executed according to the 
 | **Storage** | Component | [`PLAN-SQLITE-01`](../sqlite-storage/docs/test_plan.md) | SQLite Metadata persistence. |
 | **Storage** | Component | [`PLAN-LD-01`](../localdisk-storage/docs/test_plan.md) | Local Disk Bundle persistence. |
 | **API** | Component | [`COMP-GRPC-01`](../proto/docs/component_test_plan.md) | Streaming gRPC proxy interfaces (client & server). |
+| **TVR** | Unit | [`UTP-TVR-01`](../tvr/docs/unit_test_plan.md) | Contact scheduling (cron, parser, scheduler). |
+| **TVR** | Component | [`COMP-TVR-01`](../tvr/docs/component_test_plan.md) | gRPC session lifecycle, file hot-reload, system integration. |
 | **System** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | Application lifecycle, config, OpenTelemetry. |
 | **System** | Interop | [`PLAN-INTEROP-01`](interop_test_plan.md) | Interoperability with ION/DTNME/etc. (REQ-20). |
 

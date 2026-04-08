@@ -143,6 +143,7 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 | hardy-otel | Library | OpenTelemetry integration | [otel/docs/design.md](../otel/docs/design.md) |
 | hardy-ipn-legacy-filter | Library | Legacy IPN filter | [ipn-legacy-filter/docs/design.md](../ipn-legacy-filter/docs/design.md) |
 | hardy-bibe | Library | BIBE implementation | [bibe/docs/design.md](../bibe/docs/design.md) |
+| hardy-tvr | Application | Time-Variant Routing agent | [tvr/docs/design.md](../tvr/docs/design.md) |
 | hardy-bpa-server | Application | BPA server | [bpa-server/docs/design.md](../bpa-server/docs/design.md) |
 | hardy-tcpclv4-server | Application | Standalone TCPCLv4 | [tcpclv4-server/docs/design.md](../tcpclv4-server/docs/design.md) |
 | hardy-tools | Application | CLI tools (bp) | [tools/docs/design.md](../tools/docs/design.md) |

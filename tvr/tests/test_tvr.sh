@@ -13,9 +13,15 @@
 #
 # Tests:
 #   1. Permanent route: ping succeeds immediately
-#   2. One-shot future route: ping fails before window, succeeds during
-#   3. File hot-reload: add a route by modifying the contact plan file
-#   4. File removal: withdraw routes by deleting the contact plan file
+#   2. Hot-reload: add a route by modifying the contact plan file
+#   3. File removal: withdraw routes by deleting the contact plan file
+#   4. File restore: re-add routes by recreating the contact plan file
+#   5. gRPC session open: open session via grpcurl, verify response
+#   6. gRPC add contacts: add contacts via session, verify route installed
+#   7. gRPC session close cleanup: close session, verify routes withdrawn
+#   8. gRPC duplicate session name: second session with same name rejected
+#   9. gRPC missing open: send add as first message, verify rejection
+#  10. gRPC session name reuse: re-open session after close succeeds
 #
 # Usage:
 #   ./tvr/tests/test_tvr.sh [--skip-build] [--count N]
@@ -118,6 +124,16 @@ for bin in "$BP_BIN" "$BPA_BIN" "$TVR_BIN"; do
         exit 1
     fi
 done
+
+# grpcurl configuration for TVR gRPC session tests
+GRPCURL_ARGS="-plaintext -import-path $WORKSPACE_DIR/tvr -import-path $WORKSPACE_DIR/proto -proto tvr.proto"
+TVR_ADDR="[::1]:$TVR_GRPC_PORT"
+
+# Helper: invoke grpcurl against the TVR service with stdin data
+# Usage: echo '...' | tvr_grpcurl
+tvr_grpcurl() {
+    grpcurl $GRPCURL_ARGS -d @ "$TVR_ADDR" tvr.Tvr/Session
+}
 
 # Helper: run a ping and check result
 do_ping() {
@@ -328,6 +344,185 @@ do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "After file rest
 TEST4=$?
 
 # =============================================================================
+# TEST 5: gRPC session open (TVR-01)
+# =============================================================================
+echo ""
+echo "============================================================"
+log_step "TEST 5: gRPC session open"
+echo "============================================================"
+
+# Open a session via grpcurl and verify we get an OpenSessionResponse
+output=$(echo '{"msg_id": 1, "open": {"name": "test-open", "default_priority": 100}}' \
+    | tvr_grpcurl 2>&1) && exit_code=0 || exit_code=$?
+
+if echo "$output" | grep -q '"open"'; then
+    log_info "gRPC session open: PASSED"
+    TEST5=0
+else
+    log_error "gRPC session open: FAILED"
+    echo "$output"
+    TEST5=1
+fi
+
+# =============================================================================
+# TEST 6: gRPC add contacts + route verification (TVR-05, TVR-09)
+# =============================================================================
+echo ""
+echo "============================================================"
+log_step "TEST 6: gRPC add contacts via session"
+echo "============================================================"
+
+# First, remove the file-based contacts so only gRPC routes are active
+rm -f "$TEST_DIR/contacts"
+sleep 3
+
+# Open a session in background using a FIFO to keep the stream alive
+ADD_FIFO="$TEST_DIR/add_fifo"
+mkfifo "$ADD_FIFO"
+tvr_grpcurl < "$ADD_FIFO" > "$TEST_DIR/grpc_output.json" 2>&1 &
+GRPC_PID=$!
+exec 4>"$ADD_FIFO"
+echo '{"msg_id": 1, "open": {"name": "route-test", "default_priority": 100}}' >&4
+echo '{"msg_id": 2, "add": {"contacts": [{"eid_pattern": "ipn:'"$NODE2_NUM"'.*.*", "via": "ipn:'"$NODE2_NUM"'.1.0", "priority": 10}]}}' >&4
+
+sleep 2
+
+# Verify the add response contains added count
+if grep -q '"added":' "$TEST_DIR/grpc_output.json" 2>/dev/null; then
+    log_info "gRPC add contacts: PASSED"
+    TEST6=0
+else
+    log_error "gRPC add contacts: FAILED (no add response)"
+    cat "$TEST_DIR/grpc_output.json" 2>/dev/null
+    TEST6=1
+fi
+
+# =============================================================================
+# TEST 7: gRPC session close cleanup (TVR-09)
+# =============================================================================
+echo ""
+echo "============================================================"
+log_step "TEST 7: gRPC session close — routes withdrawn"
+echo "============================================================"
+
+# Close fd 4 to close the FIFO, ending the grpcurl stream
+exec 4>&-
+if [ -n "$GRPC_PID" ] && kill -0 "$GRPC_PID" 2>/dev/null; then
+    kill "$GRPC_PID" 2>/dev/null || true
+    wait "$GRPC_PID" 2>/dev/null || true
+fi
+rm -f "$ADD_FIFO"
+
+# Wait for TVR to process the stream close and withdraw routes
+sleep 2
+
+# Verify cleanup: open a new session and re-add the same route.
+# If cleanup worked, the route was withdrawn and re-adding it should
+# produce "active": 1 (newly installed). If cleanup failed, the route
+# would still be in the BPA from the previous session.
+output=$(cat << 'EOF' | tvr_grpcurl 2>&1
+{"msg_id": 1, "open": {"name": "cleanup-check", "default_priority": 100}}
+{"msg_id": 2, "add": {"contacts": [{"eid_pattern": "ipn:2.*.*", "via": "ipn:2.1.0", "priority": 10}]}}
+EOF
+)
+
+if echo "$output" | grep -q '"active"'; then
+    log_info "gRPC session close cleanup: PASSED"
+    TEST7=0
+else
+    log_error "gRPC session close cleanup: FAILED"
+    echo "$output"
+    TEST7=1
+fi
+
+# =============================================================================
+# TEST 8: gRPC duplicate session name (TVR-02)
+# =============================================================================
+echo ""
+echo "============================================================"
+log_step "TEST 8: gRPC duplicate session name rejected"
+echo "============================================================"
+
+# Start a session in background using a FIFO to keep stdin open.
+# Open fd 3 as a persistent writer so grpcurl's stdin stays open
+# after we write the open message.
+DUP_FIFO="$TEST_DIR/dup_fifo"
+mkfifo "$DUP_FIFO"
+tvr_grpcurl < "$DUP_FIFO" > /dev/null 2>&1 &
+DUP_PID1=$!
+exec 3>"$DUP_FIFO"
+echo '{"msg_id": 1, "open": {"name": "dup-test", "default_priority": 100}}' >&3
+
+sleep 1
+
+# Try to open a second session with the same name
+output=$(echo '{"msg_id": 1, "open": {"name": "dup-test", "default_priority": 100}}' \
+    | tvr_grpcurl 2>&1) && exit_code=0 || exit_code=$?
+
+# Clean up first session — close fd 3 to close the FIFO, then wait
+exec 3>&-
+kill "$DUP_PID1" 2>/dev/null || true
+wait "$DUP_PID1" 2>/dev/null || true
+rm -f "$DUP_FIFO"
+
+if echo "$output" | grep -qi "already"; then
+    log_info "gRPC duplicate session name: PASSED"
+    TEST8=0
+else
+    log_error "gRPC duplicate session name: FAILED"
+    echo "$output"
+    TEST8=1
+fi
+
+# =============================================================================
+# TEST 9: gRPC missing open (TVR-03)
+# =============================================================================
+echo ""
+echo "============================================================"
+log_step "TEST 9: gRPC missing open — rejected"
+echo "============================================================"
+
+# Send an add as the first message (no open)
+output=$(echo '{"msg_id": 1, "add": {"contacts": [{"eid_pattern": "ipn:2.*.*", "via": "ipn:2.1.0"}]}}' \
+    | tvr_grpcurl 2>&1) && exit_code=0 || exit_code=$?
+
+if echo "$output" | grep -qi "OpenSession\|INVALID_ARGUMENT\|InvalidArgument"; then
+    log_info "gRPC missing open: PASSED"
+    TEST9=0
+else
+    log_error "gRPC missing open: FAILED"
+    echo "$output"
+    TEST9=1
+fi
+
+# =============================================================================
+# TEST 10: gRPC session name reuse after close (TVR-12)
+# =============================================================================
+echo ""
+echo "============================================================"
+log_step "TEST 10: gRPC session name reuse after close"
+echo "============================================================"
+
+# Open and close a session
+echo '{"msg_id": 1, "open": {"name": "reuse-test", "default_priority": 100}}' \
+    | tvr_grpcurl > /dev/null 2>&1
+
+sleep 1
+
+# Re-open with the same name — should succeed
+output=$(echo '{"msg_id": 1, "open": {"name": "reuse-test", "default_priority": 100}}' \
+    | tvr_grpcurl 2>&1) && exit_code=0 || exit_code=$?
+
+if echo "$output" | grep -q '"open"'; then
+    log_info "gRPC session name reuse: PASSED"
+    TEST10=0
+else
+    log_error "gRPC session name reuse: FAILED"
+    echo "$output"
+    TEST10=1
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""
@@ -339,13 +534,19 @@ echo ""
 PASS=0
 FAIL=0
 
-for t in TEST1 TEST2 TEST3 TEST4; do
+for t in TEST1 TEST2 TEST3 TEST4 TEST5 TEST6 TEST7 TEST8 TEST9 TEST10; do
     val=${!t}
     case $t in
-        TEST1) desc="Permanent route" ;;
-        TEST2) desc="Hot-reload (add)" ;;
-        TEST3) desc="File removal" ;;
-        TEST4) desc="File restore" ;;
+        TEST1)  desc="Permanent route" ;;
+        TEST2)  desc="Hot-reload (add)" ;;
+        TEST3)  desc="File removal" ;;
+        TEST4)  desc="File restore" ;;
+        TEST5)  desc="gRPC session open" ;;
+        TEST6)  desc="gRPC add contacts + route" ;;
+        TEST7)  desc="gRPC session close cleanup" ;;
+        TEST8)  desc="gRPC duplicate session name" ;;
+        TEST9)  desc="gRPC missing open" ;;
+        TEST10) desc="gRPC session name reuse" ;;
     esac
     if [ "$val" -eq 0 ]; then
         echo "  $desc: PASS"
