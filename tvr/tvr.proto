@@ -50,9 +50,11 @@ message OpenSessionResponse {}
 
 // -- Contact Operations --
 
+// Route identity is (eid_pattern, action, priority) — two contacts that
+// match on all three fields map to a single route in the BPA.
 message Contact {
-  string pattern = 1;                           // EID pattern
-  optional uint32 priority = 2;                 // Override session default
+  string eid_pattern = 1;                       // EID pattern
+  optional uint32 priority = 2;                 // Override session default (lower = preferred)
 
   oneof action {
     string via = 10;                            // Forward via next-hop EID
@@ -79,7 +81,9 @@ message OneShot {
 }
 
 message Recurring {
-  string cron = 1;                              // Cron expression (5 or 6 field, or @shortcut)
+  // Cron expression (5 or 6 field, or @shortcut).
+  // Evaluated in UTC — no daylight-saving ambiguity (skipped/doubled hours).
+  string cron = 1;
   google.protobuf.Duration duration = 2;        // Length of each occurrence
   google.protobuf.Timestamp until = 3;          // Optional: end of recurrence
 }

@@ -4,7 +4,7 @@ use chumsky::prelude::*;
 use hardy_bpa::routes::Action;
 use hardy_eid_patterns as eid_patterns;
 use std::path::PathBuf;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 type Span = SimpleSpan<usize>;
 type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
@@ -106,8 +106,14 @@ fn priority_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
 fn rfc3339_timestamp<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>> {
     non_ws_token()
         .try_map(|s: &str, span| {
-            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-                .map_err(|e| Rich::custom(span, format!("invalid RFC 3339 timestamp: {e}")))
+            let dt = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                .map_err(|e| Rich::custom(span, format!("invalid RFC 3339 timestamp: {e}")))?;
+            if dt.offset() != time::UtcOffset::UTC {
+                warn!(
+                    "timestamp '{s}' is not UTC — converting to UTC (schedule evaluation uses UTC)"
+                );
+            }
+            Ok(dt.to_offset(time::UtcOffset::UTC))
         })
         .labelled("RFC 3339 timestamp")
 }

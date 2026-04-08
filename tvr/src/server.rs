@@ -38,7 +38,7 @@ fn convert_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, 
 }
 
 fn convert_duration(d: prost_types::Duration) -> Result<std::time::Duration, tonic::Status> {
-    if d.seconds < 0 || d.nanos < 0 {
+    if d.seconds < 0 || d.nanos < 0 || d.nanos > 999_999_999 {
         return Err(tonic::Status::invalid_argument("duration must be positive"));
     }
     Ok(std::time::Duration::new(d.seconds as u64, d.nanos as u32))
@@ -46,7 +46,7 @@ fn convert_duration(d: prost_types::Duration) -> Result<std::time::Duration, ton
 
 fn convert_contact(proto: proto::tvr::Contact) -> Result<Contact, tonic::Status> {
     let pattern = proto
-        .pattern
+        .eid_pattern
         .parse()
         .map_err(|e| tonic::Status::invalid_argument(format!("invalid EID pattern: {e}")))?;
 
